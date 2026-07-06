@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ForemanMcpServer } from "../foreman-mcp-server.js";
+import { ForemanMcpServer, compactMcpPayload } from "../foreman-mcp-server.js";
 
 describe("ForemanMcpServer", () => {
   it("exposes MCP tool metadata for current and future Foreman use cases", async () => {
@@ -50,5 +50,19 @@ describe("ForemanMcpServer", () => {
     });
 
     expect(response?.error?.message).toContain("Unknown Foreman MCP tool");
+  });
+
+  it("compacts large MCP payloads before returning them", () => {
+    const compacted = compactMcpPayload({
+      output: "x".repeat(20),
+      items: Array.from({ length: 5 }, (_, index) => ({ index })),
+      nested: { a: { b: { c: "hidden" } } },
+    }, { maxStringChars: 8, maxArrayItems: 2, maxDepth: 3 });
+
+    expect(compacted).toMatchObject({
+      output: "xxxxxxxx… [truncated 12 chars]",
+      items: [{ index: 0 }, { index: 1 }, { _mcp_truncated: "3 additional item(s) omitted" }],
+      nested: { a: { b: { _mcp_truncated: "nested object omitted (1 key(s))" } } },
+    });
   });
 });

@@ -38,6 +38,64 @@ export type ForemanMcpOptions = {
 };
 
 const okSchema = { type: "object", properties: {}, additionalProperties: false } as const;
+const MCP_MAX_STRING_CHARS = 1_200;
+const MCP_MAX_ARRAY_ITEMS = 40;
+const MCP_MAX_OBJECT_KEYS = 80;
+const MCP_MAX_DEPTH = 6;
+
+type McpCompactOptions = {
+  maxStringChars?: number;
+  maxArrayItems?: number;
+  maxObjectKeys?: number;
+  maxDepth?: number;
+};
+
+export function compactMcpPayload(value: unknown, options: McpCompactOptions = {}): unknown {
+  const limits = {
+    maxStringChars: options.maxStringChars ?? MCP_MAX_STRING_CHARS,
+    maxArrayItems: options.maxArrayItems ?? MCP_MAX_ARRAY_ITEMS,
+    maxObjectKeys: options.maxObjectKeys ?? MCP_MAX_OBJECT_KEYS,
+    maxDepth: options.maxDepth ?? MCP_MAX_DEPTH,
+  };
+
+  const compact = (current: unknown, depth: number): unknown => {
+    if (current === null || current === undefined) return current;
+    if (typeof current === "string") return truncateString(current, limits.maxStringChars);
+    if (typeof current !== "object") return current;
+    if (depth >= limits.maxDepth) return summarizeNestedValue(current);
+
+    if (Array.isArray(current)) {
+      const kept = current.slice(0, limits.maxArrayItems).map((item) => compact(item, depth + 1));
+      if (current.length > kept.length) {
+        kept.push({ _mcp_truncated: `${current.length - kept.length} additional item(s) omitted` });
+      }
+      return kept;
+    }
+
+    const entries = Object.entries(current as Record<string, unknown>);
+    const result: Record<string, unknown> = {};
+    for (const [key, entryValue] of entries.slice(0, limits.maxObjectKeys)) {
+      result[key] = compact(entryValue, depth + 1);
+    }
+    if (entries.length > limits.maxObjectKeys) {
+      result._mcp_truncated = `${entries.length - limits.maxObjectKeys} additional key(s) omitted`;
+    }
+    return result;
+  };
+
+  return compact(value, 0);
+}
+
+function truncateString(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  return `${value.slice(0, maxChars)}… [truncated ${omitted} chars]`;
+}
+
+function summarizeNestedValue(value: object): unknown {
+  if (Array.isArray(value)) return { _mcp_truncated: `nested array omitted (${value.length} item(s))` };
+  return { _mcp_truncated: `nested object omitted (${Object.keys(value).length} key(s))` };
+}
 
 export class ForemanMcpServer {
   private readonly manager: ElixirServerManager;
@@ -133,7 +191,7 @@ export class ForemanMcpServer {
     const args = objectParam(params, "arguments", {});
     const tool = this.tools.find((candidate) => candidate.name === name);
     if (!tool) throw new Error(`Unknown Foreman MCP tool: ${name}`);
-    const data = await tool.handler(args);
+    const data = compactMcpPayload(await tool.handler(args));
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
       structuredContent: data,

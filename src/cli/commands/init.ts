@@ -1,24 +1,17 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
+import { basename, join, resolve } from "node:path";
 
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
-import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
-import { ProjectRegistry } from "../../lib/project-registry.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
 import { installBundledWorkflows, BUNDLED_WORKFLOW_NAMES } from "../../lib/workflow-loader.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
-import { DatabaseConfigError, DatabaseError } from "../../lib/db/pool-manager.js";
-import { ensureCliPostgresPool, registerProjectInElixir } from "./project-task-support.js";
+import { registerProjectInElixir } from "./project-task-support.js";
 import { encrypt } from "../../lib/encryption.js";
 
 type Awaitable<T> = T | Promise<T>;
@@ -43,7 +36,7 @@ export interface InitBackendOpts {
   projectDir: string;
   /** The issue tracker selected in the wizard (jira/github). */
   issueTracker: "jira" | "github";
-  execSync?: typeof execFileSync;
+  execSync?: unknown;
   checkExists?: (path: string) => boolean;
 }
 
@@ -61,32 +54,6 @@ export async function initBackend(opts: InitBackendOpts): Promise<void> {
 }
 
 // ── Store init logic ──────────────────────────────────────────────────────
-
-export function runPostgresMigrations(
-  projectDir: string,
-  execSync: typeof execFileSync = execFileSync,
-): void {
-  const dotEnvPath = join(projectDir, ".env");
-  const databaseUrl = existsSync(dotEnvPath)
-    ? readFileSync(dotEnvPath, "utf8").match(/^\s*DATABASE_URL=(.+)\s*$/m)?.[1]?.trim().replace(/^[\'"]|[\'"]$/g, "")
-    : undefined;
-  const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../lib/db/migrations");
-  const require = createRequire(import.meta.url);
-  const nodePgMigrateBin = require.resolve("node-pg-migrate/bin/node-pg-migrate");
-  const args = [nodePgMigrateBin, "-m", migrationsDir, "up"];
-
-  if (readdirSync(migrationsDir).some((file) => file.endsWith(".ts"))) {
-    args.push("--tsx");
-  }
-
-  execSync(process.execPath, args, {
-    stdio: "pipe",
-    env: {
-      ...process.env,
-      ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}),
-    },
-  });
-}
 
 /**
  * Register project and task default sentinel config if not already present.
@@ -277,38 +244,11 @@ export async function maybeRegisterInitializedProjectInElixir(projectDir: string
   await registerProjectInElixir(projectDir, { name: projectName, status: "active" });
 }
 
-export function formatInitDatabaseError(err: unknown, projectDir: string): string {
-  const intro = "Failed to initialize the Postgres database schema or project registry.";
-  const fix = `Set DATABASE_URL in ${join(projectDir, ".env")} or your environment to a full Postgres URL like postgresql://user:password@host:5432/database.`;
-
-  if (err instanceof DatabaseConfigError) {
-    return `${intro}\n${err.message}\n${fix}`;
-  }
-
-  if (err instanceof DatabaseError && err.message.includes("client password must be a string")) {
-    return `${intro}\nDATABASE_URL is missing a password for the configured Postgres user.\n${fix}`;
-  }
-
-  if (err instanceof Error) {
-    return `${intro}\n${err.message}`;
-  }
-
-  return `${intro}\n${String(err)}`;
+export function formatInitDatabaseError(err: unknown, _projectDir: string): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
-// ── Command ────────────────────────────────────────────────────────────────
-
-/**
- * Install bundled prompt templates to ~/.foreman/prompts/.
- * Exported for unit testing.
- *
- * @param projectDir - Absolute path to the project directory
- * @param force      - Overwrite existing prompt files
- */
-export function installPrompts(
-  projectDir: string,
-  force: boolean = false,
-): { installed: string[]; skipped: string[] } {
+function installPrompts(projectDir: string, force: boolean): { installed: string[]; skipped: string[] } {
   return installBundledPrompts(projectDir, force);
 }
 
@@ -343,32 +283,6 @@ export const initCommand = new Command("init")
 
     // Initialize task tracking (Elixir backend only).
     await initBackend({ projectDir, issueTracker });
-
-    let store: PostgresStore | null = null;
-    try {
-      // Apply shared Postgres migrations before registry/store access.
-      runPostgresMigrations(projectDir);
-
-      // Register project and task sentinel config
-      ensureCliPostgresPool(projectDir);
-      const registry = new ProjectRegistry({ pg: new PostgresAdapter() });
-      let project = (await registry.list()).find((record) => record.path === projectDir || record.name === projectName);
-      if (!project) {
-        project = await registry.add({ name: projectName, path: projectDir, status: "active" });
-      }
-      store = PostgresStore.forProject(project.id);
-      await initProjectStore(projectDir, projectName, {
-        getProjectByPath: async (path: string) => (path === projectDir ? { id: project.id } : null),
-        registerProject: async () => ({ id: project.id }),
-        getSentinelConfig: async (projectId: string) => store!.getSentinelConfig(projectId),
-        upsertSentinelConfig: async (projectId: string, config) => store!.upsertSentinelConfig(projectId, config),
-      });
-    } catch (err) {
-      console.error(chalk.red(formatInitDatabaseError(err, projectDir)));
-      process.exit(1);
-    } finally {
-      store?.close();
-    }
 
     try {
       await maybeRegisterInitializedProjectInElixir(projectDir, projectName);

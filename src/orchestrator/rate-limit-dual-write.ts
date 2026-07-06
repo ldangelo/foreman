@@ -1,9 +1,17 @@
 import type { ForemanStore, RunProgress } from "../lib/store.js";
-import type { PostgresStore } from "../lib/postgres-store.js";
+
+type MirrorStore = {
+  close(): void;
+  sendMessage(runId: string, senderAgentType: string, recipientAgentType: string, subject: string, body: string): void | Promise<void>;
+  updateRun(runId: string, updates: Record<string, unknown>): void | Promise<void>;
+  updateRunProgress(runId: string, progress: RunProgress): void | Promise<void>;
+  logEvent(projectId: string, eventType: string, data: Record<string, unknown>, runId?: string): void | Promise<void>;
+  logRateLimitEvent(projectId: string, model: string, phase: string, error: string, retryAfterSeconds?: number, runId?: string): void | Promise<void>;
+};
 
 export function createDualWriteStore(
   localStore: ForemanStore,
-  pgStore: PostgresStore,
+  pgStore: MirrorStore,
   preferRegisteredPostgres = false,
   logFn: (msg: string) => void = () => undefined,
 ) {
@@ -27,17 +35,17 @@ export function createDualWriteStore(
     },
     updateRun(runId: string, updates: Record<string, unknown>): void {
       localStore.updateRun(runId, updates as never);
-      mirror(pgStore.updateRun(runId, updates as never), "updateRun");
+      mirror(Promise.resolve(pgStore.updateRun(runId, updates)), "updateRun");
     },
     updateRunProgress(runId: string, progress: RunProgress): void {
       localStore.updateRunProgress(runId, progress);
-      const op = pgStore.updateRunProgress(runId, progress);
+      const op = Promise.resolve(pgStore.updateRunProgress(runId, progress));
       mirror(op, "updateRunProgress");
     },
     logEvent(projectId: string, eventType: string, data: Record<string, unknown>, runId?: string): void {
       localStore.logEvent(projectId, eventType as never, data, runId);
       if (runId) {
-        mirror(pgStore.logEvent(projectId, eventType as never, data, runId), `logEvent:${eventType}`);
+        mirror(Promise.resolve(pgStore.logEvent(projectId, eventType, data, runId)), `logEvent:${eventType}`);
       }
     },
     async logRateLimitEvent(

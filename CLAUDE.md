@@ -16,7 +16,7 @@ npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
 
 # CLI (after build or via tsx)
-foreman init           # Apply packaged Postgres migrations + initialize project
+foreman init           # Initialize project and register it with the Elixir backend
 foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
@@ -90,8 +90,8 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
 - `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
-- `src/lib/store.ts` — PostgreSQL state (runs, progress, messages)
-- `src/lib/postgres-mail-client.ts` — Agent Mail (Postgres-backed)
+- `src/lib/store.ts` — local state for unregistered/offline paths (runs, progress, messages)
+- `src/lib/postgres-mail-client.ts` — legacy-named Agent Mail shim; no direct database access
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
 

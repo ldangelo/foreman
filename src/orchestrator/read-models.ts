@@ -90,7 +90,7 @@ export interface RunProgressSummary {
 
 /**
  * Read-only interface for accessing run data.
- * Store implementations (ForemanStore, PostgresStore, etc.) must satisfy this.
+ * Store implementations (ForemanStore, backend adapters, etc.) must satisfy this.
  */
 export interface RunStoreReadModel {
   /** Fetch a single run by ID. Returns null if not found. */

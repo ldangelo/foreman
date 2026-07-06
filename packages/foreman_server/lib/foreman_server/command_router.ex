@@ -14,6 +14,21 @@ defmodule ForemanServer.CommandRouter do
   @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
   @planning_command_types ["PlanningFlowCommand", "plan.prd", "plan.trd"]
   @migration_command_types ["MigrationImportCommand", "migration.import"]
+  @task_statuses MapSet.new([
+    "backlog",
+    "ready",
+    "approved",
+    "in_progress",
+    "in-progress",
+    "review",
+    "merged",
+    "closed",
+    "conflict",
+    "failed",
+    "stuck",
+    "blocked",
+    "cooldown"
+  ])
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
   def handle(%{"command_type" => command_type} = command)
@@ -212,7 +227,8 @@ defmodule ForemanServer.CommandRouter do
   defp domain_event("task.close", payload), do: task_status_event("task.close", payload, "closed")
 
   defp domain_event("task.update", payload) do
-    with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id) do
+    with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
+         :ok <- validate_task_status(Map.get(payload, :status)) do
       {:ok, "TaskUpdated", Map.put(payload, :task_id, task_id), "task:#{task_id}"}
     end
   end
@@ -230,6 +246,34 @@ defmodule ForemanServer.CommandRouter do
          {:ok, depends_on} <- required_binary(Map.get(payload, :depends_on), :depends_on) do
       {:ok, "TaskDependencyAdded", %{task_id: task_id, depends_on: depends_on}, "task:#{task_id}"}
     end
+  end
+
+  defp domain_event("run.start", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunStarted", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
+  defp domain_event("run.update", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunUpdated", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
+  defp domain_event("run.delete", payload) do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, "RunDeleted", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
+  defp domain_event("event.log", payload) do
+    event_type = Map.get(payload, :event_type, "cli-event")
+    stream_id = case Map.get(payload, :run_id) do
+      run_id when is_binary(run_id) and run_id != "" -> "run:#{run_id}"
+      _ -> "project:#{Map.get(payload, :project_id, "unknown")}:events"
+    end
+
+    {:ok, "CliEventLogged", Map.put(payload, :event_type, event_type), stream_id}
   end
 
   defp domain_event(command_type, command), do: command_accepted(command_type, command)
@@ -272,6 +316,12 @@ defmodule ForemanServer.CommandRouter do
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
+
+  defp validate_task_status(nil), do: :ok
+  defp validate_task_status(status) when is_binary(status) do
+    if MapSet.member?(@task_statuses, status), do: :ok, else: {:error, {:invalid_task_status, status}}
+  end
+  defp validate_task_status(status), do: {:error, {:invalid_task_status, status}}
 
   defp handle_external_trigger(payload, metadata) do
     input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))

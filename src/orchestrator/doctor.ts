@@ -19,7 +19,6 @@ import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
-import { healthCheck, getPool, initPool, destroyPool, isPoolInitialised } from "../lib/db/pool-manager.js";
 import { JiraApiClient } from "../daemon/jira-api-client.js";
 import { getTaskRetryTargetStatus } from "../lib/run-status.js";
 
@@ -542,32 +541,14 @@ export class Doctor {
   }
 
   /**
-   * Check Postgres connectivity via the connection pool.
+   * Legacy Postgres connectivity check retained as a skipped diagnostic.
    */
   async checkPostgresConnectivity(): Promise<CheckResult> {
-    const hadPool = isPoolInitialised();
-    try {
-      if (!hadPool) {
-        initPool();
-      }
-      await healthCheck();
-      return {
-        name: "postgres connectivity",
-        status: "pass",
-        message: "Postgres connection is healthy",
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        name: "postgres connectivity",
-        status: "fail",
-        message: `Postgres connection failed: ${msg.slice(0, 200)}`,
-      };
-    } finally {
-      if (!hadPool && isPoolInitialised()) {
-        await destroyPool();
-      }
-    }
+    return {
+      name: "postgres connectivity",
+      status: "skip",
+      message: "Postgres pool removed; CLI uses Elixir backend",
+    };
   }
   /**
    * Check Jira API connectivity and authentication.
@@ -711,35 +692,14 @@ export class Doctor {
   }
 
   /**
-   * Check Postgres pool capacity. Warns at 80% utilization (TRD-070).
+   * Legacy Postgres pool capacity check retained as a skipped diagnostic.
    */
   async checkPoolCapacity(): Promise<CheckResult> {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pool = getPool() as any;
-      const total = pool.totalCount ?? 0;
-      const idle = pool.idleCount ?? 0;
-      const used = total - idle;
-      const utilization = total > 0 ? (used / total) * 100 : 0;
-      if (utilization >= 80) {
-        return {
-          name: "postgres pool capacity",
-          status: "warn",
-          message: `Pool at ${utilization.toFixed(0)}% (${used}/${total} connections in use). Consider increasing pool_size.`,
-        };
-      }
-      return {
-        name: "postgres pool capacity",
-        status: "pass",
-        message: `Pool at ${utilization.toFixed(0)}% (${used}/${total} connections in use`,
-      };
-    } catch {
-      return {
-        name: "postgres pool capacity",
-        status: "pass",
-        message: "Pool not initialized (no check possible",
-      };
-    }
+    return {
+      name: "postgres pool capacity",
+      status: "skip",
+      message: "Postgres pool removed; CLI uses Elixir backend",
+    };
   }
   async checkSystem(): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check br and bv binaries.

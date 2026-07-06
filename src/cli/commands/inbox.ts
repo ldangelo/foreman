@@ -19,11 +19,21 @@ import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
-import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
-import type { AgentMessageRow, RunRow } from "../../lib/db/postgres-adapter.js";
+type AgentMessageRow = Message;
+type RunRow = Run;
+class BackendInboxAdapter {
+  listPipelineEventsForRun(_runId: string, _limit: number): Promise<[]> { return Promise.resolve([]); }
+  listProjectPipelineEvents(_projectId: string, _limit: number): Promise<[]> { return Promise.resolve([]); }
+  getTask(_projectId: string, _taskId: string): Promise<{ run_id?: string | null } | null> { return Promise.resolve(null); }
+  listRuns(_projectId: string, _opts: { limit?: number }): Promise<RunRow[]> { return Promise.resolve([]); }
+  getAllMessagesGlobal(_projectId: string, _limit: number): Promise<AgentMessageRow[]> { return Promise.resolve([]); }
+  getMessages(_projectId: string, _runId: string, _agent?: string, _unread?: boolean): Promise<AgentMessageRow[]> { return Promise.resolve([]); }
+  getAllMessages(_runId: string): Promise<AgentMessageRow[]> { return Promise.resolve([]); }
+  markMessageRead(_projectId: string, _messageId: string): Promise<void> { return Promise.resolve(); }
+}
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
-import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode, ensureCliPostgresPool } from "./project-task-support.js";
+import { listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 interface DaemonMailMessage {
   id: string;
@@ -575,7 +585,7 @@ export function adaptPostgresEvent(row: { id: string; run_id: string | null; tas
 }
 
 export async function fetchPostgresEvents(
-  adapter: PostgresAdapter,
+  adapter: BackendInboxAdapter,
   projectId: string,
   options: { all?: boolean; runId?: string; limit: number },
 ): Promise<PipelineEvent[]> {
@@ -1303,18 +1313,17 @@ function adaptPostgresMessage(row: AgentMessageRow): Message {
   };
 }
 
-export async function resolvePostgresInboxProject(projectPath: string, projectSelector?: string): Promise<{ adapter: PostgresAdapter; projectId: string } | null> {
-  ensureCliPostgresPool(projectPath);
+export async function resolvePostgresInboxProject(projectPath: string, projectSelector?: string): Promise<{ adapter: BackendInboxAdapter; projectId: string } | null> {
   const projects = await listRegisteredProjects();
   const project = projectSelector
     ? projects.find((record) => record.id === projectSelector || record.name === projectSelector)
     : projects.find((record) => resolve(record.path) === resolve(projectPath));
   if (!project) return null;
-  return { adapter: new PostgresAdapter(), projectId: project.id };
+  return { adapter: new BackendInboxAdapter(), projectId: project.id };
 }
 
 export async function resolvePostgresRunId(
-  adapter: PostgresAdapter,
+  adapter: BackendInboxAdapter,
   projectId: string,
   options: { run?: string; task?: string; bead?: string },
 ): Promise<string | null> {
@@ -1333,7 +1342,7 @@ export async function resolvePostgresRunId(
 }
 
 export async function fetchPostgresMessages(
-  adapter: PostgresAdapter,
+  adapter: BackendInboxAdapter,
   projectId: string,
   options: { all?: boolean; runId?: string; agent?: string; unread?: boolean; limit: number },
 ): Promise<Message[]> {

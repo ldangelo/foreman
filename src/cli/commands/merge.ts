@@ -5,16 +5,15 @@ import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../..
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { Refinery, dryRunMerge } from "../../orchestrator/refinery.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
-import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
-import { PostgresMergeCostTracker } from "../../orchestrator/postgres-merge-cost-tracker.js";
 import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
@@ -111,7 +110,7 @@ export const mergeCommand = new Command("merge")
 
       const store = ForemanStore.forProject(projectPath);
       const tasks = await createMergeTaskClient(projectPath, registered?.id);
-      const runLookup = registered ? new PostgresStore(registered.id) : undefined;
+      const runLookup = registered ? ElixirCliStore.forProject(registered) : undefined;
       const refinery = registered
         ? new Refinery(store, tasks, projectPath, vcs, {
           registeredProjectId: registered.id,
@@ -119,7 +118,7 @@ export const mergeCommand = new Command("merge")
         })
         : new Refinery(store, tasks, projectPath, vcs);
       const mq: MergeQueueLike = registered
-        ? new PostgresMergeQueue(registered.id)
+        ? new ElixirMergeQueue(registered.id)
         : wrapLocalMergeQueue(new MergeQueue(store.getDb()), store, projectPath);
 
       const project = registered ?? store.getProjectByPath(projectPath);
@@ -188,9 +187,12 @@ export const mergeCommand = new Command("merge")
 
       // --stats: show merge cost statistics (MQ-T071)
       if (opts.stats !== undefined) {
-        const costTracker = registered
-          ? new PostgresMergeCostTracker(registered.id)
-          : new MergeCostTracker(store.getDb());
+        if (registered) {
+          console.error(chalk.red("Merge cost statistics are not exposed by the Elixir backend yet."));
+          store.close();
+          process.exit(1);
+        }
+        const costTracker = new MergeCostTracker(store.getDb());
         const period = (typeof opts.stats === "string" ? opts.stats : "all") as "daily" | "weekly" | "monthly" | "all";
         const stats = await costTracker.getStats(period as never);
 
@@ -572,9 +574,8 @@ export const mergeCommand = new Command("merge")
       // Display running AI resolution rate after merge (MQ-T072)
       if (merged.length > 0 || conflicts.length > 0) {
         try {
-          const costTracker = registered
-            ? new PostgresMergeCostTracker(registered.id)
-            : new MergeCostTracker(store.getDb());
+          if (registered) return;
+          const costTracker = new MergeCostTracker(store.getDb());
           const rate = await costTracker.getResolutionRate(30);
           if (rate.total > 0) {
             console.log(

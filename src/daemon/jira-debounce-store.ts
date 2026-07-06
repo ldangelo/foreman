@@ -1,15 +1,14 @@
 /**
- * JiraDebounceStore — manages debounce state in PostgreSQL.
- * All debounce tracking uses the jira_issue_states table.
- * No JSON file is used — all state is persisted in the database.
+ * In-memory Jira debounce store.
+ *
+ * Legacy Postgres debounce persistence was removed with the CLI PG purge. This
+ * preserves process-local behavior until Elixir exposes Jira state APIs.
  */
 
-import { PoolManager } from "../lib/db/pool-manager.js";
-
 export interface IssueState {
-  issueKey: string;
-  lastKnownStatus: string;
-  lastTriggeredAt: Date | null;
+  issue_key: string;
+  last_known_status: string | null;
+  last_triggered_at: string | null;
 }
 
 export interface DebounceCheckResult {
@@ -17,186 +16,76 @@ export interface DebounceCheckResult {
   lastTriggeredAt: Date | null;
 }
 
-interface JiraIssueStateRow {
+export interface JiraIssueStateRow {
+  id?: number;
+  jira_project_id: string;
   issue_key: string;
   last_known_status: string | null;
-  last_triggered_at: Date | null;
+  last_triggered_at: Date | string | null;
+  last_updated_at?: Date | string | null;
 }
 
-/**
- * Check if an issue is currently debounced.
- * Uses jira_issue_states.last_triggered_at to determine if within debounce window.
- */
-export async function isDebounced(
-  jiraProjectId: string,
-  issueKey: string,
-  debounceWindowSeconds: number,
-): Promise<boolean> {
-  if (debounceWindowSeconds === 0) {
-    return false;
+const states = new Map<string, JiraIssueStateRow>();
+
+function key(jiraProjectId: string, issueKey: string): string {
+  return `${jiraProjectId}:${issueKey}`;
+}
+
+export async function isDebounced(jiraProjectId: string, issueKey: string, debounceWindowSeconds: number): Promise<boolean> {
+  const state = states.get(key(jiraProjectId, issueKey));
+  if (!state?.last_triggered_at) return false;
+  const last = new Date(state.last_triggered_at).getTime();
+  return Date.now() - last < debounceWindowSeconds * 1000;
+}
+
+export async function getDebounceStatus(jiraProjectId: string, issueKey: string): Promise<DebounceCheckResult> {
+  const state = states.get(key(jiraProjectId, issueKey));
+  const last = state?.last_triggered_at ? new Date(state.last_triggered_at) : null;
+  return { isDebounced: Boolean(last), lastTriggeredAt: last };
+}
+
+export async function setDebounced(jiraProjectId: string, issueKey: string, status: string): Promise<void> {
+  states.set(key(jiraProjectId, issueKey), {
+    jira_project_id: jiraProjectId,
+    issue_key: issueKey,
+    last_known_status: status,
+    last_triggered_at: new Date(),
+    last_updated_at: new Date(),
+  });
+}
+
+export async function updateStatus(jiraProjectId: string, issueKey: string, status: string): Promise<void> {
+  const existing = states.get(key(jiraProjectId, issueKey));
+  states.set(key(jiraProjectId, issueKey), {
+    jira_project_id: jiraProjectId,
+    issue_key: issueKey,
+    last_known_status: status,
+    last_triggered_at: existing?.last_triggered_at ?? null,
+    last_updated_at: new Date(),
+  });
+}
+
+export async function getLastKnownStatus(jiraProjectId: string, issueKey: string): Promise<string | null> {
+  return states.get(key(jiraProjectId, issueKey))?.last_known_status ?? null;
+}
+
+export async function clearDebounce(jiraProjectId: string, issueKey?: string): Promise<number> {
+  let count = 0;
+  for (const stateKey of [...states.keys()]) {
+    if (stateKey.startsWith(`${jiraProjectId}:`) && (!issueKey || stateKey === key(jiraProjectId, issueKey))) {
+      states.delete(stateKey);
+      count += 1;
+    }
   }
-
-  const db = PoolManager.getPool();
-  const result = await db.query<{ is_debounced: boolean }>(
-    `SELECT EXISTS (
-      SELECT 1 FROM jira_issue_states
-      WHERE jira_project_id = $1
-        AND issue_key = $2
-        AND last_triggered_at IS NOT NULL
-        AND (NOW() - last_triggered_at) < ($3 || ' seconds')::INTERVAL
-    ) AS is_debounced`,
-    [jiraProjectId, issueKey, debounceWindowSeconds],
-  );
-
-  return result.rows[0]?.is_debounced ?? false;
+  return count;
 }
 
-/**
- * Get debounce status for an issue, including the last triggered timestamp.
- */
-export async function getDebounceStatus(
-  jiraProjectId: string,
-  issueKey: string,
-): Promise<DebounceCheckResult> {
-  const db = PoolManager.getPool();
-  const result = await db.query<JiraIssueStateRow>(
-    `SELECT last_triggered_at FROM jira_issue_states
-     WHERE jira_project_id = $1 AND issue_key = $2`,
-    [jiraProjectId, issueKey],
-  );
-
-  return {
-    isDebounced: result.rows[0]?.last_triggered_at != null,
-    lastTriggeredAt: result.rows[0]?.last_triggered_at ?? null,
-  };
-}
-
-/**
- * Set debounce: updates last_triggered_at in jira_issue_states.
- * If the issue doesn't have a row yet, creates one.
- */
-export async function setDebounced(
-  jiraProjectId: string,
-  issueKey: string,
-  status: string,
-): Promise<void> {
-  const db = PoolManager.getPool();
-  await db.query(
-    `INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_triggered_at, last_updated_at)
-     VALUES ($1, $2, $3, NOW(), NOW())
-     ON CONFLICT (jira_project_id, issue_key)
-     DO UPDATE SET
-       last_triggered_at = NOW(),
-       last_known_status = EXCLUDED.last_known_status,
-       last_updated_at = NOW()`,
-    [jiraProjectId, issueKey, status],
-  );
-}
-
-/**
- * Update last known status without triggering debounce.
- * Used when polling detects a status change but we're not triggering a workflow.
- */
-export async function updateStatus(
-  jiraProjectId: string,
-  issueKey: string,
-  status: string,
-): Promise<void> {
-  const db = PoolManager.getPool();
-  await db.query(
-    `INSERT INTO jira_issue_states (jira_project_id, issue_key, last_known_status, last_updated_at)
-     VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (jira_project_id, issue_key)
-     DO UPDATE SET
-       last_known_status = EXCLUDED.last_known_status,
-       last_updated_at = NOW()`,
-    [jiraProjectId, issueKey, status],
-  );
-}
-
-/**
- * Get the last known status for an issue.
- * Returns null if the issue hasn't been tracked yet.
- */
-export async function getLastKnownStatus(
-  jiraProjectId: string,
-  issueKey: string,
-): Promise<string | null> {
-  const db = PoolManager.getPool();
-  const result = await db.query<{ last_known_status: string | null }>(
-    `SELECT last_known_status FROM jira_issue_states
-     WHERE jira_project_id = $1 AND issue_key = $2`,
-    [jiraProjectId, issueKey],
-  );
-
-  return result.rows[0]?.last_known_status ?? null;
-}
-
-/**
- * Check if transitioning to startStatus is a new transition.
- * Returns true if the issue was not previously in a startStatus.
- */
-export async function isNewTransition(
-  jiraProjectId: string,
-  issueKey: string,
-  startStatus: readonly string[],
-): Promise<boolean> {
-  const lastStatus = await getLastKnownStatus(jiraProjectId, issueKey);
-
-  // If no prior status, it's a new issue — not a transition
-  if (lastStatus === null) {
-    return false;
-  }
-
-  // If previously in startStatus, this is not a new transition
-  if (startStatus.includes(lastStatus)) {
-    return false;
-  }
-
-  return true;
-}
-
-/**
- * Cleanup expired debounce entries.
- * Removes last_triggered_at for entries older than the debounce window.
- * Returns the count of cleaned entries.
- */
-export async function cleanup(debounceWindowSeconds: number): Promise<number> {
-  if (debounceWindowSeconds === 0) {
-    return 0;
-  }
-
-  const db = PoolManager.getPool();
-  const result = await db.query<{ id: number }>(
-    `UPDATE jira_issue_states
-     SET last_triggered_at = NULL
-     WHERE last_triggered_at IS NOT NULL
-       AND (NOW() - last_triggered_at) >= ($1 || ' seconds')::INTERVAL
-     RETURNING id`,
-    [debounceWindowSeconds],
-  );
-
-  return result.rowCount ?? 0;
-}
-
-/**
- * Get all issue states for a Jira project.
- * Useful for loading state at startup.
- */
-export async function getIssueStates(
-  jiraProjectId: string,
-): Promise<IssueState[]> {
-  const db = PoolManager.getPool();
-  const result = await db.query<JiraIssueStateRow>(
-    `SELECT issue_key, last_known_status, last_triggered_at
-     FROM jira_issue_states
-     WHERE jira_project_id = $1`,
-    [jiraProjectId],
-  );
-
-  return result.rows.map((row) => ({
-    issueKey: row.issue_key,
-    lastKnownStatus: row.last_known_status ?? "",
-    lastTriggeredAt: row.last_triggered_at ?? null,
-  }));
+export async function getIssueStates(jiraProjectId: string): Promise<IssueState[]> {
+  return [...states.values()]
+    .filter((row) => row.jira_project_id === jiraProjectId)
+    .map((row) => ({
+      issue_key: row.issue_key,
+      last_known_status: row.last_known_status,
+      last_triggered_at: row.last_triggered_at ? new Date(row.last_triggered_at).toISOString() : null,
+    }));
 }

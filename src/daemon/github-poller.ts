@@ -24,8 +24,18 @@
  */
 
 import { GhCli, GhRateLimitError, type GitHubIssue } from "../lib/gh-cli.js";
-import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
+
+interface GitHubSyncAdapter {
+  listGithubRepos(projectId: string): Promise<Array<any>>;
+  listTasks(projectId: string, opts?: Record<string, unknown>): Promise<Array<any>>;
+  updateTaskGitHubFields(projectId: string, taskId: string, input: Record<string, unknown>): Promise<unknown>;
+  createTask(projectId: string, input: Record<string, unknown>): Promise<any>;
+  recordGithubSyncEvent(input: Record<string, unknown>): Promise<unknown>;
+  getGithubRepo(projectId: string, owner: string, repo: string): Promise<any>;
+  updateGithubRepoLastSync(repoId: string): Promise<unknown>;
+  getTask(projectId: string, taskId: string): Promise<any>;
+}
 
 export interface GitHubPollerConfig {
   /** Interval between poll cycles in milliseconds. Default: 60_000 (60s). */
@@ -75,15 +85,14 @@ export function inferTaskTypeFromGitHubLabels(issue: GitHubIssue): string {
 
 export class GitHubIssuesPoller {
   private readonly gh: GhCli;
-  private readonly adapter: PostgresAdapter;
-  private readonly registry: ProjectRegistry;
+  private readonly adapter: GitHubSyncAdapter;  private readonly registry: ProjectRegistry;
   private readonly config: Required<GitHubPollerConfig>;
   private _interval: ReturnType<typeof setInterval> | null = null;
   private _running = false;
   private _stopped = false;
 
   constructor(
-    adapter: PostgresAdapter,
+    adapter: GitHubSyncAdapter,
     registry: ProjectRegistry,
     config: GitHubPollerConfig = {},
     gh?: GhCli,
@@ -384,7 +393,7 @@ export interface PollSummary {
  * the merge completion flow.
  */
 export async function closeLinkedGithubIssue(
-  adapter: PostgresAdapter,
+  adapter: GitHubSyncAdapter,
   gh: GhCli,
   projectId: string,
   taskId: string,
@@ -447,28 +456,11 @@ export async function linkPrToGithubIssue(
   prUrl: string,
 ): Promise<void> {
   try {
-    const adapter = new PostgresAdapter();
-    const task = await adapter.getTask(projectId, taskId);
-    if (!task) return;
-
-    const externalId = task.external_id;
-    if (!externalId || !externalId.startsWith("github:")) return;
-
-    const match = externalId.match(/^github:([^/]+)\/([^#]+)#(\d+)$/);
-    if (!match) return;
-    const [, owner, repo, issueNumberStr] = match;
-    const issueNumber = parseInt(issueNumberStr, 10);
-
-    const comment = `Foreman work complete. PR: ${prUrl}`;
-    // gh api to add issue comment
-    await gh.api(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ body: comment }),
-    });
-
-    console.log(
-      `[linkPrToGithubIssue] Linked PR ${prUrl} to GitHub issue #${issueNumber}`,
-    );
+    void gh;
+    void projectId;
+    void taskId;
+    void prUrl;
+    return;
   } catch (err) {
     console.error(
       `[linkPrToGithubIssue] Failed to link PR to GitHub issue:`,

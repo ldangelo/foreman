@@ -106,12 +106,6 @@ The historical Node dispatcher/tRPC server flow has been removed from the operat
 
 - **Node.js 20+**
 - **Elixir/OTP backend** — started automatically by CLI paths or explicitly with `foreman server start`
-  ```bash
-  # macOS
-  brew install postgresql@15
-  # Linux
-  sudo apt install postgresql-15
-  ```
 - **[Pi](https://pi.dev)** _(installed as npm dependency)_ — agent runtime via `@mariozechner/pi-coding-agent` SDK. No separate binary needed.
 - **Anthropic API key** — `export ANTHROPIC_API_KEY=sk-ant-...` or log in via Pi: `pi /login`
 
@@ -140,8 +134,8 @@ curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | 
 
 Foreman does not currently ship a checked-in containerized dev environment by default, but this repository now includes:
 
-- `devbox.json` — reproducible local shell with Node 20, Postgres client tools, git, and helper scripts
-- `compose.yaml` — local Postgres container for daemon + migration development
+- `devbox.json` — reproducible local shell with Node 20, git, and helper scripts
+- `compose.yaml` — legacy local database container for migration/debug work
 
 ### Prerequisites
 
@@ -153,31 +147,19 @@ Foreman does not currently ship a checked-in containerized dev environment by de
 ```bash
 devbox shell
 devbox run install
-devbox run db:up
-devbox run db:migrate
-```
-
-The default local database URL inside the devbox shell is:
-
-```bash
-postgresql://postgres:postgres@127.0.0.1:5432/foreman
+foreman server start
 ```
 
 ### Common Devbox commands
 
 ```bash
-devbox run db:up            # start local Postgres
-devbox run db:down          # stop local Postgres
-devbox run db:reset         # recreate the Postgres volume and rerun migrations
-devbox run db:logs          # follow Postgres logs
-devbox run db:psql          # connect with psql
-devbox run db:migrate       # run node-pg-migrate up
-devbox run db:migrate:create -- add-runs-table
-devbox run daemon:start     # build, migrate, and start the daemon
+foreman server start        # start Elixir backend
+foreman server status       # check backend health
+foreman run --dry-run       # verify CLI ↔ backend connectivity
 devbox run test             # run the full test suite
 ```
 
-If you prefer not to use Docker for Postgres, override `DATABASE_URL` in your shell or `.env` and run the normal npm migration scripts directly. `foreman init` also applies pending packaged Postgres migrations before registering the project, so end users normally do not need to run `db:migrate` manually.
+The CLI no longer opens a direct database pool. Project/task/run state goes through the Elixir backend.
 
 ### PowerShell (Windows)
 
@@ -345,7 +327,7 @@ For the complete CLI reference with all options and examples, see **[CLI Referen
 For common problems and solutions, see **[Troubleshooting Guide](docs/troubleshooting.md)**.
 
 ### `foreman init`
-Initialize Foreman in a project directory. Applies pending packaged Postgres migrations, registers the project, and sets up `.foreman/`.
+Initialize Foreman in a project directory, register it with the Elixir backend, and set up `.foreman/`.
 Use `--wizard` for interactive setup that writes `.foreman/config.yaml` with VCS, workflow, and issue-tracker settings.
 
 ```bash
@@ -365,11 +347,11 @@ foreman run --dry-run                    # Check Elixir server availability with
 Each agent gets:
 - Its own git worktree (branch: `foreman/<task-id>`)
 - A `TASK.md` with task instructions, phase prompts, and task context
-- Native task status updates in PostgreSQL
+- Native task status updates through the Elixir backend
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events by default in Postgres-backed Elixir mode. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events through the Elixir backend. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
 
 ```bash
 foreman status
@@ -379,7 +361,7 @@ foreman status --live                    # Full dashboard TUI with event stream
 ```
 
 ### `foreman board`
-Terminal UI kanban board for managing Foreman tasks. Five status columns with vim-style navigation. Press `y` to copy the selected task ID. `open`/`backlog` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation.
+Terminal UI kanban board for managing Foreman tasks. Five lifecycle status columns with vim-style navigation; workflow phase is shown separately on active cards/details when available. Press `y` to copy the selected task ID. `open`/`backlog` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation.
 
 ```bash
 foreman board                             # Launch interactive kanban board
@@ -443,12 +425,12 @@ Import a legacy TypeScript-era migration payload into the Elixir event store:
 
 ```bash
 foreman import --to-elixir --file migration.json
-foreman import --to-elixir --from-node --project foreman  # snapshot current Node/Postgres project into Elixir
+foreman import --to-elixir --from-node --project foreman  # deprecated; use --file export instead
 ```
 
 The payload maps legacy projects, tasks, runs, workflows, inbox messages, and config into durable events/projections. Legacy TS delegation has been removed after cutover.
 
-Elixir is the backend after cutover. This removes legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Operator commands either use Elixir-backed APIs/events/projections or report removal; `foreman board` reads and writes task state through Elixir after importing project state. Domain events are the source of truth and trigger operational behavior; projections/read views, including status/log displays, are derived read models used after an event signal or explicit reconciliation. Worker/Pi SDK tool calls and assistant messages are emitted as ordered worker events before being mirrored to raw logs. When the Elixir scheduler launches the legacy Node worker bridge, Elixir-only tasks are mirrored into the Postgres worker store before execution so prompts receive real task metadata.
+Elixir is the backend after cutover. This removes legacy TS delegation and prevents `foreman daemon start|restart` from launching the Node scheduler, so one scheduler owns each project. Use `foreman server start` for the Elixir backend. Operator commands either use Elixir-backed APIs/events/projections or report removal; `foreman board` reads and writes task state through Elixir after importing project state. Domain events are the source of truth and trigger operational behavior; projections/read views, including status/log displays, are derived read models used after an event signal or explicit reconciliation. Worker/Pi SDK tool calls and assistant messages are emitted as ordered worker events before being mirrored to raw logs. Node/Pi workers receive task metadata from the Elixir backend and do not open a direct database pool.
 
 ### `foreman sling trd`
 Parse a TRD and create a native task hierarchy.
@@ -487,7 +469,7 @@ Security controls for the Elixir server:
 - Destructive command-router actions such as `task.close`, `task.block`, and `task.update` append `AuthorizationChecked` and `AuditRecorded` events after the command executes.
 
 ### `foreman doctor`
-Check environment health: Postgres connectivity, stray legacy daemon status, br/Pi binaries, GitHub auth, stale run records, zombie runs, and stale/orphaned worktrees.
+Check environment health: Elixir backend availability, stray legacy daemon status, br/Pi binaries, GitHub auth, stale run records, zombie runs, and stale/orphaned worktrees.
 
 ```bash
 foreman doctor
@@ -517,7 +499,7 @@ foreman worktree clean --all             # Remove all including active ones
 ```
 
 ### `foreman sentinel`
-QA sentinel for continuous testing on the main branch. Sentinel run history is stored in `sentinel_runs`, with start/pass/fail events recorded for observability.
+QA sentinel for continuous testing on the main branch. Registered-project sentinel persistence is owned by the Elixir backend; until sentinel config/run endpoints are exposed, CLI sentinel commands fail explicitly instead of reading legacy state.
 
 ```bash
 foreman sentinel run-once               # Run tests once and exit
@@ -744,13 +726,13 @@ foreman task dep add task-tests task-feature   # tests depend on feature
 foreman task dep list task-123                 # show dependencies
 ```
 
-All task operations route through `TrpcClient` → daemon's Postgres store when daemon is running; otherwise they use direct PostgreSQL access via ForemanStore. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.
+All registered-project task operations route through the Elixir backend. Native status `review` means the pipeline has finished and the branch/PR is waiting for review or merge; phase status `reviewer` is reserved for an actively running reviewer agent.
 
 
 ```bash
 ```
 
-`FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect — the native Postgres task store is always used.
+`FOREMAN_TASK_STORE=native` is accepted for backward compatibility but has no operational effect.
 
 Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (backlog).
 
@@ -871,11 +853,7 @@ foreman/
 │   └── lib/
 │       ├── daemon-manager.ts       # Inspect/stop stray legacy daemon PID/socket
 │       ├── trpc-client.ts           # fail-closed shim for removed daemon tRPC API
-│       ├── db/
-│       │   ├── pool-manager.ts     # Legacy Postgres pool utilities
-│       │   └── postgres-adapter.ts # Legacy Postgres adapter utilities
-│       ├── store.ts                # Legacy project-level PostgreSQL store
-│       ├── postgres-store.ts       # Legacy Postgres-backed store
+│       ├── store.ts                # Local project store for unregistered/offline paths
 │       └── git.ts                  # Git worktree management
 ├── packages/
 │   └── foreman-pi-extensions/      # Pi extension package

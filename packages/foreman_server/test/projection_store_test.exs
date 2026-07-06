@@ -67,11 +67,38 @@ defmodule ForemanServer.ProjectionStoreTest do
       failure_output: "boom"
     })
 
-    append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "ready"})
+    append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "in_progress"})
 
-    assert ProjectionStore.task("task-1").status == "ready"
+    assert ProjectionStore.task("task-1").status == "in_progress"
     assert ProjectionStore.task("task-1").failure_reason == nil
     assert ProjectionStore.task("task-1").failure_output == nil
+  end
+
+  test "task progress updates keep status separate from phase" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "open"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "in_progress"})
+
+    append!("worker:run-1:worker-1", "TaskUpdated", %{
+      task_id: "task-1",
+      run_id: "run-1",
+      phase_id: "documentation",
+      worker_id: "worker-1",
+      sequence: 12,
+      status: nil,
+      details: %{body: "documentation started"}
+    })
+
+    append!("task:task-1", "TaskUpdated", %{task_id: "task-1", status: "documentation"})
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "in_progress"
+    assert task.phase_id == "documentation"
+    assert task.details == %{body: "documentation started"}
   end
 
   test "run terminal events update task projection when task_id is present" do

@@ -1,6 +1,6 @@
 /**
  * Common interface for task stores.
- * Both ForemanStore (Postgres) and PostgresStore implement this interface.
+ * ForemanStore and backend store adapters implement this interface.
  */
 
 import type {

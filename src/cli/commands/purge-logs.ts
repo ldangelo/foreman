@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { resolveProjectContext } from "./project-context.js";
 import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
@@ -44,7 +44,7 @@ export async function resolvePurgeLogsCommandContext(): Promise<PurgeLogsCommand
   const localStore = ForemanStore.forProject(projectPath);
 
   const store: PurgeStore = registered
-    ? PostgresStore.forProject(registered.id)
+    ? ElixirCliStore.forProject(registered)
     : wrapLocalRunStore(localStore);
 
   return { projectPath, localStore, registered, store };

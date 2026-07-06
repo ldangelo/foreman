@@ -6,8 +6,7 @@
  */
 
 import { MergeQueue } from "./merge-queue.js";
-import { PostgresMergeQueue } from "./postgres-merge-queue.js";
-import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import type { MergeQueueEntry } from "./merge-queue.js";
 import type { MergeQueueOperation } from "./merge-queue.js";
 
@@ -67,7 +66,7 @@ export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<Enqu
     }
 
     const entry = projectId
-      ? await new PostgresMergeQueue(projectId, new PostgresAdapter()).enqueue({
+      ? await new ElixirMergeQueue(projectId).enqueue({
           branchName: `foreman/${taskId}`,
           taskId,
           runId,

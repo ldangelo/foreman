@@ -2,12 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listRegisteredProjects = vi.fn();
 const resolveRepoRootProjectPath = vi.fn();
-const ensureCliPostgresPool = vi.fn();
 
 vi.mock("../project-task-support.js", () => ({
   listRegisteredProjects: (...args: unknown[]) => listRegisteredProjects(...args),
   resolveRepoRootProjectPath: (...args: unknown[]) => resolveRepoRootProjectPath(...args),
-  ensureCliPostgresPool: (...args: unknown[]) => ensureCliPostgresPool(...args),
 }));
 
 import {
@@ -28,16 +26,14 @@ beforeEach(() => {
 });
 
 describe("findRegisteredProjectByPath", () => {
-  it("matches a registered project by exact path and initialises the pool", async () => {
+  it("matches a registered project by exact path", async () => {
     const registered = await findRegisteredProjectByPath("/projects/alpha");
     expect(registered).toEqual(PROJECTS[0]);
-    expect(ensureCliPostgresPool).toHaveBeenCalledWith("/projects/alpha");
   });
 
   it("does not match trailing-slash variants without normalizePaths", async () => {
     const registered = await findRegisteredProjectByPath("/projects/beta");
     expect(registered).toBeUndefined();
-    expect(ensureCliPostgresPool).not.toHaveBeenCalled();
   });
 
   it("matches normalized paths when normalizePaths is set (retry.ts behavior)", async () => {
@@ -45,21 +41,11 @@ describe("findRegisteredProjectByPath", () => {
       normalizePaths: true,
     });
     expect(registered).toEqual(PROJECTS[1]);
-    expect(ensureCliPostgresPool).toHaveBeenCalledWith("/projects/beta");
-  });
-
-  it("skips pool initialisation when initPool is false", async () => {
-    const registered = await findRegisteredProjectByPath("/projects/alpha", {
-      initPool: false,
-    });
-    expect(registered).toEqual(PROJECTS[0]);
-    expect(ensureCliPostgresPool).not.toHaveBeenCalled();
   });
 
   it("returns undefined when no project matches", async () => {
     const registered = await findRegisteredProjectByPath("/elsewhere");
     expect(registered).toBeUndefined();
-    expect(ensureCliPostgresPool).not.toHaveBeenCalled();
   });
 });
 
@@ -71,7 +57,6 @@ describe("resolveProjectContext", () => {
       projectPath: "/projects/alpha",
       registered: PROJECTS[0],
     });
-    expect(ensureCliPostgresPool).toHaveBeenCalledWith("/projects/alpha");
   });
 
   it("forwards project/projectPath options to the path resolver", async () => {
@@ -84,7 +69,6 @@ describe("resolveProjectContext", () => {
     resolveRepoRootProjectPath.mockResolvedValue("/elsewhere");
     const context = await resolveProjectContext();
     expect(context).toEqual({ projectPath: "/elsewhere", registered: undefined });
-    expect(ensureCliPostgresPool).not.toHaveBeenCalled();
   });
 
   it("matches by id when matchProjectFlagByIdOrName is set and --project is given (reset.ts behavior)", async () => {
@@ -94,7 +78,6 @@ describe("resolveProjectContext", () => {
       { matchProjectFlagByIdOrName: true },
     );
     expect(context.registered).toEqual(PROJECTS[1]);
-    expect(ensureCliPostgresPool).toHaveBeenCalledWith("/projects/beta/");
   });
 
   it("matches by name when matchProjectFlagByIdOrName is set and --project is given", async () => {
@@ -110,13 +93,6 @@ describe("resolveProjectContext", () => {
     expect(context.registered).toEqual(PROJECTS[0]);
   });
 
-  it("skips pool initialisation when initPool is false", async () => {
-    await resolveProjectContext(
-      { project: "alpha" },
-      { matchProjectFlagByIdOrName: true, initPool: false },
-    );
-    expect(ensureCliPostgresPool).not.toHaveBeenCalled();
-  });
 });
 
 describe("findRegisteredProjectByFlagOrCwd", () => {
@@ -149,9 +125,4 @@ describe("findRegisteredProjectByFlagOrCwd", () => {
     expect(registered).toBeNull();
   });
 
-  it("never initialises the Postgres pool", async () => {
-    await findRegisteredProjectByFlagOrCwd("alpha");
-    await findRegisteredProjectByFlagOrCwd();
-    expect(ensureCliPostgresPool).not.toHaveBeenCalled();
-  });
 });

@@ -18,7 +18,7 @@
   "scripts": {
     "prepare": "npm run build",
     "clean": "rm -rf dist/",
-    "build": "node scripts/build-atomic.js",
+    "build": "node scripts/build-atomic.js && npm run check:no-legacy-postgres",
     "rebuild": "npm run clean && npm run build",
     "build:atomic": "node scripts/build-atomic.js",
     "dev": "tsx watch src/cli/index.ts",
@@ -54,7 +54,8 @@
     "db:migrate": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ up --tsx",
     "db:migrate:down": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ down --tsx",
     "db:migrate:create": "node scripts/run-pg-migrate.mjs -m src/lib/db/migrations/ create --tsx --migration-file-language ts",
-    "test:coverage:transition": "node scripts/test-transition-coverage-ci.mjs"
+    "test:coverage:transition": "node scripts/test-transition-coverage-ci.mjs",
+    "check:no-legacy-postgres": "node scripts/check-no-legacy-postgres-runtime.mjs"
   },
   "keywords": [
     "ai",

@@ -1,0 +1,3 @@
+/Users/ldangelo/Development/Fortium/foreman/src/orchestrator/templates/sentinel-prompt.md
+/Users/ldangelo/Development/Fortium/foreman/src/templates/refinery-agent.md
+/Users/ldangelo/Development/Fortium/foreman/src/templates/worker-agent.md

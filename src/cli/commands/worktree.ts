@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import type { Run } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { Workspace } from "../../lib/vcs/types.js";
@@ -55,7 +55,7 @@ function taskIdFromBranch(branch: string): string {
  */
 export async function listForemanWorktrees(
   projectPath: string,
-  store: Pick<PostgresStore, "getRunsForTask"> | Pick<ForemanStore, "getRunsForTask">,
+  store: Pick<ElixirCliStore, "getRunsForTask"> | Pick<ForemanStore, "getRunsForTask">,
 ): Promise<WorktreeInfo[]> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const worktrees = await vcs.listWorkspaces(projectPath);
@@ -144,7 +144,7 @@ export interface WorktreeCleanOpts {
 
 function closeWorktreeStores(
   localStore: ForemanStore,
-  store: Pick<ForemanStore, "close"> | Pick<PostgresStore, "close">,
+  store: Pick<ForemanStore, "close"> | Pick<ElixirCliStore, "close">,
 ): void {
   localStore.close();
   if ("close" in store && typeof store.close === "function") {
@@ -156,7 +156,7 @@ export async function worktreeListCommandAction(opts: WorktreeListOpts): Promise
   try {
     const { projectPath, registered } = await resolveProjectContext();
     const localStore = ForemanStore.forProject(projectPath);
-    const store = registered ? PostgresStore.forProject(registered.id) : localStore;
+    const store = registered ? ElixirCliStore.forProject(registered) : localStore;
 
     const worktrees = await listForemanWorktrees(projectPath, store);
 
@@ -199,7 +199,7 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
   try {
     const { projectPath, registered } = await resolveProjectContext();
     const localStore = ForemanStore.forProject(projectPath);
-    const store = registered ? PostgresStore.forProject(registered.id) : localStore;
+    const store = registered ? ElixirCliStore.forProject(registered) : localStore;
     const dryRun = opts.dryRun ?? false;
 
     const worktrees = await listForemanWorktrees(projectPath, store);

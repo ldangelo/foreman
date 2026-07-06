@@ -12,13 +12,21 @@
 
 import { createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import { ProjectRegistry } from "../lib/project-registry.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import { WorktreeManager } from "../lib/worktree-manager.js";
 
 export interface WebhookContext {
-  adapter: PostgresAdapter;
+  adapter: {
+    listPipelineRuns(projectId: string, opts?: Record<string, unknown>): Promise<Array<Record<string, any>>>;
+    recordPipelineEvent(event: Record<string, unknown>): Promise<unknown>;
+    getGithubRepo(projectId: string, owner: string, repo: string): Promise<any>;
+    upsertGithubRepo(input: Record<string, unknown>): Promise<any>;
+    listTasks(projectId: string, opts?: Record<string, unknown>): Promise<Array<any>>;
+    createTask(projectId: string, input: Record<string, unknown>): Promise<any>;
+    updateTaskGitHubFields(projectId: string, taskId: string, input: Record<string, unknown>): Promise<unknown>;
+    recordGithubSyncEvent(input: Record<string, unknown>): Promise<unknown>;
+  };
   registry: ProjectRegistry;
 }
 

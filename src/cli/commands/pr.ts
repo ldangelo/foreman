@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { Refinery } from "../../orchestrator/refinery.js";
@@ -19,7 +19,7 @@ export const prCommand = new Command("pr")
       const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
       const { taskClient } = await createTaskClient(projectPath, { registeredProjectId: registered?.id });
       const store = ForemanStore.forProject(projectPath);
-      const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
+      const runLookup = registered ? ElixirCliStore.forProject(registered) : undefined;
       const refinery = registered
         ? new Refinery(store, taskClient, projectPath, vcs, { registeredProjectId: registered.id, runLookup })
         : new Refinery(store, taskClient, projectPath, vcs);

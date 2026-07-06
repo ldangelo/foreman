@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../test-support/tsx-subprocess.js";
-import { wrapPostgresSentinelStore } from "../commands/sentinel.js";
+import { createRegisteredSentinelStore } from "../commands/sentinel.js";
 const CLI = path.resolve(__dirname, "../../../src/cli/index.ts");
 
 /** Per-subprocess timeout (ms). Generous to reduce flakiness under load. */
@@ -112,30 +112,11 @@ describe("sentinel CLI smoke tests", () => {
     ).toBe(true);
   }, TEST_TIMEOUT_MS);
 
-  it("forwards sentinel runId to Postgres sentinel event logging", async () => {
-    const store = {
-      close: vi.fn(),
-      isOpen: vi.fn(() => true),
-      recordSentinelEvent: vi.fn().mockResolvedValue(undefined),
-      recordSentinelRun: vi.fn().mockResolvedValue(undefined),
-      updateSentinelRun: vi.fn().mockResolvedValue(undefined),
-      upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
-      getSentinelConfig: vi.fn().mockResolvedValue(null),
-      getSentinelRuns: vi.fn().mockResolvedValue([]),
-    };
+  it("registered sentinel store fails explicitly until Elixir endpoints exist", async () => {
+    const wrapped = createRegisteredSentinelStore("proj-1");
 
-    const wrapped = wrapPostgresSentinelStore(store as never, "proj-1");
-
-    await wrapped.logEvent("proj-1", "sentinel-pass", {
-      runId: "run-123",
-      status: "passed",
-    });
-
-    expect(store.recordSentinelEvent).toHaveBeenCalledWith(
-      "proj-1",
-      "run-123",
-      "sentinel-pass",
-      expect.objectContaining({ runId: "run-123", status: "passed" }),
+    await expect(wrapped.logEvent("proj-1", "sentinel-pass", { runId: "run-123" })).rejects.toThrow(
+      "Sentinel configuration and run history are not exposed by the Elixir backend yet.",
     );
   });
 

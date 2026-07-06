@@ -4,6 +4,21 @@ defmodule ForemanServer.ProjectionStore do
   use GenServer
 
   @terminal_run_statuses MapSet.new(["completed", "failed", "blocked"])
+  @task_statuses MapSet.new([
+    "backlog",
+    "ready",
+    "approved",
+    "in_progress",
+    "in-progress",
+    "review",
+    "merged",
+    "closed",
+    "conflict",
+    "failed",
+    "stuck",
+    "blocked",
+    "cooldown"
+  ])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -277,6 +292,7 @@ defmodule ForemanServer.ProjectionStore do
     updates =
       payload
       |> Map.drop([:task_id])
+      |> keep_only_task_status_values()
       |> clear_failure_fields_for_active_status()
 
     projection
@@ -331,19 +347,37 @@ defmodule ForemanServer.ProjectionStore do
          %{type: "RunStarted", payload: %{run_id: run_id} = payload},
          _mode
        ) do
-    run = %{
-      run_id: run_id,
-      task_id: Map.get(payload, :task_id),
-      status: "in_progress",
-      phase_order: Map.get(payload, :phase_order, []),
-      current_phase: Map.get(payload, :current_phase),
-      phase_status: %{},
-      worker_status: %{},
-      retry_history: []
-    }
+    run =
+      %{
+        run_id: run_id,
+        task_id: Map.get(payload, :task_id),
+        status: "in_progress",
+        phase_order: Map.get(payload, :phase_order, []),
+        current_phase: Map.get(payload, :current_phase),
+        phase_status: %{},
+        worker_status: %{},
+        retry_history: []
+      }
+      |> Map.merge(payload)
+      |> Map.put_new(:status, "in_progress")
 
     put_in(projection, [:runs, run_id], run)
   end
+
+  defp apply_domain_event(projection, %{type: "RunUpdated", payload: %{run_id: run_id} = payload}, _mode) do
+    update_run(projection, run_id, fn run -> Map.merge(run, payload) end)
+  end
+
+  defp apply_domain_event(projection, %{type: "RunDeleted", payload: %{run_id: run_id}}, _mode) do
+    update_in(projection, [:runs], &Map.delete(&1 || %{}, run_id))
+  end
+
+  defp apply_domain_event(projection, %{type: "CliEventLogged", payload: %{run_id: run_id} = payload}, _mode)
+       when is_binary(run_id) and run_id != "" do
+    put_log_entry(projection, "CliEventLogged", payload)
+  end
+
+  defp apply_domain_event(projection, %{type: "CliEventLogged"}, _mode), do: projection
 
   defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id} = payload}, _mode) do
     projection
@@ -917,6 +951,14 @@ defmodule ForemanServer.ProjectionStore do
   defp empty_task(task_id) do
     %{task_id: task_id, title: task_id, status: "open", updated_at: nil}
   end
+
+  defp keep_only_task_status_values(%{status: nil} = updates), do: Map.delete(updates, :status)
+
+  defp keep_only_task_status_values(%{status: status} = updates) when is_binary(status) do
+    if MapSet.member?(@task_statuses, status), do: updates, else: Map.delete(updates, :status)
+  end
+
+  defp keep_only_task_status_values(updates), do: updates
 
   defp clear_failure_fields_for_active_status(%{status: status} = updates)
        when status in ["ready", "approved", "in_progress", "in-progress"] do

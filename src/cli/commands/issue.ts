@@ -13,7 +13,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { ensureCliPostgresPool, resolveProjectPathFromOptions } from "./project-task-support.js";
+import { elixirClient, listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
 import {
   GhCli,
   GhRateLimitError,
@@ -21,11 +21,83 @@ import {
   type GitHubLabelDefinition,
   type GitHubIssue,
 } from "../../lib/gh-cli.js";
-import {
-  PostgresAdapter,
-  type GithubRepoRow,
-  type UpsertGithubRepoInput,
-} from "../../lib/db/postgres-adapter.js";
+import type { ElixirTask } from "../../lib/elixir-server-client.js";
+
+
+type GithubRepoRow = {
+  id: string;
+  project_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  owner: string;
+  repo: string;
+  auth_type?: string | null;
+  auth_config?: Record<string, unknown> | null;
+  default_labels: string[];
+  auto_import?: boolean;
+  webhook_secret?: string | null;
+  webhook_enabled?: boolean;
+  sync_strategy?: "github-wins" | "foreman-wins" | "manual" | string;
+  last_sync_at?: string | null;
+};
+
+type UpsertGithubRepoInput = {
+  id?: string;
+  projectId: string;
+  owner: string;
+  repo: string;
+  authType?: string | null;
+  authConfig?: Record<string, unknown> | null;
+  defaultLabels?: string[];
+  autoImport?: boolean;
+  webhookSecret?: string | null;
+  webhookEnabled?: boolean;
+  syncStrategy?: "github-wins" | "foreman-wins" | "manual" | string;
+  lastSyncAt?: string | null;
+};
+
+function githubRepoBackendMissing(): never {
+  throw new Error("GitHub repository sync configuration is not exposed by the Elixir backend yet.");
+}
+
+class ElixirIssueAdapter {
+  async listTasks(projectId: string, opts: { status?: string[]; externalId?: string; limit?: number } = {}): Promise<ElixirTask[]> {
+    const client = await elixirClient();
+    return (await client.listTasks())
+      .filter((task) => task.project_id === projectId)
+      .filter((task) => !opts.status || opts.status.includes(task.status ?? ""))
+      .filter((task) => !opts.externalId || task.external_id === opts.externalId)
+      .slice(0, opts.limit ?? Number.MAX_SAFE_INTEGER);
+  }
+
+  async createTask(projectId: string, input: Record<string, unknown>): Promise<ElixirTask> {
+    const client = await elixirClient();
+    const taskId = String(input.id ?? input.taskId ?? `github-${Date.now()}`);
+    const response = await client.sendCommand({
+      command_id: `task-create-${taskId}-${Date.now()}`,
+      command_type: "task.create",
+      payload: {
+        project_id: projectId,
+        task_id: taskId,
+        title: input.title,
+        description: input.description,
+        status: input.status ?? "open",
+        task_type: input.type ?? input.task_type ?? "task",
+        priority: input.priority,
+        external_id: input.external_id ?? input.externalId,
+        external_link: input.external_link ?? input.externalLink,
+        source: "github",
+      },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    const task = await client.getTask(taskId);
+    return task ?? { task_id: taskId, project_id: projectId, title: String(input.title ?? taskId) };
+  }
+
+  async getGithubRepo(_projectId: string, _owner: string, _repo: string): Promise<GithubRepoRow | null> { return githubRepoBackendMissing(); }
+  async upsertGithubRepo(_input: UpsertGithubRepoInput): Promise<GithubRepoRow> { return githubRepoBackendMissing(); }
+  async listGithubSyncEvents(_projectId: string, _repoId?: string, _limit?: number): Promise<Array<{ event_type: string; direction?: string; created_at: string; processed_at?: string; error_message?: string | null }>> { return githubRepoBackendMissing(); }
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -40,9 +112,7 @@ async function resolveProject(opts: {
   projectPath?: string;
 }): Promise<{ projectId: string; projectPath: string }> {
   const projectPath = await resolveProjectPathFromOptions(opts);
-  ensureCliPostgresPool(projectPath);
-  const adapter = new PostgresAdapter();
-  const projects = await adapter.listProjects();
+  const projects = await listRegisteredProjects();
   const project = projects.find((p) => p.path === projectPath);
   if (!project) {
     throw new Error(`Project not found for path '${projectPath}'. Run 'foreman init' first.`);
@@ -367,7 +437,7 @@ issueCommand.addCommand(
       ) => {
         const { projectId } = await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
-        const adapter = new PostgresAdapter();
+        const adapter = new ElixirIssueAdapter();
         const gh = new GhCli();
         const existing = await adapter.getGithubRepo(projectId, owner, repo);
 
@@ -446,7 +516,7 @@ issueCommand.addCommand(
         const { projectId } = await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
-        const adapter = new PostgresAdapter();
+        const adapter = new ElixirIssueAdapter();
 
         // Upsert the repo config if it doesn't exist yet
         let repoConfig = await adapter.getGithubRepo(projectId, owner, repo);
@@ -548,7 +618,7 @@ interface ImportResult {
 }
 
 async function importIssueAsTask(
-  adapter: PostgresAdapter,
+  adapter: ElixirIssueAdapter,
   gh: GhCli,
   projectId: string,
   issue: GitHubIssue,
@@ -564,7 +634,7 @@ async function importIssueAsTask(
     externalId: externalId,
   });
   if (existingTasks.length > 0) {
-    return { taskId: existingTasks[0]!.id, created: false };
+    return { taskId: existingTasks[0]!.task_id ?? existingTasks[0]!.id ?? externalId, created: false };
   }
 
   if (opts.dryRun) {
@@ -607,7 +677,7 @@ async function importIssueAsTask(
     sync_enabled: opts.sync,
   });
 
-  return { taskId: task.id, created: true };
+  return { taskId: task.task_id ?? task.id ?? externalId, created: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -715,7 +785,7 @@ issueCommand.addCommand(
         const { projectId } = await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
         const gh = new GhCli();
-        const adapter = new PostgresAdapter();
+        const adapter = new ElixirIssueAdapter();
 
         const webhookUrl =
           opts.url ?? `http://localhost:3847/webhook`;
@@ -865,7 +935,7 @@ issueCommand.addCommand(
       }) => {
         const { projectId } = await resolveProject(opts);
         const { owner, repo } = parseRepoKey(opts.repo);
-        const adapter = new PostgresAdapter();
+        const adapter = new ElixirIssueAdapter();
 
         try {
           const repoConfig = await adapter.getGithubRepo(projectId, owner, repo);

@@ -7,9 +7,8 @@
 import { parseArgs } from "node:util";
 import { isAbsolute, join } from "node:path";
 import { ForemanStore } from "../lib/store.js";
-import { PostgresStore } from "../lib/postgres-store.js";
 import { MergeQueue } from "./merge-queue.js";
-import { PostgresMergeQueue } from "./postgres-merge-queue.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RefineryAgentConfig } from "./refinery-agent.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "../cli/commands/project-task-support.js";
@@ -107,10 +106,10 @@ export async function runRefineCli(args: string[]): Promise<number> {
   const store = ForemanStore.forProject(projectPath);
   const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
   const mergeQueue = registered
-    ? new PostgresMergeQueue(registered.id)
+    ? new ElixirMergeQueue(registered.id)
     : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
   const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-  const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
+  const runLookup = undefined;
 
   // Agent config
   const agentConfig: Partial<RefineryAgentConfig> = {

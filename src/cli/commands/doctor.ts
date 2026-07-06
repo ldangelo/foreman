@@ -1,13 +1,12 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
-import { destroyPool, isPoolInitialised } from "../../lib/db/pool-manager.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { Doctor } from "../../orchestrator/doctor.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
-import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
-import { ensureCliPostgresPool, resolveRepoRootProjectPath } from "./project-task-support.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
+import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { wrapLocalRunStore } from "./local-store-adapter.js";
 import { parseNonNegativeIntOption } from "./cli-output.js";
@@ -113,20 +112,13 @@ export const doctorCommand = new Command("doctor")
     }
 
     let store: ForemanStore | null = null;
-    let shouldDestroyCliPool = false;
     let exitCode = 0;
     try {
       store = ForemanStore.forProject(projectPath);
-      // initPool: false — doctor records whether the pool was already
-      // initialised before ensuring it, so it can destroy it on exit.
-      const registered = await findRegisteredProjectByPath(projectPath, { initPool: false });
+      const registered = await findRegisteredProjectByPath(projectPath);
       const mq = new MergeQueue(store.getDb());
-      if (registered) {
-        shouldDestroyCliPool = !isPoolInitialised();
-        ensureCliPostgresPool(projectPath);
-      }
-      const runLookup = registered ? PostgresStore.forProject(registered.id) : undefined;
-      const registeredMergeQueue = registered ? new PostgresMergeQueue(registered.id) : undefined;
+      const runLookup = registered ? ElixirCliStore.forProject(registered) : undefined;
+      const registeredMergeQueue = registered ? new ElixirMergeQueue(registered.id) : undefined;
       const { taskClient, backendType } = await createTaskClient(projectPath);
       const doctor = new Doctor(store, projectPath, mq, taskClient, undefined, registeredMergeQueue, runLookup, backendType);
 
@@ -172,10 +164,7 @@ export const doctorCommand = new Command("doctor")
         console.log(chalk.bold("Log cleanup:"));
       }
       if (registered) {
-        ensureCliPostgresPool(projectPath);
-      }
-      if (registered) {
-        const purgeStore = PostgresStore.forProject(registered.id);
+        const purgeStore = ElixirCliStore.forProject(registered);
         try {
           await purgeLogsAction({ days: logDays, dryRun }, purgeStore);
         } finally {
@@ -204,9 +193,7 @@ export const doctorCommand = new Command("doctor")
       exitCode = 1;
     } finally {
       if (store) store.close();
-      if (shouldDestroyCliPool) {
-        await destroyPool();
-      }
+
     }
 
     if (exitCode !== 0) {

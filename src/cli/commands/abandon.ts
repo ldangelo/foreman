@@ -2,14 +2,14 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
 import { MergeQueue, type MergeQueueEntry } from "../../orchestrator/merge-queue.js";
-import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { resolveProjectContext } from "./project-context.js";
 
-type RunStore = ForemanStore | PostgresStore;
+type RunStore = ForemanStore | ElixirCliStore;
 
 export interface AbandonOpts {
   reason?: string;
@@ -39,7 +39,7 @@ async function getRun(store: RunStore, id: string): Promise<Run | null> {
 }
 
 async function removeMergeQueueEntries(
-  queue: MergeQueue | PostgresMergeQueue,
+  queue: MergeQueue | ElixirMergeQueue,
   run: Run,
   dryRun: boolean,
 ): Promise<number> {
@@ -61,7 +61,7 @@ async function abandonRun(
   deps: {
     projectPath: string;
     store: RunStore;
-    queue: MergeQueue | PostgresMergeQueue;
+    queue: MergeQueue | ElixirMergeQueue;
     vcs: Awaited<ReturnType<typeof VcsBackendFactory.create>>;
   },
 ): Promise<void> {
@@ -135,7 +135,7 @@ async function findCompletedRunsWithMissingBranches(store: RunStore, projectPath
 export async function abandonAction(target: string | undefined, opts: AbandonOpts = {}): Promise<number> {
   const { projectPath, registered } = await resolveProjectContext(opts, { normalizePaths: true });
   const localStore = ForemanStore.forProject(projectPath);
-  const store: RunStore = registered ? PostgresStore.forProject(registered.id) : localStore;
+  const store: RunStore = registered ? ElixirCliStore.forProject(registered) : localStore;
   const close = () => {
     localStore.close();
     if (store !== localStore) store.close();
@@ -143,7 +143,7 @@ export async function abandonAction(target: string | undefined, opts: AbandonOpt
 
   try {
     const queue = registered
-      ? new PostgresMergeQueue(registered.id)
+      ? new ElixirMergeQueue(registered.id)
       : new MergeQueue(localStore.getDb());
     const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
     const deps = { projectPath, store, queue, vcs };

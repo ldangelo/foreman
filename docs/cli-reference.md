@@ -41,7 +41,7 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-Initialize Foreman in a project. Applies pending packaged Postgres migrations, creates `.foreman/` directory, installs default workflow configs, prompts, and registers the project in the Postgres store.
+Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
 
 ```bash
 foreman init                      # Initialize with auto-detected name
@@ -234,7 +234,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
-Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. `open`/`backlog` tasks render in Backlog, terminal `closed`/`merged` tasks render in Closed, and unknown statuses render in Needs Attention instead of being hidden as closed. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
+Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. `open`/`backlog` tasks render in Backlog, terminal `closed`/`merged` tasks render in Closed, and unknown statuses render in Needs Attention instead of being hidden as closed. Task cards keep lifecycle status separate from workflow phase: columns use status, while active cards/details show the current phase when available. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
 
 ```bash
 foreman board
@@ -602,7 +602,7 @@ foreman import --to-elixir --file migration.json --no-auto-start
 | Option | Description |
 |--------|-------------|
 | `--file <path>` | Migration JSON payload to import |
-| `--from-node` | Build the migration payload from the current Node/Postgres project selected by `--project` / `--project-path` |
+| `--from-node` | Deprecated. The CLI no longer reads Node/Postgres state directly; export a migration JSON separately and use `--to-elixir --file <path>`. |
 | `--command-id <id>` | Explicit server command id for idempotent retries |
 | `--no-auto-start` | Require an already-running Elixir server |
 

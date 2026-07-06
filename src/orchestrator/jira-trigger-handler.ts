@@ -10,9 +10,7 @@
  * - Emits JiraTriggerEvent for observability
  */
 
-import type { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { JiraProjectConfig } from "../lib/project-config.js";
-import { getPool } from "../lib/db/pool-manager.js";
 import type { JiraIssue } from "../daemon/jira-poller.js";
 import { isDebounced, setDebounced } from "../daemon/jira-debounce-store.js";
 import {
@@ -52,13 +50,18 @@ export interface TriggerResult {
 
 // ── JiraTriggerHandler ─────────────────────────────────────────────────────────
 
+interface JiraTaskAdapter {
+  getTaskByExternalId(projectId: string, externalId: string): Promise<unknown | null>;
+  createTask(projectId: string, input: Record<string, unknown>): Promise<{ id: string }>;
+}
+
 export class JiraTriggerHandler {
-  private readonly adapter: PostgresAdapter;
+  private readonly adapter: JiraTaskAdapter;
   private readonly jiraProjectId: string;
   private readonly defaultWorkflow: string;
 
   constructor(
-    adapter: PostgresAdapter,
+    adapter: JiraTaskAdapter,
     jiraProjectId: string,
     defaultWorkflow = "default",
   ) {

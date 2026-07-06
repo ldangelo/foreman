@@ -31,6 +31,10 @@ foreman mcp --transport http --host 0.0.0.0 --port 4777 --mcp-auth-token "$FOREM
 
 The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GET /health` for load balancers/supervisors.
 
+## Output Size
+
+MCP tool responses are compacted before they are returned to clients so large debug/event payloads do not immediately overflow agent context windows. Long strings are truncated, large arrays/objects include `_mcp_truncated` markers, and IDs/status fields remain in-place when they are within the retained payload.
+
 ## Tool Set
 
 | Tool | Purpose |

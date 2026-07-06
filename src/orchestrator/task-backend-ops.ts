@@ -281,7 +281,7 @@ export const enqueueSetBeadStatus = updateTaskStatus;
 
 export function enqueueAddNotesToBead(_store: TaskStatusStore, _taskId: string, _note: string, _sender: string): void {
   // Deprecated legacy alias retained for older call sites. Native task notes are
-  // appended directly by the caller via PostgresAdapter.addTaskNote().
+  // appended directly by the caller via the active backend adapter.
 }
 
 export async function syncBeadStatusOnStartup(

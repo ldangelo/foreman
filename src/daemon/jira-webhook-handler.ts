@@ -12,14 +12,13 @@
 
 import { createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import type { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { JiraProjectConfig } from "../lib/project-config.js";
 import type { JiraIssue } from "./jira-poller.js";
 import { JiraTriggerHandler } from "../orchestrator/jira-trigger-handler.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface JiraWebhookContext {
-  adapter: PostgresAdapter;
+  adapter: ConstructorParameters<typeof JiraTriggerHandler>[0];
   /** Maps Jira project key → project config (can be async) */
   getProjectConfig: (projectKey: string) => Promise<JiraProjectConfig | undefined> | JiraProjectConfig | undefined;
 }

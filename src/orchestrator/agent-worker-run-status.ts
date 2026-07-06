@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { ForemanStore } from "../lib/store.js";
 import type { Run } from "../lib/store.js";
-import { PostgresStore } from "../lib/postgres-store.js";
+import { ElixirServerClient } from "../lib/elixir-server-client.js";
 
 const TERMINAL_TASK_STATUS_BY_RUN_STATUS: Partial<Record<Run["status"], "failed" | "stuck" | "merged">> = {
   failed: "failed",
@@ -25,28 +26,35 @@ export async function updateTerminalRunStatus(opts: {
   updates: Partial<Pick<Run, "status" | "completed_at" | "cooldown_until">>;
 }): Promise<void> {
   if (opts.projectId) {
-    const pgStore = PostgresStore.forProject(opts.projectId);
     try {
-      const currentRun = await pgStore.getRun(opts.runId);
-      if (shouldPreserveTerminalSuccess(currentRun?.status, opts.updates.status)) {
+      const client = new ElixirServerClient(process.env.FOREMAN_ELIXIR_URL ?? "http://127.0.0.1:4766");
+      const runs = await client.listRuns({ projectId: opts.projectId });
+      const currentRun = runs.find((run) => (run.run_id ?? run.id) === opts.runId);
+      if (shouldPreserveTerminalSuccess(currentRun?.status as Run["status"] | undefined, opts.updates.status)) {
         return;
       }
 
-      await pgStore.updateRun(opts.runId, opts.updates);
-      const linkedTaskStatus = opts.updates.status
-        ? TERMINAL_TASK_STATUS_BY_RUN_STATUS[opts.updates.status]
-        : undefined;
-      if (linkedTaskStatus) {
-        await pgStore.updateTaskStatusForRun(opts.runId, linkedTaskStatus);
+      const response = await client.sendCommand({
+        command_id: `run-update-${opts.runId}-${randomUUID()}`,
+        command_type: "run.update",
+        payload: { run_id: opts.runId, project_id: opts.projectId, ...opts.updates },
+      });
+      if (!response.ok) throw new Error(response.error.message);
+      const linkedTaskStatus = opts.updates.status ? TERMINAL_TASK_STATUS_BY_RUN_STATUS[opts.updates.status] : undefined;
+      if (linkedTaskStatus && currentRun?.task_id) {
+        const taskResponse = await client.sendCommand({
+          command_id: `task-update-${currentRun.task_id}-${randomUUID()}`,
+          command_type: "task.update",
+          payload: { task_id: currentRun.task_id, project_id: opts.projectId, status: linkedTaskStatus },
+        });
+        if (!taskResponse.ok) throw new Error(taskResponse.error.message);
       }
       return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(
-        `[agent-worker-run-status] Postgres updateRun failed for ${opts.runId} (${opts.projectId}); falling back to local store: ${msg}`,
+        `[agent-worker-run-status] Elixir updateRun failed for ${opts.runId} (${opts.projectId}); falling back to local store: ${msg}`,
       );
-    } finally {
-      pgStore.close();
     }
   }
 

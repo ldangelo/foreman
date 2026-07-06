@@ -17,14 +17,13 @@
 import { Command, Option } from "commander";
 import chalk from "chalk";
 
-import { resolveRepoRootProjectPath, listRegisteredProjects } from "./project-task-support.js";
+import { resolveRepoRootProjectPath, listRegisteredProjects, elixirClient } from "./project-task-support.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
-import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
@@ -148,7 +147,7 @@ async function resolveRegisteredProject(projectPath: string): Promise<Registered
  * Returns the run ID if locked, null otherwise.
  */
 async function checkWorktreeLock(
-  store: ForemanStore | PostgresStore,
+  store: ForemanStore | ElixirCliStore,
   taskId: string,
   projectId: string,
 ): Promise<string | null> {
@@ -207,10 +206,6 @@ export async function runTaskAction(
   const resolvedProjectPath = await resolveRepoRootProjectPath({ project, projectPath: optsProjectPath });
   const registered = await resolveRegisteredProject(resolvedProjectPath);
 
-  // Initialize task clients
-  if (registered) {
-    // ensureCliPostgresPool is called in run.ts for the main command
-  }
   const clients = await createTaskClient(resolvedProjectPath, { registeredProjectId: registered?.id });
   const taskClient = clients.taskClient;
 
@@ -250,7 +245,7 @@ export async function runTaskAction(
   const store = ForemanStore.forProject(resolvedProjectPath);
   const testRuntime = process.env.FOREMAN_RUNTIME_MODE === "test";
   const daemonStore = registered && !testRuntime
-    ? PostgresStore.forProject(registered.id)
+    ? ElixirCliStore.forProject(registered)
     : null;
   const projectRecord = registered ?? store.getProjectByPath(resolvedProjectPath);
   if (!projectRecord) {
@@ -392,22 +387,26 @@ export async function runTaskAction(
     if (requestedRunId) {
       // Elixir scheduler already appended RunStarted and claimed the task.
     } else if (daemonStore && registered) {
-      const pg = new PostgresAdapter();
-      const existingRuns = await daemonStore.getRunsForTask(taskId, projectId);
+      const existingRuns = await daemonStore.getRunsForTask(taskId);
       const runNumber = existingRuns.length + 1;
-
-      await pg.createPipelineRun({
-        id: runId,
-        projectId,
-        beadId: taskId,
-        runNumber,
-        branch: branchName,
-        trigger: "manual",
-        agentType: "developer",
-        worktreePath,
-        baseBranch: baseBranch ?? undefined,
-        mergeStrategy: workflowConfig.merge ?? "auto",
+      const client = await elixirClient();
+      const response = await client.sendCommand({
+        command_id: `run-start-${runId}`,
+        command_type: "run.start",
+        payload: {
+          run_id: runId,
+          project_id: projectId,
+          task_id: taskId,
+          run_number: runNumber,
+          branch_name: branchName,
+          trigger: "manual",
+          agent_type: "developer",
+          worktree_path: worktreePath,
+          base_branch: baseBranch ?? undefined,
+          merge_strategy: workflowConfig.merge ?? "auto",
+        },
       });
+      if (!response.ok) throw new Error(response.error.message);
     } else {
       const localRun = store.createRun(projectId, taskId, "developer", worktreePath, {
         baseBranch: baseBranch ?? undefined,
@@ -427,8 +426,13 @@ export async function runTaskAction(
     if (requestedRunId) {
       // Elixir scheduler already owns task status for this run.
     } else if (daemonStore && registered) {
-      const pg = new PostgresAdapter();
-      await pg.updateTask(projectId, taskId, { status: "in-progress" });
+      const client = await elixirClient();
+      const response = await client.sendCommand({
+        command_id: `task-update-${taskId}-${runId}`,
+        command_type: "task.update",
+        payload: { task_id: taskId, project_id: projectId, status: "in_progress", run_id: runId },
+      });
+      if (!response.ok) throw new Error(response.error.message);
     } else if (typeof taskClient.update === "function") {
       await taskClient.update(taskId, { status: "in-progress" });
     }

@@ -1,5 +1,5 @@
 /**
- * ProjectRegistry — project metadata store with JSON + Postgres dual-write.
+ * ProjectRegistry — project metadata store with JSON persistence.
  *
  * Architecture:
  * - Legacy JSON file at `~/.foreman/projects/projects.json` is retained as a
@@ -28,7 +28,27 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { PostgresAdapter } from "./db/postgres-adapter.js";
+
+interface ProjectAdapterRow {
+  id: string;
+  name: string;
+  path: string;
+  github_url?: string | null;
+  repo_key?: string | null;
+  default_branch?: string | null;
+  status: ProjectRecord["status"];
+  created_at: string;
+  updated_at: string;
+  last_sync_at?: string | null;
+}
+
+interface ProjectRegistryAdapter {
+  createProject(input: Record<string, unknown>): Promise<ProjectAdapterRow>;
+  listProjects(): Promise<ProjectAdapterRow[]>;
+  updateProject(id: string, patch: Record<string, unknown>): Promise<void>;
+  getProject(id: string): Promise<ProjectAdapterRow | null>;
+  removeProject(id: string): Promise<void>;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -187,8 +207,8 @@ interface LegacyProjectEntry {
 export interface ProjectRegistryOptions {
   /** Override the base directory. Defaults to `~/.foreman`. */
   baseDir?: string;
-  /** Override PostgresAdapter instance. Defaults to module-level singleton. */
-  pg?: PostgresAdapter;
+  /** Optional backend adapter. New code should use the Elixir backend instead. */
+  pg?: ProjectRegistryAdapter;
   /** Override the JSON file path (for testing). */
   jsonPath?: string;
 }
@@ -196,7 +216,7 @@ export interface ProjectRegistryOptions {
 export class ProjectRegistry {
   private readonly baseDir: string;
   private readonly jsonFilePath: string;
-  private readonly pg: PostgresAdapter | null;
+  private readonly pg: ProjectRegistryAdapter | null;
   /** In-memory cache — null means cache is invalidated (needs re-read). */
   private cache: ProjectRecord[] | null = null;
 
@@ -322,7 +342,7 @@ export class ProjectRegistry {
     this.cache = null;
   }
 
-  private projectRowToRecord(row: import("./db/postgres-adapter.js").ProjectRow): ProjectRecord {
+  private projectRowToRecord(row: ProjectAdapterRow): ProjectRecord {
     return {
       id: row.id,
       name: row.name,
@@ -330,10 +350,10 @@ export class ProjectRegistry {
       githubUrl: row.github_url ?? "",
       repoKey: row.repo_key,
       defaultBranch: row.default_branch ?? "main",
-      status: row.status,
+      status: row.status as ProjectRecord["status"],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      lastSyncAt: row.last_sync_at,
+      lastSyncAt: row.last_sync_at ?? null,
     };
   }
 
@@ -344,7 +364,7 @@ export class ProjectRegistry {
     } catch (err) {
       console.warn(
         `[ProjectRegistry] JSON mirror write failed: ${(err as Error).message}. ` +
-          "Postgres source of truth remains current."
+          "backend source of truth remains current."
       );
     }
   }

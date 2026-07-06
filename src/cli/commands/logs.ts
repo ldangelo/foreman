@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import chalk from "chalk";
 import { Command } from "commander";
-import type { TaskRow } from "../../lib/db/postgres-adapter.js";
+import type { TaskRow } from "../../lib/task-store.js";
 import { ForemanStore, type Run, type RunProgress } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";

@@ -2,7 +2,7 @@ import chalk from "chalk";
 
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import type { ITaskClient } from "../../lib/task-client.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
@@ -152,7 +152,7 @@ export async function purgeZombieRunsCommandAction(opts: PurgeZombieRunsOpts): P
   const localStore = ForemanStore.forProject(projectPath);
   const registered = await findRegisteredProjectByPath(projectPath);
   const store: PurgeZombieStore = registered
-    ? PostgresStore.forProject(registered.id)
+    ? ElixirCliStore.forProject(registered)
     : wrapLocalRunStore(localStore);
   const { taskClient } = await createTaskClient(projectPath);
 

@@ -2,12 +2,9 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createTaskClient, type TaskClientBackend } from "../../lib/task-client-factory.js";
-import { createTrpcClient } from "../../lib/trpc-client.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
-import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 import { closeStoreIfPossible, wrapLocalRunStore } from "./local-store-adapter.js";
@@ -31,33 +28,6 @@ interface RetryStore {
   getRunsForTask(taskId: string, projectId: string): Promise<import("../../lib/store.js").Run[]>;
   updateRun(runId: string, updates: Partial<Pick<import("../../lib/store.js").Run, "status" | "completed_at">>): Promise<void>;
   logEvent(projectId: string, eventType: "restart", data: Record<string, unknown>, runId?: string): Promise<void>;
-}
-
-function createDaemonTaskClient(client: ReturnType<typeof createTrpcClient>, projectId: string): ITaskClient {
-  return {
-    async show(id: string) {
-      const task = await client.tasks.get({ projectId, taskId: id }) as { status: string; description?: string | null; title?: string } | null;
-      if (!task) throw new Error(`Task '${id}' not found`);
-      return { status: task.status, description: task.description ?? null, title: task.title };
-    },
-    async update(id: string, opts) {
-      await client.tasks.update({
-        projectId,
-        taskId: id,
-        updates: {
-          status: opts.status,
-          title: opts.title,
-          description: opts.description ?? undefined,
-        },
-      });
-    },
-    async resetToReady(id: string) {
-      await client.tasks.retry({ projectId, taskId: id });
-    },
-    async ready() { return []; },
-    async list() { return []; },
-    async close() { throw new Error("not implemented"); },
-  } as ITaskClient;
 }
 
 async function createElixirRetryClient(): Promise<ElixirServerClient> {
@@ -437,114 +407,23 @@ export const retryCommand = new Command("retry")
       return;
     }
 
-    const store: RetryStore = registered ? PostgresStore.forProject(registered.id) : wrapLocalRunStore(localStore);
-    const { taskClient, backendType } = registered
-      ? { taskClient: createDaemonTaskClient(createTrpcClient(), registered.id), backendType: "native" as const }
-      : await createTaskClient(projectPath);
-    const dispatcher = registered
-      ? (() => {
-          const pg = new PostgresAdapter();
-          return new Dispatcher(taskClient, localStore, projectPath, null, {
-            externalProjectId: registered.id,
-            getRecentFailureCount: async (_projectId, since) => {
-              const failures = await pg.listTasks(registered.id, { status: ["failed", "stuck", "conflict"], limit: 1000 });
-              return failures.filter((t) => t.updated_at >= since).length;
-            },
-            getActiveTaskIds: async () => {
-              const active = await pg.listPipelineRuns(registered.id, { status: "running", limit: 1000 });
-              const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
-              return [...active, ...pending].map((r) => r.bead_id);
-            },
-            getActiveAgentCount: async () => {
-              const active = await pg.listPipelineRuns(registered.id, { status: "running", limit: 1000 });
-              const pending = await pg.listPipelineRuns(registered.id, { status: "pending", limit: 1000 });
-              return active.length + pending.length;
-            },
-            hasActiveOrPendingRun: async (taskId) => {
-              const runs = await pg.listPipelineRuns(registered.id, { beadId: taskId, limit: 20 });
-              return runs.some((r) => ["pending", "running", "success"].includes(r.status));
-            },
-            nativeTaskOps: {
-              hasNativeTasks: async () => pg.hasNativeTasks(registered.id),
-              getReadyTasks: async () => await pg.listTasks(registered.id, { status: ["ready"], limit: 1000 }) as never,
-              getTaskByExternalId: async (externalId) => await pg.getTaskByExternalId(registered.id, externalId) as never,
-              getTaskById: async (taskId) => await pg.getTask(registered.id, taskId) as never,
-              claimTask: async (taskId, runId) => await pg.claimTask(registered.id, taskId, runId),
-            },
-            runOps: {
-              createRun: async ({ runId, taskId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
-                const createdAt = new Date().toISOString();
-                const existing = await pg.listPipelineRuns(registered.id, { beadId: taskId });
-                await pg.createPipelineRun({
-                  id: runId,
-                  projectId: registered.id,
-                  beadId: taskId,
-                  runNumber: existing.length + 1,
-                  branch: branchName,
-                  trigger: "bead",
-                  agentType,
-                  worktreePath: worktreePath ?? undefined,
-                  baseBranch: baseBranch ?? undefined,
-                  mergeStrategy: mergeStrategy ?? undefined,
-                });
-                return {
-                  id: runId,
-                  project_id: registered.id,
-                  task_id: taskId,
-                  agent_type: agentType,
-                  session_key: null,
-                  worktree_path: worktreePath,
-                  status: "pending",
-                  started_at: null,
-                  completed_at: null,
-                  created_at: createdAt,
-                  progress: null,
-                  tmux_session: null,
-                  base_branch: baseBranch ?? null,
-                  merge_strategy: mergeStrategy ?? "auto",
-                };
-              },
-              updateRun: async (runId, updates) => {
-                const patch: {
-                  status?: string;
-                  sessionKey?: string;
-                  worktreePath?: string;
-                  startedAt?: string;
-                  finishedAt?: string;
-                } = {};
-                if (updates.status) patch.status = updates.status;
-                if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
-                if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
-                if (updates.started_at) patch.startedAt = updates.started_at;
-                if (updates.completed_at) patch.finishedAt = updates.completed_at;
-                if (Object.keys(patch).length > 0) {
-                  await pg.updatePipelineRun(runId, patch);
-                }
-              },
-              sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
-                await pg.sendMessage(registered.id, runId, senderAgentType, recipientAgentType, subject, body);
-              },
-              logEvent: async (runId, _projectId, eventType, payload) => {
-                const mappedEventType = eventType === "complete"
-                  ? "run:success"
-                  : eventType === "fail"
-                    ? "run:failure"
-                    : eventType === "restart" || eventType === "dispatch"
-                      ? "run:queued"
-                      : null;
-                if (!mappedEventType) return;
-                await pg.recordPipelineEvent({
-                  projectId: registered.id,
-                  runId,
-                  taskId: payload.taskId as string | undefined,
-                  eventType: mappedEventType,
-                  payload,
-                });
-              },
-            },
-          });
-        })()
-      : undefined;
+    if (registered) {
+      try {
+        const exitCode = await retryElixirTask(beadId, opts, projectPath, registered.id);
+        localStore.close();
+        process.exit(exitCode);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(`Unexpected error: ${msg}`));
+        localStore.close();
+        process.exit(1);
+      }
+      return;
+    }
+
+    const store: RetryStore = wrapLocalRunStore(localStore);
+    const { taskClient, backendType } = await createTaskClient(projectPath);
+    const dispatcher = undefined;
 
     try {
       const exitCode = await retryAction(

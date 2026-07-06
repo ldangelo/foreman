@@ -5,11 +5,10 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
-import { ensureCliPostgresPool, listRegisteredProjects } from "./project-task-support.js";
+import { listRegisteredProjects } from "./project-task-support.js";
 import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
 
 export const sentinelCommand = new Command("sentinel")
@@ -45,20 +44,20 @@ function wrapLocalSentinelStore(store: ForemanStore) {
   };
 }
 
-export function wrapPostgresSentinelStore(store: PostgresStore, projectId: string) {
+function registeredSentinelBackendMissing(): never {
+  throw new Error("Sentinel configuration and run history are not exposed by the Elixir backend yet.");
+}
+
+export function createRegisteredSentinelStore(_projectId: string): ReturnType<typeof wrapLocalSentinelStore> {
   return {
-    close: () => store.close(),
-    isOpen: () => store.isOpen(),
-    logEvent: async (pid: string, eventType: "sentinel-start" | "sentinel-pass" | "sentinel-fail", data: Record<string, unknown>) => {
-      const sentinelRunId = typeof data.runId === "string" ? data.runId : undefined;
-      if (!sentinelRunId) return;
-      return store.recordSentinelEvent(pid, sentinelRunId, eventType, data);
-    },
-    recordSentinelRun: async (run: Parameters<ForemanStore["recordSentinelRun"]>[0]) => store.recordSentinelRun(projectId, run),
-    updateSentinelRun: async (id: string, updates: Parameters<ForemanStore["updateSentinelRun"]>[1]) => store.updateSentinelRun(id, updates),
-    upsertSentinelConfig: async (_projectId: string, config: Parameters<ForemanStore["upsertSentinelConfig"]>[1]) => { await store.upsertSentinelConfig(projectId, config); },
-    getSentinelConfig: async (_projectId: string) => store.getSentinelConfig(projectId),
-    getSentinelRuns: async (_projectId: string, limit?: number) => store.getSentinelRuns(projectId, limit),
+    close: () => undefined,
+    isOpen: () => true,
+    logEvent: async () => registeredSentinelBackendMissing(),
+    recordSentinelRun: async () => registeredSentinelBackendMissing(),
+    updateSentinelRun: async () => registeredSentinelBackendMissing(),
+    upsertSentinelConfig: async () => registeredSentinelBackendMissing(),
+    getSentinelConfig: async () => registeredSentinelBackendMissing(),
+    getSentinelRuns: async () => registeredSentinelBackendMissing(),
   };
 }
 
@@ -169,11 +168,8 @@ sentinelCommand
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const localStore = ForemanStore.forProject(projectPath);
 
-      if (opts.project) {
-        ensureCliPostgresPool(projectPath);
-      }
       const store = registered
-        ? wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id)
+        ? createRegisteredSentinelStore(registered.id)
         : wrapLocalSentinelStore(localStore);
       const tasks = await createSentinelTaskClient(projectPath);
 
@@ -262,8 +258,7 @@ sentinelCommand
       const projectPath = registered.path;
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const localStore = ForemanStore.forProject(projectPath);
-      ensureCliPostgresPool(projectPath);
-      const store = wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id);
+      const store = createRegisteredSentinelStore(registered.id);
       // Check if Jira is configured for this project
       let tasks = await createSentinelTaskClient(projectPath);
       const { loadProjectConfig } = await import("../../lib/project-config.js");
@@ -387,8 +382,7 @@ sentinelCommand
 
       const projectPath = registered.path;
       const localStore = ForemanStore.forProject(projectPath);
-      ensureCliPostgresPool(projectPath);
-      const store = wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id);
+      const store = createRegisteredSentinelStore(registered.id);
 
       const limit = parseInt(opts.limit as string, 10);
       const runs = await store.getSentinelRuns(registered.id, limit);
@@ -490,8 +484,7 @@ sentinelCommand
       }
 
       const projectPath = registered.path;
-      ensureCliPostgresPool(projectPath);
-      const store = wrapPostgresSentinelStore(PostgresStore.forProject(registered.id), registered.id);
+      const store = createRegisteredSentinelStore(registered.id);
 
       const result = await stopProjectSentinel(registered.id, Boolean(opts.force));
 
@@ -543,8 +536,7 @@ sentinelCommand
       const statuses: ProjectSentinelStatus[] = [];
 
       for (const project of projects) {
-        ensureCliPostgresPool(project.path);
-        const store = wrapPostgresSentinelStore(PostgresStore.forProject(project.id), project.id);
+        const store = createRegisteredSentinelStore(project.id);
         const lock = readSentinelLock(project.id);
         const config = await store.getSentinelConfig(project.id);
 

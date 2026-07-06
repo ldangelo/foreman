@@ -3,12 +3,27 @@
  * and dispatches Foreman workflows when issues enter configured start statuses.
  */
 
-import type { PostgresAdapter } from "../lib/db/postgres-adapter.js";
 import type { JiraProjectConfig, JiraConfig } from "../lib/project-config.js";
 import { JiraApiClient } from "./jira-api-client.js";
 
-// Re-export types from adapter
-export type { JiraIssueStateRow, JiraIssueStateInput } from "../lib/db/postgres-adapter.js";
+export interface JiraIssueStateRow {
+  project_key: string;
+  issue_key: string;
+  last_known_status: string;
+  last_updated_at: string;
+}
+
+export interface JiraIssueStateInput {
+  jiraProjectKey: string;
+  issueKey: string;
+  lastKnownStatus: string;
+  lastUpdatedAt: string;
+}
+
+interface JiraStateAdapter {
+  getJiraIssueStates(): Promise<JiraIssueStateRow[]>;
+  upsertJiraIssueState(input: JiraIssueStateInput): Promise<void>;
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -73,7 +88,7 @@ export interface JiraPollSummary {
  * so transitions are not re-triggered on sentinel restart.
  */
 export class JiraIssuesPoller {
-  private readonly adapter: PostgresAdapter;
+  private readonly adapter: JiraStateAdapter;
   private readonly client: JiraApiClient;
   private readonly jiraConfig: JiraConfig;
   private readonly onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig, foremanTag?: string) => Promise<void>;
@@ -89,7 +104,7 @@ export class JiraIssuesPoller {
   private _state = new Map<string, IssueState>();
 
   constructor(
-    adapter: PostgresAdapter,
+    adapter: JiraStateAdapter,
     client: JiraApiClient,
     jiraConfig: JiraConfig,
     onTransition: (issue: JiraIssue, projectConfig: JiraProjectConfig, foremanTag?: string) => Promise<void>,

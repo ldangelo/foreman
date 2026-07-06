@@ -2,15 +2,15 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { ForemanStore, type Run } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { MergeQueue, type MergeQueueEntry } from "../../orchestrator/merge-queue.js";
-import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { resolveProjectContext } from "./project-context.js";
 
-type RunStore = ForemanStore | PostgresStore;
-type Queue = MergeQueue | PostgresMergeQueue;
+type RunStore = ForemanStore | ElixirCliStore;
+type Queue = MergeQueue | ElixirMergeQueue;
 
 export interface CleanStateOpts {
   dryRun?: boolean;
@@ -59,8 +59,8 @@ async function markRunDropped(store: RunStore, run: Run, reason: string, keepTas
 export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<number> {
   const { projectPath, registered } = await resolveProjectContext(opts, { normalizePaths: true });
   const localStore = ForemanStore.forProject(projectPath);
-  const store: RunStore = registered ? PostgresStore.forProject(registered.id) : localStore;
-  const queue: Queue = registered ? new PostgresMergeQueue(registered.id) : new MergeQueue(localStore.getDb());
+  const store: RunStore = registered ? ElixirCliStore.forProject(registered) : localStore;
+  const queue: Queue = registered ? new ElixirMergeQueue(registered.id) : new MergeQueue(localStore.getDb());
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const dryRun = opts.dryRun ?? !opts.force;
   const reason = "clean state reset";

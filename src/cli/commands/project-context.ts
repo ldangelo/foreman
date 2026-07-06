@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import {
-  ensureCliPostgresPool,
   listRegisteredProjects,
   resolveRepoRootProjectPath,
   type RegisteredProjectSummary,
@@ -10,11 +9,10 @@ import {
  * Consolidated project-resolution helpers for CLI commands.
  *
  * These replace the per-command copies of the "resolve project path → find the
- * registered project → initialise the CLI Postgres pool" sequence that was
- * duplicated across reset, retry, stop, purge-logs, purge-zombie-runs,
- * sentinel, worktree, and task commands. Per-command differences (path
- * normalization, id/name matching for --project, pool initialisation) are
- * preserved via options.
+ * registered project" sequence that was duplicated across reset, retry, stop,
+ * purge-logs, purge-zombie-runs, sentinel, worktree, and task commands.
+ * Per-command differences (path normalization, id/name matching for --project)
+ * are preserved via options.
  */
 
 export interface FindRegisteredProjectOptions {
@@ -23,10 +21,7 @@ export interface FindRegisteredProjectOptions {
    * (retry.ts / task.ts behavior). Default: exact string equality.
    */
   normalizePaths?: boolean;
-  /**
-   * Initialise the CLI Postgres pool when a registered project is found.
-   * Default: true.
-   */
+  /** @deprecated CLI Postgres pools are no longer initialised. */
   initPool?: boolean;
 }
 
@@ -39,9 +34,6 @@ export async function findRegisteredProjectByPath(
   const registered = options.normalizePaths
     ? projects.find((project) => resolve(project.path) === resolve(projectPath))
     : projects.find((project) => project.path === projectPath);
-  if (registered && (options.initPool ?? true)) {
-    ensureCliPostgresPool(projectPath);
-  }
   return registered;
 }
 
@@ -60,8 +52,7 @@ export interface ResolveProjectContextOptions extends FindRegisteredProjectOptio
 
 /**
  * Resolve the project path (repo root / --project / --project-path) and look
- * up the matching registered project, initialising the CLI Postgres pool when
- * one is found.
+ * up the matching registered project.
  */
 export async function resolveProjectContext(
   opts: { project?: string; projectPath?: string } = {},
@@ -74,9 +65,6 @@ export async function resolveProjectContext(
     const registered = projects.find(
       (project) => project.id === opts.project || project.name === opts.project,
     );
-    if (registered && (options.initPool ?? true)) {
-      ensureCliPostgresPool(projectPath);
-    }
     return { projectPath, registered };
   }
 

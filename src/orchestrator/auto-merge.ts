@@ -16,7 +16,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
-import { PostgresMergeQueue } from "./postgres-merge-queue.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { Refinery } from "./refinery.js";
 import { mapRunStatusToTaskStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
 import { enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
@@ -212,7 +212,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   }
 
   const mq: MergeQueueLike = registeredProjectId
-    ? new PostgresMergeQueue(registeredProjectId)
+    ? new ElixirMergeQueue(registeredProjectId)
     : wrapLocalMergeQueue(new MergeQueue(store.getDb()), store, projectPath);
   const refinery = new Refinery(store, taskClient, projectPath, vcs, {
     runLookup: readLookup,

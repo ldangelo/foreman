@@ -74,6 +74,7 @@ describe("BoardRendering", () => {
     updated_at: "2026-04-19T00:00:00Z",
     approved_at: null,
     closed_at: null,
+    phase_id: null,
     ...overrides,
   });
 
@@ -316,6 +317,19 @@ describe("BoardRendering", () => {
       expect(output).toContain("[1] Backlog");
       expect(output).toContain("[5] Closed");
       expect(output).not.toContain("Merged");
+    });
+
+    it("should render task phase separately from status in active cards", () => {
+      const output = stripTerminalFormatting(renderBoard(
+        createRenderState({
+          in_progress: [createTask("bd-2222", { title: "Doing task", status: "in_progress", phase_id: "documentation" })],
+        }),
+        "Demo",
+        260,
+      ));
+
+      expect(output).toContain("bd-2222");
+      expect(output).toContain("documentation");
     });
 
     it("should render task ids in every column card", () => {
@@ -589,6 +603,7 @@ describe("BoardRendering", () => {
         updated_at: "2026-04-19T12:00:00Z",
         approved_at: "2026-04-19T11:00:00Z",
         closed_at: null,
+        phase_id: "documentation",
       });
 
       expect(task.id).toBe("bd-1234");
@@ -603,6 +618,8 @@ describe("BoardRendering", () => {
       expect(output).toContain("TASK DETAIL — in_progress");
       expect(output).toContain("Status:");
       expect(output).toContain("in_progress");
+      expect(output).toContain("Phase:");
+      expect(output).toContain("documentation");
     });
 
     it("should handle null optional fields", () => {

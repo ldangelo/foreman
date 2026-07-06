@@ -9,13 +9,12 @@ import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Run } from "../../lib/store.js";
-import { PostgresStore } from "../../lib/postgres-store.js";
-import { PostgresAdapter } from "../../lib/db/postgres-adapter.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import { isIgnorableControllerPath } from "../../lib/controller-paths.js";
 import { syncRegisteredProjectCheckout } from "../../lib/registered-project-checkout.js";
 import type { ProjectConfig } from "../../lib/project-config.js";
-import { ensureCliPostgresPool, listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { elixirClient, listRegisteredProjects, resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
@@ -34,7 +33,6 @@ import { watchRunsInk } from "../watch-ui.js";
 import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
-import { wrapPostgresSentinelStore } from "./sentinel.js";
 import { syncTaskStatusOnStartup } from "../../orchestrator/task-backend-ops.js";
 import { PIPELINE_TIMEOUTS, PIPELINE_LIMITS } from "../../lib/config.js";
 import { isPiAvailable } from "../../orchestrator/pi-rpc-spawn-strategy.js";
@@ -44,7 +42,7 @@ export { autoMerge } from "../../orchestrator/auto-merge.js";
 export type { AutoMergeOpts, AutoMergeResult } from "../../orchestrator/auto-merge.js";
 import { runTaskCommand, skipFlagsDeprecationWarning } from "./run-task.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RunLookup } from "../../orchestrator/refinery-agent.js";
-import { PostgresMergeQueue } from "../../orchestrator/postgres-merge-queue.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { MergeQueue } from "../../orchestrator/merge-queue.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
@@ -54,7 +52,7 @@ import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 /**
  * Result returned by createTaskClients.
  * Contains the task client to pass to Dispatcher.
- * The native Postgres task store is the only supported backend (TRD-024).
+ * The Elixir backend task store is the supported registered-project backend.
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
@@ -160,21 +158,25 @@ function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverr
   };
 }
 
-function createRegisteredDispatcherOverrides(projectId: string, daemonStore: PostgresStore): DispatcherOverrides {
-  const pg = new PostgresAdapter();
+function createRegisteredDispatcherOverrides(projectId: string, daemonStore: ElixirCliStore): DispatcherOverrides {
+  const mapTask = (task: Record<string, unknown>) => ({
+    id: String(task.task_id ?? task.id ?? ""),
+    title: String(task.title ?? task.task_id ?? task.id ?? ""),
+    description: (task.description as string | null | undefined) ?? null,
+    type: String(task.task_type ?? task.type ?? "task"),
+    priority: Number(task.priority ?? 2),
+    status: String(task.status ?? "open"),
+    run_id: (task.run_id as string | null | undefined) ?? null,
+    created_at: String(task.created_at ?? new Date(0).toISOString()),
+    updated_at: String(task.updated_at ?? new Date(0).toISOString()),
+    external_id: (task.external_id as string | null | undefined) ?? null,
+    labels: Array.isArray(task.labels) ? task.labels : [],
+  }) as never;
 
   return {
     externalProjectId: projectId,
     getRecentFailureCount: async (_projectId: string, since: string) => {
-      const statuses: Array<"failed" | "stuck" | "conflict" | "test-failed"> = [
-        "failed",
-        "stuck",
-        "conflict",
-        "test-failed",
-      ];
-      const runs = (await Promise.all(
-        statuses.map((status) => pg.listPipelineRuns(projectId, { status, limit: 1000 })),
-      )).flat();
+      const runs = await daemonStore.getRunsByStatuses(["failed", "stuck", "conflict", "test-failed"] as Run["status"][]);
       return runs.filter((run) => run.created_at >= since).length;
     },
     getActiveTaskIds: async () => {
@@ -186,36 +188,65 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
       return activeRuns.length;
     },
     hasActiveOrPendingRun: async (taskId: string) => {
-      const runs = await pg.listPipelineRuns(projectId, { beadId: taskId, limit: 20 });
-      return runs.some((run) => ["pending", "running", "success"].includes(run.status));
+      const runs = await daemonStore.getRunsForTask(taskId);
+      return runs.some((run) => ["pending", "running"].includes(run.status));
     },
     getRunsByStatus: async (status, overrideProjectId) => await daemonStore.getRunsByStatus(status, overrideProjectId),
-    getRunsForTask: async (taskId, overrideProjectId) => await daemonStore.getRunsForTask(taskId, overrideProjectId),
+    getRunsForTask: async (taskId, _overrideProjectId) => await daemonStore.getRunsForTask(taskId),
     getRun: async (runId) => await daemonStore.getRun(runId),
     getActiveRuns: async (overrideProjectId) => await daemonStore.getActiveRuns(overrideProjectId),
     nativeTaskOps: {
-      hasNativeTasks: async () => pg.hasNativeTasks(projectId),
-      getReadyTasks: async () => await pg.listDispatchableReadyTasks(projectId, 1000) as never,
-      getTaskByExternalId: async (externalId: string) => await pg.getTaskByExternalId(projectId, externalId) as never,
-      getTaskById: async (taskId: string) => await pg.getTask(projectId, taskId) as never,
-      claimTask: async (taskId: string, runId: string) => await pg.claimTask(projectId, taskId, runId),
+      hasNativeTasks: async () => {
+        const client = await elixirClient();
+        return (await client.listTasks()).some((task) => task.project_id === projectId);
+      },
+      getReadyTasks: async () => {
+        const client = await elixirClient();
+        return (await client.listTasks())
+          .filter((task) => task.project_id === projectId && task.status === "ready")
+          .map((task) => mapTask(task as Record<string, unknown>));
+      },
+      getTaskByExternalId: async (externalId: string) => {
+        const client = await elixirClient();
+        const task = (await client.listTasks()).find((candidate) => candidate.project_id === projectId && candidate.external_id === externalId);
+        return task ? mapTask(task as Record<string, unknown>) : null;
+      },
+      getTaskById: async (taskId: string) => {
+        const client = await elixirClient();
+        const task = await client.getTask(taskId);
+        return task ? mapTask(task as Record<string, unknown>) : null;
+      },
+      claimTask: async (taskId: string, runId: string) => {
+        const client = await elixirClient();
+        const response = await client.sendCommand({
+          command_id: `task-claim-${taskId}-${runId}`,
+          command_type: "task.update",
+          payload: { project_id: projectId, task_id: taskId, status: "in_progress", run_id: runId },
+        });
+        return response.ok;
+      },
     },
     runOps: {
       createRun: async ({ runId, taskId, branchName, worktreePath, baseBranch, mergeStrategy, agentType }) => {
         const createdAt = new Date().toISOString();
-        const existing = await pg.listPipelineRuns(projectId, { beadId: taskId });
-        await pg.createPipelineRun({
-          id: runId,
-          projectId,
-          beadId: taskId,
-          runNumber: existing.length + 1,
-          branch: branchName,
-          trigger: "bead",
-          agentType,
-          worktreePath: worktreePath ?? undefined,
-          baseBranch: baseBranch ?? undefined,
-          mergeStrategy: mergeStrategy ?? undefined,
+        const client = await elixirClient();
+        const response = await client.sendCommand({
+          command_id: `run-start-${runId}`,
+          command_type: "run.start",
+          payload: {
+            run_id: runId,
+            project_id: projectId,
+            task_id: taskId,
+            agent_type: agentType,
+            branch_name: branchName,
+            worktree_path: worktreePath,
+            base_branch: baseBranch ?? null,
+            merge_strategy: mergeStrategy ?? "auto",
+            status: "pending",
+            created_at: createdAt,
+          },
         });
+        if (!response.ok) throw new Error(response.error.message);
         const run: Run = {
           id: runId,
           project_id: projectId,
@@ -235,41 +266,19 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
         return run;
       },
       updateRun: async (runId, updates) => {
-        const patch: {
-          status?: string;
-          sessionKey?: string;
-          worktreePath?: string;
-          startedAt?: string;
-          finishedAt?: string;
-        } = {};
-        if (updates.status) patch.status = updates.status;
-        if (updates.session_key !== undefined) patch.sessionKey = updates.session_key ?? undefined;
-        if (updates.worktree_path !== undefined) patch.worktreePath = updates.worktree_path ?? undefined;
-        if (updates.started_at) patch.startedAt = updates.started_at;
-        if (updates.completed_at) patch.finishedAt = updates.completed_at;
-        if (Object.keys(patch).length > 0) {
-          await pg.updatePipelineRun(runId, patch);
-        }
+        await daemonStore.updateRun(runId, updates as Partial<Run>);
       },
       sendMessage: async (runId, senderAgentType, recipientAgentType, subject, body) => {
-        await pg.sendMessage(projectId, runId, senderAgentType, recipientAgentType, subject, body);
-      },
-      logEvent: async (runId, _projectId, eventType, payload) => {
-        const mappedEventType = eventType === "complete"
-          ? "run:success"
-          : eventType === "fail"
-            ? "run:failure"
-            : eventType === "restart" || eventType === "dispatch"
-              ? "run:queued"
-              : null;
-        if (!mappedEventType) return;
-        await pg.recordPipelineEvent({
-          projectId,
-          runId,
-          taskId: payload.taskId as string | undefined,
-          eventType: mappedEventType,
-          payload,
+        const client = await elixirClient();
+        const response = await client.sendCommand({
+          command_id: `inbox-send-${runId}-${Date.now()}`,
+          command_type: "inbox.send",
+          payload: { project_id: projectId, run_id: runId, sender_agent_type: senderAgentType, recipient_agent_type: recipientAgentType, subject, body },
         });
+        if (!response.ok) throw new Error(response.error.message);
+      },
+      logEvent: async (runId, eventProjectId, eventType, payload) => {
+        await daemonStore.logEvent(eventProjectId, eventType, payload, runId);
       },
     },
   };
@@ -310,7 +319,7 @@ async function runRefineryMerge(
 
   try {
     const mergeQueue = registered
-      ? new PostgresMergeQueue(registered.id)
+      ? new ElixirMergeQueue(registered.id)
       : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
     const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
     const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, {}, runLookup);
@@ -793,9 +802,6 @@ export const runCommand = new Command("run")
       let taskClient: ITaskClient;
       let backendType: "native" = "native";
       const useElixirTestBackend = Boolean(registered && runtimeMode === "test" && process.env.FOREMAN_SERVER_URL);
-      if (registered && !useElixirTestBackend) {
-        ensureCliPostgresPool(projectPath);
-      }
       try {
         const clients = await createTaskClients(projectPath, runtimeMode, registered?.id);
         taskClient = clients.taskClient;
@@ -807,9 +813,7 @@ export const runCommand = new Command("run")
       }
       const store = ForemanStore.forProject(projectPath);
       const daemonStore = registered && !useElixirTestBackend
-        ? (() => {
-            return PostgresStore.forProject(registered.id);
-          })()
+        ? ElixirCliStore.forProject(registered)
         : null;
       const project = registered ?? store.getProjectByPath(projectPath);
       const dispatcher = new Dispatcher(
@@ -831,10 +835,8 @@ export const runCommand = new Command("run")
       let sentinelAgent: SentinelAgent | null = null;
       if (!dryRun) {
         try {
-          if (project && !useElixirTestBackend) {
-            const sentinelStore = registered
-              ? wrapPostgresSentinelStore(daemonStore ?? PostgresStore.forProject(registered.id), registered.id)
-              : store;
+          if (project && !useElixirTestBackend && !registered) {
+            const sentinelStore = store;
             const sentinelConfig = await sentinelStore.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
               const sentinelTaskClient = taskClient as SentinelStartupTaskClient;

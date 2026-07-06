@@ -161,7 +161,6 @@ export type TrdTaskStatus = "open" | "in_progress" | "completed";
  * native task records in the Postgres store.
  *
  * Valid values: 'backlog' | 'ready' | 'in-progress' | 'review' |
- *   'explorer' | 'developer' | 'qa' | 'reviewer' | 'finalize' |
  *   'merged' | 'closed' | 'conflict' | 'failed' | 'stuck' | 'blocked'
  *
  * NOTE: 'in-progress' uses hyphen, not underscore. The legacy 'in_progress'
@@ -172,11 +171,6 @@ export type NativeTaskStatus =
   | "ready"
   | "in-progress"
   | "review"
-  | "explorer"
-  | "developer"
-  | "qa"
-  | "reviewer"
-  | "finalize"
   | "merged"
   | "closed"
   | "conflict"

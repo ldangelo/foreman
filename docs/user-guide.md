@@ -18,7 +18,7 @@ Use Foreman when you want multiple AI agents working safely on one repository wi
 
 ### Projects
 
-A project is a repository registered with Foreman. `foreman init` applies pending packaged Postgres migrations before registration, so normal project setup keeps the database schema current. Commands that act on a project accept `--project <name-or-path>` so you can operate from another directory.
+A project is a repository registered with Foreman. `foreman init` creates the local `.foreman/` config assets and registers the project with the Elixir backend; the CLI does not apply Postgres migrations or connect directly to the database. Commands that act on a project accept `--project <name-or-path>` so you can operate from another directory.
 
 Common commands:
 
@@ -30,7 +30,7 @@ foreman status --project my-project
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
+Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. Workflow phases are tracked separately from task status, so custom phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high
@@ -129,14 +129,14 @@ Use `foreman server doctor` first if the Elixir server is not already running. `
 
 ### 3. Migrate Legacy State
 
-During the Elixir backend migration, operators can import a TypeScript-era migration JSON payload into the Elixir event store:
+During the Elixir backend migration, operators can import a prebuilt TypeScript-era migration JSON payload into the Elixir event store. The CLI no longer builds that payload by reading Postgres directly:
 
 ```bash
 foreman import --to-elixir --file migration.json
 foreman import --to-elixir --from-node --project foreman
 ```
 
-The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. `--from-node` snapshots the selected Node/Postgres project into Elixir. After importing, `foreman board --project <name>` reads and mutates task state through Elixir without the Node daemon socket.
+The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. `--from-node` is deprecated because the CLI no longer reads Node/Postgres state directly. After importing, `foreman board --project <name>` reads and mutates task state through Elixir without the Node daemon socket.
 
 ```bash
 foreman status
@@ -167,7 +167,7 @@ Good task descriptions include:
 
 ### 5. Approve the Task
 
-Tasks usually start in backlog. Approve when ready for dispatch. During the Elixir cutover, a task created only in Elixir is mirrored into the Postgres worker store when the worker bridge starts, so worker prompts receive the task title, type, priority, and description instead of placeholder metadata.
+Tasks usually start in backlog. Approve when ready for dispatch. Worker prompts receive task title, type, priority, and description from the Elixir backend; Node/Pi workers do not open a direct database pool.
 
 ```bash
 foreman task approve <task-id>
@@ -250,7 +250,7 @@ Common keys:
 | `?` | Help |
 | `q` | Quit |
 
-The board also monitors agent inbox updates. When a new inbox message arrives for a run, the board reloads only the task tied to that run and moves that card if its status changed; it does not refresh the entire board. `open` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention so they are visible for triage. Press `r` for a full manual refresh. The header shows an animated `refreshing…` indicator while full reload is in progress, then a `refreshed <time>` marker when the latest event-driven or manual update finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
+The board also monitors agent inbox updates. When a new inbox message arrives for a run, the board reloads only the task tied to that run and moves that card if its status changed; it does not refresh the entire board. `open` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention so they are visible for triage. Current phase appears on active cards/details when available, independent of the status column. Press `r` for a full manual refresh. The header shows an animated `refreshing…` indicator while full reload is in progress, then a `refreshed <time>` marker when the latest event-driven or manual update finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
 
 ## Retry and Cleanup Guidance
 

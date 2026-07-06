@@ -39,7 +39,7 @@ import {
   parsePriority,
   type TaskRow,
 } from "../../lib/task-store.js";
-import type { TaskNoteRow } from "../../lib/db/postgres-adapter.js";
+type TaskNoteRow = { id: string; task_id: string; body: string; author: string; created_at: string; phase: string | null; kind: string };
 import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
@@ -151,6 +151,7 @@ export interface BoardTask {
   approved_at: string | null;
   closed_at: string | null;
   run_id?: string | null;
+  phase_id?: string | null;
   notes?: BoardTaskNote[];
 }
 
@@ -279,6 +280,7 @@ function boardTaskFromRow(row: TaskRow): BoardTask {
     approved_at: row.approved_at,
     closed_at: row.closed_at,
     run_id: row.run_id,
+    phase_id: null,
   };
 }
 
@@ -298,6 +300,7 @@ function boardTaskFromElixir(row: ElixirTask): BoardTask {
     approved_at: row.approved_at ?? null,
     closed_at: row.closed_at ?? null,
     run_id: row.run_id ?? null,
+    phase_id: row.phase_id ?? null,
     notes: (row.annotations ?? []).map((note, index) => ({
       id: `${id}-annotation-${index}`,
       created_at: note.created_at ?? now,
@@ -439,6 +442,7 @@ function boardTaskSignature(task: BoardTask): string {
     task.title,
     task.priority,
     task.run_id ?? "",
+    task.phase_id ?? "",
   ].join("\u0000");
 }
 
@@ -647,6 +651,7 @@ function renderTaskCardView(
   const rowBackgroundColor = isFlash ? "green" : isSelected ? "cyan" : undefined;
   const rowTextColor = rowBackgroundColor ? "black" : "white";
   const metaTextColor = rowBackgroundColor ? "black" : "white";
+  const phaseText = task.phase_id ? `phase: ${task.phase_id}` : task.status;
 
   return h(
     Box,
@@ -684,7 +689,7 @@ function renderTaskCardView(
       h(
         Box,
         { width: "50%", minWidth: 0 },
-        h(Text, { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" }, task.status),
+        h(Text, { color: metaTextColor, dimColor: !rowBackgroundColor, wrap: "truncate-end" }, phaseText),
       ),
     ),
   );
@@ -822,6 +827,7 @@ function renderTaskDetailView(
     ["Type:", task.type],
     ["Priority:", `${priorityLabel(task.priority)} (P${task.priority})`],
     ["Status:", task.status],
+    ["Phase:", task.phase_id ?? null],
     ["External ID:", task.external_id],
     ["Created:", new Date(task.created_at).toLocaleString()],
     ["Updated:", new Date(task.updated_at).toLocaleString()],
@@ -1157,6 +1163,7 @@ export function editTaskInEditor(
     doc.updated_at = task.updated_at;
     doc.approved_at = task.approved_at;
     doc.closed_at = task.closed_at;
+    doc.phase_id = task.phase_id ?? null;
   }
 
   try {
@@ -1208,6 +1215,7 @@ export function editTaskInEditor(
       updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : task.updated_at,
       approved_at: typeof parsed.approved_at === "string" ? parsed.approved_at : task.approved_at,
       closed_at: typeof parsed.closed_at === "string" ? parsed.closed_at : task.closed_at,
+      phase_id: typeof parsed.phase_id === "string" ? parsed.phase_id : task.phase_id,
     };
 
     try { unlinkSync(tmpFile); } catch { /* ignore */ }
