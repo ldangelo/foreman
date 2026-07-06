@@ -60,13 +60,16 @@ export class ElixirServerManager {
   async ensureRunning(): Promise<ElixirServerStatus> {
     const status = this.status();
     if (status.running && (await this.health()).ok) return status;
-    this.start();
-    await waitFor(async () => (await this.health()).ok, 10_000);
+    const startError = this.start();
+    await Promise.race([
+      waitFor(async () => (await this.health()).ok, 10_000),
+      startError,
+    ]);
     return this.status();
   }
 
-  start(): void {
-    if (this.status().running) return;
+  start(): Promise<never> {
+    if (this.status().running) return new Promise(() => undefined);
     mkdirSync(dirname(this.pidPath), { recursive: true });
 
     const child = spawn("mix", ["run", "--no-halt"], {
@@ -81,7 +84,13 @@ export class ElixirServerManager {
     });
 
     child.unref();
-    writeFileSync(this.pidPath, String(child.pid), "utf8");
+    if (child.pid !== undefined) {
+      writeFileSync(this.pidPath, String(child.pid), "utf8");
+    }
+
+    return new Promise((_, reject) => {
+      child.once("error", reject);
+    });
   }
 
   stop(): void {
