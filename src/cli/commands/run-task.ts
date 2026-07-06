@@ -260,7 +260,7 @@ export async function runTaskAction(
   const projectId = registered?.id ?? projectRecord.id;
 
   // ── Check worktree lock ───────────────────────────────────────────────
-  if (!testRuntime) {
+  if (!(testRuntime && requestedRunId)) {
     let lockRunId: string | null;
     try {
       lockRunId = await checkWorktreeLock(daemonStore ?? store, taskId, projectId);
@@ -272,7 +272,7 @@ export async function runTaskAction(
     }
     if (lockRunId) {
       console.error(chalk.red(`Worktree is locked by active run: ${lockRunId}`));
-      console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset --bead <id>' to reset it"));
+      console.error(chalk.dim("  Use 'foreman stop' to stop the active run, or 'foreman reset <task-id>' to reset it"));
       return 1;
     }
   }

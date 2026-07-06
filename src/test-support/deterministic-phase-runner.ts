@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PiRunResult } from "../orchestrator/pi-sdk-runner.js";
 import type { PhaseRunnerOptions } from "../orchestrator/phase-runner.js";
@@ -43,7 +43,7 @@ function parseScenario(description?: string): DeterministicScenario {
 }
 
 function writeArtifact(cwd: string, artifact: string, body: string): void {
-  const path = join(cwd, artifact);
+  const path = isAbsolute(artifact) ? artifact : join(cwd, artifact);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, body, "utf-8");
 }
@@ -76,10 +76,13 @@ function findReportDir(taskId: string, runId?: string): string | null {
 }
 
 function extractReportDir(prompt: string): string | null {
-  const mkdirMatch = prompt.match(/mkdir -p \"([^\"]+)\"/);
+  const mkdirMatch = prompt.match(/mkdir -p\s+["']([^"']+)["']/);
   if (mkdirMatch?.[1]) return mkdirMatch[1];
-  const reportPathMatch = prompt.match(/\*\*([^*\n]+\/(?:PRD|TRD|IMPLEMENT_REPORT|DEVELOPER_REPORT|DOCUMENTATION_REPORT|QA_REPORT|REVIEW|FINALIZE_VALIDATION|TROUBLESHOOT_REPORT)\.md)\*\*/);
-  if (reportPathMatch?.[1]) return dirname(reportPathMatch[1]);
+  const reportFile = "(?:PRD|TRD|IMPLEMENT_REPORT|DEVELOPER_REPORT|DOCUMENTATION_REPORT|QA_REPORT|REVIEW|FINALIZE_VALIDATION|TROUBLESHOOT_REPORT)\\.md";
+  const quotedReportPathMatch = prompt.match(new RegExp(`["']([^"'\\n]+/${reportFile})["']`));
+  if (quotedReportPathMatch?.[1]) return dirname(quotedReportPathMatch[1]);
+  const markdownReportPathMatch = prompt.match(new RegExp(`\\*\\*([^*\\n]+/${reportFile})\\*\\*`));
+  if (markdownReportPathMatch?.[1]) return dirname(markdownReportPathMatch[1]);
   return null;
 }
 

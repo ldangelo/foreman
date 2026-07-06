@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 
-import { BvClient } from "../../lib/bv.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import { ForemanStore } from "../../lib/store.js";
@@ -59,7 +58,7 @@ import { ElixirServerClient } from "../../lib/elixir-server-client.js";
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
-  bvClient: null;  // Always null — BvClient was for beads backend which is removed
+  bvClient: null;
   backendType: "native";
 }
 
@@ -107,17 +106,23 @@ function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverr
           sequence: nextSequence(args.runId),
           details: { task_id: args.taskId, branch_name: args.branchName, worktree_path: args.worktreePath },
         });
+        const startedAt = new Date().toISOString();
         return {
           id: args.runId,
           project_id: args.projectId,
           task_id: args.taskId,
           agent_type: args.agentType,
-          status: "running",
-          branch_name: args.branchName,
+          session_key: null,
           worktree_path: args.worktreePath,
-          started_at: new Date().toISOString(),
-          merge_strategy: args.mergeStrategy,
-        } as Run;
+          status: "running",
+          started_at: startedAt,
+          completed_at: null,
+          created_at: startedAt,
+          progress: null,
+          tmux_session: null,
+          base_branch: args.baseBranch ?? null,
+          merge_strategy: args.mergeStrategy ?? "auto",
+        };
       },
       updateRun: async (runId, updates) => {
         if (updates.status === "completed" || updates.status === "failed") {
@@ -271,10 +276,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Pos
 }
 
 /**
- * Instantiate the br task-tracking client(s).
- *
- * TRD-024: sd backend removed. Always returns a BeadsRustClient after verifying
- * plus a BvClient for graph-aware triage.
+ * Instantiate the native task client.
  */
 export async function createTaskClients(
   projectPath: string,
@@ -288,7 +290,7 @@ export async function createTaskClients(
 
   return {
     taskClient,
-    bvClient: null,  // BvClient only used for beads backend
+    bvClient: null,
     backendType,
   };
 }
@@ -451,13 +453,13 @@ export async function resolveOwnedControllerBranch(
 }
 
 /**
- * Check whether any in-progress beads have a `branch:` label that differs
+ * Check whether any in-progress tasks have a `branch:` label that differs
  * from the current git branch.
  *
  * Edge cases handled:
- * - No in-progress beads: no prompt, return false (continue normally)
+ * - No in-progress tasks: no prompt, return false (continue normally)
  * - Label matches current branch: no prompt, return false (continue normally)
- * - No branch: label on bead: no prompt, return false (backward compat)
+ * - No branch: label on task: no prompt, return false
  * - Label differs: show prompt, switch branch (return false) or exit (return true)
  *
  * Returns true if the caller should abort (user declined to switch).
@@ -534,39 +536,39 @@ export async function checkBranchMismatch(
     return false;
   }
 
-  let inProgressBeads: Issue[];
+  let inProgressTasks: Issue[];
   try {
-    inProgressBeads = await taskClient.list({ status: "in_progress" });
+    inProgressTasks = await taskClient.list({ status: "in_progress" });
   } catch {
-    // Cannot list in-progress beads — skip mismatch check
+    // Cannot list in-progress tasks — skip mismatch check
     return false;
   }
 
-  if (inProgressBeads.length === 0) return false;
+  if (inProgressTasks.length === 0) return false;
 
-  // Group mismatched beads by target branch
+  // Group mismatched tasks by target branch
   const mismatchByBranch = new Map<string, string[]>();
-  for (const bead of inProgressBeads) {
+  for (const task of inProgressTasks) {
     try {
-      const detail = await taskClient.show(bead.id) as unknown as { labels?: string[] };
+      const detail = await taskClient.show(task.id) as unknown as { labels?: string[] };
       const targetBranch = normalizeBranchLabel(extractBranchLabel(detail.labels));
       if (targetBranch && targetBranch !== currentBranch) {
         const ids = mismatchByBranch.get(targetBranch) ?? [];
-        ids.push(bead.id);
+        ids.push(task.id);
         mismatchByBranch.set(targetBranch, ids);
       }
     } catch {
-      // Non-fatal: skip this bead if detail fetch fails
+      // Non-fatal: skip this task if detail fetch fails
     }
   }
 
   if (mismatchByBranch.size === 0) return false;
 
   // For each unique target branch, prompt the user to switch
-  for (const [targetBranch, beadIds] of mismatchByBranch) {
-    const beadList = beadIds.join(", ");
+  for (const [targetBranch, taskIds] of mismatchByBranch) {
+    const taskList = taskIds.join(", ");
     const question = chalk.yellow(
-      `\nBeads ${chalk.cyan(beadList)} target branch ${chalk.green(targetBranch)} ` +
+      `\nTasks ${chalk.cyan(taskList)} target branch ${chalk.green(targetBranch)} ` +
       `but you are on ${chalk.red(currentBranch)}.\n` +
       `Switch to ${chalk.green(targetBranch)} to continue? [Y/n] `,
     );
@@ -585,8 +587,8 @@ export async function checkBranchMismatch(
       }
     } else {
       console.log(
-        chalk.yellow(`Skipping beads ${beadList} — they target ${targetBranch}.`) +
-        chalk.dim(` Run 'git checkout ${targetBranch}' and re-run foreman to continue those beads.`),
+        chalk.yellow(`Skipping tasks ${taskList} — they target ${targetBranch}.`) +
+        chalk.dim(` Run 'git checkout ${targetBranch}' and re-run foreman to continue those tasks.`),
       );
       return true; // abort — user said no
     }
@@ -639,7 +641,6 @@ export const runCommand = new Command("run")
   .addOption(new Option("--skip-explore", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
   .addOption(new Option("--skip-review", "(deprecated) No effect — use --workflow quick or a custom workflow").hideHelp())
   .option("--task <id>", "Dispatch only this specific task by ID (must be ready)")
-  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--no-auto-dispatch", "Disable automatic dispatch when an agent completes and capacity is available")
   .option("--stagger <duration>", "Stagger delay between dispatches to prevent thundering herd (e.g. '30s', '1m')")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -656,7 +657,7 @@ export const runCommand = new Command("run")
     const telemetry = opts.telemetry as boolean | undefined;
     const pipeline = opts.pipeline as boolean;  // --no-pipeline sets to false
     const workflowOverride = (opts.workflow as string | undefined)?.trim() || undefined;
-    const beadFilter = (opts.bead ?? opts.task) as string | undefined;
+    const taskFilter = opts.task as string | undefined;
 
     // Deprecated no-op flags retained for backwards compatibility
     const deprecationWarning = skipFlagsDeprecationWarning({
@@ -685,8 +686,8 @@ export const runCommand = new Command("run")
     }
 
     if (runtimeMode !== "test" && process.env.VITEST !== "true") {
-      if (beadFilter) {
-        console.error(chalk.red("Error: foreman run --task/--bead was removed after the Elixir backend cutover. Use normal 'foreman run' to tick the scheduler, or 'foreman retry <task-id>' for retry flows."));
+      if (taskFilter) {
+        console.error(chalk.red("Error: foreman run --task was removed after the Elixir backend cutover. Use normal 'foreman run' to tick the scheduler, or 'foreman retry <task-id>' for retry flows."));
         process.exit(1);
       }
       if (resume || resumeFailed) {
@@ -791,7 +792,8 @@ export const runCommand = new Command("run")
 
       let taskClient: ITaskClient;
       let backendType: "native" = "native";
-      if (registered && runtimeMode !== "test") {
+      const useElixirTestBackend = Boolean(registered && runtimeMode === "test" && process.env.FOREMAN_SERVER_URL);
+      if (registered && !useElixirTestBackend) {
         ensureCliPostgresPool(projectPath);
       }
       try {
@@ -804,7 +806,7 @@ export const runCommand = new Command("run")
         process.exit(1);
       }
       const store = ForemanStore.forProject(projectPath);
-      const daemonStore = registered && runtimeMode !== "test"
+      const daemonStore = registered && !useElixirTestBackend
         ? (() => {
             return PostgresStore.forProject(registered.id);
           })()
@@ -814,10 +816,10 @@ export const runCommand = new Command("run")
         taskClient,
         store,
         projectPath,
-        null,  // BvClient removed — native task store only
-        registered && daemonStore && runtimeMode !== "test"
+        null,
+        registered && daemonStore && !useElixirTestBackend
           ? createRegisteredDispatcherOverrides(registered.id, daemonStore)
-          : registered && runtimeMode === "test"
+          : useElixirTestBackend && registered
             ? createElixirTestDispatcherOverrides(registered.id)
             : undefined,
       );
@@ -829,7 +831,7 @@ export const runCommand = new Command("run")
       let sentinelAgent: SentinelAgent | null = null;
       if (!dryRun) {
         try {
-          if (project && !(registered && runtimeMode === "test")) {
+          if (project && !useElixirTestBackend) {
             const sentinelStore = registered
               ? wrapPostgresSentinelStore(daemonStore ?? PostgresStore.forProject(registered.id), registered.id)
               : store;
@@ -898,7 +900,7 @@ export const runCommand = new Command("run")
       // ── Startup Task Sync ────────────────────────────────────────────────
       // Reconcile native task statuses against run state before dispatching.
       // Fixes drift caused by interrupted foreman sessions. Non-fatal.
-      // The legacy br/bead sync is intentionally not run in native-only mode.
+      // Native task status sync runs before dispatch.
       if (!dryRun && project) {
         try {
           const taskSyncResult = await syncTaskStatusOnStartup(daemonStore ?? store, project.id);
@@ -920,7 +922,7 @@ export const runCommand = new Command("run")
       }
 
       // ── Branch mismatch check ───────────────────────────────────────────────
-      // Before dispatching, check if any in-progress beads target a different
+      // Before dispatching, check if any in-progress tasks target a different
       // branch than the current one. If so, prompt the user to switch branches.
       // Skip in dry-run mode since no actual dispatch happens.
       if (!dryRun && !resume && !resumeFailed) {
@@ -1009,7 +1011,7 @@ export const runCommand = new Command("run")
               pipeline,
               runtimeMode,
               workflow: workflowOverride,
-              taskId: beadFilter,
+              taskId: taskFilter,
               notifyUrl,
               targetBranch,
               staggerMs,
@@ -1100,7 +1102,7 @@ export const runCommand = new Command("run")
       // Track whether the user explicitly detached (Ctrl+C). When detached, agents
       // continue running in the background so we skip the final merge drain.
       let userDetached = false;
-      // Suppress repeated "No ready beads" log messages — only print once per wait period.
+      // Suppress repeated "No ready tasks" log messages — only print once per wait period.
       let waitingForTasksLogged = false;
       // Count consecutive poll cycles with nothing dispatched and no active agents.
       // When this reaches PIPELINE_LIMITS.emptyPollCycles the loop exits gracefully.
@@ -1119,7 +1121,7 @@ export const runCommand = new Command("run")
           pipeline,
           runtimeMode,
           workflow: workflowOverride,
-          taskId: beadFilter,
+          taskId: taskFilter,
           notifyUrl,
           targetBranch,
           staggerMs,
@@ -1192,13 +1194,13 @@ export const runCommand = new Command("run")
               );
               console.log(
                 chalk.yellow(
-                  `\nNo ready beads after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
+                  `\nNo ready tasks after ${emptyPollCount} poll cycle(s) (~${elapsedSec}s). Exiting dispatch loop.`
                 )
               );
               console.log(
                 chalk.dim(
                   "  • Re-run 'foreman run' once tasks become unblocked\n" +
-                  "  • Use 'br ready' to see which tasks are ready\n" +
+                  "  • Use 'foreman tasks' to see which tasks are ready\n" +
                   "  • Use 'foreman status' to check for stuck agents\n" +
                   "  • Set FOREMAN_EMPTY_POLL_CYCLES=0 to disable this limit"
                 )
@@ -1208,7 +1210,7 @@ export const runCommand = new Command("run")
             if (!waitingForTasksLogged) {
               console.log(
                 chalk.dim(
-                  `No ready beads — waiting for tasks to become available…`
+                  `No ready tasks — waiting for tasks to become available…`
                 )
               );
               waitingForTasksLogged = true;

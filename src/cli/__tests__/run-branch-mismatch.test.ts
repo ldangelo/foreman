@@ -44,7 +44,7 @@ describe("checkBranchMismatch", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns false when no in-progress beads exist", async () => {
+  it("returns false when no in-progress tasks exist", async () => {
     mockVcsCreate.mockResolvedValue({
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
       checkoutBranch: vi.fn().mockResolvedValue(undefined),
@@ -95,7 +95,7 @@ describe("checkBranchMismatch", () => {
 
     await expect(checkBranchMismatch(taskClient, "/repo")).resolves.toBe(true);
     expect(checkoutBranch).not.toHaveBeenCalled();
-    expect(vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("Skipping beads task-1");
+    expect(vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("Skipping tasks task-1");
   });
 
   it("returns true and prints an error when branch checkout fails", async () => {

@@ -14,6 +14,6 @@ describe("run watch loop after Elixir cutover", () => {
 
   it("legacy local test-runtime path keeps empty-poll protection", () => {
     expect(source).toContain("emptyPollCount");
-    expect(source).toContain("No ready beads after ${emptyPollCount} poll cycle(s)");
+    expect(source).toContain("No ready tasks after ${emptyPollCount} poll cycle(s)");
   });
 });
