@@ -169,7 +169,7 @@ vcs:
 
 ## Workflow YAML Configuration
 
-Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). The bundled bug Explorer phase indexes/updates Graphify and uses Graphify semantic queries before exact-file reads; Grep is reserved for later exact verification phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before `foreman run`; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults.
+Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow. The bundled bug Explorer phase indexes/updates Graphify and uses Graphify semantic queries before exact-file reads; Grep is reserved for later exact verification phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before `foreman run`; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults.
 
 ```yaml
 # Example: src/defaults/workflows/default.yaml

@@ -98,10 +98,10 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('feature', ['workflow:override'], map)).toBe('override');
     });
 
-    it('config mapping takes priority over file-existence fallback', () => {
-      // docs type has docs.yaml in bundled workflows, but we remap it to 'task'
+    it('workflow task_type mapping takes priority over legacy config mapping', () => {
+      // docs declares task_type: docs in bundled workflows, so it wins over legacy config.
       const map = { docs: 'task' };
-      expect(resolveWorkflowName('docs', [], map)).toBe('task');
+      expect(resolveWorkflowName('docs', [], map, undefined, { docs: 'docs' })).toBe('docs');
     });
 
     it('config mapping "default" key used when type not explicitly mapped', () => {
@@ -111,10 +111,10 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('random', [], map)).toBe('feature');
     });
 
-    it('explicit type mapping takes priority over config default', () => {
+    it('workflow task_type mapping takes priority over config default', () => {
       const map = { bug: 'smoke', default: 'default' };
-      expect(resolveWorkflowName('bug', [], map)).toBe('smoke');
-      // "unknown" is not explicitly mapped, so falls to "default" from config
+      expect(resolveWorkflowName('bug', [], map, undefined, { bug: 'bug' })).toBe('bug');
+      // "unknown" is not declared or explicitly mapped, so falls to "default" from config
       expect(resolveWorkflowName('unknown', [], map)).toBe('default');
     });
 
@@ -134,10 +134,9 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('unknown', [], emptyMap)).toBe('default');
     });
 
-    it('maps task type to different workflow via config', () => {
-      // Example from task description: docs → task, spike → feature
+    it('maps undeclared task type to different workflow via config', () => {
       const map = { docs: 'task', spike: 'feature' };
-      expect(resolveWorkflowName('docs', [], map)).toBe('task');
+      expect(resolveWorkflowName('docs', [], map, undefined, { docs: 'docs' })).toBe('docs');
       expect(resolveWorkflowName('spike', [], map)).toBe('feature');
     });
 

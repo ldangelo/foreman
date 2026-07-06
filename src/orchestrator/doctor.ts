@@ -14,7 +14,7 @@ import type { MergeQueue, MergeQueueEntry, ExecFileAsyncFn, ReconcileResult } fr
 import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
-import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows } from "../lib/workflow-loader.js";
+import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
 import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
@@ -1136,6 +1136,38 @@ export class Doctor {
     };
   }
 
+  /**
+   * Check that no two workflows declare the same `task_type`.
+   *
+   * When multiple workflows declare the same task type, dispatch routing becomes
+   * ambiguous — `resolveWorkflowName()` would nondeterministically return the
+   * first match from `buildTaskTypeWorkflowMap()`. This check fails fast so the
+   * user can resolve the conflict by editing the workflow YAML files.
+   *
+   * This check is informational only — there is no --fix path since the fix
+   * requires user intent (which workflow should own the task type?).
+   */
+  async checkTaskTypeUniqueness(): Promise<CheckResult> {
+    const result = validateTaskTypeUniqueness();
+
+    if (result.valid) {
+      return {
+        name: "workflow task_type declarations",
+        status: "pass",
+        message: "All task types are uniquely declared across workflows",
+      };
+    }
+
+    const conflicts = result.duplicates.map(
+      (d) => `task_type '${d.taskType}' declared by: ${d.workflows.join(", ")}`,
+    );
+    return {
+      name: "workflow task_type declarations",
+      status: "fail",
+      message: `Duplicate task_type declarations found: ${conflicts.join("; ")}. Edit the conflicting workflow YAML files to remove or rename the duplicate task_type declarations.`,
+    };
+  }
+
   async checkRepository(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
     // TRD-024: sd backend removed. Always check for .beads initialization.
     const results: CheckResult[] = [];
@@ -1146,6 +1178,7 @@ export class Doctor {
     results.push(await this.checkPrompts(opts));
     results.push(await this.checkPiSkills(opts));
     results.push(await this.checkWorkflows(opts));
+    results.push(await this.checkTaskTypeUniqueness());
     return results;
   }
 

@@ -17,6 +17,7 @@
 # skipIfArtifact: checked at phase start to skip if report already exists.
 
 name: epic
+task_type: epic
 onError: stop
 taskTimeout: 300
 merge: auto

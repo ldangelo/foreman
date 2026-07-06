@@ -764,6 +764,7 @@ Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)
 - **Setup cache** — symlink dependency directories from a shared cache
 - **Phase sequence** — which agents run in what order
+- **Task-type routing** — optional top-level `task_type: bug` declarations map task types to workflows and must be unique
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer/merge failure → targeted retry with feedback
 - **PR gates** — create-pr, pr-wait, and merge phases for review-aware workflows; PR readiness requires zero failed checks plus a brief stable window, and merge re-waits on late pending checks
@@ -771,8 +772,9 @@ Workflows define:
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 ```yaml
-# ~/.foreman/workflows/default.yaml (global override)
-name: default
+# ~/.foreman/workflows/task.yaml (global override)
+name: task
+task_type: task
 setup:
   - command: npm install --prefer-offline --no-audit
     failFatal: true

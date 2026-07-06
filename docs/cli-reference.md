@@ -81,7 +81,7 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 | `--no-watch` | — | Exit immediately after dispatching |
 | `--yes` | — | Answer yes to supported run confirmation prompts |
 | `--resume` / `--resume-failed` | — | Removed; use `foreman retry` |
-| `--no-pipeline` / `--workflow <name>` | — | Removed dispatch-shaping options; workflow selection is scheduler-owned |
+| `--no-pipeline` / `--workflow <name>` | — | Removed dispatch-shaping options; workflow selection is scheduler-owned by workflow YAML `task_type` routing and labels |
 | `--no-auto-dispatch` / `--telemetry` | — | Removed legacy dispatcher options |
 | `--project <name-or-path>` | — | Target a registered project name or absolute project path |
 
@@ -280,7 +280,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates br binary, Pi SDK, DB integrity, prompt files, workflow configs, stale run records, zombie runs, and stale/orphaned worktrees. Installed workflow YAML is compared to bundled defaults; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
+Health checks for Foreman installation. Validates Pi SDK, DB integrity, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed workflow YAML is compared to bundled defaults; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
 
 ```bash
 foreman doctor                    # Run all health checks

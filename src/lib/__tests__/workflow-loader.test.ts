@@ -22,6 +22,8 @@ import {
   ensureBundledWorkflowsInstalled,
   WorkflowConfigError,
   BUNDLED_WORKFLOW_NAMES,
+  buildTaskTypeWorkflowMap,
+  validateTaskTypeUniqueness,
   type WorkflowSetupStep,
   type WorkflowPhaseConfig,
 } from "../workflow-loader.js";
@@ -1191,5 +1193,41 @@ describe("ensureBundledWorkflowsInstalled", () => {
     const stillMissing = ensureBundledWorkflowsInstalled(tmpDir);
     expect(stillMissing).toHaveLength(0);
     expect(existsSync(join(tmpDir, "workflows", "quick.yaml"))).toBe(true);
+  });
+});
+
+describe("workflow task_type routing", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkTmpDir();
+    process.env["FOREMAN_HOME"] = tmpDir;
+    installBundledWorkflows(tmpDir);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["FOREMAN_HOME"];
+  });
+
+  it("loads task_type declarations into the workflow map", () => {
+    const map = buildTaskTypeWorkflowMap();
+    expect(map.get("bug")).toBe("bug");
+    expect(map.get("feature")).toBe("feature");
+    expect(map.get("task")).toBe("task");
+  });
+
+  it("routes task type through workflow task_type before config fallback", () => {
+    expect(resolveWorkflowName("bug", [], { bug: "quick" })).toBe("bug");
+  });
+
+  it("detects duplicate task_type declarations", () => {
+    const quickPath = join(tmpDir, "workflows", "quick.yaml");
+    const quick = readFileSync(quickPath, "utf-8").replace("task_type: quick", "task_type: bug");
+    writeFileSync(quickPath, quick);
+
+    const result = validateTaskTypeUniqueness();
+    expect(result.valid).toBe(false);
+    expect(result.duplicates).toContainEqual({ taskType: "bug", workflows: ["bug", "quick"] });
   });
 });
