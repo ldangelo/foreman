@@ -3,9 +3,10 @@ defmodule ForemanServer.EventStore do
   Append-only event store with a Postgres/Ecto runtime backend.
 
   When `DATABASE_URL` (or `:database_url`) is configured, events are persisted to
-  the `foreman_events` table through `ForemanServer.Repo`. Without a database URL
-  the server keeps the legacy dependency-free term-log adapter for isolated tests
-  and local transition scenarios.
+  the `foreman_events` table through `ForemanServer.Repo`; project/task/run/inbox
+  read models are persisted by `ForemanServer.ProjectionStore.Postgres`. Without a
+  database URL the server keeps the legacy dependency-free term-log adapter for
+  isolated tests and local transition scenarios.
   """
 
   use GenServer
@@ -58,7 +59,7 @@ defmodule ForemanServer.EventStore do
   def init(_opts) do
     adapter = adapter()
     events = load_events(adapter)
-    Enum.each(events, &ProjectionStore.apply_event/1)
+    {:ok, _projection} = ProjectionStore.rebuild(events)
     {:ok, %{adapter: adapter, events: events}}
   end
 

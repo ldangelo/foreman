@@ -8,7 +8,9 @@ export type ElixirRuntimeIdentity = {
   mix_env?: string;
   http?: { enabled?: boolean; port?: number };
   event_store?: { adapter?: string; path?: string | null; table?: string | null };
-  project_store?: { path?: string | null };
+  projection_store?: { adapter?: string; tables?: string[] | null };
+  project_config_store?: { adapter?: string; path?: string | null };
+  project_store?: { adapter?: string; path?: string | null };
 };
 
 export type ElixirServerStatus = {

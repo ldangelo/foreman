@@ -33,8 +33,9 @@ Legacy TS delegation has been removed after cutover. `foreman daemon start|resta
 
 Elixir state is append-only first, projection-backed second:
 
+- **Aggregates** validate command families against stream history before new events are appended. Project, task, run, phase, inbox, worker, scheduler, VCS, recovery, and integration aggregates keep command invariants explicit while tolerating historical/imported events during replay.
 - **Events** are durable facts such as `RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, or `AuditRecorded`. When debugging, verify whether the expected event exists before assuming a projection bug.
-- **Projections** are rebuildable read models for CLI/status/debug/inbox/metrics views. If a view looks stale, compare `/api/v1/metrics` projection lag with `foreman server doctor`, then rebuild projections or restart the server if the lag does not catch up.
+- **Projections** are rebuildable read models for CLI/status/debug/inbox/metrics views. In Postgres event-store mode, project/task/run/inbox projections are also persisted in Postgres read-model tables; in term mode they are in-memory and rebuilt from the term log. If a view looks stale, compare `/api/v1/metrics` projection lag with `foreman server doctor`, then rebuild projections or restart the server if the lag does not catch up.
 - **Recovery** starts by recording observations, e.g. `ExternalWorkerObserved`, before emitting resolution events such as `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`. This makes crash recovery auditable.
 
 Example investigation:

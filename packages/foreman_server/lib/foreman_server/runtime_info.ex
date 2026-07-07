@@ -19,7 +19,16 @@ defmodule ForemanServer.RuntimeInfo do
         path: if(adapter == :term, do: event_log_path(), else: nil),
         table: if(adapter == :postgres, do: "foreman_events", else: nil)
       },
+      projection_store: %{
+        adapter: Atom.to_string(projection_store_adapter()),
+        tables: projection_store_tables()
+      },
+      project_config_store: %{
+        adapter: "term",
+        path: project_store_path(required?: true)
+      },
       project_store: %{
+        adapter: "term",
         path: project_store_path(required?: true)
       }
     }
@@ -65,6 +74,24 @@ defmodule ForemanServer.RuntimeInfo do
       _ ->
         Application.get_env(:foreman_server, :event_store_adapter) ||
           default_event_store_adapter()
+    end
+  end
+
+  @spec projection_store_adapter() :: :memory | :postgres
+  def projection_store_adapter do
+    if event_store_adapter() == :postgres and database_url?(), do: :postgres, else: :memory
+  end
+
+  @spec projection_store_tables() :: [String.t()] | nil
+  def projection_store_tables do
+    if projection_store_adapter() == :postgres do
+      [
+        "foreman_project_projections",
+        "foreman_task_projections",
+        "foreman_run_projections",
+        "foreman_inbox_message_projections",
+        "foreman_projection_checkpoints"
+      ]
     end
   end
 

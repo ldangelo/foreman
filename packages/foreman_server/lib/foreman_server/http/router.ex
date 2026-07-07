@@ -61,6 +61,23 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  post "/api/v1/projections/rebuild" do
+    with :ok <- authorize(conn),
+         {:ok, projection} <- ForemanServer.EventStore.rebuild_projections() do
+      send_json(conn, 202, %{
+        ok: true,
+        checkpoint: Map.get(projection, :checkpoint),
+        projects: map_size(Map.get(projection, :projects, %{})),
+        tasks: map_size(Map.get(projection, :tasks, %{})),
+        runs: map_size(Map.get(projection, :runs, %{})),
+        inbox_messages: map_size(Map.get(projection, :inbox_messages, %{}))
+      })
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+    end
+  end
+
   get "/api/v1/projects" do
     with :ok <- authorize(conn) do
       send_json(conn, 200, %{ok: true, projects: ForemanServer.ProjectionStore.project_list()})

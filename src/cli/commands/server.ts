@@ -39,8 +39,16 @@ serverCommand
         const eventStore = `${stringValue(runtime.event_store.adapter)} ${stringValue(runtime.event_store.path ?? runtime.event_store.table)}`;
         console.log(chalk.dim(`Event store: ${eventStore}`));
       }
-      if (isRecord(runtime.project_store)) {
-        console.log(chalk.dim(`Project store: ${stringValue(runtime.project_store.path)}`));
+      if (isRecord(runtime.projection_store)) {
+        const tables = Array.isArray(runtime.projection_store.tables) ? runtime.projection_store.tables.join(",") : "memory";
+        console.log(chalk.dim(`Projection store: ${stringValue(runtime.projection_store.adapter)} ${tables}`));
+      }
+      if (isRecord(runtime.project_config_store)) {
+        const projectConfigStore = `${stringValue(runtime.project_config_store.adapter)} ${stringValue(runtime.project_config_store.path)}`;
+        console.log(chalk.dim(`Project config store: ${projectConfigStore}`));
+      } else if (isRecord(runtime.project_store)) {
+        const projectStore = `${stringValue(runtime.project_store.adapter)} ${stringValue(runtime.project_store.path)}`;
+        console.log(chalk.dim(`Project config store: ${projectStore}`));
       }
     }
   });

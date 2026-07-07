@@ -7,7 +7,8 @@ defmodule ForemanServer.RuntimeSafetyTest do
       "FOREMAN_SERVER_HTTP_PORT" => System.get_env("FOREMAN_SERVER_HTTP_PORT"),
       "FOREMAN_SERVER_EVENT_LOG" => System.get_env("FOREMAN_SERVER_EVENT_LOG"),
       "FOREMAN_SERVER_PROJECT_STORE" => System.get_env("FOREMAN_SERVER_PROJECT_STORE"),
-      "FOREMAN_SERVER_EVENT_STORE_ADAPTER" => System.get_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER"),
+      "FOREMAN_SERVER_EVENT_STORE_ADAPTER" =>
+        System.get_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER"),
       "DATABASE_URL" => System.get_env("DATABASE_URL"),
       "FOREMAN_ALLOW_TEST_PORT_COLLISION" => System.get_env("FOREMAN_ALLOW_TEST_PORT_COLLISION"),
       "FOREMAN_ALLOW_TEST_PERSISTENT_STORAGE" =>
@@ -49,6 +50,19 @@ defmodule ForemanServer.RuntimeSafetyTest do
     Application.delete_env(:foreman_server, :http_port)
 
     assert ForemanServer.RuntimeInfo.http_port() == 14766
+  end
+
+  test "postgres runtime identity distinguishes storage roles" do
+    System.put_env("DATABASE_URL", "postgres://localhost/foreman_test")
+    System.put_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER", "postgres")
+
+    identity = ForemanServer.RuntimeInfo.identity()
+
+    assert identity.event_store.adapter == "postgres"
+    assert identity.event_store.table == "foreman_events"
+    assert identity.projection_store.adapter == "postgres"
+    assert "foreman_task_projections" in identity.projection_store.tables
+    assert identity.project_config_store.adapter == "term"
   end
 
   test "postgres event store requires DATABASE_URL" do

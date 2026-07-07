@@ -187,6 +187,20 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert ProjectionStore.snapshot().tasks["task-1"].title == "From events"
   end
 
+  test "term projection mode keeps reads in memory" do
+    assert ForemanServer.RuntimeInfo.projection_store_adapter() == :memory
+
+    append!("project:project-1", "ProjectRegistered", %{
+      project_id: "project-1",
+      path: "/tmp/project-1",
+      status: "active",
+      config: %{name: "Project 1"}
+    })
+
+    assert ProjectionStore.project("project-1").path == "/tmp/project-1"
+    assert Enum.map(ProjectionStore.project_list(), & &1.project_id) == ["project-1"]
+  end
+
   defp append!(stream_id, event_type, payload) do
     {:ok, event} =
       EventStore.append(%{

@@ -1,24 +1,26 @@
 defmodule ForemanServer.ProjectionStore do
-  @moduledoc "In-memory CQRS read models rebuilt from the durable event log."
+  @moduledoc "CQRS read models rebuilt from the durable event log."
 
   use GenServer
 
+  alias ForemanServer.ProjectionStore.Postgres
+
   @terminal_run_statuses MapSet.new(["completed", "failed", "blocked"])
   @task_statuses MapSet.new([
-    "backlog",
-    "ready",
-    "approved",
-    "in_progress",
-    "in-progress",
-    "review",
-    "merged",
-    "closed",
-    "conflict",
-    "failed",
-    "stuck",
-    "blocked",
-    "cooldown"
-  ])
+                   "backlog",
+                   "ready",
+                   "approved",
+                   "in_progress",
+                   "in-progress",
+                   "review",
+                   "merged",
+                   "closed",
+                   "conflict",
+                   "failed",
+                   "stuck",
+                   "blocked",
+                   "cooldown"
+                 ])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -77,11 +79,14 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_call({:apply_event, event}, _from, projection) do
-    {:reply, :ok, reduce_event(projection, event, :live)}
+    updated = reduce_event(projection, event, :live)
+    persist_changes(projection, updated, event)
+    {:reply, :ok, updated}
   end
 
   def handle_call({:rebuild, events}, _from, _projection) do
     rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
+    persist_all(rebuilt)
     {:reply, {:ok, rebuilt}, rebuilt}
   end
 
@@ -90,27 +95,45 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   def handle_call({:project, project_id}, _from, projection) do
-    {:reply, get_in(projection, [:projects, project_id]), projection}
+    project =
+      if Postgres.enabled?(),
+        do: Postgres.project(project_id),
+        else: get_in(projection, [:projects, project_id])
+
+    {:reply, project, projection}
   end
 
   def handle_call(:project_list, _from, projection) do
     projects =
-      projection.projects
-      |> Map.values()
-      |> Enum.sort_by(& &1.project_id)
+      if Postgres.enabled?() do
+        Postgres.project_list()
+      else
+        projection.projects
+        |> Map.values()
+        |> Enum.sort_by(& &1.project_id)
+      end
 
     {:reply, projects, projection}
   end
 
   def handle_call({:task, task_id}, _from, projection) do
-    {:reply, get_in(projection, [:tasks, task_id]), projection}
+    task =
+      if Postgres.enabled?(),
+        do: Postgres.task(task_id),
+        else: get_in(projection, [:tasks, task_id])
+
+    {:reply, task, projection}
   end
 
   def handle_call(:task_list, _from, projection) do
     tasks =
-      projection.tasks
-      |> Map.values()
-      |> Enum.sort_by(& &1.task_id)
+      if Postgres.enabled?() do
+        Postgres.task_list()
+      else
+        projection.tasks
+        |> Map.values()
+        |> Enum.sort_by(& &1.task_id)
+      end
 
     {:reply, tasks, projection}
   end
@@ -127,6 +150,14 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(& &1.task_id)
 
     {:reply, tasks, projection}
+  end
+
+  defp persist_changes(old_projection, new_projection, event) do
+    if Postgres.enabled?(), do: Postgres.persist_changes(old_projection, new_projection, event)
+  end
+
+  defp persist_all(projection) do
+    if Postgres.enabled?(), do: Postgres.replace_all(projection)
   end
 
   defp empty_projection do
@@ -210,7 +241,9 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     update_in(projection, [:projects, project_id], fn
-      nil -> nil
+      nil ->
+        nil
+
       project ->
         config =
           project
@@ -236,7 +269,9 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     update_in(projection, [:projects, project_id], fn
-      nil -> nil
+      nil ->
+        nil
+
       project ->
         project
         |> Map.put(:status, "archived")
@@ -364,7 +399,11 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:runs, run_id], run)
   end
 
-  defp apply_domain_event(projection, %{type: "RunUpdated", payload: %{run_id: run_id} = payload}, _mode) do
+  defp apply_domain_event(
+         projection,
+         %{type: "RunUpdated", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
     update_run(projection, run_id, fn run -> Map.merge(run, payload) end)
   end
 
@@ -372,14 +411,22 @@ defmodule ForemanServer.ProjectionStore do
     update_in(projection, [:runs], &Map.delete(&1 || %{}, run_id))
   end
 
-  defp apply_domain_event(projection, %{type: "CliEventLogged", payload: %{run_id: run_id} = payload}, _mode)
+  defp apply_domain_event(
+         projection,
+         %{type: "CliEventLogged", payload: %{run_id: run_id} = payload},
+         _mode
+       )
        when is_binary(run_id) and run_id != "" do
     put_log_entry(projection, "CliEventLogged", payload)
   end
 
   defp apply_domain_event(projection, %{type: "CliEventLogged"}, _mode), do: projection
 
-  defp apply_domain_event(projection, %{type: "RunCompleted", payload: %{run_id: run_id} = payload}, _mode) do
+  defp apply_domain_event(
+         projection,
+         %{type: "RunCompleted", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "completed")
@@ -640,7 +687,11 @@ defmodule ForemanServer.ProjectionStore do
 
     case Map.get(payload, :operation_id) do
       operation_id when is_binary(operation_id) ->
-        put_in(projection, [:vcs_operations, operation_id], Map.put(payload, :event_type, "WorktreeCreated"))
+        put_in(
+          projection,
+          [:vcs_operations, operation_id],
+          Map.put(payload, :event_type, "WorktreeCreated")
+        )
 
       _ ->
         projection
@@ -659,7 +710,11 @@ defmodule ForemanServer.ProjectionStore do
 
     case Map.get(payload, :operation_id) do
       operation_id when is_binary(operation_id) ->
-        put_in(projection, [:vcs_operations, operation_id], Map.put(payload, :event_type, "WorktreeCleaned"))
+        put_in(
+          projection,
+          [:vcs_operations, operation_id],
+          Map.put(payload, :event_type, "WorktreeCleaned")
+        )
 
       _ ->
         projection
@@ -895,7 +950,14 @@ defmodule ForemanServer.ProjectionStore do
       existing
       |> Map.put(:status, status)
       |> Map.put(:run_id, Map.get(payload, :run_id, Map.get(existing, :run_id)))
-      |> maybe_put(:updated_at, Map.get(payload, :updated_at, Map.get(payload, :completed_at, Map.get(payload, :failed_at))))
+      |> maybe_put(
+        :updated_at,
+        Map.get(
+          payload,
+          :updated_at,
+          Map.get(payload, :completed_at, Map.get(payload, :failed_at))
+        )
+      )
       |> maybe_put(:failure_reason, Map.get(payload, :reason, Map.get(payload, :failure_reason)))
 
     put_in(projection, [:tasks, task_id], task)

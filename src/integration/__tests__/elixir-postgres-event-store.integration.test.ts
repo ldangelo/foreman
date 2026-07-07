@@ -151,10 +151,26 @@ describe.skipIf(!MIX_AVAILABLE)("Elixir Postgres event store", () => {
     }, serverLogs);
     await sendCommand(baseUrl, "task.approve", { task_id: taskId }, serverLogs);
 
+    const health = await fetch(new URL("/api/v1/health", baseUrl));
+    expect(health.ok).toBe(true);
+    const healthPayload = await health.json() as { runtime?: { projection_store?: { adapter?: string } } };
+    expect(healthPayload.runtime?.projection_store?.adapter).toBe("postgres");
+
+    const projects = await fetch(new URL("/api/v1/projects", baseUrl));
+    expect(projects.ok).toBe(true);
+    const projectPayload = await projects.json() as { projects?: Array<{ project_id: string }> };
+    expect(projectPayload.projects ?? []).toEqual(expect.arrayContaining([expect.objectContaining({ project_id: projectId })]));
+
     const tasks = await fetch(new URL(`/api/v1/tasks?project_id=${projectId}`, baseUrl));
     expect(tasks.ok).toBe(true);
     const taskPayload = await tasks.json() as { tasks?: Array<{ task_id: string; status: string }> };
     expect(taskPayload.tasks ?? []).toEqual(expect.arrayContaining([expect.objectContaining({ task_id: taskId })]));
+
+    const rebuild = await fetch(new URL("/api/v1/projections/rebuild", baseUrl), { method: "POST" });
+    expect(rebuild.ok).toBe(true);
+    const rebuildPayload = await rebuild.json() as { tasks?: number; projects?: number };
+    expect(rebuildPayload.tasks).toBeGreaterThanOrEqual(1);
+    expect(rebuildPayload.projects).toBeGreaterThanOrEqual(1);
 
     await stopServer();
     await startServer();
