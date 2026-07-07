@@ -1,0 +1,240 @@
+defmodule ForemanServer.AggregateTest do
+  use ExUnit.Case
+
+  alias ForemanServer.{Aggregate, AggregateRouter, CommandRouter, EventStore}
+
+  alias ForemanServer.Aggregates.{
+    InboxThread,
+    Integration,
+    Phase,
+    Project,
+    Recovery,
+    Run,
+    Scheduler,
+    Task,
+    VcsOperation,
+    Worker
+  }
+
+  setup do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "foreman-aggregate-test-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+
+    on_exit(fn ->
+      Application.stop(:foreman_server)
+      Application.delete_env(:foreman_server, :event_log_path)
+      File.rm_rf!(tmp_dir)
+      Application.start(:foreman_server)
+    end)
+
+    assert :ok = Application.start(:foreman_server)
+    :ok
+  end
+
+  test "project aggregate rejects duplicate registrations and validates updates" do
+    assert {:ok, %{event: %{event_type: "ProjectRegistered"}}} =
+             CommandRouter.handle(%{
+               command_id: "project-register-1",
+               command_type: "project.register",
+               payload: %{project_id: "proj-agg", path: "/tmp/proj-agg"}
+             })
+
+    assert {:error, {:already_exists, :project, "proj-agg"}} =
+             CommandRouter.handle(%{
+               command_id: "project-register-duplicate",
+               command_type: "project.register",
+               payload: %{project_id: "proj-agg", path: "/tmp/proj-agg"}
+             })
+
+    assert {:error, {:invalid_project_status, "unknown"}} =
+             AggregateRouter.route("project.update", %{project_id: "proj-agg", status: "unknown"})
+  end
+
+  test "task aggregate validates lifecycle and preserves existing event names" do
+    assert {:ok, %{event: %{event_type: "TaskCreated"}}} =
+             CommandRouter.handle(%{
+               command_id: "task-create-1",
+               command_type: "task.create",
+               payload: %{task_id: "task-agg", title: "Aggregate task"}
+             })
+
+    assert {:ok, %{event: %{event_type: "TaskUpdated"}, projection: projection}} =
+             CommandRouter.handle(%{
+               command_id: "task-approve-1",
+               command_type: "task.approve",
+               payload: %{task_id: "task-agg"}
+             })
+
+    assert projection.tasks["task-agg"].status == "ready"
+
+    assert {:ok, %{event: %{event_type: "TaskUpdated"}}} =
+             CommandRouter.handle(%{
+               command_id: "task-close-1",
+               command_type: "task.close",
+               payload: %{task_id: "task-agg"}
+             })
+
+    closed_state =
+      Aggregate.fold(Task, [
+        %{event_type: "TaskCreated", payload: %{task_id: "closed-task", status: "open"}},
+        %{event_type: "TaskUpdated", payload: %{task_id: "closed-task", status: "closed"}}
+      ])
+
+    assert {:error, {:invalid_task_transition, "closed", "ready"}} =
+             Task.handle_command(closed_state, %{
+               type: "task.approve",
+               payload: %{task_id: "closed-task"}
+             })
+
+    assert {:error, :self_dependency} =
+             AggregateRouter.route("task.add_dependency", %{
+               task_id: "task-agg",
+               depends_on: "task-agg"
+             })
+  end
+
+  test "aggregate decisions carry expected stream version for optimistic concurrency" do
+    assert {:ok, spec} = AggregateRouter.route("task.create", %{task_id: "task-versioned"})
+    assert spec.expected_stream_version == 0
+
+    assert {:ok, event} = EventStore.append(spec)
+    assert event.stream_version == 1
+
+    stale_spec = %{spec | payload: Map.put(spec.payload, :title, "stale")}
+    assert {:error, {:conflict, [expected: 0, actual: 1]}} = EventStore.append(stale_spec)
+  end
+
+  test "run and phase aggregates reject invalid transitions" do
+    assert {:ok, %{event: %{event_type: "RunStarted"}}} =
+             CommandRouter.handle(%{
+               command_id: "run-start-1",
+               command_type: "run.start",
+               payload: %{run_id: "run-agg", task_id: "task-agg"}
+             })
+
+    assert {:ok, %{event: %{event_type: "RunDeleted"}}} =
+             CommandRouter.handle(%{
+               command_id: "run-delete-1",
+               command_type: "run.delete",
+               payload: %{run_id: "run-agg"}
+             })
+
+    assert {:error, {:run_terminal, "deleted"}} =
+             CommandRouter.handle(%{
+               command_id: "run-update-terminal",
+               command_type: "run.update",
+               payload: %{run_id: "run-agg", status: "in_progress"}
+             })
+
+    assert {:error, :phase_not_started} =
+             AggregateRouter.route("phase.complete", %{run_id: "run-agg", phase_id: "dev"})
+
+    assert {:ok, start_spec} =
+             AggregateRouter.route("phase.start", %{run_id: "run-agg", phase_id: "dev"})
+
+    assert {:ok, _} = EventStore.append(start_spec)
+
+    assert {:ok, complete_spec} =
+             AggregateRouter.route("phase.complete", %{run_id: "run-agg", phase_id: "dev"})
+
+    assert complete_spec.event_type == "PhaseCompleted"
+  end
+
+  test "inbox aggregate validates duplicate messages and delivery targets" do
+    assert {:ok, spec} =
+             AggregateRouter.route("inbox.send", %{
+               run_id: "run-inbox-agg",
+               message_id: "msg-1",
+               body: "hello"
+             })
+
+    assert {:ok, _} = EventStore.append(spec)
+
+    assert {:error, {:already_exists, :message, "msg-1"}} =
+             AggregateRouter.route("inbox.send", %{
+               run_id: "run-inbox-agg",
+               message_id: "msg-1",
+               body: "hello again"
+             })
+
+    assert {:ok, delivery_spec} =
+             AggregateRouter.route("inbox.delivery.update", %{
+               run_id: "run-inbox-agg",
+               message_id: "msg-1",
+               delivery_status: "delivered"
+             })
+
+    assert delivery_spec.event_type == "InboxDeliveryUpdated"
+  end
+
+  test "worker aggregate folds imported worker events and validates sequence" do
+    events = [
+      %{event_type: "WorkerStarted", payload: %{run_id: "run", worker_id: "w", sequence: 0}},
+      %{event_type: "WorkerHeartbeat", payload: %{run_id: "run", worker_id: "w", sequence: 1}},
+      %{event_type: "AssistantMessage", payload: %{run_id: "run", worker_id: "w", sequence: 2}}
+    ]
+
+    state = Aggregate.fold(Worker, events)
+    assert state.last_sequence == 2
+    assert Worker.next_sequence(state) == 3
+    assert state.assistant_messages == 1
+  end
+
+  test "scheduler, vcs, recovery, and integration aggregates tolerate historical replay" do
+    scheduler =
+      Aggregate.fold(Scheduler, [
+        %{event_type: "SchedulerTaskClaimed", payload: %{task_id: "task-1", run_id: "run-1"}},
+        %{event_type: "SchedulerTaskSkipped", payload: %{task_id: "task-2", reason: "capacity"}}
+      ])
+
+    assert scheduler.claims["task-1"].run_id == "run-1"
+    assert scheduler.skips["task-2"].reason == "capacity"
+
+    vcs =
+      Aggregate.fold(VcsOperation, [
+        %{event_type: "WorktreeCreated", payload: %{run_id: "run-1", worktree_path: "/tmp/wt"}},
+        %{event_type: "PrMerged", payload: %{operation_id: "op-1"}}
+      ])
+
+    assert vcs.status == "merged"
+
+    recovery =
+      Aggregate.fold(Recovery, [
+        %{event_type: "ExternalWorkerObserved", payload: %{run_id: "run-1"}},
+        %{event_type: "WorkerRestarted", payload: %{run_id: "run-1"}}
+      ])
+
+    assert recovery.status == "recovering"
+    assert length(recovery.observations) == 1
+
+    integration =
+      Aggregate.fold(Integration, [
+        %{event_type: "IntegrationCommandIngested", payload: %{dedupe_key: "github:event-1"}}
+      ])
+
+    assert integration.seen?
+    assert integration.dedupe_key == "github:event-1"
+  end
+
+  test "project, task, run, phase, and inbox folds tolerate imported map events" do
+    assert Aggregate.fold(Project, [
+             %{type: "ProjectRegistered", payload: %{project_id: "p", path: "/tmp/p"}}
+           ]).exists?
+
+    assert Aggregate.fold(Task, [%{type: "TaskCreated", payload: %{task_id: "t", status: "open"}}]).exists?
+
+    assert Aggregate.fold(Run, [%{type: "RunStarted", payload: %{run_id: "r"}}]).exists?
+
+    assert Aggregate.fold(Phase, [
+             %{type: "PhaseStarted", payload: %{run_id: "r", phase_id: "dev"}}
+           ]).status == "in_progress"
+
+    assert Aggregate.fold(InboxThread, [
+             %{type: "InboxMessageAppended", payload: %{run_id: "r", message_id: "m"}}
+           ]).messages["m"].message_id == "m"
+  end
+end

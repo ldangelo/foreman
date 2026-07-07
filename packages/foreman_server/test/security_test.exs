@@ -148,6 +148,13 @@ defmodule ForemanServer.SecurityTest do
   end
 
   test "destructive commands record authorization and audit events after execution" do
+    assert {:ok, _} =
+             CommandRouter.handle(%{
+               command_id: "cmd-create-secure",
+               command_type: "task.create",
+               payload: %{task_id: "task-secure"}
+             })
+
     assert {:ok, %{event: event, audit_events: [authorization, audit]}} =
              CommandRouter.handle(%{
                command_id: "cmd-close-secure",
@@ -165,7 +172,7 @@ defmodule ForemanServer.SecurityTest do
     assert audit.payload.resulting_event_type == "TaskUpdated"
 
     event_types = Enum.map(EventStore.all(), & &1.event_type)
-    assert event_types == ["TaskUpdated", "AuthorizationChecked", "AuditRecorded"]
+    assert event_types == ["TaskCreated", "TaskUpdated", "AuthorizationChecked", "AuditRecorded"]
 
     audits = ProjectionStore.snapshot().authorization_audits
     assert Enum.map(audits, & &1.event_type) == ["AuthorizationChecked", "AuditRecorded"]

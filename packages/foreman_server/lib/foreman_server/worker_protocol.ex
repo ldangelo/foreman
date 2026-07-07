@@ -1,7 +1,15 @@
 defmodule ForemanServer.WorkerProtocol do
   @moduledoc "HTTP-facing Node/Pi worker protocol: phase start, events, and heartbeat."
 
-  alias ForemanServer.{EventStore, ProjectionStore, ProviderRegistry, WorkerEnvironment}
+  alias ForemanServer.{
+    Aggregate,
+    EventStore,
+    ProjectionStore,
+    ProviderRegistry,
+    WorkerEnvironment
+  }
+
+  alias ForemanServer.Aggregates.Worker
 
   @spec start_phase(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def start_phase(phase_id, payload) when is_binary(phase_id) and is_map(payload) do
@@ -71,8 +79,7 @@ defmodule ForemanServer.WorkerProtocol do
          {:ok, phase_id} <- required_binary(Map.get(payload, :phase_id), :phase_id),
          {:ok, worker_id} <- required_binary(Map.get(payload, :worker_id), :worker_id),
          {:ok, type} <- required_binary(Map.get(payload, :type), :type),
-         {:ok, sequence} <- required_integer(Map.get(payload, :sequence), :sequence),
-         :ok <- validate_sequence(run_id, worker_id, sequence) do
+         {:ok, sequence} <- required_integer(Map.get(payload, :sequence), :sequence) do
       event_type = worker_event_type(type)
 
       details = Map.get(payload, :details, %{})
@@ -80,7 +87,8 @@ defmodule ForemanServer.WorkerProtocol do
       append_worker_event(event_type, %{
         run_id: run_id,
         project_id: Map.get(payload, :project_id) || Map.get(details, "project_id"),
-        task_id: Map.get(payload, :task_id) || Map.get(details, "task_id") || Map.get(details, "taskId"),
+        task_id:
+          Map.get(payload, :task_id) || Map.get(details, "task_id") || Map.get(details, "taskId"),
         phase_id: phase_id,
         worker_id: worker_id,
         sequence: sequence,
@@ -102,36 +110,58 @@ defmodule ForemanServer.WorkerProtocol do
   end
 
   defp append_worker_event(event_type, payload) do
-    with {:ok, event} <-
-           EventStore.append(%{
-             stream_id: "worker:#{payload.run_id}:#{payload.worker_id}",
-             event_type: event_type,
-             payload: Map.put(payload, :observed_at, DateTime.utc_now()),
-             metadata: %{
-               correlation_id: payload.run_id,
-               idempotency_key:
-                 "#{event_type}:#{payload.run_id}:#{payload.worker_id}:#{payload.sequence}"
-             }
-           }) do
-      {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
+    stream_id = "worker:#{payload.run_id}:#{payload.worker_id}"
+    idempotency_key = "#{event_type}:#{payload.run_id}:#{payload.worker_id}:#{payload.sequence}"
+
+    case validate_sequence(stream_id, payload.sequence, idempotency_key) do
+      {:ok, expected_version} ->
+        with {:ok, event} <-
+               EventStore.append(%{
+                 stream_id: stream_id,
+                 event_type: event_type,
+                 payload: Map.put(payload, :observed_at, DateTime.utc_now()),
+                 expected_stream_version: expected_version,
+                 metadata: %{
+                   correlation_id: payload.run_id,
+                   idempotency_key: idempotency_key
+                 }
+               }) do
+          {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
+        end
+
+      {:duplicate, event} ->
+        {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp validate_sequence(run_id, worker_id, sequence) do
-    expected = next_sequence(run_id, worker_id)
+  defp validate_sequence(stream_id, sequence, idempotency_key) do
+    {state, version} = Aggregate.load(Worker, stream_id)
+    expected = Worker.next_sequence(state)
 
-    if sequence == expected,
-      do: :ok,
-      else: {:error, {:out_of_order_sequence, expected: expected, actual: sequence}}
+    cond do
+      sequence == expected ->
+        {:ok, version}
+
+      duplicate = duplicate_worker_event(stream_id, idempotency_key) ->
+        {:duplicate, duplicate}
+
+      true ->
+        {:error, {:out_of_order_sequence, expected: expected, actual: sequence}}
+    end
+  end
+
+  defp duplicate_worker_event(stream_id, idempotency_key) do
+    Enum.find(EventStore.stream(stream_id), fn event ->
+      Map.get(event.metadata, :idempotency_key) == idempotency_key
+    end)
   end
 
   defp next_sequence(run_id, worker_id) do
-    ProjectionStore.snapshot()
-    |> get_in([:worker_sequences, "#{run_id}:#{worker_id}"])
-    |> case do
-      nil -> 1
-      value -> value + 1
-    end
+    {state, _version} = Aggregate.load(Worker, "worker:#{run_id}:#{worker_id}")
+    Worker.next_sequence(state)
   end
 
   defp worker_event_type("stdout"), do: "WorkerStdout"

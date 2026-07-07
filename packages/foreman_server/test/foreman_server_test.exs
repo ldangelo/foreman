@@ -15,11 +15,13 @@ defmodule ForemanServerTest do
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :project_store_path, project_store_path)
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    Application.put_env(:foreman_server, :scheduler, auto_tick: false, event_triggered_ticks: false)
 
     on_exit(fn ->
       Application.stop(:foreman_server)
       Application.delete_env(:foreman_server, :project_store_path)
       Application.delete_env(:foreman_server, :event_log_path)
+      Application.delete_env(:foreman_server, :scheduler)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)

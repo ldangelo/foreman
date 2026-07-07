@@ -1,7 +1,7 @@
 defmodule ForemanServer.Inbox do
   @moduledoc "Event-backed inbox and agent mail boundary."
 
-  alias ForemanServer.{EventStore, ProjectionStore}
+  alias ForemanServer.{AggregateRouter, EventStore, ProjectionStore}
 
   @phase_events %{
     "PhaseStarted" => "phase_started",
@@ -190,16 +190,20 @@ defmodule ForemanServer.Inbox do
       |> Map.put_new(:created_at, DateTime.utc_now())
       |> Map.put_new(:delivery_status, "appended")
 
-    with {:ok, event} <-
-           EventStore.append(%{
-             stream_id: "inbox:#{message.run_id}",
-             event_type: "InboxMessageAppended",
-             payload: message,
-             metadata: %{
-               correlation_id: message.run_id,
-               idempotency_key: "InboxMessageAppended:#{message.message_id}"
+    with {:ok, event_spec} <- AggregateRouter.route("inbox.send", message),
+         {:ok, event} <-
+           EventStore.append(
+             %{
+               stream_id: Map.fetch!(event_spec, :stream_id),
+               event_type: Map.fetch!(event_spec, :event_type),
+               payload: Map.fetch!(event_spec, :payload),
+               metadata: %{
+                 correlation_id: message.run_id,
+                 idempotency_key: "InboxMessageAppended:#{message.message_id}"
+               }
              }
-           }) do
+             |> maybe_put_expected_version(Map.get(event_spec, :expected_stream_version))
+           ) do
       {:ok, %{event: event, projection: ProjectionStore.snapshot(), result: message}}
     end
   end
@@ -207,20 +211,34 @@ defmodule ForemanServer.Inbox do
   defp append_delivery_update(update) do
     update = Map.put_new(update, :updated_at, DateTime.utc_now())
 
-    with {:ok, event} <-
-           EventStore.append(%{
-             stream_id: "inbox:#{update.run_id}",
-             event_type: "InboxDeliveryUpdated",
-             payload: update,
-             metadata: %{
-               correlation_id: update.run_id,
-               idempotency_key:
-                 "InboxDeliveryUpdated:#{update.message_id}:#{update.delivery_status}:#{System.unique_integer([:positive])}"
+    with {:ok, event_spec} <- AggregateRouter.route("inbox.delivery.update", update),
+         {:ok, event} <-
+           EventStore.append(
+             %{
+               stream_id: Map.fetch!(event_spec, :stream_id),
+               event_type: Map.fetch!(event_spec, :event_type),
+               payload: Map.fetch!(event_spec, :payload),
+               metadata: %{
+                 correlation_id: update.run_id,
+                 idempotency_key: delivery_update_idempotency_key(update)
+               }
              }
-           }) do
+             |> maybe_put_expected_version(Map.get(event_spec, :expected_stream_version))
+           ) do
       {:ok, %{event: event, projection: ProjectionStore.snapshot(), result: update}}
     end
   end
+
+  defp delivery_update_idempotency_key(update) do
+    stable_update = Map.drop(update, [:updated_at, "updated_at"])
+    fingerprint = :crypto.hash(:sha256, :erlang.term_to_binary(stable_update)) |> Base.url_encode64(padding: false)
+    "InboxDeliveryUpdated:#{update.message_id}:#{fingerprint}"
+  end
+
+  defp maybe_put_expected_version(input, nil), do: input
+
+  defp maybe_put_expected_version(input, expected),
+    do: Map.put(input, :expected_stream_version, expected)
 
   defp active_run(run_id) do
     run = get_in(ProjectionStore.snapshot(), [:runs, run_id])

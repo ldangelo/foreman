@@ -2,6 +2,7 @@ defmodule ForemanServer.CommandRouter do
   @moduledoc "Command boundary for server-side project/task mutations."
 
   alias ForemanServer.{
+    AggregateRouter,
     EventStore,
     Inbox,
     IntegrationIngestion,
@@ -15,20 +16,20 @@ defmodule ForemanServer.CommandRouter do
   @planning_command_types ["PlanningFlowCommand", "plan.prd", "plan.trd"]
   @migration_command_types ["MigrationImportCommand", "migration.import"]
   @task_statuses MapSet.new([
-    "backlog",
-    "ready",
-    "approved",
-    "in_progress",
-    "in-progress",
-    "review",
-    "merged",
-    "closed",
-    "conflict",
-    "failed",
-    "stuck",
-    "blocked",
-    "cooldown"
-  ])
+                   "backlog",
+                   "ready",
+                   "approved",
+                   "in_progress",
+                   "in-progress",
+                   "review",
+                   "merged",
+                   "closed",
+                   "conflict",
+                   "failed",
+                   "stuck",
+                   "blocked",
+                   "cooldown"
+                 ])
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
   def handle(%{"command_type" => command_type} = command)
@@ -128,25 +129,43 @@ defmodule ForemanServer.CommandRouter do
 
     metadata = normalize_metadata(command)
 
-    with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload),
+    with {:ok, event_spec} <- command_event(command_type, payload),
+         event_type = Map.fetch!(event_spec, :event_type),
          enriched_payload =
-           event_payload
+           event_spec
+           |> Map.fetch!(:payload)
            |> Map.put_new(:command_id, command_id)
            |> Map.put_new(:updated_at, DateTime.utc_now()),
-         {:ok, event} <-
-           EventStore.append(%{
-             stream_id: stream_id,
+         append_input =
+           %{
+             stream_id: Map.fetch!(event_spec, :stream_id),
              event_type: event_type,
              payload: enriched_payload,
              metadata: metadata,
              correlation_id: Map.get(metadata, :correlation_id)
-           }),
+           }
+           |> maybe_put_expected_version(Map.get(event_spec, :expected_stream_version)),
+         {:ok, event} <- EventStore.append(append_input),
          {:ok, audit_events} <- maybe_audit(command, event_type, enriched_payload) do
       {:ok, %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
     end
   end
 
   def handle(_command), do: {:error, :invalid_command}
+
+  defp command_event(command_type, payload) do
+    case AggregateRouter.route(command_type, payload) do
+      {:ok, event_spec} -> {:ok, event_spec}
+      :unhandled -> legacy_domain_event(command_type, payload)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp legacy_domain_event(command_type, payload) do
+    with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload) do
+      {:ok, %{event_type: event_type, payload: event_payload, stream_id: stream_id}}
+    end
+  end
 
   defp domain_event("project.register", payload) do
     project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
@@ -268,10 +287,12 @@ defmodule ForemanServer.CommandRouter do
 
   defp domain_event("event.log", payload) do
     event_type = Map.get(payload, :event_type, "cli-event")
-    stream_id = case Map.get(payload, :run_id) do
-      run_id when is_binary(run_id) and run_id != "" -> "run:#{run_id}"
-      _ -> "project:#{Map.get(payload, :project_id, "unknown")}:events"
-    end
+
+    stream_id =
+      case Map.get(payload, :run_id) do
+        run_id when is_binary(run_id) and run_id != "" -> "run:#{run_id}"
+        _ -> "project:#{Map.get(payload, :project_id, "unknown")}:events"
+      end
 
     {:ok, "CliEventLogged", Map.put(payload, :event_type, event_type), stream_id}
   end
@@ -296,6 +317,11 @@ defmodule ForemanServer.CommandRouter do
      }, "command:#{Map.get(command, :command_id, command_type)}"}
   end
 
+  defp maybe_put_expected_version(input, nil), do: input
+
+  defp maybe_put_expected_version(input, expected),
+    do: Map.put(input, :expected_stream_version, expected)
+
   defp maybe_audit(%{command_type: command_type} = command, event_type, payload) do
     if Security.destructive_command?(command_type) do
       Security.append_destructive_audit(command, event_type, payload)
@@ -318,9 +344,13 @@ defmodule ForemanServer.CommandRouter do
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
 
   defp validate_task_status(nil), do: :ok
+
   defp validate_task_status(status) when is_binary(status) do
-    if MapSet.member?(@task_statuses, status), do: :ok, else: {:error, {:invalid_task_status, status}}
+    if MapSet.member?(@task_statuses, status),
+      do: :ok,
+      else: {:error, {:invalid_task_status, status}}
   end
+
   defp validate_task_status(status), do: {:error, {:invalid_task_status, status}}
 
   defp handle_external_trigger(payload, metadata) do
