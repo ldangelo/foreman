@@ -1,8 +1,11 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ForemanMcpServer } from "../foreman-mcp-server.js";
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 
 describe("ForemanMcpServer", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it("exposes MCP tool metadata for current and future Foreman use cases", async () => {
     const server = new ForemanMcpServer({ autoStart: false });
     const response = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -91,6 +94,7 @@ describe("ForemanMcpServer", () => {
     });
 
     it("returns error when project is not found", async () => {
+      vi.spyOn(ElixirServerClient.prototype, "listProjects").mockResolvedValue([]);
       const server = new ForemanMcpServer({ autoStart: false });
       const response = await server.handle({
         jsonrpc: "2.0",
@@ -109,6 +113,18 @@ describe("ForemanMcpServer", () => {
         id: 5,
         method: "tools/call",
         params: { name: "foreman.tasks.create", arguments: { project_id: "test-project", title: "Test", priority: 5 } },
+      });
+
+      expect(response?.error?.message).toContain("Invalid priority");
+    });
+
+    it("returns error for non-number priority value", async () => {
+      const server = new ForemanMcpServer({ autoStart: false });
+      const response = await server.handle({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: { name: "foreman.tasks.create", arguments: { project_id: "test-project", title: "Test", priority: "2" } },
       });
 
       expect(response?.error?.message).toContain("Invalid priority");
@@ -147,14 +163,13 @@ describe("ForemanMcpServer", () => {
         expect.objectContaining({
           command_type: "task.create",
           payload: expect.objectContaining({
-            task_id: expect.stringMatching(/^test-project-.{5}$/),
+            task_id: expect.stringMatching(/^test-project-[a-f0-9]{16}$/),
             project_id: "test-project",
             title: "Test task",
             priority: 2,
           }),
         }),
       );
-      mockSendCommand.mockRestore();
     });
   });
 });
