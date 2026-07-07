@@ -1,7 +1,7 @@
 defmodule ForemanServer.PlanningFlow do
   @moduledoc "Event-backed PRD/TRD planning flow execution through the worker pipeline."
 
-  alias ForemanServer.{CommandRouter, EventStore, ProjectionStore, WorkerProtocol}
+  alias ForemanServer.{AggregateRouter, CommandRouter, EventStore, ProjectionStore, WorkerProtocol}
 
   @compat_commands %{
     "/ensemble:create-prd" => "/ensemble:create-prd",
@@ -280,16 +280,42 @@ defmodule ForemanServer.PlanningFlow do
   end
 
   defp append_event(stream_id, event_type, payload, idempotency_key) do
-    EventStore.append(%{
-      stream_id: stream_id,
-      event_type: event_type,
-      payload: Map.put(payload, :observed_at, DateTime.utc_now()),
-      metadata: %{
-        correlation_id: Map.get(payload, :run_id),
-        idempotency_key: idempotency_key
-      }
-    })
+    payload = Map.put(payload, :observed_at, DateTime.utc_now())
+    metadata = %{correlation_id: Map.get(payload, :run_id), idempotency_key: idempotency_key}
+
+    event_type
+    |> planning_command_type()
+    |> case do
+      nil ->
+        append_input(stream_id, event_type, payload, metadata)
+
+      command_type ->
+        case AggregateRouter.route(command_type, payload) do
+          {:ok, event_spec} -> append_input(event_spec, metadata)
+          :unhandled -> append_input(stream_id, event_type, payload, metadata)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+    |> case do
+      {:error, reason} -> {:error, reason}
+      input -> EventStore.append(input)
+    end
   end
+
+  defp append_input(%{} = event_spec, metadata) do
+    event_spec
+    |> Map.take([:stream_id, :event_type, :payload, :expected_stream_version])
+    |> Map.put(:metadata, metadata)
+  end
+
+  defp append_input(stream_id, event_type, payload, metadata) do
+    %{stream_id: stream_id, event_type: event_type, payload: payload, metadata: metadata}
+  end
+
+  defp planning_command_type("PlanningFlowStarted"), do: "planning.start"
+  defp planning_command_type("PlanningTraceLinked"), do: "planning.trace.link"
+  defp planning_command_type("PlanningFlowCompleted"), do: "planning.complete"
+  defp planning_command_type(_event_type), do: nil
 
   defp phases(:prd, description, output_dir, compatibility, _from_prd, create_prd_command) do
     [
