@@ -1864,7 +1864,7 @@ function createElixirWorkerObservabilityWriter(
   registeredProjectId: string,
 ): PipelineObservabilityWriter | undefined {
   let clientPromise: Promise<ElixirServerClient> | undefined;
-  let sequence = 0;
+  let sequence = -1;
   let eventTail: Promise<void> = Promise.resolve();
   const workerId = `node-pipeline:${config.taskId}`;
 

@@ -85,7 +85,7 @@ function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverr
   );
   const sequences = new Map<string, number>();
   const nextSequence = (runId: string) => {
-    const next = (sequences.get(runId) ?? 0) + 1;
+    const next = (sequences.get(runId) ?? -1) + 1;
     sequences.set(runId, next);
     return next;
   };
