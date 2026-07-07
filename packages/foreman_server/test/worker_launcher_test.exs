@@ -263,6 +263,53 @@ defmodule ForemanServer.WorkerLauncherTest do
       Enum.any?(events, fn event -> event.event_type == "WorkerProcessExited" end)
     end)
 
+    events = EventStore.stream("worker-launch:#{run_id}")
+
+    assert Enum.any?(events, fn event ->
+             event.event_type == "WorkerSpawned" && event.payload.worker_pid == 12345
+           end)
+
+    refute Enum.any?(events, fn event ->
+             event.event_type == "RunFailed"
+           end)
+  end
+
+  test "zero-exit detached bridge without spawn line does not record fallback failure", %{
+    bin_dir: bin_dir,
+    project_dir: project_dir
+  } do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo 'server_url=http://127.0.0.1:14766'
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{
+      task_id: "foreman-no-spawn-line",
+      project_id: "project-a",
+      project_path: project_dir,
+      task_type: "feature"
+    }
+
+    run_id = "00000000-0000-0000-0000-000000000007"
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "RunStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "foreman-no-spawn-line", current_phase: nil}
+      })
+
+    assert {:ok, _} = WorkerLauncher.launch(task, run_id, ["explorer"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, fn event -> event.event_type == "WorkerProcessExited" end)
+    end)
+
     refute Enum.any?(EventStore.stream("worker-launch:#{run_id}"), fn event ->
              event.event_type == "RunFailed"
            end)

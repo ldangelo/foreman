@@ -154,6 +154,37 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert snapshot.runs["run-worker-fixture"].phase_status["developer"] == "completed"
   end
 
+  test "non-terminal worker events are rejected after run terminal", %{fixture: fixture} do
+    assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
+
+    run_failed = %{
+      "run_id" => "run-worker-fixture",
+      "project_id" => "proj-1",
+      "phase_id" => "developer",
+      "worker_id" => "worker-1",
+      "type" => "run_failed",
+      "sequence" => 1,
+      "status" => "failed",
+      "details" => %{"task_id" => "task-1", "failure_reason" => "max_turns"}
+    }
+
+    assert post_json("/worker/v1/events", run_failed).status == 202
+
+    assert {:error, {:run_not_active, "run-worker-fixture"}} =
+             ForemanServer.WorkerProtocol.heartbeat(%{
+               run_id: "run-worker-fixture",
+               phase_id: "developer",
+               worker_id: "worker-1",
+               sequence: 2
+             })
+
+    event_types =
+      ForemanServer.EventStore.stream("worker:run-worker-fixture:worker-1")
+      |> Enum.map(& &1.event_type)
+
+    assert event_types == ["WorkerStarted", "RunFailed"]
+  end
+
   test "out-of-order worker sequence is rejected before projection mutation", %{fixture: fixture} do
     assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
 

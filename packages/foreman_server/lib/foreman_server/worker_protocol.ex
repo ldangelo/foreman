@@ -11,6 +11,9 @@ defmodule ForemanServer.WorkerProtocol do
 
   alias ForemanServer.Aggregates.Worker
 
+  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked"])
+  @after_terminal_run_events MapSet.new(["RunCompleted", "RunFailed", "TaskUpdated"])
+
   @spec start_phase(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def start_phase(phase_id, payload) when is_binary(phase_id) and is_map(payload) do
     payload = atomize_keys(payload)
@@ -115,7 +118,8 @@ defmodule ForemanServer.WorkerProtocol do
 
     case validate_sequence(stream_id, payload.sequence, idempotency_key) do
       {:ok, expected_version} ->
-        with {:ok, event} <-
+        with :ok <- reject_event_after_terminal_run(event_type, payload.run_id),
+             {:ok, event} <-
                EventStore.append(%{
                  stream_id: stream_id,
                  event_type: event_type,
@@ -134,6 +138,21 @@ defmodule ForemanServer.WorkerProtocol do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp reject_event_after_terminal_run(event_type, run_id) do
+    run = get_in(ProjectionStore.snapshot(), [:runs, run_id])
+
+    cond do
+      MapSet.member?(@after_terminal_run_events, event_type) ->
+        :ok
+
+      is_map(run) and MapSet.member?(@terminal_run_statuses, Map.get(run, :status)) ->
+        {:error, {:run_not_active, run_id}}
+
+      true ->
+        :ok
     end
   end
 

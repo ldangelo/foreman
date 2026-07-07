@@ -44,13 +44,9 @@ defmodule ForemanServer.WorkerLauncher do
             output: output
           })
 
-          append_missing_terminal_event(
-            task,
-            run_id,
-            workflow,
-            status,
-            combined_worker_output(run_id, output)
-          )
+          maybe_append_worker_spawned_event(task, run_id, workflow, output)
+
+          append_missing_terminal_event(task, run_id, workflow, status, output)
         end)
 
       {:ok, %{pid: pid, workflow: workflow}}
@@ -132,7 +128,8 @@ defmodule ForemanServer.WorkerLauncher do
     unless Map.get(run, :status) in ["completed", "failed", "blocked"] do
       inferred = infer_terminal_failure(output)
 
-      unless detached_worker_started?(exit_code, output, inferred) do
+      unless bridge_completed_successfully?(exit_code, inferred) or
+               detached_worker_started?(exit_code, output, inferred) do
         phase_id = inferred.phase_id || Map.get(run, :current_phase)
 
         append("RunFailed", task, run_id, %{
@@ -146,12 +143,31 @@ defmodule ForemanServer.WorkerLauncher do
     end
   end
 
+  defp bridge_completed_successfully?(0, %{phase_id: nil, reason: nil}), do: true
+  defp bridge_completed_successfully?(_exit_code, _inferred), do: false
+
   defp detached_worker_started?(0, output, %{phase_id: nil, reason: nil})
        when is_binary(output) do
     String.contains?(output, "Worker spawned (pid=")
   end
 
   defp detached_worker_started?(_exit_code, _output, _inferred), do: false
+
+  defp maybe_append_worker_spawned_event(task, run_id, workflow, output) when is_binary(output) do
+    case Regex.run(~r/Worker spawned \(pid=(\d+)\)/, output) do
+      [_match, pid] ->
+        append("WorkerSpawned", task, run_id, %{
+          workflow: workflow,
+          worker_pid: String.to_integer(pid),
+          log_path: Path.join([System.user_home!(), ".foreman", "logs", "#{run_id}.log"])
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_append_worker_spawned_event(_task, _run_id, _workflow, _output), do: :ok
 
   defp infer_terminal_failure(output) when is_binary(output) do
     normalized_output = String.replace(output, "—", "-")
@@ -243,22 +259,6 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp normalize_phase(_phase), do: nil
-
-  defp combined_worker_output(run_id, output) do
-    [output, read_worker_log(run_id, ".log"), read_worker_log(run_id, ".err")]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.join("\n")
-  end
-
-  defp read_worker_log(run_id, suffix) do
-    path = Path.join([System.user_home!(), ".foreman", "logs", "#{run_id}#{suffix}"])
-
-    if File.exists?(path) do
-      File.read!(path)
-    end
-  rescue
-    _ -> nil
-  end
 
   defp append(event_type, task, run_id, payload) do
     EventStore.append(%{
