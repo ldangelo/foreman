@@ -30,7 +30,6 @@ defmodule ForemanServer.Http.Endpoint do
   defp remote_bind?(_ip), do: true
 
   defp http_port do
-    Application.get_env(:foreman_server, :http_port) ||
-      String.to_integer(System.get_env("FOREMAN_SERVER_HTTP_PORT") || "0")
+    ForemanServer.RuntimeInfo.http_port()
   end
 end

@@ -66,7 +66,7 @@ defmodule ForemanServer.WorkerLauncherTest do
         Enum.any?(events, fn event ->
           event.event_type == "WorkerProcessExited" &&
             String.contains?(event.payload.output, "backend=unset") &&
-            String.contains?(event.payload.output, "server_url=http://127.0.0.1:4766") &&
+            String.contains?(event.payload.output, "server_url=http://127.0.0.1:14766") &&
             String.contains?(event.payload.output, "http_enabled=false") &&
             String.contains?(event.payload.output, "http_port=0")
         end)

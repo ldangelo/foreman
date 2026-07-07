@@ -44,7 +44,13 @@ defmodule ForemanServer.WorkerLauncher do
             output: output
           })
 
-          append_missing_terminal_event(task, run_id, workflow, status, combined_worker_output(run_id, output))
+          append_missing_terminal_event(
+            task,
+            run_id,
+            workflow,
+            status,
+            combined_worker_output(run_id, output)
+          )
         end)
 
       {:ok, %{pid: pid, workflow: workflow}}
@@ -71,7 +77,9 @@ defmodule ForemanServer.WorkerLauncher do
 
   defp foreman_executable do
     case System.get_env("FOREMAN_EXECUTABLE") do
-      path when is_binary(path) and path != "" -> {:ok, path}
+      path when is_binary(path) and path != "" ->
+        {:ok, path}
+
       _ ->
         case System.find_executable("foreman") do
           nil -> {:error, :foreman_executable_not_found}
@@ -81,14 +89,15 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp worker_env do
-    env = [
-      {"FOREMAN_SERVER_URL", server_url()},
-      {"FOREMAN_SERVER_HTTP_ENABLED", "false"},
-      {"FOREMAN_SERVER_HTTP_PORT", "0"}
-    ]
-    |> maybe_put_env("FOREMAN_RUNTIME_MODE")
-    |> maybe_put_env("FOREMAN_PHASE_RUNNER_MODULE")
-    |> maybe_put_env("FOREMAN_HOME")
+    env =
+      [
+        {"FOREMAN_SERVER_URL", server_url()},
+        {"FOREMAN_SERVER_HTTP_ENABLED", "false"},
+        {"FOREMAN_SERVER_HTTP_PORT", "0"}
+      ]
+      |> maybe_put_env("FOREMAN_RUNTIME_MODE")
+      |> maybe_put_env("FOREMAN_PHASE_RUNNER_MODULE")
+      |> maybe_put_env("FOREMAN_HOME")
 
     env =
       case ForemanServer.Security.auth_token() do
@@ -110,32 +119,7 @@ defmodule ForemanServer.WorkerLauncher do
   end
 
   defp server_url do
-    port =
-      Application.get_env(:foreman_server, :http_port) ||
-        String.to_integer(System.get_env("FOREMAN_SERVER_HTTP_PORT") || "4766")
-
-    "http://127.0.0.1:#{port}"
-  end
-
-  defp database_url do
-    System.get_env("DATABASE_URL") || database_url_from_file()
-  end
-
-  defp database_url_from_file do
-    [Path.expand("../../.env", File.cwd!()), Path.expand(".env", File.cwd!())]
-    |> Enum.find_value(fn path ->
-      if File.exists?(path) do
-        path
-        |> File.read!()
-        |> String.split("\n")
-        |> Enum.find_value(fn line ->
-          case String.split(line, "=", parts: 2) do
-            ["DATABASE_URL", value] -> String.trim(value)
-            _ -> nil
-          end
-        end)
-      end
-    end)
+    "http://127.0.0.1:#{ForemanServer.RuntimeInfo.http_port()}"
   end
 
   defp workflow_name(task) do
@@ -162,7 +146,8 @@ defmodule ForemanServer.WorkerLauncher do
     end
   end
 
-  defp detached_worker_started?(0, output, %{phase_id: nil, reason: nil}) when is_binary(output) do
+  defp detached_worker_started?(0, output, %{phase_id: nil, reason: nil})
+       when is_binary(output) do
     String.contains?(output, "Worker spawned (pid=")
   end
 
@@ -201,7 +186,9 @@ defmodule ForemanServer.WorkerLauncher do
 
   defp infer_failure_reason(output) do
     reasons =
-      Regex.scan(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output, return: :index)
+      Regex.scan(~r/\[PIPELINE\]\s+([A-Za-z0-9_-]+)\s+failed after \d+ retries/i, output,
+        return: :index
+      )
       |> Enum.map(fn [{start, _}, phase_capture] ->
         phase = capture_text(output, [phase_capture]) |> normalize_phase()
         {"#{phase}_failed", start}
@@ -219,12 +206,17 @@ defmodule ForemanServer.WorkerLauncher do
         {output |> binary_part(start, length) |> reason_after_fail(), start}
       end)
 
-    case Enum.max_by(reasons ++ pipeline_fail_reasons ++ phase_fail_reasons, fn {_reason, start} -> start end, fn -> {nil, nil} end) do
+    case Enum.max_by(
+           reasons ++ pipeline_fail_reasons ++ phase_fail_reasons,
+           fn {_reason, start} -> start end,
+           fn -> {nil, nil} end
+         ) do
       {reason, _start} when is_binary(reason) and reason != "" ->
         reason
 
       _ ->
-        if String.contains?(output, "Run completed: failed") or String.contains?(output, "[PIPELINE] FAILED") do
+        if String.contains?(output, "Run completed: failed") or
+             String.contains?(output, "[PIPELINE] FAILED") do
           "pipeline_failed"
         end
     end

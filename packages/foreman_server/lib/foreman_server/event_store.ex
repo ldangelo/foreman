@@ -96,18 +96,9 @@ defmodule ForemanServer.EventStore do
   end
 
   defp adapter do
-    case event_store_adapter() do
-      :term -> {:term, event_log_path()}
+    case ForemanServer.RuntimeInfo.event_store_adapter() do
+      :term -> {:term, ForemanServer.RuntimeInfo.event_log_path()}
       :postgres -> :postgres
-      _ -> if(Process.whereis(Repo), do: :postgres, else: {:term, event_log_path()})
-    end
-  end
-
-  defp event_store_adapter do
-    case System.get_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER") do
-      "term" -> :term
-      "postgres" -> :postgres
-      _ -> Application.get_env(:foreman_server, :event_store_adapter)
     end
   end
 
@@ -118,9 +109,14 @@ defmodule ForemanServer.EventStore do
          FROM foreman_events
          ORDER BY inserted_at ASC, stream_id ASC, stream_version ASC
          """) do
-      {:ok, %{rows: rows}} -> Enum.map(rows, &row_to_event/1)
-      {:error, %Postgrex.Error{postgres: %{code: :undefined_table}}} -> []
-      {:error, reason} -> raise "failed to load foreman_events: #{inspect(reason)}"
+      {:ok, %{rows: rows}} ->
+        Enum.map(rows, &row_to_event/1)
+
+      {:error, %Postgrex.Error{postgres: %{code: :undefined_table}}} ->
+        raise "failed to load foreman_events: table is missing; run Elixir event-store migrations or set FOREMAN_SERVER_EVENT_STORE_ADAPTER=term intentionally"
+
+      {:error, reason} ->
+        raise "failed to load foreman_events: #{inspect(reason)}"
     end
   end
 
@@ -169,12 +165,16 @@ defmodule ForemanServer.EventStore do
       event.causation_id
     ]
 
-    case SQL.query(Repo, """
-         INSERT INTO foreman_events (
-           event_id, stream_id, stream_version, event_type, schema_version,
-           payload, metadata, occurred_at, correlation_id, causation_id
-         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)
-         """, params) do
+    case SQL.query(
+           Repo,
+           """
+           INSERT INTO foreman_events (
+             event_id, stream_id, stream_version, event_type, schema_version,
+             payload, metadata, occurred_at, correlation_id, causation_id
+           ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)
+           """,
+           params
+         ) do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
     end
@@ -214,12 +214,6 @@ defmodule ForemanServer.EventStore do
     |> Enum.map(& &1.stream_version)
     |> Enum.max(fn -> 0 end)
     |> Kernel.+(1)
-  end
-
-  defp event_log_path do
-    Application.get_env(:foreman_server, :event_log_path) ||
-      System.get_env("FOREMAN_SERVER_EVENT_LOG") ||
-      Path.expand("var/foreman_server/events.term.log")
   end
 
   defp replay(path) do

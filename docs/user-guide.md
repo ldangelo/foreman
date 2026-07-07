@@ -96,9 +96,9 @@ foreman server doctor        # validates DB/projections/workers/VCS/providers/in
 foreman doctor
 ```
 
-If commands report backend or database issues, run `foreman server doctor` and check [Troubleshooting](./troubleshooting.md).
+If commands report backend or database issues, run `foreman server doctor` and check [Troubleshooting](./troubleshooting.md). `foreman server status` shows `MIX_ENV`, event store, and project store for the active server.
 
-After cutover, legacy TS delegation is removed and `foreman daemon start|restart` is blocked so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge.
+After cutover, legacy TS delegation is removed and `foreman daemon start|restart` is blocked so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge. `MIX_ENV=test` uses port `14766` by default and refuses user port `4766` or non-temp storage unless the dangerous overrides `FOREMAN_ALLOW_TEST_PORT_COLLISION=1` / `FOREMAN_ALLOW_TEST_PERSISTENT_STORAGE=1` are set.
 
 ```bash
 foreman server stop

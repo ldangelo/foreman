@@ -32,7 +32,29 @@ serverCommand
     console.log(status.running && health.ok ? chalk.green("● running") : chalk.dim("○ stopped"));
     console.log(chalk.dim(`URL: ${status.url}`));
     if (status.pid) console.log(chalk.dim(`PID: ${status.pid}`));
+    if (isRecord(health.body) && isRecord(health.body.runtime)) {
+      const runtime = health.body.runtime;
+      console.log(chalk.dim(`MIX_ENV: ${stringValue(runtime.mix_env)}`));
+      if (isRecord(runtime.event_store)) {
+        const eventStore = `${stringValue(runtime.event_store.adapter)} ${stringValue(runtime.event_store.path ?? runtime.event_store.table)}`;
+        console.log(chalk.dim(`Event store: ${eventStore}`));
+      }
+      if (isRecord(runtime.project_store)) {
+        console.log(chalk.dim(`Project store: ${stringValue(runtime.project_store.path)}`));
+      }
+    }
   });
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function stringValue(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "unknown";
+}
 
 serverCommand
   .command("doctor")

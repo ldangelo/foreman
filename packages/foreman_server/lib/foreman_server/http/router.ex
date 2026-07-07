@@ -8,7 +8,18 @@ defmodule ForemanServer.Http.Router do
   plug(:dispatch)
 
   get "/api/v1/health" do
-    send_json(conn, 200, %{ok: true, active_projects: ForemanServer.active_projects()})
+    payload = %{
+      ok: true,
+      active_projects: ForemanServer.active_projects()
+    }
+
+    payload =
+      case authorize(conn) do
+        :ok -> Map.put(payload, :runtime, ForemanServer.RuntimeInfo.identity())
+        {:error, :unauthorized} -> payload
+      end
+
+    send_json(conn, 200, payload)
   end
 
   get "/api/v1/doctor" do

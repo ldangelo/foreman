@@ -61,10 +61,6 @@ defmodule ForemanServer.ProjectStore do
   end
 
   defp store_path(opts \\ []) do
-    required? = Keyword.get(opts, :required?, false)
-
-    Application.get_env(:foreman_server, :project_store_path) ||
-      System.get_env("FOREMAN_SERVER_PROJECT_STORE") ||
-      if(required?, do: Path.expand("var/foreman_server/projects.term"), else: nil)
+    ForemanServer.RuntimeInfo.project_store_path(opts)
   end
 end
