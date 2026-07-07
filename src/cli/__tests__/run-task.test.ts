@@ -306,6 +306,30 @@ phases:
       }));
     });
 
+    it("does not enter watch mode for internal --run-id bridge", async () => {
+      mockListRegisteredProjects.mockResolvedValueOnce([
+        { id: "proj-elixir", name: "foreman", path: testProjectPath, status: "active" },
+      ]);
+      mockElixirGetTask.mockResolvedValueOnce({
+        task_id: "task-123",
+        title: "Elixir task",
+        status: "in_progress",
+        task_type: "feature",
+        priority: 4,
+        description: "Elixir body",
+      });
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        runId: "00000000-0000-0000-0000-000000000124",
+        watch: true,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(mockSpawnWorkerProcess).toHaveBeenCalledTimes(1);
+      expect(mockWatchRunsInk).not.toHaveBeenCalled();
+    });
+
     it("returns an error when the task does not exist", async () => {
       mockCreateTaskClient.mockImplementationOnce(async () => ({
         taskClient: {

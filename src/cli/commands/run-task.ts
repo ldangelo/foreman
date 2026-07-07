@@ -506,7 +506,7 @@ export async function runTaskAction(
   }
 
   // ── Watch mode ─────────────────────────────────────────────────────────
-  if (watch) {
+  if (watch && !requestedRunId) {
     console.log(chalk.dim("\nWatching run... (Ctrl+C to detach)\n"));
     const { detached } = await watchRunsInk(daemonStore ?? store, [runId], { notificationBus });
 

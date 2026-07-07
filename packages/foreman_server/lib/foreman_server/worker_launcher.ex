@@ -129,7 +129,7 @@ defmodule ForemanServer.WorkerLauncher do
       inferred = infer_terminal_failure(output)
 
       unless bridge_completed_successfully?(exit_code, inferred) or
-               detached_worker_started?(exit_code, output, inferred) do
+               detached_worker_started?(output) do
         phase_id = inferred.phase_id || Map.get(run, :current_phase)
 
         append("RunFailed", task, run_id, %{
@@ -146,12 +146,11 @@ defmodule ForemanServer.WorkerLauncher do
   defp bridge_completed_successfully?(0, %{phase_id: nil, reason: nil}), do: true
   defp bridge_completed_successfully?(_exit_code, _inferred), do: false
 
-  defp detached_worker_started?(0, output, %{phase_id: nil, reason: nil})
-       when is_binary(output) do
+  defp detached_worker_started?(output) when is_binary(output) do
     String.contains?(output, "Worker spawned (pid=")
   end
 
-  defp detached_worker_started?(_exit_code, _output, _inferred), do: false
+  defp detached_worker_started?(_output), do: false
 
   defp maybe_append_worker_spawned_event(task, run_id, workflow, output) when is_binary(output) do
     case Regex.run(~r/Worker spawned \(pid=(\d+)\)/, output) do
