@@ -100,7 +100,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - Phase sequence, models, retries, mail hooks, artifacts all defined in YAML
 - No hardcoded phase names in the executor — new phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
-- Retry loops: QA⇄Developer and Reviewer⇄Developer with feedback mail
+- Retry loops: verdict failures route to focused repair phases when configured (`repair.md` in bundled `task`/`docs` workflows) so agents fix only reported QA/review/finalize assertions; specialized retry targets still handle CI, CodeRabbit, and merge-conflict failures.
 - `send_mail` registered as a native Pi SDK tool — agents call it directly, no bash commands
 
 **Default pipeline phases:**

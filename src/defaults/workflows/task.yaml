@@ -47,34 +47,28 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Retry-only: developer remediation ──────────────────────────────────
-  # Retry target for QA/finalize/PR-review findings. Skipped during normal
+  # ── Retry-only: focused repair ─────────────────────────────────────────
+  # Retry target for generic QA/review/finalize findings. Skipped during normal
   # sequential execution; activated only when a later phase fails and uses
-  # retryWith: developer.
-  - name: developer
+  # retryWith: repair.
+  - name: repair
     retryOnly: true
-    prompt: developer.md
+    prompt: repair.md
     tools:
       allowed:
         [
-          Agent,
           Bash,
           Edit,
           Glob,
           Grep,
           Read,
-          TaskOutput,
-          TaskStop,
-          TodoWrite,
-          WebFetch,
-          WebSearch,
           Write,
         ]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
-    maxTurns: 500
-    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    maxTurns: 200
+    artifact: "{task.projectReportsDir}/FIX_REPORT.md"
     mail:
       onStart: true
       onComplete: true
@@ -106,7 +100,7 @@ phases:
     maxTurns: 500
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true
-    retryWith: developer
+    retryWith: repair
     retryWithByReason:
       "ci_failed:": cicd-developer
       "pr_review_failed_checks:": cicd-developer
@@ -116,7 +110,7 @@ phases:
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: repair
 
   - name: reviewer
     prompt: reviewer.md
@@ -128,12 +122,12 @@ phases:
     maxTurns: 500
     artifact: "{task.projectReportsDir}/REVIEW.md"
     verdict: true
-    retryWith: developer
+    retryWith: repair
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: repair
       forwardArtifactTo: foreman
 
   - name: cicd-developer
@@ -196,12 +190,12 @@ phases:
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
     verdict: true
-    retryWith: developer
+    retryWith: repair
     retryOnFail: 3
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: repair
 
   # ── Phase 4: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
@@ -210,12 +204,12 @@ phases:
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 500
     verdict: true
-    retryWith: developer
+    retryWith: repair
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: repair
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -227,7 +221,7 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
-    retryWith: developer
+    retryWith: repair
     retryWithByReason:
       "ci_failed:": cicd-developer
       "pr_review_failed_checks:": cicd-developer
@@ -237,13 +231,13 @@ phases:
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: repair
 
 
   - name: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
-    retryWith: developer
+    retryWith: repair
     retryWithByReason:
       "ci_failed:": cicd-developer
       "pr_review_failed_checks:": cicd-developer
@@ -253,7 +247,7 @@ phases:
     mail:
       onStart: true
       onComplete: true
-      onFail: developer
+      onFail: repair
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

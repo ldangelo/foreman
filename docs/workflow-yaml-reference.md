@@ -426,27 +426,32 @@ files:
 
 ### Retry Loops
 
-Phases with `verdict: true` parse PASS/FAIL from their artifact. On FAIL, `retryWith` loops back to the named phase for another attempt.
+Phases with `verdict: true` parse PASS/FAIL from their artifact. On FAIL, `retryWith` loops back to the named phase for another attempt. Prefer a focused retry-only repair phase for generic QA/review/finalize findings so the agent fixes only the reported assertion instead of reopening broad task scope.
 
 ```yaml
-# QA fails → send feedback to developer → developer retries → QA retries
+# QA fails → send feedback to repair → repair patches only the failure → QA retries
+- name: repair
+  retryOnly: true
+  prompt: repair.md
+  artifact: "{task.projectReportsDir}/FIX_REPORT.md"
+
 - name: qa
   verdict: true
-  retryWith: developer           # Loop back to developer on FAIL
-  retryOnFail: 2                 # Max 2 retries (3 total attempts)
+  retryWith: repair             # Loop back to focused repair on FAIL
+  retryOnFail: 2                # Max 2 retries (3 total attempts)
   mail:
-    onFail: developer            # Send QA_REPORT.md to developer inbox
+    onFail: repair              # Send QA_REPORT.md to repair inbox
 
 # Reviewer fails → same pattern, independent retry budget
 - name: reviewer
   verdict: true
-  retryWith: developer
-  retryOnFail: 1                 # Max 1 retry (2 total attempts)
+  retryWith: repair
+  retryOnFail: 1                # Max 1 retry (2 total attempts)
   mail:
-    onFail: developer
+    onFail: repair
 ```
 
-QA and Reviewer have **independent retry budgets** — QA exhausting its retries does not affect Reviewer's ability to retry.
+QA and Reviewer have **independent retry budgets** — QA exhausting its retries does not affect Reviewer's ability to retry. Bundled `task` and `docs` workflows use `repair.md` for generic verdict retries while keeping specialized `retryWithByReason` targets for CI, CodeRabbit, and merge-conflict failures.
 
 ---
 

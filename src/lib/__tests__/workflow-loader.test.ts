@@ -347,14 +347,15 @@ phases:
     const config = loadWorkflowConfig("task", tmpDir);
     const phaseNames = new Set(config.phases.map((p) => p.name));
     const fixPhase = config.phases.find((p) => p.name === "fix");
-    const developerPhase = config.phases.find((p) => p.name === "developer");
+    const repairPhase = config.phases.find((p) => p.name === "repair");
     const qaPhase = config.phases.find((p) => p.name === "qa");
 
     expect(fixPhase?.prompt).toBe("fix-issue.md");
     expect(fixPhase?.command).toBeUndefined();
-    expect(developerPhase?.prompt).toBe("developer.md");
+    expect(repairPhase?.prompt).toBe("repair.md");
+    expect(repairPhase?.retryOnly).toBe(true);
     expect(qaPhase?.prompt).toBe("qa.md");
-    expect(qaPhase?.retryWith).toBe("developer");
+    expect(qaPhase?.retryWith).toBe("repair");
     expect(qaPhase?.retryOnFail).toBe(2);
 
     for (const phase of config.phases) {

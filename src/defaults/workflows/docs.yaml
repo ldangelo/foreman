@@ -1,8 +1,8 @@
-# Docs workflow: develop → finalize → auto-merge
+# Docs workflow: develop → documentation → review/finalize → PR/merge
 #
 # Minimal pipeline for documentation changes — README, API docs, inline comments,
-# examples, and guides. No testing phase (docs don't need CI) and no reviewer
-# (docs are low-risk). Auto-merges on finalize validation.
+# examples, and guides. Verdict failures route to a focused retry-only repair
+# phase so agents fix the reported assertion instead of reopening broad task scope.
 #
 # Auto-selected when task type is "docs".
 
@@ -46,17 +46,35 @@ phases:
       onComplete: true
       forwardArtifactTo: foreman
 
+  - name: repair
+    prompt: repair.md
+    retryOnly: true
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: sonnet
+      P0: opus
+      P4: haiku
+    maxTurns: 200
+    artifact: "{task.projectReportsDir}/FIX_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 300
+
   - name: cli-review
     builtin: true
     artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
     timeoutSecs: 600
     verdict: true
-    retryWith: develop
+    retryWith: repair
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: develop
+      onFail: repair
 
   # ── Phase 3: finalize ───────────────────────────────────────────────────
   # Quick validation: verify docs build or lint, then auto-merge.
@@ -65,12 +83,12 @@ phases:
     artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
     maxTurns: 500
     verdict: true
-    retryWith: develop
+    retryWith: repair
     retryOnFail: 1
     mail:
       onStart: true
       onComplete: true
-      onFail: develop
+      onFail: repair
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -82,20 +100,20 @@ phases:
     builtin: true
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     timeoutSecs: 1200
-    retryWith: develop
+    retryWith: repair
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: develop
+      onFail: repair
 
 
   - name: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
-    retryWith: develop
+    retryWith: repair
     retryOnFail: 2
     mail:
       onStart: true
       onComplete: true
-      onFail: develop
+      onFail: repair

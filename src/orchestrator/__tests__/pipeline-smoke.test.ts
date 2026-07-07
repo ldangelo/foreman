@@ -65,7 +65,10 @@ describe("default/finalize.md: worktree cwd fix", () => {
 describe("smoke workflow: structural invariants", () => {
   const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
   const SMOKE_PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "smoke");
+  const DEFAULT_PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "default");
   const SMOKE_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "smoke.yaml");
+  const DOCS_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "docs.yaml");
+  const TASK_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "task.yaml");
 
   it("agent-worker.ts does NOT contain FOREMAN_SMOKE_TEST bypass (bypass was removed)", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
@@ -158,6 +161,34 @@ describe("smoke workflow: structural invariants", () => {
       expect(content, `smoke/${phase}.md should reference agent-error`).toContain("agent-error");
       expect(content, `smoke/${phase}.md should reference send_mail tool`).toContain("send_mail");
     }
+  });
+
+  it("docs workflow routes verdict failures to a focused repair phase", () => {
+    const workflow = readFileSync(DOCS_WORKFLOW, "utf-8");
+    expect(workflow).toContain("- name: repair");
+    expect(workflow).toContain("retryOnly: true");
+    expect(workflow).toContain("prompt: repair.md");
+    expect(workflow).toContain("retryWith: repair");
+    expect(workflow).toContain("onFail: repair");
+    expect(workflow).not.toContain("retryWith: develop\n    retryOnFail");
+  });
+
+  it("task workflow routes generic QA/review failures to focused repair, not developer", () => {
+    const workflow = readFileSync(TASK_WORKFLOW, "utf-8");
+    expect(workflow).toContain("- name: repair");
+    expect(workflow).toContain("retryOnly: true");
+    expect(workflow).toContain("prompt: repair.md");
+    expect(workflow).toContain("retryWith: repair");
+    expect(workflow).toContain("onFail: repair");
+    expect(workflow).not.toContain("retryWith: developer\n    retryWithByReason");
+  });
+
+  it("default repair prompt enforces failure-only edits", () => {
+    const content = readFileSync(join(DEFAULT_PROMPTS_DIR, "repair.md"), "utf-8");
+    expect(content).toContain("Focused Repair Feedback");
+    expect(content).toContain("Patch only the reported failure");
+    expect(content).toContain("Do not broaden scope");
+    expect(content).toContain("FIX_REPORT.md");
   });
 
   it("dispatcher.ts does NOT inject FOREMAN_SMOKE_TEST into env (no-op env var removed)", () => {
