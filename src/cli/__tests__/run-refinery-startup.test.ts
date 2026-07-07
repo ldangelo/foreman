@@ -26,10 +26,9 @@ const {
   mockSyncRegisteredProjectCheckout,
 } = vi.hoisted(() => {
   const mockProjectsList = vi.fn().mockResolvedValue([]);
-  const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: {}, bvClient: null, backendType: "tasks" });
+  const mockCreateTaskClient = vi.fn().mockResolvedValue({ taskClient: {}, backendType: "tasks" });
   const mockCreateTaskClients = vi.fn().mockResolvedValue({
     taskClient: {},
-    bvClient: null,
     backendType: "tasks",
   });
 
@@ -215,7 +214,7 @@ describe("foreman run startup refinery lookup", () => {
     vi.clearAllMocks();
     mockSyncRegisteredProjectCheckout.mockReset();
     mockProjectsList.mockResolvedValue([]);
-    mockCreateTaskClients.mockResolvedValue({ taskClient: {}, bvClient: null, backendType: "tasks" });
+    mockCreateTaskClients.mockResolvedValue({ taskClient: {}, backendType: "tasks" });
     mockGetProjectByPath.mockReturnValue(null);
     mockRefineryAgentProcessOnce.mockResolvedValue([]);
     mockDispatch.mockResolvedValue({ dispatched: [], skipped: [], activeAgents: 0 });

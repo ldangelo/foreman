@@ -116,7 +116,6 @@ describe("run runtime mode", () => {
     const result = await createTaskClients(projectPath, "test", "proj-1");
 
     expect(result.backendType).toBe("native");
-    expect(result.bvClient).toBeNull();
     expect(MockTaskClient).not.toHaveBeenCalled();
     expect(result.taskClient).toBeDefined();
     expect(MockForemanStore.forProject).not.toHaveBeenCalled();
@@ -129,6 +128,5 @@ describe("run runtime mode", () => {
     expect(MockTaskClient).not.toHaveBeenCalled();
     expect(mockEnsureBrInstalled).not.toHaveBeenCalled();
     expect(MockTaskOrderingClient).not.toHaveBeenCalled();
-    expect(result.bvClient).toBeNull();
   });
 });

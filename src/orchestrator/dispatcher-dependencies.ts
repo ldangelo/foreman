@@ -234,8 +234,6 @@ export interface DispatcherDeps {
   vcsBackend: VcsBackend;
   /** Project path for workspace operations. */
   projectPath: string;
-  /** Optional NATIVE TASK ORDERING client for tasks operations. */
-  bvClient?: null;
   /** Optional overrides for testing/external use. */
   overrides?: DispatcherOverrides;
 }

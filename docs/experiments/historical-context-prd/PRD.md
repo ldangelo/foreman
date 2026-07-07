@@ -125,7 +125,7 @@ The following are **never** candidates for banners, even if they sit inside an a
 | **Standard** | Default archival banner | See 5.1 |
 | **Comparison** | Document compares Foreman to an external tool (Overstory, Flywheel) | See 5.1, plus one line: `> Comparisons to external tools (e.g. Overstory, Flywheel) reflect Foreman at a specific historical point and may be outdated.` |
 | **Migration** | Document is a migration guide | See 5.1, plus one line: `> This migration guide is preserved for historical reference. See TRD-2026-006 for current task management architecture.` |
-| **Tasks-Rust-Only** | Document describes the deprecated `TaskClient` era (before coexistence fallback) | See 5.1, plus one line: `> The TaskClient is deprecated. See TRD-2026-019 for deprecation schedule.` |
+| **Legacy-TaskClient-Only** | Document describes the deprecated `TaskClient` era (before coexistence fallback) | See 5.1, plus one line: `> The TaskClient is deprecated. See TRD-2026-019 for deprecation schedule.` |
 
 ### 5.3 Placement
 
@@ -462,7 +462,7 @@ These are the exact strings to inject. Do not modify spacing or emoji.
 > for current task management architecture.
 ```
 
-**Tasks-Rust-Only:**
+**Legacy-TaskClient-Only:**
 ```markdown
 > ⚠️ Historical Context
 > This document describes Foreman's tasks-first architecture, which has been

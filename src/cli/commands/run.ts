@@ -56,7 +56,6 @@ import { ElixirServerClient } from "../../lib/elixir-server-client.js";
  */
 export interface TaskClientResult {
   taskClient: ITaskClient;
-  bvClient: null;
   backendType: "native";
 }
 
@@ -299,7 +298,6 @@ export async function createTaskClients(
 
   return {
     taskClient,
-    bvClient: null,
     backendType,
   };
 }
