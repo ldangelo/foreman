@@ -90,8 +90,67 @@ function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverr
     return next;
   };
 
+  const mapTask = (task: Record<string, unknown>) => ({
+    id: String(task.task_id ?? task.id ?? ""),
+    title: String(task.title ?? task.task_id ?? task.id ?? ""),
+    description: (task.description as string | null | undefined) ?? null,
+    type: String(task.task_type ?? task.type ?? "task"),
+    priority: Number(task.priority ?? 2),
+    status: String(task.status ?? "open"),
+    run_id: (task.run_id as string | null | undefined) ?? null,
+    created_at: String(task.created_at ?? new Date(0).toISOString()),
+    updated_at: String(task.updated_at ?? new Date(0).toISOString()),
+    external_id: (task.external_id as string | null | undefined) ?? null,
+    labels: Array.isArray(task.labels) ? task.labels : [],
+  }) as never;
+
   return {
     externalProjectId: projectId,
+    getActiveTaskIds: async () => {
+      const runs = await client.listRuns({ projectId });
+      return runs
+        .filter((run) => ["pending", "running"].includes(String(run.status)))
+        .map((run) => String(run.task_id));
+    },
+    getActiveAgentCount: async () => {
+      const runs = await client.listRuns({ projectId });
+      return runs.filter((run) => ["pending", "running"].includes(String(run.status))).length;
+    },
+    hasActiveOrPendingRun: async (taskId: string) => {
+      const runs = await client.listRuns({ projectId });
+      return runs.some((run) => run.task_id === taskId && ["pending", "running"].includes(String(run.status)));
+    },
+    nativeTaskOps: {
+      hasNativeTasks: async () => (await client.listTasks()).some((task) => task.project_id === projectId),
+      getReadyTasks: async () =>
+        (await client.listTasks())
+          .filter((task) => task.project_id === projectId && task.status === "ready")
+          .map((task) => mapTask(task as Record<string, unknown>)),
+      getTaskByExternalId: async (externalId: string) => {
+        const task = (await client.listTasks()).find((candidate) => candidate.project_id === projectId && candidate.external_id === externalId);
+        return task ? mapTask(task as Record<string, unknown>) : null;
+      },
+      getTaskById: async (taskId: string) => {
+        const task = await client.getTask(taskId);
+        return task ? mapTask(task as Record<string, unknown>) : null;
+      },
+      claimTask: async (taskId: string, runId: string) => {
+        const response = await client.sendCommand({
+          command_id: `task-claim-${taskId}-${runId}`,
+          command_type: "task.update",
+          payload: { project_id: projectId, task_id: taskId, status: "in_progress", run_id: runId },
+        });
+        return response.ok;
+      },
+      updateTaskStatus: async (taskId: string, status) => {
+        const response = await client.sendCommand({
+          command_id: `task-status-${taskId}-${status}-${Date.now()}`,
+          command_type: "task.update",
+          payload: { project_id: projectId, task_id: taskId, status },
+        });
+        if (!response.ok) throw new Error(response.error.message);
+      },
+    },
     runOps: {
       createRun: async (args) => {
         await client.sendWorkerEvent({
