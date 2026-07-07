@@ -1,15 +1,21 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const localGetRun = vi.fn();
-const localUpdateRun = vi.fn();
-const localClose = vi.fn();
-const pgGetRun = vi.fn();
-const pgUpdateRun = vi.fn();
-const pgClose = vi.fn();
-const localForProject = vi.fn(() => ({ getRun: localGetRun, updateRun: localUpdateRun, close: localClose }));
-const pgForProject = vi.fn(() => ({ getRun: pgGetRun, updateRun: pgUpdateRun, close: pgClose }));
+const {
+  localGetRun,
+  localUpdateRun,
+  localClose,
+  localForProject,
+} = vi.hoisted(() => {
+  const localGetRun = vi.fn();
+  const localUpdateRun = vi.fn();
+  const localClose = vi.fn();
+  const localForProject = vi.fn(() => ({ getRun: localGetRun, updateRun: localUpdateRun, close: localClose }));
+  return { localGetRun, localUpdateRun, localClose, localForProject };
+});
+
+const fetchSpy = vi.spyOn(globalThis, "fetch");
 
 vi.mock("../../lib/store.js", () => ({
   ForemanStore: {
@@ -17,29 +23,30 @@ vi.mock("../../lib/store.js", () => ({
   },
 }));
 
-vi.mock("../../lib/postgres-store.js", () => ({
-  PostgresStore: {
-    forProject: pgForProject,
-  },
-}));
-
 const { updateFatalRunStatus } = await import("../agent-worker-fatal-path.js");
+
+afterAll(() => {
+  fetchSpy.mockRestore();
+});
+
+function jsonResponse(body: unknown, ok = true, status = 200): Response {
+  return { ok, status, json: vi.fn().mockResolvedValue(body) } as unknown as Response;
+}
 
 describe("agent-worker fatal-path run-status repair", () => {
   beforeEach(() => {
     localGetRun.mockReset();
     localUpdateRun.mockReset();
     localClose.mockReset();
-    pgGetRun.mockReset();
-    pgUpdateRun.mockReset();
-    pgClose.mockReset();
     localForProject.mockClear();
-    pgForProject.mockClear();
+    fetchSpy.mockReset();
     localGetRun.mockReturnValue(null);
-    pgGetRun.mockResolvedValue(null);
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ ok: true, runs: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
   });
 
-  it("uses PostgresStore for registered fatal run-status updates", async () => {
+  it("uses Elixir for registered fatal run-status updates", async () => {
     await updateFatalRunStatus({
       runId: "run-1",
       projectId: "proj-1",
@@ -47,17 +54,24 @@ describe("agent-worker fatal-path run-status repair", () => {
       completedAt: "2026-04-25T00:00:00.000Z",
     });
 
-    expect(pgForProject).toHaveBeenCalledWith("proj-1");
-    expect(localForProject).not.toHaveBeenCalled();
-    expect(pgUpdateRun).toHaveBeenCalledWith("run-1", {
-      status: "failed",
-      completed_at: "2026-04-25T00:00:00.000Z",
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("/api/v1/runs?project_id=proj-1");
+    const command = JSON.parse(String((fetchSpy.mock.calls[1][1] as RequestInit).body));
+    expect(command).toMatchObject({
+      command_type: "run.update",
+      payload: {
+        run_id: "run-1",
+        project_id: "proj-1",
+        status: "failed",
+        completed_at: "2026-04-25T00:00:00.000Z",
+      },
     });
-    expect(pgClose).toHaveBeenCalled();
+    expect(localForProject).not.toHaveBeenCalled();
   });
 
   it("preserves a registered pr-created run instead of downgrading it to failed", async () => {
-    pgGetRun.mockResolvedValueOnce({ id: "run-pr", status: "pr-created" });
+    fetchSpy
+      .mockReset()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, runs: [{ run_id: "run-pr", status: "pr-created" }] }));
 
     await updateFatalRunStatus({
       runId: "run-pr",
@@ -66,7 +80,7 @@ describe("agent-worker fatal-path run-status repair", () => {
       completedAt: "2026-04-25T00:00:30.000Z",
     });
 
-    expect(pgUpdateRun).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("uses ForemanStore for local fatal run-status updates", async () => {
@@ -77,7 +91,7 @@ describe("agent-worker fatal-path run-status repair", () => {
     });
 
     expect(localForProject).toHaveBeenCalledWith("/tmp/local-project");
-    expect(pgForProject).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(localUpdateRun).toHaveBeenCalledWith("run-2", {
       status: "failed",
       completed_at: "2026-04-25T00:01:00.000Z",

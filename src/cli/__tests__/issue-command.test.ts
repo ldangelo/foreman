@@ -44,7 +44,16 @@ const {
 
 vi.mock("../commands/project-task-support.js", () => ({
   resolveProjectPathFromOptions: mockResolveProjectPathFromOptions,
-  ensureCliPostgresPool: mockEnsureCliPostgresPool,
+  listRegisteredProjects: async () => mockListProjects(),
+  elixirClient: async () => ({
+    getGithubRepo: mockGetGithubRepo,
+    upsertGithubRepo: mockUpsertGithubRepo,
+    listTasks: mockListTasks,
+    createTask: mockCreateTask,
+    listGithubSyncEvents: mockListGithubSyncEvents,
+    getTask: vi.fn(async (id: string) => ({ task_id: id, id, project_id: "proj-1", title: id })),
+    sendCommand: vi.fn(async () => ({ ok: true })),
+  }),
 }));
 
 vi.mock("../../lib/gh-cli.js", () => {
@@ -265,7 +274,7 @@ describe("issue command wrappers", () => {
     ]);
     mockUpsertGithubRepo.mockResolvedValue({ id: "repo-1", default_labels: ["github:docs"], auto_import: false, sync_strategy: "github-wins" });
     mockListTasks
-      .mockResolvedValueOnce([{ id: "task-existing" }])
+      .mockResolvedValueOnce([{ id: "task-existing", project_id: "proj-1", external_id: "github:owner/repo#1" }])
       .mockResolvedValueOnce([]);
     mockCreateTask.mockResolvedValue({ id: "task-created" });
     const issueCommand = await freshIssueCommand();

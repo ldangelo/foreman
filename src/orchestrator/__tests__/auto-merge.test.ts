@@ -144,6 +144,9 @@ vi.mock("../merge-queue.js", () => ({
 vi.mock("../postgres-merge-queue.js", () => ({
   PostgresMergeQueue: MockPostgresMergeQueue,
 }));
+vi.mock("../elixir-merge-queue.js", () => ({
+  ElixirMergeQueue: MockPostgresMergeQueue,
+}));
 vi.mock("../refinery.js", () => ({ Refinery: MockRefinery }));
 vi.mock("../../lib/project-config.js", () => ({
   loadProjectConfig: vi.fn().mockReturnValue(null),

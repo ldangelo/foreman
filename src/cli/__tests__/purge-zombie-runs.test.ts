@@ -7,7 +7,7 @@ const {
   mockWrapLocalRunStore,
   mockCloseStoreIfPossible,
   mockForemanStoreForProject,
-  mockPostgresStoreForProject,
+  mockElixirStoreForProject,
 } = vi.hoisted(() => ({
   mockCreateTaskClient: vi.fn(),
   mockResolveRepoRootProjectPath: vi.fn(),
@@ -15,7 +15,7 @@ const {
   mockWrapLocalRunStore: vi.fn(),
   mockCloseStoreIfPossible: vi.fn(),
   mockForemanStoreForProject: vi.fn(),
-  mockPostgresStoreForProject: vi.fn(),
+  mockElixirStoreForProject: vi.fn(),
 }));
 
 vi.mock("../../lib/task-client-factory.js", () => ({
@@ -41,9 +41,9 @@ vi.mock("../../lib/store.js", () => ({
   },
 }));
 
-vi.mock("../../lib/postgres-store.js", () => ({
-  PostgresStore: {
-    forProject: (...args: unknown[]) => mockPostgresStoreForProject(...args),
+vi.mock("../commands/elixir-cli-store.js", () => ({
+  ElixirCliStore: {
+    forProject: (...args: unknown[]) => mockElixirStoreForProject(...args),
   },
 }));
 
@@ -167,9 +167,9 @@ describe("purgeZombieRunsCommandAction", () => {
     expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("Not in a git repository");
   });
 
-  it("uses the Postgres store for registered projects and returns 0 on clean success", async () => {
+  it("uses the Elixir store for registered projects and returns 0 on clean success", async () => {
     const localStore = { close: vi.fn() };
-    const pgStore = {
+    const elixirStore = {
       getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo/project" }),
       getRunsByStatus: vi.fn().mockResolvedValue([]),
       deleteRun: vi.fn(),
@@ -178,14 +178,14 @@ describe("purgeZombieRunsCommandAction", () => {
     mockResolveRepoRootProjectPath.mockResolvedValue("/repo/project");
     mockForemanStoreForProject.mockReturnValue(localStore);
     mockFindRegisteredProjectByPath.mockResolvedValue({ id: "proj-1", path: "/repo/project" });
-    mockPostgresStoreForProject.mockReturnValue(pgStore);
+    mockElixirStoreForProject.mockReturnValue(elixirStore);
     mockCreateTaskClient.mockResolvedValue({ taskClient: { show: vi.fn() } });
 
     await expect(purgeZombieRunsCommandAction({})).resolves.toBe(0);
 
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("proj-1");
+    expect(mockElixirStoreForProject).toHaveBeenCalledWith({ id: "proj-1", path: "/repo/project" });
     expect(localStore.close).toHaveBeenCalledOnce();
-    expect(mockCloseStoreIfPossible).toHaveBeenCalledWith(pgStore);
+    expect(mockCloseStoreIfPossible).toHaveBeenCalledWith(elixirStore);
   });
 
   it("returns 1 when purgeZombieRunsAction throws", async () => {

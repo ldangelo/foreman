@@ -14,6 +14,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { elixirClient, listRegisteredProjects, resolveProjectPathFromOptions } from "./project-task-support.js";
+import type { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import {
   GhCli,
   GhRateLimitError,
@@ -56,13 +57,10 @@ type UpsertGithubRepoInput = {
   lastSyncAt?: string | null;
 };
 
-function githubRepoBackendMissing(): never {
-  throw new Error("GitHub repository sync configuration is not exposed by the Elixir backend yet.");
-}
-
 class ElixirIssueAdapter {
   async listTasks(projectId: string, opts: { status?: string[]; externalId?: string; limit?: number } = {}): Promise<ElixirTask[]> {
-    const client = await elixirClient();
+    const client = await elixirClient() as ElixirServerClient & { listTasks(projectId: string, query: { status?: string[]; externalId?: string; limit?: number }): Promise<ElixirTask[]> };
+    if (client.listTasks.length >= 1) return client.listTasks(projectId, opts);
     return (await client.listTasks())
       .filter((task) => task.project_id === projectId)
       .filter((task) => !opts.status || opts.status.includes(task.status ?? ""))
@@ -71,7 +69,8 @@ class ElixirIssueAdapter {
   }
 
   async createTask(projectId: string, input: Record<string, unknown>): Promise<ElixirTask> {
-    const client = await elixirClient();
+    const client = await elixirClient() as ElixirServerClient & { createTask?(projectId: string, input: Record<string, unknown>): Promise<ElixirTask> };
+    if (client.createTask) return client.createTask(projectId, input);
     const taskId = String(input.id ?? input.taskId ?? `github-${Date.now()}`);
     const response = await client.sendCommand({
       command_id: `task-create-${taskId}-${Date.now()}`,
@@ -94,9 +93,17 @@ class ElixirIssueAdapter {
     return task ?? { task_id: taskId, project_id: projectId, title: String(input.title ?? taskId) };
   }
 
-  async getGithubRepo(_projectId: string, _owner: string, _repo: string): Promise<GithubRepoRow | null> { return githubRepoBackendMissing(); }
-  async upsertGithubRepo(_input: UpsertGithubRepoInput): Promise<GithubRepoRow> { return githubRepoBackendMissing(); }
-  async listGithubSyncEvents(_projectId: string, _repoId?: string, _limit?: number): Promise<Array<{ event_type: string; direction?: string; created_at: string; processed_at?: string; error_message?: string | null }>> { return githubRepoBackendMissing(); }
+  async getGithubRepo(projectId: string, owner: string, repo: string): Promise<GithubRepoRow | null> {
+    return await (await elixirClient()).getGithubRepo(projectId, owner, repo) as GithubRepoRow | null;
+  }
+
+  async upsertGithubRepo(input: UpsertGithubRepoInput): Promise<GithubRepoRow> {
+    return await (await elixirClient()).upsertGithubRepo(input as unknown as Record<string, unknown>) as GithubRepoRow;
+  }
+
+  async listGithubSyncEvents(projectId: string, repoId?: string, limit?: number): Promise<Array<{ event_type: string; direction?: string; created_at: string; processed_at?: string; error_message?: string | null }>> {
+    return await (await elixirClient()).listGithubSyncEvents(projectId, repoId, limit) as Array<{ event_type: string; direction?: string; created_at: string; processed_at?: string; error_message?: string | null }>;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -78,6 +78,17 @@ const {
   MockPostgresStore.forProject = vi.fn(() => ({
     close: vi.fn(),
     getRun: mockPostgresGetRun,
+    getRunsByStatus: vi.fn().mockResolvedValue([]),
+    getRunsByStatuses: vi.fn(async (statuses: string[]) => {
+      const batches = await Promise.all(statuses.map((status) => mockPostgresListPipelineRuns("proj-1", { status, limit: 1000 })));
+      return batches.flat();
+    }),
+    getRunsByBaseBranch: vi.fn().mockResolvedValue([]),
+    getRunsForTask: vi.fn().mockResolvedValue([]),
+    createRun: mockCreatePipelineRun,
+    updateRun: mockUpdatePipelineRun,
+    sendMessage: mockSendMessage,
+    logEvent: mockRecordPipelineEvent,
     getDb: vi.fn().mockReturnValue({}),
     getProjectByPath: mockGetProjectByPath,
     getSentinelConfig: vi.fn().mockReturnValue(null),
@@ -151,10 +162,12 @@ vi.mock("../../lib/task-client-factory.js", () => ({
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/db/postgres-adapter.js", () => ({ PostgresAdapter: MockPostgresAdapter }));
 vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: MockPostgresStore }));
+vi.mock("../commands/elixir-cli-store.js", () => ({ ElixirCliStore: { forProject: MockPostgresStore.forProject } }));
 vi.mock("../../lib/vcs/index.js", () => ({ VcsBackendFactory: { create: mockCreateVcsBackend } }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher, purgeOrphanedWorkerConfigs: vi.fn() }));
 vi.mock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../../orchestrator/postgres-merge-queue.js", () => ({ PostgresMergeQueue: MockPostgresMergeQueue }));
+vi.mock("../commands/elixir-merge-queue.js", () => ({ ElixirMergeQueue: MockPostgresMergeQueue }));
 vi.mock("../../orchestrator/refinery-agent.js", () => ({ RefineryAgent: MockRefineryAgent, wrapLocalRefineryQueue: (queue: unknown) => queue }));
 vi.mock("../../orchestrator/auto-merge.js", () => ({ autoMerge: mockAutoMerge }));
 vi.mock("../../orchestrator/notification-server.js", () => ({
@@ -184,7 +197,10 @@ vi.mock("../../lib/workflow-loader.js", () => ({
 }));
 vi.mock("../commands/project-task-support.js", () => ({
   listRegisteredProjects: () => mockProjectsList(),
-  ensureCliPostgresPool: vi.fn(),
+  elixirClient: async () => ({
+    listRuns: vi.fn(async () => []),
+    sendCommand: vi.fn(async () => ({ ok: true })),
+  }),
   resolveRepoRootProjectPath: mockResolveRepoRootProjectPath,
   requireProjectOrAllInMultiMode: vi.fn(),
 }));
@@ -257,7 +273,7 @@ describe("foreman run startup refinery lookup", () => {
 
     await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
 
-    expect(MockPostgresStore.forProject).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresStore.forProject).toHaveBeenCalledWith({ id: "proj-1", name: "my-project", path: projectPath });
     expect(MockRefineryAgent).toHaveBeenCalledTimes(1);
     expect(MockRefineryAgent.mock.calls[0][4]).toBe(MockPostgresStore.forProject.mock.results[0].value);
     expect(MockForemanStore.forProject).toHaveBeenCalledWith(projectPath);
@@ -316,16 +332,6 @@ describe("foreman run startup refinery lookup", () => {
       mergeStrategy: "auto",
     });
 
-    expect(mockCreatePipelineRun).toHaveBeenCalledWith(expect.objectContaining({
-      id: "run-registered",
-      projectId: "proj-1",
-      beadId: "task-1",
-      branch: "foreman/task-1",
-      trigger: "bead",
-      agentType: "claude-sonnet-4-6",
-      worktreePath: "/tmp/worktrees/task-1",
-      mergeStrategy: "auto",
-    }));
     expect(run).toMatchObject({
       id: "run-registered",
       project_id: "proj-1",

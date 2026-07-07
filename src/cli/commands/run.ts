@@ -835,8 +835,8 @@ export const runCommand = new Command("run")
       let sentinelAgent: SentinelAgent | null = null;
       if (!dryRun) {
         try {
-          if (project && !useElixirTestBackend && !registered) {
-            const sentinelStore = store;
+          if (project && !useElixirTestBackend) {
+            const sentinelStore = daemonStore ?? store;
             const sentinelConfig = await sentinelStore.getSentinelConfig(project.id);
             if (sentinelConfig && sentinelConfig.enabled === 1) {
               const sentinelTaskClient = taskClient as SentinelStartupTaskClient;

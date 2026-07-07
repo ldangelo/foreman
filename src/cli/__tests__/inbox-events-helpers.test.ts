@@ -59,7 +59,7 @@ describe("inbox event helpers", () => {
     const byId = await resolvePostgresInboxProject("/nope", "proj-2");
     const missing = await resolvePostgresInboxProject("/missing");
 
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/repo");
+    expect(mockEnsureCliPostgresPool).not.toHaveBeenCalled();
     expect(byPath?.projectId).toBe("proj-1");
     expect(byName?.projectId).toBe("proj-2");
     expect(byId?.projectId).toBe("proj-2");

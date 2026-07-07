@@ -121,6 +121,36 @@ export class ElixirServerClient {
     return body.tasks;
   }
 
+  async getGithubRepo(projectId: string, owner: string, repo: string): Promise<unknown | null> {
+    const response = await fetch(new URL(`/api/v1/projects/${encodeURIComponent(projectId)}/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, this.baseUrl), {
+      method: "GET",
+      headers: this.headers({ command_id: `github-repo-get-${projectId}-${owner}-${repo}`, command_type: "github.repo.get" }),
+    });
+    if (response.status === 404) return null;
+    const body = await response.json() as { ok: true; repo: unknown } | ForemanServerError;
+    if (response.ok && body.ok) return body.repo;
+    throw new Error(!body.ok ? body.error.message : `unexpected Foreman server status ${response.status}`);
+  }
+
+  async upsertGithubRepo(input: Record<string, unknown>): Promise<unknown> {
+    const response = await this.sendCommand({
+      command_id: `github-repo-upsert-${input.project_id ?? input.projectId ?? "project"}-${Date.now()}`,
+      command_type: "github.repo.upsert",
+      payload: input,
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    return (response as ForemanServerOk & { data?: unknown }).data ?? input;
+  }
+
+  async listGithubSyncEvents(projectId: string, repoId?: string, limit?: number): Promise<unknown[]> {
+    const params = new URLSearchParams();
+    if (repoId) params.set("repo_id", repoId);
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; events: unknown[] }>(`/api/v1/projects/${encodeURIComponent(projectId)}/github/sync-events${query ? `?${query}` : ""}`);
+    return body.events;
+  }
+
   async getTask(taskId: string): Promise<ElixirTask | null> {
     const response = await fetch(new URL(`/api/v1/tasks/${encodeURIComponent(taskId)}`, this.baseUrl), {
       method: "GET",

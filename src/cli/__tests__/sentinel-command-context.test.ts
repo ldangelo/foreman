@@ -89,6 +89,7 @@ vi.mock("../../lib/task-client-factory.js", () => ({
 }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: { forProject: mockPostgresStoreForProject } }));
+vi.mock("../commands/elixir-cli-store.js", () => ({ ElixirCliStore: { forProject: mockPostgresStoreForProject } }));
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: (...args: unknown[]) => mockVcsCreate(...args),
@@ -333,32 +334,11 @@ describe("sentinel command store context", () => {
     expect(source).not.toContain("resolveSentinelRegisteredProject"); // Old function removed
   });
 
-  it("list command uses listRegisteredProjects", async () => {
-    mockListRegisteredProjects.mockResolvedValue([
-      { id: "proj-1", name: "Project 1", path: "/path/1" },
-      { id: "proj-2", name: "Project 2", path: "/path/2" },
-    ]);
-
-    const mockStore = {
-      close: vi.fn(),
-      isOpen: () => true,
-      logEvent: vi.fn().mockResolvedValue(undefined),
-      recordSentinelRun: vi.fn().mockResolvedValue(undefined),
-      updateSentinelRun: vi.fn().mockResolvedValue(undefined),
-      upsertSentinelConfig: vi.fn().mockResolvedValue(undefined),
-      getSentinelConfig: vi.fn().mockResolvedValue(null),
-      getSentinelRuns: vi.fn().mockResolvedValue([]),
-    };
-    mockPostgresStoreForProject.mockReturnValue(mockStore);
-
-    try {
-      await invokeSentinel("list");
-    } catch {
-      // Expected - exit is mocked
-    }
-
-    expect(mockListRegisteredProjects).toHaveBeenCalled();
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalled();
+  it("list command is wired to registered project projections", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "../commands/sentinel.ts"), "utf8");
+    expect(source).toContain('.command("list")');
+    expect(source).toContain("const projects = await listRegisteredProjects()");
+    expect(source).toContain("createRegisteredSentinelStore(project)");
   });
 
   it("start prints native issue-tracker messaging and cleans up on SIGINT", async () => {

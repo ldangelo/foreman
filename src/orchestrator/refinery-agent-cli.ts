@@ -12,6 +12,7 @@ import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
 import { RefineryAgent, wrapLocalRefineryQueue, type RefineryAgentConfig } from "./refinery-agent.js";
 import { listRegisteredProjects, resolveRepoRootProjectPath } from "../cli/commands/project-task-support.js";
+import { ElixirCliStore } from "../cli/commands/elixir-cli-store.js";
 import { getForemanHomePath } from "../lib/foreman-paths.js";
 
 const DEFAULT_LOG_DIR = getForemanHomePath("logs", "refinery");
@@ -109,7 +110,7 @@ export async function runRefineCli(args: string[]): Promise<number> {
     ? new ElixirMergeQueue(registered.id)
     : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
   const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-  const runLookup = undefined;
+  const runLookup = registered ? ElixirCliStore.forProject(registered) : undefined;
 
   // Agent config
   const agentConfig: Partial<RefineryAgentConfig> = {

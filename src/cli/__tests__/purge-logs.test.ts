@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 const {
   mockResolveProjectContext,
   mockForemanStoreForProject,
-  mockPostgresStoreForProject,
+  mockElixirStoreForProject,
   mockCloseStoreIfPossible,
 } = vi.hoisted(() => ({
   mockResolveProjectContext: vi.fn(),
   mockForemanStoreForProject: vi.fn(),
-  mockPostgresStoreForProject: vi.fn(),
+  mockElixirStoreForProject: vi.fn(),
   mockCloseStoreIfPossible: vi.fn(),
 }));
 
@@ -24,8 +24,8 @@ vi.mock("../../lib/store.js", () => ({
   ForemanStore: { forProject: (...args: unknown[]) => mockForemanStoreForProject(...args) },
 }));
 
-vi.mock("../../lib/postgres-store.js", () => ({
-  PostgresStore: { forProject: (...args: unknown[]) => mockPostgresStoreForProject(...args) },
+vi.mock("../commands/elixir-cli-store.js", () => ({
+  ElixirCliStore: { forProject: (...args: unknown[]) => mockElixirStoreForProject(...args) },
 }));
 
 vi.mock("../commands/local-store-adapter.js", async (importOriginal) => ({
@@ -159,7 +159,7 @@ describe("purge-logs", () => {
 
   it("purgeLogsCommandAction exits 0 and closes stores after success", async () => {
     const localStore = { close: vi.fn() };
-    const postgresStore = { getRun: vi.fn(), close: vi.fn() };
+    const elixirStore = { getRun: vi.fn(), close: vi.fn() };
     const enoent = Object.assign(new Error("missing"), { code: "ENOENT" });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     mockResolveProjectContext.mockResolvedValue({
@@ -167,14 +167,14 @@ describe("purge-logs", () => {
       registered: { id: "proj-1", name: "Foreman", path: "/tmp/project" },
     });
     mockForemanStoreForProject.mockReturnValue(localStore);
-    mockPostgresStoreForProject.mockReturnValue(postgresStore);
+    mockElixirStoreForProject.mockReturnValue(elixirStore);
     vi.spyOn(nodeFs, "readdir").mockRejectedValue(enoent);
 
     await purgeLogsCommandAction({ days: 7 });
 
     expect(exitSpy).toHaveBeenCalledWith(0);
     expect(localStore.close).toHaveBeenCalled();
-    expect(mockCloseStoreIfPossible).toHaveBeenCalledWith(postgresStore);
+    expect(mockCloseStoreIfPossible).toHaveBeenCalledWith(elixirStore);
   });
 
   it("purgeLogsCommandAction exits 1 when project context cannot be resolved", async () => {

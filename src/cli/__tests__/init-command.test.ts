@@ -140,25 +140,21 @@ describe("init command", () => {
     tempDirs.length = 0;
   });
 
-  it("initializes a new project without the wizard and registers it in Postgres", async () => {
+  it("initializes a new project without the wizard and does not open a database pool", async () => {
     const projectDir = makeTempProject("fresh");
     process.chdir(projectDir);
     mockRegistryAdd.mockResolvedValue({ id: "proj-1", name: "fresh", path: projectDir, status: "active" });
 
     await invokeInit({});
 
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      process.execPath,
-      expect.arrayContaining([expect.stringContaining("node-pg-migrate"), "up"]),
-      expect.objectContaining({ stdio: "pipe" }),
-    );
+    expect(mockExecFileSync).not.toHaveBeenCalled();
     expect(mockInstallBundledPrompts).toHaveBeenCalled();
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("proj-1");
+    expect(mockPostgresStoreForProject).not.toHaveBeenCalled();
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("Foreman initialized successfully!");
   });
 
-  it("reuses an existing registry project instead of adding a duplicate", async () => {
+  it("skips legacy registry/store setup for existing projects", async () => {
     const projectDir = makeTempProject("existing");
     process.chdir(projectDir);
     mockRegistryList.mockResolvedValue([{ id: "proj-existing", name: projectDir.split("/").pop(), path: projectDir, status: "active" }]);
@@ -171,20 +167,18 @@ describe("init command", () => {
     await invokeInit({});
 
     expect(mockRegistryAdd).not.toHaveBeenCalled();
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("proj-existing");
+    expect(mockPostgresStoreForProject).not.toHaveBeenCalled();
   });
 
-  it("fails with formatted database errors during registry setup", async () => {
-    const projectDir = makeTempProject("dbfail");
+  it("does not read the legacy registry during node-mode init", async () => {
+    const projectDir = makeTempProject("noregistry");
     process.chdir(projectDir);
     mockRegistryList.mockRejectedValue(new Error("database offline"));
 
-    await expect(invokeInit({})).rejects.toThrow("process.exit(1)");
+    await expect(invokeInit({})).resolves.toBeUndefined();
 
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    const rendered = vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Failed to initialize the Postgres database schema or project registry.");
-    expect(rendered).toContain("database offline");
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockRegistryList).not.toHaveBeenCalled();
   });
 
   it("fails closed when Elixir project registration errors", async () => {

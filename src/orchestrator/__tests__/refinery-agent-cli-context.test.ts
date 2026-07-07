@@ -53,6 +53,8 @@ const { previousFeatureFlag, mockResolveRepoRootProjectPath, mockListRegisteredP
 
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: { forProject: mockPostgresStoreForProject } }));
+vi.mock("../../cli/commands/elixir-cli-store.js", () => ({ ElixirCliStore: { forProject: mockPostgresStoreForProject } }));
+vi.mock("../elixir-merge-queue.js", () => ({ ElixirMergeQueue: MockPostgresMergeQueue }));
 vi.mock("../merge-queue.js", () => ({ MergeQueue: MockMergeQueue }));
 vi.mock("../postgres-merge-queue.js", () => ({ PostgresMergeQueue: MockPostgresMergeQueue }));
 vi.mock("../refinery-agent.js", () => ({
@@ -95,7 +97,7 @@ describe("runRefineCli bootstrap context", () => {
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(MockForemanStore.forProject).toHaveBeenCalledWith("/repo/canonical");
     expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, "/repo/canonical");
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-id");
+    expect(mockPostgresStoreForProject).toHaveBeenCalledWith({ id: "registered-id", path: "/repo/canonical", name: "test" });
     expect(MockPostgresMergeQueue).toHaveBeenCalledWith("registered-id");
     expect(MockRefineryAgent).toHaveBeenCalledWith(
       expect.any(Object),

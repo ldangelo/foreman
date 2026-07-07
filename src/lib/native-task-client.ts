@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { ForemanStore } from "./store.js";
 import {
@@ -11,6 +11,7 @@ import {
 } from "./task-store.js";
 import type { CreateOptions, ITaskClient, Issue, UpdateOptions } from "./task-client.js";
 import type { NativeTaskStatus } from "../orchestrator/types.js";
+import { ElixirServerClient, type ElixirTask } from "./elixir-server-client.js";
 
 const COMPACT_TASK_ID_SUFFIX_HEX_LENGTH = 5;
 
@@ -59,8 +60,43 @@ export class NativeTaskClient implements ITaskClient {
     });
   }
 
-  private requireElixirTaskBackend(): never {
-    throw new Error("Registered native task access must use the Elixir backend; Postgres backend was removed");
+  private elixirClient(): ElixirServerClient {
+    return new ElixirServerClient(process.env.FOREMAN_ELIXIR_URL ?? "http://127.0.0.1:4766");
+  }
+
+  private toElixirIssue(task: ElixirTask): Issue {
+    const id = task.task_id ?? task.id;
+    if (!id) throw new TaskNotFoundError("<missing-id>");
+    return toIssue(this.projectPath, {
+      id,
+      title: task.title ?? id,
+      type: task.task_type ?? task.type ?? "task",
+      priority: String(task.priority ?? 2),
+      status: this.normalizeStatus(task.status) ?? "backlog",
+      assignee: null,
+      parent: null,
+      created_at: task.created_at ?? new Date(0).toISOString(),
+      updated_at: task.updated_at ?? task.created_at ?? new Date(0).toISOString(),
+      description: task.description ?? null,
+      labels: [`project:${this.projectPath}`],
+    });
+  }
+
+  private async getElixirTask(id: string): Promise<ElixirTask> {
+    const task = await this.elixirClient().getTask(id);
+    if (!task || (task.project_id && task.project_id !== this.registeredProjectId)) {
+      throw new TaskNotFoundError(id);
+    }
+    return task;
+  }
+
+  private async sendElixirCommand(commandType: string, payload: Record<string, unknown>): Promise<void> {
+    const response = await this.elixirClient().sendCommand({
+      command_id: `${commandType}-${payload.task_id ?? payload.id ?? "task"}-${randomUUID()}`,
+      command_type: commandType,
+      payload,
+    });
+    if (!response.ok) throw new Error(response.error.message);
   }
 
   private normalizeStatus(status: string | undefined): string | undefined {
@@ -107,7 +143,14 @@ export class NativeTaskClient implements ITaskClient {
   }
 
   async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) {
+      const normalizedStatus = this.normalizeStatus(opts?.status);
+      return (await this.elixirClient().listTasks())
+        .filter((task) => task.project_id === this.registeredProjectId)
+        .filter((task) => !normalizedStatus || this.normalizeStatus(task.status) === normalizedStatus)
+        .filter((task) => !opts?.type || (task.task_type ?? task.type) === opts.type)
+        .map((task) => this.toElixirIssue(task));
+    }
 
     return this.withStore((taskStore) =>
       taskStore
@@ -118,7 +161,28 @@ export class NativeTaskClient implements ITaskClient {
   }
 
   async create(title: string, opts?: CreateOptions): Promise<Issue> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) {
+      const id = allocateTaskId(this.projectPath);
+      const payload = {
+        task_id: id,
+        project_id: this.registeredProjectId,
+        title,
+        description: opts?.description ?? null,
+        task_type: opts?.type ?? "task",
+        priority: this.normalizePriority(opts?.priority) ?? 2,
+        status: "backlog",
+      };
+      await this.sendElixirCommand("task.create", payload);
+      if (opts?.parent) {
+        await this.sendElixirCommand("task.add_dependency", {
+          project_id: this.registeredProjectId,
+          task_id: id,
+          depends_on: opts.parent,
+          kind: "parent-child",
+        });
+      }
+      return this.toElixirIssue({ ...payload, id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    }
 
     return this.withStore((taskStore) => {
       const created = taskStore.create({
@@ -137,14 +201,14 @@ export class NativeTaskClient implements ITaskClient {
   }
 
   async ready(): Promise<Issue[]> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) return this.list({ status: "ready" });
 
     const readyIssues = await this.withStore((taskStore) => taskStore.ready());
     return readyIssues.map((issue) => toIssue(this.projectPath, issue));
   }
 
   async show(id: string): Promise<Issue> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) return this.toElixirIssue(await this.getElixirTask(id));
 
     return this.withStore((taskStore) => {
       const row = taskStore.get(id);
@@ -156,7 +220,33 @@ export class NativeTaskClient implements ITaskClient {
   }
 
   async update(id: string, opts: UpdateOptions): Promise<void> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) {
+      const current = await this.getElixirTask(id);
+      const nextStatus =
+        opts.claim
+          ? "in-progress"
+          : opts.status === "in_progress"
+            ? "in-progress"
+            : (opts.status as NativeTaskStatus | undefined);
+      if (nextStatus) this.validateStatusTransition(id, this.normalizeStatus(current.status) ?? "backlog", nextStatus);
+      await this.sendElixirCommand("task.update", {
+        task_id: id,
+        project_id: this.registeredProjectId,
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.description !== undefined ? { description: opts.description ?? null } : {}),
+        ...(nextStatus !== undefined ? { status: nextStatus } : {}),
+      });
+      if (typeof opts.notes === "string" && opts.notes.trim()) {
+        await this.sendElixirCommand("task.annotate", {
+          task_id: id,
+          project_id: this.registeredProjectId,
+          body: opts.notes,
+          author: "foreman",
+          kind: "note",
+        });
+      }
+      return;
+    }
 
     this.withStore((taskStore) => {
       const nextStatus =
@@ -177,11 +267,20 @@ export class NativeTaskClient implements ITaskClient {
 
   async comments(id: string): Promise<string | null> {
     if (!this.registeredProjectId) return null;
-    this.requireElixirTaskBackend();
+    const task = await this.getElixirTask(id);
+    const notes = task.annotations ?? [];
+    if (notes.length === 0) return null;
+    return notes
+      .map((note) => `**${note.author ?? "foreman"}**${note.created_at ? ` (${note.created_at})` : ""}:\n${note.body}`)
+      .join("\n\n");
   }
 
   async close(id: string, reason?: string): Promise<void> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) {
+      await this.getElixirTask(id);
+      await this.sendElixirCommand("task.close", { task_id: id, project_id: this.registeredProjectId, reason });
+      return;
+    }
 
     this.withStore((taskStore) => {
       taskStore.close(id, reason);
@@ -189,7 +288,12 @@ export class NativeTaskClient implements ITaskClient {
   }
 
   async resetToReady(id: string, reason?: string): Promise<void> {
-    if (this.registeredProjectId) this.requireElixirTaskBackend();
+    if (this.registeredProjectId) {
+      const current = await this.getElixirTask(id);
+      this.validateStatusTransition(id, this.normalizeStatus(current.status) ?? "backlog", "ready");
+      await this.sendElixirCommand("task.update", { task_id: id, project_id: this.registeredProjectId, status: "ready", reason });
+      return;
+    }
 
     this.withStore((taskStore) => {
       taskStore.resetToReady(id, reason);

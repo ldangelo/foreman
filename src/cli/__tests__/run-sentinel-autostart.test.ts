@@ -154,6 +154,7 @@ vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher, purgeOrphanedWorkerConfigs: mockPurgeOrphanedWorkerConfigs }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: { forProject: mockPostgresStoreForProject } }));
+vi.mock("../commands/elixir-cli-store.js", () => ({ ElixirCliStore: { forProject: mockPostgresStoreForProject } }));
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: (...args: unknown[]) => mockVcsCreate(...args),
@@ -323,7 +324,7 @@ describe("sentinel auto-start in foreman run", () => {
     );
   });
 
-  it("uses the wrapped Postgres sentinel store for registered projects", async () => {
+  it("uses the Elixir sentinel store for registered projects", async () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockListRegisteredProjects.mockResolvedValue([
       { id: "registered-proj", path: "/mock/project", name: "project" },
@@ -347,15 +348,12 @@ describe("sentinel auto-start in foreman run", () => {
 
     await invokeRun(["--no-watch"]);
 
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/mock/project");
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
-    expect(mockWrapPostgresSentinelStore).toHaveBeenCalledWith(postgresStore, "registered-proj");
-    expect(mockPurgeOrphanedWorkerConfigs).toHaveBeenCalledWith(postgresStore);
+    expect(mockPostgresStoreForProject).toHaveBeenCalledWith({ id: "registered-proj", path: "/mock/project", name: "project" });
+    expect(mockWrapPostgresSentinelStore).not.toHaveBeenCalled();
     expect(mockGetSentinelConfig).not.toHaveBeenCalled();
 
-    const wrappedStore = mockWrapPostgresSentinelStore.mock.results[0]?.value;
     expect(MockSentinelAgent).toHaveBeenCalledWith(
-      wrappedStore,
+      postgresStore,
       expect.anything(),
       "registered-proj",
       "/mock/project",
@@ -372,7 +370,7 @@ describe("sentinel auto-start in foreman run", () => {
     );
   });
 
-  it("uses the daemon Postgres store for startup native task sync on registered projects", async () => {
+  it("uses the Elixir store for startup native task sync on registered projects", async () => {
     mockGetProjectByPath.mockReturnValue(null);
     mockListRegisteredProjects.mockResolvedValue([
       { id: "registered-proj", path: "/mock/project", name: "project" },
@@ -392,8 +390,7 @@ describe("sentinel auto-start in foreman run", () => {
 
     await invokeRun(["--no-watch"]);
 
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/mock/project");
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("registered-proj");
+    expect(mockPostgresStoreForProject).toHaveBeenCalledWith({ id: "registered-proj", path: "/mock/project", name: "project" });
     expect(mockSyncBeadStatusOnStartup).not.toHaveBeenCalled();
     expect(mockSyncTaskStatusOnStartup).toHaveBeenCalledWith(postgresStore, "registered-proj");
   });

@@ -112,12 +112,11 @@ describe("sentinel CLI smoke tests", () => {
     ).toBe(true);
   }, TEST_TIMEOUT_MS);
 
-  it("registered sentinel store fails explicitly until Elixir endpoints exist", async () => {
-    const wrapped = createRegisteredSentinelStore("proj-1");
+  it("registered sentinel store exposes an Elixir-backed shim", async () => {
+    const wrapped = createRegisteredSentinelStore({ id: "proj-1", name: "proj", path: "/repo" });
 
-    await expect(wrapped.logEvent("proj-1", "sentinel-pass", { runId: "run-123" })).rejects.toThrow(
-      "Sentinel configuration and run history are not exposed by the Elixir backend yet.",
-    );
+    expect(wrapped.isOpen()).toBe(true);
+    await expect(wrapped.getSentinelConfig("proj-1")).resolves.toBeNull();
   });
 
   it("--help includes sentinel command", async () => {

@@ -40,7 +40,6 @@ describe("Continuation Retry — issue state evaluation", () => {
     // isTerminal = !status || status === "closed" || status === "completed"
 
     it("treats null status as terminal", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       // Simulate continuation check with null status
@@ -51,16 +50,14 @@ describe("Continuation Retry — issue state evaluation", () => {
       // Should mark as completed
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "completed", completed_at: new Date().toISOString() },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
     });
 
     it("treats undefined status as terminal", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       // Simulate continuation check with undefined status
@@ -71,16 +68,14 @@ describe("Continuation Retry — issue state evaluation", () => {
       // Should mark as completed
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "completed", completed_at: new Date().toISOString() },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
     });
 
     it("treats 'closed' status as terminal", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       // Cast to string to avoid type narrowing issues in tests
@@ -90,16 +85,14 @@ describe("Continuation Retry — issue state evaluation", () => {
 
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "completed", completed_at: new Date().toISOString() },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
     });
 
     it("treats 'completed' status as terminal", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       const status = "completed" as string;
@@ -108,16 +101,14 @@ describe("Continuation Retry — issue state evaluation", () => {
 
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "completed", completed_at: new Date().toISOString() },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
     });
 
     it("treats 'open' status as active (not terminal)", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       const status = "open" as string;
@@ -127,16 +118,14 @@ describe("Continuation Retry — issue state evaluation", () => {
       // Should keep as running
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "running" },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "running" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "running" }));
     });
 
     it("treats 'in_progress' status as active (not terminal)", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       const status = "in_progress" as string;
@@ -146,16 +135,14 @@ describe("Continuation Retry — issue state evaluation", () => {
       // Should keep as running
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "running" },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "running" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "running" }));
     });
 
     it("treats 'review' status as active (not terminal)", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       const status = "review" as string;
@@ -165,18 +152,16 @@ describe("Continuation Retry — issue state evaluation", () => {
       // Should keep as running
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "running" },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "running" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "running" }));
     });
   });
 
   describe("continuationCheck runId usage", () => {
     it("uses checkRunId to update the correct run", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-123", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-123", status: "running" } as Run);
 
       // The continuation check should use checkRunId (not a hardcoded value)
@@ -184,29 +169,26 @@ describe("Continuation Retry — issue state evaluation", () => {
 
       await updateTerminalRunStatus({
         runId: checkRunId,
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "completed", completed_at: new Date().toISOString() },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-123", expect.any(Object));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-123", expect.any(Object));
     });
   });
 
   describe("error handling", () => {
     it("marks run as completed on task client error", async () => {
-      mockPgStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
       mockLocalStore.getRun.mockResolvedValue({ id: "run-1", status: "running" } as Run);
 
       // Simulate error handling: on error, mark as completed as safe default
       await updateTerminalRunStatus({
         runId: "run-1",
-        projectId: "proj-1",
         projectPath: "/tmp",
         updates: { status: "completed", completed_at: new Date().toISOString() },
       });
 
-      expect(mockPgStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
+      expect(mockLocalStore.updateRun).toHaveBeenCalledWith("run-1", expect.objectContaining({ status: "completed" }));
     });
   });
 });

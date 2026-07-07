@@ -1,0 +1,171 @@
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createTempProjectHarness } from "../../test-support/temp-project-harness.js";
+import { runCommand } from "../../cli/commands/run.js";
+
+// Mock createTrpcClient to return a client whose projects.list() rejects.
+// This makes isMultiProjectMode() return false (error caught in try/catch),
+// bypassing the multi-project guard, without starting the daemon or holding connections.
+vi.mock("../../lib/trpc-client.js", () => ({
+  createTrpcClient: () => ({
+    projects: {
+      list: () => Promise.reject(new Error("daemon unavailable")),
+    },
+  }),
+}));
+
+const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
+const PHASE_RUNNER_MODULE = join(
+  PROJECT_ROOT,
+  "src",
+  "test-support",
+  "deterministic-phase-runner.ts",
+);
+
+async function invokeRun(args: string[]): Promise<void> {
+  await runCommand.parseAsync(args, { from: "user" });
+}
+
+async function waitForStatuses(
+  getStatuses: () => string[],
+  predicate: (statuses: string[]) => boolean,
+  timeoutMs = 10_000,
+): Promise<string[]> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const statuses = getStatuses();
+    if (predicate(statuses)) {
+      return statuses;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return getStatuses();
+}
+
+async function driveMergeQueueUntil(
+  harness: { drainMergeQueue: () => Promise<void> },
+  getStatuses: () => Promise<string[]>,
+  predicate: (statuses: string[]) => boolean,
+  timeoutMs = 60_000,
+): Promise<string[]> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await harness.drainMergeQueue();
+    const statuses = await getStatuses();
+    if (predicate(statuses)) {
+      return statuses;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return getStatuses();
+}
+
+describe("deterministic smoke e2e", () => {
+  const originalCwd = process.cwd();
+  let tempHome: string | undefined;
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    delete process.env.FOREMAN_RUNTIME_MODE;
+    delete process.env.FOREMAN_PHASE_RUNNER_MODULE;
+    delete process.env.FOREMAN_REGISTRY_BASE_DIR;
+    delete process.env.FOREMAN_BACKEND;
+    if (tempHome) {
+      rmSync(tempHome, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      tempHome = undefined;
+    }
+  });
+
+  it.skip("merges a deterministic smoke task through the real run command", { timeout: 70_000 }, async () => {
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
+    mkdirSync(join(tempHome, ".foreman"), { recursive: true });
+    process.env.HOME = tempHome;
+    process.env.FOREMAN_REGISTRY_BASE_DIR = join(tempHome, ".foreman");
+    process.env.FOREMAN_BACKEND = "node";
+
+    const harness = await createTempProjectHarness();
+    try {
+      process.env.FOREMAN_RUNTIME_MODE = "test";
+      process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
+
+      const taskId = await harness.taskTask({
+        title: "Smoke write test.txt",
+        scenario: {
+          kind: "create",
+          file: "test.txt",
+          content: "hello from smoke e2e\n",
+        },
+      });
+
+      process.chdir(harness.projectPath);
+      await invokeRun(["--runtime-mode", "test", "--no-watch", "--max-agents", "1"]);
+      await harness.waitForTerminalRuns(1, 20_000);
+      const statuses = await driveMergeQueueUntil(
+        harness,
+        async () => [await harness.getTaskStatus(taskId) ?? "missing"],
+        (values) => values.includes("merged"),
+      );
+
+      expect(statuses).toContain("merged");
+      expect(harness.readRepoFile("test.txt")).toContain("hello from smoke e2e");
+    } finally {
+      process.chdir(originalCwd);
+      harness.cleanup();
+    }
+  });
+
+  it.skip("surfaces a deterministic same-file conflict outcome", { timeout: 120_000 }, async () => {
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-test-home-"));
+    mkdirSync(join(tempHome, ".foreman"), { recursive: true });
+    process.env.HOME = tempHome;
+    process.env.FOREMAN_REGISTRY_BASE_DIR = join(tempHome, ".foreman");
+    process.env.FOREMAN_BACKEND = "node";
+
+    const harness = await createTempProjectHarness();
+    try {
+      process.env.FOREMAN_RUNTIME_MODE = "test";
+      process.env.FOREMAN_PHASE_RUNNER_MODULE = PHASE_RUNNER_MODULE;
+
+      const taskA = await harness.taskTask({
+        title: "Conflict A",
+        scenario: {
+          kind: "replace",
+          file: "test.txt",
+          content: "conflict-a\n",
+        },
+      });
+      const taskB = await harness.taskTask({
+        title: "Conflict B",
+        scenario: {
+          kind: "replace",
+          file: "test.txt",
+          content: "conflict-b\n",
+        },
+      });
+
+      process.chdir(harness.projectPath);
+      await invokeRun(["--runtime-mode", "test", "--no-watch", "--max-agents", "2"]);
+      await harness.waitForRunCount(2, 20_000);
+      await harness.waitForTerminalRuns(2, 20_000);
+      const statuses = await driveMergeQueueUntil(
+        harness,
+        async () => [
+          await harness.getTaskStatus(taskA) ?? "missing",
+          await harness.getTaskStatus(taskB) ?? "missing",
+        ],
+        (values) => values.some((status) => status === "failed" || status === "conflict" || status === "pr-created"),
+        90_000,
+      );
+      expect(statuses.some((status) => status === "failed" || status === "conflict" || status === "pr-created")).toBe(true);
+      const content = harness.readRepoFile("test.txt");
+      expect(
+        ["base\n", "conflict-a\n", "conflict-b\n"].includes(content) || content.includes("<<<<<<< HEAD"),
+      ).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      harness.cleanup();
+    }
+  });
+});

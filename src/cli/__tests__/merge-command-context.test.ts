@@ -126,6 +126,10 @@ vi.mock("../../lib/postgres-store.js", () => ({
   PostgresStore: MockPostgresStore,
 }));
 
+vi.mock("../commands/elixir-cli-store.js", () => ({
+  ElixirCliStore: { forProject: vi.fn((arg: unknown) => new (MockPostgresStore as never as new (arg: unknown) => unknown)(arg)) },
+}));
+
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: mockCreateVcsBackend,
@@ -147,6 +151,10 @@ vi.mock("../../orchestrator/merge-queue.js", () => ({
 
 vi.mock("../../orchestrator/postgres-merge-queue.js", () => ({
   PostgresMergeQueue: MockPostgresMergeQueue,
+}));
+
+vi.mock("../commands/elixir-merge-queue.js", () => ({
+  ElixirMergeQueue: MockPostgresMergeQueue,
 }));
 
 vi.mock("../../orchestrator/merge-cost-tracker.js", () => ({
@@ -188,14 +196,14 @@ describe("merge command registered context", () => {
     mockResolveRepoRootProjectPath.mockResolvedValue("/canonical/project");
     mockListRegisteredProjects.mockResolvedValue([{ id: "proj-1", name: "my-project", path: "/canonical/project" }]);
 
-    await runCommand(["--stats"]);
+    await runCommand([]);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockCreateVcsBackend).toHaveBeenCalledWith({ backend: "auto" }, "/canonical/project");
     expect(mockCreateTaskClient).toHaveBeenCalledWith("/canonical/project", {
       registeredProjectId: "proj-1",
     });
-    expect(MockPostgresStore).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresStore).toHaveBeenCalledWith({ id: "proj-1", name: "my-project", path: "/canonical/project" });
     expect(MockRefinery).toHaveBeenCalledWith(
       expect.any(Object),
       expect.any(Object),
@@ -206,11 +214,10 @@ describe("merge command registered context", () => {
         runLookup: MockPostgresStore.mock.results[0].value,
       }),
     );
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/canonical/project");
     expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
     expect(MockMergeQueue).not.toHaveBeenCalled();
     expect(MockMergeCostTracker).not.toHaveBeenCalled();
-    expect(MockPostgresMergeCostTracker).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresMergeCostTracker).not.toHaveBeenCalled();
   });
 
   it("does not fail when the registered project exists but the local store row is missing", async () => {
@@ -277,7 +284,7 @@ describe("merge command registered context", () => {
     await runCommand(["--resolve", "run-1", "--strategy", "theirs"]);
 
     expect(mockLocalGetRun).not.toHaveBeenCalled();
-    expect(MockPostgresStore).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresStore).toHaveBeenCalledWith({ id: "proj-1", name: "my-project", path: "/mock/project" });
     expect(MockRefinery.mock.results[0]?.value.resolveConflict).toHaveBeenCalledWith(
       "run-1",
       "theirs",

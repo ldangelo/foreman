@@ -56,8 +56,8 @@ vi.mock("../../lib/store.js", () => ({
   ForemanStore: { forProject: vi.fn(() => mockLocalStore) },
 }));
 
-vi.mock("../../lib/postgres-store.js", () => ({
-  PostgresStore: { forProject: vi.fn(() => mockPostgresStore) },
+vi.mock("../commands/elixir-cli-store.js", () => ({
+  ElixirCliStore: { forProject: vi.fn(() => mockPostgresStore) },
 }));
 
 vi.mock("../../orchestrator/merge-queue.js", () => ({
@@ -67,8 +67,8 @@ vi.mock("../../orchestrator/merge-queue.js", () => ({
   },
 }));
 
-vi.mock("../../orchestrator/postgres-merge-queue.js", () => ({
-  PostgresMergeQueue: class MockPostgresMergeQueue {
+vi.mock("../commands/elixir-merge-queue.js", () => ({
+  ElixirMergeQueue: class MockElixirMergeQueue {
     list = mockMergeQueueList;
     remove = mockMergeQueueRemove;
   },

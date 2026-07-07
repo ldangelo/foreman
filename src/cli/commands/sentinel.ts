@@ -8,7 +8,8 @@ import { ForemanStore } from "../../lib/store.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { SentinelAgent } from "../../orchestrator/sentinel.js";
-import { listRegisteredProjects } from "./project-task-support.js";
+import { listRegisteredProjects, type RegisteredProjectSummary } from "./project-task-support.js";
+import { ElixirCliStore } from "./elixir-cli-store.js";
 import { findRegisteredProjectByFlagOrCwd } from "./project-context.js";
 
 export const sentinelCommand = new Command("sentinel")
@@ -44,21 +45,9 @@ function wrapLocalSentinelStore(store: ForemanStore) {
   };
 }
 
-function registeredSentinelBackendMissing(): never {
-  throw new Error("Sentinel configuration and run history are not exposed by the Elixir backend yet.");
-}
-
-export function createRegisteredSentinelStore(_projectId: string): ReturnType<typeof wrapLocalSentinelStore> {
-  return {
-    close: () => undefined,
-    isOpen: () => true,
-    logEvent: async () => registeredSentinelBackendMissing(),
-    recordSentinelRun: async () => registeredSentinelBackendMissing(),
-    updateSentinelRun: async () => registeredSentinelBackendMissing(),
-    upsertSentinelConfig: async () => registeredSentinelBackendMissing(),
-    getSentinelConfig: async () => registeredSentinelBackendMissing(),
-    getSentinelRuns: async () => registeredSentinelBackendMissing(),
-  };
+export function createRegisteredSentinelStore(project: RegisteredProjectSummary | string): ReturnType<typeof wrapLocalSentinelStore> {
+  const summary = typeof project === "string" ? { id: project, name: project, path: "", status: "active" } : project;
+  return ElixirCliStore.forProject(summary) as unknown as ReturnType<typeof wrapLocalSentinelStore>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,7 +158,7 @@ sentinelCommand
       const localStore = ForemanStore.forProject(projectPath);
 
       const store = registered
-        ? createRegisteredSentinelStore(registered.id)
+        ? createRegisteredSentinelStore(registered)
         : wrapLocalSentinelStore(localStore);
       const tasks = await createSentinelTaskClient(projectPath);
 
@@ -258,7 +247,7 @@ sentinelCommand
       const projectPath = registered.path;
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       const localStore = ForemanStore.forProject(projectPath);
-      const store = createRegisteredSentinelStore(registered.id);
+      const store = createRegisteredSentinelStore(registered);
       // Check if Jira is configured for this project
       let tasks = await createSentinelTaskClient(projectPath);
       const { loadProjectConfig } = await import("../../lib/project-config.js");
@@ -382,7 +371,7 @@ sentinelCommand
 
       const projectPath = registered.path;
       const localStore = ForemanStore.forProject(projectPath);
-      const store = createRegisteredSentinelStore(registered.id);
+      const store = createRegisteredSentinelStore(registered);
 
       const limit = parseInt(opts.limit as string, 10);
       const runs = await store.getSentinelRuns(registered.id, limit);
@@ -484,7 +473,7 @@ sentinelCommand
       }
 
       const projectPath = registered.path;
-      const store = createRegisteredSentinelStore(registered.id);
+      const store = createRegisteredSentinelStore(registered);
 
       const result = await stopProjectSentinel(registered.id, Boolean(opts.force));
 
@@ -536,7 +525,7 @@ sentinelCommand
       const statuses: ProjectSentinelStatus[] = [];
 
       for (const project of projects) {
-        const store = createRegisteredSentinelStore(project.id);
+        const store = createRegisteredSentinelStore(project);
         const lock = readSentinelLock(project.id);
         const config = await store.getSentinelConfig(project.id);
 

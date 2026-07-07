@@ -29,6 +29,9 @@ vi.mock("../../lib/postgres-store.js", () => ({
     forProject: mockPostgresStoreForProject,
   },
 }));
+vi.mock("../commands/elixir-cli-store.js", () => ({
+  ElixirCliStore: { forProject: mockPostgresStoreForProject },
+}));
 
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
@@ -91,7 +94,7 @@ describe("pr command registered context", () => {
     expect(mockCreateTaskClient).toHaveBeenCalledWith("/canonical/project", {
       registeredProjectId: "proj-1",
     });
-    expect(mockPostgresStoreForProject).toHaveBeenCalledWith("proj-1");
+    expect(mockPostgresStoreForProject).toHaveBeenCalledWith({ id: "proj-1", name: "my-project", path: "/canonical/project" });
     expect(MockRefinery).toHaveBeenCalledWith(
       expect.any(Object),
       expect.any(Object),

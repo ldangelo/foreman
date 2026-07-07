@@ -131,10 +131,9 @@ describe("doctor command action", () => {
     expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ error: "doctor exploded" }, null, 2));
   });
 
-  it("runs clean-logs against the registered Postgres store when a project is registered", async () => {
-    const ensureCliPostgresPool = vi.fn();
+  it("runs clean-logs against the registered Elixir store when a project is registered", async () => {
     const closeSpy = vi.fn();
-    const postgresCloseSpy = vi.fn();
+    const elixirCloseSpy = vi.fn();
     const purgeLogsAction = vi.fn().mockResolvedValue(undefined);
     const runAll = vi.fn().mockResolvedValue({
       system: [{ name: "system", status: "pass", message: "ok" }],
@@ -142,20 +141,19 @@ describe("doctor command action", () => {
       dataIntegrity: [],
       summary: { pass: 1, warn: 0, fail: 0, fixed: 0, skip: 0 },
     });
-    const PostgresStoreForProject = vi.fn().mockReturnValue({ close: postgresCloseSpy });
+    const elixirForProject = vi.fn().mockReturnValue({ close: elixirCloseSpy });
 
     vi.doMock("../../lib/store.js", () => ({
       ForemanStore: {
         forProject: vi.fn().mockReturnValue({ getDb: vi.fn().mockReturnValue({}), close: closeSpy }),
       },
     }));
-    vi.doMock("../../lib/postgres-store.js", () => ({ PostgresStore: { forProject: PostgresStoreForProject } }));
-    vi.doMock("../../lib/db/pool-manager.js", () => ({ destroyPool: vi.fn(), isPoolInitialised: vi.fn().mockReturnValue(false) }));
+    vi.doMock("../commands/elixir-cli-store.js", () => ({ ElixirCliStore: { forProject: elixirForProject } }));
     vi.doMock("../../lib/task-client-factory.js", () => ({ createTaskClient: vi.fn().mockResolvedValue({ taskClient: {}, backendType: "native" }) }));
     vi.doMock("../../orchestrator/doctor.js", () => ({ Doctor: class Doctor { runAll = runAll; } }));
     vi.doMock("../../orchestrator/merge-queue.js", () => ({ MergeQueue: class MergeQueue {} }));
-    vi.doMock("../../orchestrator/postgres-merge-queue.js", () => ({ PostgresMergeQueue: class PostgresMergeQueue {} }));
-    vi.doMock("../commands/project-task-support.js", () => ({ resolveRepoRootProjectPath: vi.fn().mockResolvedValue("/tmp/project"), ensureCliPostgresPool }));
+    vi.doMock("../commands/elixir-merge-queue.js", () => ({ ElixirMergeQueue: class ElixirMergeQueue {} }));
+    vi.doMock("../commands/project-task-support.js", () => ({ resolveRepoRootProjectPath: vi.fn().mockResolvedValue("/tmp/project") }));
     vi.doMock("../commands/project-context.js", () => ({ findRegisteredProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1" }) }));
     vi.doMock("../commands/local-store-adapter.js", () => ({ wrapLocalRunStore: vi.fn((value) => value) }));
     vi.doMock("../commands/purge-logs.js", () => ({ purgeLogsAction }));
@@ -164,10 +162,9 @@ describe("doctor command action", () => {
 
     await doctorCommand.parseAsync(["node", "doctor", "--clean-logs"], { from: "node" });
 
-    expect(ensureCliPostgresPool).toHaveBeenCalledWith("/tmp/project");
-    expect(PostgresStoreForProject).toHaveBeenCalledWith("proj-1");
-    expect(purgeLogsAction).toHaveBeenCalledWith({ days: 7, dryRun: false }, { close: postgresCloseSpy });
+    expect(elixirForProject).toHaveBeenCalledWith({ id: "proj-1" });
+    expect(purgeLogsAction).toHaveBeenCalledWith({ days: 7, dryRun: false }, { close: elixirCloseSpy });
     expect(closeSpy).toHaveBeenCalled();
-    expect(postgresCloseSpy).toHaveBeenCalled();
+    expect(elixirCloseSpy).toHaveBeenCalled();
   });
 });

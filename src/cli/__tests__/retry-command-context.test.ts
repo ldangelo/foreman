@@ -161,17 +161,12 @@ describe("retry command bootstrap", () => {
       projectPath: "/worktrees/my-project",
     });
     expect(mockForemanForProject).toHaveBeenCalledWith("/canonical/project");
-    expect(mockEnsureCliPostgresPool).toHaveBeenCalledWith("/canonical/project");
-    expect(mockPostgresForProject).toHaveBeenCalledWith("proj-1");
     expect(mockCreateTaskClient).not.toHaveBeenCalled();
-    expect(mockPostgresAdapterCtor).toHaveBeenCalledTimes(1);
-    expect(mockDispatcherCtor).toHaveBeenCalledTimes(1);
-    const overrides = (mockDispatcherCtor.mock.calls as unknown[][])[0]?.[4] as Record<string, unknown>;
-    const runOps = overrides.runOps as Record<string, unknown>;
-    expect(runOps.createRun).toBeTypeOf("function");
-    expect(runOps.updateRun).toBeTypeOf("function");
-    expect(runOps.sendMessage).toBeTypeOf("function");
-    expect(runOps.logEvent).toBeTypeOf("function");
+    expect(mockPostgresForProject).not.toHaveBeenCalled();
+    expect(mockPostgresAdapterCtor).not.toHaveBeenCalled();
+    expect(mockDispatcherCtor).not.toHaveBeenCalled();
+    expect(mockGetTask).toHaveBeenCalledWith("bead-1");
+    expect(mockListRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
 
   });
 

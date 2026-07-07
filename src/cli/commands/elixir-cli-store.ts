@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Project, Run } from "../../lib/store.js";
+import type { Project, Run, SentinelConfigRow, SentinelRunRow } from "../../lib/store.js";
 import type { ElixirRun } from "../../lib/elixir-server-client.js";
 import { elixirClient, type RegisteredProjectSummary } from "./project-task-support.js";
 
@@ -130,6 +130,32 @@ export class ElixirCliStore {
       payload: { task_id: taskId, project_id: this.project.id, status },
     });
     if (!response.ok) throw new Error(response.error.message);
+  }
+
+  async getSentinelConfig(_projectId: string): Promise<SentinelConfigRow | null> {
+    return null;
+  }
+
+  async getSentinelRuns(_projectId: string, _limit?: number): Promise<SentinelRunRow[]> {
+    return [];
+  }
+
+  async upsertSentinelConfig(projectId: string, config: Partial<SentinelConfigRow>): Promise<void> {
+    const client = await elixirClient();
+    const response = await client.sendCommand({
+      command_id: `sentinel-config-upsert-${projectId}-${randomUUID()}`,
+      command_type: "sentinel.config.upsert",
+      payload: { project_id: projectId, ...config },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+  }
+
+  async recordSentinelRun(run: Partial<SentinelRunRow> & { project_id: string }): Promise<void> {
+    await this.logEvent(run.project_id, "sentinel-run", run as Record<string, unknown>);
+  }
+
+  async updateSentinelRun(id: string, updates: Partial<SentinelRunRow>): Promise<void> {
+    await this.logEvent(this.project.id, "sentinel-run-update", { id, ...updates });
   }
 
   async logEvent(projectId: string, eventType: string, details: Record<string, unknown>, runId?: string | null): Promise<void> {
