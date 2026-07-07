@@ -636,12 +636,15 @@ defmodule ForemanServer.ProjectionStore do
          },
          _mode
        ) do
-    projection
-    |> put_in([:worktrees, run_id], payload)
-    |> put_in(
-      [:vcs_operations, payload.operation_id],
-      Map.put(payload, :event_type, "WorktreeCreated")
-    )
+    projection = put_in(projection, [:worktrees, run_id], payload)
+
+    case Map.get(payload, :operation_id) do
+      operation_id when is_binary(operation_id) ->
+        put_in(projection, [:vcs_operations, operation_id], Map.put(payload, :event_type, "WorktreeCreated"))
+
+      _ ->
+        projection
+    end
   end
 
   defp apply_domain_event(
@@ -652,12 +655,15 @@ defmodule ForemanServer.ProjectionStore do
          },
          _mode
        ) do
-    projection
-    |> update_in([:worktrees], &Map.delete(&1 || %{}, run_id))
-    |> put_in(
-      [:vcs_operations, payload.operation_id],
-      Map.put(payload, :event_type, "WorktreeCleaned")
-    )
+    projection = update_in(projection, [:worktrees], &Map.delete(&1 || %{}, run_id))
+
+    case Map.get(payload, :operation_id) do
+      operation_id when is_binary(operation_id) ->
+        put_in(projection, [:vcs_operations, operation_id], Map.put(payload, :event_type, "WorktreeCleaned"))
+
+      _ ->
+        projection
+    end
   end
 
   defp apply_domain_event(
