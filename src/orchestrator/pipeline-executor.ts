@@ -1972,10 +1972,10 @@ async function runPhaseSequence(
       const verdictReport = readReport(worktreePath, interpolatedArtifact);
       const artifactVerdict = verdictReport ? parseVerdict(verdictReport) : "unknown";
       const interruptedAfterReport = /terminated|aborted|exceeded maxTurns/i.test(phaseError ?? "");
-      if (interruptedAfterReport && artifactVerdict === "pass") {
+      if (interruptedAfterReport && artifactVerdict !== "unknown") {
         phaseSucceeded = true;
         phaseError = undefined;
-        ctx.log(`[${phaseName.toUpperCase()}] SDK interrupted after a PASS artifact; accepting ${phaseName} evidence`);
+        ctx.log(`[${phaseName.toUpperCase()}] SDK interrupted after a ${artifactVerdict.toUpperCase()} artifact; accepting ${phaseName} evidence`);
       }
     }
 

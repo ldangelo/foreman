@@ -90,7 +90,7 @@ describe("verdict-triggered retry", () => {
     // Create stub prompt files so prompt-loader doesn't throw
     const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue", "repair"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
     writeFileSync(
@@ -231,6 +231,38 @@ describe("verdict-triggered retry", () => {
     expect(phaseOrder).toEqual(["qa", "reviewer"]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("SDK interrupted after a PASS artifact"));
     expect(onPipelineComplete).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it("routes a FAIL verdict artifact to retry even when the SDK reports termination after writing it", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "repair", artifact: "FIX_REPORT.md", retryOnly: true },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "repair", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let qaCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        qaCallCount++;
+        if (qaCallCount === 1) {
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: FAIL\n\n## Test Results\n- Command run: `npx foreman --help`\n- Test suite: docs CLI audit: 1 failed, 0 passed\n- Raw summary: FAIL: documented command mismatch\n");
+          return { success: false, costUsd: 0.02, turns: 31, tokensIn: 100, tokensOut: 50, error: "terminated" };
+        }
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), "# QA\n\n## Verdict: PASS\n\n## Test Results\n- Command run: `npx foreman --help`\n- Test suite: docs CLI audit: 1 passed, 0 failed\n- Raw summary: PASS: docs align\n");
+      }
+      return successResult();
+    });
+
+    await executePipeline(makeBasePipelineArgs(tmpDir, phases, runPhase, log) as never);
+
+    expect(phaseOrder).toEqual(["qa", "repair", "qa", "finalize"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("SDK interrupted after a FAIL artifact"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("FAIL — looping back to repair"));
   });
 
   it("runs retryOnly developer only after a verdict failure, then retries QA", async () => {
