@@ -738,8 +738,9 @@ export const runCommand = new Command("run")
     }
 
     try {
-      // Require --project in multi-project mode
-      await requireProjectOrAllInMultiMode(opts.project, false);
+      // Require an explicit project selector in multi-project mode.
+      // --project-path is also explicit; let the resolver validate absoluteness below.
+      await requireProjectOrAllInMultiMode(opts.project ?? opts.projectPath, false);
       const projectPath = await resolveRepoRootProjectPath(opts);
       const registered = await resolveRunRegisteredProject(projectPath);
       if (registered) {
