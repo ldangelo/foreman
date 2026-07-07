@@ -103,41 +103,36 @@ The pipeline executor determines phase type by which field is present: `bash:` =
 
 ## Merge Strategy
 
-### REQ-004: Per-Workflow Merge Strategy
+### REQ-004: Phase-Driven PR and Merge Behavior
 
-**Priority:** Must | **Complexity:** Medium | [RISK: Refinery currently assumes auto-merge for all completed runs]
+**Priority:** Must | **Complexity:** Medium
 
-Workflow YAML accepts a top-level `merge:` field that controls post-finalize behavior.
-
-```yaml
-name: bug
-merge: auto       # auto-merge after finalize (default, current behavior)
-```
+Workflow YAML controls PR creation, readiness waits, and merging through explicit phases. Top-level `merge:` and `pr:` fields are not supported.
 
 ```yaml
-name: feature
-merge: pr         # create a PR for manual review
+phases:
+  - name: create-pr
+    builtin: true
+  - name: pr-wait
+    builtin: true
+  - name: merge
+    builtin: true
 ```
 
-```yaml
-name: analysis
-merge: none       # skip merging (analysis/dry-run workflows)
-```
-
-Valid values: `auto` (default), `pr`, `none`. When absent, defaults to `auto` (preserving current behavior).
-
-- AC-004-1: Given a workflow with `merge: auto`, when the pipeline completes finalize, then autoMerge triggers immediately (current behavior).
-- AC-004-2: Given a workflow with `merge: pr`, when the pipeline completes finalize, then the refinery creates a GitHub PR via `gh pr create` instead of merging, and sets the run status to `pr-created`.
-- AC-004-3: Given a workflow with no `merge:` field, when the pipeline completes, then behavior defaults to `auto`.
-- AC-004-4: Given a workflow with `merge: none`, when the pipeline completes finalize, then no merge or PR is created, the run status is set to `completed`, and the worktree/branch is left intact for manual inspection.
+- AC-004-1: Given a workflow with `create-pr`, when that phase runs after finalize, then the refinery creates or reuses a GitHub PR.
+- AC-004-2: Given a workflow with `pr-wait`, when that phase runs, then Foreman waits for PR checks/review readiness before continuing.
+- AC-004-3: Given a workflow with `merge`, when that phase runs, then Foreman performs the final PR readiness gate and queues refinery merge processing.
+- AC-004-4: Given a workflow without `merge`, when the pipeline completes, then no workflow-driven merge is queued.
+- AC-004-5: Given a workflow with top-level `merge:` or `pr:`, when the workflow is loaded, then validation rejects it with a message directing the operator to explicit phases.
 
 ### REQ-005: Merge Strategy Propagation
 
 **Priority:** Must | **Complexity:** Low
 
-The resolved merge strategy must be available to the auto-merge and refinery code paths. The dispatcher stores the workflow's merge strategy in the run record (Postgres) so that downstream merge logic can read it without re-parsing the YAML.
+The persisted run merge strategy is internal compatibility state derived from phases. Workflows with a `merge` phase persist an auto-merge intent; workflows without a `merge` phase persist no workflow-driven merge intent.
 
-- AC-005-1: Given a dispatched run, when auto-merge processes it, then it reads the merge strategy from the run record and branches accordingly (merge vs. PR vs. skip).
+- AC-005-1: Given a dispatched run for a workflow with a `merge` phase, when auto-merge processes it, then it can read the derived merge intent from the run record.
+- AC-005-2: Given a dispatched run for a workflow without a `merge` phase, when reconciliation sees it, then no workflow-driven merge is queued.
 
 ---
 
@@ -228,4 +223,4 @@ Literal braces can be escaped with a backslash: `\{task.title\}` emits the liter
 | Date | Version | Changes |
 |---|---|---|
 | 2026-04-18 | 1.0.0 | Initial draft from create-prd |
-| 2026-04-18 | 1.0.1 | Refinement: added bash phase 120s timeout (AC-001-5), added [RISK] tag to REQ-001, added `merge: none` option (AC-004-4), added placeholder escape syntax (AC-008-3), clarified command phase full parity with prompt phases (AC-002-3), scored Implementation Readiness Gate (4.5 PASS) |
+| 2026-04-18 | 1.0.1 | Refinement: added bash phase 120s timeout (AC-001-5), added placeholder escape syntax (AC-008-3), clarified command phase full parity with prompt phases (AC-002-3), scored Implementation Readiness Gate (4.5 PASS) |

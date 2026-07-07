@@ -1207,11 +1207,10 @@ async function runCreatePrBuiltinPhase(args: {
   registeredProjectId?: string;
   registeredReadStore?: RegisteredReadStore;
   vcsBackend?: VcsBackend;
-  workflowConfig: WorkflowConfig;
   log: (msg: string) => void;
   agentMailClient: AnyMailClient | null;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
-  const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
+  const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, log, agentMailClient } = args;
 
   // Fallback logic mirrors runPipeline: if registeredReadStore is missing but a database
   // URL exists in the project path, derive a RegisteredReadStore for run lookups. This ensures
@@ -1260,9 +1259,7 @@ async function runCreatePrBuiltinPhase(args: {
     runId: config.runId,
     baseBranch,
     updateRunStatus: false,
-    bodyNote: workflowConfig.merge === "auto"
-      ? "Automatically published before PR review and refinery merge."
-      : "Published for operator review.",
+    bodyNote: "Published by create-pr workflow phase.",
   });
   const prNumber = parsePrNumber(pr.prUrl);
   const headSha = vcsBackend ? await vcsBackend.getHeadId(config.worktreePath).catch(() => undefined) : undefined;
@@ -1282,7 +1279,7 @@ async function runCreatePrBuiltinPhase(args: {
     branchName: pr.branchName,
     prUrl: pr.prUrl,
     prNumber,
-    strategy: workflowConfig.merge ?? "auto",
+    strategy: "create-pr-phase",
   });
   return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: pr.prUrl };
 }
@@ -1690,27 +1687,15 @@ async function writeMergeReport(args: {
 
 async function runMergeBuiltinPhase(args: {
   config: WorkerConfig;
-  store: WorkerStoreCompat;
   pipelineProjectPath: string;
-  registeredProjectId?: string;
-  registeredReadStore?: RegisteredReadStore;
   vcsBackend?: VcsBackend;
-  workflowConfig: WorkflowConfig;
   log: (msg: string) => void;
   agentMailClient: AnyMailClient | null;
 }): Promise<import("./pipeline-executor.js").PhaseResult> {
-  const { config, store, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, workflowConfig, log, agentMailClient } = args;
-  const mergeStrategy = workflowConfig.merge ?? "auto";
+  const { config, pipelineProjectPath, vcsBackend, log, agentMailClient } = args;
   const prNumber = (() => {
     try { return readPrNumberFromMetadata(config.worktreePath, workerReportDir(config)); } catch { return undefined; }
   })();
-
-  if (mergeStrategy !== "auto") {
-    const details = `Workflow merge strategy is ${mergeStrategy}; explicit merge phase skipped auto-merge.`;
-    await writeMergeReport({ config, status: "SKIPPED", details, prNumber });
-    log(`[MERGE] ${details}`);
-    return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: details };
-  }
 
   const gate = await validatePrReviewGate({
     worktreePath: config.worktreePath,
@@ -2060,7 +2045,6 @@ async function runPipeline(
               registeredProjectId,
               registeredReadStore,
               vcsBackend,
-              workflowConfig,
               log,
               agentMailClient,
             });
@@ -2080,12 +2064,8 @@ async function runPipeline(
           if (phase.name === "merge") {
             return await runMergeBuiltinPhase({
               config,
-              store,
               pipelineProjectPath,
-              registeredProjectId,
-              registeredReadStore,
               vcsBackend,
-              workflowConfig,
               log,
               agentMailClient,
             });
@@ -2333,9 +2313,9 @@ async function runPipeline(
             }
           } else {
             // No finalize-specific mail — preserve the pipeline success result.
-            // A finalize FAIL verdict may not emit phase-complete or agent-error
-            // mail, so assuming success here can incorrectly enqueue failed runs
-            // to the merge queue and send branch-ready.
+                    // A finalize FAIL verdict may not emit phase-complete or agent-error
+            // mail, so assuming success here can incorrectly mark failed runs
+            // completed.
             log(`[FINALIZE] No finalize mail found — preserving pipeline success=${String(finalizeSucceeded)}`);
           }
         }
@@ -2390,17 +2370,9 @@ async function runPipeline(
       }
 
       const now = new Date().toISOString();
-      const registeredRefineryOptions = deriveFallbackRefineryOptions(
-        registeredProjectId,
-        registeredReadStore,
-        pipelineProjectPath,
-        config.projectId,
-        log,
-      );
       if (finalizeSucceeded) {
 
-        // Mark run as completed BEFORE enqueue/autoMerge — autoMerge looks
-        // for completed runs, so this must happen first.
+        // Mark run as completed after all configured phases have succeeded.
         await updateTerminalRunStatus({
           runId,
           projectId: config.projectId,
@@ -2409,44 +2381,8 @@ async function runPipeline(
         });
         notifyClient.send({ type: "status", runId, status: "completed", timestamp: now });
 
-        let prCreated = hasCreatePrPhase;
         if (hasCreatePrPhase) {
           log(`[PIPELINE] PR creation handled by create-pr phase`);
-        } else {
-          try {
-            const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
-            const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
-            const pr = await refinery.ensurePullRequestForRun({
-              runId,
-              baseBranch: config.targetBranch,
-              updateRunStatus: false,
-              bodyNote: workflowConfig.merge === "auto"
-                ? "Automatically published before refinery PR merge."
-                : "Published by finalize for operator review.",
-            });
-            prCreated = true;
-            log(`[FINALIZE] PR ready: ${pr.prUrl}`);
-            sendMail(agentMailClient, "foreman", "pr-created", {
-              taskId,
-              runId,
-              branchName: pr.branchName,
-              prUrl: pr.prUrl,
-              strategy: workflowConfig.merge ?? "auto",
-            });
-
-            if ((workflowConfig.merge ?? "auto") !== "auto") {
-              await updateTerminalRunStatus({
-                runId,
-                projectId: registeredProjectId,
-                projectPath: pipelineProjectPath,
-                updates: { status: "pr-created", completed_at: now },
-              });
-              notifyClient.send({ type: "status", runId, status: "pr-created", timestamp: now });
-            }
-          } catch (prErr: unknown) {
-            const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-            log(`[FINALIZE] PR creation failed (will rely on queue/retry path): ${prMsg}`);
-          }
         }
 
         let skipMergeQueue = false;
@@ -2466,74 +2402,10 @@ async function runPipeline(
           }
         }
 
-        const mergeStrategy = workflowConfig.merge ?? "auto";
-        if (!skipMergeQueue && mergeStrategy === "auto") {
-          try {
-            // Pre-compute modified files via VcsBackend (async) before calling
-            // enqueueToMergeQueue which expects a synchronous getFilesModified callback.
-            let enqueueFiles: string[] = [];
-            try {
-              const enqueueBackend = vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, worktreePath);
-              const enqueueDefaultBranch = await enqueueBackend.detectDefaultBranch(worktreePath);
-              enqueueFiles = await enqueueBackend.getChangedFiles(worktreePath, enqueueDefaultBranch, "HEAD");
-            } catch {
-              // Non-fatal — proceed with empty file list
-            }
-            const enqueueResult = await enqueueToMergeQueue({
-              projectId: config.projectId,
-              taskId,
-              runId,
-              operation: "auto_merge",
-              worktreePath,
-              getFilesModified: () => enqueueFiles,
-            });
-            if (enqueueResult.success) {
-              log(`[FINALIZE] Enqueued to merge queue`);
-              // Guard: Only send branch-ready after successful finalize push (double-check).
-              // Primary guard is at function entry, this is defense-in-depth.
-              sendMail(agentMailClient, "refinery", "branch-ready", {
-                taskId, runId, branch: `foreman/${taskId}`, worktreePath,
-              });
-
-              log("[FINALIZE] Merge queued for Elixir/refinery processing");
-            } else {
-              log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqueueResult.error ?? "(unknown)"}`);
-            }
-          } catch (enqErr: unknown) {
-            const enqMsg = enqErr instanceof Error ? enqErr.message : String(enqErr);
-            log(`[FINALIZE] Merge queue enqueue failed (non-fatal): ${enqMsg}`);
-          }
-        } else if (mergeStrategy !== "auto") {
-          if (prCreated) {
-            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue`);
-          } else {
-            log(`[FINALIZE] Workflow merge strategy is ${mergeStrategy} but PR was not created — no merge queue enqueue`);
-          }
+        if (!skipMergeQueue && hasExplicitMergePhase) {
+          log("[FINALIZE] Merge handled by explicit merge phase");
         }
       } else {
-        try {
-          const runtimeTaskClient = await createRuntimeTaskClient(pipelineProjectPath, registeredProjectId);
-          const refinery = new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);
-          const pr = await refinery.ensurePullRequestForRun({
-            runId,
-            baseBranch: config.targetBranch,
-            updateRunStatus: false,
-            bodyNote: `Pipeline finished with failure: ${finalizeFailureReason || "unknown error"}`,
-            existingOk: true,
-          });
-          log(`[FINALIZE] Failure PR ready: ${pr.prUrl}`);
-          sendMail(agentMailClient, "foreman", "pr-created", {
-            taskId,
-            runId,
-            branchName: pr.branchName,
-            prUrl: pr.prUrl,
-            strategy: "failure-review",
-          });
-        } catch (prErr: unknown) {
-          const prMsg = prErr instanceof Error ? prErr.message : String(prErr);
-          log(`[FINALIZE] Failed to publish PR after finalize failure: ${prMsg}`);
-        }
-
         let alreadyLandedOnTarget = false;
         if (!finalizeRetryable && finalizeFailureReason === "tests_failed_pre_existing_issues") {
           try {

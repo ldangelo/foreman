@@ -8,7 +8,6 @@
 
 name: feature
 task_type: feature
-merge: auto
 onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit

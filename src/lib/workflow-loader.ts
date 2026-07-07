@@ -327,30 +327,6 @@ export interface WorkflowConfig {
    */
   taskTimeout?: number;
   /**
-   * Per-workflow merge strategy. Controls how completed branches are merged:
-   *
-   * - `'auto'`: refinery merges completed branches automatically (default)
-   * - `'pr'`: creates a GitHub PR via `gh pr create`
-   * - `'none'`: no merge or PR; run ends in `completed` status
-   *
-   * @default 'auto'
-   */
-  merge?: "auto" | "pr" | "none";
-  /**
-   * Per-workflow PR timing policy. Controls when and whether GitHub PRs are created.
-   *
-   * - `'draft-after-developer'`: PR is created in draft state after the developer phase
-   *   completes, then promoted to open (or merged) at finalize (default)
-   * - `'create-at-finalize'`: PR is created (open, not draft) only at finalize phase completion
-   * - `'never'`: no PR is created; merge:auto merges the branch directly via refinery
-   *
-   * @default 'draft-after-developer'
-   */
-  pr?: {
-    /** When to create the PR. */
-    timing?: "draft-after-developer" | "create-at-finalize" | "never";
-  };
-  /**
    * Optional sandbox configuration for container isolation.
    * When present, overrides project-level sandbox config.
    * Useful for workflow-specific sandbox settings (e.g., untrusted code).
@@ -408,6 +384,12 @@ export class WorkflowConfigError extends Error {
     );
     this.name = "WorkflowConfigError";
   }
+}
+
+export type DerivedMergeStrategy = "auto" | "none";
+
+export function deriveMergeStrategyFromPhases(config: Pick<WorkflowConfig, "phases">): DerivedMergeStrategy {
+  return config.phases.some((phase) => phase.name === "merge") ? "auto" : "none";
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -716,34 +698,11 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     }
   }
 
-  // ── Parse optional merge strategy ────────────────────────────────────────
   if (raw["merge"] !== undefined) {
-    const merge = raw["merge"];
-    if (merge === "auto" || merge === "pr" || merge === "none") {
-      config.merge = merge;
-    } else {
-      throw new WorkflowConfigError(
-        workflowName,
-        `merge must be 'auto', 'pr', or 'none' (got: ${String(merge)})`,
-      );
-    }
+    throw new WorkflowConfigError(workflowName, "top-level 'merge' is no longer supported; use explicit create-pr/pr-wait/merge phases");
   }
-
-  // ── Parse optional pr.timing ───────────────────────────────────────────
-  if (isRecord(raw["pr"])) {
-    const prRaw = raw["pr"];
-    config.pr = {};
-    if (typeof prRaw["timing"] === "string") {
-      const timing = prRaw["timing"];
-      if (timing === "draft-after-developer" || timing === "create-at-finalize" || timing === "never") {
-        config.pr.timing = timing;
-      } else {
-        throw new WorkflowConfigError(
-          workflowName,
-          `pr.timing must be 'draft-after-developer', 'create-at-finalize', or 'never' (got: ${timing})`,
-        );
-      }
-    }
+  if (raw["pr"] !== undefined) {
+    throw new WorkflowConfigError(workflowName, "top-level 'pr' is no longer supported; use explicit create-pr/pr-wait phases");
   }
 
   // ── Parse optional sandbox block (Backlog-011: Container Sandboxing) ───

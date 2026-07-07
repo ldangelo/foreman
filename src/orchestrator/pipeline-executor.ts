@@ -279,8 +279,8 @@ export interface PipelineContext {
   onRateLimit?: (model: string, phase: string, error: string, retryAfterSeconds?: number) => void;
   /**
    * Called after the last phase (finalize) completes.
-   * Responsible for: reading finalize mail, enqueuing to merge queue,
-   * updating run status, resetting task on failure, sending branch-ready mail.
+   * Responsible for: reading finalize mail, updating run status, and resetting
+   * task state on failure. Explicit builtin phases handle PR and merge work.
    * @param info.success - Whether the pipeline completed successfully.
    *                        Only send branch-ready when success=true AND currentPhase=finalize.
    */

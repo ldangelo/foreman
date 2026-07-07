@@ -22,7 +22,6 @@ import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
-import type { Run } from "../../lib/store.js";
 import { ElixirCliStore } from "./elixir-cli-store.js";
 import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
@@ -30,7 +29,7 @@ import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { WorktreeManager } from "../../lib/worktree-manager.js";
 import { installDependencies, runSetupWithCache } from "../../lib/setup.js";
 import { runWorkspaceHook } from "../../lib/setup.js";
-import { loadWorkflowConfig } from "../../lib/workflow-loader.js";
+import { deriveMergeStrategyFromPhases, loadWorkflowConfig } from "../../lib/workflow-loader.js";
 import type { WorkflowConfig } from "../../lib/workflow-loader.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { buildWorkerEnv, spawnWorkerProcess } from "../../orchestrator/dispatcher.js";
@@ -232,8 +231,10 @@ export async function runTaskAction(
 
   // ── Load workflow config ─────────────────────────────────────────────
   let workflowConfig: WorkflowConfig;
+  let workflowMergeStrategy: "auto" | "none" = "none";
   try {
     workflowConfig = loadWorkflowConfig(workflowPath, resolvedProjectPath);
+    workflowMergeStrategy = deriveMergeStrategyFromPhases(workflowConfig);
     console.log(`  Workflow: ${chalk.magenta(workflowConfig.name)} (${workflowConfig.phases.length} phases)`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -403,14 +404,14 @@ export async function runTaskAction(
           agent_type: "developer",
           worktree_path: worktreePath,
           base_branch: baseBranch ?? undefined,
-          merge_strategy: workflowConfig.merge ?? "auto",
+          merge_strategy: workflowMergeStrategy,
         },
       });
       if (!response.ok) throw new Error(response.error.message);
     } else {
       const localRun = store.createRun(projectId, taskId, "developer", worktreePath, {
         baseBranch: baseBranch ?? undefined,
-        mergeStrategy: (workflowConfig.merge ?? "auto") as Run["merge_strategy"],
+        mergeStrategy: workflowMergeStrategy,
       });
       runId = localRun.id;
     }

@@ -116,56 +116,23 @@ describe('validateWorkflowConfig — bash/command/merge fields', () => {
     });
   });
 
-  describe('merge strategy field', () => {
-    it('accepts merge: auto', () => {
-      const config = validateWorkflowConfig(
-        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], merge: 'auto' },
-        'test',
-      );
-      expect(config.merge).toBe('auto');
-    });
-
-    it('accepts merge: pr', () => {
-      const config = validateWorkflowConfig(
-        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], merge: 'pr' },
-        'test',
-      );
-      expect(config.merge).toBe('pr');
-    });
-
-    it('accepts merge: none', () => {
-      const config = validateWorkflowConfig(
-        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], merge: 'none' },
-        'test',
-      );
-      expect(config.merge).toBe('none');
-    });
-
-    it('defaults to undefined when absent', () => {
-      const config = validateWorkflowConfig(
-        { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }] },
-        'test',
-      );
-      expect(config.merge).toBeUndefined();
-    });
-
-    it('throws when merge: has an invalid value', () => {
+  describe('removed merge/pr workflow tags', () => {
+    it('rejects top-level merge', () => {
       expect(() =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        validateWorkflowConfig({ name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], merge: 'invalid' } as any, 'test'),
+        validateWorkflowConfig(
+          { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], merge: 'auto' },
+          'test',
+        ),
       ).toThrow(WorkflowConfigError);
     });
 
-    it('error message for invalid merge value lists valid values', () => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        validateWorkflowConfig({ name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], merge: 'invalid' } as any, 'test');
-        expect.fail('Should have thrown');
-      } catch (e) {
-        expect((e as Error).message).toContain('auto');
-        expect((e as Error).message).toContain('pr');
-        expect((e as Error).message).toContain('none');
-      }
+    it('rejects top-level pr config', () => {
+      expect(() =>
+        validateWorkflowConfig(
+          { name: 'test', phases: [{ name: 'p', prompt: 'x.md' }], pr: { timing: 'never' } },
+          'test',
+        ),
+      ).toThrow(WorkflowConfigError);
     });
   });
 });

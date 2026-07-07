@@ -6,10 +6,10 @@ describe("agent-worker runtime task client threading", () => {
   const sourcePath = fileURLToPath(new URL("../agent-worker.ts", import.meta.url));
   const source = readFileSync(sourcePath, "utf8");
 
-  it("threads config.projectId into every runtime task-client call", () => {
+  it("threads registered project ids into runtime task-client calls", () => {
     expect(source).toContain("async function createRuntimeTaskClient(projectPath: string, registeredProjectId?: string)");
-    const registeredCalls = source.match(/createRuntimeTaskClient\(pipelineProjectPath, registeredProjectId\)/g) ?? [];
-    expect(registeredCalls.length).toBeGreaterThanOrEqual(2);
+    expect(source).toContain("createRuntimeTaskClient(projectPath, projectId)");
+    expect(source).toContain("createRuntimeTaskClient(checkProjectPath, checkRegisteredProjectId)");
     expect(source).not.toContain("createRuntimeTaskClient(pipelineProjectPath)");
   });
 

@@ -41,7 +41,7 @@ foreman task list
 
 ### Workflows
 
-A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation.
+A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: use `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` tags are rejected.
 
 Important phase reports:
 
@@ -223,7 +223,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 ### 9. Review and Merge
 
-Auto-merge workflows create PRs, wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through the configured merge phase. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
+Merge-capable workflows create PRs, wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
 
 ```bash
 foreman merge

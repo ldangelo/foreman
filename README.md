@@ -749,9 +749,11 @@ Workflows define:
 - **Task-type routing** — optional top-level `task_type: bug` declarations map task types to workflows and must be unique
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer/merge failure → targeted retry with feedback
-- **PR gates** — create-pr, pr-wait, and merge phases for review-aware workflows; PR readiness requires zero failed checks plus a brief stable window, and merge re-waits on late pending checks
+- **PR gates** — explicit `create-pr`, `pr-wait`, and `merge` phases for review-aware workflows; PR readiness requires zero failed checks plus a brief stable window, and merge re-waits on late pending checks
 - **Targeted PR remediation** — PR check failures route to `cicd-developer`, CodeRabbit findings route to `cr-developer`, merge conflicts route to `merge-resolver`, and unknown failures fall back to `developer`
 - **Mail hooks** — lifecycle notifications and artifact forwarding
+
+Top-level `merge:` and `pr:` workflow tags are not supported; add or omit PR/merge phases to control behavior.
 
 ```yaml
 # ~/.foreman/workflows/task.yaml (global override)

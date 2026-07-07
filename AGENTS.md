@@ -70,6 +70,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 READ ./CLAUDE.md
 
+Workflow note: PR/merge behavior is controlled by explicit `create-pr`, `pr-wait`, and `merge` phases. Do not add top-level workflow `merge:` or `pr:` tags.
+
 Execution safety rules:
 
 - Before rerunning a task to validate a fix, ensure the fix is durably committed and available on the active branch being tested.

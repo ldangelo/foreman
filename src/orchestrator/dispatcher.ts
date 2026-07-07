@@ -18,7 +18,7 @@ import { workerAgentMd } from "./templates.js";
 import { normalizePriority } from "../lib/priority.js";
 import { PLAN_STEP_CONFIG } from "./roles.js";
 import { resolveWorkflowType } from "../lib/workflow-config-loader.js";
-import { loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
+import { deriveMergeStrategyFromPhases, loadWorkflowConfig, resolveWorkflowName } from "../lib/workflow-loader.js";
 import type { EpicTask } from "./pipeline-executor.js";
 import { loadProjectConfig, resolveVcsConfig } from "../lib/project-config.js";
 import { getWorkspacePath } from "../lib/workspace-paths.js";
@@ -865,15 +865,14 @@ export class Dispatcher {
         let setupSteps: import("../lib/workflow-loader.js").WorkflowSetupStep[] | undefined;
         let setupCache: import("../lib/workflow-loader.js").WorkflowSetupCache | undefined;
         let vcsBackendName: 'git' | 'jujutsu' = 'git'; // default to git
-        // TRD-007: capture merge strategy from workflow config
-        let workflowMerge: 'auto' | 'pr' | 'none' = 'auto';
+        let workflowMergeStrategy: 'auto' | 'none' = 'none';
         // projectHooks is used in afterCreate/beforeRun hooks below the try block
         const projectHooks: import("../lib/project-config.js").ProjectHooksConfig | undefined = projectCfg?.hooks;
         try {
           const wfConfig = loadWorkflowConfig(resolvedWorkflow, this.projectPath);
           setupSteps = wfConfig.setup;
           setupCache = wfConfig.setupCache;
-          workflowMerge = wfConfig.merge ?? 'auto';
+          workflowMergeStrategy = deriveMergeStrategyFromPhases(wfConfig);
 
           // Resolve VCS backend: workflow > project > auto-detect
           const resolvedVcs = resolveVcsConfig(wfConfig.vcs, projectCfg?.vcs);
@@ -943,14 +942,13 @@ export class Dispatcher {
         await writeFile(join(worktreePath, "TASK.md"), taskMd, "utf-8");
 
         // 4. Record run in store (include base_branch for stacking awareness)
-        // TRD-007: pass merge_strategy from workflow config
         const run = await this.createRunRecord(
           projectId,
           task.id,
           model,
           worktreePath,
           branchName,
-          { baseBranch: baseBranch ?? null, mergeStrategy: workflowMerge },
+          { baseBranch: baseBranch ?? null, mergeStrategy: workflowMergeStrategy },
         );
 
         // 5. Log dispatch event

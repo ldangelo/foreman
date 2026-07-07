@@ -8,7 +8,6 @@
 
 name: question
 task_type: question
-merge: none
 setup: []
 # No install needed for research-only tasks
 
@@ -30,7 +29,7 @@ phases:
       onComplete: true
 
   # ── Phase 2: finalize ───────────────────────────────────────────────────
-  # Summarise findings. No merge — merge_strategy is "none".
+  # Summarise findings. No merge phase is defined.
   - name: documentation
     prompt: documentation.md
     tools:

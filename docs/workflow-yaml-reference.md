@@ -57,6 +57,8 @@ vcs: { backend, git, jujutsu }   # VCS backend override (optional)
 phases: [...]                    # Phase sequence (required)
 ```
 
+PR creation and merging are controlled by explicit phases (`create-pr`, `pr-wait`, `merge`). Top-level `merge:` and `pr:` workflow tags are not supported.
+
 ### `name` (required)
 
 The workflow identifier. Must match the filename (e.g. `default.yaml` → `name: default`).
@@ -313,6 +315,32 @@ Bundled workflows use a deterministic builtin `finalize` phase. It runs dependen
     retryWith: developer
     retryOnFail: 1
 ```
+
+### PR and Merge Phases
+
+Bundled merge-capable workflows express PR and merge behavior as phases, not top-level tags:
+
+```yaml
+  - name: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "merge_conflict:": merge-resolver
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+```
+
+- `create-pr` creates or reuses the GitHub PR.
+- `pr-wait` waits for required checks/review readiness and can route failures.
+- `merge` performs the final PR readiness gate and queues refinery merge processing.
+- Omit `merge` for workflows that should not merge. Omit `create-pr`/`pr-wait` for workflows that should not create or wait on PRs.
 
 ### Models
 

@@ -20,7 +20,6 @@ name: epic
 task_type: epic
 onError: stop
 taskTimeout: 300
-merge: auto
 
 setup:
   - command: npm install --prefer-offline --no-audit

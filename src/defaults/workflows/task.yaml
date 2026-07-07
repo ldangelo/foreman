@@ -8,7 +8,6 @@
 
 name: task
 task_type: task
-merge: auto
 onError: stop
 setup:
   - command: npm install --prefer-offline --no-audit

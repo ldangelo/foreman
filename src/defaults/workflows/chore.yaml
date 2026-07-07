@@ -8,7 +8,6 @@
 
 name: chore
 task_type: chore
-merge: auto
 setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies

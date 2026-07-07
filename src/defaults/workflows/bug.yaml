@@ -5,14 +5,12 @@
 #   - fix prompt — workflow-scoped issue fixing prompt
 #   - qa phase — validates the fix and writes QA_REPORT.md
 #   - developer prompt — retry-only target for QA/review/finalize findings
-#   - merge: auto — auto-merge on green PR checks
 #
 # Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
 
 name: bug
 task_type: bug
-merge: auto
 setup:
   - command: npm install --prefer-offline --no-audit
     description: Install Node.js dependencies

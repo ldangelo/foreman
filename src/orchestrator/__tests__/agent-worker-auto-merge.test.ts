@@ -48,9 +48,9 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).toContain("MERGE_REPORT.md");
   });
 
-  it("publishes a PR and skips merge queue enqueue for non-auto strategies", () => {
-    expect(source).toContain("mergeStrategy === \"auto\"");
-    expect(source).toContain("Workflow merge strategy is ${mergeStrategy} — PR created, skipping merge queue enqueue");
+  it("does not use top-level workflow merge strategy gates", () => {
+    expect(source).not.toContain("workflowConfig.merge");
+    expect(source).not.toContain("Workflow merge strategy is ${mergeStrategy}");
   });
 
   it("keeps the mail helper fire-and-forget and non-throwing", () => {

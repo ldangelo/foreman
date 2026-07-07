@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 // TRD-009: End-to-end integration test for bug.yaml workflow
 // 1. workflow-scoped fix prompt (fix-issue.md)
 // 2. QA validation phase with developer remediation on failure
-// 3. merge: auto (TRD-002, TRD-007)
-// Also verifies type-based dispatch selects bug.yaml for bead type "bug" (TRD-006)
+// 3. explicit create-pr/pr-wait/merge phases
+// Also verifies type-based dispatch selects bug.yaml for task type "bug" (TRD-006)
 
 const BUNDLED_WORKFLOWS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'defaults', 'workflows');
 
@@ -44,8 +44,8 @@ describe('TRD-009 bug.yaml workflow integration', () => {
       expect(bugWorkflow.name).toBe('bug');
     });
 
-    it('has merge: auto', () => {
-      expect(bugWorkflow.merge).toBe('auto');
+    it('has explicit PR and merge phases', () => {
+      expect(bugWorkflow.phases.map((p) => p.name)).toEqual(expect.arrayContaining(['create-pr', 'pr-wait', 'merge']));
     });
   });
 

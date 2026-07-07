@@ -64,7 +64,7 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orchestration server, which owns ready-task claiming, capacity, and worker launches.
 
-Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a Graphify-backed Explorer phase for semantic discovery before implementation. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed.
+Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a Graphify-backed Explorer phase for semantic discovery before implementation. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Workflow PR/merge behavior is controlled by explicit `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` YAML tags are invalid.
 
 ```bash
 foreman run                       # Dispatch all ready tasks through the Elixir scheduler
@@ -385,7 +385,7 @@ Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
 
-Merge completed agent work into the target branch via the refinery. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`.
+Merge completed agent work into the target branch via the refinery. Merge-capable workflows enqueue work from an explicit `merge` phase; workflows without that phase are not merge-queued by workflow execution. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`.
 
 ```bash
 foreman merge                     # Process merge queue

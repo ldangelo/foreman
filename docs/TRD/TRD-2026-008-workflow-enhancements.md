@@ -27,7 +27,7 @@ The Foreman pipeline executor already has clean extension points — `WorkflowPh
 
 ```
 WorkflowConfig (workflow-loader.ts)
-  + merge: 'auto' | 'pr' | 'none'         ← REQ-004
+  - rejects top-level merge/pr tags       ← REQ-004
 
 WorkflowPhaseConfig (workflow-loader.ts)
   + bash?: string                           ← REQ-001
@@ -46,9 +46,9 @@ pipeline-executor.ts (runPhaseSequence)
 store.ts (runs table)
   + merge_strategy column                   ← REQ-005
 
-auto-merge.ts / refinery.ts
-  + read merge_strategy from run record     ← REQ-004
-  + branch: merge vs PR vs skip
+agent-worker.ts / auto-merge.ts / refinery.ts
+  + explicit create-pr/pr-wait/merge builtin phases ← REQ-004
+  + read derived merge_strategy compatibility state
 ```
 
 ### Data Flow
@@ -57,7 +57,7 @@ auto-merge.ts / refinery.ts
 Dispatch:
   bead.type → resolveWorkflowName() → loadWorkflowConfig(name)
                                          ↓
-                                    WorkflowConfig.merge → stored in runs.merge_strategy
+                                    WorkflowConfig.phases → derive runs.merge_strategy
                                     WorkflowConfig.phases → pipeline-executor
 
 Phase execution:
@@ -65,10 +65,10 @@ Phase execution:
   phase.command? → interpolate({task.*}) → Pi SDK session.prompt(command) → artifact
   phase.prompt?  → loadPromptFile(prompt) → Pi SDK session.prompt(content) → artifact
 
-Post-finalize:
-  runs.merge_strategy === 'auto' → refinery.mergeCompleted() (current path)
-  runs.merge_strategy === 'pr'   → gh pr create
-  runs.merge_strategy === 'none' → set status=completed, skip merge
+PR/merge phases:
+  create-pr → create or reuse GitHub PR
+  pr-wait   → wait for checks/review readiness
+  merge     → final readiness gate and queue refinery merge
 ```
 
 ---
@@ -77,17 +77,17 @@ Post-finalize:
 
 ### Sprint 1: Foundation (workflow-loader + store schema)
 
-#### TRD-001: Add bash/command/merge fields to workflow types [4h]
+#### TRD-001: Add bash/command fields and reject legacy merge/pr workflow tags [4h]
 [satisfies REQ-001, REQ-002, REQ-003, REQ-004]
 
 **Validates PRD ACs:** AC-003-1, AC-003-2, AC-004-3
 
-Extend `WorkflowPhaseConfig` with optional `bash?: string` and `command?: string` fields. Extend `WorkflowConfig` with optional `merge?: 'auto' | 'pr' | 'none'` (default: `'auto'`). Add validation in `loadWorkflowConfig()`: exactly one of `bash`, `command`, `prompt` must be present per phase; `merge` must be one of the three valid values.
+Extend `WorkflowPhaseConfig` with optional `bash?: string` and `command?: string` fields. Add validation in `loadWorkflowConfig()`: exactly one of `bash`, `command`, or `prompt` must be present per phase; top-level `merge:` and `pr:` workflow tags are invalid because PR/merge behavior is expressed by explicit phases.
 
 **Implementation ACs:**
 - Given a workflow YAML with a phase containing both `bash:` and `prompt:`, when `loadWorkflowConfig()` is called, then it throws a validation error mentioning both conflicting fields.
 - Given a workflow YAML with a phase containing none of `bash:`, `command:`, or `prompt:`, when `loadWorkflowConfig()` is called, then it throws a validation error listing the missing fields.
-- Given a workflow YAML with `merge: invalid`, when `loadWorkflowConfig()` is called, then it throws a validation error listing valid merge values.
+- Given a workflow YAML with top-level `merge:` or `pr:`, when `loadWorkflowConfig()` is called, then it throws a validation error directing users to explicit PR/merge phases.
 
 [depends: none]
 
@@ -101,9 +101,9 @@ Write vitest tests for:
 - Valid phase with `command:` only — loads successfully
 - Phase with both `bash:` and `prompt:` — throws with clear message
 - Phase with none of the three — throws with clear message
-- `merge: auto` / `merge: pr` / `merge: none` — all accepted
-- `merge:` absent — defaults to `auto`
-- `merge: invalid` — throws validation error
+- `merge` phase present — derives auto-merge intent for persisted run compatibility
+- `merge` phase absent — derives no workflow-driven merge intent
+- Top-level `merge:` / `pr:` — throw validation errors
 
 ---
 
@@ -112,11 +112,11 @@ Write vitest tests for:
 
 **Validates PRD ACs:** AC-005-1
 
-Add `merge_strategy TEXT DEFAULT 'auto'` column to the `runs` table in `store.ts`. Update `createRun()` to accept and store the merge strategy. Update `getRun()` / run types to include the field.
+Keep `merge_strategy` as persisted compatibility state derived from workflow phases. Update run creation paths to store `auto` when a `merge` phase exists and `none` when it does not.
 
 **Implementation ACs:**
-- Given a new run created with `merge_strategy: 'pr'`, when `getRun()` is called, then the returned run object includes `merge_strategy: 'pr'`.
-- Given a run created without specifying merge_strategy, when `getRun()` is called, then `merge_strategy` defaults to `'auto'`.
+- Given a new run for a workflow with a `merge` phase, when `getRun()` is called, then the returned run object includes `merge_strategy: 'auto'`.
+- Given a new run for a workflow without a `merge` phase, when `getRun()` is called, then the returned run object includes `merge_strategy: 'none'`.
 
 [depends: none]
 
@@ -126,8 +126,8 @@ Add `merge_strategy TEXT DEFAULT 'auto'` column to the `runs` table in `store.ts
 [verifies TRD-002] [satisfies REQ-005] [depends: TRD-002]
 
 Write vitest tests for:
-- `createRun()` with explicit merge_strategy stores and retrieves correctly
-- `createRun()` without merge_strategy defaults to `'auto'`
+- `createRun()` stores and retrieves derived merge strategy correctly
+- workflows with no `merge` phase store `none`
 - Migration: existing runs without the column still work (Postgres ALTER TABLE compatibility)
 
 ---
@@ -258,7 +258,7 @@ Write vitest tests:
 
 ---
 
-### Sprint 3: Merge Strategy + Type Dispatch
+### Sprint 3: Phase-Driven Merge + Type Dispatch
 
 #### TRD-006: Type-based workflow resolution [3h]
 [satisfies REQ-006, REQ-007]
@@ -295,22 +295,20 @@ Write vitest tests (using temp directories with/without workflow files):
 
 ---
 
-#### TRD-007: Merge strategy in auto-merge and refinery [4h]
+#### TRD-007: Phase-driven PR/merge routing [4h]
 [satisfies REQ-004, REQ-005]
 
 **Validates PRD ACs:** AC-004-1, AC-004-2, AC-004-3, AC-004-4, AC-005-1
 
-1. **Dispatcher**: When dispatching a run, load `WorkflowConfig.merge`, pass to `store.createRun()` as `merge_strategy`.
-2. **auto-merge.ts**: In `autoMerge()`, read `run.merge_strategy` from the run record:
-   - `'auto'`: current behavior (refinery.mergeCompleted)
-   - `'pr'`: call `gh pr create` with bead title/description, set run status to `pr-created`
-   - `'none'`: set run status to `completed`, skip merge queue entirely
-3. **refinery.ts**: No changes needed — `autoMerge()` gates before calling refinery.
+1. **Dispatcher**: When dispatching a run, derive `merge_strategy` from the loaded workflow phases: `auto` when a `merge` phase exists, otherwise `none`.
+2. **agent-worker.ts**: Implement builtin `create-pr`, `pr-wait`, and `merge` phases. Finalize no longer creates PRs or enqueues merges implicitly.
+3. **auto-merge.ts / merge queue**: Keep `merge_strategy` handling for persisted compatibility and legacy queue reconciliation.
 
 **Implementation ACs:**
-- Given a run with `merge_strategy: 'auto'`, when autoMerge processes it, then refinery.mergeCompleted() is called (unchanged behavior).
-- Given a run with `merge_strategy: 'pr'`, when autoMerge processes it, then a GitHub PR is created and run status becomes `pr-created`.
-- Given a run with `merge_strategy: 'none'`, when autoMerge processes it, then no merge/PR occurs and run status is `completed`.
+- Given a workflow with `create-pr`, when that phase runs, then a GitHub PR is created or reused.
+- Given a workflow with `pr-wait`, when that phase runs, then checks/review readiness is enforced.
+- Given a workflow with `merge`, when that phase runs, then refinery merge processing is queued.
+- Given a workflow without `merge`, when finalize succeeds, then no workflow-driven merge queue entry is created.
 
 [depends: TRD-001, TRD-002]
 
@@ -320,11 +318,11 @@ Write vitest tests (using temp directories with/without workflow files):
 [verifies TRD-007] [satisfies REQ-004, REQ-005] [depends: TRD-007]
 
 Write vitest tests:
-- `merge_strategy: 'auto'` → refinery.mergeCompleted() called
-- `merge_strategy: 'pr'` → gh pr create called, status → pr-created
-- `merge_strategy: 'none'` → no merge, status → completed
-- Default (no merge_strategy) → auto behavior
-- Workflow YAML merge field propagates through dispatch → run record → auto-merge
+- workflow with `merge` phase derives `merge_strategy: 'auto'`
+- workflow without `merge` phase derives `merge_strategy: 'none'`
+- `create-pr` phase creates/reuses PR metadata
+- `merge` phase queues refinery merge processing
+- top-level `merge:` / `pr:` workflow tags are rejected
 
 ---
 
@@ -337,7 +335,6 @@ Create `src/defaults/workflows/bug.yaml` as a bundled workflow demonstrating all
 
 ```yaml
 name: bug
-merge: auto
 phases:
   - name: fix
     command: "/ensemble:fix-issue {task.title} {task.description}"

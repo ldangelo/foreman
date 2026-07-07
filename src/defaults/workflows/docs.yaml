@@ -8,7 +8,6 @@
 
 name: docs
 task_type: docs
-merge: auto
 setup: []
 # No dependencies needed for docs-only changes
 
