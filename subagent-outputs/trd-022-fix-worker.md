@@ -105,7 +105,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Hardened TRD-022 planning flow completion and command routing. PlanningFlow appends RunStarted/RunCompleted events, returns existing completed command-id runs idempotently, and generates unique run ids for direct calls without explicit ids. CommandRouter plan.prd/plan.trd aliases force the alias kind and preserve planning keys such as run_id/provider. ProjectionStore marks worker status completed on PhaseCompleted. planning_flow_test adds terminal projection/status-count, alias conflict, rerun, restart, HTTP command, and invalid-input coverage.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-022 planning flow bridge correctness fixes only. No bead state changes made.",
+  "manualNotes": "Scoped to TRD-022 planning flow bridge correctness fixes only. No task state changes made.",
   "notes": "Output report file is untracked after final write by design."
 }
 ```

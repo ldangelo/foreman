@@ -24,7 +24,6 @@ Thank you for your interest in contributing to **@oftheangels/foreman**! This do
 
 - **Node.js ≥ 20** — required by `engines` in `package.json`
 - **npm ≥ 9** — for workspaces and `npm ci`
-- **[br (beads_rust)](https://github.com/Dicklesworthstone/beads_rust)** — task tracking CLI
 - **Anthropic API key** — set `ANTHROPIC_API_KEY` in your environment
 
 ### Install and build

@@ -121,7 +121,7 @@ OperatorDashboard (root)
 │   ├── BoardView (collapsible)
 │   │   ├── BoardColumn[] (4 columns: Ready, In Progress, Blocked, Done)
 │   │   │   ├── ColumnHeader (name, count)
-│   │   │   └── BeadCard[]
+│   │   │   └── TaskCard[]
 │   │   └── BoardFooter (navigation hints)
 │   └── InboxView (collapsible)
 │       ├── MessageList[]
@@ -183,7 +183,7 @@ export interface RunningTasksView {
 
 export interface RunSummary {
   runId: string;
-  beadId: string;
+  taskId: string;
   priority: number;
   status: 'running' | 'paused' | 'failed' | 'completed';
   startedAt: Date;
@@ -204,16 +204,16 @@ export interface PhaseSummary {
 
 export interface BoardView {
   columns: {
-    ready: BeadItem[];
-    in_progress: BeadItem[];
-    blocked: BeadItem[];
-    done: BeadItem[];
+    ready: TaskItem[];
+    in_progress: TaskItem[];
+    blocked: TaskItem[];
+    done: TaskItem[];
   };
   totalCount: number;
 }
 
-export interface BeadItem {
-  beadId: string;
+export interface TaskItem {
+  taskId: string;
   title: string;
   priority: number;
   status: string;
@@ -237,7 +237,7 @@ export interface MailMessage {
   timestamp: Date;
   isRead: boolean;
   runId?: string;
-  beadId?: string;
+  taskId?: string;
 }
 ```
 
@@ -278,7 +278,7 @@ const STATUS_TO_COLUMN: Record<string, BoardColumn> = {
 
 **Responsibilities:**
 - Aggregate data from ForemanStore (runs), NativeTaskStore (tasks), PostgresMailClient (messages)
-- Calculate cross-references (run → bead, mail → run, bead → run)
+- Calculate cross-references (run → task, mail → run, task → run)
 - Maintain unified DashboardState
 - Trigger re-renders on state changes
 
@@ -301,7 +301,7 @@ export class StateManager {
   getRuns(status?: RunStatus[]): RunSummary[];
   
   /** Get tasks filtered by column */
-  getTasksByColumn(column: BoardColumn): BeadItem[];
+  getTasksByColumn(column: BoardColumn): TaskItem[];
   
   /** Get mail messages with cross-references */
   getMessages(options?: { unreadOnly?: boolean }): MailMessage[];
@@ -535,7 +535,7 @@ timestamp:2026-04-21T10:30:00Z
 | `run_progress` | Phase change or heartbeat |
 | `run_complete` | Run finished (success/fail) |
 | `mail_received` | New message in inbox |
-| `bead_update` | Task status changed |
+| `task_update` | Task status changed |
 
 ---
 
@@ -689,7 +689,7 @@ const state: DashboardState = {
         preview: msg.body.slice(0, 100),
         isRead: msg.read === 1,
         runId: msg.run_id,
-        beadId: run?.task_id,
+        taskId: run?.task_id,
       })),
       unreadCount: messages.filter(m => m.read === 0).length,
       totalCount: messages.length,

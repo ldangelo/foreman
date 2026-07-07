@@ -9,8 +9,8 @@ Commits:
 - 707676a5 test: verify Elixir backend docs
 
 Changed files:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - CLAUDE.md
 - README.md
 - docs/cli-reference.md
@@ -24,7 +24,7 @@ Validation:
 - `npx tsc --noEmit` exit 0.
 - `node /Users/ldangelo/Development/Fortium/ensemble/packages/development/lib/trd-cli.js parse docs/TRD/TRD-2026-014-elixir-backend-orchestration.md` exit 0; 52 tasks, warnings [].
 - No Elixir files touched; `mix test` not run.
-- Final bead count: 52/52 TRD tasks closed.
+- Final task count: 52/52 TRD tasks closed.
 - Final git status before writing this report: clean.
 
 Diff summary:
@@ -44,7 +44,7 @@ Current git status after report write:
     {
       "id": "criterion-1",
       "status": "satisfied",
-      "evidence": "Claimed TRD-026 with `/Users/ldangelo/.local/bin/br update bd-lxhto --status in_progress` before editing docs."
+      "evidence": "Claimed TRD-026 with `/Users/ldangelo/.local/bin/native task store update bd-lxhto --status in_progress` before editing docs."
     },
     {
       "id": "criterion-2",
@@ -68,8 +68,8 @@ Current git status after report write:
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "CLAUDE.md",
     "README.md",
     "docs/cli-reference.md",
@@ -83,7 +83,7 @@ Current git status after report write:
   ],
   "commandsRun": [
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-lxhto --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-lxhto --status in_progress",
       "result": "passed",
       "summary": "Claimed TRD-026 before documentation edits."
     },
@@ -93,7 +93,7 @@ Current git status after report write:
       "summary": "Pre-close implementation validation passed: docs test 3 passed, TypeScript passed, TRD parser warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-lxhto --reason \"Updated operator and architecture docs for Elixir backend migration\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-lxhto --reason \"Updated operator and architecture docs for Elixir backend migration\"",
       "result": "passed",
       "summary": "Closed TRD-026 after validation."
     },
@@ -103,7 +103,7 @@ Current git status after report write:
       "summary": "Created implementation/docs commit 0b196164."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-0asyf --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-0asyf --status in_progress",
       "result": "passed",
       "summary": "Claimed TRD-026-TEST after TRD-026 closed."
     },
@@ -113,17 +113,17 @@ Current git status after report write:
       "summary": "Pre-close test validation passed: docs test 3 passed, TypeScript passed, TRD parser warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-0asyf --reason \"Verified TRD-026 operator docs cover responsibilities, deprecations, and troubleshooting\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-0asyf --reason \"Verified TRD-026 operator docs cover responsibilities, deprecations, and troubleshooting\"",
       "result": "passed",
       "summary": "Closed TRD-026-TEST after validation."
     },
     {
       "command": "git commit -m \"test: verify Elixir backend docs\"",
       "result": "passed",
-      "summary": "Created test/bead commit 707676a5."
+      "summary": "Created test/task commit 707676a5."
     },
     {
-      "command": "git status --short && br list --all --limit 0 --title-contains '[trd:trd-2026-014-elixir-backend-orchestration:task:' --json",
+      "command": "git status --short && native task store list --all --limit 0 --title-contains '[trd:trd-2026-014-elixir-backend-orchestration:task:' --json",
       "result": "passed",
       "summary": "Clean before report write; all 52 TRD tasks closed."
     }
@@ -133,12 +133,12 @@ Current git status after report write:
     "npx tsc --noEmit: passed with no output",
     "TRD parser: ok, 52 tasks, warnings []",
     "mix test: not run because no Elixir files were touched",
-    "TRD task beads: 52 closed / 52 total",
+    "TRD task tasks: 52 closed / 52 total",
     "Commits: 0b196164, 707676a5"
   ],
   "residualRisks": [],
   "noStagedFiles": true,
-  "diffSummary": "Added a dedicated Elixir backend architecture guide and updated README, User Guide, CLI Reference, CLAUDE, and troubleshooting docs so operators can understand Node CLI vs Elixir server vs Node/Pi worker responsibilities, deprecated command replacements/legacy delegation, and event/projection/recovery troubleshooting. Added a focused Vitest doc coverage test for AC-024-1/2/3 and closed both TRD-026 beads.",
+  "diffSummary": "Added a dedicated Elixir backend architecture guide and updated README, User Guide, CLI Reference, CLAUDE, and troubleshooting docs so operators can understand Node CLI vs Elixir server vs Node/Pi worker responsibilities, deprecated command replacements/legacy delegation, and event/projection/recovery troubleshooting. Added a focused Vitest doc coverage test for AC-024-1/2/3 and closed both TRD-026 tasks.",
   "reviewFindings": [],
   "manualNotes": "No subagents run. Scope limited to TRD-026 docs and matching docs test. No Elixir runtime files touched.",
   "notes": "Writing this report leaves subagent-outputs/trd-026-worker.md untracked by design."

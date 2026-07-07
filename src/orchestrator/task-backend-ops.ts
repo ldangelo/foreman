@@ -10,12 +10,11 @@
  *   - updateTaskStatus() — updates task status directly
  *
  * All operations use the native Postgres task store via ForemanStore.
- * Beads (br CLI) operations have been removed — native tasks are mandatory.
+ * Tasks (native task store CLI) operations have been removed — native tasks are mandatory.
  */
 
-import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
-import { mapRunStatusToTaskStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
+import { mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
 import type { StateMismatch } from "../lib/run-status.js";
 import type { NativeTaskStatus } from "./types.js";
 import type { RunStatus } from "./read-models.js";
@@ -33,18 +32,13 @@ type StartupTaskStatusStore = {
   updateTaskStatus?(taskId: string, newStatus: NativeTaskStatus): Awaitable<void>;
 };
 
-type LegacyTaskClient = {
-  show(id: string): Awaitable<{ status?: string } | null | undefined>;
-  update?(id: string, updates: { status: string }): Awaitable<unknown>;
-};
-
 // ── Native Task Operations ─────────────────────────────────────────────────────
 //
 // These functions perform task lifecycle operations directly on the native
 // Postgres task store. They are called by agent-worker, refinery,
 // pipeline-executor, and auto-merge.
 //
-// Unlike the deprecated Beads backend, there is no write queue or sequential
+// Unlike the deprecated Tasks backend, there is no write queue or sequential
 // drain pattern — native tasks support concurrent writes via Postgres MVCC.
 
 /**
@@ -276,99 +270,21 @@ export async function syncTaskStatusOnStartup(
 
 export const enqueueCloseTask = closeTask;
 export const enqueueResetTaskToOpen = resetTaskToOpen;
-export const enqueueMarkBeadFailed = markTaskFailed;
-export const enqueueSetBeadStatus = updateTaskStatus;
+export const enqueueMarkTaskFailed = markTaskFailed;
+export const enqueueSetTaskStatus = updateTaskStatus;
 
-export function enqueueAddNotesToBead(_store: TaskStatusStore, _taskId: string, _note: string, _sender: string): void {
+export function enqueueAddNotesToTask(_store: TaskStatusStore, _taskId: string, _note: string, _sender: string): void {
   // Deprecated legacy alias retained for older call sites. Native task notes are
   // appended directly by the caller via the active backend adapter.
 }
 
-export async function syncBeadStatusOnStartup(
-  store: StartupTaskStatusStore,
-  taskClient: LegacyTaskClient,
-  projectId: string,
-  opts?: { dryRun?: boolean; projectPath?: string },
-): Promise<SyncResult> {
-  const dryRun = opts?.dryRun ?? false;
-  const terminalStatuses: Array<"completed" | "merged" | "pr-created" | "conflict" | "test-failed" | "failed" | "stuck" | "cooldown"> = [
-    "completed",
-    "merged",
-    "pr-created",
-    "conflict",
-    "test-failed",
-    "failed",
-    "stuck",
-    "cooldown",
-  ];
-
-  const terminalRuns = await Promise.resolve(store.getRunsByStatuses(terminalStatuses, projectId));
-  type RunLike = { id: string; task_id: string; status: RunStatus; created_at: string };
-  const latestByTask = new Map<string, RunLike>();
-  for (const run of terminalRuns) {
-    const existing = latestByTask.get(run.task_id);
-    if (!existing || run.created_at > existing.created_at) {
-      latestByTask.set(run.task_id, run);
-    }
-  }
-
-  const mismatches: StateMismatch[] = [];
-  const errors: string[] = [];
-  let synced = 0;
-
-  for (const run of latestByTask.values()) {
-    const expectedTaskStatus = mapRunStatusToTaskStatus(run.status);
-    try {
-      const task = await Promise.resolve(taskClient.show(run.task_id));
-      if (!task) continue;
-      const actualTaskStatus = task.status ?? "";
-      if (actualTaskStatus !== expectedTaskStatus) {
-        mismatches.push({
-          taskId: run.task_id,
-          runId: run.id,
-          runStatus: run.status,
-          actualTaskStatus,
-          expectedTaskStatus,
-        });
-        if (!dryRun) {
-          try {
-            execFileSync("br", ["update", run.task_id, "--status", expectedTaskStatus], {
-              cwd: opts?.projectPath,
-            });
-            synced++;
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            errors.push(`Failed to sync task ${run.task_id}: ${msg}`);
-          }
-        }
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!/not found/i.test(msg)) {
-        errors.push(`Could not check task ${run.task_id}: ${msg}`);
-      }
-    }
-  }
-
-  if (!dryRun && synced > 0) {
-    try {
-      execFileSync("br", ["sync", "--flush-only"], { cwd: opts?.projectPath });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`br sync --flush-only failed: ${msg}`);
-    }
-  }
-
-  return { synced, mismatches, errors };
-}
-
-// ── Deprecated Beads Operations (removed) ─────────────────────────────────────
+// ── Deprecated Tasks Operations (removed) ─────────────────────────────────────
 //
-// The following Beads-specific operations have been removed:
-//   - enqueueCloseTask, enqueueResetTaskToOpen, enqueueMarkBeadFailed,
-//     enqueueAddNotesToBead, enqueueAddLabelsToBead, enqueueSetBeadStatus
-//   - closeTask, resetTaskToOpen, markBeadFailed, addNotesToBead, addLabelsToBead
-//   - syncBeadStatusOnStartup
+// The following Tasks-specific operations have been removed:
+//   - enqueueCloseTask, enqueueResetTaskToOpen, enqueueMarkTaskFailed,
+//     enqueueAddNotesToTask, enqueueAddLabelsToTask, enqueueSetTaskStatus
+//   - closeTask, resetTaskToOpen, markTaskFailed, addNotesToTask, addLabelsToTask
+//   - syncTaskStatusOnStartup
 //
 // Use the native task operations above instead:
 //   - closeTask (store, taskId, sender)

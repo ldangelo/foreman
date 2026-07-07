@@ -446,7 +446,6 @@ export function createGetRunStatusTool(store: RunStatusReader): ToolDefinition {
         const progress = store.getRunProgress(params.runId);
         const info = {
           runId: run.id,
-          beadId: run.task_id,
           taskId: run.task_id,
           status: run.status,
           startedAt: run.started_at,

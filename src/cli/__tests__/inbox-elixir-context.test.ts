@@ -348,7 +348,7 @@ describe("inbox Elixir context", () => {
         event_id: "evt-1",
         run_id: "run-1",
         event_type: "dispatch",
-        payload: { bead_id: "task-1" },
+        payload: { task_id: "task-1" },
         occurred_at: "2026-01-01T00:00:00.000Z",
       },
       {
@@ -393,7 +393,7 @@ describe("inbox Elixir context", () => {
     expect(rendered).toContain("task-2");
   });
 
-  it("resolves Elixir runs by --bead alias", async () => {
+  it("resolves Elixir runs by --task alias", async () => {
     const tmpBase = makeTempDir();
     const projectDir = join(tmpBase, "registered-project");
     mkdirSync(join(projectDir, ".foreman"), { recursive: true });
@@ -407,7 +407,7 @@ describe("inbox Elixir context", () => {
     ]);
     mockListInbox.mockResolvedValue([]);
 
-    await inboxCommand.parseAsync(["--bead", "task-2", "--project-path", projectDir], { from: "user" });
+    await inboxCommand.parseAsync(["--task", "task-2", "--project-path", projectDir], { from: "user" });
 
     expect(mockListInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-2", unread: undefined, limit: 50 });
   });

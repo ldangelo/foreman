@@ -10,8 +10,8 @@ Commits:
 - 6f31244d test: verify Elixir planning flow bridge
 
 Files changed:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - docs/TRD/TRD-2026-014-elixir-backend-orchestration.md
 - packages/foreman_server/README.md
 - packages/foreman_server/lib/foreman_server/command_router.ex
@@ -63,7 +63,7 @@ Current git status:
     {
       "id": "criterion-4",
       "status": "satisfied",
-      "evidence": "Committed implementation as 1c63d503, a scoped production correction as 3a442758, and tests/bead state as 6f31244d."
+      "evidence": "Committed implementation as 1c63d503, a scoped production correction as 3a442758, and tests/task state as 6f31244d."
     },
     {
       "id": "criterion-5",
@@ -72,8 +72,8 @@ Current git status:
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "docs/TRD/TRD-2026-014-elixir-backend-orchestration.md",
     "packages/foreman_server/README.md",
     "packages/foreman_server/lib/foreman_server/command_router.ex",
@@ -86,9 +86,9 @@ Current git status:
   ],
   "commandsRun": [
     {
-      "command": "br update bd-9njx --status in_progress --json && br comment add bd-9njx ... && br sync --flush-only",
+      "command": "native task store update bd-9njx --status in_progress --json && native task store comment add bd-9njx ... && native task store sync --flush-only",
       "result": "passed",
-      "summary": "Claimed TRD-022 bead before editing."
+      "summary": "Claimed TRD-022 task before editing."
     },
     {
       "command": "cd packages/foreman_server && mix format && mix test",
@@ -106,12 +106,12 @@ Current git status:
       "summary": "TypeScript passed; TRD parser reported 52 tasks and warnings []."
     },
     {
-      "command": "br close bd-9njx --reason 'Completed TRD-022 planning flow execution' && br sync --flush-only && git commit -m 'feat: add Elixir planning flow bridge'",
+      "command": "native task store close bd-9njx --reason 'Completed TRD-022 planning flow execution' && native task store sync --flush-only && git commit -m 'feat: add Elixir planning flow bridge'",
       "result": "passed",
       "summary": "Closed TRD-022 and committed implementation as 1c63d503."
     },
     {
-      "command": "br update bd-kf4n0 --status in_progress --json && br comment add bd-kf4n0 ... && br sync --flush-only",
+      "command": "native task store update bd-kf4n0 --status in_progress --json && native task store comment add bd-kf4n0 ... && native task store sync --flush-only",
       "result": "passed",
       "summary": "Claimed TRD-022-TEST after dependency unlocked."
     },
@@ -136,9 +136,9 @@ Current git status:
       "summary": "Final validation passed; 89 tests, 0 failures; TypeScript pass; TRD parser pass."
     },
     {
-      "command": "br close bd-kf4n0 --reason 'Completed TRD-022-TEST; planning flow tests pass' && br sync --flush-only && git commit -m 'test: verify Elixir planning flow bridge'",
+      "command": "native task store close bd-kf4n0 --reason 'Completed TRD-022-TEST; planning flow tests pass' && native task store sync --flush-only && git commit -m 'test: verify Elixir planning flow bridge'",
       "result": "passed",
-      "summary": "Closed TRD-022-TEST and committed tests/bead changes as 6f31244d."
+      "summary": "Closed TRD-022-TEST and committed tests/task changes as 6f31244d."
     },
     {
       "command": "git status --short && git log --oneline -6",

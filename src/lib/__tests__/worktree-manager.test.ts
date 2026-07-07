@@ -63,7 +63,7 @@ describe("WorktreeManager", () => {
     const manager = new WorktreeManager({ root: join(tmpDir("foreman-worktrees-"), "worktrees") });
     const worktree = await manager.createWorktree({
       projectId: "proj",
-      beadId: "task-1",
+      taskId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });
@@ -83,7 +83,7 @@ describe("WorktreeManager", () => {
     const manager = new WorktreeManager({ root });
     const first = await manager.createWorktree({
       projectId: "proj",
-      beadId: "task-1",
+      taskId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });
@@ -92,7 +92,7 @@ describe("WorktreeManager", () => {
 
     const second = await manager.createWorktree({
       projectId: "proj",
-      beadId: "task-1",
+      taskId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });
@@ -123,7 +123,7 @@ describe("WorktreeManager", () => {
     const manager = new WorktreeManager({ root: join(tmpDir("foreman-worktrees-"), "worktrees") });
     const worktree = await manager.createWorktree({
       projectId: "proj",
-      beadId: "task-1",
+      taskId: "task-1",
       repoPath: repo,
       baseBranch: "main",
     });

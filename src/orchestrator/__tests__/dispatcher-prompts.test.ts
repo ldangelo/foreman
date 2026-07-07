@@ -2,8 +2,8 @@
  * Tests for TRD-012: Dispatcher inline prompts.
  *
  * Verifies:
- * - buildSpawnPrompt() does NOT emit "br close" (bead closed by refinery after merge)
- * - buildResumePrompt() does NOT emit "br close"
+ * - buildSpawnPrompt() does NOT emit "native task store close" (task closed by refinery after merge)
+ * - buildResumePrompt() does NOT emit "native task store close"
  * - No "sd close" references in any prompt
  * - Uses "git add ." (not "git add -A") to limit staging scope to current directory in worktrees
  */
@@ -21,18 +21,18 @@ function makeDispatcher() {
 }
 
 describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
-  it("does NOT include 'br close' — bead is closed by refinery after merge", () => {
+  it("does NOT include 'native task store close' — task is closed by refinery after merge", () => {
     const d = makeDispatcher();
     const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
 
-    expect(prompt).not.toContain("br close");
+    expect(prompt).not.toContain("native task store close");
   });
 
-  it("tells agent NOT to close the bead manually", () => {
+  it("tells agent NOT to close the task manually", () => {
     const d = makeDispatcher();
     const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain("Do NOT close the bead manually");
+    expect(prompt).toContain("Do NOT close the task manually");
   });
 
   it("does not include 'sd close'", () => {
@@ -42,11 +42,11 @@ describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
     expect(prompt).not.toContain("sd close");
   });
 
-  it("references 'br (beads_rust)'", () => {
+  it("references 'native task store (native task store)'", () => {
     const d = makeDispatcher();
     const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain("br (beads_rust)");
+    expect(prompt).toContain("native task store (native task store)");
   });
 
   it("includes git push to correct branch", () => {
@@ -71,13 +71,13 @@ describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
     expect(prompt).not.toContain("git add -A");
   });
 
-  it("includes 'br sync --flush-only' before git add (session protocol)", () => {
+  it("includes 'native task store sync --flush-only' before git add (session protocol)", () => {
     const d = makeDispatcher();
     const prompt = d.buildSpawnPrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain("br sync --flush-only");
+    expect(prompt).toContain("native task store sync --flush-only");
 
-    const syncIdx = prompt.indexOf("br sync --flush-only");
+    const syncIdx = prompt.indexOf("native task store sync --flush-only");
     const addIdx = prompt.indexOf("git add .");
     expect(syncIdx).toBeGreaterThan(-1);
     expect(addIdx).toBeGreaterThan(-1);
@@ -86,18 +86,18 @@ describe("TRD-012: Dispatcher.buildSpawnPrompt", () => {
 });
 
 describe("TRD-012: Dispatcher.buildResumePrompt", () => {
-  it("does NOT include 'br close' — bead is closed by refinery after merge", () => {
+  it("does NOT include 'native task store close' — task is closed by refinery after merge", () => {
     const d = makeDispatcher();
     const prompt = d.buildResumePrompt("bd-001", "Implement feature");
 
-    expect(prompt).not.toContain("br close");
+    expect(prompt).not.toContain("native task store close");
   });
 
-  it("tells agent NOT to close the bead manually", () => {
+  it("tells agent NOT to close the task manually", () => {
     const d = makeDispatcher();
     const prompt = d.buildResumePrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain("Do NOT close the bead manually");
+    expect(prompt).toContain("Do NOT close the task manually");
   });
 
   it("does not include 'sd close'", () => {
@@ -129,13 +129,13 @@ describe("TRD-012: Dispatcher.buildResumePrompt", () => {
     expect(prompt).not.toContain("git add -A");
   });
 
-  it("includes 'br sync --flush-only' before git add (session protocol)", () => {
+  it("includes 'native task store sync --flush-only' before git add (session protocol)", () => {
     const d = makeDispatcher();
     const prompt = d.buildResumePrompt("bd-001", "Implement feature");
 
-    expect(prompt).toContain("br sync --flush-only");
+    expect(prompt).toContain("native task store sync --flush-only");
 
-    const syncIdx = prompt.indexOf("br sync --flush-only");
+    const syncIdx = prompt.indexOf("native task store sync --flush-only");
     const addIdx = prompt.indexOf("git add .");
     expect(syncIdx).toBeGreaterThan(-1);
     expect(addIdx).toBeGreaterThan(-1);

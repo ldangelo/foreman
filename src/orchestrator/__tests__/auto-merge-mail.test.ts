@@ -6,7 +6,7 @@
  *   - merge-complete  — branch merged successfully
  *   - merge-conflict  — conflict detected (code conflicts or PRs created)
  *   - merge-failed    — merge failed (test failures, no-completed-run, unexpected error)
- *   - bead-closed     — bead status synced in br after merge outcome
+ *   - task-closed     — task status synced in native task store after merge outcome
  *
  * These tests use a mock store.sendMessage() to capture sent messages
  * without requiring a real Postgres database.
@@ -101,9 +101,9 @@ vi.mock("../../lib/store.js", () => ({
 }));
 
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueAddNotesToBead: vi.fn(),
-  enqueueMarkBeadFailed: vi.fn(),
-  enqueueSetBeadStatus: vi.fn(),
+  enqueueAddNotesToTask: vi.fn(),
+  enqueueMarkTaskFailed: vi.fn(),
+  enqueueSetTaskStatus: vi.fn(),
 }));
 
 vi.mock("../merge-queue.js", () => ({
@@ -429,12 +429,12 @@ describe("autoMerge() mail — merge-failed (unexpected error)", () => {
   });
 });
 
-// ── Tests: bead-closed mail ───────────────────────────────────────────────────
+// ── Tests: task-closed mail ───────────────────────────────────────────────────
 
-describe("autoMerge() mail — bead-closed", () => {
+describe("autoMerge() mail — task-closed", () => {
   beforeEach(resetMocks);
 
-  it("sends bead-closed mail after successful merge", async () => {
+  it("sends task-closed mail after successful merge", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001" }],
@@ -446,21 +446,21 @@ describe("autoMerge() mail — bead-closed", () => {
 
     await autoMerge(makeOpts());
 
-    const beadClosedCalls = mockSendMessage.mock.calls.filter(
-      (c: unknown[]) => c[3] === "bead-closed",
+    const taskClosedCalls = mockSendMessage.mock.calls.filter(
+      (c: unknown[]) => c[3] === "task-closed",
     );
-    expect(beadClosedCalls).toHaveLength(1);
-    const [runId, sender, recipient, subject, bodyStr] = beadClosedCalls[0] as [string, string, string, string, string];
+    expect(taskClosedCalls).toHaveLength(1);
+    const [runId, sender, recipient, subject, bodyStr] = taskClosedCalls[0] as [string, string, string, string, string];
     expect(runId).toBe("run-001");
     expect(sender).toBe("auto-merge");
     expect(recipient).toBe("foreman");
-    expect(subject).toBe("bead-closed");
+    expect(subject).toBe("task-closed");
     const body = JSON.parse(bodyStr) as Record<string, unknown>;
     expect(body.taskId).toBe("bd-test-001");
     expect(body.timestamp).toBeDefined();
   });
 
-  it("does NOT send bead-closed mail when merge fails (after conflict) — Fix 2", async () => {
+  it("does NOT send task-closed mail when merge fails (after conflict) — Fix 2", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry(1)).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
@@ -472,14 +472,14 @@ describe("autoMerge() mail — bead-closed", () => {
 
     await autoMerge(makeOpts());
 
-    const beadClosedCalls = mockSendMessage.mock.calls.filter(
-      (c: unknown[]) => c[3] === "bead-closed",
+    const taskClosedCalls = mockSendMessage.mock.calls.filter(
+      (c: unknown[]) => c[3] === "task-closed",
     );
-    // bead-closed must NOT be sent when merge did not succeed (Fix 2)
-    expect(beadClosedCalls).toHaveLength(0);
+    // task-closed must NOT be sent when merge did not succeed (Fix 2)
+    expect(taskClosedCalls).toHaveLength(0);
   });
 
-  it("does NOT send bead-closed mail when refinery throws — Fix 2", async () => {
+  it("does NOT send task-closed mail when refinery throws — Fix 2", async () => {
     mockMergeQueueDequeue
       .mockReturnValueOnce(makeEntry(1))
       .mockReturnValue(null);
@@ -487,11 +487,11 @@ describe("autoMerge() mail — bead-closed", () => {
 
     await autoMerge(makeOpts());
 
-    const beadClosedCalls = mockSendMessage.mock.calls.filter(
-      (c: unknown[]) => c[3] === "bead-closed",
+    const taskClosedCalls = mockSendMessage.mock.calls.filter(
+      (c: unknown[]) => c[3] === "task-closed",
     );
-    // bead-closed must NOT be sent when refinery throws (Fix 2)
-    expect(beadClosedCalls).toHaveLength(0);
+    // task-closed must NOT be sent when refinery throws (Fix 2)
+    expect(taskClosedCalls).toHaveLength(0);
   });
 });
 

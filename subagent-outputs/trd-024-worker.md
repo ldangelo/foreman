@@ -9,8 +9,8 @@ Commits:
 - 38dbc17c test: verify Elixir operational observability
 
 Changed files:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - CLAUDE.md
 - README.md
 - docs/cli-reference.md
@@ -50,7 +50,7 @@ Final git status before report write: clean.
     {
       "id": "criterion-1",
       "status": "satisfied",
-      "evidence": "Claimed TRD-024 bead with `/Users/ldangelo/.local/bin/br update bd-0fdng --status in_progress` before implementation edits."
+      "evidence": "Claimed TRD-024 task with `/Users/ldangelo/.local/bin/native task store update bd-0fdng --status in_progress` before implementation edits."
     },
     {
       "id": "criterion-2",
@@ -70,12 +70,12 @@ Final git status before report write: clean.
     {
       "id": "criterion-5",
       "status": "satisfied",
-      "evidence": "Created separate commits: 1b7a25bd for implementation/docs/bead close and 38dbc17c for tests/test bead close."
+      "evidence": "Created separate commits: 1b7a25bd for implementation/docs/task close and 38dbc17c for tests/test task close."
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "CLAUDE.md",
     "README.md",
     "docs/cli-reference.md",
@@ -97,12 +97,12 @@ Final git status before report write: clean.
   ],
   "commandsRun": [
     {
-      "command": "git status --short && br show bd-0fdng --json && br show bd-rwi15 --json",
+      "command": "git status --short && native task store show bd-0fdng --json && native task store show bd-rwi15 --json",
       "result": "passed",
-      "summary": "Verified clean start and parent-selected TRD-024 bead open; TRD-025 also ready but not selected."
+      "summary": "Verified clean start and parent-selected TRD-024 task open; TRD-025 also ready but not selected."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-0fdng --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-0fdng --status in_progress",
       "result": "passed",
       "summary": "Claimed TRD-024 before implementation edits."
     },
@@ -127,17 +127,17 @@ Final git status before report write: clean.
       "summary": "Pre-close implementation validation passed: 107 tests, compile clean, TypeScript pass, TRD parser warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-0fdng --reason \"Implemented operational doctor, metrics, projection lag, and debug anomaly views\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-0fdng --reason \"Implemented operational doctor, metrics, projection lag, and debug anomaly views\"",
       "result": "passed",
       "summary": "Closed TRD-024 after validation."
     },
     {
       "command": "git add ... && git commit -m \"feat: add Elixir operational observability\"",
       "result": "passed",
-      "summary": "Committed implementation/docs and TRD-024 bead close as 1b7a25bd."
+      "summary": "Committed implementation/docs and TRD-024 task close as 1b7a25bd."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-epjpd --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-epjpd --status in_progress",
       "result": "passed",
       "summary": "Claimed TRD-024-TEST after TRD-024 closed and dependency unlocked."
     },
@@ -147,14 +147,14 @@ Final git status before report write: clean.
       "summary": "Pre-close test validation passed: 107 tests, 4 Vitest tests, TypeScript pass, TRD parser warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-epjpd --reason \"Verified operational doctor, metrics, projection lag, and debug anomaly behavior\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-epjpd --reason \"Verified operational doctor, metrics, projection lag, and debug anomaly behavior\"",
       "result": "passed",
       "summary": "Closed TRD-024-TEST after validation."
     },
     {
       "command": "git add ... && git commit -m \"test: verify Elixir operational observability\"",
       "result": "passed",
-      "summary": "Committed tests and TRD-024-TEST bead close as 38dbc17c."
+      "summary": "Committed tests and TRD-024-TEST task close as 38dbc17c."
     },
     {
       "command": "git status --short",

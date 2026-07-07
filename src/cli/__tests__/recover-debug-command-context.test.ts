@@ -148,7 +148,7 @@ describe("foreman debug/recover command context", () => {
     return {
       id: "run-daemon",
       project_id: "proj-1",
-      bead_id: "task-1",
+      task_id: "task-1",
       status: "running",
       branch: "foreman/task-1",
       agent_type: "daemon",
@@ -202,7 +202,7 @@ describe("foreman debug/recover command context", () => {
     expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
     expect(ForemanStore.forProject).toHaveBeenCalledWith(canonicalPath);
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
-    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "task-1", limit: 50 });
+    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-1", limit: 50 });
     expect(localStore.getRunsForTask).not.toHaveBeenCalled();
   });
 
@@ -222,7 +222,7 @@ describe("foreman debug/recover command context", () => {
     expect(resolveRepoRootProjectPathMock).toHaveBeenCalledWith({});
     expect(ForemanStore.forProject).toHaveBeenCalledWith(canonicalPath);
     expect(mockCreateTrpcClient).toHaveBeenCalledTimes(1);
-    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "task-1", limit: 50 });
+    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-1", limit: 50 });
     expect(localStore.getRunsForTask).not.toHaveBeenCalled();
   });
 

@@ -17,7 +17,7 @@ describe('interpolateTaskPlaceholders', () => {
 
   describe('supported placeholders', () => {
     it('interpolates {task.id}', () => {
-      expect(interpolateTaskPlaceholders('Bead: {task.id}', FULL_TASK)).toBe('Bead: bd-001');
+      expect(interpolateTaskPlaceholders('Task: {task.id}', FULL_TASK)).toBe('Task: bd-001');
     });
 
     it('interpolates {task.title}', () => {

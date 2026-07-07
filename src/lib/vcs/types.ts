@@ -78,7 +78,7 @@ export interface PushOptions {
 
 /** Template variables for backend-specific finalize command generation. */
 export interface FinalizeTemplateVars {
-  /** The task/bead ID for this task (e.g. 'bd-deoi'). */
+  /** The task/task ID for this task (e.g. 'bd-deoi'). */
   taskId: string;
   /** Human-readable title of the task/task. */
   taskTitle: string;
@@ -107,7 +107,7 @@ export interface FinalizeCommands {
   commitCommand: string;
   /** Command to push the branch/bookmark to the remote. */
   pushCommand: string;
-  /** Command to integrate the latest target-branch changes into the bead branch for finalize validation. */
+  /** Command to integrate the latest target-branch changes into the task branch for finalize validation. */
   integrateTargetCommand: string;
   /** Command to verify the branch/bookmark exists on the remote after push. */
   branchVerifyCommand: string;

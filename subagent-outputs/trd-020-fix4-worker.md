@@ -110,7 +110,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "ForemanServer.DebugViews now redacts inline hyphen aliases for configured underscore secret keys by adding underscore-to-hyphen variants to the generated secret-key regex. Debug view and HTTP tests now cover api-key, access-token, auth-token, and client-secret forms while preserving prior redaction and UTF-8 truncation coverage.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-020 debug view inline redaction only. Did not alter bead state or broader behavior.",
+  "manualNotes": "Scoped to TRD-020 debug view inline redaction only. Did not alter task state or broader behavior.",
   "notes": "Untracked subagent output artifacts remain by design."
 }
 ```

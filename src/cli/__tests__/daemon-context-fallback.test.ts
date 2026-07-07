@@ -48,7 +48,7 @@ function makeDaemonRun() {
   return {
     id: "run-daemon",
     project_id: "proj-daemon",
-    bead_id: "task-1",
+    task_id: "task-1",
     status: "running",
     branch: "foreman/task-1",
     agent_type: "daemon",
@@ -137,7 +137,7 @@ describe("daemon context fallback", () => {
     expect(localStore.getRunsForTask).not.toHaveBeenCalled();
     expect(localStore.getRunProgress).not.toHaveBeenCalled();
     expect(localStore.getAllMessages).not.toHaveBeenCalled();
-    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", beadId: "task-1", limit: 50 });
+    expect(daemonRunsList).toHaveBeenCalledWith({ projectId: "proj-1", taskId: "task-1", limit: 50 });
     expect(daemonMailList).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-daemon" });
   });
 

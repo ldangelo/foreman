@@ -276,7 +276,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 - All Agent Mail messages (chronological)
 - Pipeline reports (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, etc.)
 - Agent worker logs (`~/.foreman/logs/<runId>.log`)
-- Bead info from `br show`
+- Task info from `native task store show`
 
 ### `foreman doctor`
 

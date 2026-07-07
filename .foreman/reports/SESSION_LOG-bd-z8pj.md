@@ -7,7 +7,7 @@
 - Run ID: 10ad7fe2-467e-4bc4-8e6f-341232cdf7af
 
 ## Key Activities
-1. Read TASK.md — understood the infinite re-dispatch loop problem with sentinel beads
+1. Read TASK.md — understood the infinite re-dispatch loop problem with sentinel tasks
 2. Read EXPLORER_REPORT.md — reviewed architecture, problem flow, and recommended approach
 3. Read QA_REPORT.md — noted 7 new tests added, all passing, TypeScript clean
 4. Read `src/orchestrator/auto-merge.ts` — reviewed the implementation

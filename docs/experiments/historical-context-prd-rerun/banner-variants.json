@@ -4,11 +4,11 @@
   "description": "Canonical banner text snippets. Do not modify spacing or emoji. Each entry maps a variant name to its exact Markdown blockquote content.",
   "variants": {
     "standard": {
-      "description": "Default archival banner for beads-first era documents",
-      "trigger": "Document describes beads-first architecture without comparison or migration context",
+      "description": "Default archival banner for tasks-first era documents",
+      "trigger": "Document describes tasks-first architecture without comparison or migration context",
       "lines": [
         "> ⚠️ Historical Context",
-        "> This document describes Foreman's beads-first architecture, which has been",
+        "> This document describes Foreman's tasks-first architecture, which has been",
         "> superseded by native task management (TRD-2026-006). Some instructions,",
         "> configurations, or comparisons in this document may no longer reflect",
         "> current behavior."
@@ -20,7 +20,7 @@
       "additionalLine": "Comparisons to external tools (e.g. Overstory, Flywheel) reflect Foreman at a specific historical point and may be outdated.",
       "lines": [
         "> ⚠️ Historical Context",
-        "> This document describes Foreman's beads-first architecture, which has been",
+        "> This document describes Foreman's tasks-first architecture, which has been",
         "> superseded by native task management (TRD-2026-006). Some instructions,",
         "> configurations, or comparisons in this document may no longer reflect",
         "> current behavior.",
@@ -30,11 +30,11 @@
     },
     "migration": {
       "description": "For migration guides describing past transitions",
-      "trigger": "Document is a migration guide (tasks → br, or other historical migration)",
+      "trigger": "Document is a migration guide (tasks → native task store, or other historical migration)",
       "additionalLine": "This migration guide is preserved for historical reference. See TRD-2026-006 for current task management architecture.",
       "lines": [
         "> ⚠️ Historical Context",
-        "> This document describes Foreman's beads-first architecture, which has been",
+        "> This document describes Foreman's tasks-first architecture, which has been",
         "> superseded by native task management (TRD-2026-006). Some instructions,",
         "> configurations, or comparisons in this document may no longer reflect",
         "> current behavior.",
@@ -42,17 +42,17 @@
         "> for current task management architecture."
       ]
     },
-    "beads-rust-only": {
-      "description": "For documents describing the deprecated BeadsRustClient era without coexistence fallback",
-      "trigger": "Document describes BeadsRustClient as the sole task backend (before FOREMAN_TASK_BACKEND coexistence)",
-      "additionalLine": "The BeadsRustClient is deprecated. See TRD-2026-019 for deprecation schedule.",
+    "task-client-only": {
+      "description": "For documents describing the deprecated TaskClient era without coexistence fallback",
+      "trigger": "Document describes TaskClient as the sole task backend (before FOREMAN_TASK_BACKEND coexistence)",
+      "additionalLine": "The TaskClient is deprecated. See TRD-2026-019 for deprecation schedule.",
       "lines": [
         "> ⚠️ Historical Context",
-        "> This document describes Foreman's beads-first architecture, which has been",
+        "> This document describes Foreman's tasks-first architecture, which has been",
         "> superseded by native task management (TRD-2026-006). Some instructions,",
         "> configurations, or comparisons in this document may no longer reflect",
         "> current behavior.",
-        "> The BeadsRustClient is deprecated. See TRD-2026-019 for deprecation schedule."
+        "> The TaskClient is deprecated. See TRD-2026-019 for deprecation schedule."
       ]
     }
   },

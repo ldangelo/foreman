@@ -206,10 +206,10 @@ function renderSummary(runId: string, tailCount: number): void {
   }
 }
 
-function normalizeDaemonRun(row: Run & { bead_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }): Run {
+function normalizeDaemonRun(row: Run & { task_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }): Run {
   return {
     ...row,
-    task_id: row.task_id ?? row.bead_id ?? row.id,
+    task_id: row.task_id ?? row.task_id ?? row.id,
     completed_at: row.completed_at ?? row.finished_at ?? null,
   };
 }
@@ -307,7 +307,7 @@ async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise
   const runId = opts.run ?? id;
   if (runId && /^[0-9a-f-]{8,}$/i.test(runId)) {
     try {
-      const directRow = await client.runs.get({ runId }) as (Run & { bead_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }) | null;
+      const directRow = await client.runs.get({ runId }) as (Run & { task_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }) | null;
       if (directRow) {
         const run = normalizeDaemonRun(directRow);
         const progress = await client.runs.getProgress({ runId: run.id }) as RunProgress | null;
@@ -323,14 +323,14 @@ async function resolveDaemonRun(id: string | undefined, opts: LogsOpts): Promise
   const tasks = await client.tasks.list({ projectId: project.id }) as TaskRow[];
   const matches = tasks.filter((task) => task.id === id || task.id.startsWith(id));
   if (matches.length === 1 && matches[0]?.run_id) {
-    const runRow = await client.runs.get({ runId: matches[0].run_id }) as (Run & { bead_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }) | null;
+    const runRow = await client.runs.get({ runId: matches[0].run_id }) as (Run & { task_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }) | null;
     if (!runRow) return null;
     const run = normalizeDaemonRun(runRow);
     const progress = await client.runs.getProgress({ runId: run.id }) as RunProgress | null;
     return { run, progress: progress ?? progressFromRun(runRow), taskId: matches[0].id };
   }
 
-  const runRows = await client.runs.list({ projectId: project.id, limit: 100 }) as Array<Run & { bead_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }>;
+  const runRows = await client.runs.list({ projectId: project.id, limit: 100 }) as Array<Run & { task_id?: string; finished_at?: string | null; progress?: RunProgress | string | null }>;
   const runs = runRows.map(normalizeDaemonRun);
   const match = runs.find((run) => run.id === id || run.id.startsWith(id) || run.task_id === id || run.task_id.startsWith(id));
   if (!match) return null;

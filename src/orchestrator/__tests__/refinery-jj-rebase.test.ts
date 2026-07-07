@@ -9,8 +9,8 @@ vi.mock("node:child_process", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseTask: vi.fn(),
   enqueueResetTaskToOpen: vi.fn(),
-  enqueueAddNotesToBead: vi.fn(),
-  enqueueSetBeadStatus: vi.fn(),
+  enqueueAddNotesToTask: vi.fn(),
+  enqueueSetTaskStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({

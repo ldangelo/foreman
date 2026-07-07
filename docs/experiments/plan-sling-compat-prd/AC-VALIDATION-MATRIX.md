@@ -21,7 +21,7 @@ This document provides a test matrix for validating all acceptance criteria defi
 | **AC-001-2** | TRD satisfies parseTrd() format | Call `parseTrd(output)` on create-trd-foreman output; must not throw | `trd-parser-foreman.test.ts` | No `SLING-010` (missing columns), no `SLING-002` (no tasks), SlingPlan has epic + sprints + stories + tasks | ⬜ |
 | **AC-001-3** | All task statuses are `[ ]` | Count `[x]` occurrences in task tables of generated TRD | `trd-parser-foreman.test.ts` | `[x]` count in task tables = 0 | ⬜ |
 | **AC-002-1** | sling prd runs create-trd-foreman + parseTrd + execute | Run `foreman sling prd <prd> --dry-run --json` and inspect JSON output | `sling-prd.test.ts` | JSON contains valid `SlingPlan` with `epic.title`, `sprints[]`, `stories[].tasks[]` | ⬜ |
-| **AC-002-2** | Tasks created with status=open | Run `foreman sling prd <prd> --auto`; query `br list --status=open` | `sling-prd.test.ts` | All newly created tasks have `status: open` | ⬜ |
+| **AC-002-2** | Tasks created with status=open | Run `foreman sling prd <prd> --auto`; query `native task store list --status=open` | `sling-prd.test.ts` | All newly created tasks have `status: open` | ⬜ |
 | **AC-002-3** | --auto flag skips confirmation | Run `foreman sling prd <prd> --auto --dry-run`; assert no stdin reads | `sling-prd.test.ts` | Process completes without hanging on confirmation prompt | ⬜ |
 | **AC-002-4** | --dry-run previews without writing | Run `foreman sling prd <prd> --dry-run`; query task count before/after | `sling-prd.test.ts` | Task store count unchanged after `--dry-run` | ⬜ |
 | **AC-002-5** | --project and --project-path work | Run `foreman sling prd <prd> --project <name>`; verify correct project | `sling-prd.test.ts` | Tasks written to correct project's Postgres DB | ⬜ |
@@ -31,12 +31,12 @@ This document provides a test matrix for validating all acceptance criteria defi
 | **AC-003-4** | All task statuses are `[ ]` | Inspect status column in all task table rows | `trd-parser-foreman.test.ts` | 0 `[x]`, 0 `[~]`, all `[ ]` (open) | ⬜ |
 | **AC-003-5** | Dependencies use TASK-ID format | Inspect deps column cells; regex test: `/^[A-Z]+-T\d+(,\s*[A-Z]+-T\d+)*$/` | `trd-parser-foreman.test.ts` | All non-empty deps cells match format; range expressions (if any) expand correctly | ⬜ |
 | **AC-003-6** | Task IDs match [A-Z]+-T\d+ | Regex test against all trdId values in SlingPlan | `trd-parser-foreman.test.ts` | 100% of trdId values match pattern | ⬜ |
-| **AC-004-1** | Tasks in br ready output | Run `br ready` after `sling prd`; count tasks | `sling-prd.test.ts` | All epic/sprint/story/task nodes appear in `br ready` (unblocked) | ⬜ |
+| **AC-004-1** | Tasks in native task store ready output | Run `native task store ready` after `sling prd`; count tasks | `sling-prd.test.ts` | All epic/sprint/story/task nodes appear in `native task store ready` (unblocked) | ⬜ |
 | **AC-004-2** | Parent-child dependencies correct | Query task store for dependency type `parent-child` | `sling-prd.test.ts` | Epic has no parent; sprint has parent=epic; story has parent=sprint; task has parent=story | ⬜ |
 | **AC-004-3** | externalId set to trd:<TRD-ID> | Query `external_id` column in tasks table | `sling-prd.test.ts` | All rows have `external_id` matching pattern `trd:<id>` | ⬜ |
 | **AC-004-4** | Type mapping correct | Query `type` column in tasks table | `sling-prd.test.ts` | epic→epic, sprint→feature, story→feature, task→task, spike→chore | ⬜ |
 | **AC-004-5** | Priority mapping correct | Query `priority` column in tasks table | `sling-prd.test.ts` | critical→0, high→1, medium→2, low→3 | ⬜ |
-| **AC-005-1** | sling trd works with create-trd output | Run `foreman sling trd <beads-path-trd> --auto` on existing TRD | `sling.test.ts` (existing) | Tasks created, no errors | ⬜ |
+| **AC-005-1** | sling trd works with create-trd output | Run `foreman sling trd <tasks-path-trd> --auto` on existing TRD | `sling.test.ts` (existing) | Tasks created, no errors | ⬜ |
 | **AC-005-2** | sling trd works with create-trd-foreman output | Run `foreman sling trd <foreman-path-trd> --auto` | `sling-prd.test.ts` | Tasks created, no errors | ⬜ |
 | **AC-005-3** | parseTrd() API unchanged | Verify existing `trd-parser.test.ts` tests pass | `trd-parser.test.ts` (existing) | All tests pass without modification | ⬜ |
 | **AC-005-4** | execute() API unchanged | Verify existing `sling-executor.test.ts` tests pass | `sling-executor.test.ts` (existing) | All tests pass without modification | ⬜ |
@@ -106,7 +106,7 @@ A TRD in `create-trd-foreman` format generated from Fixture 1. Must include:
 
 **Location:** `src/orchestrator/__tests__/fixtures/test-trd-foreman.md`
 
-### Fixture 3: Beads-path TRD (for AC-005-1)
+### Fixture 3: Tasks-path TRD (for AC-005-1)
 
 An existing TRD in the original `create-trd` format from `docs/TRD/TRD-2026-018-ensemble-pi-runtime.md`. Used for backward compatibility testing.
 

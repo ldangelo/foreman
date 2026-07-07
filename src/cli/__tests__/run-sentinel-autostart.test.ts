@@ -17,8 +17,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const {
   mockEnsureBrInstalled,
-  MockBeadsRustClient,
-  MockBvClient,
+  MockTaskClient,
+  MockTaskOrderingClient,
   mockDispatch,
   MockDispatcher,
   mockGetActiveRuns,
@@ -31,7 +31,6 @@ const {
   mockRequireProjectOrAllInMultiMode,
   mockPostgresStoreForProject,
   mockWrapPostgresSentinelStore,
-  mockSyncBeadStatusOnStartup,
   mockSyncTaskStatusOnStartup,
   mockPurgeOrphanedWorkerConfigs,
   MockForemanStore,
@@ -43,10 +42,10 @@ const {
   mockVcsCreate,
 } = vi.hoisted(() => {
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
-  const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
+  const MockTaskClient = vi.fn(function (this: Record<string, unknown>) {
     this.ensureBrInstalled = mockEnsureBrInstalled;
   });
-  const MockBvClient = vi.fn(function () { /* noop */ });
+  const MockTaskOrderingClient = vi.fn(function () { /* noop */ });
 
   const mockDispatch = vi.fn();
   const MockDispatcher = vi.fn(function (this: Record<string, unknown>) {
@@ -65,7 +64,6 @@ const {
 
   const mockPostgresStoreForProject = vi.fn();
   const mockWrapPostgresSentinelStore = vi.fn();
-  const mockSyncBeadStatusOnStartup = vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
   const mockSyncTaskStatusOnStartup = vi.fn().mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
   const mockPurgeOrphanedWorkerConfigs = vi.fn().mockResolvedValue(0);
 
@@ -98,8 +96,8 @@ const {
 
   return {
     mockEnsureBrInstalled,
-    MockBeadsRustClient,
-    MockBvClient,
+    MockTaskClient,
+    MockTaskOrderingClient,
     mockDispatch,
     MockDispatcher,
     mockGetActiveRuns,
@@ -118,7 +116,6 @@ const {
     mockRequireProjectOrAllInMultiMode,
     mockPostgresStoreForProject,
     mockWrapPostgresSentinelStore,
-    mockSyncBeadStatusOnStartup,
     mockSyncTaskStatusOnStartup,
     mockPurgeOrphanedWorkerConfigs,
     mockVcsCreate,
@@ -137,7 +134,7 @@ vi.mock("../../lib/trpc-client.js", () => ({
     },
   }),
 }));
-vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
+vi.mock("../../lib/task-client.js", () => ({ TaskClient: MockTaskClient }));
 // Skip runtime asset preflight — no prompts/workflows in test env
 vi.mock("../../lib/prompt-loader.js", () => ({
   findMissingPrompts: () => [],
@@ -150,7 +147,7 @@ vi.mock("../../lib/workflow-loader.js", () => ({
   listAvailableWorkflows: () => ["default", "quick"],
   loadWorkflowConfig: () => ({ name: "default", phases: [] }),
 }));
-vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
+vi.mock("../../lib/task-ordering.js", () => ({ TaskOrderingClient: MockTaskOrderingClient }));
 vi.mock("../../orchestrator/dispatcher.js", () => ({ Dispatcher: MockDispatcher, purgeOrphanedWorkerConfigs: mockPurgeOrphanedWorkerConfigs }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/postgres-store.js", () => ({ PostgresStore: { forProject: mockPostgresStoreForProject } }));
@@ -173,7 +170,6 @@ vi.mock("../watch-ui.js", () => ({
 }));
 vi.mock("../../orchestrator/sentinel.js", () => ({ SentinelAgent: MockSentinelAgent }));
 vi.mock("../../orchestrator/task-backend-ops.js", () => ({
-  syncBeadStatusOnStartup: (...args: unknown[]) => mockSyncBeadStatusOnStartup(...args),
   syncTaskStatusOnStartup: (...args: unknown[]) => mockSyncTaskStatusOnStartup(...args),
 }));
 vi.mock("../commands/sentinel.js", () => ({ wrapPostgresSentinelStore: mockWrapPostgresSentinelStore }));
@@ -235,10 +231,10 @@ describe("sentinel auto-start in foreman run", () => {
 
     // Restore constructor implementations after clearAllMocks
     mockEnsureBrInstalled.mockResolvedValue(undefined);
-    MockBeadsRustClient.mockImplementation(function (this: Record<string, unknown>) {
+    MockTaskClient.mockImplementation(function (this: Record<string, unknown>) {
       this.ensureBrInstalled = mockEnsureBrInstalled;
     });
-    MockBvClient.mockImplementation(function () { /* noop */ });
+    MockTaskOrderingClient.mockImplementation(function () { /* noop */ });
     MockDispatcher.mockImplementation(function (this: Record<string, unknown>) {
       this.dispatch = mockDispatch;
       this.resumeRuns = vi.fn().mockResolvedValue({ resumed: [], skipped: [], activeAgents: 0 });
@@ -275,7 +271,7 @@ describe("sentinel auto-start in foreman run", () => {
       ...store,
       projectId,
     }));
-    mockSyncBeadStatusOnStartup.mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
+    mockSyncTaskStatusOnStartup.mockResolvedValue({ synced: 0, mismatches: [], errors: [] });
     mockPurgeOrphanedWorkerConfigs.mockResolvedValue(0);
     mockVcsCreate.mockResolvedValue({
       getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
@@ -391,7 +387,6 @@ describe("sentinel auto-start in foreman run", () => {
     await invokeRun(["--no-watch"]);
 
     expect(mockPostgresStoreForProject).toHaveBeenCalledWith({ id: "registered-proj", path: "/mock/project", name: "project" });
-    expect(mockSyncBeadStatusOnStartup).not.toHaveBeenCalled();
     expect(mockSyncTaskStatusOnStartup).toHaveBeenCalledWith(postgresStore, "registered-proj");
   });
 

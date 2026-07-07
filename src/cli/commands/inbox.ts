@@ -49,7 +49,7 @@ interface DaemonMailMessage {
 
 interface DaemonRunRow {
   id: string;
-  bead_id: string;
+  task_id: string;
   status: string;
   branch: string;
   queued_at: string;
@@ -127,7 +127,7 @@ export function formatPipelineEvent(event: PipelineEvent): string {
   const ts = formatTimestamp(event.createdAt);
   const icon = PIPELINE_EVENT_ICONS[event.eventType] ?? "·";
   const details = normalizedEventDetails(event);
-  const taskId = details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : undefined;
+  const taskId = details ? detailString(details, ["task_id", "taskId", "task_id", "taskId"]) : undefined;
   const taskPrefix = taskId ? ` ${taskId}` : "";
   const summary = formatEventSummary(event.eventType, details);
   return `[${ts}]${taskPrefix} ${icon} ${event.eventType} — ${summary}`;
@@ -151,7 +151,7 @@ function eventTurns(details: Record<string, unknown> | null): string | undefined
 }
 
 function eventTask(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
-  return details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : event.taskId ?? undefined;
+  return details ? detailString(details, ["task_id", "taskId", "task_id", "taskId"]) : event.taskId ?? undefined;
 }
 
 function eventKind(eventType: string): string {
@@ -321,7 +321,7 @@ interface CompactPhaseSummary {
 function compactTaskId(events: PipelineEvent[], messages: Message[], fallback?: string): string {
   for (const event of events) {
     const details = normalizedEventDetails(event);
-    const taskId = details ? detailString(details, ["task_id", "taskId", "bead_id", "beadId"]) : event.taskId ?? undefined;
+    const taskId = details ? detailString(details, ["task_id", "taskId", "task_id", "taskId"]) : event.taskId ?? undefined;
     if (taskId) return taskId;
   }
   for (const msg of messages) {
@@ -447,7 +447,7 @@ function detailString(details: Record<string, unknown>, keys: string[]): string 
 export function formatEventSummary(eventType: string, details: Record<string, unknown> | null): string {
   if (!details) return eventType;
 
-  const taskId = detailString(details, ["task_id", "taskId", "bead_id", "beadId"]);
+  const taskId = detailString(details, ["task_id", "taskId", "task_id", "taskId"]);
   const runId = detailString(details, ["run_id", "runId"]);
   const phase = detailString(details, ["phase_id", "phase", "current_phase"]);
   const status = detailString(details, ["status"]);
@@ -1269,7 +1269,7 @@ export function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: "",
-    task_id: row.bead_id,
+    task_id: row.task_id,
     agent_type: "daemon",
     session_key: null,
     worktree_path: null,
@@ -1325,10 +1325,10 @@ export async function resolvePostgresInboxProject(projectPath: string, projectSe
 export async function resolvePostgresRunId(
   adapter: BackendInboxAdapter,
   projectId: string,
-  options: { run?: string; task?: string; bead?: string },
+  options: { run?: string; task?: string },
 ): Promise<string | null> {
   if (options.run) return options.run;
-  const taskFilter = options.task ?? options.bead;
+  const taskFilter = options.task;
   if (taskFilter) {
     const task = typeof adapter.getTask === "function"
       ? await adapter.getTask(projectId, taskFilter)
@@ -1383,11 +1383,11 @@ export async function resolveDaemonInboxContext(projectPath: string, projectSele
 
 export async function resolveDaemonRunId(
   daemon: InboxClientContext,
-  options: { run?: string; task?: string; bead?: string },
+  options: { run?: string; task?: string },
 ): Promise<string | null> {
   if (options.run) return options.run;
   if (daemon.backend === "elixir") {
-    const taskFilter = options.task ?? options.bead;
+    const taskFilter = options.task;
     if (taskFilter && typeof daemon.client.getTask === "function") {
       const task = await daemon.client.getTask(taskFilter).catch(() => null);
       const taskRunId = task && typeof task.run_id === "string" ? task.run_id : null;
@@ -1403,9 +1403,9 @@ export async function resolveDaemonRunId(
     return first?.run_id ? String(first.run_id) : first?.id ? String(first.id) : null;
   }
   const runs = await daemon.client.runs.list({ projectId: daemon.projectId, limit: 100 }) as DaemonRunRow[];
-  const taskFilter = options.task ?? options.bead;
+  const taskFilter = options.task;
   if (taskFilter) {
-    const match = runs.find((run) => run.bead_id === taskFilter);
+    const match = runs.find((run) => run.task_id === taskFilter);
     return match?.id ?? null;
   }
   return runs[0]?.id ?? null;
@@ -1668,7 +1668,6 @@ export const inboxCommand = new Command("inbox")
   .option("--agent <name>", "Filter to a specific agent/role (default: show all)")
   .option("--run <id>", "Filter to a specific run ID (default: latest run)")
   .option("--task <id>", "Resolve run by task ID (uses most recent run for that task)")
-  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--all", "Watch messages across all runs (ignores --run and --task)")
   .option("--watch", "Poll every 2s for new messages (shows only new ones)")
   .option("--unread", "Show only unread messages")
@@ -1685,7 +1684,6 @@ export const inboxCommand = new Command("inbox")
     agent?: string;
     run?: string;
     task?: string;
-    bead?: string;
     all?: boolean;
     watch?: boolean;
     unread?: boolean;
@@ -1706,7 +1704,7 @@ export const inboxCommand = new Command("inbox")
     const showEvents = options.events ?? false;
     const compactOutput = options.compact ?? false;
     const groupedEvents = options.grouped ?? false;
-    const taskFilter = options.task ?? options.bead;
+    const taskFilter = options.task;
 
     // Require --project or --all in multi-project mode
     await requireProjectOrAllInMultiMode(options.project, options.all ?? false);
@@ -1924,9 +1922,9 @@ export const inboxCommand = new Command("inbox")
       }
 
       const runId = postgres
-        ? await resolvePostgresRunId(postgres.adapter, postgres.projectId, { run: options.run, task: options.task, bead: options.bead })
+        ? await resolvePostgresRunId(postgres.adapter, postgres.projectId, { run: options.run, task: options.task })
         : daemon
-          ? await resolveDaemonRunId(daemon, { run: options.run, task: options.task, bead: options.bead })
+          ? await resolveDaemonRunId(daemon, { run: options.run, task: options.task })
           : options.run
             ?? (taskFilter ? resolveRunIdByTask(store!, taskFilter) : null)
             ?? resolveLatestRunId(store!);

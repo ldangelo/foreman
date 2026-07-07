@@ -85,7 +85,7 @@ describe("purgeZombieRunsAction", () => {
     expect(store.getRunsByStatus).toHaveBeenCalledWith("failed", "proj-1");
   });
 
-  it("dry-runs closed or missing beads without deleting rows", async () => {
+  it("dry-runs closed or missing tasks without deleting rows", async () => {
     const store = {
       getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo/project" }),
       getRunsByStatus: vi.fn().mockResolvedValue([
@@ -104,7 +104,7 @@ describe("purgeZombieRunsAction", () => {
     expect(store.deleteRun).not.toHaveBeenCalled();
   });
 
-  it("skips open beads and counts unexpected lookup failures as errors", async () => {
+  it("skips open tasks and counts unexpected lookup failures as errors", async () => {
     const store = {
       getProjectByPath: vi.fn().mockResolvedValue({ id: "proj-1", path: "/repo/project" }),
       getRunsByStatus: vi.fn().mockResolvedValue([

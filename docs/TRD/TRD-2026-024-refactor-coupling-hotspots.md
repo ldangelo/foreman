@@ -588,7 +588,7 @@ import type { RunCommands, RunFactory } from "./write-models.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type { ProjectConfig } from "../lib/project-config.js";
 import type { WorkflowConfig } from "../lib/workflow-loader.js";
-import type { BvClient } from "../lib/bv.js";
+import type { TaskOrderingClient } from "../lib/task-ordering.js";
 
 /**
  * Facade encapsulating all dispatcher dependencies.
@@ -597,7 +597,7 @@ import type { BvClient } from "../lib/bv.js";
 export interface DispatcherDeps {
   // Task management
   taskClient: ITaskClient;
-  taskStoreMode: "br" | "bd" | "auto";
+  taskStoreMode: "native task store" | "bd" | "auto";
   
   // Read model
   storeReadModel: RunStoreReadModel;
@@ -740,7 +740,7 @@ export class Dispatcher {
 | `src/lib/postgres-store.ts` | Concrete implementation unchanged |
 | `src/lib/db/postgres-adapter.ts` | Concrete implementation unchanged |
 | `src/lib/db/pool-manager.ts` | Concrete implementation unchanged |
-| `src/lib/beads-rust.ts` | Unchanged |
+| `src/lib/task-client.ts` | Unchanged |
 | `src/lib/vcs/*.ts` | Unchanged |
 
 ---
@@ -755,4 +755,4 @@ export class Dispatcher {
 
 ---
 
-*This TRD was created by tech-lead-orchestrator. Proceed with `/ensemble:implement-trd-beads docs/TRD/TRD-2026-024-refactor-coupling-hotspots.md` to begin implementation.*
+*This TRD was created by tech-lead-orchestrator. Proceed with `/ensemble:implement-trd-tasks docs/TRD/TRD-2026-024-refactor-coupling-hotspots.md` to begin implementation.*

@@ -13,8 +13,8 @@ The Foreman project uses a **mixed approach** to skill integration:
 
 | Skill | Location | Purpose | Pi Integration |
 |-------|----------|---------|----------------|
-| `br` | `skills/br/` | beads_rust task tracker | Available via skill path |
-| `bv` | `skills/bv/` | BV task tracker | Available via skill path |
+| `native task store` | `skills/native task store/` | native task store task tracker | Available via skill path |
+| `native task ordering` | `skills/native task ordering/` | NATIVE TASK ORDERING task tracker | Available via skill path |
 | `jj` | `skills/jj/` | Jujutsu VCS | Available via skill path |
 | `foreman` | `skills/foreman/` | Foreman orchestrator | Available via skill path |
 
@@ -24,9 +24,9 @@ The skills are organized in a directory structure compatible with Pi's skill dis
 
 ```
 skills/
-├── br/
+├── native task store/
 │   └── SKILL.md
-├── bv/
+├── native task ordering/
 │   └── SKILL.md
 ├── jj/
 │   └── SKILL.md
@@ -60,16 +60,16 @@ pi install npm:@oftheangels/foreman-skills
 Reference skills directly via command-line flags:
 
 ```bash
-pi --skill ~/Development/Fortium/foreman/skills/br
+pi --skill ~/Development/Fortium/foreman/skills/native task store
 pi --skill ~/Development/Fortium/foreman/skills/foreman
-pi --skill ~/Development/Fortium/foreman/skills/bv
+pi --skill ~/Development/Fortium/foreman/skills/native task ordering
 pi --skill ~/Development/Fortium/foreman/skills/jj
 ```
 
 Or combine with existing skills:
 
 ```bash
-pi --skill ~/Development/Fortium/foreman/skills/foreman --skill ~/Development/Fortium/foreman/skills/br
+pi --skill ~/Development/Fortium/foreman/skills/foreman --skill ~/Development/Fortium/foreman/skills/native task store
 ```
 
 ## Skill Naming Conventions
@@ -78,12 +78,12 @@ Each skill has a name defined in its `SKILL.md` frontmatter:
 
 ```markdown
 ---
-name: br
-description: "beads_rust (br) issue tracker CLI..."
+name: native task store
+description: "native task store (native task store) issue tracker CLI..."
 ---
 ```
 
-Invoke via `/skill:br`, `/skill:foreman`, `/skill:bv`, `/skill:jj`
+Invoke via `/skill:native task store`, `/skill:foreman`, `/skill:native task ordering`, `/skill:jj`
 
 ## Recommended Workflow
 
@@ -101,13 +101,13 @@ Invoke via `/skill:br`, `/skill:foreman`, `/skill:bv`, `/skill:jj`
 
 ## Skill Usage Examples
 
-### Using br (beads_rust) Skill
+### Using native task store (native task store) Skill
 
 ```bash
-pi "Help me create a new issue with br"
+pi "Help me create a new issue with native task store"
 # Or explicitly invoke
-pi /skill:br
-br create "New feature" -t feature -p 2
+pi /skill:native task store
+native task store create "New feature" -t feature -p 2
 ```
 
 ### Using foreman Skill
@@ -115,7 +115,7 @@ br create "New feature" -t feature -p 2
 ```bash
 pi /skill:foreman
 foreman task create --title "Add auth" --type feature --priority high
-foreman run --bead bd-001
+foreman run --task bd-001
 ```
 
 ## Best Practices

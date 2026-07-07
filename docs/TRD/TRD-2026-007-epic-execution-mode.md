@@ -33,7 +33,7 @@ Dispatcher
   │                          phases: explorer→developer→QA→reviewer→finalize
   │
   └─ type=epic → executePipeline(epicCtx)
-                   epicCtx.tasks = [child beads in dependency order]
+                   epicCtx.tasks = [child tasks in dependency order]
                    outer loop: for each task
                      inner loop: taskPhases (developer→QA) with retry
                      commit on QA PASS
@@ -44,27 +44,27 @@ Dispatcher
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| **Dispatcher** | `dispatcher.ts` | Detect epic beads, create shared worktree, build epic context, spawn worker |
+| **Dispatcher** | `dispatcher.ts` | Detect epic tasks, create shared worktree, build epic context, spawn worker |
 | **Pipeline Executor** | `pipeline-executor.ts` | Phase loop (existing) + new outer task loop for epic mode |
 | **Epic Workflow Config** | `workflows/epic.yaml` | Define taskPhases, finalPhases, retry limits, timeouts |
 | **Workflow Loader** | `workflow-loader.ts` | Parse epic-specific YAML fields (taskPhases, finalPhases) |
 | **Agent Worker** | `agent-worker.ts` | Build PipelineContext with epic fields, handle session reuse |
-| **Task Ordering** | `bv.ts` + new `task-ordering.ts` | Query bv --robot-next or topological sort fallback |
+| **Task Ordering** | `native task ordering.ts` + new `task-ordering.ts` | Query native task ordering --robot-next or topological sort fallback |
 | **Resume Detection** | `pipeline-executor.ts` | Check git log for completed task commits, skip them |
-| **Bead Status** | `task-backend-ops.ts` | Update child bead status as tasks complete |
+| **Task Status** | `task-backend-ops.ts` | Update child task status as tasks complete |
 
 ### Data Flow
 
 ```
-1. Dispatcher detects epic bead → queries children → sorts by dependency
+1. Dispatcher detects epic task → queries children → sorts by dependency
 2. Creates single worktree → runs npm install → writes TASK.md with all tasks
-3. Spawns worker with epicMode=true, tasks=[ordered child beads]
+3. Spawns worker with epicMode=true, tasks=[ordered child tasks]
 4. Worker calls executePipeline() with epic context:
    a. For each task in ctx.tasks:
       - Build task-specific prompt with previous context
       - Run taskPhases (developer→QA) via existing phase loop
-      - On QA PASS: vcs.commit(), update bead status, advance
-      - On QA FAIL: create bug bead, retry developer (up to retryOnFail)
+      - On QA PASS: vcs.commit(), update task status, advance
+      - On QA FAIL: create bug task, retry developer (up to retryOnFail)
       - On max retries: mark task failed, apply onError policy
    b. After all tasks: run finalPhases (finalize) once
 5. Finalize: rebase, test, push → refinery squash-merges to dev
@@ -96,18 +96,18 @@ Dispatcher
   - Given `src/defaults/workflows/epic.yaml` exists, when an epic is dispatched, then it uses `taskPhases: [developer, qa]`, `finalPhases: [finalize]`, `qa.retryOnFail: 2`
   - Given the epic workflow config, when QA is configured, then `verdict: true` and `retryWith: developer` are set on the QA phase
 
-#### TRD-003: Create task ordering module with bv fallback
+#### TRD-003: Create task ordering module with native task ordering fallback
 **2h** | [satisfies REQ-004]
 - Validates PRD ACs: AC-004-1, AC-004-2
 - Implementation ACs:
-  - Given an epic bead ID, when `getTaskOrder(epicId)` is called with bv available, then it returns child task IDs from `bv --robot-next` in dependency order
-  - Given bv is unavailable, when `getTaskOrder(epicId)` is called, then it falls back to topological sort of child bead dependencies with priority as tiebreaker
+  - Given an epic task ID, when `getTaskOrder(epicId)` is called with native task ordering available, then it returns child task IDs from `native task ordering --robot-next` in dependency order
+  - Given native task ordering is unavailable, when `getTaskOrder(epicId)` is called, then it falls back to topological sort of child task dependencies with priority as tiebreaker
   - Given a circular dependency, when topological sort runs, then it throws `CircularDependencyError`
 
 #### TRD-003-TEST: Unit tests for task ordering
 **1h** | [verifies TRD-003] [satisfies REQ-004] [depends: TRD-003]
-- Test: bv available returns bv order
-- Test: bv unavailable falls back to topological sort
+- Test: native task ordering available returns native task ordering order
+- Test: native task ordering unavailable falls back to topological sort
 - Test: priority tiebreaker when no deps
 - Test: circular dependency throws
 
@@ -116,7 +116,7 @@ Dispatcher
 - Validates PRD ACs: AC-001-1, AC-004-1
 - Implementation ACs:
   - Given `PipelineContext`, when `epicTasks` is set, then it contains an ordered array of `{taskId, taskTitle, taskDescription}` objects
-  - Given `PipelineRunConfig`, when `epicId` is set, then the run is linked to the parent epic bead
+  - Given `PipelineRunConfig`, when `epicId` is set, then the run is linked to the parent epic task
 
 #### TRD-005: Implement outer task loop in executePipeline for epic mode
 **4h** | [satisfies REQ-004, REQ-005, REQ-007] [depends: TRD-001, TRD-004]
@@ -137,18 +137,18 @@ Dispatcher
 - Test: finalize runs once after all tasks
 - Test: no empty commits after task loop
 
-#### TRD-006: Update dispatcher to detect epic beads and build epic context
+#### TRD-006: Update dispatcher to detect epic tasks and build epic context
 **3h** | [satisfies REQ-001, REQ-003] [depends: TRD-003, TRD-004]
 - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-003-1, AC-003-2
 - Implementation ACs:
-  - Given a ready bead with type `epic` and children, when the dispatcher encounters it, then it creates a single worktree, queries task order, and spawns an Epic Runner (worker with `pipeline=true` and `epicTasks` in config)
-  - Given a ready bead with type `task`, when the dispatcher encounters it, then the standard pipeline path is used (no change)
+  - Given a ready task with type `epic` and children, when the dispatcher encounters it, then it creates a single worktree, queries task order, and spawns an Epic Runner (worker with `pipeline=true` and `epicTasks` in config)
+  - Given a ready task with type `task`, when the dispatcher encounters it, then the standard pipeline path is used (no change)
   - Given an epic running, when counting active agents, then the epic counts as 1 agent slot regardless of how many child tasks it has
 
 #### TRD-006-TEST: Unit tests for epic dispatch
 **2h** | [verifies TRD-006] [satisfies REQ-001, REQ-003] [depends: TRD-006]
-- Test: epic bead with children dispatches via epic path
-- Test: task bead dispatches via standard path
+- Test: epic task with children dispatches via epic path
+- Test: task task dispatches via standard path
 - Test: epic with 0 children auto-closes
 - Test: epic counts as 1 agent slot
 - Test: epic + one-off tasks coexist within maxAgents
@@ -188,7 +188,7 @@ Dispatcher
 **3h** | [satisfies REQ-010] [depends: TRD-005]
 - Validates PRD ACs: AC-010-1, AC-010-2
 - Implementation ACs:
-  - Given an epic worktree with commits for tasks 1-15, when the epic is re-dispatched (resume), then `git log` is parsed to find committed task bead IDs and those tasks are skipped
+  - Given an epic worktree with commits for tasks 1-15, when the epic is re-dispatched (resume), then `git log` is parsed to find committed task task IDs and those tasks are skipped
   - Given task 16 was partially completed (developer done, no QA), when resume runs, then task 16 restarts from developer (no commit = not completed)
   - Given a resumed epic, when the task loop starts, then the log shows `[EPIC] Resuming from task 16 of 40 (15 completed)`
 
@@ -200,29 +200,29 @@ Dispatcher
 
 ---
 
-### Sprint 3: Observability, Bug Beads, and Polish
+### Sprint 3: Observability, Bug Tasks, and Polish
 
-#### TRD-010: Bug bead creation on QA failure
+#### TRD-010: Bug task creation on QA failure
 **1h** | [satisfies REQ-006] [depends: TRD-005]
 - Validates PRD ACs: AC-006-1, AC-006-2
 - Implementation ACs:
-  - Given QA FAIL on task N, when the retry loop fires, then `br create --title "QA failure in <task>" --type bug --parent <epicId>` is called
-  - Given the developer fixes and QA passes, when the task completes, then the bug bead is closed via `br close <bugId>`
+  - Given QA FAIL on task N, when the retry loop fires, then `native task store create --title "QA failure in <task>" --type bug --parent <epicId>` is called
+  - Given the developer fixes and QA passes, when the task completes, then the bug task is closed via `native task store close <bugId>`
 
-#### TRD-010-TEST: Tests for bug bead creation
+#### TRD-010-TEST: Tests for bug task creation
 **1h** | [verifies TRD-010] [satisfies REQ-006] [depends: TRD-010]
-- Test: QA FAIL creates bug bead
-- Test: QA PASS after retry closes bug bead
-- Test: bug bead has correct parent and type
+- Test: QA FAIL creates bug task
+- Test: QA PASS after retry closes bug task
+- Test: bug task has correct parent and type
 
-#### TRD-011: Per-task bead status updates
+#### TRD-011: Per-task task status updates
 **1h** | [satisfies REQ-011] [depends: TRD-005]
 - Validates PRD ACs: AC-011-1, AC-011-2
 - Implementation ACs:
-  - Given task N starts, when the task loop begins it, then `br update <taskId> --status in_progress` is called
-  - Given task N passes QA, when the commit succeeds, then bead status transitions appropriately
+  - Given task N starts, when the task loop begins it, then `native task store update <taskId> --status in_progress` is called
+  - Given task N passes QA, when the commit succeeds, then task status transitions appropriately
 
-#### TRD-011-TEST: Tests for bead status updates
+#### TRD-011-TEST: Tests for task status updates
 **1h** | [verifies TRD-011] [satisfies REQ-011] [depends: TRD-011]
 - Test: task start sets in_progress
 - Test: task complete updates status
@@ -288,10 +288,10 @@ Dispatcher
 - [x] **TRD-009-TEST** (2h): Tests for resume
 
 ### Sprint 3: Observability and Polish (~11h)
-- [x] **TRD-010** (1h): Bug bead creation [depends: TRD-005]
-- [x] **TRD-010-TEST** (1h): Tests for bug beads
-- [x] **TRD-011** (1h): Per-task bead status [depends: TRD-005]
-- [x] **TRD-011-TEST** (1h): Tests for bead status
+- [x] **TRD-010** (1h): Bug task creation [depends: TRD-005]
+- [x] **TRD-010-TEST** (1h): Tests for bug tasks
+- [x] **TRD-011** (1h): Per-task task status [depends: TRD-005]
+- [x] **TRD-011-TEST** (1h): Tests for task status
 - [x] **TRD-012** (2h): Epic progress display [depends: TRD-005]
 - [x] **TRD-012-TEST** (1h): Tests for status display
 - [x] **TRD-013** (1h): onError for epics [depends: TRD-005]
@@ -307,17 +307,17 @@ Dispatcher
 
 | REQ | Description | Implementation Tasks | Test Tasks |
 |-----|-------------|---------------------|------------|
-| REQ-001 | Epic bead detection | TRD-004, TRD-006 | TRD-006-TEST |
+| REQ-001 | Epic task detection | TRD-004, TRD-006 | TRD-006-TEST |
 | REQ-002 | Epic workflow YAML | TRD-001, TRD-002 | TRD-001-TEST |
 | REQ-003 | Parallel epic execution | TRD-006 | TRD-006-TEST |
 | REQ-004 | Sequential task execution | TRD-003, TRD-004, TRD-005 | TRD-003-TEST, TRD-005-TEST |
 | REQ-005 | Per-task dev→QA loop | TRD-005 | TRD-005-TEST |
-| REQ-006 | Bug bead on QA failure | TRD-010 | TRD-010-TEST |
+| REQ-006 | Bug task on QA failure | TRD-010 | TRD-010-TEST |
 | REQ-007 | Per-task commits | TRD-005 | TRD-005-TEST |
 | REQ-008 | Session continuity | TRD-004, TRD-007 | TRD-007-TEST |
 | REQ-009 | Single finalize | TRD-008 | TRD-008-TEST |
 | REQ-010 | Resume from last task | TRD-009 | TRD-009-TEST |
-| REQ-011 | Per-task bead status | TRD-011 | TRD-011-TEST |
+| REQ-011 | Per-task task status | TRD-011 | TRD-011-TEST |
 | REQ-012 | Epic progress display | TRD-012 | TRD-012-TEST |
 | REQ-013 | Epic cost tracking | TRD-012 | TRD-012-TEST |
 | REQ-014 | onError for epics | TRD-013 | TRD-013-TEST |

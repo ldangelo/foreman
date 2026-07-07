@@ -246,7 +246,7 @@ phases: [...]
 Dispatch with the appropriate workflow:
 
 ```bash
-br update <id> --set-labels "workflow:team-a"
+native task store update <id> --set-labels "workflow:team-a"
 foreman run
 ```
 

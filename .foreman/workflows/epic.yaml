@@ -1,6 +1,6 @@
 # Epic workflow: Skill-driven planning and implementation pipeline.
 #
-# When epic has child tasks (beads mode): iterates child tasks via taskPhases,
+# When epic has child tasks (tasks mode): iterates child tasks via taskPhases,
 # then finalPhases once at the end.
 #
 # When epic has no children (native mode): runs skill phases directly as a
@@ -28,12 +28,12 @@ setupCache:
   key: package-lock.json
   path: node_modules
 
-# Per-task phases: run for each child task in the epic (beads mode)
+# Per-task phases: run for each child task in the epic (tasks mode)
 taskPhases:
   - developer
   - qa
 
-# Final phases: run once after all tasks complete (beads mode)
+# Final phases: run once after all tasks complete (tasks mode)
 finalPhases:
   - finalize
 

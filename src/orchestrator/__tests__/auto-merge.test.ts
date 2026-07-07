@@ -6,8 +6,8 @@
  * - autoMerge() reconciles and drains the queue when a project exists
  * - autoMerge() counts merged/conflict/failed outcomes correctly
  * - autoMerge() handles per-entry refinery errors gracefully (non-fatal)
- * - autoMerge() syncs bead status after each merge outcome
- * - syncBeadStatusAfterMerge() is non-fatal when br or taskClient fails
+ * - autoMerge() syncs task status after each merge outcome
+ * - syncTaskStatusAfterMerge() is non-fatal when native task store or taskClient fails
  *
  * These tests mirror the existing run-auto-merge.test.ts unit tests but
  * exercise the module directly (now that the logic is in auto-merge.ts).
@@ -37,9 +37,9 @@ const {
   mockDetectDefaultBranch,
   mockCreateVcsBackend,
   mockTaskClientUpdate,
-  mockAddNotesToBead,
-  mockMarkBeadFailed,
-  mockSetBeadStatus,
+  mockAddNotesToTask,
+  mockMarkTaskFailed,
+  mockSetTaskStatus,
   mockGetRunsByStatuses,
 } = vi.hoisted(() => {
   const mockExecFileSync = vi.fn().mockReturnValue(Buffer.from(""));
@@ -58,8 +58,8 @@ const {
 
   const mockMergeQueueReconcile = vi.fn().mockResolvedValue({ enqueued: 0, skipped: 0, invalidBranch: 0 });
   const mockMergeQueueDequeue = vi.fn().mockReturnValue(null);
-  const mockAddNotesToBead = vi.fn();
-  const mockSetBeadStatus = vi.fn();
+  const mockAddNotesToTask = vi.fn();
+  const mockSetTaskStatus = vi.fn();
   const mockMergeQueueUpdateStatus = vi.fn();
   const MockMergeQueue = vi.fn(function (this: Record<string, unknown>) {
     this.reconcile = mockMergeQueueReconcile;
@@ -101,7 +101,7 @@ const {
     detectDefaultBranch: mockDetectDefaultBranch,
   });
   const mockTaskClientUpdate = vi.fn().mockResolvedValue(undefined);
-  const mockMarkBeadFailed = vi.fn().mockResolvedValue(undefined);
+  const mockMarkTaskFailed = vi.fn().mockResolvedValue(undefined);
   const mockGetRunsByStatuses = vi.fn().mockReturnValue([]);
 
   return {
@@ -124,9 +124,9 @@ const {
     mockDetectDefaultBranch,
     mockCreateVcsBackend,
     mockTaskClientUpdate,
-    mockAddNotesToBead,
-    mockMarkBeadFailed,
-    mockSetBeadStatus,
+    mockAddNotesToTask,
+    mockMarkTaskFailed,
+    mockSetTaskStatus,
     mockGetRunsByStatuses,
   };
 });
@@ -158,12 +158,12 @@ vi.mock("../../lib/vcs/index.js", () => ({
   },
 }));
 vi.mock("../task-backend-ops.js", () => ({
-  enqueueAddNotesToBead: mockAddNotesToBead,
-  enqueueMarkBeadFailed: mockMarkBeadFailed,
-  enqueueSetBeadStatus: mockSetBeadStatus,
+  enqueueAddNotesToTask: mockAddNotesToTask,
+  enqueueMarkTaskFailed: mockMarkTaskFailed,
+  enqueueSetTaskStatus: mockSetTaskStatus,
 }));
 
-import { autoMerge, syncBeadStatusAfterMerge, type AutoMergeOpts } from "../auto-merge.js";
+import { autoMerge, syncTaskStatusAfterMerge, type AutoMergeOpts } from "../auto-merge.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -248,8 +248,8 @@ function resetMocks(): void {
     prUrl: "https://github.com/x/y/pull/1",
   });
   mockTaskClientUpdate.mockResolvedValue(undefined);
-  mockAddNotesToBead.mockReturnValue(undefined);
-  mockMarkBeadFailed.mockResolvedValue(undefined);
+  mockAddNotesToTask.mockReturnValue(undefined);
+  mockMarkTaskFailed.mockResolvedValue(undefined);
   mockGetRunsByStatuses.mockReturnValue([]);
 }
 
@@ -862,18 +862,18 @@ describe("autoMerge() — refinery errors are non-fatal", () => {
   });
 });
 
-// ── syncBeadStatusAfterMerge() ────────────────────────────────────────────────
+// ── syncTaskStatusAfterMerge() ────────────────────────────────────────────────
 
-describe("syncBeadStatusAfterMerge()", () => {
+describe("syncTaskStatusAfterMerge()", () => {
   beforeEach(resetMocks);
 
   it("does nothing when run is not found in store", async () => {
     const store = makeStore({ getRun: vi.fn().mockReturnValue(null) });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-x", "bd-x", "/proj");
+    await syncTaskStatusAfterMerge(store as never, taskClient as never, "run-x", "bd-x", "/proj");
 
-    expect(mockSetBeadStatus).not.toHaveBeenCalled();
+    expect(mockSetTaskStatus).not.toHaveBeenCalled();
   });
 
   it("updates status through the native task store", async () => {
@@ -883,7 +883,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+    await syncTaskStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
     expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "closed");
     // Should NOT call taskClient.update directly (avoids backend lock contention)
@@ -897,18 +897,18 @@ describe("syncBeadStatusAfterMerge()", () => {
     });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+    await syncTaskStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
     expect(store.updateTaskStatus).not.toHaveBeenCalled();
   });
 
-  it("calls addNotesToBead with the failure reason when failureReason is provided", async () => {
+  it("calls addNotesToTask with the failure reason when failureReason is provided", async () => {
     const store = makeStore({
       getRun: vi.fn().mockReturnValue({ id: "run-1", status: "conflict" }),
     });
     const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
 
-    await syncBeadStatusAfterMerge(
+    await syncTaskStatusAfterMerge(
       store as never,
       taskClient as never,
       "run-1",
@@ -917,7 +917,7 @@ describe("syncBeadStatusAfterMerge()", () => {
       "Merge conflict detected in branch foreman/bd-test-001.\nConflicting files:\n  - src/foo.ts",
     );
 
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-test-001",
       "Merge conflict detected in branch foreman/bd-test-001.\nConflicting files:\n  - src/foo.ts",
@@ -925,13 +925,13 @@ describe("syncBeadStatusAfterMerge()", () => {
     );
   });
 
-  it("does NOT call addNotesToBead when failureReason is not provided", async () => {
+  it("does NOT call addNotesToTask when failureReason is not provided", async () => {
     const store = makeStore({
       getRun: vi.fn().mockReturnValue({ id: "run-1", status: "merged" }),
     });
     const taskClient = makeTaskClient({ update: vi.fn().mockResolvedValue(undefined) });
 
-    await syncBeadStatusAfterMerge(
+    await syncTaskStatusAfterMerge(
       store as never,
       taskClient as never,
       "run-1",
@@ -940,7 +940,7 @@ describe("syncBeadStatusAfterMerge()", () => {
       // no failureReason
     );
 
-    expect(mockAddNotesToBead).not.toHaveBeenCalled();
+    expect(mockAddNotesToTask).not.toHaveBeenCalled();
   });
 
   it("maps conflict run status to blocked", async () => {
@@ -949,7 +949,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+    await syncTaskStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
     expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
   });
@@ -960,7 +960,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+    await syncTaskStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
     expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
   });
@@ -971,7 +971,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
+    await syncTaskStatusAfterMerge(store as never, taskClient as never, "run-1", "bd-x", "/proj");
 
     expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "failed");
   });
@@ -982,7 +982,7 @@ describe("syncBeadStatusAfterMerge()", () => {
     });
     const taskClient = makeTaskClient();
 
-    await syncBeadStatusAfterMerge(
+    await syncTaskStatusAfterMerge(
       store as never,
       taskClient as never,
       "run-1",
@@ -992,13 +992,13 @@ describe("syncBeadStatusAfterMerge()", () => {
     );
 
     expect(store.updateTaskStatus).toHaveBeenCalledWith("bd-x", "blocked");
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(expect.anything(), "bd-x", "Merge conflict in foo.ts", "auto-merge");
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(expect.anything(), "bd-x", "Merge conflict in foo.ts", "auto-merge");
   });
 });
 
-// ── autoMerge() — bead failure notes ────────────────────────────────────────
+// ── autoMerge() — task failure notes ────────────────────────────────────────
 
-describe("autoMerge() — bead failure notes via addNotesToBead", () => {
+describe("autoMerge() — task failure notes via addNotesToTask", () => {
   beforeEach(() => {
     resetMocks();
     mockGetProjectByPath.mockReturnValue({ id: "proj-1" });
@@ -1009,7 +1009,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     return { id, task_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
   }
 
-  it("calls addNotesToBead with conflict files when merge conflict occurs", async () => {
+  it("calls addNotesToTask with conflict files when merge conflict occurs", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
@@ -1023,7 +1023,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "conflict" }) }) as never,
     }));
 
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-test-001",
       expect.stringContaining("src/foo.ts"),
@@ -1031,7 +1031,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     );
   });
 
-  it("calls addNotesToBead with PR URL when PR was created on conflict", async () => {
+  it("calls addNotesToTask with PR URL when PR was created on conflict", async () => {
     mockMergeQueueDequeue
       .mockReturnValueOnce({ ...makeEntry(), operation: "create_pr" })
       .mockReturnValue(null);
@@ -1046,7 +1046,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "pr-created" }) }) as never,
     }));
 
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-test-001",
       expect.stringContaining("https://github.com/x/y/pull/42"),
@@ -1054,7 +1054,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     );
   });
 
-  it("calls addNotesToBead with test failure summary when post-merge tests fail", async () => {
+  it("calls addNotesToTask with test failure summary when post-merge tests fail", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [],
@@ -1068,7 +1068,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "test-failed" }) }) as never,
     }));
 
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-test-001",
       expect.stringContaining("FAIL src/foo.test.ts"),
@@ -1076,7 +1076,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     );
   });
 
-  it("calls addNotesToBead with exception message when refinery throws", async () => {
+  it("calls addNotesToTask with exception message when refinery throws", async () => {
     mockMergeQueueDequeue
       .mockReturnValueOnce({ id: 1, task_id: "bd-err-001", run_id: "run-001", branch_name: "foreman/bd-err-001" })
       .mockReturnValue(null);
@@ -1087,7 +1087,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "failed" }) }) as never,
     }));
 
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-err-001",
       expect.stringContaining("git rebase failed: conflict in HEAD"),
@@ -1095,7 +1095,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
     );
   });
 
-  it("does NOT call addNotesToBead when merge succeeds", async () => {
+  it("does NOT call addNotesToTask when merge succeeds", async () => {
     mockMergeQueueDequeue.mockReturnValueOnce(makeEntry()).mockReturnValue(null);
     mockRefineryMergeCompleted.mockResolvedValueOnce({
       merged: [{ runId: "run-001", taskId: "bd-test-001", branchName: "foreman/bd-test-001" }],
@@ -1109,7 +1109,7 @@ describe("autoMerge() — bead failure notes via addNotesToBead", () => {
       store: makeStore({ getProjectByPath: mockGetProjectByPath, getRun: vi.fn().mockReturnValue({ id: "run-001", status: "merged" }) }) as never,
     }));
 
-    expect(mockAddNotesToBead).not.toHaveBeenCalled();
+    expect(mockAddNotesToTask).not.toHaveBeenCalled();
   });
 });
 
@@ -1125,7 +1125,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
     return { id, task_id: `bd-test-00${id}`, run_id: `run-00${id}`, branch_name: `foreman/bd-test-00${id}` };
   }
 
-  it("does NOT call markBeadFailed when test-failed count is below the retry limit", async () => {
+  it("does NOT call markTaskFailed when test-failed count is below the retry limit", async () => {
     // Only 1 test-failed run (first attempt) — under the limit of 3
     mockGetRunsByStatuses.mockReturnValue([
       { task_id: "bd-test-001", status: "test-failed" },
@@ -1146,11 +1146,11 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       }) as never,
     }));
 
-    // Should NOT permanently fail the bead yet
-    expect(mockMarkBeadFailed).not.toHaveBeenCalled();
+    // Should NOT permanently fail the task yet
+    expect(mockMarkTaskFailed).not.toHaveBeenCalled();
   });
 
-  it("calls markBeadFailed when test-failed count reaches RETRY_CONFIG.maxRetries (3)", async () => {
+  it("calls markTaskFailed when test-failed count reaches RETRY_CONFIG.maxRetries (3)", async () => {
     // 3 test-failed runs for this task — at the retry limit
     mockGetRunsByStatuses.mockReturnValue([
       { task_id: "bd-test-001", status: "test-failed" },
@@ -1173,11 +1173,11 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       }) as never,
     }));
 
-    // Should permanently fail the bead to break the infinite loop
-    expect(mockMarkBeadFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
+    // Should permanently fail the task to break the infinite loop
+    expect(mockMarkTaskFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
   });
 
-  it("calls markBeadFailed when test-failed count exceeds RETRY_CONFIG.maxRetries", async () => {
+  it("calls markTaskFailed when test-failed count exceeds RETRY_CONFIG.maxRetries", async () => {
     // 5 test-failed runs — well over the limit
     mockGetRunsByStatuses.mockReturnValue([
       { task_id: "bd-test-001", status: "test-failed" },
@@ -1202,7 +1202,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
       }) as never,
     }));
 
-    expect(mockMarkBeadFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
+    expect(mockMarkTaskFailed).toHaveBeenCalledWith(expect.anything(), "bd-test-001", "auto-merge");
   });
 
   it("only counts test-failed runs for the specific task — not other tasks", async () => {
@@ -1229,7 +1229,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
     }));
 
     // Other task's failures should not affect this task
-    expect(mockMarkBeadFailed).not.toHaveBeenCalled();
+    expect(mockMarkTaskFailed).not.toHaveBeenCalled();
   });
 
   it("includes retry exhaustion context in the failure message when limit is reached", async () => {
@@ -1255,7 +1255,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
     }));
 
     // The failure note should mention exhaustion and manual intervention
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-test-001",
       expect.stringContaining("exhausted"),
@@ -1284,7 +1284,7 @@ describe("autoMerge() — test failure retry exhaustion (infinite loop preventio
     }));
 
     // The failure note should mention the attempt number
-    expect(mockAddNotesToBead).toHaveBeenCalledWith(
+    expect(mockAddNotesToTask).toHaveBeenCalledWith(
       expect.anything(),
       "bd-test-001",
       expect.stringContaining("attempt"),

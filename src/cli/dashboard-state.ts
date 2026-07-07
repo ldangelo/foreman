@@ -49,7 +49,7 @@ interface DaemonDashboardStats {
 
 interface DaemonRunSummary {
   id: string;
-  bead_id: string;
+  task_id: string;
   status: "pending" | "running";
   branch: string;
   started_at: string | null;
@@ -209,7 +209,7 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
       activeRuns.set(project.id, runs.map((run) => ({
         id: run.id,
         project_id: project.id,
-        task_id: run.bead_id,
+        task_id: run.task_id,
         agent_type: "daemon",
         session_key: null,
         worktree_path: null,

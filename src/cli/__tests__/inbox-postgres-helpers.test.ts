@@ -9,7 +9,7 @@ describe("inbox Postgres helper functions", () => {
     expect(adapter.listRuns).not.toHaveBeenCalled();
   });
 
-  it("resolvePostgresRunId resolves latest and task/bead selectors", async () => {
+  it("resolvePostgresRunId resolves latest and task/task selectors", async () => {
     const adapter = {
       listRuns: vi.fn().mockResolvedValue([
         { id: "run-2", task_id: "task-2" },
@@ -18,7 +18,7 @@ describe("inbox Postgres helper functions", () => {
     } as any;
 
     await expect(resolvePostgresRunId(adapter, "proj-1", { task: "task-1" })).resolves.toBe("run-1");
-    await expect(resolvePostgresRunId(adapter, "proj-1", { bead: "task-2" })).resolves.toBe("run-2");
+    await expect(resolvePostgresRunId(adapter, "proj-1", { task: "task-2" })).resolves.toBe("run-2");
     await expect(resolvePostgresRunId(adapter, "proj-1", {})).resolves.toBe("run-2");
   });
 

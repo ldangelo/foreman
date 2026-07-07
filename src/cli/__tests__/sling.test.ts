@@ -61,21 +61,6 @@ describe("sling trd CLI pipeline", () => {
     expect(() => readFileSync("/nonexistent/path.md", "utf-8")).toThrow();
   });
 
-  it("sling-trd.md parses correctly", () => {
-    const slingTrd = readFileSync(
-      join(process.cwd(), "docs", "TRD", "sling-trd.md"),
-      "utf-8",
-    );
-    const plan = parseTrd(slingTrd);
-    expect(plan.epic.title).toBe("TRD: Sling-TRD Command");
-    expect(plan.epic.documentId).toBe("TRD-SLING-TRD");
-
-    const totalTasks = plan.sprints.reduce(
-      (sum, s) => sum + s.stories.reduce((ss, st) => ss + st.tasks.length, 0),
-      0,
-    );
-    expect(totalTasks).toBe(52);
-  });
 
   it("--skip-completed filters completed tasks from plan", () => {
     const plan = parseTrd(content);

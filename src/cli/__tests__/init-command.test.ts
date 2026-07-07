@@ -104,7 +104,7 @@ describe("init command", () => {
   function makeTempProject(name: string): string {
     const dir = mkdtempSync(join(tmpdir(), `foreman-init-command-${name}-`));
     tempDirs.push(dir);
-    mkdirSync(join(dir, ".beads"), { recursive: true });
+    mkdirSync(join(dir, ".tasks"), { recursive: true });
     return dir;
   }
 

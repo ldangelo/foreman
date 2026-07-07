@@ -11,8 +11,8 @@ Implemented TRD-018 and TRD-018-TEST.
 - 0e926e09 test: verify Elixir inbox projection
 
 ## Files changed
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - docs/TRD/TRD-2026-014-elixir-backend-orchestration.md
 - packages/foreman_server/README.md
 - packages/foreman_server/lib/foreman_server/application.ex

@@ -1,8 +1,8 @@
 /**
- * TRD-NF-002-TEST: Verify worker binary PATH includes ~/.local/bin/br directory.
+ * TRD-NF-002-TEST: Verify worker binary PATH includes ~/.local/bin/native task store directory.
  *
  * buildWorkerEnv() prepends ~/.local/bin so spawned worker agents can find
- * the `br` binary. Verified via the same env-construction logic used in
+ * the `native task store` binary. Verified via the same env-construction logic used in
  * dispatcher.ts (TRD-NF-002 requirement).
  */
 
@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { resolveWorkerPaths } from "../dispatcher.js";
 
 describe("TRD-NF-002: worker PATH construction includes ~/.local/bin", () => {
-  it("~/.local/bin prepended produces PATH with br binary directory first", () => {
+  it("~/.local/bin prepended produces PATH with native task store binary directory first", () => {
     const home = os.homedir();
     const baseEnv: Record<string, string> = {};
     baseEnv.PATH = `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`;
@@ -31,8 +31,8 @@ describe("TRD-NF-002: worker PATH construction includes ~/.local/bin", () => {
     expect(localBinIdx).toBeLessThan(homebrewIdx);
   });
 
-  it("br binary is resolvable via ~/.local/bin path segment", () => {
-    // The br binary ships at ~/.local/bin/br — verify our PATH construction
+  it("native task store binary is resolvable via ~/.local/bin path segment", () => {
+    // The native task store binary ships at ~/.local/bin/native task store — verify our PATH construction
     // would make it discoverable via PATH lookup.
     const home = os.homedir();
     const workerPath = `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`;

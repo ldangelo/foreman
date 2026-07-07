@@ -219,7 +219,7 @@ The inbox panel shows new messages as they arrive:
 | Data Source Unavailable | Panel Behavior |
 |------------------------|----------------|
 | Postgres runs table missing | Agents panel shows "DB unavailable — agents unknown" |
-| Task store (br) unavailable | Board panel shows "Task backend unavailable — board unknown" |
+| Task store (native task store) unavailable | Board panel shows "Task backend unavailable — board unknown" |
 | Inbox table missing | Inbox panel shows "Inbox unavailable — messages unknown" |
 | All sources unavailable | Full-screen error message, exit on any key |
 
@@ -361,7 +361,7 @@ src/cli/commands/watch/
 | `inbox.ts` | `formatMessage()`, `formatTimestamp()` for abbreviated inbox rendering |
 | `NativeTaskStore` | Board data access for task counts |
 | `ForemanStore` | Postgres runs and messages queries |
-| `fetchTaskCounts()` | br task counts for board summary |
+| `fetchTaskCounts()` | native task store task counts for board summary |
 
 ### No New Dependencies
 
@@ -381,7 +381,7 @@ The unified watch command uses only existing code:
 | 0 tasks in all statuses | Board panel shows all columns with count 0 |
 | Very long agent list (>10) | Scroll within agent panel, show "+N more" indicator |
 | Very long inbox (>20 messages) | Trim oldest messages from scroll buffer |
-| Task backend (br) not installed | Board panel shows "br unavailable — counts unknown" in muted state |
+| Task backend (native task store) not installed | Board panel shows "native task store unavailable — counts unknown" in muted state |
 | Postgres database locked | Retry once, then show "DB locked — retrying..." status |
 | Terminal too narrow (< 60 cols) | Show warning: "Terminal too narrow for unified view. Use `foreman dashboard` instead." |
 | New inbox message arrives during key input | Queue message for display on next render cycle |

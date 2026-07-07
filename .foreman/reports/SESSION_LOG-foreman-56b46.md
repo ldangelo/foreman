@@ -3,7 +3,7 @@
 ## Metadata
 - **Date:** 2026-04-19
 - **Phase:** Implementation (developer)
-- **Bead ID:** foreman-6f854
+- **Task ID:** foreman-6f854
 - **Branch:** feature/kanban-task-board
 
 ## Key Activities
@@ -69,8 +69,8 @@
 
 ### Next Steps
 1. Merge feature branch to dev
-2. Close bead foreman-6f854
-3. Sync beads to git
+2. Close task foreman-6f854
+3. Sync tasks to git
 
 ## Test Results
 ```

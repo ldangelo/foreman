@@ -13,12 +13,12 @@
 |---------|-------|----------|------------|--------|
 | **RISK-1** | Backward Compatibility — TRD Parser Column Ambiguity | Medium | Medium | Open |
 | **RISK-2** | Parser Ambiguity — Sprint/Story Numbering Collision | Low | Low | Open |
-| **RISK-3** | Backward Compatibility — Existing Beads TRD Format Mismatch | High | Medium | Open |
+| **RISK-3** | Backward Compatibility — Existing Tasks TRD Format Mismatch | High | Medium | Open |
 | **RISK-4** | Dependency Parsing — Range Expression Semantics | Low | Medium | Open |
 | **RISK-5** | Task Status Ambiguity — Silent Task Dropping | High | Medium | Open |
 | **RISK-6** | Identifier Collision — Idempotent Re-runs | Low | Medium | Open |
 | **RISK-7** | Dependency Wire Ordering — Forward Reference Silent Failures | Medium | Low | Open |
-| **RISK-8** | Migration Path — Existing Projects with Beads TRDs | Low | Low | Open |
+| **RISK-8** | Migration Path — Existing Projects with Tasks TRDs | Low | Low | Open |
 | **RISK-9** | Command Surface Bloat — `sling prd` vs `sling trd` Confusion | Low | Medium | Open |
 | **RISK-10** | Pi Session Failure — Partial State from Failed Run | Medium | Low | Open |
 
@@ -117,11 +117,11 @@ The existing parser handles this correctly. The risk is that `create-trd-foreman
 
 ---
 
-## RISK-3: Backward Compatibility — Existing Beads TRD Format Mismatch
+## RISK-3: Backward Compatibility — Existing Tasks TRD Format Mismatch
 
 ### Description
 
-Projects that have run `foreman plan` with `create-trd` (beads path) have TRD files in `docs/TRD/` that may use a different format than `parseTrd()` expects. Specifically, `create-trd` outputs task lists as markdown checklists (not tables) in some sections:
+Projects that have run `foreman plan` with `create-trd` (tasks path) have TRD files in `docs/TRD/` that may use a different format than `parseTrd()` expects. Specifically, `create-trd` outputs task lists as markdown checklists (not tables) in some sections:
 
 ```markdown
 - [ ] **AT-001**: Implement feature X (8h) [satisfies REQ-001]
@@ -139,18 +139,18 @@ This would break backward compatibility for existing TRD files. `foreman sling t
 
 **Medium**
 
-The existing `create-trd` output format uses tables within Story sections, but may use checklists in other sections. The parser handles this correctly for existing TRDs. However, if the beads path migrates to a fully checklist-based format, `parseTrd()` would break.
+The existing `create-trd` output format uses tables within Story sections, but may use checklists in other sections. The parser handles this correctly for existing TRDs. However, if the tasks path migrates to a fully checklist-based format, `parseTrd()` would break.
 
 ### Mitigation
 
 1. **Document table format requirement:** Both `create-trd` and `create-trd-foreman` must emit markdown tables (not checklists) for task sections.
-2. **Backward compatibility test:** TRD-FSC-008 specifically tests `foreman sling trd` on existing beads-path TRDs.
+2. **Backward compatibility test:** TRD-FSC-008 specifically tests `foreman sling trd` on existing tasks-path TRDs.
 3. **Fallback parser (future):** If needed, a `--legacy` flag to `sling trd` could enable a checklist-style fallback parser.
 4. **CI validation:** Add a test that `parseTrd()` succeeds on all TRDs in `docs/TRD/`.
 
 ### Residual Risk
 
-**Medium** (depends on beads path maintaining table format)
+**Medium** (depends on tasks path maintaining table format)
 
 ---
 
@@ -306,16 +306,16 @@ The dependency is silently dropped. Tasks would execute out of order if the depe
 
 ---
 
-## RISK-8: Migration Path — Existing Projects with Beads TRDs
+## RISK-8: Migration Path — Existing Projects with Tasks TRDs
 
 ### Description
 
-Projects that used `foreman plan` with `create-trd` (beads path) have TRD files in `docs/TRD/`. Switching to `create-trd-foreman` would generate a new TRD in the same location (same filename). This would overwrite the beads-path TRD.
+Projects that used `foreman plan` with `create-trd` (tasks path) have TRD files in `docs/TRD/`. Switching to `create-trd-foreman` would generate a new TRD in the same location (same filename). This would overwrite the tasks-path TRD.
 
 However:
-1. The beads path TRD is still valid for `foreman sling trd`
+1. The tasks path TRD is still valid for `foreman sling trd`
 2. The new `create-trd-foreman` output uses the same filename, so both are in the same format (table-based)
-3. The migration is seamless if the beads path also uses tables
+3. The migration is seamless if the tasks path also uses tables
 
 ### Severity
 

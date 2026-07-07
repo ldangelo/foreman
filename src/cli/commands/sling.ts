@@ -20,7 +20,7 @@ import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-ta
 /**
  * Legacy helper retained for backward-compatibility tests.
  *
- * Historically sling defaulted to --br-only. Native task migration now ignores
+ * Historically sling defaulted to --native-only. Native task migration now ignores
  * the backend-targeting flags, but this helper is retained so older callers and
  * tests do not break while the flag surface remains accepted.
  */
@@ -272,7 +272,7 @@ async function handleTrdImport(
 
   const emittedSdNotice = applySdOnlyDeprecation(opts);
   if (!emittedSdNotice && opts.brOnly) {
-    console.warn(chalk.yellow(`${getSlingLegacyBackendFlagNotice()} (--br-only)`));
+    console.warn(chalk.yellow(`${getSlingLegacyBackendFlagNotice()} (--native-only)`));
   }
 
   // Retained for compatibility with older tests/callers; the native path does
@@ -499,7 +499,7 @@ const trdSubcommand = new Command("trd")
   .option("--auto", "Skip confirmation prompt")
   .option("--json", "Output parsed structure as JSON")
   .option("--sd-only", "Legacy no-op; sling now writes to the native task store only")
-  .option("--br-only", "Legacy no-op; sling now writes to the native task store only")
+  .option("--native-only", "Legacy no-op; sling now writes to the native task store only")
   .option("--skip-completed", "Skip [x] tasks (not created)")
   .option("--close-completed", "Create [x] tasks and immediately close them")
   .option("--no-parallel", "Disable parallel sprint detection")
@@ -534,7 +534,7 @@ const prdSubcommand = new Command("prd")
   .option("--auto", "Skip confirmation prompt")
   .option("--json", "Output the generated TRD path and parsed structure as JSON")
   .option("--sd-only", "Legacy no-op; sling now writes to the native task store only")
-  .option("--br-only", "Legacy no-op; sling now writes to the native task store only")
+  .option("--native-only", "Legacy no-op; sling now writes to the native task store only")
   .option("--skip-completed", "Skip [x] tasks (not created)")
   .option("--close-completed", "Create [x] tasks and immediately close them")
   .option("--no-parallel", "Disable parallel sprint detection")

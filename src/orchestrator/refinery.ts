@@ -135,8 +135,8 @@ async function runTestCommand(command: string, cwd: string): Promise<{ ok: boole
  *   - show(id): fetch issue detail for PR title/body generation
  *   - getGraph(): optional; used to order merges by dependency graph
  *
- * BeadsRustClient satisfies this interface.
- * BeadsRustClient does not implement getGraph(); the try/catch in
+ * TaskClient satisfies this interface.
+ * TaskClient does not implement getGraph(); the try/catch in
  * orderByDependencies will fall back to insertion order in that case.
  */
 interface TaskDependencyGraph {
@@ -455,7 +455,7 @@ export class Refinery {
 
     await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
-    this.sendMail(run.id, "bead-closed", {
+    this.sendMail(run.id, "task-closed", {
       taskId: run.task_id,
       branchName,
       targetBranch,
@@ -760,8 +760,8 @@ export class Refinery {
   }
 
   /**
-   * Attempt to add a note to a bead explaining what went wrong.
-   * Non-fatal — a failure to annotate the bead must not mask the original error.
+   * Attempt to add a note to a task explaining what went wrong.
+   * Non-fatal — a failure to annotate the task must not mask the original error.
    */
   private async addFailureNote(_taskId: string, _note: string): Promise<void> {
     // Disabled in Elixir-backed runtime until task annotation writes are exposed
@@ -923,7 +923,7 @@ export class Refinery {
     if (runs.length <= 1) return runs;
 
     try {
-      if (!this.tasks.getGraph) return runs; // br backend has no getGraph
+      if (!this.tasks.getGraph) return runs; // native task store backend has no getGraph
       const graph = await this.tasks.getGraph();
       // Build a map of task_id → set of dependency task_ids
       const depMap = new Map<string, Set<string>>();
@@ -1061,7 +1061,7 @@ export class Refinery {
       for (const run of completedRuns) {
         const branchName = `foreman/${run.task_id}`;
 
-        // Resolve per-task target branch: prefer branch: label on the bead,
+        // Resolve per-task target branch: prefer branch: label on the task,
         // fall back to the caller-supplied or auto-detected default.
         let targetBranch = defaultTargetBranch;
         try {
@@ -1357,7 +1357,7 @@ export class Refinery {
               // Revert the merge + archive commits
               await this.vcsBackend.resetHard(mergeWorkspacePath, preMergeHead);
 
-              // Add failure note before resetting so the bead records why it was reset
+              // Add failure note before resetting so the task records why it was reset
               await this.addFailureNote(
                 run.task_id,
                 `Merge failed: post-merge tests failed on ${new Date().toISOString().slice(0, 10)} — manual retry required. ${testResult.output.slice(0, 300)}`,
@@ -1426,8 +1426,8 @@ export class Refinery {
 
           await this.closeNativeTaskPostMerge(run.id, run.task_id);
 
-          // Send bead-closed mail so inbox shows bead lifecycle completion
-          this.sendMail(run.id, "bead-closed", {
+          // Send task-closed mail so inbox shows task lifecycle completion
+          this.sendMail(run.id, "task-closed", {
             taskId: run.task_id,
             branchName,
             targetBranch,
@@ -1443,7 +1443,7 @@ export class Refinery {
           });
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
-          // Update run status to "failed" so subsequent bead status sync has a
+          // Update run status to "failed" so subsequent task status sync has a
           // terminal status to map from (fixes the exception gap).
           await this.persistRunUpdate(run, { status: "failed" });
           await this.persistRunEvent(
@@ -1847,9 +1847,9 @@ async function gitReadOnly(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-// ── Beads preservation ────────────────────────────────────────────────────────
+// ── Tasks preservation ────────────────────────────────────────────────────────
 
-export interface BeadPreservationResult {
+export interface TaskPreservationResult {
   preserved: boolean;
   error?: string;
 }
@@ -1865,12 +1865,12 @@ export interface BeadPreservationResult {
  * @param branchName    Source branch containing task changes
  * @param targetBranch  Target branch to apply changes to
  */
-export async function preserveBeadChanges(
+export async function preserveTaskChanges(
   projectPath: string,
   branchName: string,
   targetBranch: string,
   vcsBackend?: Pick<VcsBackend, "applyPatchToIndex" | "commit">,
-): Promise<BeadPreservationResult> {
+): Promise<TaskPreservationResult> {
   const tmpPatchPath = join(projectPath, `.foreman-task-patch-${Date.now()}.patch`);
 
   try {

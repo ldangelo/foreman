@@ -40,7 +40,7 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
   pgm.createIndex("costs", "run_id", { ifNotExists: true });
   pgm.createIndex("costs", "recorded_at", { ifNotExists: true });
 
-  pgm.createTable("bead_write_queue", {
+  pgm.createTable("task_write_queue", {
     id: {
       type: "uuid",
       notNull: true,
@@ -75,17 +75,17 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
       notNull: false,
     },
   }, { ifNotExists: true });
-  pgm.createIndex("bead_write_queue", ["project_id", "processed_at", "created_at"], {
+  pgm.createIndex("task_write_queue", ["project_id", "processed_at", "created_at"], {
     ifNotExists: true,
-    name: "idx_bead_write_queue_pending",
+    name: "idx_task_write_queue_pending",
   });
 }
 
 export async function down(pgm: MigrationBuilder): Promise<void> {
-  pgm.dropIndex("bead_write_queue", ["project_id", "processed_at", "created_at"], {
+  pgm.dropIndex("task_write_queue", ["project_id", "processed_at", "created_at"], {
     ifExists: true,
-    name: "idx_bead_write_queue_pending",
+    name: "idx_task_write_queue_pending",
   });
-  pgm.dropTable("bead_write_queue", { ifExists: true });
+  pgm.dropTable("task_write_queue", { ifExists: true });
   pgm.dropTable("costs", { ifExists: true });
 }

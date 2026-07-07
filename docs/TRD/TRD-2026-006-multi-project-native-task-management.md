@@ -70,7 +70,7 @@ Pipeline Integration:
 | **Dispatcher** (updated) | `src/orchestrator/dispatcher.ts` | Native task store query; `--project` resolution; coexistence logic |
 | **Refinery** (updated) | `src/orchestrator/refinery.ts` | Close native tasks post-merge |
 | **Pipeline Executor** (existing) | `src/orchestrator/pipeline-executor.ts` | Phase status updates (already calls `updatePhase()`) |
-| **Sling** (updated) | `src/cli/commands/sling.ts` | Create native tasks instead of `br create` |
+| **Sling** (updated) | `src/cli/commands/sling.ts` | Create native tasks instead of `native task store create` |
 | **Dashboard** (updated) | `src/cli/commands/dashboard.ts` | Cross-project aggregation; "Needs Human" panel |
 | **Status** (updated) | `src/cli/commands/status.ts` | `--all` flag; `--project` flag |
 | **Doctor** (updated) | `src/cli/commands/doctor.ts` | Native task store mode reporting |
@@ -189,7 +189,7 @@ Pipeline Integration:
 - Validates PRD ACs: AC-005.1, AC-017.1
 - Implementation ACs:
   - Given tasks in various statuses, when `ready()` is called, then it returns only tasks with `status = 'ready'` and `run_id IS NULL`, ordered by priority ASC then created_at ASC
-  - Given the native task store is empty, when `ready()` is called, then it returns an empty array (no beads fallback)
+  - Given the native task store is empty, when `ready()` is called, then it returns an empty array (no tasks fallback)
 
 #### TRD-005-TEST: Unit tests for ready() query
 **1h** | [verifies TRD-005] [satisfies REQ-017, REQ-020] [depends: TRD-005]
@@ -207,7 +207,7 @@ Pipeline Integration:
 
 #### TRD-006-TEST: Backward compatibility regression tests
 **1h** | [verifies TRD-006] [satisfies REQ-020] [depends: TRD-006]
-- Test: empty `tasks` table returns empty array from `ready()` query (no beads fallback)
+- Test: empty `tasks` table returns empty array from `ready()` query (no tasks fallback)
 - Test: existing `foreman status` output unchanged when no native tasks
 - Test: `foreman init` on existing DB adds tables without data loss
 
@@ -275,9 +275,9 @@ Pipeline Integration:
 **3h** | [satisfies REQ-017] [depends: TRD-005]
 - Validates PRD ACs: AC-017.1, AC-017.2, AC-017.3
 - Implementation ACs:
-  - Given the dispatcher calls `getReadyTasks()`, then it calls `NativeTaskStore.ready()` directly (no shell exec, no `br` invocation)
+  - Given the dispatcher calls `getReadyTasks()`, then it calls `NativeTaskStore.ready()` directly (no shell exec, no `native task store` invocation)
   - Given the dispatcher claims a task, when `claim(taskId, runId)` is called, then the status update and run_id assignment happen in the same Postgres transaction (already implemented in `NativeTaskStore.claim()`)
-  - Given the tasks table is empty, when `getReadyTasks()` is called, then the dispatcher returns an empty array (native-only, no beads fallback)
+  - Given the tasks table is empty, when `getReadyTasks()` is called, then the dispatcher returns an empty array (native-only, no tasks fallback)
 
 #### TRD-010-TEST: Integration tests for dispatcher native task store path
 **2h** | [verifies TRD-010] [satisfies REQ-017] [depends: TRD-010]
@@ -297,18 +297,18 @@ Pipeline Integration:
 - Test: successful merge sets task status to `merged` with `closed_at`
 - Test: missing task ID logs warning, does not throw
 
-#### TRD-012: Update sling to create native tasks instead of beads
+#### TRD-012: Update sling to create native tasks instead of tasks
 **3h** | [satisfies REQ-009] [depends: TRD-003, TRD-004]
 - Validates PRD ACs: AC-009.1, AC-009.2, AC-009.3
 - Implementation ACs:
-  - Given `foreman sling trd <file>`, when tasks are created, then `NativeTaskStore.create()` is called for each task (no `br create` or `BeadsRustClient` calls)
+  - Given `foreman sling trd <file>`, when tasks are created, then `NativeTaskStore.create()` is called for each task (no `native task store create` or `TaskClient` calls)
   - Given tasks created by sling, when they are inserted, then `status='backlog'` and operator must approve before dispatch
   - Given the `tasks` table does not exist yet, when sling runs, then the schema migration executes automatically with the message `"Migrating task store to native format..."`
   - Given sling creates tasks with dependencies, when `addDependency()` is called, then `blocks` relationships from the TRD are preserved
 
 #### TRD-012-TEST: Unit tests for sling native task creation
 **2h** | [verifies TRD-012] [satisfies REQ-009] [depends: TRD-012]
-- Test: sling creates tasks via NativeTaskStore, not br
+- Test: sling creates tasks via NativeTaskStore, not native task store
 - Test: created tasks have `status='backlog'`
 - Test: auto-migration runs when tasks table absent
 - Test: dependencies from TRD are imported as `blocks` relationships
@@ -354,7 +354,7 @@ Pipeline Integration:
   - Given tasks with status `conflict`, `failed`, `stuck`, or `backlog` across projects, when the dashboard renders, then the "Needs Human" panel shows them sorted by priority (P0 first) then age (oldest first) with columns `PROJECT`, `TASK ID`, `TITLE`, `STATUS`, `AGE`
   - Given no tasks need attention, when the panel renders, then it displays `"No tasks need attention."` in a distinct style
   - Given the operator presses `a` on a `backlog` item, when the keypress is handled, then `NativeTaskStore.approve()` is called on the target project's database
-  - Given the operator presses `r` on a `failed` item, when the keypress is handled, then the equivalent of `foreman reset --bead <id> --project <name>` is dispatched
+  - Given the operator presses `r` on a `failed` item, when the keypress is handled, then the equivalent of `foreman reset --task <id> --project <name>` is dispatched
 
 #### TRD-015-TEST: Unit tests for "Needs Human" panel
 **2h** | [verifies TRD-015] [satisfies REQ-011] [depends: TRD-015]
@@ -384,29 +384,29 @@ Pipeline Integration:
 
 ### Sprint 5: Migration and Deprecation (REQ-013, REQ-014, REQ-015)
 
-#### TRD-017: Implement `foreman task import --from-beads`
+#### TRD-017: Implement `foreman task import --from-tasks`
 **4h** | [satisfies REQ-013] [depends: TRD-003, TRD-004]
 - Validates PRD ACs: AC-013.1, AC-013.2, AC-013.3, AC-013.4
 - Implementation ACs:
-  - Given `.beads/beads.jsonl` exists, when `foreman task import --from-beads` runs, then each bead is parsed and mapped: `open`->`backlog`, `in_progress`->`ready`, `closed`->`merged`; type and priority are preserved; the `external_id` column stores the original bead ID
-  - Given a bead with `blocks` dependencies, when imported, then `task_dependencies` rows are created with type `blocks`; `parent-child` relationships are also preserved
+  - Given `.tasks/tasks.jsonl` exists, when `foreman task import --from-tasks` runs, then each task is parsed and mapped: `open`->`backlog`, `in_progress`->`ready`, `closed`->`merged`; type and priority are preserved; the `external_id` column stores the original task ID
+  - Given a task with `blocks` dependencies, when imported, then `task_dependencies` rows are created with type `blocks`; `parent-child` relationships are also preserved
   - Given `--dry-run`, when the import runs, then no rows are written but the output shows field-level mapping for the first 5 tasks and a total count
-  - Given a bead whose `id` matches an existing `external_id` in the native store, when import runs, then it is skipped (no duplicate)
+  - Given a task whose `id` matches an existing `external_id` in the native store, when import runs, then it is skipped (no duplicate)
 
-#### TRD-017-TEST: Unit tests for beads import
+#### TRD-017-TEST: Unit tests for tasks import
 **2h** | [verifies TRD-017] [satisfies REQ-013] [depends: TRD-017]
-- Test: import reads `.beads/beads.jsonl` and creates native tasks
+- Test: import reads `.tasks/tasks.jsonl` and creates native tasks
 - Test: status mapping (open->backlog, in_progress->ready, closed->merged)
 - Test: dependency import (blocks and parent-child)
 - Test: `--dry-run` writes no rows, prints mapping
 - Test: duplicate detection by external_id skips existing
 - Test: import summary message format matches AC-013.1
 
-#### TRD-018: Native task store is mandatory -- no beads fallback
+#### TRD-018: Native task store is mandatory -- no tasks fallback
 **2h** | [satisfies REQ-014] [depends: TRD-010]
 - Validates PRD ACs: AC-014.1, AC-014.2, AC-014.3
 - Implementation ACs:
-  - Given the dispatcher calls `getReadyTasks()`, then native task store is always used (no beads fallback)
+  - Given the dispatcher calls `getReadyTasks()`, then native task store is always used (no tasks fallback)
   - Given `foreman doctor`, when the native task store has rows, then output includes `"Task store: native (N tasks)"`; when empty, `"Task store: native (empty)"`
 
 #### TRD-018-TEST: Unit tests for native-only task store
@@ -415,18 +415,18 @@ Pipeline Integration:
 - Test: doctor reports native task store mode
 - Test: empty task store reports "native (empty)"
 
-#### TRD-019: Deprecate BeadsRustClient and update doctor checks
+#### TRD-019: Deprecate TaskClient and update doctor checks
 **2h** | [satisfies REQ-015] [depends: TRD-018]
 - Validates PRD ACs: AC-015.1, AC-015.2
 - Implementation ACs:
-  - Given `src/lib/beads-rust.ts`, when this task is complete, then all exported symbols have `@deprecated` JSDoc tags
+  - Given `src/lib/task-client.ts`, when this task is complete, then all exported symbols have `@deprecated` JSDoc tags
   - Given `npx tsc --noEmit`, when run after deprecation, then zero errors are emitted (no internal usages of deprecated symbols outside the compatibility shim)
-  - Given `br` binary is absent, when `foreman doctor` runs, then it emits an informational notice `"beads (br) not found -- native task store active."` instead of a failure
+  - Given `native task store` binary is absent, when `foreman doctor` runs, then it emits an informational notice `"tasks (native task store) not found -- native task store active."` instead of a failure
 
 #### TRD-019-TEST: Unit tests for deprecation and doctor updates
 **1h** | [verifies TRD-019] [satisfies REQ-015] [depends: TRD-019]
-- Test: `foreman doctor` without `br` binary emits info notice, not error
-- Test: `foreman doctor` with `br` binary and native store active emits migration suggestion
+- Test: `foreman doctor` without `native task store` binary emits info notice, not error
+- Test: `foreman doctor` with `native task store` binary and native store active emits migration suggestion
 - Test: no TypeScript compilation errors with deprecated annotations
 
 ---
@@ -474,11 +474,11 @@ Pipeline Integration:
 - [ ] **TRD-016-TEST** (2h): Tests for --project dispatch [depends: TRD-016]
 
 ### Sprint 5: Migration and Deprecation (~12h)
-- [ ] **TRD-017** (4h): Beads import command [depends: TRD-003, TRD-004]
-- [ ] **TRD-017-TEST** (2h): Tests for beads import [depends: TRD-017]
+- [ ] **TRD-017** (4h): Tasks import command [depends: TRD-003, TRD-004]
+- [ ] **TRD-017-TEST** (2h): Tests for tasks import [depends: TRD-017]
 - [ ] **TRD-018** (2h): Native task store mandatory [depends: TRD-010]
 - [ ] **TRD-018-TEST** (1h): Tests for native-only task store [depends: TRD-018]
-- [ ] **TRD-019** (2h): BeadsRustClient deprecation [depends: TRD-018]
+- [ ] **TRD-019** (2h): TaskClient deprecation [depends: TRD-018]
 - [ ] **TRD-019-TEST** (1h): Tests for deprecation [depends: TRD-019]
 
 **Total: ~71h estimated across 38 tasks (19 implementation + 19 test)**
@@ -501,9 +501,9 @@ Pipeline Integration:
 | REQ-010 | Cross-Project Dashboard Aggregation | TRD-014 | TRD-014-TEST |
 | REQ-011 | "Needs Human" Panel | TRD-015 | TRD-015-TEST |
 | REQ-012 | Pipeline Phase Visibility | TRD-013 | TRD-013-TEST |
-| REQ-013 | Beads Import Command | TRD-017 | TRD-017-TEST |
+| REQ-013 | Tasks Import Command | TRD-017 | TRD-017-TEST |
 | REQ-014 | Native task store is mandatory | TRD-018 | TRD-018-TEST |
-| REQ-015 | Beads Deprecation Path | TRD-019 | TRD-019-TEST |
+| REQ-015 | Tasks Deprecation Path | TRD-019 | TRD-019-TEST |
 | REQ-016 | `--project` Flag on Dispatch Commands | TRD-009, TRD-016 | TRD-009-TEST, TRD-016-TEST |
 | REQ-017 | Dispatcher Reads Native Task Store | TRD-005, TRD-010 | TRD-005-TEST, TRD-010-TEST |
 | REQ-018 | Refinery Closes Native Tasks Post-Merge | TRD-011 | TRD-011-TEST |

@@ -15,10 +15,10 @@
 Pure logic, mocked dependencies. Fast, reliable.
 
 ### Layer 2: Integration Tests (local deps only)
-Requires filesystem + git. No Dolt/legacy beads/Claude.
+Requires filesystem + git. No Dolt/legacy tasks/Claude.
 
 ### Layer 3: E2E Tests (full stack)
-Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
+Requires Dolt running, Tasks CLI, optionally Claude. Manual or CI-gated.
 
 ---
 
@@ -41,8 +41,8 @@ Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Worker AGENTS.md contains task ID | Template includes `{{BEAD_ID}}` replacement |
-| 2 | Worker AGENTS.md contains task-update commands | Includes task/bead status guidance |
+| 1 | Worker AGENTS.md contains task ID | Template includes `{{TASK_ID}}` replacement |
+| 2 | Worker AGENTS.md contains task-update commands | Includes task/task status guidance |
 | 3 | Worker AGENTS.md contains git push | Includes push to `foreman/<task-id>` |
 | 4 | Different runtimes produce valid output | claude-code, pi, codex all generate valid templates |
 
@@ -62,11 +62,11 @@ Requires Dolt running, Beads CLI, optionally Claude. Manual or CI-gated.
 ### 1.4 Sling Executor (`src/orchestrator/sling-executor.ts`)
 **File:** `src/orchestrator/__tests__/sling-executor.test.ts`
 
-Mock native task client + compatibility beads client, verify:
+Mock native task client + compatibility tasks client, verify:
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Creates epic in the selected backend | Native or beads client called with type: "epic" |
+| 1 | Creates epic in the selected backend | Native or tasks client called with type: "epic" |
 | 2 | Creates tasks with parent ref | Parent/dependency refs preserved |
 | 3 | Sets up explicit dependencies | Dep column values wired as blocks deps |
 | 4 | Returns backend-aware result | SlingResult reflects selected backend |
@@ -79,9 +79,9 @@ Mock store + task backend:
 
 | # | Test | What to verify |
 |---|------|---------------|
-| 1 | Detects completed runs | Bead status=closed → run marked completed |
-| 2 | Detects stuck agents | started_at > timeout ago + bead still open → stuck |
-| 3 | Active runs stay active | Recent start + bead open → still active |
+| 1 | Detects completed runs | Task status=closed → run marked completed |
+| 2 | Detects stuck agents | started_at > timeout ago + task still open → stuck |
+| 3 | Active runs stay active | Recent start + task open → still active |
 | 4 | Recovery respects max retries | recoverStuck returns false after max retries |
 | 5 | Recovery resets run status | recoverStuck sets status back to pending |
 | 6 | Logs events on status change | store.logEvent called for completions/stuck |
@@ -161,7 +161,7 @@ Spawn `tsx src/cli/index.ts <command>` as child process:
 ## Layer 3: E2E Tests (manual / CI-gated)
 
 ### 3.1 Full Pipeline Test
-**Requires:** Dolt running, optional legacy beads CLI for fallback flows, Claude Code
+**Requires:** Dolt running, optional legacy tasks CLI for fallback flows, Claude Code
 
 ```bash
 # Setup
@@ -217,7 +217,7 @@ foreman dashboard
 ```
 
 ### 3.3 Plan Pipeline Test (Ensemble)
-**Requires:** Dolt, optional legacy beads fallback, Claude Code, Ensemble commands
+**Requires:** Dolt, optional legacy tasks fallback, Claude Code, Ensemble commands
 
 ```bash
 cd /tmp/foreman-e2e-test

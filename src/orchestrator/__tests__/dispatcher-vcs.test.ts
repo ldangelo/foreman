@@ -60,20 +60,20 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
 
 vi.mock("../../lib/worktree-manager.js", () => ({
   WorktreeManager: class {
-    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
+    async createWorktree(opts: { projectId: string; taskId: string; repoPath: string; baseBranch?: string }) {
       return {
         projectId: opts.projectId,
-        beadId: opts.beadId,
-        branchName: `foreman/${opts.beadId}`,
-        path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`,
+        taskId: opts.taskId,
+        branchName: `foreman/${opts.taskId}`,
+        path: `/tmp/worktrees/${opts.projectId}/${opts.taskId}`,
         exists: false,
       };
     }
   },
 }));
 
-vi.mock("../../lib/beads-rust.js", () => ({
-  BeadsRustClient: class {
+vi.mock("../../lib/task-client.js", () => ({
+  TaskClient: class {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     constructor(_path: string) {}
     show = mockShowFn;
@@ -127,7 +127,7 @@ function makeStore(): ForemanStore {
     getRunsByStatus: vi.fn().mockReturnValue([]),
     getRunsByStatuses: vi.fn().mockReturnValue([]),
     getStuckRunsForTask: vi.fn().mockReturnValue([]),
-    getPendingBeadWrites: vi.fn().mockReturnValue([]),
+    getPendingTaskWrites: vi.fn().mockReturnValue([]),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     getRunsForTask: vi.fn().mockReturnValue([]),
     createRun: vi.fn().mockReturnValue({ id: "run-001" }),
@@ -680,10 +680,10 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
 
     await dispatcher.dispatch({ dryRun: false });
 
-    // WorktreeManager.createWorktree() should be called with projectId, beadId, repoPath, baseBranch
+    // WorktreeManager.createWorktree() should be called with projectId, taskId, repoPath, baseBranch
     expect(createWorktreeSpy).toHaveBeenCalledWith({
       projectId: "proj-001",
-      beadId: "test-task",
+      taskId: "test-task",
       repoPath: "/tmp/project",
       baseBranch: "main",
     });

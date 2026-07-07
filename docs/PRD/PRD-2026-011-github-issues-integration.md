@@ -13,7 +13,7 @@
 
 ### 1.1 Problem Statement
 
-Foreman currently tracks tasks in a native Postgres store (`foreman task create`, `foreman run`) with optional fallback to beads_rust (`br`). While functional, this creates several friction points:
+Foreman currently tracks tasks in a native Postgres store (`foreman task create`, `foreman run`) with optional fallback to native task store (`native task store`). While functional, this creates several friction points:
 
 1. **Disconnected from GitHub-native workflows**: Issues/PRs on GitHub cannot be directly converted to Foreman tasks. Teams using GitHub Issues for project planning must manually duplicate work.
 2. **No bi-directional sync**: Changes in Foreman don't reflect in GitHub and vice versa. Labels, assignees, milestones, and status updates require manual coordination.

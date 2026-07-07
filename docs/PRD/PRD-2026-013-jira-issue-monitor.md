@@ -68,7 +68,7 @@ A Jira Issue Monitor daemon that:
 ```
 1. Jira issue enters "In Progress" status
 2. Developer manually: foreman task create "JIRA-123: ..."
-3. foreman run --bead <id>
+3. foreman run --task <id>
 4. Track status separately in Jira vs Foreman
 ```
 

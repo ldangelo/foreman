@@ -75,8 +75,8 @@ function makeJjVcs(overrides: Partial<VcsBackend> = {}): VcsBackend {
 describe("isIgnorableControllerPath", () => {
   it("ignores runtime state paths", () => {
     expect(isIgnorableControllerPath(".omx/state/ralph.json")).toBe(true);
-    expect(isIgnorableControllerPath(".beads/issues.jsonl")).toBe(true);
-    expect(isIgnorableControllerPath(".beads/last-touched")).toBe(true);
+    expect(isIgnorableControllerPath(".tasks/issues.jsonl")).toBe(true);
+    expect(isIgnorableControllerPath(".tasks/last-touched")).toBe(true);
     expect(isIgnorableControllerPath(".foreman/log.txt")).toBe(true);
     expect(isIgnorableControllerPath("storage.runtime-wal")).toBe(true);
   });

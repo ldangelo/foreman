@@ -292,7 +292,7 @@ export interface WorkflowConfig {
   onFailure?: OnFailureConfig;
   /**
    * Dispatcher error strategy. Controls whether the dispatcher stops or
-   * continues when any bead ends in a non-merged terminal failure state
+   * continues when any task ends in a non-merged terminal failure state
    * (test-failed, failed, stuck, conflict).
    *
    * - "stop": refuse to dispatch new agents until failures are resolved
@@ -1219,7 +1219,7 @@ export function resolveWorkflowModel(model: string | undefined): string | undefi
  *   4. `fallbackModel`              — caller-supplied fallback (typically ROLE_CONFIGS value)
  *
  * @param phase         - Loaded workflow phase config.
- * @param priorityStr   - Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+ * @param priorityStr   - Task priority string ("P0"–"P4", "0"–"4", or undefined).
  * @param fallbackModel - Model to use when no YAML config is present (e.g. ROLE_CONFIGS[role].model).
  * @returns Full model ID string.
  */

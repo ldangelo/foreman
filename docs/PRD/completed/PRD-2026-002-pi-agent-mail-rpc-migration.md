@@ -156,7 +156,7 @@ Dispatcher.dispatch()
                                 |-> runPhase('developer', ...) -> query() -> code changes
                                 |-> runPhase('qa', ...) -> query() -> QA_REPORT.md
                                 |-> runPhase('reviewer', ...) -> query() -> REVIEW.md
-                                |-> finalize: git add/commit/push, br close
+                                |-> finalize: git add/commit/push, native task store close
                           |-> OR single query() call
 ```
 
@@ -377,11 +377,11 @@ The dispatcher must detect whether the `pi` binary is available and fall back to
 - AC-002-1: Given Pi binary is NOT on PATH, when `spawnWorkerProcess()` is called, then `DetachedSpawnStrategy.spawn()` is used with identical behavior to the current implementation.
 - AC-002-2: Given Pi binary IS on PATH, when `spawnWorkerProcess()` is called, then `PiRpcSpawnStrategy.spawn()` is preferred over `TmuxSpawnStrategy` and `DetachedSpawnStrategy`.
 - AC-002-3: Given Pi binary is on PATH but PiRpcSpawnStrategy.spawn() fails, when the failure is detected, then Foreman falls back to `DetachedSpawnStrategy.spawn()` and logs a warning.
-- AC-002-4: Given the fallback to DetachedSpawnStrategy, when the agent completes, then all existing behavior (Postgres updates, notification POSTs, br operations) is preserved identically.
+- AC-002-4: Given the fallback to DetachedSpawnStrategy, when the agent completes, then all existing behavior (Postgres updates, notification POSTs, native task store operations) is preserved identically.
 
 ### REQ-003: foreman-tool-gate Pi Extension (P0)
 
-Build a Pi extension that hooks the `tool_call` event and blocks tools not in the phase's allowed list. This replaces the SDK `disallowedTools` parameter (computed by `getDisallowedTools()` in roles.ts) with enforcement at the Pi runtime level. The extension must be built by extending the existing **`permission-gate.ts`** example from pi-mono (which already handles `rm -rf`, `sudo`, and `chmod 777` pattern matching) combined with **`protected-paths.ts`** (which blocks writes to sensitive directories). Foreman-specific additions on top of those foundations: block `git push --force`, protect `.beads/` directory, and enforce the per-phase tool allowlist via the `tool_call` hook's `event.toolName` and `event.input.command` fields.
+Build a Pi extension that hooks the `tool_call` event and blocks tools not in the phase's allowed list. This replaces the SDK `disallowedTools` parameter (computed by `getDisallowedTools()` in roles.ts) with enforcement at the Pi runtime level. The extension must be built by extending the existing **`permission-gate.ts`** example from pi-mono (which already handles `rm -rf`, `sudo`, and `chmod 777` pattern matching) combined with **`protected-paths.ts`** (which blocks writes to sensitive directories). Foreman-specific additions on top of those foundations: block `git push --force`, protect `.tasks/` directory, and enforce the per-phase tool allowlist via the `tool_call` hook's `event.toolName` and `event.input.command` fields.
 
 - AC-003-1: Given the Explorer phase is active, when Pi attempts to invoke the `Bash` tool, then `foreman-tool-gate` blocks the call and returns a denial reason to Pi.
 - AC-003-2: Given the Explorer phase is active, when Pi invokes `Read`, `Grep`, `Glob`, or `LS`, then `foreman-tool-gate` allows the call to proceed.
@@ -434,7 +434,7 @@ Integrate Agent Mail file reservation leases to prevent concurrent agents from e
 Implement a continuously-running daemon (following the SentinelAgent pattern) that automates branch merging by listening for "branch-ready" messages on Agent Mail.
 
 - AC-008-1: Given the Pi Merge Agent is running, when a "branch-ready" message arrives in the `merge-agent` Agent Mail inbox, then the daemon dequeues the message and begins merge processing for that branch.
-- AC-008-2: Given a branch with no conflicts (T1 clean merge), when the merge agent processes it, then it performs the merge automatically (rebase, fast-forward, test, close bead) without spawning a Pi session.
+- AC-008-2: Given a branch with no conflicts (T1 clean merge), when the merge agent processes it, then it performs the merge automatically (rebase, fast-forward, test, close task) without spawning a Pi session.
 - AC-008-3: Given a branch with report-only conflicts (T2), when the merge agent processes it, then it auto-resolves report files (accept theirs) and completes the merge programmatically.
 - AC-008-4: Given a branch with code conflicts (T3/T4), when the merge agent processes it, then it spawns a Pi RPC session with conflict context to drive AI-assisted resolution, following the existing `ConflictResolver` tier logic.
 - AC-008-5: Given the merge agent is running, when `foreman merge` is invoked manually, then the manual command takes precedence (acquires a lock), and the daemon skips that branch.

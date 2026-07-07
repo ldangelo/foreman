@@ -175,7 +175,7 @@ describe("AC-T-014-3: agent-worker-finalize.ts — retryable vs non-retryable fa
   });
 
   it("sets pushSucceeded = true only on successful push", () => {
-    // This flag controls whether the bead is enqueued for merge
+    // This flag controls whether the task is enqueued for merge
     expect(source).toContain("pushSucceeded = true");
   });
 
@@ -202,9 +202,9 @@ describe("AC-T-014-3: agent-worker-finalize.ts — retryable vs non-retryable fa
     expect(enqueueIdx).toBeLessThan(pushIdx);
   });
 
-  it("only updates bead status to review when push succeeds", () => {
-    // Bead status update should be gated on pushSucceeded
-    const statusUpdateIdx = source.indexOf('enqueueSetBeadStatus(statusStore, taskId, "review"');
+  it("only updates task status to review when push succeeds", () => {
+    // Task status update should be gated on pushSucceeded
+    const statusUpdateIdx = source.indexOf('enqueueSetTaskStatus(statusStore, taskId, "review"');
     expect(statusUpdateIdx).toBeGreaterThan(-1);
     // The pushSucceeded guard must appear before the status update
     const pushSucceededGuardIdx = source.indexOf("if (pushSucceeded)");

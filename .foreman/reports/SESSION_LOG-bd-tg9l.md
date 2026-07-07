@@ -13,7 +13,7 @@
 4. Read QA_REPORT.md — confirmed all 2175 tests pass with no failures
 5. Reviewed `src/orchestrator/agent-worker-finalize.ts` — examined enqueue-before-push implementation
 6. Reviewed `src/orchestrator/__tests__/agent-worker-finalize.test.ts` — examined 64 test cases
-7. Reviewed `src/orchestrator/__tests__/doctor-bead-status-sync.test.ts` — verified conflict markers resolved
+7. Reviewed `src/orchestrator/__tests__/doctor-task-status-sync.test.ts` — verified conflict markers resolved
 8. Reviewed `src/orchestrator/agent-worker-enqueue.ts` — confirmed enqueue interface
 9. Reviewed `src/lib/run-status.ts` — verified `mapRunStatusToTaskStatus` mapping correctness
 10. Wrote REVIEW.md with verdict PASS

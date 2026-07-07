@@ -30,7 +30,7 @@ Startup/doctor validation fails if multiple workflows declare the same `task_typ
 
 ```bash
 # Dispatch with default workflow
-br create --title="Add user auth" --type=feature
+native task store create --title="Add user auth" --type=feature
 foreman run
 
 # Dispatch everything with the quick workflow (no explorer/reviewer phases)
@@ -344,7 +344,7 @@ Bundled merge-capable workflows express PR and merge behavior as phases, not top
 
 ### Models
 
-The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The bead's priority determines which model is used.
+The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The task's priority determines which model is used.
 
 **Model shorthands:**
 
@@ -829,7 +829,7 @@ phases:
       onComplete: true
 EOF
 
-# Assign a bead to the custom workflow
-br update <id> --set-labels "workflow:docs"
+# Assign a task to the custom workflow
+native task store update <id> --set-labels "workflow:docs"
 foreman run
 ```

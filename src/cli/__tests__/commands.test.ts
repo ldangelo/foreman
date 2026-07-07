@@ -61,7 +61,6 @@ describe("CLI smoke tests", () => {
     expect(output).toContain("legacy dashboard -> watch");
 
     // Deprecated spellings are hidden from help but still parse
-    expect(output).not.toMatch(/^\s+bead[\s|]/m);
     expect(output).not.toMatch(/^\s+purge-logs[\s|]/m);
     expect(output).not.toMatch(/^\s+purge-zombie-runs[\s|]/m);
   }, 90_000);

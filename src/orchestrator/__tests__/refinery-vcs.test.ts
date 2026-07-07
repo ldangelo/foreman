@@ -37,8 +37,8 @@ vi.mock("../../lib/git.js", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseTask: vi.fn(),
   enqueueResetTaskToOpen: vi.fn(),
-  enqueueAddNotesToBead: vi.fn(),
-  enqueueSetBeadStatus: vi.fn(),
+  enqueueAddNotesToTask: vi.fn(),
+  enqueueSetTaskStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -115,7 +115,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
-      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;
@@ -324,7 +324,7 @@ describe("AC-T-012-2: Conflict cascade triggered when squash merge has conflicts
 
     await refinery.mergeCompleted({ runTests: false });
 
-    // AC-T-012-2: conflict cascade now leaves the bead blocked until an explicit human retry/reset.
+    // AC-T-012-2: conflict cascade now leaves the task blocked until an explicit human retry/reset.
     expect(enqueueResetTaskToOpen).not.toHaveBeenCalled();
   });
 

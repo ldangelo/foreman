@@ -5,23 +5,23 @@
   "description": "Canonical list of archival documents requiring historical context banners. Maintained manually — see PRD-2026-008 for process.",
   "documents": [
     {
-      "path": "migration-tasks-to-br.md",
+      "path": "migration-tasks-to-native task store.md",
       "variant": "migration",
-      "rationale": "Migration guide; describes sd → br transition; pre-native-task-management era",
+      "rationale": "Migration guide; describes sd → native task store transition; pre-native-task-management era",
       "lastReviewed": "2026-04-15",
       "status": "archived"
     },
     {
       "path": "Overstory_comparison.md",
       "variant": "comparison",
-      "rationale": "Feature comparison with Overstory; assumes beads-first as default backend",
+      "rationale": "Feature comparison with Overstory; assumes tasks-first as default backend",
       "lastReviewed": "2026-04-15",
       "status": "archived"
     },
     {
       "path": "flywheel_comparison.md",
       "variant": "comparison",
-      "rationale": "Feature comparison with Flywheel; assumes sd task backend and beads-first pipeline",
+      "rationale": "Feature comparison with Flywheel; assumes sd task backend and tasks-first pipeline",
       "lastReviewed": "2026-04-15",
       "status": "archived"
     },
@@ -35,7 +35,7 @@
     {
       "path": "PRD.md",
       "variant": "standard",
-      "rationale": "Draft PRD from 2026-03-10; assumes beads-first, Beads for task tracking",
+      "rationale": "Draft PRD from 2026-03-10; assumes tasks-first, Tasks for task tracking",
       "lastReviewed": "2026-04-15",
       "status": "archived"
     },
@@ -56,7 +56,7 @@
     {
       "path": "TRD/TRD-2026-004-vcs-backend-abstraction.md",
       "variant": "standard",
-      "rationale": "Draft TRD from 2026-03-27; pre-native-task; may contain beads-first assumptions",
+      "rationale": "Draft TRD from 2026-03-27; pre-native-task; may contain tasks-first assumptions",
       "lastReviewed": "2026-04-15",
       "status": "archived"
     },
@@ -68,9 +68,9 @@
       "status": "archived"
     },
     {
-      "path": "TRD/tasks-to-br-bv-migration.md",
+      "path": "TRD/tasks-to-native task store-native task ordering-migration.md",
       "variant": "comparison",
-      "rationale": "See OQ-3: depends on whether it describes beads-first as end state (archived) or baseline for native task management (needs reclassification). Status: review until OQ-3 resolved.",
+      "rationale": "See OQ-3: depends on whether it describes tasks-first as end state (archived) or baseline for native task management (needs reclassification). Status: review until OQ-3 resolved.",
       "lastReviewed": "2026-04-15",
       "status": "review"
     }

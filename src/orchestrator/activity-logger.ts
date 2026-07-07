@@ -95,7 +95,7 @@ export interface CommitInfo {
  * Written to ACTIVITY_LOG.json and committed with every branch.
  */
 export interface ActivityLog {
-  /** Task/bead ID (e.g., "bd-ytzv") */
+  /** Task/task ID (e.g., "bd-ytzv") */
   taskId: string;
   /** Run ID (e.g., UUID) */
   runId: string;
@@ -131,7 +131,7 @@ export interface GenerateActivityLogOptions {
   worktreePath: string;
   /** Run ID */
   runId: string;
-  /** Task/bead ID */
+  /** Task/task ID */
   taskId: string;
   /** Phase records accumulated during pipeline execution */
   phases: PhaseRecord[];

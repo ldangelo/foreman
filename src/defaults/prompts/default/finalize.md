@@ -46,7 +46,7 @@ Then restore tracked shared-state files and unstage workspace-only artifacts tha
 ```
 {{vcsRestoreTrackedStateCommand}}
 ```
-The restore command must remove `.beads/issues.jsonl`, `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, repository-root report artifacts, and `docs/reports/**` from the index before commit. `.beads/issues.jsonl` is managed centrally by the bead-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Beads updates and workspace artifacts from dirtying active workspaces.
+The restore command must remove `.tasks/issues.jsonl`, `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, repository-root report artifacts, and `docs/reports/**` from the index before commit. `.tasks/issues.jsonl` is managed centrally by the task-writer process, so finalize restores it out of the workspace before commit using a backend-aware path. This prevents parent-branch Tasks updates and workspace artifacts from dirtying active workspaces.
 
 ### Step 4: Commit
 Run:
@@ -62,18 +62,18 @@ git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranc
 
 **If there ARE commits ahead** (output is non-empty), the work was already committed in a previous run. This is normal for reused worktrees. Proceed to Step 5 (Verify branch) — no mail needed.
 
-**If there are NO commits ahead** (output is empty), check whether this is a verification/test bead:
-- Bead type is `{{taskType}}`
-- Bead title is `{{taskTitle}}`
+**If there are NO commits ahead** (output is empty), check whether this is a verification/test task:
+- Task type is `{{taskType}}`
+- Task title is `{{taskTitle}}`
 
-**If the bead type is `test` OR the title contains "verify", "validate", or "test" (case-insensitive):**
-No changes is the correct and expected outcome for a verification bead. Treat this as success — send phase-complete mail and continue to Step 5:
+**If the task type is `test` OR the title contains "verify", "validate", or "test" (case-insensitive):**
+No changes is the correct and expected outcome for a verification task. Treat this as success — send phase-complete mail and continue to Step 5:
 ```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"finalize","taskId":"{{taskId}}","status":"complete","note":"nothing_to_commit_verification_bead"}'
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject phase-complete --body '{"phase":"finalize","taskId":"{{taskId}}","status":"complete","note":"nothing_to_commit_verification_task"}'
 ```
 Then proceed to Step 5 (Verify branch).
 
-**Otherwise (non-verification bead with no commits at all):**
+**Otherwise (non-verification task with no commits at all):**
 Send this mail and stop immediately:
 ```
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","taskId":"{{taskId}}","error":"nothing_to_commit"}'
@@ -89,8 +89,8 @@ If the output is NOT `foreman/{{taskId}}`, check it out:
 git checkout foreman/{{taskId}}
 ```
 
-### Step 6: Integrate the latest target-branch changes into this bead branch only when drift exists
-Bring the latest `{{baseBranch}}` changes into this bead branch **only if** the target branch moved after QA. If QA and Finalize see the same target revision, skip this step entirely.
+### Step 6: Integrate the latest target-branch changes into this task branch only when drift exists
+Bring the latest `{{baseBranch}}` changes into this task branch **only if** the target branch moved after QA. If QA and Finalize see the same target revision, skip this step entirely.
 
 QA-validated target revision: `{{qaValidatedTargetRef}}`
 Current target revision: `{{currentTargetRef}}`
@@ -119,7 +119,7 @@ If that merge also conflicts, send the same `rebase_conflict` error and stop.
 - Proceed directly to Step 7
 
 ### Step 7: Run tests only if the target branch changed after QA
-QA already validated this bead. Finalize should rerun the full test suite only when the target branch moved after QA completed.
+QA already validated this task. Finalize should rerun the full test suite only when the target branch moved after QA completed.
 
 First create the reports directory, then write `FINALIZE_VALIDATION.md`:
 ```bash
@@ -178,8 +178,8 @@ Capture the full output and exit code. The `--reporter=dot` flag reduces per-tes
 - Write `## Verdict: FAIL` in `{{reportDir}}/FINALIZE_VALIDATION.md`
 - Include test failure details in the `## Test Validation` section
 - Classify the failures in `## Failure Scope`:
-  - `MODIFIED_FILES` if the failures are in files changed by this bead or are clearly caused by this bead's work
-  - `UNRELATED_FILES` if the failures are only in files unrelated to this bead (pre-existing failures on the target branch)
+  - `MODIFIED_FILES` if the failures are in files changed by this task or are clearly caused by this task's work
+  - `UNRELATED_FILES` if the failures are only in files unrelated to this task (pre-existing failures on the target branch)
   - `UNKNOWN` if you cannot determine the scope confidently
 - **If Failure Scope = MODIFIED_FILES or UNKNOWN:** STOP HERE — do not push. The pipeline will route back to developer.
 - **If Failure Scope = UNRELATED_FILES:** send a finalize result mail marking the phase as failed but non-retryable, then stop:
@@ -234,6 +234,6 @@ Use this format:
 ## Rules
 - **DO NOT modify any source code files** — only write FINALIZE_VALIDATION.md, FINALIZE_REPORT.md and run git commands
 - Run steps in order — do not skip any step unless explicitly told to stop
-- All failures except "nothing to commit" (for non-verification beads) are logged and continue (non-fatal) unless they prevent git push
-- Do NOT commit node_modules, SESSION_LOG.md, RUN_LOG.md, .beads/issues.jsonl, repository-root report artifacts, or docs/reports/** — finalize restores tracked Beads state and unstages workspace artifacts before commit
+- All failures except "nothing to commit" (for non-verification tasks) are logged and continue (non-fatal) unless they prevent git push
+- Do NOT commit node_modules, SESSION_LOG.md, RUN_LOG.md, .tasks/issues.jsonl, repository-root report artifacts, or docs/reports/** — finalize restores tracked Tasks state and unstages workspace artifacts before commit
 - **If tests fail in Step 7, stop after writing FINALIZE_VALIDATION.md — do NOT run Steps 8 or 9**

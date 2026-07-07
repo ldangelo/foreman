@@ -9,8 +9,8 @@ Commits:
 - d71cdb7b test: verify Elixir migration importer
 
 Changed files:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - CLAUDE.md
 - README.md
 - docs/cli-reference.md
@@ -53,7 +53,7 @@ After writing this report: `subagent-outputs/trd-023-worker.md` is expected untr
     {
       "id": "criterion-1",
       "status": "satisfied",
-      "evidence": "Claimed bd-6uc4d via `br update bd-6uc4d --status in_progress` before implementation edits; claimed bd-xie58 via `br update bd-xie58 --status in_progress` before test commit."
+      "evidence": "Claimed bd-6uc4d via `native task store update bd-6uc4d --status in_progress` before implementation edits; claimed bd-xie58 via `native task store update bd-xie58 --status in_progress` before test commit."
     },
     {
       "id": "criterion-2",
@@ -68,7 +68,7 @@ After writing this report: `subagent-outputs/trd-023-worker.md` is expected untr
     {
       "id": "criterion-4",
       "status": "satisfied",
-      "evidence": "Created separate commits: bdda5936 for implementation + bd-6uc4d bead state; d71cdb7b for tests + bd-xie58 bead state."
+      "evidence": "Created separate commits: bdda5936 for implementation + bd-6uc4d task state; d71cdb7b for tests + bd-xie58 task state."
     },
     {
       "id": "criterion-5",
@@ -77,8 +77,8 @@ After writing this report: `subagent-outputs/trd-023-worker.md` is expected untr
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "CLAUDE.md",
     "README.md",
     "docs/cli-reference.md",
@@ -100,9 +100,9 @@ After writing this report: `subagent-outputs/trd-023-worker.md` is expected untr
   ],
   "commandsRun": [
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-6uc4d --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-6uc4d --status in_progress",
       "result": "passed",
-      "summary": "exit 0; TRD-023 bead claimed before implementation edits."
+      "summary": "exit 0; TRD-023 task claimed before implementation edits."
     },
     {
       "command": "cd packages/foreman_server && mix format && mix test test/migration_importer_test.exs",
@@ -117,37 +117,37 @@ After writing this report: `subagent-outputs/trd-023-worker.md` is expected untr
     {
       "command": "cd packages/foreman_server && mix test && cd ../.. && npx vitest run src/cli/__tests__/legacy-coexistence.test.ts --reporter=dot && npx tsc --noEmit && node /Users/ldangelo/Development/Fortium/ensemble/packages/development/lib/trd-cli.js parse docs/TRD/TRD-2026-014-elixir-backend-orchestration.md",
       "result": "passed",
-      "summary": "exit 0 before closing implementation bead; 97 ExUnit tests, 5 focused Vitest tests, TypeScript pass, TRD parser 52 tasks warnings []."
+      "summary": "exit 0 before closing implementation task; 97 ExUnit tests, 5 focused Vitest tests, TypeScript pass, TRD parser 52 tasks warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-6uc4d --reason \"Implemented migration importer and legacy TS coexistence delegation\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-6uc4d --reason \"Implemented migration importer and legacy TS coexistence delegation\"",
       "result": "passed",
       "summary": "exit 0; closed TRD-023 after validation."
     },
     {
       "command": "git commit -m \"feat: add Elixir migration importer\"",
       "result": "passed",
-      "summary": "exit 0; created bdda5936 with implementation/docs and TRD-023 bead state."
+      "summary": "exit 0; created bdda5936 with implementation/docs and TRD-023 task state."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-xie58 --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-xie58 --status in_progress",
       "result": "passed",
-      "summary": "exit 0; TRD-023-TEST bead claimed after implementation bead closed."
+      "summary": "exit 0; TRD-023-TEST task claimed after implementation task closed."
     },
     {
       "command": "cd packages/foreman_server && mix test && cd ../.. && npx vitest run src/cli/__tests__/legacy-coexistence.test.ts --reporter=dot && npx tsc --noEmit && node /Users/ldangelo/Development/Fortium/ensemble/packages/development/lib/trd-cli.js parse docs/TRD/TRD-2026-014-elixir-backend-orchestration.md",
       "result": "passed",
-      "summary": "exit 0 before closing test bead; 97 ExUnit tests, 5 focused Vitest tests, TypeScript pass, TRD parser 52 tasks warnings []."
+      "summary": "exit 0 before closing test task; 97 ExUnit tests, 5 focused Vitest tests, TypeScript pass, TRD parser 52 tasks warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-xie58 --reason \"Verified TRD-023 migration importer and legacy compatibility\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-xie58 --reason \"Verified TRD-023 migration importer and legacy compatibility\"",
       "result": "passed",
       "summary": "exit 0; closed TRD-023-TEST after validation."
     },
     {
       "command": "git commit -m \"test: verify Elixir migration importer\"",
       "result": "passed",
-      "summary": "exit 0; created d71cdb7b with tests and TRD-023-TEST bead state."
+      "summary": "exit 0; created d71cdb7b with tests and TRD-023-TEST task state."
     },
     {
       "command": "git status --short",

@@ -31,16 +31,16 @@ interface PurgeZombieStore {
 // ── Core action (exported for testing) ───────────────────────────────
 
 /**
- * Check whether a bead is closed (or no longer exists).
+ * Check whether a task is closed (or no longer exists).
  * Returns true if the run should be purged.
  */
-async function isBeadClosedOrGone(
-  beadsClient: Pick<ITaskClient, "show">,
+async function isTaskClosedOrGone(
+  tasksClient: Pick<ITaskClient, "show">,
   taskId: string,
 ): Promise<boolean> {
   try {
-    const bead = await beadsClient.show(taskId);
-    return bead.status === "closed" || bead.status === "completed";
+    const task = await tasksClient.show(taskId);
+    return task.status === "closed" || task.status === "completed";
   } catch (err: unknown) {
     const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
     // Treat a 404 / not-found as "gone" — safe to purge
@@ -58,7 +58,7 @@ async function isBeadClosedOrGone(
  */
 export async function purgeZombieRunsAction(
   opts: PurgeZombieRunsOpts,
-  beadsClient: Pick<ITaskClient, "show">,
+  tasksClient: Pick<ITaskClient, "show">,
   store: PurgeZombieStore,
   projectPath: string,
 ): Promise<PurgeZombieRunsResult> {
@@ -91,15 +91,15 @@ export async function purgeZombieRunsAction(
     errors: 0,
   };
 
-  // 3. Check each failed run's bead and purge if the bead is closed / gone
+  // 3. Check each failed run's task and purge if the task is closed / gone
   for (const run of failedRuns) {
     let shouldPurge: boolean;
     try {
-      shouldPurge = await isBeadClosedOrGone(beadsClient, run.task_id);
+      shouldPurge = await isTaskClosedOrGone(tasksClient, run.task_id);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(
-        chalk.yellow(`  warn  run ${run.id} (bead ${run.task_id}): ${msg} — skipping`),
+        chalk.yellow(`  warn  run ${run.id} (task ${run.task_id}): ${msg} — skipping`),
       );
       result.errors += 1;
       continue;
@@ -107,7 +107,7 @@ export async function purgeZombieRunsAction(
 
     if (!shouldPurge) {
       console.log(
-        chalk.dim(`  skip  run ${run.id} — bead ${run.task_id} is still open`),
+        chalk.dim(`  skip  run ${run.id} — task ${run.task_id} is still open`),
       );
       result.skipped += 1;
       continue;
@@ -115,13 +115,13 @@ export async function purgeZombieRunsAction(
 
     if (dryRun) {
       console.log(
-        chalk.cyan(`  would purge  run ${run.id} — bead ${run.task_id} is closed/gone`),
+        chalk.cyan(`  would purge  run ${run.id} — task ${run.task_id} is closed/gone`),
       );
       result.purged += 1;
     } else {
       await store.deleteRun(run.id);
       console.log(
-        chalk.green(`  purged  run ${run.id} — bead ${run.task_id} is closed/gone`),
+        chalk.green(`  purged  run ${run.id} — task ${run.task_id} is closed/gone`),
       );
       result.purged += 1;
     }

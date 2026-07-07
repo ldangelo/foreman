@@ -9,7 +9,7 @@
 6. `src/cli/commands/run.ts` (lines 580-660) - Elixir default scheduler tick exists; legacy direct-dispatch/resume/dispatch-shaping flags still emit `FOREMAN_BACKEND=node` guidance.
 7. `src/cli/commands/run-task.ts` (lines 1-180; grep line 590) - direct operator command is blocked, but file also contains worker/direct execution plumbing likely needed for internal `--run-id` bridge.
 8. `src/cli/commands/task.ts` (lines 940-1010; grep lines 84, 360) - normal task create has Elixir path, but `--from-text` is legacy-gated and file still has tRPC helpers.
-9. `src/cli/commands/bead.ts` (lines 1-58) - hidden deprecated alias still exposes legacy-only generator gate.
+9. `src/cli/commands/task.ts` (lines 1-58) - hidden deprecated alias still exposes legacy-only generator gate.
 10. `src/cli/commands/project-task-support.ts` (lines 1-121) - shared project registry helper uses Elixir when default, tRPC/ProjectRegistry in Node mode.
 11. `packages/foreman_server/lib/foreman_server/command_router.ex` (lines 1-145) - Elixir accepts `project.register` and task commands; no project archive/update/Jira domain commands found.
 12. `src/lib/elixir-server-client.ts` (lines 90-142 via grep) - TS client already supports `sendCommand`, `listProjects`, `getTask`, `schedulerTick`.
@@ -26,8 +26,8 @@
 - `src/cli/commands/jira.ts:35-42`, `84-86`, `140-142`, `188-190`, `232-234`, `262-264`: all Jira subcommands are Node/tRPC-only.
 - `src/cli/commands/run.ts:616-626`: legacy operator flags still advise Node mode. For goal, remove options or convert to hard unsupported messages with no `FOREMAN_BACKEND=node` path.
 - `src/cli/commands/run-task.ts:589-591`: operator direct worker path is blocked; preserve internal bridge path only (hidden `--run-id`).
-- `src/cli/commands/task.ts:979-981`: `task create --from-text` still advertises legacy Node/beads gate.
-- `src/cli/commands/bead.ts:43-48`: hidden `foreman bead` still advertises explicit Node legacy operation.
+- `src/cli/commands/task.ts:979-981`: `task create --from-text` still advertises legacy Node/tasks gate.
+- `src/cli/commands/task.ts:43-48`: hidden `foreman task` still advertises explicit Node legacy operation.
 - Residual command tRPC markers from grep: `attach.ts`, `board.ts`, `debug.ts`, `inbox.ts`, `logs.ts`, `plan.ts`, `recover.ts`, `retry.ts`, `sling.ts`, `status.ts`, `task.ts`, `watch/WatchState.ts`, `project-task-support.ts`, `project.ts`, `jira.ts`.
 
 ## Architecture
@@ -49,7 +49,7 @@
   - `src/cli/commands/jira.ts`
   - `src/cli/commands/run.ts`
   - `src/cli/commands/task.ts`
-  - `src/cli/commands/bead.ts`
+  - `src/cli/commands/task.ts`
   - `src/cli/commands/daemon.ts`
   - `src/lib/backend-mode.ts`
   - docs: `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`, `CLAUDE.md`/`AGENTS.md` if they mention rollback/legacy.
@@ -77,25 +77,25 @@
 - Recommended minimal route: remove/disable `foreman jira configure/status/test/enable-webhook/disable-webhook` from product surface with clear Elixir-cutover message, unless user explicitly wants new integration management now.
 - Rebuild route is larger: add secure config storage, credential encryption, status projection/API, webhook toggle semantics, Jira connectivity test in Elixir. Current server grep only shows ingestion handling, not management APIs.
 
-### P0 - Run/task/bead legacy paths
+### P0 - Run/task/task legacy paths
 - Severity: blocker. Files:
   - `src/cli/commands/run.ts`
   - `src/cli/commands/run-task.ts`
   - `src/cli/commands/task.ts`
-  - `src/cli/commands/bead.ts`
+  - `src/cli/commands/task.ts`
   - `src/cli/commands/create-from-text.ts` if deletion follows.
-  - Tests: `src/cli/__tests__/run-auto-dispatch.test.ts`, run tests, `src/cli/__tests__/task.test.ts`, `src/cli/__tests__/bead.test.ts`, create-from-text tests.
+  - Tests: `src/cli/__tests__/run-auto-dispatch.test.ts`, run tests, `src/cli/__tests__/task.test.ts`, `src/cli/__tests__/task.test.ts`, create-from-text tests.
 - Change:
-  - Remove or hide `foreman run --task/--bead`, `--resume`, `--resume-failed`, `--no-pipeline`, `--workflow`, `--stagger`, `--telemetry`, `--no-auto-dispatch`, explicit `--max-agents` if no Elixir equivalent.
+  - Remove or hide `foreman run --task/--task`, `--resume`, `--resume-failed`, `--no-pipeline`, `--workflow`, `--stagger`, `--telemetry`, `--no-auto-dispatch`, explicit `--max-agents` if no Elixir equivalent.
   - Keep normal `foreman run` Elixir scheduler tick.
   - Preserve `foreman run task --run-id` internal bridge; ensure operator invocation without `--run-id` fails without Node guidance.
-  - Remove `task create --from-text` and hidden `foreman bead`, or rewrite as Elixir `task.create` generator. Minimal route: removal message + docs.
+  - Remove `task create --from-text` and hidden `foreman task`, or rewrite as Elixir `task.create` generator. Minimal route: removal message + docs.
 
 ### P1 - Residual tRPC/local backend cleanup after callers gone
 - Severity: high. Files likely to change:
   - `src/lib/trpc-client.ts`, `src/lib/daemon-manager.ts`, `src/daemon/**`
   - `src/lib/store.ts`, `src/lib/postgres-store.ts`, `src/lib/db/postgres-adapter.ts`, `src/lib/project-registry.ts`
-  - `src/lib/task-client-factory.ts`, `src/lib/native-task-client.ts`, `src/lib/task-store.ts`, `src/lib/beads*.ts`, `src/lib/tasks.ts`
+  - `src/lib/task-client-factory.ts`, `src/lib/native-task-client.ts`, `src/lib/task-store.ts`, `src/lib/tasks*.ts`, `src/lib/tasks.ts`
   - `src/orchestrator/dispatcher*.ts`, `task-backend-ops.ts`, `store-read-model-adapter.ts`, merge/finalize helpers only after bridge audit.
 - Do not delete until grep shows no unapproved operator callers. Worker bridge likely still needs parts of orchestrator, VCS, workflow, prompts, artifacts, setup, worker env, Postgres task mirror.
 
@@ -105,7 +105,7 @@
 - Plan:
   - For each command, confirm Elixir path exists and remove Node fallback branch.
   - If branch is only for explicit Node mode, delete branch or fail closed with no operator legacy guidance.
-  - Update tests named `*-br-backend`, `*-node`, `*-local-fallback`, `project-task-support-node.test.ts` to either remove or convert to guard tests.
+  - Update tests named `*-native task store-backend`, `*-node`, `*-local-fallback`, `project-task-support-node.test.ts` to either remove or convert to guard tests.
 
 ### P1 - Tests and guardrails
 - Add/update tests:
@@ -114,7 +114,7 @@
   - `src/cli/__tests__/jira*.test.ts` new/updated: removed messages or Elixir-backed config/status/test.
   - `src/cli/__tests__/run*.test.ts`: legacy flags no longer mention `FOREMAN_BACKEND=node`; scheduler tick still works.
   - `src/cli/__tests__/run-task*.test.ts`: operator direct run removed; hidden `--run-id` bridge remains.
-  - `src/cli/__tests__/task.test.ts`, `bead.test.ts`: from-text/bead removed or Elixir-backed.
+  - `src/cli/__tests__/task.test.ts`, `task.test.ts`: from-text/task removed or Elixir-backed.
   - New grep/transition test: fail if command files contain `FOREMAN_BACKEND=node`, `requireNode*`, or unapproved `createTrpcClient()`.
   - Elixir tests for any new `project.archive/update` events/projections.
 - Required validation commands after implementation:
@@ -183,8 +183,8 @@ No blocker for scouting. Dangerous decisions for parent/user:
     "blocker: src/cli/commands/project.ts:83 - project add/remove/edit still require legacy Node mode and use tRPC.",
     "blocker: src/cli/commands/jira.ts:35 - all Jira management commands still require legacy Node/tRPC.",
     "blocker: src/cli/commands/run.ts:616 - direct dispatch/resume/dispatch-shaping flags still advise FOREMAN_BACKEND=node.",
-    "blocker: src/cli/commands/task.ts:979 - task create --from-text still requires legacy Node/beads generator.",
-    "blocker: src/cli/commands/bead.ts:43 - hidden bead alias still exposes legacy Node generator guidance.",
+    "blocker: src/cli/commands/task.ts:979 - task create --from-text still requires legacy Node/tasks generator.",
+    "blocker: src/cli/commands/task.ts:43 - hidden task alias still exposes legacy Node generator guidance.",
     "high: src/cli/commands/daemon.ts:44 - daemon lifecycle remains operator-visible and backed by Node DaemonManager.",
     "high: src/cli/commands/* - residual createTrpcClient callers remain in attach/board/debug/inbox/logs/plan/recover/retry/sling/status/task/watch/project-task-support."
   ],

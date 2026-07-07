@@ -14,7 +14,7 @@ import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import type { MergeQueueStatus } from "../../orchestrator/merge-queue.js";
 import type { MergedRun, ConflictRun, FailedRun, CreatedPr } from "../../orchestrator/types.js";
 import { MergeCostTracker } from "../../orchestrator/merge-cost-tracker.js";
-import { syncBeadStatusAfterMerge } from "../../orchestrator/auto-merge.js";
+import { syncTaskStatusAfterMerge } from "../../orchestrator/auto-merge.js";
 import { resolveRepoRootProjectPath } from "./project-task-support.js";
 import { findRegisteredProjectByPath } from "./project-context.js";
 
@@ -84,7 +84,6 @@ export const mergeCommand = new Command("merge")
   .option("--no-tests", "Skip running tests after merge")
   .option("--test-command <cmd>", "Test command to run", "npm test")
   .option("--task <id>", "Merge a single task by ID")
-  .option("--bead <id>", "Alias for --task (backward compatibility)")
   .option("--list", "List tasks ready to merge (no merge performed)")
   .option("--dry-run", "Preview merge results without modifying git state")
   .option("--resolve <runId>", "Resolve a conflicting run by ID")
@@ -257,7 +256,7 @@ export const mergeCommand = new Command("merge")
           projectPath,
           targetBranch,
           branches,
-          (opts.task ?? opts.bead) as string | undefined,
+          (opts.task ?? opts.task) as string | undefined,
         );
 
         for (const entry of dryRunResults) {
@@ -304,7 +303,7 @@ export const mergeCommand = new Command("merge")
         }
 
         if (entries.length === 0) {
-          console.log(chalk.yellow("No beads in merge queue."));
+          console.log(chalk.yellow("No tasks in merge queue."));
           store.close();
           return;
         }
@@ -327,7 +326,7 @@ export const mergeCommand = new Command("merge")
         }
 
         console.log(chalk.dim("\nMerge all:    foreman merge"));
-        console.log(chalk.dim("Merge one:    foreman merge --bead <id>"));
+        console.log(chalk.dim("Merge one:    foreman merge --task <id>"));
 
         store.close();
         return;
@@ -352,7 +351,7 @@ export const mergeCommand = new Command("merge")
 
       // When retrying a specific task, reset its failed/conflict entry back to
       // pending so the dequeue loop can pick it up again.
-      const taskFilter = (opts.task ?? opts.bead) as string | undefined;
+      const taskFilter = (opts.task ?? opts.task) as string | undefined;
       if (taskFilter) {
         await mq.resetForRetry(taskFilter);
       }
@@ -375,7 +374,7 @@ export const mergeCommand = new Command("merge")
 
         console.log(`Processing: ${chalk.cyan(entry.task_id)} (${chalk.dim(entry.branch_name)})`);
 
-        // Track failure reason for immediate bead note (declared outside try for finally access)
+        // Track failure reason for immediate task note (declared outside try for finally access)
         let mergeFailureReason: string | undefined;
         try {
           // Fetch the run directly to bypass the getCompletedRuns() query and eliminate
@@ -398,7 +397,7 @@ export const mergeCommand = new Command("merge")
             await mq.updateStatus(entry.id, "conflict", { error: "Code conflicts" });
             conflicts.push(...report.conflicts);
             prsCreated.push(...report.prsCreated);
-            // Build failure reason for bead note
+            // Build failure reason for task note
             if (report.conflicts.length > 0) {
               const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
               mergeFailureReason = `Merge conflict detected in branch foreman/${entry.task_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
@@ -409,7 +408,7 @@ export const mergeCommand = new Command("merge")
           } else if (report.testFailures.length > 0) {
             await mq.updateStatus(entry.id, "failed", { error: "Test failures" });
             testFailures.push(...report.testFailures);
-            // Build failure reason for bead note
+            // Build failure reason for task note
             const firstFailure = report.testFailures[0];
             const errorSummary = firstFailure.error?.slice(0, 800) ?? "no details";
             mergeFailureReason = `Post-merge tests failed (${report.testFailures.length} failure(s)).\nFirst failure:\n${errorSummary}`;
@@ -429,10 +428,10 @@ export const mergeCommand = new Command("merge")
           });
           mergeFailureReason = `Unexpected error during merge: ${message.slice(0, 800)}`;
         } finally {
-          // Immediately sync bead status in br so it reflects the merge outcome
+          // Immediately sync task status in native task store so it reflects the merge outcome
           // without waiting for the next foreman startup reconciliation.
-          // Pass mergeFailureReason to add an explanatory note to the bead.
-          await syncBeadStatusAfterMerge(store, tasks, entry.run_id, entry.task_id, projectPath, mergeFailureReason, runLookup);
+          // Pass mergeFailureReason to add an explanatory note to the task.
+          await syncTaskStatusAfterMerge(store, tasks, entry.run_id, entry.task_id, projectPath, mergeFailureReason, runLookup);
         }
 
         // If --task filter, stop after processing the target
@@ -521,7 +520,7 @@ export const mergeCommand = new Command("merge")
                 });
                 retryFailureReason = `Unexpected error during merge retry: ${message.slice(0, 800)}`;
               } finally {
-                await syncBeadStatusAfterMerge(store, tasks, toProcess.run_id, toProcess.task_id, projectPath, retryFailureReason, runLookup);
+                await syncTaskStatusAfterMerge(store, tasks, toProcess.run_id, toProcess.task_id, projectPath, retryFailureReason, runLookup);
               }
             }
           }

@@ -469,7 +469,7 @@ Security controls for the Elixir server:
 - Destructive command-router actions such as `task.close`, `task.block`, and `task.update` append `AuthorizationChecked` and `AuditRecorded` events after the command executes.
 
 ### `foreman doctor`
-Check environment health: Elixir backend availability, stray legacy daemon status, br/Pi binaries, GitHub auth, stale run records, zombie runs, and stale/orphaned worktrees.
+Check environment health: Elixir backend availability, stray legacy daemon status, native task store/Pi binaries, GitHub auth, stale run records, zombie runs, and stale/orphaned worktrees.
 
 ```bash
 foreman doctor
@@ -989,7 +989,7 @@ npm run bundle         # esbuild single-file bundle
 - ESM only — all imports use `.js` extensions
 - TDD — RED-GREEN-REFACTOR cycle
 - Test coverage — unit ≥ 80%, integration ≥ 70%
-- `br sync --flush-only` before every git commit
+- `native task store sync --flush-only` before every git commit
 
 ## License
 

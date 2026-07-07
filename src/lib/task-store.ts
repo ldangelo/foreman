@@ -527,7 +527,7 @@ export class NativeTaskStore {
    * Returns true when the `tasks` table contains at least one row.
    *
    * Used by Dispatcher.getReadyTasks() as a coexistence check: if native
-   * tasks exist, use the native path; otherwise fall back to BeadsRustClient.
+   * tasks exist, use the native path; otherwise fall back to TaskClient.
    */
   hasNativeTasks(): boolean {
     try {

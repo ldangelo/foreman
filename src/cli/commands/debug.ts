@@ -5,7 +5,7 @@
  * reports, run progress) and passes them to Opus in plan mode for deep-dive
  * analysis. Read-only — no file modifications.
  *
- * Note: `<task-id>` is the primary identifier. `--bead` is accepted as a
+ * Note: `<task-id>` is the primary identifier. `--task` is accepted as a
  * backward-compatible alias.
  */
 
@@ -27,7 +27,7 @@ import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-ta
 interface DaemonRunRow {
   id: string;
   project_id: string;
-  bead_id: string;
+  task_id: string;
   status: string;
   branch: string;
   agent_type: string | null;
@@ -78,7 +78,7 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    task_id: row.bead_id,
+    task_id: row.task_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -130,8 +130,8 @@ async function resolveElixirDebugContext(projectPath: string): Promise<ElixirDeb
   };
 }
 
-async function resolveDaemonRuns(context: DaemonDebugContext, beadId: string): Promise<Run[]> {
-  const rows = await context.client.runs.list({ projectId: context.projectId, beadId, limit: 50 }) as DaemonRunRow[];
+async function resolveDaemonRuns(context: DaemonDebugContext, taskId: string): Promise<Run[]> {
+  const rows = await context.client.runs.list({ projectId: context.projectId, taskId, limit: 50 }) as DaemonRunRow[];
   return rows.map(adaptDaemonRun);
 }
 
@@ -167,10 +167,10 @@ function adaptElixirRun(row: ElixirRun): Run {
   };
 }
 
-async function resolveElixirRuns(context: ElixirDebugContext, beadId: string): Promise<Run[]> {
+async function resolveElixirRuns(context: ElixirDebugContext, taskId: string): Promise<Run[]> {
   const rows = await context.client.listRuns({ projectId: context.projectId });
   return rows
-    .filter((row) => row.task_id === beadId)
+    .filter((row) => row.task_id === taskId)
     .map(adaptElixirRun);
 }
 
@@ -275,11 +275,11 @@ function buildDiagnosticPrompt(
 
 export const debugCommand = new Command("debug")
   .description("AI-powered analysis of a task's pipeline execution")
-  .argument("<task-id>", "The task ID to analyze (alias: bead-id for backward compatibility)")
+  .argument("<task-id>", "The task ID to analyze (alias: task-id for backward compatibility)")
   .option("--run <id>", "Specific run ID (default: latest run for this task)")
   .option("--model <model>", "Model to use for analysis")
   .option("--raw", "Print collected artifacts without AI analysis")
-  .action(async (beadId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
+  .action(async (taskId: string, opts: { run?: string; model?: string; raw?: boolean }) => {
     const projectPath = await resolveRepoRootProjectPath({});
     const isElixir = foremanBackendMode() === "elixir";
     const elixir = isElixir ? await resolveElixirDebugContext(projectPath) : null;
@@ -291,12 +291,12 @@ export const debugCommand = new Command("debug")
 
     // Find runs for this task
     const runs = elixir
-      ? await resolveElixirRuns(elixir, beadId)
+      ? await resolveElixirRuns(elixir, taskId)
       : daemon
-        ? await resolveDaemonRuns(daemon, beadId)
-        : store.getRunsForTask(beadId);
+        ? await resolveDaemonRuns(daemon, taskId)
+        : store.getRunsForTask(taskId);
     if (runs.length === 0) {
-      console.error(chalk.red(`No runs found for task ${beadId}`));
+      console.error(chalk.red(`No runs found for task ${taskId}`));
       process.exit(1);
     }
 
@@ -306,12 +306,12 @@ export const debugCommand = new Command("debug")
       : runs[0]; // latest
 
     if (!run) {
-      console.error(chalk.red(`Run ${opts.run} not found for task ${beadId}`));
+      console.error(chalk.red(`Run ${opts.run} not found for task ${taskId}`));
       console.error(`Available runs: ${runs.map((r) => `${r.id.slice(0, 8)} (${r.status})`).join(", ")}`);
       process.exit(1);
     }
 
-    console.log(chalk.bold(`\nAnalyzing ${beadId} — run ${run.id.slice(0, 8)} (${run.status})\n`));
+    console.log(chalk.bold(`\nAnalyzing ${taskId} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
     // 1. Run summary + progress
     const progress = elixir || daemon ? null : store.getRunProgress(run.id);
@@ -338,13 +338,13 @@ export const debugCommand = new Command("debug")
     // 4. Agent worker log
     const logContent = findLogFile(run.id);
 
-    // 5. Bead info from br
-    let beadInfo: string | null = null;
+    // 5. Task info from native task store
+    let taskInfo: string | null = null;
     try {
       const { execFileSync } = await import("node:child_process");
-      beadInfo = execFileSync("br", ["show", beadId], { encoding: "utf-8", cwd: projectPath });
+      taskInfo = execFileSync("native task store", ["show", taskId], { encoding: "utf-8", cwd: projectPath });
     } catch { /* non-fatal */ }
-    if (beadInfo) reports["BEAD_INFO"] = beadInfo;
+    if (taskInfo) reports["TASK_INFO"] = taskInfo;
 
     store.close();
 
@@ -371,7 +371,7 @@ export const debugCommand = new Command("debug")
     }
 
     // Build the diagnostic prompt and send to AI
-    const prompt = buildDiagnosticPrompt(beadId, runSummary, messagesText, reports, logContent);
+    const prompt = buildDiagnosticPrompt(taskId, runSummary, messagesText, reports, logContent);
 
     const model = opts.model ?? getHighspeedModel();
     console.log(chalk.yellow(`Sending to ${model} for analysis...\n`));

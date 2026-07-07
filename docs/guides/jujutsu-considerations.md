@@ -214,8 +214,8 @@ Reviewers can use `{{vcsBackendName}}` to tailor feedback (e.g., noting that a d
 
 6. **Test with a smoke workflow**:
    ```bash
-   br create --title "jj migration test" --type task --priority 3
-   br update <id> --set-labels "workflow:smoke"
+   native task store create --title "jj migration test" --type task --priority 3
+   native task store update <id> --set-labels "workflow:smoke"
    foreman run
    ```
 
@@ -249,7 +249,7 @@ foreman doctor --check vcs
 | Merge strategies | `VcsBackend.merge()` has no `-X theirs` equivalent | Refinery uses raw git for complex merges |
 | Change ID vs commit hash | `getHeadId()` returns change ID, not commit hash | Use `resolveRef()` for commit hash if needed |
 | Operation log | jj records an operation log; no API to query it | Access via `jj op log` manually |
-| Non-linear history | jj supports more complex history shapes; Foreman assumes linear branches | Design beads to avoid complex merge topologies |
+| Non-linear history | jj supports more complex history shapes; Foreman assumes linear branches | Design tasks to avoid complex merge topologies |
 
 ---
 

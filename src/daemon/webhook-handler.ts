@@ -2,8 +2,8 @@
  * GitHub webhook handler for ForemanDaemon.
  *
  * Handles:
- * - push events: record bead:synced events and rebase active worktrees (TRD-063)
- * - pull_request events: record bead:synced when PR is closed+merged
+ * - push events: record task:synced events and rebase active worktrees (TRD-063)
+ * - pull_request events: record task:synced when PR is closed+merged
  *
  * HMAC-SHA256 verification uses the webhook secret from FOREMAN_WEBHOOK_SECRET.
  *
@@ -185,10 +185,10 @@ function shouldReadyIssueImport(issue: GitHubIssueWebhookPayload["issue"], confi
 // ── Push Event Handler ─────────────────────────────────────────────────────────
 
 /**
- * Handle GitHub push events: record bead:synced events for active runs on the pushed branch.
+ * Handle GitHub push events: record task:synced events for active runs on the pushed branch.
  *
  * For each project whose clone URL matches the repository, find active runs
- * with a worktree on the pushed branch, record a bead:synced event, and
+ * with a worktree on the pushed branch, record a task:synced event, and
  * rebase the worktree onto the updated base branch (TRD-063).
  */
 async function handlePush(
@@ -229,17 +229,17 @@ async function handlePush(
 
       // Find runs that are pending/running on this branch
       const runs = await ctx.adapter.listPipelineRuns(project.id, {
-        beadId: undefined,
+        taskId: undefined,
         status: undefined, // get all, filter below
       });
 
       for (const run of runs) {
         if (run.branch === branch && (run.status === "pending" || run.status === "running")) {
-          // Record bead:synced event
+          // Record task:synced event
           await ctx.adapter.recordPipelineEvent({
             projectId: project.id,
             runId: run.id,
-            eventType: "bead:synced",
+            eventType: "task:synced",
             payload: {
               reason: forced ? "forced-push" : "push",
               branch,
@@ -254,7 +254,7 @@ async function handlePush(
             let rebaseSuccess = false;
             let worktreePath: string | null = null;
             try {
-              worktreePath = worktreeManager.getWorktreePath(project.id, run.bead_id);
+              worktreePath = worktreeManager.getWorktreePath(project.id, run.task_id);
               const rebaseResult = await vcsBackend.rebase(worktreePath, branch);
               rebasesAttempted++;
 
@@ -274,7 +274,7 @@ async function handlePush(
                 await ctx.adapter.recordPipelineEvent({
                   projectId: project.id,
                   runId: run.id,
-                  eventType: "bead:rebase-conflict",
+                  eventType: "task:rebase-conflict",
                   payload: {
                     worktreePath,
                     branch,
@@ -316,9 +316,9 @@ async function handlePush(
 // ── Pull Request Event Handler ────────────────────────────────────────────────
 
 /**
- * Handle GitHub pull_request events: record bead:synced when PR is closed and merged.
+ * Handle GitHub pull_request events: record task:synced when PR is closed and merged.
  *
- * Records a bead:synced event with PR metadata so the sentinel can transition
+ * Records a task:synced event with PR metadata so the sentinel can transition
  * associated runs to completed/merged on next poll cycle.
  */
 async function handlePullRequest(
@@ -349,7 +349,7 @@ async function handlePullRequest(
     try {
       // Find runs for this branch that are success/running
       const runs = await ctx.adapter.listPipelineRuns(project.id, {
-        beadId: undefined,
+        taskId: undefined,
         status: undefined,
       });
 
@@ -361,7 +361,7 @@ async function handlePullRequest(
           await ctx.adapter.recordPipelineEvent({
             projectId: project.id,
             runId: run.id,
-            eventType: "bead:synced",
+            eventType: "task:synced",
             payload: {
               reason: "pr-merged",
               pr: prNumber,

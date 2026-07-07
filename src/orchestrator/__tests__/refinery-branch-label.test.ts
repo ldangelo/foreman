@@ -2,7 +2,7 @@
  * Tests for per-task branch: label support in Refinery.mergeCompleted().
  *
  * Verifies that:
- * 1. When a bead has branch:installer, it merges into installer, not main
+ * 1. When a task has branch:installer, it merges into installer, not main
  * 2. When no branch: label, falls back to the default target branch
  * 3. Each run can target a different branch (per-run resolution)
  */
@@ -20,8 +20,8 @@ vi.mock("node:child_process", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueResetTaskToOpen: vi.fn().mockResolvedValue(undefined),
   enqueueCloseTask: vi.fn().mockResolvedValue(undefined),
-  enqueueAddNotesToBead: vi.fn().mockResolvedValue(undefined),
-  enqueueSetBeadStatus: vi.fn(),
+  enqueueAddNotesToTask: vi.fn().mockResolvedValue(undefined),
+  enqueueSetTaskStatus: vi.fn(),
 }));
 
 vi.mock("../../lib/archive-reports.js", () => ({
@@ -107,7 +107,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
-      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;
@@ -247,7 +247,7 @@ describe("Refinery — branch label targeting", () => {
 
     const tasks = {
       getGraph: vi.fn().mockResolvedValue({ edges: [] }),
-      show: vi.fn().mockRejectedValue(new Error("br not available")), // lookup fails
+      show: vi.fn().mockRejectedValue(new Error("native task store not available")), // lookup fails
       update: vi.fn().mockResolvedValue(undefined),
     };
 

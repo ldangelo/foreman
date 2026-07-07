@@ -47,8 +47,8 @@ vi.mock("../../lib/vcs/index.js", () => ({
 
 vi.mock("../../lib/worktree-manager.js", () => ({
   WorktreeManager: class {
-    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
-      return { projectId: opts.projectId, beadId: opts.beadId, branchName: `foreman/${opts.beadId}`, path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`, exists: false };
+    async createWorktree(opts: { projectId: string; taskId: string; repoPath: string; baseBranch?: string }) {
+      return { projectId: opts.projectId, taskId: opts.taskId, branchName: `foreman/${opts.taskId}`, path: `/tmp/worktrees/${opts.projectId}/${opts.taskId}`, exists: false };
     }
   },
 }));
@@ -217,7 +217,7 @@ describe("Dispatcher — state-gate bypass for direct task runner", () => {
     const tasks = makeTasks();
     const dispatcher = new Dispatcher(tasks, store, "/tmp");
 
-    // taskId option: simulates `foreman run --bead bd-closed` on a closed task
+    // taskId option: simulates `foreman run --task bd-closed` on a closed task
     const result = await dispatcher.dispatch({ dryRun: true, taskId: "bd-closed", projectId: "proj-1" });
 
     // Task is found (not skipped as "not found") — may be skipped due to non-ready status,

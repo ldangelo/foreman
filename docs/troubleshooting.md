@@ -10,13 +10,13 @@ Before diving into specific issues, run these commands to understand the current
 
 ```bash
 foreman status                    # Overview: tasks, agents, costs
-foreman doctor                    # Health checks (br, DB, prompts)
+foreman doctor                    # Health checks (native task store, DB, prompts)
 foreman inbox --all --watch       # Live mail stream across all runs
 foreman debug <task-id>           # AI-powered deep-dive on a specific task
 foreman debug <task-id> --raw     # Raw artifacts without AI analysis
 ```
 
-> **Note:** `<task-id>` is the primary identifier. `--bead` is accepted as a
+> **Note:** `<task-id>` is the primary identifier. `--task` is accepted as a
 > backward-compatible alias throughout the CLI.
 
 ---
@@ -61,7 +61,7 @@ Deprecated aliases are hidden from help and print replacements when used:
 | Deprecated | Use instead |
 |------------|-------------|
 | `foreman dashboard` | `foreman watch` |
-| `foreman bead` | Removed; use structured `foreman task create --title ...` |
+| `foreman task` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `--skip-explore` / `--skip-review` | `--workflow quick` or a custom workflow |
@@ -106,7 +106,7 @@ foreman inbox --task <task-id>    # Check for error mail and lifecycle events
 
 ### Agent crashes immediately on startup
 
-**Symptoms:** Bead dispatches but immediately shows as failed. No tool calls, no cost.
+**Symptoms:** Task dispatches but immediately shows as failed. No tool calls, no cost.
 
 **Diagnosis:**
 ```bash
@@ -342,48 +342,48 @@ foreman worktree clean --dry-run  # Preview first
 
 ## Database Issues
 
-### "br" commands fail with merge conflict in issues.jsonl
+### "native task store" commands fail with merge conflict in issues.jsonl
 
-**Symptoms:** `br show`, `br ready`, etc. fail with "Merge conflict markers detected in issues.jsonl".
+**Symptoms:** `native task store show`, `native task store ready`, etc. fail with "Merge conflict markers detected in issues.jsonl".
 
 **Fix:**
 ```bash
 # Option 1: Resolve conflicts keeping our version
 python3 -c "
 import re
-with open('.beads/issues.jsonl') as f:
+with open('.tasks/issues.jsonl') as f:
     content = f.read()
 result = re.sub(
     r'<<<<<<< .*?\n(.*?\n)(?:\|\|\|\|\|\|\| .*?\n(?:.*?\n)*?)?=======\n(?:.*?\n)*?>>>>>>> .*?\n',
     r'\1', content, flags=re.DOTALL)
-with open('.beads/issues.jsonl', 'w') as f:
+with open('.tasks/issues.jsonl', 'w') as f:
     f.write(result)
 "
 
 # Option 2: Force sync from DB (DB is source of truth)
-br sync --force
+native task store sync --force
 
 # Verify
-br doctor
+native task store doctor
 ```
 
 ### Task stuck in wrong status (IN_PROGRESS but actually merged)
 
-**Symptoms:** `br list` shows tasks as IN_PROGRESS but they're already on dev.
+**Symptoms:** `native task store list` shows tasks as IN_PROGRESS but they're already on dev.
 
 **Diagnosis:**
 ```bash
 # Check if the task's work is on dev
 git log --oneline dev | grep <task-id>
 
-# Check br status
-br show <task-id>
+# Check native task store status
+native task store show <task-id>
 ```
 
 **Fix:**
 ```bash
-# Close tasks that are already merged in the legacy beads store
-br close <task-id> --force --reason "Already merged to dev"
+# Close tasks that are already merged in the legacy tasks store
+native task store close <task-id> --force --reason "Already merged to dev"
 
 # Or run doctor to reconcile
 foreman doctor --fix
@@ -391,13 +391,13 @@ foreman doctor --fix
 
 ### DB and JSONL counts differ
 
-**Symptoms:** `br doctor` warns "DB and JSONL counts differ".
+**Symptoms:** `native task store doctor` warns "DB and JSONL counts differ".
 
 **Fix:**
 ```bash
-br sync --force                   # Re-import from JSONL
-br sync --flush-only              # Then re-export from DB
-br doctor                         # Verify
+native task store sync --force                   # Re-import from JSONL
+native task store sync --flush-only              # Then re-export from DB
+native task store doctor                         # Verify
 ```
 
 ---

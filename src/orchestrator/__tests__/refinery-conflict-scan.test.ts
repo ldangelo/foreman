@@ -15,7 +15,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 vi.mock("../task-backend-ops.js", () => ({
   resetTaskToOpen: vi.fn().mockResolvedValue(undefined),
   closeTask: vi.fn().mockResolvedValue(undefined),
-  enqueueSetBeadStatus: vi.fn(),
+  enqueueSetTaskStatus: vi.fn(),
 }));
 
 import { Refinery } from "../refinery.js";

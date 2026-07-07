@@ -14,7 +14,7 @@ This inventory tracks operator-facing legacy Node backend paths after the Elixir
 | `foreman project remove` | Replaced with Elixir-backed project archive command/event/projection handling. |
 | `foreman project edit` | Replaced with Elixir-backed project metadata updates (`name`, `status`, `defaultBranch`). Jira edit flags are removed with guidance to Elixir external trigger ingestion. |
 | `foreman jira configure/status/test/enable-webhook/disable-webhook` | Removed from the CLI management surface. Jira transition ingestion remains available through the Elixir `ExternalTriggerCommand` API. |
-| `foreman run --task/--bead` | Removed. Operators use normal scheduler-backed `foreman run` or `foreman retry`. |
+| `foreman run --task/--task` | Removed. Operators use normal scheduler-backed `foreman run` or `foreman retry`. |
 | `foreman run --resume/--resume-failed` | Removed. Operators use `foreman retry`. |
 | `foreman run` dispatch-shaping options (`--no-pipeline`, `--workflow`, `--model`, `--max-agents`, `--no-auto-dispatch`, legacy telemetry/stagger controls) | Removed from normal operator dispatch. Elixir scheduler/workflow/provider config owns dispatch policy. |
 | `foreman run task` | Removed for operators. The hidden `--run-id` bridge remains reserved for Elixir scheduler-launched Node/Pi workers. |
@@ -23,8 +23,8 @@ This inventory tracks operator-facing legacy Node backend paths after the Elixir
 | `foreman task note` | Replaced with Elixir `task.annotate`. |
 | `foreman task dep add/list` | Replaced with Elixir task projections/`task.add_dependency` for blocker relationships. |
 | `foreman task dep remove` | Removed until an Elixir dependency-removal event/API exists. |
-| `foreman task import --from-beads` | Replaced with Elixir `task.create` / `task.add_dependency`; local `.beads` files are source data only. |
-| hidden `foreman bead` | Removed with explicit message pointing to structured task creation. |
+| `foreman task import --from-tasks` | Replaced with Elixir `task.create` / `task.add_dependency`; local `.tasks` files are source data only. |
+| hidden `foreman task` | Removed with explicit message pointing to structured task creation. |
 | `foreman daemon start` / `restart` | Removed with guidance to `foreman server start`. `daemon stop/status` remain only to inspect or stop stray legacy daemon processes. |
 | Legacy TS delegation envs (`FOREMAN_LEGACY_COMPATIBILITY_MODE`, `FOREMAN_LEGACY_TS_BIN`) | Removed from the CLI entrypoint and docs. |
 

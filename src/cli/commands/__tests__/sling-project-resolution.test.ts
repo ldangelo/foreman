@@ -7,7 +7,7 @@ import path from "node:path";
 import { runTsxModule, type ExecResult } from "../../../test-support/tsx-subprocess.js";
 
 const CLI = path.resolve(__dirname, "../../index.ts");
-const SOURCE_TRD = path.resolve(process.cwd(), "docs/TRD/sling-trd.md");
+const SOURCE_TRD = path.resolve(process.cwd(), "docs/TRD/merge-queue.md");
 
 async function run(
   args: string[],
@@ -30,7 +30,7 @@ describe("foreman sling trd --project", () => {
     const dir = join(baseDir, name);
     mkdirSync(join(dir, ".foreman"), { recursive: true });
     mkdirSync(join(dir, "docs", "TRD"), { recursive: true });
-    cpSync(SOURCE_TRD, join(dir, "docs", "TRD", "sling-trd.md"));
+    cpSync(SOURCE_TRD, join(dir, "docs", "TRD", "merge-queue.md"));
     execFileSync("git", ["init", "--initial-branch", "main"], { cwd: dir, stdio: "ignore" });
     execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
     execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
@@ -67,13 +67,13 @@ describe("foreman sling trd --project", () => {
     writeRegistry(tmpBase, "registered-target", targetProject);
 
     const result = await run(
-      ["sling", "trd", "docs/TRD/sling-trd.md", "--project", "registered-target", "--json"],
+      ["sling", "trd", "docs/TRD/merge-queue.md", "--project", "registered-target", "--json"],
       tmpBase,
       { ...process.env, HOME: tmpBase },
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("registered-target/docs/TRD/sling-trd.md");
+    expect(result.stdout + result.stderr).toContain("registered-target/docs/TRD/merge-queue.md");
   });
 
   it("reads the TRD from an explicit --project-path target", async () => {
@@ -81,13 +81,13 @@ describe("foreman sling trd --project", () => {
     const targetProject = mkProject(tmpBase, "explicit-target");
 
     const result = await run(
-      ["sling", "trd", "docs/TRD/sling-trd.md", "--project-path", targetProject, "--json"],
+      ["sling", "trd", "docs/TRD/merge-queue.md", "--project-path", targetProject, "--json"],
       tmpBase,
       { ...process.env, HOME: tmpBase },
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout + result.stderr).toContain("explicit-target/docs/TRD/sling-trd.md");
+    expect(result.stdout + result.stderr).toContain("explicit-target/docs/TRD/merge-queue.md");
   });
 
   it("rejects relative --project-path values", async () => {
@@ -96,7 +96,7 @@ describe("foreman sling trd --project", () => {
     writeRegistry(tmpBase, "relative-target", targetProject);
 
     const result = await run(
-      ["sling", "trd", "docs/TRD/sling-trd.md", "--project-path", "relative-target", "--json"],
+      ["sling", "trd", "docs/TRD/merge-queue.md", "--project-path", "relative-target", "--json"],
       tmpBase,
       { ...process.env, HOME: tmpBase },
     );
@@ -110,14 +110,14 @@ describe("foreman sling trd --project", () => {
     const targetProject = mkProject(tmpBase, "legacy-target");
 
     const result = await run(
-      ["sling", "trd", "docs/TRD/sling-trd.md", "--project", targetProject, "--json"],
+      ["sling", "trd", "docs/TRD/merge-queue.md", "--project", targetProject, "--json"],
       tmpBase,
       { ...process.env, HOME: tmpBase },
     );
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout + result.stderr).toContain("deprecated; use `--project-path` instead");
-    expect(result.stdout + result.stderr).toContain("legacy-target/docs/TRD/sling-trd.md");
+    expect(result.stdout + result.stderr).toContain("legacy-target/docs/TRD/merge-queue.md");
   });
 
   it("rejects combining --project with --project-path", async () => {
@@ -129,7 +129,7 @@ describe("foreman sling trd --project", () => {
       [
         "sling",
         "trd",
-        "docs/TRD/sling-trd.md",
+        "docs/TRD/merge-queue.md",
         "--project",
         "combined-target",
         "--project-path",

@@ -20,8 +20,8 @@ describe("inbox daemon helper functions", () => {
       client: {
         runs: {
           list: async () => [
-            { id: "run-1", bead_id: "task-1" },
-            { id: "run-2", bead_id: "task-2" },
+            { id: "run-1", task_id: "task-1" },
+            { id: "run-2", task_id: "task-2" },
           ],
         },
       },
@@ -31,7 +31,7 @@ describe("inbox daemon helper functions", () => {
     await expect(resolveDaemonRunId(daemon, {})).resolves.toBe("run-1");
   });
 
-  it("resolveDaemonRunId resolves Elixir runs by task/bead and latest fallback", async () => {
+  it("resolveDaemonRunId resolves Elixir runs by task/task and latest fallback", async () => {
     const daemon = {
       backend: "elixir",
       projectId: "proj-1",
@@ -44,7 +44,7 @@ describe("inbox daemon helper functions", () => {
       },
     } as any;
 
-    await expect(resolveDaemonRunId(daemon, { bead: "task-2" })).resolves.toBe("run-2");
+    await expect(resolveDaemonRunId(daemon, { task: "task-2" })).resolves.toBe("run-2");
     await expect(resolveDaemonRunId(daemon, {})).resolves.toBe("run-1");
   });
 
@@ -188,7 +188,7 @@ describe("inbox daemon helper functions", () => {
           list: async () => [
             {
               id: "run-2",
-              bead_id: "task-2",
+              task_id: "task-2",
               status: "success",
               branch: "foreman/task-2",
               queued_at: "2026-01-01T00:00:00.000Z",

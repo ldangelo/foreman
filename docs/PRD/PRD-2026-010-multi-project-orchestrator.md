@@ -121,8 +121,8 @@ PRD-2026-006 described native task tracking, a project registry, and cross-proje
 ### 4.3 Single-Project User (Existing)
 
 **Name:** Dana, Senior Engineer
-**Context:** Uses Foreman on one repository. Has existing `.beads/` and `.foreman/foreman.db` data.
-**Needs:** Zero regression. `foreman init` still works in a local directory. Beads import works. Existing commands unchanged.
+**Context:** Uses Foreman on one repository. Has existing `.tasks/` and `.foreman/foreman.db` data.
+**Needs:** Zero regression. `foreman init` still works in a local directory. Tasks import works. Existing commands unchanged.
 
 ---
 
@@ -349,7 +349,7 @@ Foreman shall manage Postgres schema via a migration system. On first startup, F
 All tables include `project_id` as a required column. All queries in task-context include `WHERE project_id = $1`. The system enforces referential integrity via foreign keys.
 
 **Acceptance Criteria:**
-- AC-006.1: The `runs`, `tasks`, `task_dependencies`, `events`, `merge_queue`, `messages`, `bead_write_queue`, `costs`, and `rate_limit_events` tables all include `project_id TEXT NOT NULL REFERENCES projects(id)`.
+- AC-006.1: The `runs`, `tasks`, `task_dependencies`, `events`, `merge_queue`, `messages`, `task_write_queue`, `costs`, and `rate_limit_events` tables all include `project_id TEXT NOT NULL REFERENCES projects(id)`.
 - AC-006.2: A database trigger prevents insertion of rows with a `project_id` not present in the `projects` table.
 - AC-006.3: Queries that omit `project_id` in a project-context operation are rejected at the TypeScript level (compile-time error via `projectId: string` parameter on all store methods).
 
@@ -479,7 +479,7 @@ All Foreman commands that operate on tasks, runs, or agents shall accept a `--pr
 - AC-014.1: Given `~/.foreman/projects.json` has two or more registered projects (multi-project mode), when `foreman run` is invoked without `--project`, then Foreman exits with: `"Multiple projects registered. Use --project <name> to specify the target project."`
 - AC-014.2: Given `foreman run --project <name>`, when the project is healthy and has ready tasks, then the dispatcher queries `SELECT * FROM tasks WHERE project_id = <id> AND status = 'ready' ORDER BY priority ASC` and dispatches the highest-priority task.
 - AC-014.3: Given single-project mode (zero or one project in `~/.foreman/projects.json`), `foreman run` operates on the current directory (zero projects) or the sole registered project (one project) with no `--project` flag required.
-- AC-014.4: `foreman run --project <name> --bead <task-id>` dispatches a specific task regardless of its status, forcing it to `ready` if it was `backlog` (equivalent to implicit approve).
+- AC-014.4: `foreman run --project <name> --task <task-id>` dispatches a specific task regardless of its status, forcing it to `ready` if it was `backlog` (equivalent to implicit approve).
 
 ---
 
@@ -530,20 +530,20 @@ The dashboard shall display aggregate metrics across all projects.
 
 ---
 
-### 6.6 Feature Area: Beads Data Import
+### 6.6 Feature Area: Tasks Data Import
 
-#### REQ-018: Beads Data Import
+#### REQ-018: Tasks Data Import
 
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 **Complexity:** Medium
 
-`foreman task import --from-beads --project <name>` shall import existing `.beads/beads.jsonl` data from a project's clone directory into Postgres.
+`foreman task import --from-tasks --project <name>` shall import existing `.tasks/tasks.jsonl` data from a project's clone directory into Postgres.
 
 **Acceptance Criteria:**
-- AC-018.1: Reads `.beads/beads.jsonl` from the project's clone path (`~/.foreman/projects/<project-id>/.beads/beads.jsonl`). Maps each bead to a native task in Postgres `tasks` table with `project_id` set correctly.
-- AC-018.2: Beads status mapping: `open` → `backlog`, `in_progress` → `ready` (auto-approved after import), `closed` → `merged`. Dependencies are preserved as `blocks` relationships in `task_dependencies`.
-- AC-018.3: `foreman task import --from-beads --project <name> --dry-run` shows what would be imported without writing to Postgres.
+- AC-018.1: Reads `.tasks/tasks.jsonl` from the project's clone path (`~/.foreman/projects/<project-id>/.tasks/tasks.jsonl`). Maps each task to a native task in Postgres `tasks` table with `project_id` set correctly.
+- AC-018.2: Tasks status mapping: `open` → `backlog`, `in_progress` → `ready` (auto-approved after import), `closed` → `merged`. Dependencies are preserved as `blocks` relationships in `task_dependencies`.
+- AC-018.3: `foreman task import --from-tasks --project <name> --dry-run` shows what would be imported without writing to Postgres.
 
 ---
 
@@ -604,8 +604,8 @@ Foreman v1 starts fresh with Postgres. Existing users with per-project `.foreman
 **Acceptance Criteria:**
 - AC-024.1: Fresh Foreman installs initialize directly with Postgres. `foreman daemon start` runs migrations to create all required tables.
 - AC-024.2: `foreman project add <github-url>` registers a project and stores its data in Postgres. No Postgres file is created for registered projects.
-- AC-024.3: Existing users with Postgres data in per-project `.foreman/foreman.db` files are not affected by v1 installation — the old Postgres data remains accessible if they do not upgrade. If they choose to upgrade, `foreman task import --from-beads --project <name>` imports beads data from the project's clone directory.
-- AC-024.4: `foreman run --bead <id>` without `--project` works in single-project mode (one project registered) and fails in multi-project mode (2+ projects registered) with: `"Multiple projects registered. Use --project <name> to specify the target project."`
+- AC-024.3: Existing users with Postgres data in per-project `.foreman/foreman.db` files are not affected by v1 installation — the old Postgres data remains accessible if they do not upgrade. If they choose to upgrade, `foreman task import --from-tasks --project <name>` imports tasks data from the project's clone directory.
+- AC-024.4: `foreman run --task <id>` without `--project` works in single-project mode (one project registered) and fails in multi-project mode (2+ projects registered) with: `"Multiple projects registered. Use --project <name> to specify the target project."`
 
 ---
 
@@ -657,7 +657,7 @@ Foreman v1 targets 5–20 simultaneous projects. The architecture shall support 
 | REQ-015 (Cross-Project Dashboard) | REQ-004, REQ-010 | — | Needs daemon + registry |
 | REQ-016 (Needs Human Panel) | REQ-015 | — | Part of dashboard |
 | REQ-017 (Aggregate Metrics) | REQ-015 | — | Part of dashboard |
-| REQ-018 (Beads Import) | REQ-005 | — | Needs Postgres schema (via daemon) |
+| REQ-018 (Tasks Import) | REQ-005 | — | Needs Postgres schema (via daemon) |
 | REQ-021 (PG Performance) | REQ-004, REQ-007 | — | Needs locking + pool tuning |
 | REQ-022 (Observability) | REQ-004 | — | Needs daemon |
 | REQ-023 (Graceful Degradation) | REQ-004 | — | Needs daemon |
@@ -769,7 +769,7 @@ All items resolved — no deferred questions remain.
 | REQ-015 | Cross-Project Dashboard | Must | Medium | 4 |
 | REQ-016 | "Needs Human" Triage Panel | Must | Low | 3 |
 | REQ-017 | Aggregate Metrics Panel | Should | Low | 2 |
-| REQ-018 | Beads Data Import | Must | Medium | 3 |
+| REQ-018 | Tasks Data Import | Must | Medium | 3 |
 | REQ-021 | Postgres Performance | Must | Medium | 3 |
 | REQ-022 | Operational Observability | Should | Low | 2 |
 | REQ-023 | Graceful Degradation | Should | Medium | 2 |

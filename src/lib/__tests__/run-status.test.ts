@@ -1,77 +1,24 @@
-import { describe, it, expect } from "vitest";
-import { mapRunStatusToTaskStatus, mapRunStatusToNativeTaskStatus } from "../run-status.js";
-
-describe("mapRunStatusToTaskStatus", () => {
-  it("maps pending to in_progress", () => {
-    expect(mapRunStatusToTaskStatus("pending")).toBe("in_progress");
-  });
-  it("maps running to in_progress", () => {
-    expect(mapRunStatusToTaskStatus("running")).toBe("in_progress");
-  });
-  it("maps completed to review — pipeline done, awaiting merge (not yet closed)", () => {
-    expect(mapRunStatusToTaskStatus("completed")).toBe("review");
-  });
-  it("maps merged to closed", () => {
-    expect(mapRunStatusToTaskStatus("merged")).toBe("closed");
-  });
-  it("maps pr-created to closed", () => {
-    expect(mapRunStatusToTaskStatus("pr-created")).toBe("closed");
-  });
-  it("maps failed to failed — unexpected pipeline exception", () => {
-    expect(mapRunStatusToTaskStatus("failed")).toBe("failed");
-  });
-  it("maps stuck to open — agent pipeline stuck, safe to retry", () => {
-    expect(mapRunStatusToTaskStatus("stuck")).toBe("open");
-  });
-  it("maps conflict to blocked — merge conflict needs human intervention", () => {
-    expect(mapRunStatusToTaskStatus("conflict")).toBe("blocked");
-  });
-  it("maps test-failed to blocked — post-merge tests failed, needs intervention", () => {
-    expect(mapRunStatusToTaskStatus("test-failed")).toBe("blocked");
-  });
-  it("maps reset to open — safe to retry", () => {
-    expect(mapRunStatusToTaskStatus("reset")).toBe("open");
-  });
-  it("completed does NOT map to closed — bead stays visible until merge lands", () => {
-    expect(mapRunStatusToTaskStatus("completed")).not.toBe("closed");
-  });
-  it("completed does NOT map to in_progress — visually distinct from actively-running tasks", () => {
-    expect(mapRunStatusToTaskStatus("completed")).not.toBe("in_progress");
-  });
-});
+import { describe, expect, it } from "vitest";
+import { mapRunStatusToNativeTaskStatus } from "../run-status.js";
 
 describe("mapRunStatusToNativeTaskStatus", () => {
-  it("maps pending to in-progress (hyphenated for native tasks)", () => {
+  it("maps active runs to in-progress", () => {
     expect(mapRunStatusToNativeTaskStatus("pending")).toBe("in-progress");
-  });
-  it("maps running to in-progress", () => {
     expect(mapRunStatusToNativeTaskStatus("running")).toBe("in-progress");
   });
-  it("maps completed to review", () => {
-    expect(mapRunStatusToNativeTaskStatus("completed")).toBe("review");
-  });
-  it("maps merged to closed", () => {
+
+  it("maps terminal success states to closed", () => {
     expect(mapRunStatusToNativeTaskStatus("merged")).toBe("closed");
-  });
-  it("maps pr-created to closed", () => {
     expect(mapRunStatusToNativeTaskStatus("pr-created")).toBe("closed");
   });
-  it("maps failed to failed", () => {
-    expect(mapRunStatusToNativeTaskStatus("failed")).toBe("failed");
-  });
-  it("maps stuck to ready — agent pipeline stuck, safe to retry", () => {
+
+  it("maps retryable or intervention states to native task statuses", () => {
+    expect(mapRunStatusToNativeTaskStatus("completed")).toBe("review");
     expect(mapRunStatusToNativeTaskStatus("stuck")).toBe("ready");
-  });
-  it("maps conflict to blocked", () => {
+    expect(mapRunStatusToNativeTaskStatus("cooldown")).toBe("cooldown");
     expect(mapRunStatusToNativeTaskStatus("conflict")).toBe("blocked");
-  });
-  it("maps test-failed to blocked", () => {
     expect(mapRunStatusToNativeTaskStatus("test-failed")).toBe("blocked");
-  });
-  it("maps reset to ready — safe to retry", () => {
+    expect(mapRunStatusToNativeTaskStatus("failed")).toBe("failed");
     expect(mapRunStatusToNativeTaskStatus("reset")).toBe("ready");
-  });
-  it("pending does NOT map to in_progress (underscore) — native tasks use hyphen", () => {
-    expect(mapRunStatusToNativeTaskStatus("pending")).not.toBe("in_progress");
   });
 });

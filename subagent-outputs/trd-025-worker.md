@@ -9,8 +9,8 @@ Commits:
 - 208b9cbe test: verify Elixir security controls
 
 Changed files:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - CLAUDE.md
 - README.md
 - docs/cli-reference.md
@@ -50,7 +50,7 @@ Residual risks:
     {
       "id": "criterion-1",
       "status": "satisfied",
-      "evidence": "Ran `/Users/ldangelo/.local/bin/br update bd-rwi15 --status in_progress` before implementation edits; bead moved open -> in_progress."
+      "evidence": "Ran `/Users/ldangelo/.local/bin/native task store update bd-rwi15 --status in_progress` before implementation edits; task moved open -> in_progress."
     },
     {
       "id": "criterion-2",
@@ -74,8 +74,8 @@ Residual risks:
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "CLAUDE.md",
     "README.md",
     "docs/cli-reference.md",
@@ -95,12 +95,12 @@ Residual risks:
   ],
   "commandsRun": [
     {
-      "command": "git status --short && br show bd-rwi15 --json && trd-cli parse ...",
+      "command": "git status --short && native task store show bd-rwi15 --json && trd-cli parse ...",
       "result": "passed",
-      "summary": "Verified clean start, TRD-025 bead open, and TRD parser available."
+      "summary": "Verified clean start, TRD-025 task open, and TRD parser available."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-rwi15 --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-rwi15 --status in_progress",
       "result": "passed",
       "summary": "Claimed TRD-025 before edits."
     },
@@ -115,17 +115,17 @@ Residual risks:
       "summary": "Pre-close implementation validation passed: 111 ExUnit tests, TypeScript pass, TRD parser 52 tasks warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-rwi15 --reason \"Implemented worker secret scoping, remote auth controls, and destructive command audit events\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-rwi15 --reason \"Implemented worker secret scoping, remote auth controls, and destructive command audit events\"",
       "result": "passed",
       "summary": "Closed TRD-025 after validation."
     },
     {
       "command": "git commit -m \"feat: add Elixir security controls\"",
       "result": "passed",
-      "summary": "Committed implementation/docs/bead state as 8f615bcc."
+      "summary": "Committed implementation/docs/task state as 8f615bcc."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br update bd-cwjl6 --status in_progress",
+      "command": "/Users/ldangelo/.local/bin/native task store update bd-cwjl6 --status in_progress",
       "result": "passed",
       "summary": "Claimed TRD-025-TEST after TRD-025 closed and dependency unlocked."
     },
@@ -135,14 +135,14 @@ Residual risks:
       "summary": "Pre-close test validation passed: 111 ExUnit tests, TypeScript pass, TRD parser 52 tasks warnings []."
     },
     {
-      "command": "/Users/ldangelo/.local/bin/br close bd-cwjl6 --reason \"Verified worker secret scoping, remote auth controls, and destructive command audit events\"",
+      "command": "/Users/ldangelo/.local/bin/native task store close bd-cwjl6 --reason \"Verified worker secret scoping, remote auth controls, and destructive command audit events\"",
       "result": "passed",
       "summary": "Closed TRD-025-TEST after validation."
     },
     {
       "command": "git commit -m \"test: verify Elixir security controls\"",
       "result": "passed",
-      "summary": "Committed tests/bead state as 208b9cbe."
+      "summary": "Committed tests/task state as 208b9cbe."
     },
     {
       "command": "git status --short && git log --oneline -4",

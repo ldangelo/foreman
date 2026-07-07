@@ -487,8 +487,8 @@ export function buildPhasePrompt(
     taskTitle: string;
     taskDescription: string;
     taskComments?: string;
-    /** Bead type (e.g. "test", "task", "bug"). Used by finalize to handle
-     *  "nothing to commit" as success for verification beads. */
+    /** Task type (e.g. "test", "task", "bug"). Used by finalize to handle
+     *  "nothing to commit" as success for verification tasks. */
     taskType?: string;
   runId?: string;
   hasExplorerReport?: boolean;
@@ -506,7 +506,7 @@ export function buildPhasePrompt(
     vcsCommitCommand?: string;
     /** Command to push the branch to remote. */
     vcsPushCommand?: string;
-    /** Command to integrate the latest target-branch changes into the bead branch. */
+    /** Command to integrate the latest target-branch changes into the task branch. */
     vcsIntegrateTargetCommand?: string;
     /** Command to verify the current branch name. */
     vcsBranchVerifyCommand?: string;
@@ -569,7 +569,7 @@ Then exit. Do not write any code. Do not write DEVELOPER_REPORT.md.`
     vcsIntegrateTargetCommand: context.vcsIntegrateTargetCommand ?? `git fetch origin && git rebase origin/${context.baseBranch ?? "main"}`,
     vcsBranchVerifyCommand: context.vcsBranchVerifyCommand ?? "git rev-parse --abbrev-ref HEAD",
     vcsCleanCommand: context.vcsCleanCommand ?? `git worktree remove --force ${context.worktreePath ?? ""}`,
-    vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .beads/issues.jsonl 2>/dev/null || true`,
+    vcsRestoreTrackedStateCommand: context.vcsRestoreTrackedStateCommand ?? `git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl 2>/dev/null || git restore --source=HEAD --worktree -- .tasks/issues.jsonl 2>/dev/null || true`,
     qaValidatedTargetRef: context.qaValidatedTargetRef ?? "",
     currentTargetRef: context.currentTargetRef ?? "",
     shouldRunFinalizeValidation: context.shouldRunFinalizeValidation ?? "true",

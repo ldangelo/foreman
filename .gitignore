@@ -29,15 +29,10 @@ dist/
 /AGENTS.md
 !/AGENTS.md
 
-# bv (beads viewer) local config and caches
-.bv/
-
-# br (beads_rust) shell history and runtime files
-.beads/.br_history/
-.beads/.bv.lock
-.beads/*.lock
-.beads/*.db-wal
-.beads/*.db-shm
+# task store local runtime files
+.tasks/*.lock
+.tasks/*.db-wal
+.tasks/*.db-shm
 
 # Backup files
 *.bak

@@ -10,8 +10,8 @@ const LEGACY_EVENT_TYPES = [
   "task:approved",
   "task:rejected",
   "task:reset",
-  "bead:synced",
-  "bead:conflict",
+  "task:synced",
+  "task:conflict",
 ];
 
 const FOREMAN_EVENT_TYPES = [

@@ -31,11 +31,11 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Path relative to docs/ root (e.g. 'migration-tasks-to-br.md' or 'TRD/trd-2026-004.md')"
+            "description": "Path relative to docs/ root (e.g. 'migration-tasks-to-native task store.md' or 'TRD/trd-2026-004.md')"
           },
           "variant": {
             "type": "string",
-            "enum": ["standard", "comparison", "migration", "beads-rust-only"],
+            "enum": ["standard", "comparison", "migration", "task-client-only"],
             "description": "Banner variant to inject — must match a key in banner-variants.json"
           },
           "rationale": {

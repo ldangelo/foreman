@@ -21,7 +21,7 @@ The execution flow is broken at the handoff:
 foreman plan → PRD → TRD (markdown) → [manual foreman sling trd ...] → foreman run
 ```
 
-Step 4 requires a manual `foreman sling trd <trd-file>` invocation after `foreman plan` completes. This is an unnecessary friction point: the TRD is already a structured document, and `foreman sling` already parses it. The manual invocation step exists because `create-trd` was designed for beads, not for Foreman's native task store.
+Step 4 requires a manual `foreman sling trd <trd-file>` invocation after `foreman plan` completes. This is an unnecessary friction point: the TRD is already a structured document, and `foreman sling` already parses it. The manual invocation step exists because `create-trd` was designed for tasks, not for Foreman's native task store.
 
 The goal is:
 
@@ -60,7 +60,7 @@ Where `foreman sling prd` (not `foreman sling trd`) runs a new `/ensemble:create
 
 1. **We are not redesigning the TRD parser.** `parseTrd()` in `trd-parser.ts` is stable. The new command produces markdown that satisfies the existing parser's expectations.
 
-2. **We are not migrating beads to native tasks.** `create-trd-beads` remains as-is for projects that use beads. The `create-trd-foreman` is a parallel output path.
+2. **We are not migrating tasks to native tasks.** `create-trd-tasks` remains as-is for projects that use tasks. The `create-trd-foreman` is a parallel output path.
 
 3. **We are not modifying `foreman run` behavior.** `foreman run` dispatches `ready` tasks as it does today. This work only changes how tasks are created during the planning phase.
 
@@ -105,7 +105,7 @@ Where `foreman sling prd` (not `foreman sling trd`) runs a new `/ensemble:create
 **Statement:** When `sling prd` writes tasks to the native store, they must be marked `ready` and have correct priority/type.
 
 **Acceptance Criteria:**
-- AC-004-1: Tasks are created with `status: open` and are included in `br ready` output (unblocked, not deferred).
+- AC-004-1: Tasks are created with `status: open` and are included in `native task store ready` output (unblocked, not deferred).
 - AC-004-2: Tasks created from epic/sprint/story hierarchy are linked via `parent-child` dependencies, so the epic blocks sprints, sprints block stories, stories block tasks.
 - AC-004-3: Tasks have `externalId` set to `trd:<TRD-ID>` (e.g., `trd:AT-T001`), enabling idempotent re-runs.
 - AC-004-4: Task type mapping: `epic` → `epic`, `sprint` → `feature`, `story` → `feature`, `task` → `task`, `test` → `task`, `spike` → `chore`.
@@ -116,7 +116,7 @@ Where `foreman sling prd` (not `foreman sling trd`) runs a new `/ensemble:create
 **Statement:** Existing `foreman sling trd <trd-file>` continues to work without modification.
 
 **Acceptance Criteria:**
-- AC-005-1: `foreman sling trd <trd-file>` with a TRD produced by `create-trd` (beads path) continues to parse correctly.
+- AC-005-1: `foreman sling trd <trd-file>` with a TRD produced by `create-trd` (tasks path) continues to parse correctly.
 - AC-005-2: `foreman sling trd <trd-file>` with a TRD produced by `create-trd-foreman` (native path) continues to parse correctly.
 - AC-005-3: No changes to `parseTrd()` API signature or return type.
 - AC-005-4: No changes to `sling-executor.ts` execute function signature or return type.
@@ -176,7 +176,7 @@ Where `foreman sling prd` (not `foreman sling trd`) runs a new `/ensemble:create
 - All task status values: `[ ]` (never `[x]`)
 - Task IDs must match `[A-Z]+-T\d+` pattern
 - Sprint/Story headers must match existing regex patterns
-- No beads-specific annotations (no `[satisfies REQ-NNN]` — only `[satisfies REQ-NNN]` as existing TRD format)
+- No tasks-specific annotations (no `[satisfies REQ-NNN]` — only `[satisfies REQ-NNN]` as existing TRD format)
 - Output path: `docs/TRD/TRD-YYYY-NNN-foreman.md`
 
 **Note on `[satisfies REQ-NNN]`:** The existing TRD parser does NOT parse `[satisfies REQ-NNN]` annotations in task tables. The current parser only extracts: `trdId`, `title`, `estimateHours`, `dependencies`, `files`, `status`. The PRD→TRD traceability mapping (`[satisfies REQ-NNN]`) is informational in the task description field, not the table cells.
@@ -284,11 +284,11 @@ Where `prdPath` is the path to the PRD that was either passed via `--from-prd` o
 
 ---
 
-## 6. Migration from create-trd-beads to create-trd-foreman in ../ensemble
+## 6. Migration from create-trd-tasks to create-trd-foreman in ../ensemble
 
 ### 6.1 What changes
 
-| Aspect | create-trd (beads) | create-trd-foreman (native) |
+| Aspect | create-trd (tasks) | create-trd-foreman (native) |
 |--------|-------------------|---------------------------|
 | Output file | `docs/TRD/TRD-YYYY-NNN.md` | `docs/TRD/TRD-YYYY-NNN-foreman.md` |
 | Task status | `[ ]` (open), `[x]` (completed) allowed | Always `[ ]` — no completed tasks in output |
@@ -302,7 +302,7 @@ Where `prdPath` is the path to the PRD that was either passed via `--from-prd` o
 
 `create-trd-foreman` reuses most phases from `create-trd.yaml` v3.0.0:
 
-| Phase | create-trd (beads) | create-trd-foreman | Notes |
+| Phase | create-trd (tasks) | create-trd-foreman | Notes |
 |-------|-------------------|---------------------|-------|
 | Phase 1 | PRD Ingestion and Validation | PRD Ingestion and Validation | Unchanged |
 | Phase 2 | Architecture Design | Architecture Design | Unchanged |
@@ -315,7 +315,7 @@ Where `prdPath` is the path to the PRD that was either passed via `--from-prd` o
 
 The key modification is in **Phase 3, Step 1: Master Task List Generation**:
 
-**Before (beads path):**
+**Before (tasks path):**
 - Task IDs: `- [ ] **AT-001**: Description (8h) [satisfies REQ-001]`
 - Status: `[ ]` open or `[x]` completed
 - Annotations in table or checklist format
@@ -355,7 +355,7 @@ The key modification is in **Phase 3, Step 1: Master Task List Generation**:
 | AC-001-2 | TRD satisfies parseTrd() format | Parse output TRD with `parseTrd()`; must not throw |
 | AC-001-3 | All task statuses are `[ ]` | Inspect TRD markdown; count `[x]` occurrences → must be 0 |
 | AC-002-1 | sling prd runs create-trd-foreman + parseTrd + execute | Run `foreman sling prd <prd> --dry-run --json`; verify SlingPlan parsed |
-| AC-002-2 | Tasks created with status=open | Run `foreman sling prd <prd>`; query `br list --status=open`; verify tasks present |
+| AC-002-2 | Tasks created with status=open | Run `foreman sling prd <prd>`; query `native task store list --status=open`; verify tasks present |
 | AC-002-3 | --auto flag skips confirmation | Run `foreman sling prd <prd> --auto --dry-run`; no interactive prompt |
 | AC-002-4 | --dry-run previews without writing | Run `foreman sling prd <prd> --dry-run`; query task store → no new tasks |
 | AC-002-5 | --project and --project-path work | Run with `--project <name>` and `--project-path <abs>`; verify correct project |
@@ -365,7 +365,7 @@ The key modification is in **Phase 3, Step 1: Master Task List Generation**:
 | AC-003-4 | All task statuses are `[ ]` | Count `[x]` occurrences in TRD tasks table |
 | AC-003-5 | Dependencies use TASK-ID format | Inspect Deps column; verify format |
 | AC-003-6 | Task IDs match [A-Z]+-T\d+ | Test regex against all task IDs |
-| AC-004-1 | Tasks in br ready output | Run `br ready`; verify tasks appear |
+| AC-004-1 | Tasks in native task store ready output | Run `native task store ready`; verify tasks appear |
 | AC-004-2 | Parent-child dependencies correct | Query task store; verify epic→sprint→story→task hierarchy |
 | AC-004-3 | externalId set to trd:<TRD-ID> | Query task store; verify externalId field |
 | AC-004-4 | Type mapping correct | Query task store; verify type field for each task |
@@ -406,7 +406,7 @@ The key modification is in **Phase 3, Step 1: Master Task List Generation**:
 
 ### Risk 3: Backward Compatibility — Existing TRD files
 
-**Description:** Projects that already have TRD files generated by `create-trd` (beads path) will be processed by `foreman sling trd` using the same `parseTrd()`. If those TRDs use a different table format (e.g., checklist format instead of tables, or different column headers), `parseTrd()` will throw `SLING-002: No tasks extracted`.
+**Description:** Projects that already have TRD files generated by `create-trd` (tasks path) will be processed by `foreman sling trd` using the same `parseTrd()`. If those TRDs use a different table format (e.g., checklist format instead of tables, or different column headers), `parseTrd()` will throw `SLING-002: No tasks extracted`.
 
 **Severity:** High
 **Likelihood:** Medium
@@ -463,7 +463,7 @@ The key modification is in **Phase 3, Step 1: Master Task List Generation**:
 
 ### Risk 8: Migration Path for Existing Projects
 
-**Description:** Projects that already used `foreman plan` with `create-trd` (beads path) have TRD files in `docs/TRD/`. Switching to `create-trd-foreman` would generate a new TRD with a different slug (`-foreman` suffix), leaving the old TRD in place.
+**Description:** Projects that already used `foreman plan` with `create-trd` (tasks path) have TRD files in `docs/TRD/`. Switching to `create-trd-foreman` would generate a new TRD with a different slug (`-foreman` suffix), leaving the old TRD in place.
 
 **Severity:** Low
 **Likelihood:** Low
@@ -537,7 +537,7 @@ The key modification is in **Phase 3, Step 1: Master Task List Generation**:
 
 ## 11. Open Questions
 
-1. **TRD filename convention:** Should `create-trd-foreman` output to `docs/TRD/TRD-YYYY-NNN.md` (same as beads path) or `docs/TRD/TRD-YYYY-NNN-foreman.md`? Using the same filename enables `sling trd` to consume both. But it would overwrite beads-path TRDs. Using the `-foreman` suffix is safer but means `sling trd` can't consume it directly — only `sling prd` can.
+1. **TRD filename convention:** Should `create-trd-foreman` output to `docs/TRD/TRD-YYYY-NNN.md` (same as tasks path) or `docs/TRD/TRD-YYYY-NNN-foreman.md`? Using the same filename enables `sling trd` to consume both. But it would overwrite tasks-path TRDs. Using the `-foreman` suffix is safer but means `sling trd` can't consume it directly — only `sling prd` can.
 
    **Recommendation:** Use the same filename (`TRD-YYYY-NNN.md`) so both `sling trd` and `sling prd` can consume it. This maximizes compatibility.
 

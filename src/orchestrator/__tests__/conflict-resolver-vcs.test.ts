@@ -82,7 +82,7 @@ function makeMockVcs(
       integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
-      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;

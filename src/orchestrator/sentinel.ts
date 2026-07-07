@@ -2,7 +2,7 @@
  * SentinelAgent — continuous testing agent for main/master branch.
  *
  * Runs the test suite on the specified branch on a configurable schedule.
- * Records results in Postgres and creates br bug tasks on repeated failures.
+ * Records results in Postgres and creates native task store bug tasks on repeated failures.
  */
 
 import { execFile } from "node:child_process";

@@ -24,7 +24,7 @@ function testFileExists(modulePath: string): boolean {
 
 describe("TRD-NF-005: key migrated modules have test coverage", () => {
   const coreModules = [
-    "src/lib/bv.ts",
+    "src/orchestrator/task-ordering.ts",
     "src/lib/feature-flags.ts",
     // task-client.ts is interface-only; tested through consumers (reset, dispatcher)
     "src/orchestrator/monitor.ts",
@@ -39,19 +39,14 @@ describe("TRD-NF-005: key migrated modules have test coverage", () => {
   }
 
   it("cli command tests exist for run.ts", () => {
-    const testPath = resolve(ROOT, "src/cli/__tests__/run-backend.test.ts");
+    const testPath = resolve(ROOT, "src/cli/__tests__/run-runtime-mode.test.ts");
     expect(existsSync(testPath)).toBe(true);
   });
 
-  it("cli command tests exist for reset.ts", () => {
-    const testPath = resolve(ROOT, "src/cli/__tests__/reset-br-backend.test.ts");
-    expect(existsSync(testPath)).toBe(true);
-  });
-
-  it("sling command tests exist for TRD-021/TRD-022", () => {
-    const dep = resolve(ROOT, "src/cli/__tests__/sling-sd-only-deprecation.test.ts");
-    const def = resolve(ROOT, "src/cli/__tests__/sling-br-default.test.ts");
-    expect(existsSync(dep)).toBe(true);
-    expect(existsSync(def)).toBe(true);
+  it("sling command tests exist", () => {
+    const command = resolve(ROOT, "src/cli/__tests__/sling-command-context.test.ts");
+    const parser = resolve(ROOT, "src/cli/__tests__/sling.test.ts");
+    expect(existsSync(command)).toBe(true);
+    expect(existsSync(parser)).toBe(true);
   });
 });

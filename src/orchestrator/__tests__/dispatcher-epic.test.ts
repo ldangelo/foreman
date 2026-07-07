@@ -1,9 +1,9 @@
 /**
- * dispatcher-epic.test.ts — Tests for TRD-006: epic bead dispatch logic.
+ * dispatcher-epic.test.ts — Tests for TRD-006: epic task dispatch logic.
  *
  * Verifies current native-task behavior:
  *  1. Epic tasks dispatch as single-agent tasks
- *  2. Task beads dispatch through standard path
+ *  2. Task tasks dispatch through standard path
  *  3. Empty epics still dispatch as ordinary tasks
  *  4. Epic counts as 1 agent slot
  */
@@ -47,12 +47,12 @@ vi.mock("../../lib/vcs/git-backend.js", () => ({
 
 vi.mock("../../lib/worktree-manager.js", () => ({
   WorktreeManager: class {
-    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
+    async createWorktree(opts: { projectId: string; taskId: string; repoPath: string; baseBranch?: string }) {
       return {
         projectId: opts.projectId,
-        beadId: opts.beadId,
-        branchName: `foreman/${opts.beadId}`,
-        path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`,
+        taskId: opts.taskId,
+        branchName: `foreman/${opts.taskId}`,
+        path: `/tmp/worktrees/${opts.projectId}/${opts.taskId}`,
         exists: false,
       };
     }
@@ -93,8 +93,8 @@ vi.mock("../pi-rpc-spawn-strategy.js", () => ({
   isPiAvailable: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock("../../lib/beads-rust.js", () => ({
-  BeadsRustClient: class {
+vi.mock("../../lib/task-client.js", () => ({
+  TaskClient: class {
     async show(_id: string): Promise<never> { throw new Error("not found"); }
   },
 }));
@@ -167,7 +167,7 @@ function makeStore(): ForemanStore {
     updateRun: vi.fn(),
     logEvent: vi.fn(),
     sendMessage: vi.fn(),
-    getPendingBeadWrites: vi.fn().mockReturnValue([]),
+    getPendingTaskWrites: vi.fn().mockReturnValue([]),
   } as unknown as ForemanStore;
 }
 
@@ -189,7 +189,7 @@ function makeTasksClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
+describe("Dispatcher — Epic Task Detection (TRD-006)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -227,7 +227,7 @@ describe("Dispatcher — Epic Bead Detection (TRD-006)", () => {
     expect(epicId).toBeUndefined();
   });
 
-  it("task bead dispatches via standard path without epicTasks", async () => {
+  it("task task dispatches via standard path without epicTasks", async () => {
     const taskIssue = makeIssue("task-1", "task");
     const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([taskIssue]),

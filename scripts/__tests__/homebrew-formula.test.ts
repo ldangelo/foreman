@@ -6,7 +6,7 @@
  * - Platform-specific URLs cover all 4 Unix targets (darwin-arm64, darwin-x64, linux-x64, linux-arm64)
  * - SHA256 placeholders are present (to be auto-updated by CI)
  * - The formula installs the binary to bin/
- * - Caveats mention required dependencies (br, ANTHROPIC_API_KEY)
+ * - Caveats mention required dependencies (ANTHROPIC_API_KEY)
  * - Test block is present for brew test
  */
 
@@ -114,7 +114,7 @@ describe("Homebrew formula content", () => {
 
   it("has caveats method mentioning required dependencies", () => {
     expect(content).toContain("def caveats");
-    expect(content).toContain("br");
+    expect(content).toContain("foreman");
     expect(content).toContain("ANTHROPIC_API_KEY");
   });
 

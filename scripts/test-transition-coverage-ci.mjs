@@ -10,7 +10,7 @@ const transitionSummaryPath = join(coverageDir, "transition-scope-summary.json")
 
 const nodeFrontendScope = [
   "src/cli/commands/attach.ts",
-  "src/cli/commands/bead.ts",
+  "src/cli/commands/task.ts",
   "src/cli/commands/cli-output.ts",
   "src/cli/commands/daemon.ts",
   "src/cli/commands/debug.ts",
@@ -35,9 +35,7 @@ const nodeFrontendScope = [
   "src/cli/commands/worktree.ts",
   "src/lib/archive-reports.ts",
   "src/lib/backend-mode.ts",
-  "src/lib/beads-rust.ts",
   "src/lib/branch-label.ts",
-  "src/lib/bv.ts",
   "src/lib/controller-paths.ts",
   "src/lib/elixir-server-client.ts",
   "src/lib/elixir-server-manager.ts",

@@ -9,7 +9,7 @@ import { MigrationBuilder } from "node-pg-migrate";
  *
  * Key design decisions:
  * - project_id is the primary isolation boundary — all queries include it.
- * - id is TEXT (bead UUID) to match native task store compatibility.
+ * - id is TEXT (task UUID) to match native task store compatibility.
  * - external_id is unique per project (not globally), allowing the same Jira/Linear ID
  *   in different projects without conflict.
  * - status CHECK mirrors the Postgres constraint for consistency.
@@ -25,7 +25,7 @@ export const up = (pgm: MigrationBuilder) => {
       type: "text",
       primaryKey: true,
       notNull: true,
-      comment: "Bead/task UUID (e.g. bd-xxxx). Matches native task store.",
+      comment: "Task/task UUID (e.g. bd-xxxx). Matches native task store.",
     },
     project_id: {
       type: "uuid",
@@ -42,7 +42,7 @@ export const up = (pgm: MigrationBuilder) => {
     description: {
       type: "text",
       notNull: false,
-      comment: "Optional description/bead body",
+      comment: "Optional description/task body",
     },
     type: {
       type: "varchar(32)",

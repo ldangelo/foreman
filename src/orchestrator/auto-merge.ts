@@ -18,8 +18,8 @@ import type { VcsBackend } from "../lib/vcs/interface.js";
 import { MergeQueue, RETRY_CONFIG } from "./merge-queue.js";
 import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { Refinery } from "./refinery.js";
-import { mapRunStatusToTaskStatus, mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
-import { enqueueMarkBeadFailed, enqueueAddNotesToBead } from "./task-backend-ops.js";
+import { mapRunStatusToNativeTaskStatus } from "../lib/run-status.js";
+import { enqueueMarkTaskFailed, enqueueAddNotesToTask } from "./task-backend-ops.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -61,14 +61,14 @@ function sendMail(
  * Immediately sync a task's status in the native task store after a merge outcome.
  *
  * Fetches the latest run status from Postgres, maps it to the expected task
- * status via mapRunStatusToTaskStatus(), and updates the native task store.
+ * status via mapRunStatusToNativeTaskStatus(), and updates the native task store.
  *
  * When `failureReason` is provided (non-empty), logs it (native task store
  * does not have a notes field for failure context).
  *
  * Non-fatal — logs a warning on failure and lets the caller continue.
  */
-export async function syncBeadStatusAfterMerge(
+export async function syncTaskStatusAfterMerge(
   store: ForemanStore,
   taskClient: ITaskClient,
   runId: string,
@@ -92,7 +92,7 @@ export async function syncBeadStatusAfterMerge(
   await Promise.resolve(store.updateTaskStatus(taskId, expectedStatus));
 
   if (failureReason) {
-    enqueueAddNotesToBead(store, taskId, failureReason, "auto-merge");
+    enqueueAddNotesToTask(store, taskId, failureReason, "auto-merge");
   }
 }
 
@@ -175,10 +175,10 @@ function wrapLocalMergeQueue(queue: MergeQueue, store: ForemanStore, projectPath
  *
  * Sends mail notifications for each merge outcome so that `foreman inbox` shows
  * the full lifecycle from dispatch through merge:
- *   - merge-complete  — branch merged successfully, bead closed
+ *   - merge-complete  — branch merged successfully, task closed
  *   - merge-conflict  — conflict detected, PR created or manual intervention needed
  *   - merge-failed    — merge failed (test failures, no completed run, or unexpected error)
- *   - bead-closed     — bead status synced in br after merge outcome
+ *   - task-closed     — task status synced in native task store after merge outcome
  *
  * Note: Refinery also sends per-run merge lifecycle messages. autoMerge sends
  * wrapper-level messages from sender "auto-merge" to provide queue-level context.
@@ -232,11 +232,11 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   let entry = await mq.dequeue();
   while (entry) {
     const currentEntry = entry;
-    // Track the failure reason to attach as a bead note (if any failure occurs).
+    // Track the failure reason to attach as a task note (if any failure occurs).
     // Declared outside try/catch so it's accessible in the finally block.
     let mergeFailureReason: string | undefined;
     // Track whether this queue entry resulted in a successful merge so that
-    // bead-closed mail is only sent on actual success (Fix 2).
+    // task-closed mail is only sent on actual success (Fix 2).
     let mergeSucceeded = false;
 
     // Determine merge intent from the queue entry first, falling back to the
@@ -268,7 +268,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
           bodyNote: "Manual PR created by Foreman",
         });
         await mq.updateStatus(currentEntry.id, 'merged', { completedAt: new Date().toISOString() });
-        await syncBeadStatusAfterMerge(
+        await syncTaskStatusAfterMerge(
           store,
           taskClient,
           currentEntry.run_id,
@@ -340,7 +340,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         conflictCount += conflictsForEntry;
         if (target && currentEntry.run_id === target.runId) target.conflicts += conflictsForEntry;
 
-        // Build failure reason for the bead note
+        // Build failure reason for the task note
         if (report.conflicts.length > 0) {
           const files = report.conflicts.flatMap((c) => c.conflictFiles).slice(0, 10);
           mergeFailureReason = `Merge conflict detected in branch foreman/${currentEntry.task_id}.\nConflicting files:\n${files.map((f) => `  - ${f}`).join("\n") || "  (no file details available)"}`;
@@ -374,8 +374,8 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         const totalTestFailCount = testFailedRunsForTask.length;
 
         if (totalTestFailCount >= RETRY_CONFIG.maxRetries) {
-          // Retry limit exhausted — permanently mark the bead as failed.
-          enqueueMarkBeadFailed(store, currentEntry.task_id, "auto-merge");
+          // Retry limit exhausted — permanently mark the task as failed.
+          enqueueMarkTaskFailed(store, currentEntry.task_id, "auto-merge");
           mergeFailureReason = [
             `Post-merge tests failed ${totalTestFailCount} time(s) — retry limit (${RETRY_CONFIG.maxRetries}) exhausted.`,
             `Pre-existing failures on the dev branch may be causing false positives.`,
@@ -439,10 +439,10 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         error: message.slice(0, 400),
       });
     } finally {
-      // Sync bead status after every merge outcome (success or failure).
-      // Pass mergeFailureReason so the bead gets a note explaining the failure.
-      // Always runs — ensures br reflects the latest run status immediately.
-      await syncBeadStatusAfterMerge(
+      // Sync task status after every merge outcome (success or failure).
+      // Pass mergeFailureReason so the task gets a note explaining the failure.
+      // Always runs — ensures native task store reflects the latest run status immediately.
+      await syncTaskStatusAfterMerge(
         store,
         taskClient,
         currentEntry.run_id,
@@ -452,11 +452,11 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
         readLookup,
       );
 
-      // Send bead-closed mail only when the merge actually succeeded.
+      // Send task-closed mail only when the merge actually succeeded.
       // Sending it on failure paths creates a misleading inbox entry where the
-      // bead shows OPEN in br but "closed" in pipeline mail (Fix 2).
+      // task shows OPEN in native task store but "closed" in pipeline mail (Fix 2).
       if (mergeSucceeded) {
-        sendMail(store, currentEntry.run_id, "bead-closed", {
+        sendMail(store, currentEntry.run_id, "task-closed", {
           taskId: currentEntry.task_id,
         });
       }

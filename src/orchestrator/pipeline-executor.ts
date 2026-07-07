@@ -136,11 +136,11 @@ export interface PipelineObservabilityWriter {
 
 /** A child task within an epic pipeline run. */
 export interface EpicTask {
-  /** Bead/task ID of the child task. */
+  /** Task/task ID of the child task. */
   taskId: string;
-  /** Title of the child task bead. */
+  /** Title of the child task task. */
   taskTitle: string;
-  /** Description of the child task bead. */
+  /** Description of the child task task. */
   taskDescription?: string;
   /** GitHub issue number for this task (from github_issue_number field). */
   githubIssueNumber?: number;
@@ -156,7 +156,7 @@ export interface PipelineRunConfig {
   taskType?: string;
   taskLabels?: string[];
   /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Task priority string ("P0"–"P4", "0"–"4", or undefined).
    * Used to select the per-priority model from the workflow YAML models map.
    */
   taskPriority?: string;
@@ -182,7 +182,7 @@ export interface PipelineRunConfig {
    */
   nativeTaskId?: string | null;
   /**
-   * Parent epic bead ID. When set, this run is part of an epic execution.
+   * Parent epic task ID. When set, this run is part of an epic execution.
    * Used to link child task results back to the parent epic.
    */
   epicId?: string;
@@ -255,19 +255,19 @@ export interface PipelineContext {
   /** Prompt loader options */
   promptOpts: { projectRoot: string; workflow: string };
   /**
-   * Epic mode callback: update a child task bead's status.
+   * Epic mode callback: update a child task task's status.
    * Called when a task starts (in_progress) or completes (closed/failed).
    */
   onTaskStatusChange?: (taskTaskId: string, status: "in_progress" | "completed" | "failed") => Promise<void>;
   /**
-   * Epic mode callback: create a bug bead when QA fails on a task.
-   * Returns the created bug bead ID, or undefined if creation fails.
+   * Epic mode callback: create a bug task when QA fails on a task.
+   * Returns the created bug task ID, or undefined if creation fails.
    */
   onTaskQaFailure?: (taskTaskId: string, taskTitle: string, epicId: string) => Promise<string | undefined>;
   /**
-   * Epic mode callback: close a bug bead when QA passes after retry.
+   * Epic mode callback: close a bug task when QA passes after retry.
    */
-  onTaskQaPass?: (bugBeadId: string) => Promise<void>;
+  onTaskQaPass?: (bugTaskId: string) => Promise<void>;
   /**
    * Called when a rate limit (429) is detected.
    * Used for alerting (P1) and per-model rate limit tracking (P2).
@@ -957,7 +957,7 @@ function detectCompletedTasks(worktreePath: string): Set<string> {
  * between, then finalPhases once at the end.
  *
  * Resume support (TRD-009): on re-dispatch, parses git log to find
- * already-committed task bead IDs and skips them.
+ * already-committed task task IDs and skips them.
  */
 async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const { config, workflowConfig, store, logFile } = ctx;
@@ -1019,7 +1019,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   const completedTaskIds: string[] = [];
 
   // ── Outer task loop ──────────────────────────────────────────────────
-  const activeBugBeadIds = new Map<string, string>();
+  const activeBugTaskIds = new Map<string, string>();
 
   for (let taskIdx = 0; taskIdx < epicTasks.length; taskIdx++) {
     const task = epicTasks[taskIdx];
@@ -1031,7 +1031,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     totalProgress.epicCurrentTaskId = task.taskId;
     await writeNormalPhaseProgress(store, runId, totalProgress, ctx.observabilityWriter);
 
-    // TRD-011: Mark task bead as in_progress
+    // TRD-011: Mark task task as in_progress
     if (ctx.onTaskStatusChange) {
       await ctx.onTaskStatusChange(task.taskId, "in_progress").catch(() => {});
     }
@@ -1072,12 +1072,12 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       completedCount++;
       completedTaskIds.push(task.taskId);
 
-      // TRD-010: Close bug bead if QA passed after retry
-      const activeBugBeadId = activeBugBeadIds.get(task.taskId);
-      if (activeBugBeadId && ctx.onTaskQaPass) {
-        await ctx.onTaskQaPass(activeBugBeadId).catch(() => {});
+      // TRD-010: Close bug task if QA passed after retry
+      const activeBugTaskId = activeBugTaskIds.get(task.taskId);
+      if (activeBugTaskId && ctx.onTaskQaPass) {
+        await ctx.onTaskQaPass(activeBugTaskId).catch(() => {});
       }
-      activeBugBeadIds.delete(task.taskId);
+      activeBugTaskIds.delete(task.taskId);
 
       // Commit after each successful task (epic mode: one commit per task)
       if (config.vcsBackend) {
@@ -1091,7 +1091,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
         }
       }
 
-      // TRD-011: Mark task bead as completed
+      // TRD-011: Mark task task as completed
       if (ctx.onTaskStatusChange) {
         await ctx.onTaskStatusChange(task.taskId, "completed").catch(() => {});
       }
@@ -1107,16 +1107,16 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
     } else {
       failedCount++;
 
-      // TRD-010: Create bug bead on QA failure
+      // TRD-010: Create bug task on QA failure
       if (result.retriesExhausted && ctx.onTaskQaFailure && config.epicId) {
-        const activeBugBeadId = await ctx.onTaskQaFailure(task.taskId, task.taskTitle, config.epicId).catch(() => undefined);
-        if (activeBugBeadId) {
-          activeBugBeadIds.set(task.taskId, activeBugBeadId);
-          ctx.log(`[EPIC] Created bug bead ${activeBugBeadId} for QA failure on ${task.taskId}`);
+        const activeBugTaskId = await ctx.onTaskQaFailure(task.taskId, task.taskTitle, config.epicId).catch(() => undefined);
+        if (activeBugTaskId) {
+          activeBugTaskIds.set(task.taskId, activeBugTaskId);
+          ctx.log(`[EPIC] Created bug task ${activeBugTaskId} for QA failure on ${task.taskId}`);
         }
       }
 
-      // TRD-011: Mark task bead as failed
+      // TRD-011: Mark task task as failed
       if (ctx.onTaskStatusChange) {
         await ctx.onTaskStatusChange(task.taskId, "failed").catch(() => {});
       }

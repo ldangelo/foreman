@@ -386,7 +386,7 @@ export interface PollSummary {
  *
  * Called from:
  * - Refinery.closeNativeTaskPostMerge() — after native task merge
- * - syncBeadStatusAfterMerge() in auto-merge.ts — after beads task merge
+ * - syncTaskStatusAfterMerge() in auto-merge.ts — after tasks task merge
  *
  * Idempotent: closing an already-closed issue is a no-op in GitHub's API.
  * Errors are logged but not thrown — closing the linked issue must not block

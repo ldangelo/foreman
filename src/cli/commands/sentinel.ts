@@ -270,7 +270,7 @@ sentinelCommand
       } else if (projectConfig?.issueTracker?.backend === "github") {
         console.log(chalk.dim("  Issue tracker: GitHub (issue sync enabled)"));
       } else {
-        console.log(chalk.dim("  Issue tracker: native task store / beads"));
+        console.log(chalk.dim("  Issue tracker: native task store / tasks"));
       }
       const intervalMinutes = parseInt(opts.interval as string, 10);
       const failureThreshold = parseInt(opts.failureThreshold as string, 10);

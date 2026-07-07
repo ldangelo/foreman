@@ -28,11 +28,11 @@ describe("attach daemon helpers", () => {
     vi.restoreAllMocks();
   });
 
-  it("adapts daemon run statuses and falls back the worktree path from bead id", () => {
+  it("adapts daemon run statuses and falls back the worktree path from task id", () => {
     const success = adaptDaemonRun({
       id: "run-1",
       project_id: "proj-1",
-      bead_id: "task-1",
+      task_id: "task-1",
       status: "success",
       branch: "foreman/task-1",
       agent_type: null,
@@ -49,7 +49,7 @@ describe("attach daemon helpers", () => {
     const cancelled = adaptDaemonRun({
       id: "run-2",
       project_id: "proj-1",
-      bead_id: "task-2",
+      task_id: "task-2",
       status: "cancelled",
       branch: "foreman/task-2",
       agent_type: "developer",
@@ -66,7 +66,7 @@ describe("attach daemon helpers", () => {
     const unknown = adaptDaemonRun({
       id: "run-3",
       project_id: "proj-1",
-      bead_id: "task-3",
+      task_id: "task-3",
       status: "mystery",
       branch: "foreman/task-3",
       agent_type: "qa",
@@ -106,7 +106,7 @@ describe("attach daemon helpers", () => {
     await expect(resolveDaemonAttachContext("/repo")).resolves.toBeNull();
   });
 
-  it("resolves daemon runs by exact id, prefix, bead id, or returns null", async () => {
+  it("resolves daemon runs by exact id, prefix, task id, or returns null", async () => {
     const context = {
       client: {
         runs: {
@@ -114,7 +114,7 @@ describe("attach daemon helpers", () => {
             {
               id: "run-1111",
               project_id: "proj-1",
-              bead_id: "task-1",
+              task_id: "task-1",
               status: "running",
               branch: "foreman/task-1",
               agent_type: "developer",
@@ -131,7 +131,7 @@ describe("attach daemon helpers", () => {
             {
               id: "run-2222",
               project_id: "proj-1",
-              bead_id: "task-2",
+              task_id: "task-2",
               status: "failure",
               branch: "foreman/task-2",
               agent_type: "developer",
@@ -192,7 +192,7 @@ describe("attach daemon helpers", () => {
         runs: { get: vi.fn().mockResolvedValue({
           id: "run-1",
           project_id: "proj-1",
-          bead_id: "task-1",
+          task_id: "task-1",
           status: "success",
           branch: "foreman/task-1",
           agent_type: "developer",
@@ -228,8 +228,8 @@ describe("attach daemon helpers", () => {
             { id: "msg-2", run_id: "run-1", sender_agent_type: "developer", recipient_agent_type: "qa", subject: "second", body: "plain text", read: 0, created_at: "2026-01-01T00:01:00.000Z", deleted_at: null },
           ]) },
         runs: { get: vi.fn()
-          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", bead_id: "task-1", status: "running", branch: "foreman/task-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: null, created_at: "2026-01-01T00:00:00.000Z" })
-          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", bead_id: "task-1", status: "success", branch: "foreman/task-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: "2026-01-01T00:02:00.000Z", created_at: "2026-01-01T00:00:00.000Z" }) },
+          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", task_id: "task-1", status: "running", branch: "foreman/task-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: null, created_at: "2026-01-01T00:00:00.000Z" })
+          .mockResolvedValueOnce({ id: "run-1", project_id: "proj-1", task_id: "task-1", status: "success", branch: "foreman/task-1", agent_type: "developer", session_key: null, worktree_path: "/tmp/wt", progress: null, base_branch: null, merge_strategy: null, queued_at: "2026-01-01T00:00:00.000Z", started_at: "2026-01-01T00:01:00.000Z", finished_at: "2026-01-01T00:02:00.000Z", created_at: "2026-01-01T00:00:00.000Z" }) },
       },
     } as any;
     const run = { id: "run-1", task_id: "task-1", status: "running", worktree_path: "/tmp/wt" } as any;

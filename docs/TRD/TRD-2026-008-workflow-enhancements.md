@@ -55,7 +55,7 @@ agent-worker.ts / auto-merge.ts / refinery.ts
 
 ```
 Dispatch:
-  bead.type → resolveWorkflowName() → loadWorkflowConfig(name)
+  task.type → resolveWorkflowName() → loadWorkflowConfig(name)
                                          ↓
                                     WorkflowConfig.phases → derive runs.merge_strategy
                                     WorkflowConfig.phases → pipeline-executor
@@ -165,10 +165,10 @@ Write vitest tests for:
 
 **Validates PRD ACs:** AC-008-1, AC-008-2
 
-Define a `TaskMeta` interface (`{ id: string; title: string; description: string; type: string; priority: number }`) in `src/lib/interpolate.ts`. Add a `taskMeta: TaskMeta` field to the `WorkerConfig` / `PipelineContext` types. In the dispatcher, populate `taskMeta` from the bead's metadata when spawning. In the pipeline executor, pass `taskMeta` to `interpolateTaskPlaceholders()` when executing `bash:` or `command:` phases.
+Define a `TaskMeta` interface (`{ id: string; title: string; description: string; type: string; priority: number }`) in `src/lib/interpolate.ts`. Add a `taskMeta: TaskMeta` field to the `WorkerConfig` / `PipelineContext` types. In the dispatcher, populate `taskMeta` from the task's metadata when spawning. In the pipeline executor, pass `taskMeta` to `interpolateTaskPlaceholders()` when executing `bash:` or `command:` phases.
 
 **Implementation ACs:**
-- Given a dispatched bead with title "Fix login timeout", when the pipeline executor runs a command phase, then `ctx.taskMeta.title` is `"Fix login timeout"`.
+- Given a dispatched task with title "Fix login timeout", when the pipeline executor runs a command phase, then `ctx.taskMeta.title` is `"Fix login timeout"`.
 - Given a PipelineContext without taskMeta (legacy runs), when a phase tries to interpolate, then placeholders are left as-is with a warning.
 
 [depends: TRD-003]
@@ -179,7 +179,7 @@ Define a `TaskMeta` interface (`{ id: string; title: string; description: string
 [verifies TRD-010] [satisfies REQ-008] [depends: TRD-010]
 
 Write vitest tests:
-- WorkerConfig with taskMeta populated from bead — fields match
+- WorkerConfig with taskMeta populated from task — fields match
 - PipelineContext passes taskMeta to interpolation
 - Missing taskMeta (null/undefined) — graceful fallback with warning
 
@@ -268,7 +268,7 @@ Write vitest tests:
 Modify `resolveWorkflowName()` in `workflow-loader.ts`:
 1. Keep existing label check first (`workflow:<name>` label)
 2. Remove hardcoded `smoke` and `epic` checks
-3. Map bead type directly to workflow name (e.g., `"bug"` → `"bug"`)
+3. Map task type directly to workflow name (e.g., `"bug"` → `"bug"`)
 4. Check if workflow file exists in `.foreman/workflows/` or bundled defaults
 5. If file exists, return the type name; if not, return `"default"`
 
@@ -363,7 +363,7 @@ phases:
 ```
 
 **Implementation ACs:**
-- Given a bead of type `bug`, when dispatched, then `bug.yaml` is selected and the pipeline runs fix → test → finalize → auto-merge.
+- Given a task of type `bug`, when dispatched, then `bug.yaml` is selected and the pipeline runs fix → test → finalize → auto-merge.
 
 [depends: TRD-001, TRD-004, TRD-005, TRD-006]
 
@@ -374,7 +374,7 @@ phases:
 
 Write an integration test that:
 1. Creates a temp project with `.foreman/workflows/bug.yaml`
-2. Creates a bead of type `bug`
+2. Creates a task of type `bug`
 3. Dispatches it — verifies `bug.yaml` is selected
 4. Runs through a mock pipeline: command phase → bash phase → finalize
 5. Verifies merge strategy is respected
@@ -438,7 +438,7 @@ team:
 | REQ-003 | Phase type resolution | TRD-001 | TRD-001-TEST |
 | REQ-004 | Per-workflow merge strategy | TRD-001, TRD-007 | TRD-001-TEST, TRD-007-TEST, TRD-009 |
 | REQ-005 | Merge strategy propagation | TRD-002, TRD-007 | TRD-002-TEST, TRD-007-TEST |
-| REQ-006 | Workflow resolution by bead type | TRD-006 | TRD-006-TEST, TRD-009 |
+| REQ-006 | Workflow resolution by task type | TRD-006 | TRD-006-TEST, TRD-009 |
 | REQ-007 | Workflow file discovery | TRD-006 | TRD-006-TEST |
 | REQ-008 | Task metadata interpolation | TRD-003, TRD-010 | TRD-003-TEST, TRD-010-TEST |
 

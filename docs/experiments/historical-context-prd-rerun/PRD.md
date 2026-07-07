@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-Foreman is migrating from the **beads-first architecture** (beads_rust `br` as the sole task store) to **native task management** (Postgres-backed tasks in `foreman.db`, multi-project support). During this transition, many documents describe the older system state. Readers need an immediate visual signal to distinguish archived design documents from current operating procedures.
+Foreman is migrating from the **tasks-first architecture** (native task store `native task store` as the sole task store) to **native task management** (Postgres-backed tasks in `foreman.db`, multi-project support). During this transition, many documents describe the older system state. Readers need an immediate visual signal to distinguish archived design documents from current operating procedures.
 
 **This PRD defines a Historical Context Banner System** that injects standardized notices into archived documents while leaving active operator docs untouched.
 
@@ -22,9 +22,9 @@ Foreman's `docs/` directory contains three types of documents:
 
 1. **Active operator docs** — current procedures and references
 2. **Draft PRDs/TRDs** — describing current work
-3. **Legacy and comparison docs** — describing beads-first era
+3. **Legacy and comparison docs** — describing tasks-first era
 
-Readers landing on legacy documents (e.g., `migration-tasks-to-br.md`, `Overstory_comparison.md`) have no immediate signal that these describe an older system state. This causes:
+Readers landing on legacy documents (e.g., `migration-tasks-to-native task store.md`, `Overstory_comparison.md`) have no immediate signal that these describe an older system state. This causes:
 - Confusion about current vs. historical behavior
 - Operators following archived instructions that no longer apply
 - Difficulty onboarding contributors
@@ -39,23 +39,23 @@ Readers landing on legacy documents (e.g., `migration-tasks-to-br.md`, `Overstor
 
 | Directory | Archival? | Rationale |
 |-----------|-----------|-----------|
-| `docs/` (root) | **Yes** | Contains legacy comparison docs, migration guides, draft PRDs from beads-first era |
-| `docs/PRD/` | **Partial** | Draft PRDs describing beads-first era need banners; PRD-2026-007 describes current architecture (excluded) |
+| `docs/` (root) | **Yes** | Contains legacy comparison docs, migration guides, draft PRDs from tasks-first era |
+| `docs/PRD/` | **Partial** | Draft PRDs describing tasks-first era need banners; PRD-2026-007 describes current architecture (excluded) |
 | `docs/PRD/completed/` | **Yes** | Historical PRD artifacts from completed initiatives |
 | `docs/TRD/` | **Partial** | TRDs prior to TRD-2026-006 need review; TRD-2026-007 describes current architecture (excluded) |
 | `docs/guides/` | **No — Never** | All guides describe current operating procedures |
 | `docs/standards/` | **No — Never** | Active standards documents |
 
-**Decision Rule:** Any document that references beads-first as the default/proposed architecture, references `tasks` (`sd`) as an active backend option, or pre-dates the native task management initiative is a candidate for archival status.
+**Decision Rule:** Any document that references tasks-first as the default/proposed architecture, references `tasks` (`sd`) as an active backend option, or pre-dates the native task management initiative is a candidate for archival status.
 
 ### Q2: What Should the Banner Text Say?
 
 | Variant | Trigger | Canonical Text |
 |---------|---------|----------------|
-| `standard` | Default archival | ⚠️ Historical Context — describes beads-first architecture superseded by native task management (TRD-2026-006) |
+| `standard` | Default archival | ⚠️ Historical Context — describes tasks-first architecture superseded by native task management (TRD-2026-006) |
 | `comparison` | Compares Foreman to external tools | + Comparisons to external tools reflect Foreman at a specific historical point and may be outdated. |
 | `migration` | Migration guide | + This migration guide is preserved for historical reference. See TRD-2026-006 for current task management architecture. |
-| `beads-rust-only` | Deprecated BeadsRustClient era | + The BeadsRustClient is deprecated. See TRD-2026-019 for deprecation schedule. |
+| `task-client-only` | Deprecated TaskClient era | + The TaskClient is deprecated. See TRD-2026-019 for deprecation schedule. |
 
 **Exact banner text is maintained in [banner-variants.json](./banner-variants.json).**
 
@@ -89,7 +89,7 @@ Readers landing on legacy documents (e.g., `migration-tasks-to-br.md`, `Overstor
 
 | ID | Criterion | Verification |
 |----|-----------|--------------|
-| UC-1 | New contributor reading `migration-tasks-to-br.md` immediately understands it describes a past migration | Banner visible on first 5 lines |
+| UC-1 | New contributor reading `migration-tasks-to-native task store.md` immediately understands it describes a past migration | Banner visible on first 5 lines |
 | UC-2 | Reader of `Overstory_comparison.md` sees Comparison variant with tool-specific notice | Comparison variant used, not standard |
 | UC-3 | Banner text is scannable — no more than 4-6 lines | Visual inspection |
 
@@ -117,7 +117,7 @@ Readers landing on legacy documents (e.g., `migration-tasks-to-br.md`, `Overstor
 
 | File | Variant | Status |
 |------|---------|--------|
-| `docs/migration-tasks-to-br.md` | migration | ✅ Injected |
+| `docs/migration-tasks-to-native task store.md` | migration | ✅ Injected |
 | `docs/Overstory_comparison.md` | comparison | ✅ Injected |
 | `docs/flywheel_comparison.md` | comparison | ✅ Injected |
 | `docs/mail-transport-plan.md` | standard | ✅ Injected |
@@ -125,7 +125,7 @@ Readers landing on legacy documents (e.g., `migration-tasks-to-br.md`, `Overstor
 | `docs/PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md` | standard | ✅ Injected |
 | `docs/TRD/TRD-2026-004-vcs-backend-abstraction.md` | standard | ✅ Injected |
 | `docs/TRD/TRD-2026-005-mid-pipeline-rebase.md` | standard | ✅ Injected |
-| `docs/TRD/tasks-to-br-bv-migration.md` | comparison | ✅ Injected |
+| `docs/TRD/tasks-to-native task store-native task ordering-migration.md` | comparison | ✅ Injected |
 
 ### Explicitly Excluded (active docs — zero banners)
 
@@ -183,7 +183,7 @@ npx tsx docs/experiments/historical-context-prd-rerun/validate-historical-banner
 | ID | Question | Disposition |
 |----|----------|-------------|
 | OQ-1 | Manual vs. auto-generated manifest? | **Manual** — human review per document is correct for this scale |
-| OQ-2 | Should `docs/TRD/tasks-to-br-bv-migration.md` get a banner? | **Yes** — apply `comparison` variant |
+| OQ-2 | Should `docs/TRD/tasks-to-native task store-native task ordering-migration.md` get a banner? | **Yes** — apply `comparison` variant |
 | OQ-3 | Does the pre-commit hook block or warn? | **Warn locally, fail CI** |
 | OQ-4 | How to handle TRDs with frontmatter? | Banner goes after frontmatter `---` closing delimiter |
 

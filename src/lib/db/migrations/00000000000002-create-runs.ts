@@ -22,7 +22,7 @@ export async function up(migration: MigrationBuilder): Promise<void> {
       type: "uuid",
       notNull: true,
     },
-    bead_id: {
+    task_id: {
       type: "varchar(255)",
       notNull: true,
     },
@@ -47,7 +47,7 @@ export async function up(migration: MigrationBuilder): Promise<void> {
       type: "varchar(32)",
       notNull: true,
       default: "'manual'",
-      check: "trigger IN ('push','pr','manual','schedule','bead')",
+      check: "trigger IN ('push','pr','manual','schedule','task')",
     },
     queued_at: {
       type: "timestamp with time zone",
@@ -82,12 +82,12 @@ export async function up(migration: MigrationBuilder): Promise<void> {
     },
   });
 
-  migration.addConstraint("runs", "runs_unique_bead_run_number", {
-    unique: ["bead_id", "run_number"],
+  migration.addConstraint("runs", "runs_unique_task_run_number", {
+    unique: ["task_id", "run_number"],
   });
 
   migration.createIndex("runs", "project_id", { ifNotExists: true });
-  migration.createIndex("runs", "bead_id", { ifNotExists: true });
+  migration.createIndex("runs", "task_id", { ifNotExists: true });
   migration.createIndex("runs", "status", { ifNotExists: true });
 
   // Tasks table exists from the previous migration, but its run_id foreign key
@@ -123,7 +123,7 @@ export async function up(migration: MigrationBuilder): Promise<void> {
     event_type: {
       type: "varchar(64)",
       notNull: true,
-      check: "event_type IN ('run:queued','run:started','run:success','run:failure','run:cancelled','task:claimed','task:approved','task:rejected','task:reset','bead:synced','bead:conflict')",
+      check: "event_type IN ('run:queued','run:started','run:success','run:failure','run:cancelled','task:claimed','task:approved','task:rejected','task:reset','task:synced','task:conflict')",
     },
     payload: {
       type: "jsonb",

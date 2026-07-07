@@ -36,7 +36,7 @@ readiness_score: 4.25
 
 ## 1. Executive Summary
 
-Foreman currently treats every bead identically: one worktree, one 5-phase pipeline (explorer → developer → QA → reviewer → finalize), one merge. This model adds massive overhead for epics with many interdependent tasks — TRD-2026-006 (40 tasks) ran for 24+ hours at ~50% success rate, burning money on worktree setup, redundant exploration, merge-time test failures, and retry loops.
+Foreman currently treats every task identically: one worktree, one 5-phase pipeline (explorer → developer → QA → reviewer → finalize), one merge. This model adds massive overhead for epics with many interdependent tasks — TRD-2026-006 (40 tasks) ran for 24+ hours at ~50% success rate, burning money on worktree setup, redundant exploration, merge-time test failures, and retry loops.
 
 Epic Execution Mode introduces a second dispatch path: epics run as sequential task sessions in a single shared worktree, with a lightweight developer→QA loop per task. Tasks execute in dependency order, commits happen per-task, and push/merge happens only when the epic completes. The existing 5-phase pipeline remains for one-off tasks.
 
@@ -63,12 +63,12 @@ Epic Execution Mode introduces a second dispatch path: epics run as sequential t
 - Maintain the existing 5-phase pipeline for one-off tasks (backward compatible)
 - Support multiple epics running in parallel on separate worktrees
 - Resume from the last completed task after a crash or rate limit
-- Provide per-task progress visibility and traceability via beads
+- Provide per-task progress visibility and traceability via tasks
 
 ### Non-Goals
 - Replacing the 5-phase pipeline entirely (it's appropriate for one-off, high-risk changes)
 - Cross-epic task parallelism (tasks within an epic are sequential by design)
-- Automatic TRD parsing (use `foreman sling` to create beads first, then dispatch the epic)
+- Automatic TRD parsing (use `foreman sling` to create tasks first, then dispatch the epic)
 - Multi-agent collaboration within an epic (one agent session handles the full epic)
 
 ## 4. User Personas
@@ -86,7 +86,7 @@ Epic Execution Mode introduces a second dispatch path: epics run as sequential t
                     ┌─────────────────────────────────┐
                     │         Dispatcher               │
                     │                                   │
-                    │  Epic bead? ──yes──► Epic Runner  │
+                    │  Epic task? ──yes──► Epic Runner  │
                     │      │                    │       │
                     │      no           shared worktree │
                     │      │            task 1 → task N │
@@ -96,20 +96,20 @@ Epic Execution Mode introduces a second dispatch path: epics run as sequential t
                     └─────────────────────────────────┘
 ```
 
-**Epic Runner** creates one worktree, loads the epic's child tasks in dependency order (via `bv --robot-next` or topological sort), and executes each task through a lightweight developer→QA loop. On QA failure, it creates a bug bead for traceability and loops back to developer. After all tasks complete, it runs finalize once (commit, rebase, push, merge).
+**Epic Runner** creates one worktree, loads the epic's child tasks in dependency order (via `native task ordering --robot-next` or topological sort), and executes each task through a lightweight developer→QA loop. On QA failure, it creates a bug task for traceability and loops back to developer. After all tasks complete, it runs finalize once (commit, rebase, push, merge).
 
 ---
 
 ## 6. Requirements: Epic Detection and Dispatch
 
-### REQ-001: Epic bead detection in dispatcher
+### REQ-001: Epic task detection in dispatcher
 **Priority:** Must | **Complexity:** Low
 
-When the dispatcher encounters a bead of type `epic` with child tasks (parent-child dependents), it dispatches via the Epic Runner instead of the standard pipeline. One-off tasks (type `task`, `bug`, `chore`) continue using the standard pipeline.
+When the dispatcher encounters a task of type `epic` with child tasks (parent-child dependents), it dispatches via the Epic Runner instead of the standard pipeline. One-off tasks (type `task`, `bug`, `chore`) continue using the standard pipeline.
 
-- AC-001-1: Given a ready bead with type `epic` and 3+ child task beads, when `foreman run` executes, then the dispatcher creates a single worktree and spawns an Epic Runner process.
-- AC-001-2: Given a ready bead with type `task`, when `foreman run` executes, then the dispatcher uses the standard 5-phase pipeline (no behavioral change).
-- AC-001-3: Given a ready bead with type `epic` and 0 child tasks, when `foreman run` executes, then the dispatcher auto-closes it (existing behavior).
+- AC-001-1: Given a ready task with type `epic` and 3+ child task tasks, when `foreman run` executes, then the dispatcher creates a single worktree and spawns an Epic Runner process.
+- AC-001-2: Given a ready task with type `task`, when `foreman run` executes, then the dispatcher uses the standard 5-phase pipeline (no behavioral change).
+- AC-001-3: Given a ready task with type `epic` and 0 child tasks, when `foreman run` executes, then the dispatcher auto-closes it (existing behavior).
 
 ### REQ-002: Epic workflow YAML configuration
 **Priority:** Must | **Complexity:** Medium
@@ -133,12 +133,12 @@ Multiple epics can run simultaneously, each in its own worktree. The dispatcher 
 ## 7. Requirements: Task Execution Loop
 
 ### REQ-004: Sequential task execution in dependency order
-**Priority:** Must | **Complexity:** High | [RISK: bv availability]
+**Priority:** Must | **Complexity:** High | [RISK: native task ordering availability]
 
-Within an epic, tasks execute sequentially in dependency order. The Epic Runner queries `bv --robot-next` (or falls back to topological sort of child beads) to determine execution order.
+Within an epic, tasks execute sequentially in dependency order. The Epic Runner queries `native task ordering --robot-next` (or falls back to topological sort of child tasks) to determine execution order.
 
 - AC-004-1: Given an epic with tasks A→B→C (B depends on A, C depends on B), when the epic executes, then tasks run in order A, B, C.
-- AC-004-2: Given `bv` is unavailable, when the epic determines task order, then it falls back to topological sort of parent-child dependencies with priority as tiebreaker.
+- AC-004-2: Given `native task ordering` is unavailable, when the epic determines task order, then it falls back to topological sort of parent-child dependencies with priority as tiebreaker.
 - AC-004-3: Given an epic with 40 tasks, when all tasks complete successfully, then total execution time is under 2 hours (target: ~3 min per task average).
 
 ### REQ-005: Per-task developer→QA loop
@@ -150,18 +150,18 @@ Each task runs through a developer phase (implementation) followed by a QA phase
 - AC-005-2: Given a QA FAIL verdict with `retryOnFail: 2`, when the developer has not yet retried twice, then developer re-runs with the QA feedback as context.
 - AC-005-3: Given a QA PASS verdict, when the task completes, then it is committed and the next task begins.
 
-### REQ-006: Bug bead creation on QA failure
+### REQ-006: Bug task creation on QA failure
 **Priority:** Must | **Complexity:** Low
 
-When QA detects a test failure, a bug bead is created for traceability before looping back to developer. The bug bead links to the epic and the failing task.
+When QA detects a test failure, a bug task is created for traceability before looping back to developer. The bug task links to the epic and the failing task.
 
-- AC-006-1: Given a QA FAIL verdict on task N, when the retry loop fires, then a bug bead is created with title "QA failure in <task title>", type `bug`, and parent set to the epic.
-- AC-006-2: Given a bug bead created by QA failure, when the developer fixes the issue and QA passes, then the bug bead is auto-closed.
+- AC-006-1: Given a QA FAIL verdict on task N, when the retry loop fires, then a bug task is created with title "QA failure in <task title>", type `bug`, and parent set to the epic.
+- AC-006-2: Given a bug task created by QA failure, when the developer fixes the issue and QA passes, then the bug task is auto-closed.
 
 ### REQ-007: Per-task commits in shared worktree
 **Priority:** Must | **Complexity:** Low
 
-After each task passes QA, changes are committed to the shared worktree branch. Commits use the task title and bead ID as the commit message. No push until the epic completes.
+After each task passes QA, changes are committed to the shared worktree branch. Commits use the task title and task ID as the commit message. No push until the epic completes.
 
 - AC-007-1: Given task N passes QA, when the commit runs, then a git commit is created with message `<task title> (<task-id>)`.
 - AC-007-2: Given 10 tasks complete, when inspecting the worktree branch, then there are exactly 10 commits (no empty commits, no extra jj working revisions).
@@ -199,13 +199,13 @@ When an epic run is interrupted (rate limit, crash, OOM), it can be resumed from
 - AC-010-1: Given an epic run interrupted after task 15 of 40, when `foreman run` or `foreman retry` re-dispatches the epic, then tasks 1-15 are skipped (their commits exist in the worktree) and execution resumes from task 16.
 - AC-010-2: Given a resumed epic with a partially completed task 16 (developer done, QA not run), when the epic resumes, then task 16 restarts from developer (partial tasks are not skipped).
 
-### REQ-011: Per-task bead status updates
+### REQ-011: Per-task task status updates
 **Priority:** Should | **Complexity:** Low
 
-As each task completes within an epic, its bead is updated to reflect progress. This provides visibility in `foreman status` and `foreman dashboard`.
+As each task completes within an epic, its task is updated to reflect progress. This provides visibility in `foreman status` and `foreman dashboard`.
 
-- AC-011-1: Given task N starts, when the Epic Runner begins it, then the bead status is set to `in_progress`.
-- AC-011-2: Given task N passes QA and is committed, when the next task starts, then task N's bead status is set to `completed` (or equivalent closed state after merge).
+- AC-011-1: Given task N starts, when the Epic Runner begins it, then the task status is set to `in_progress`.
+- AC-011-2: Given task N passes QA and is committed, when the next task starts, then task N's task status is set to `completed` (or equivalent closed state after merge).
 
 ---
 
@@ -228,7 +228,7 @@ Track and display aggregate cost across all tasks in the epic, broken down by ta
 ### REQ-014: onError behavior for epics
 **Priority:** Should | **Complexity:** Low
 
-The `onError: stop` workflow config applies to epic runs. If a task within an epic fails after exhausting retries, the epic stops and the bead is marked stuck.
+The `onError: stop` workflow config applies to epic runs. If a task within an epic fails after exhausting retries, the epic stops and the task is marked stuck.
 
 - AC-014-1: Given a task that fails QA after max retries, when `onError: stop` is set, then the epic halts, the run is marked stuck, and `foreman status` shows which task failed.
 - AC-014-2: Given a stuck epic, when `foreman retry <epic-id>` runs, then the epic resumes from the failed task.
@@ -257,17 +257,17 @@ Individual tasks within an epic have a configurable timeout. If a task exceeds t
 
 | REQ | Description | Priority | Complexity | AC Count |
 |-----|-------------|----------|------------|----------|
-| REQ-001 | Epic bead detection | Must | Low | 3 |
+| REQ-001 | Epic task detection | Must | Low | 3 |
 | REQ-002 | Epic workflow YAML | Must | Medium | 3 |
 | REQ-003 | Parallel epic execution | Must | Medium | 2 |
 | REQ-004 | Sequential task execution | Must | High | 3 |
 | REQ-005 | Per-task dev→QA loop | Must | Medium | 3 |
-| REQ-006 | Bug bead on QA failure | Must | Low | 2 |
+| REQ-006 | Bug task on QA failure | Must | Low | 2 |
 | REQ-007 | Per-task commits | Must | Low | 2 |
 | REQ-008 | Session continuity | Must | Medium | 2 |
 | REQ-009 | Single finalize | Must | Medium | 3 |
 | REQ-010 | Resume from last task | Must | High | 2 |
-| REQ-011 | Per-task bead status | Should | Low | 2 |
+| REQ-011 | Per-task task status | Should | Low | 2 |
 | REQ-012 | Epic progress display | Should | Low | 1 |
 | REQ-013 | Epic cost tracking | Should | Low | 1 |
 | REQ-014 | onError for epics | Should | Low | 2 |
@@ -281,7 +281,7 @@ Individual tasks within an epic have a configurable timeout. If a task exceeds t
 | REQ-003 | REQ-001 | Can't run epics in parallel until detection works |
 | REQ-004 | REQ-001, REQ-002 | Task ordering requires epic detection and workflow config |
 | REQ-005 | REQ-004 | Dev→QA loop operates within the task execution loop |
-| REQ-006 | REQ-005 | Bug beads created on QA failure |
+| REQ-006 | REQ-005 | Bug tasks created on QA failure |
 | REQ-007 | REQ-005 | Commits happen after QA passes |
 | REQ-008 | REQ-004 | Session continuity spans the task loop |
 | REQ-009 | REQ-007 | Finalize runs after all per-task commits |
@@ -296,6 +296,6 @@ Dispatcher detects epics, creates shared worktree, Epic Runner executes tasks se
 Single finalize at end, resume from last completed task, session continuity.
 
 ### Sprint 3: Observability and Polish (REQ-003, REQ-006, REQ-011-016)
-Parallel epics, bug bead traceability, status display, cost tracking, configuration.
+Parallel epics, bug task traceability, status display, cost tracking, configuration.
 
 **Cross-cutting concern:** The existing `pipeline-executor.ts` phase loop can be reused for the per-task dev→QA execution — the Epic Runner orchestrates which tasks to run and calls the phase loop for each one.

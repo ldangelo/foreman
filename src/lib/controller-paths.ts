@@ -1,6 +1,6 @@
 export function isIgnorableControllerPath(path: string): boolean {
-  return path === ".beads/issues.jsonl"
-    || path === ".beads/last-touched"
+  return path === ".tasks/issues.jsonl"
+    || path === ".tasks/last-touched"
     || path.startsWith(".omx/")
     || path.startsWith(".foreman/")
     || path.startsWith("SessionLogs/")

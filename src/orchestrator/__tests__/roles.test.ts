@@ -248,7 +248,7 @@ describe("buildPhasePrompt — taskType propagation", () => {
     expect(prompt).not.toContain("{{taskType}}");
   });
 
-  it("finalize prompt contains nothing-to-commit logic for verification beads", () => {
+  it("finalize prompt contains nothing-to-commit logic for verification tasks", () => {
     const prompt = buildPhasePrompt("finalize", {
       taskId: "bd-abc",
       taskTitle: "Verify auth flow",

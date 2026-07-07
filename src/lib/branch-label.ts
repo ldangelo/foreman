@@ -1,12 +1,12 @@
 /**
- * branch-label.ts — Utilities for managing branch: labels on beads.
+ * branch-label.ts — Utilities for managing branch: labels on tasks.
  *
- * Foreman uses `branch:<name>` labels on beads to track which git branch
+ * Foreman uses `branch:<name>` labels on tasks to track which git branch
  * the work should merge into. This enables the git-town workflow:
  *
  *   git town hack installer && foreman run
  *
- * All dispatched beads get `branch:installer` added automatically, and the
+ * All dispatched tasks get `branch:installer` added automatically, and the
  * refinery merges them into `installer` rather than the default main/dev branch.
  */
 
@@ -48,7 +48,7 @@ export function extractBranchLabel(labels: string[] | undefined): string | undef
 
 /**
  * Check whether the given branch is a "default" branch (main, master, dev).
- * When on a default branch, beads are NOT labeled — this preserves backward
+ * When on a default branch, tasks are NOT labeled — this preserves backward
  * compatibility with existing projects that always merge to main/dev.
  *
  * Returns true if the branch should NOT be labeled (i.e. it is the default).
@@ -64,7 +64,7 @@ export function isDefaultBranch(branch: string, defaultBranch: string): boolean 
 }
 
 /**
- * Return the updated labels array for a bead after applying the branch label.
+ * Return the updated labels array for a task after applying the branch label.
  *
  * - Removes any existing `branch:*` labels (to avoid duplicates).
  * - Appends `branch:<branchName>`.
@@ -76,7 +76,7 @@ export function applyBranchLabel(
   const filtered = (existingLabels ?? []).filter((l) => !l.startsWith("branch:"));
   const normalizedBranch = normalizeBranchLabel(branchName);
   if (!isValidBranchLabel(normalizedBranch)) return filtered;
-  // br enforces a 50-character limit per label. Skip the label entirely if it
+  // native task store enforces a 50-character limit per label. Skip the label entirely if it
   // would exceed the limit — a truncated branch name would cause the refinery
   // to target a non-existent branch. The explicit targetBranch threading in
   // dispatch/auto-merge handles merge targeting for long branch names.

@@ -11,7 +11,7 @@ design_readiness_score: 3.5
 
 ## Overview
 
-The **Refinery** is the merge-orchestration component of the Foreman pipeline. It takes completed agent branches from the merge queue, rebases them onto the target branch, resolves conflicts using a tiered cascade (deterministic → AI-powered), runs optional post-merge tests, and closes the corresponding bead in the task tracker.
+The **Refinery** is the merge-orchestration component of the Foreman pipeline. It takes completed agent branches from the merge queue, rebases them onto the target branch, resolves conflicts using a tiered cascade (deterministic → AI-powered), runs optional post-merge tests, and closes the corresponding task in the task tracker.
 
 Refinery is invoked in two distinct contexts:
 
@@ -50,7 +50,7 @@ auto-merge.ts
             │    └─ Fallback: gh pr create
             ├─ MergeValidator (post-AI resolution validation)
             ├─ archiveReportsPostMerge()      — post-merge cleanup
-            ├─ enqueueCloseTask()             — close bead after success
+            ├─ enqueueCloseTask()             — close task after success
             ├─ closeNativeTaskPostMerge()     — REQ-018 native task update
             ├─ rebaseStackedBranches()        — rebase dependents onto target
             └─ sendMail()                     — lifecycle notifications
@@ -60,17 +60,17 @@ auto-merge.ts
 
 | File | Class/Fn | Responsibility |
 |------|----------|----------------|
-| `src/orchestrator/refinery.ts` | `Refinery` | Main merge orchestrator. Rebase → squash merge → conflict cascade → cleanup → bead closure |
-| `src/orchestrator/refinery.ts` | `preserveBeadChanges()` | Extract `.tasks/` changes from a branch via patch, apply to target branch before deletion |
+| `src/orchestrator/refinery.ts` | `Refinery` | Main merge orchestrator. Rebase → squash merge → conflict cascade → cleanup → task closure |
+| `src/orchestrator/refinery.ts` | `preserveTaskChanges()` | Extract `.tasks/` changes from a branch via patch, apply to target branch before deletion |
 | `src/orchestrator/auto-merge.ts` | `autoMerge()` | Top-level trigger. Reconciles completed runs into queue, drains entries, handles strategy routing (`auto`/`pr`/`none`) |
-| `src/orchestrator/auto-merge.ts` | `syncBeadStatusAfterMerge()` | Syncs bead status from run status to br after merge outcome (immediate post-merge sync) |
+| `src/orchestrator/auto-merge.ts` | `syncTaskStatusAfterMerge()` | Syncs task status from run status to native task store after merge outcome (immediate post-merge sync) |
 | `src/orchestrator/merge-queue.ts` | `MergeQueue` | Postgres-backed FIFO queue. `enqueue`, `dequeue`, `reconcile`, `resetForRetry`, `getOrderedPending` (cluster-aware) |
 | `src/orchestrator/conflict-resolver.ts` | `ConflictResolver` | Tier cascade (Tiers 1–4 + fallback), rebase conflict auto-resolve, post-merge tests |
 | `src/orchestrator/conflict-resolver.ts` | `REPORT_FILES` | Constants: report filenames that can be auto-resolved |
 | `src/orchestrator/merge-validator.ts` | `MergeValidator` | Post-AI resolution validation: conflict markers, prose detection, markdown fencing, syntax check |
 | `src/orchestrator/merge-config.ts` | `MergeQueueConfig` / `loadMergeConfig()` | Tier thresholds, cost limits, syntax checkers, prose detection patterns |
-| `src/orchestrator/task-backend-ops.ts` | `enqueueCloseTask()`, `enqueueResetTaskToOpen()`, etc. | Enqueue br write operations via ForemanStore bead_write_queue (serialized by dispatcher) |
-| `src/orchestrator/task-backend-ops.ts` | `syncBeadStatusOnStartup()` | Reconcile br status from Postgres on foreman startup (dry-run mode supported) |
+| `src/orchestrator/task-backend-ops.ts` | `enqueueCloseTask()`, `enqueueResetTaskToOpen()`, etc. | Enqueue native task store write operations via ForemanStore task_write_queue (serialized by dispatcher) |
+| `src/orchestrator/task-backend-ops.ts` | `syncTaskStatusOnStartup()` | Reconcile native task store status from Postgres on foreman startup (dry-run mode supported) |
 | `src/orchestrator/types.ts` | `MergeReport`, `MergedRun`, `ConflictRun`, `FailedRun`, `CreatedPr`, `PrReport` | Result types for merge operations |
 
 ---
@@ -104,7 +104,7 @@ Refinery always uses `--squash` merges so each feature branch becomes a single c
 - Makes rollback trivial (`git reset --hard HEAD~1`)
 - Produces a clean `git log` with one entry per feature
 
-The squash commit message uses the bead title if available, otherwise `foreman/<taskId>: squash merge`.
+The squash commit message uses the task title if available, otherwise `foreman/<taskId>: squash merge`.
 
 ### 3. Conflict Marker Scanning (Committed Content Only)
 
@@ -116,27 +116,27 @@ Report files (`QA_REPORT.md`, `REVIEW.md`, `TASK.md`, `SESSION_LOG.md`, etc.) ar
 1. **Removed pre-merge** via `removeReportFiles()` — prevents conflicts
 2. **Archived post-merge** to `.foreman/reports/<name>-<taskId>.md` — preserves the artifact
 
-`ConflictResolver.isReportFile()` determines which files are auto-resolvable (includes `.beads/` files — latest bead state wins).
+`ConflictResolver.isReportFile()` determines which files are auto-resolvable (includes `.tasks/` files — latest task state wins).
 
-### 5. Bead Write Queue (Postgres Contention Avoidance)
+### 5. Task Write Queue (Postgres Contention Avoidance)
 
-Multiple `agent-worker` processes can call `autoMerge()` concurrently after `finalize`, all writing to the shared `.beads/beads.db`. Direct `br` CLI calls cause `POSTGRES_BUSY` contention.
+Multiple `agent-worker` processes can call `autoMerge()` concurrently after `finalize`, all writing to the shared `.tasks/tasks.db`. Direct `native task store` CLI calls cause `POSTGRES_BUSY` contention.
 
-**Solution**: All br write operations are enqueued via `ForemanStore.enqueueBeadWrite()`:
+**Solution**: All native task store write operations are enqueued via `ForemanStore.enqueueTaskWrite()`:
 - `enqueueCloseTask()` — close after successful merge
 - `enqueueResetTaskToOpen()` — reset on failure
-- `enqueueAddNotesToBead()` — annotate failure reasons
-- `enqueueAddLabelsToBead()` — phase-tracking labels
-- `enqueueSetBeadStatus()` — arbitrary status transitions
-- `enqueueMarkBeadFailed()` — permanent failure marker
+- `enqueueAddNotesToTask()` — annotate failure reasons
+- `enqueueAddLabelsToTask()` — phase-tracking labels
+- `enqueueSetTaskStatus()` — arbitrary status transitions
+- `enqueueMarkTaskFailed()` — permanent failure marker
 
 The **dispatcher** (single process) drains the queue sequentially, eliminating Postgres lock contention.
 
-### 6. Bead Closure Timing
+### 6. Task Closure Timing
 
-The bead is closed **after** the code lands in the target branch (`enqueueCloseTask()` called after `vcs.commit()`). This ensures:
-- Bead shows `review` (awaiting merge) during the merge window
-- Bead shows `closed` only after code is on the target
+The task is closed **after** the code lands in the target branch (`enqueueCloseTask()` called after `vcs.commit()`). This ensures:
+- Task shows `review` (awaiting merge) during the merge window
+- Task shows `closed` only after code is on the target
 
 ### 7. Stacked Branch Rebasing
 
@@ -144,7 +144,7 @@ After a successful merge of `mergedBranch` into `targetBranch`, `rebaseStackedBr
 
 ### 8. Branch Label Routing
 
-Target branch is resolved from the bead's `branch:<name>` label (via `extractBranchLabel()`). Fallback is the auto-detected default branch. This enables per-bead target specification rather than hardcoding `dev`/`main`.
+Target branch is resolved from the task's `branch:<name>` label (via `extractBranchLabel()`). Fallback is the auto-detected default branch. This enables per-task target specification rather than hardcoding `dev`/`main`.
 
 ### 9. Merge Strategy Routing
 
@@ -155,7 +155,7 @@ Target branch is resolved from the bead's `branch:<name>` label (via `extractBra
 
 ### 10. `.tasks/` Preservation
 
-`preserveBeadChanges()` extracts `.tasks/` changes from a branch before it's deleted, applies them as a patch to the target branch, and commits them. This ensures task tracker state from completed branches isn't lost when worktrees are removed.
+`preserveTaskChanges()` extracts `.tasks/` changes from a branch before it's deleted, applies them as a patch to the target branch, and commits them. This ensures task tracker state from completed branches isn't lost when worktrees are removed.
 
 ---
 
@@ -280,11 +280,11 @@ Defaults are defined in `DEFAULT_MERGE_CONFIG` in `merge-config.ts`.
 
 Refinery follows a strict **non-fatal** philosophy for auxiliary operations:
 - Mail failures: silently ignored (mail is optional infrastructure)
-- Bead annotation failures: logged as warnings, never propagate
+- Task annotation failures: logged as warnings, never propagate
 - Worktree removal failures: logged, doesn't block merge completion
 - Archive failures: best-effort, doesn't block merge
 
-Only **core merge failures** (conflicts, test failures, unexpected errors) are reported as such. These update the run status and bead notes but still allow the queue to continue processing other entries.
+Only **core merge failures** (conflicts, test failures, unexpected errors) are reported as such. These update the run status and task notes but still allow the queue to continue processing other entries.
 
 ---
 
@@ -307,7 +307,7 @@ Only **core merge failures** (conflicts, test failures, unexpected errors) are r
 1. **Jujutsu rebase in colocated repos**: The `gitSpecial` 2-arg rebase form (`rebase upstream branch`) operates from the main repo context, which jj's colocated mode intercepts. Rebase inside the workspace directory is used as mitigation.
 2. **Conflict cluster ordering**: `MergeQueue.getOrderedPending()` uses file overlap to order merges, but this is approximate — two branches modifying the same file in different ways will still conflict regardless of merge order.
 3. **Stacked branch base tracking**: `base_branch` is cleared after rebase but if the rebase itself fails, the old `base_branch` value persists. `rebaseStackedBranches()` skips inactive runs, so stale bases don't cause incorrect behavior.
-4. **`.tasks/` preservation on merge conflict**: If a branch has conflicts, `preserveBeadChanges()` is not called. The `.tasks/` changes on the conflicting branch require manual extraction.
+4. **`.tasks/` preservation on merge conflict**: If a branch has conflicts, `preserveTaskChanges()` is not called. The `.tasks/` changes on the conflicting branch require manual extraction.
 
 ---
 
@@ -335,7 +335,7 @@ Only **core merge failures** (conflicts, test failures, unexpected errors) are r
 - `src/orchestrator/conflict-resolver.ts` → `src/orchestrator/merge-config.ts`
 - `src/orchestrator/conflict-resolver.ts` → `src/orchestrator/merge-validator.ts`
 - `src/orchestrator/conflict-resolver.ts` → `src/orchestrator/pi-sdk-runner.ts`
-- `src/orchestrator/task-backend-ops.ts` → `src/lib/store.ts` (bead_write_queue)
+- `src/orchestrator/task-backend-ops.ts` → `src/lib/store.ts` (task_write_queue)
 - `src/orchestrator/task-backend-ops.ts` → `src/lib/run-status.ts` (mapRunStatusToTaskStatus)
 
 ---
@@ -354,12 +354,12 @@ interface IRefineryTaskClient {
     status: string;
     labels?: string[];
   }>;
-  getGraph?(): Promise<BeadGraph>;  // Used for topological merge ordering
+  getGraph?(): Promise<TaskGraph>;  // Used for topological merge ordering
   update?(id: string, opts: UpdateOptions): Promise<void>;
 }
 ```
 
-`BeadsRustClient` satisfies this interface. The `getGraph()` method is optional — `orderByDependencies()` falls back to insertion order when unavailable.
+`TaskClient` satisfies this interface. The `getGraph()` method is optional — `orderByDependencies()` falls back to insertion order when unavailable.
 
 ### AutoMergeOpts
 

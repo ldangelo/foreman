@@ -12,7 +12,7 @@
  * Unlike `foreman debug`, this command is NOT read-only — the agent has write
  * access and will make fixes, commit, and push when appropriate.
  *
- * Note: `<task-id>` is the primary identifier. `--bead` is accepted as a
+ * Note: `<task-id>` is the primary identifier. `--task` is accepted as a
  * backward-compatible alias.
  */
 
@@ -36,7 +36,7 @@ import { listRegisteredProjects, resolveRepoRootProjectPath } from "./project-ta
 interface DaemonRunRow {
   id: string;
   project_id: string;
-  bead_id: string;
+  task_id: string;
   status: string;
   branch: string;
   agent_type: string | null;
@@ -85,7 +85,7 @@ function adaptDaemonRun(row: DaemonRunRow): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    task_id: row.bead_id,
+    task_id: row.task_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
     worktree_path: row.worktree_path,
@@ -342,7 +342,7 @@ const CLEAN_REPLAY_EXCLUDED_PATHS = [
   /^REVIEW\.md$/,
   /^BLOCKED\.md$/,
   /^TASK\.md$/,
-  /^\.beads\//,
+  /^\.tasks\//,
   /^docs\/reports\//,
 ];
 
@@ -407,9 +407,9 @@ export function validateCleanReplayWorkspace(workspacePath: string): CleanReplay
   };
 }
 
-async function commitCleanReplayWorkspace(projectPath: string, workspace: CleanReplayWorkspace, beadId: string): Promise<CleanReplayCommitResult> {
+async function commitCleanReplayWorkspace(projectPath: string, workspace: CleanReplayWorkspace, taskId: string): Promise<CleanReplayCommitResult> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-  const message = `fix: replay ${beadId} cleanly from current ${workspace.baseBranch}`;
+  const message = `fix: replay ${taskId} cleanly from current ${workspace.baseBranch}`;
   await vcs.stageAll(workspace.workspacePath);
   await vcs.commit(workspace.workspacePath, message);
   return { success: true, message };
@@ -421,10 +421,10 @@ async function pushCleanReplayWorkspace(projectPath: string, workspace: CleanRep
   return { success: true, branchName: workspace.branchName };
 }
 
-async function prepareCleanReplayWorkspace(projectPath: string, beadId: string): Promise<CleanReplayWorkspace> {
+async function prepareCleanReplayWorkspace(projectPath: string, taskId: string): Promise<CleanReplayWorkspace> {
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const baseBranch = await vcs.detectDefaultBranch(projectPath);
-  const replayTaskId = `${beadId}-clean-replay`;
+  const replayTaskId = `${taskId}-clean-replay`;
   const { workspacePath, branchName } = await vcs.createWorkspace(projectPath, replayTaskId, baseBranch);
   return {
     taskId: replayTaskId,
@@ -437,14 +437,14 @@ async function prepareCleanReplayWorkspace(projectPath: string, beadId: string):
 // ── Prompt builder ──────────────────────────────────────────────────────────
 
 function buildRecoveryPrompt(opts: {
-  beadId: string;
+  taskId: string;
   reason: RecoveryReason;
   branchName: string;
   runId: string;
   projectRoot: string;
   runSummary: string;
   testOutput: string;
-  blockedBeads: string;
+  blockedTasks: string;
   recentGitLog: string;
   reports: Record<string, string>;
   logContent: string | null;
@@ -459,7 +459,7 @@ function buildRecoveryPrompt(opts: {
     : "## Agent Worker Log\n(not found)";
 
   return loadAndInterpolate("recover.md", {
-    beadId: opts.beadId,
+    taskId: opts.taskId,
     reason: opts.reason,
     branchName: opts.branchName,
     runId: opts.runId,
@@ -467,7 +467,7 @@ function buildRecoveryPrompt(opts: {
     runSummary: opts.runSummary,
     recoveryRecommendation: opts.recoveryRecommendation,
     testOutput: opts.testOutput || "(not captured)",
-    blockedBeads: opts.blockedBeads || "(none)",
+    blockedTasks: opts.blockedTasks || "(none)",
     recentGitLog: opts.recentGitLog || "(not available)",
     reportSections: reportSections
       ? `## Pipeline Reports\n${reportSections}`
@@ -480,7 +480,7 @@ function buildRecoveryPrompt(opts: {
 
 export const recoverCommand = new Command("recover")
   .description("Autonomous recovery agent for pipeline failures")
-  .argument("<task-id>", "The task ID that needs recovery (alias: bead-id for backward compatibility)")
+  .argument("<task-id>", "The task ID that needs recovery (alias: task-id for backward compatibility)")
   .option(
     "--reason <reason>",
     "Failure reason: test-failed | stuck | stale-blocked | finalize-conflict",
@@ -495,7 +495,7 @@ export const recoverCommand = new Command("recover")
   .option("--commit-clean-replay", "Stage and commit the clean replay workspace after successful validation")
   .option("--push-clean-replay", "Push the validated clean replay branch after commit")
   .option("--execute-clean-replay", "Run the full clean replay flow: apply, validate, commit, and push")
-  .action(async (beadId: string, opts: {
+  .action(async (taskId: string, opts: {
     reason?: string;
     runId?: string;
     output?: string;
@@ -532,12 +532,12 @@ export const recoverCommand = new Command("recover")
 
     // Find runs for this task
     const runs = elixir
-      ? ((await elixir.client.listRuns({ projectId: elixir.projectId })).filter((row) => row.task_id === beadId).map(adaptElixirRun))
+      ? ((await elixir.client.listRuns({ projectId: elixir.projectId })).filter((row) => row.task_id === taskId).map(adaptElixirRun))
       : daemon
-        ? ((await daemon.client.runs.list({ projectId: daemon.projectId, beadId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
-        : store.getRunsForTask(beadId);
+        ? ((await daemon.client.runs.list({ projectId: daemon.projectId, taskId, limit: 50 }) as DaemonRunRow[]).map(adaptDaemonRun))
+        : store.getRunsForTask(taskId);
     if (runs.length === 0) {
-      console.error(chalk.red(`No runs found for task ${beadId}`));
+      console.error(chalk.red(`No runs found for task ${taskId}`));
       process.exit(1);
     }
 
@@ -547,7 +547,7 @@ export const recoverCommand = new Command("recover")
       : runs[0]; // latest
 
     if (!run) {
-      console.error(chalk.red(`Run ${opts.runId} not found for task ${beadId}`));
+      console.error(chalk.red(`Run ${opts.runId} not found for task ${taskId}`));
       console.error(`Available runs: ${runs.map((r) => `${r.id.slice(0, 8)} (${r.status})`).join(", ")}`);
       process.exit(1);
     }
@@ -586,22 +586,22 @@ export const recoverCommand = new Command("recover")
     if (reason !== requestedReason) {
       console.log(chalk.dim(`  Auto-selected recovery reason: ${reason} (from finalize recommendation)`));
     }
-    console.log(chalk.bold(`\nRecovery: ${beadId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
+    console.log(chalk.bold(`\nRecovery: ${taskId} — reason: ${reason} — run ${run.id.slice(0, 8)} (${run.status})\n`));
 
-    // 4. Bead info from br
+    // 4. Task info from native task store
     try {
-      const beadInfo = execFileSync("br", ["show", beadId], {
+      const taskInfo = execFileSync("native task store", ["show", taskId], {
         encoding: "utf-8",
         cwd: projectPath,
       });
-      if (beadInfo) reports["BEAD_INFO"] = beadInfo;
+      if (taskInfo) reports["TASK_INFO"] = taskInfo;
     } catch { /* non-fatal */ }
 
     // 5. Agent worker log
     const logContent = findLogFile(run.id);
 
-    // 6. Branch name (from bead id convention: foreman/<beadId>)
-    const branchName = `foreman/${beadId}`;
+    // 6. Branch name (from task id convention: foreman/<taskId>)
+    const branchName = `foreman/${taskId}`;
 
     // 7. Fresh test output (run it now unless pre-captured or raw mode)
     let testOutput = opts.output ?? "";
@@ -610,9 +610,9 @@ export const recoverCommand = new Command("recover")
       testOutput = runCommandSafe(["npm", "test"], projectPath);
     }
 
-    // 8. Blocked beads
-    const blockedBeads = runCommandSafe(
-      ["br", "list", "--status=blocked", "--limit", "0"],
+    // 8. Blocked tasks
+    const blockedTasks = runCommandSafe(
+      ["native task store", "list", "--status=blocked", "--limit", "0"],
       projectPath,
     );
 
@@ -636,7 +636,7 @@ export const recoverCommand = new Command("recover")
         console.error(chalk.red("--prepare-clean-replay/--apply-clean-replay requires finalize-conflict recovery context"));
         process.exit(1);
       }
-      cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, beadId);
+      cleanReplayWorkspace = await prepareCleanReplayWorkspace(projectPath, taskId);
       if (applyCleanReplay) {
         if (!worktreePath) {
           store.close();
@@ -655,7 +655,7 @@ export const recoverCommand = new Command("recover")
           console.error(chalk.red("--commit-clean-replay/--push-clean-replay requires successful clean replay validation"));
           process.exit(1);
         }
-        cleanReplayCommitResult = await commitCleanReplayWorkspace(projectPath, cleanReplayWorkspace, beadId);
+        cleanReplayCommitResult = await commitCleanReplayWorkspace(projectPath, cleanReplayWorkspace, taskId);
       }
       if (pushCleanReplay) {
         cleanReplayPushResult = await pushCleanReplayWorkspace(projectPath, cleanReplayWorkspace);
@@ -669,7 +669,7 @@ export const recoverCommand = new Command("recover")
     console.log(chalk.dim(`  Reports:     ${Object.keys(reports).join(", ") || "(none)"}`));
     console.log(chalk.dim(`  Log:         ${logContent ? "found" : "not found"}`));
     console.log(chalk.dim(`  Test output: ${testOutput ? `${testOutput.split("\n").length} lines` : "(none)"}`));
-    console.log(chalk.dim(`  Blocked:     ${blockedBeads.split("\n").filter(Boolean).length} beads`));
+    console.log(chalk.dim(`  Blocked:     ${blockedTasks.split("\n").filter(Boolean).length} tasks`));
     if (cleanReplayWorkspace) {
       console.log(chalk.dim(`  Clean replay: ${cleanReplayWorkspace.branchName} @ ${cleanReplayWorkspace.workspacePath}`));
     }
@@ -736,8 +736,8 @@ export const recoverCommand = new Command("recover")
         console.log(chalk.bold("\n─── Test Output (last 100 lines) ───"));
         console.log(testOutput.split("\n").slice(-100).join("\n"));
       }
-      console.log(chalk.bold("\n─── Blocked Beads ───"));
-      console.log(blockedBeads || "(none)");
+      console.log(chalk.bold("\n─── Blocked Tasks ───"));
+      console.log(blockedTasks || "(none)");
       console.log(chalk.bold("\n─── Recent Git Log ───"));
       console.log(recentGitLog || "(none)");
       return;
@@ -745,14 +745,14 @@ export const recoverCommand = new Command("recover")
 
     // Build the recovery prompt and send to AI
     const prompt = buildRecoveryPrompt({
-      beadId,
+      taskId,
       reason,
       branchName,
       runId: run.id,
       projectRoot: projectPath,
       runSummary,
       testOutput,
-      blockedBeads,
+      blockedTasks,
       recentGitLog,
       reports,
       logContent,

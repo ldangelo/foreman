@@ -340,7 +340,6 @@ jobs:
             ### Requirements
 
             - No Node.js required (standalone binary)
-            - `br` ([beads_rust](https://github.com/Dicklesworthstone/beads_rust)) CLI on PATH for task tracking
             - `ANTHROPIC_API_KEY` environment variable set
 
             ### Checksums

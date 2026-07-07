@@ -264,14 +264,14 @@ Goal: `foreman daemon start` → `foreman project add` → `foreman project list
 
 ---
 
-### Sprint 6: Beads Data Import
+### Sprint 6: Tasks Data Import
 
 | TRD-NNN | Description | Est | Satisfies | Validates ACs |
 |---------|------------|-----|----------|---------------|
-| TRD-057 | Implement `foreman task import --from-beads --project <name>` | 4h | REQ-018 | AC-018.1, AC-018.2, AC-018.3 |
-| TRD-058 | Implement beads status → native task status mapping | 2h | REQ-018 | AC-018.2 |
-| TRD-059 | Implement beads dependency → task_dependencies mapping | 3h | REQ-018 | AC-018.2 |
-| TRD-060 | Write beads import integration tests | 3h | REQ-018 | AC-018.3 |
+| TRD-057 | Implement `foreman task import --from-tasks --project <name>` | 4h | REQ-018 | AC-018.1, AC-018.2, AC-018.3 |
+| TRD-058 | Implement tasks status → native task status mapping | 2h | REQ-018 | AC-018.2 |
+| TRD-059 | Implement tasks dependency → task_dependencies mapping | 3h | REQ-018 | AC-018.2 |
+| TRD-060 | Write tasks import integration tests | 3h | REQ-018 | AC-018.3 |
 
 ---
 
@@ -361,10 +361,10 @@ For every user-facing implementation task, a corresponding TEST task is generate
 | TRD-054-TEST | Keyboard nav: a/r/Enter actions dispatch correctly | TRD-054 |
 | TRD-055-TEST | Project failure shows [error], doesn't crash dashboard | TRD-055 |
 | TRD-056-TEST | Dashboard with real daemon + Postgres (integration) | TRD-056 |
-| TRD-057-TEST | Beads import creates native tasks in Postgres | TRD-057 |
-| TRD-058-TEST | Beads status → native task status mapping | TRD-058 |
-| TRD-059-TEST | Beads dependency → task_dependencies mapping | TRD-059 |
-| TRD-060-TEST | Beads import dry-run shows correct preview | TRD-060 |
+| TRD-057-TEST | Tasks import creates native tasks in Postgres | TRD-057 |
+| TRD-058-TEST | Tasks status → native task status mapping | TRD-058 |
+| TRD-059-TEST | Tasks dependency → task_dependencies mapping | TRD-059 |
+| TRD-060-TEST | Tasks import dry-run shows correct preview | TRD-060 |
 | TRD-061-TEST | Webhook server starts, receives requests | TRD-061 |
 | TRD-062-TEST | Invalid HMAC signatures rejected | TRD-062 |
 | TRD-063-TEST | Push event triggers worktree rebase | TRD-063 |
@@ -414,10 +414,10 @@ For every user-facing implementation task, a corresponding TEST task is generate
 - Goal: `foreman dashboard` renders cross-project view with Needs Human panel.
 - **Critical path gate:** Dashboard shows all registered projects, keyboard nav works.
 
-### Sprint 6: Beads Data Import (8 days, 12h)
+### Sprint 6: Tasks Data Import (8 days, 12h)
 - TRD-057 through TRD-060
-- Goal: Existing beads data imported from project clone directory into Postgres.
-- **Critical path gate:** Beads import dry-run shows correct preview; write produces correct native tasks.
+- Goal: Existing tasks data imported from project clone directory into Postgres.
+- **Critical path gate:** Tasks import dry-run shows correct preview; write produces correct native tasks.
 
 ### Sprint 7: Webhook (11 days, 16h)
 - TRD-061 through TRD-065
@@ -451,7 +451,7 @@ For every user-facing implementation task, a corresponding TEST task is generate
 | REQ-015 | Cross-Project Dashboard | TRD-049, TRD-050, TRD-055 | TRD-049-TEST, TRD-050-TEST, TRD-055-TEST |
 | REQ-016 | "Needs Human" Triage Panel | TRD-051, TRD-054 | TRD-051-TEST, TRD-054-TEST |
 | REQ-017 | Aggregate Metrics Panel | TRD-052 | TRD-052-TEST |
-| REQ-018 | Beads Data Import | TRD-057, TRD-058, TRD-059 | TRD-057-TEST, TRD-058-TEST, TRD-059-TEST |
+| REQ-018 | Tasks Data Import | TRD-057, TRD-058, TRD-059 | TRD-057-TEST, TRD-058-TEST, TRD-059-TEST |
 | REQ-021 | Postgres Performance | TRD-069 | TRD-069-TEST |
 | REQ-022 | Operational Observability | TRD-066, TRD-067 | TRD-066-TEST, TRD-067-TEST |
 | REQ-023 | Graceful Degradation | TRD-068 | TRD-068-TEST |
@@ -471,7 +471,7 @@ For every user-facing implementation task, a corresponding TEST task is generate
 | Task coverage | 5/5 | Every REQ has implementation + test tasks. 100% coverage. 0 orphaned annotations. |
 | Dependency clarity | 4/5 | Clear sprint ordering. Sprint 0 gate: daemon + projects domain. TRD-001–TRD-012 must all pass before proceeding to Sprint 1. |
 | Estimate confidence | 3/5 | Implementation estimates 1–6h. Webhook (Sprint 7) optimistic. Daemon lifecycle management (TRD-005, TRD-006) may slip — Unix socket permissions, PID file races. |
-| **Overall** | **4.0** | **PASS — proceed to /ensemble:implement-trd-beads** |
+| **Overall** | **4.0** | **PASS — proceed to /ensemble:implement-trd-tasks** |
 
 **Design concerns to monitor:**
 1. **TRD-005 (ForemanDaemon HTTP server):** Unix socket permissions (mode 0600), socket file cleanup on crash, fallback to localhost HTTP. Test on both macOS and Linux.
@@ -492,7 +492,7 @@ For every user-facing implementation task, a corresponding TEST task is generate
 
 **Next recommended step:**
 ```
-/ensemble:implement-trd-beads docs/TRD/TRD-2026-011-multi-project-orchestrator.md
+/ensemble:implement-trd-tasks docs/TRD/TRD-2026-011-multi-project-orchestrator.md
 ```
 
 All tables include `project_id` as a required column. All queries in task-context include `WHERE project_id = $1`. The tRPC procedures enforce project scope at the procedure argument level — the procedure signature includes `projectId: string` as a required input, making it impossible to issue a cross-project query without explicitly providing a project ID.

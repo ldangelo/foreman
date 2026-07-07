@@ -102,7 +102,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Hardened ForemanServer.DebugViews redaction to cover colon/equal secret assignments and bearer authorization forms, replaced byte slicing with UTF-8/grapheme-safe truncation, and added direct + HTTP regression tests for secret redaction and long Unicode log JSON encoding.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-020 review round 2 redaction/truncation fix only. Did not alter bead state or broader debug view behavior.",
+  "manualNotes": "Scoped to TRD-020 review round 2 redaction/truncation fix only. Did not alter task state or broader debug view behavior.",
   "notes": "Output artifact itself may appear in git status after this report write."
 }
 ```

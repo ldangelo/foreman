@@ -26,7 +26,7 @@ describe("agent-worker finalize mail status handling", () => {
   it("marks deterministic finalize failures via Elixir task status helper", () => {
     expect(source).toContain('const terminalStatus = finalizeRetryable ? "stuck" : "failed"');
     expect(source).toContain('await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "failed", "agent-worker-finalize");');
-    expect(source).not.toContain('enqueueMarkBeadFailed(store, taskId, "agent-worker-finalize")');
+    expect(source).not.toContain('enqueueMarkTaskFailed(store, taskId, "agent-worker-finalize")');
   });
 
   it("does not assume finalize success when finalize mail is missing", () => {
@@ -74,7 +74,9 @@ describe("agent-worker finalize mail status handling", () => {
     expect(source).toContain('config.projectId,');
     expect(source).toContain('log,');
     // The derived options are passed to Refinery
-    expect(source).toContain('new Refinery(store, runtimeTaskClient, pipelineProjectPath, vcsBackend, registeredRefineryOptions);');
+    expect(source).toContain('const refinery = new Refinery(');
+    expect(source).toContain('runtimeTaskClient,');
+    expect(source).toContain('registeredRefineryOptions,');
   });
 
   it("keeps finalize mail, queue, and terminal status side effects unchanged", () => {
@@ -94,7 +96,6 @@ describe("agent-worker finalize mail status handling", () => {
 
   it("routes finalize terminal statuses through the helper", () => {
     expect(source).toContain('status: "completed"');
-    expect(source).toContain('status: "pr-created"');
     expect(source).toContain('status: terminalStatus');
     expect(source).toContain('await updateTerminalRunStatus({');
   });

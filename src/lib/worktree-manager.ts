@@ -1,11 +1,11 @@
 /**
- * WorktreeManager — manages git worktrees at ~/.foreman/worktrees/<project-id>/<bead-id>.
+ * WorktreeManager — manages git worktrees at ~/.foreman/worktrees/<project-id>/<task-id>.
  *
  * Path hierarchy:
- *   ~/.foreman/worktrees/<projectId>/<beadId>
+ *   ~/.foreman/worktrees/<projectId>/<taskId>
  *
  * Each worktree is a git worktree of the project's repository, checked out
- * on a branch named `foreman/<beadId>`. This keeps per-bead workspaces isolated
+ * on a branch named `foreman/<taskId>`. This keeps per-task workspaces isolated
  * from the main checkout without polluting the project directory.
  *
  * @module src/lib/worktree-manager
@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 
 export interface WorktreeInfo {
   projectId: string;
-  beadId: string;
+  taskId: string;
   branchName: string;
   path: string;
   exists: boolean;
@@ -27,7 +27,7 @@ export interface WorktreeInfo {
 
 export interface CreateWorktreeOptions {
   projectId: string;
-  beadId: string;
+  taskId: string;
   repoPath: string;
   baseBranch?: string;
 }
@@ -201,10 +201,10 @@ export class WorktreeManager {
   }
 
   /**
-   * Get the worktree directory for a specific project+bead.
+   * Get the worktree directory for a specific project+task.
    */
-  getWorktreePath(projectId: string, beadId: string): string {
-    return join(this.root, projectId, beadId);
+  getWorktreePath(projectId: string, taskId: string): string {
+    return join(this.root, projectId, taskId);
   }
 
   /**
@@ -215,10 +215,10 @@ export class WorktreeManager {
   }
 
   /**
-   * Create a git worktree for a bead.
+   * Create a git worktree for a task.
    *
-   * Branch: foreman/<beadId>
-   * Path: ~/.foreman/worktrees/<projectId>/<beadId>
+   * Branch: foreman/<taskId>
+   * Path: ~/.foreman/worktrees/<projectId>/<taskId>
    *
    * If the worktree already exists, rebases onto the base branch.
    * If the branch already exists but has no worktree, attaches a new worktree.
@@ -226,9 +226,9 @@ export class WorktreeManager {
    * @throws Error if creation/rebase fails after cleanup
    */
   async createWorktree(options: CreateWorktreeOptions): Promise<WorktreeInfo> {
-    const { projectId, beadId, repoPath, baseBranch } = options;
-    const branchName = `foreman/${beadId}`;
-    const worktreePath = this.getWorktreePath(projectId, beadId);
+    const { projectId, taskId, repoPath, baseBranch } = options;
+    const branchName = `foreman/${taskId}`;
+    const worktreePath = this.getWorktreePath(projectId, taskId);
 
     // Resolve the actual git repo path. The provided repoPath may be a store
     // directory rather than the git repo root. Search up the tree for .git.
@@ -247,7 +247,7 @@ export class WorktreeManager {
     // If worktree already exists — reuse it with rebase
     if (existsSync(worktreePath)) {
       await this._rebaseWorktree(worktreePath, startPoint);
-      return { projectId, beadId, branchName, path: worktreePath, exists: true, created: false };
+      return { projectId, taskId, branchName, path: worktreePath, exists: true, created: false };
     }
 
     // Branch may exist without a worktree — reset it to the clean start point
@@ -276,14 +276,14 @@ export class WorktreeManager {
       }
     }
 
-    return { projectId, beadId, branchName, path: worktreePath, exists: true, created: true };
+    return { projectId, taskId, branchName, path: worktreePath, exists: true, created: true };
   }
 
   /**
    * Remove a worktree and its branch.
    */
-  async removeWorktree(projectId: string, beadId: string, repoPath: string): Promise<void> {
-    const worktreePath = this.getWorktreePath(projectId, beadId);
+  async removeWorktree(projectId: string, taskId: string, repoPath: string): Promise<void> {
+    const worktreePath = this.getWorktreePath(projectId, taskId);
     if (!existsSync(worktreePath)) return;
 
     try {
@@ -313,12 +313,12 @@ export class WorktreeManager {
     try {
       for (const entry of readdirSync(projectRoot, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        const beadId = entry.name;
-        const worktreePath = join(projectRoot, beadId);
-        const branchName = `foreman/${beadId}`;
+        const taskId = entry.name;
+        const worktreePath = join(projectRoot, taskId);
+        const branchName = `foreman/${taskId}`;
         worktrees.push({
           projectId,
-          beadId,
+          taskId,
           branchName,
           path: worktreePath,
           exists: existsSync(worktreePath),

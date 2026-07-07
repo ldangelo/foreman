@@ -22,7 +22,7 @@ Decompose PRD-2026-008 into actionable tasks for implementing the Historical Con
 | Task ID | Description | Status | Notes |
 |---------|-------------|--------|-------|
 | T1 | Create manifest.json with archival document list | ✅ Done | 9 documents, exclusions defined |
-| T2 | Define banner-variants.json with canonical banner text | ✅ Done | 4 variants: standard, comparison, migration, beads-rust-only |
+| T2 | Define banner-variants.json with canonical banner text | ✅ Done | 4 variants: standard, comparison, migration, task-client-only |
 | T3 | Create manifest.schema.json for validation | ✅ Done | Full schema with enum constraints |
 | T4 | Implement validate-historical-banners.ts | ✅ Done | Validates banners, --fix mode for injection |
 | T5 | Inject banners into all 9 archived documents | ✅ Done | All banners present per validation |

@@ -138,7 +138,7 @@ Foreman Dispatcher
   |       |     resume: new Pi process, switch_session
   |       |     fork:   same Pi process, fork command (preferred for Dev<->QA)
   |       |
-  |       |-- On complete: git add/commit/push, br close, enqueue merge
+  |       |-- On complete: git add/commit/push, native task store close, enqueue merge
   |
   |-- 5. Agent Mail sends (fire-and-forget):
   |       |-> register_agent("{role}-{taskId}")
@@ -163,7 +163,7 @@ spawnWorkerProcess(config)
   |     |-> DetachedSpawnStrategy.spawn(config)
   |           |-> existing behavior: tsx agent-worker.ts <configPath>
   |           |-> SDK query() calls per phase
-  |           |-> All Postgres updates, br operations, notifications preserved
+  |           |-> All Postgres updates, native task store operations, notifications preserved
   |
   |-- isPiAvailable() -> true, but spawn fails
         |-> log warning
@@ -322,7 +322,7 @@ Create TypeScript type definitions for the Pi extension API based on pi-mono ref
 ---
 
 #### TRD-003: foreman-tool-gate Extension (4h) [satisfies REQ-003] [satisfies REQ-018]
-Implement the `foreman-tool-gate` Pi extension that hooks `tool_call` events and blocks tools not in the phase's allowed list. Extends pi-mono `permission-gate.ts` and `protected-paths.ts` patterns. Reads `FOREMAN_ALLOWED_TOOLS` and `FOREMAN_BASH_BLOCKLIST` from env vars. Protects `.beads/` directory. Blocks `git push --force`.
+Implement the `foreman-tool-gate` Pi extension that hooks `tool_call` events and blocks tools not in the phase's allowed list. Extends pi-mono `permission-gate.ts` and `protected-paths.ts` patterns. Reads `FOREMAN_ALLOWED_TOOLS` and `FOREMAN_BASH_BLOCKLIST` from env vars. Protects `.tasks/` directory. Blocks `git push --force`.
 
 **Validates PRD ACs:** AC-003-1, AC-003-2, AC-003-3, AC-003-4, AC-003-5, AC-003-6, AC-018-1, AC-018-2
 **Implementation AC:**
@@ -333,12 +333,12 @@ Implement the `foreman-tool-gate` Pi extension that hooks `tool_call` events and
 - [ ] Given the default blocklist, when Pi invokes `Bash` with command `npm test`, then the extension allows the call
 - [ ] Given any tool call is blocked, when the block occurs, then an audit callback is invoked with tool name, phase, and denial reason
 - [ ] Given a tool call with a canonical name `Bash`, when an alias is attempted, then the extension checks against the canonical name
-- [ ] Given any phase, when Pi invokes `Write` targeting `.beads/` directory, then the extension blocks the call
+- [ ] Given any phase, when Pi invokes `Write` targeting `.tasks/` directory, then the extension blocks the call
 
 [depends: TRD-002]
 
 #### TRD-003-TEST: foreman-tool-gate Tests (3h) [verifies TRD-003] [satisfies REQ-003] [satisfies REQ-018] [depends: TRD-003]
-Unit tests for all tool-gate scenarios: phase-based blocking, bash blocklist, canonical name enforcement, .beads/ protection.
+Unit tests for all tool-gate scenarios: phase-based blocking, bash blocklist, canonical name enforcement, .tasks/ protection.
 
 **Validates PRD ACs:** AC-003-1, AC-003-2, AC-003-3, AC-003-4, AC-003-5, AC-003-6, AC-018-1, AC-018-2
 **Implementation AC:**
@@ -586,7 +586,7 @@ Update `spawnWorkerProcess()` in `dispatcher.ts` to use the three-tier strategy:
 - [ ] Given Pi is available but spawn fails, when the failure is caught, then `DetachedSpawnStrategy` is used with a warning logged
 - [ ] Given Pi is not available, when `spawnWorkerProcess()` is called, then `DetachedSpawnStrategy` is used directly
 - [ ] Given `FOREMAN_SPAWN_STRATEGY=tmux`, when `spawnWorkerProcess()` is called, then `TmuxSpawnStrategy` is still used (backward compat)
-- [ ] Given fallback to `DetachedSpawnStrategy`, when the agent completes, then all Postgres updates, notification POSTs, and br operations are preserved identically
+- [ ] Given fallback to `DetachedSpawnStrategy`, when the agent completes, then all Postgres updates, notification POSTs, and native task store operations are preserved identically
 - [ ] Given `TmuxSpawnStrategy`, when its source is inspected, then `@deprecated` JSDoc is present
 
 [depends: TRD-012, TRD-010]
@@ -943,7 +943,7 @@ Refactor `Refinery.mergeCompleted()` to extract single-branch merge logic into a
 **Validates PRD ACs:** AC-008-2, AC-008-3
 **Implementation AC:**
 - [ ] Given the extracted `mergeOne()` function, when called with a completed run, then it performs the same merge logic as `mergeCompleted()` for a single branch
-- [ ] Given a T1 clean merge, when `mergeOne()` processes it, then rebase + fast-forward + test + close bead happens without spawning Pi
+- [ ] Given a T1 clean merge, when `mergeOne()` processes it, then rebase + fast-forward + test + close task happens without spawning Pi
 - [ ] Given a T2 report-only conflict, when `mergeOne()` processes it, then report files are auto-resolved and merge completes programmatically
 - [ ] Given existing `mergeCompleted()`, when refactored, then it calls `mergeOne()` in a loop (preserving existing behavior exactly)
 - [ ] Given existing tests for Refinery, when the refactor is complete, then all existing tests still pass

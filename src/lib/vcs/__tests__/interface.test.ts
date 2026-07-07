@@ -116,7 +116,7 @@ class MockVcsBackend implements VcsBackend {
       integrateTargetCommand: 'git rebase origin/main',
       branchVerifyCommand: 'git rev-parse HEAD',
       cleanCommand: 'git worktree remove /tmp',
-      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
+      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl',
     };
   }
 }

@@ -1,6 +1,6 @@
 # Default workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
 #
-# This is the standard Foreman pipeline. All bead types except "smoke" use
+# This is the standard Foreman pipeline. All task types except "smoke" use
 # this workflow unless overridden by a `workflow:<name>` label.
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).

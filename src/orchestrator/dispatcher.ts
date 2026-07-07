@@ -11,7 +11,6 @@ import type { NativeTask, Run, EventType, RunStore, ProgressEventStore } from ".
 import type { RunStatus } from "./read-models.js";
 import type { DispatcherStoreDeps } from "./dispatcher-dependencies.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, getDefaultModel } from "../lib/config.js";
-import type { BvClient } from "../lib/bv.js";
 import { installDependencies, runSetupWithCache, runWorkspaceHook } from "../lib/setup.js";
 import { extractBranchLabel, isDefaultBranch, applyBranchLabel, isValidBranchLabel, normalizeBranchLabel } from "../lib/branch-label.js";
 import { workerAgentMd } from "./templates.js";
@@ -51,7 +50,7 @@ interface DispatcherDependentRef {
   status: string;
 }
 
-interface DispatcherBeadsIssueDetail {
+interface DispatcherTasksIssueDetail {
   children?: string[];
   dependents?: DispatcherDependentRef[];
   dependencies?: Array<string | DispatcherDependencyRef>;
@@ -65,7 +64,7 @@ interface NativeTaskOps {
   claimTask(taskId: string, runId: string): Promise<boolean>;
   updateTaskStatus?(taskId: string, status: NativeTaskStatus): Promise<void>;
   updateTaskLabels?(taskId: string, labels: string[]): Promise<void>;
-  /** Get child task IDs for a given parent task (inverse of Beads' children field). */
+  /** Get child task IDs for a given parent task (inverse of Tasks' children field). */
   getChildren?(taskId: string): Promise<string[]>;
 }
 
@@ -111,7 +110,7 @@ export interface DispatcherOverrides {
 
 /**
  * Convert a NativeTask row into a normalized Issue so that native tasks can be
- * processed by the same dispatch loop that handles Beads issues.
+ * processed by the same dispatch loop that handles Tasks issues.
  *
  * Priority is stored as INTEGER (0–4) in the native store; normalise to string
  * form ('P0'–'P4') so the existing normalizePriority() helper works correctly.
@@ -143,14 +142,13 @@ export function nativeTaskToIssue(task: NativeTask): Issue {
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 export class Dispatcher {
-  private bvFallbackWarned = false;
   private runLifecycleService: RunLifecycleService;
 
   constructor(
     private tasks: ITaskClient,
     private store: DispatcherStoreDeps,
     private projectPath: string,
-    private bvClient?: BvClient | null,
+    _taskOrderingClient?: unknown,
     private overrides?: DispatcherOverrides,
   ) {
     this.runLifecycleService = new RunLifecycleService(
@@ -323,7 +321,7 @@ export class Dispatcher {
      * targets driven by unrelated local activity). Interactive `foreman run`
      * leaves this unset to preserve the branch-stacking feature.
      *
-     * Parent-bead branch-label inheritance is unaffected — a child still
+     * Parent-task branch-label inheritance is unaffected — a child still
      * inherits an explicit `branch:` label from its parent.
      */
     assumeDefaultBranch?: boolean;
@@ -448,45 +446,11 @@ export class Dispatcher {
       : await this.store.getReadyTasks();
     let readyTasks: Issue[] = nativeTasks.map(nativeTaskToIssue);
 
-    // Sort ready tasks using bv triage scores when available, falling back to priority sort.
+    // Sort ready tasks by native priority when dispatching generally.
     if (!opts?.taskId) {
-      if (this.bvClient) {
-        const triageResult = await this.bvClient.robotTriage();
-        if (triageResult !== null) {
-          // Build a score map from bv recommendations
-          const scoreMap = new Map<string, number>();
-          for (const rec of triageResult.recommendations) {
-            scoreMap.set(rec.id, rec.score);
-          }
-          readyTasks = [...readyTasks].sort((a, b) => {
-            const hasA = scoreMap.has(a.id);
-            const hasB = scoreMap.has(b.id);
-            // Tasks in recommendations come before tasks not in recommendations
-            if (hasA && !hasB) return -1;
-            if (!hasA && hasB) return 1;
-            if (hasA && hasB) {
-              // Both ranked: sort by score descending
-              return (scoreMap.get(b.id) ?? 0) - (scoreMap.get(a.id) ?? 0);
-            }
-            // Neither ranked: fall back to priority sort
-            return normalizePriority(a.priority) - normalizePriority(b.priority);
-          });
-          log(`bv triage scored ${readyTasks.length} ready tasks`);
-        } else {
-          if (!this.bvFallbackWarned) {
-            log("bv unavailable, using priority-sort fallback");
-            this.bvFallbackWarned = true;
-          }
-          readyTasks = [...readyTasks].sort(
-            (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
-          );
-        }
-      } else {
-        // No bvClient provided — sort by priority
-        readyTasks = [...readyTasks].sort(
-          (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
-        );
-      }
+      readyTasks = [...readyTasks].sort(
+        (a, b) => normalizePriority(a.priority) - normalizePriority(b.priority),
+      );
     }
 
     // Filter to a specific task if requested
@@ -567,7 +531,7 @@ export class Dispatcher {
       if (opts?.assumeDefaultBranch) {
         // Daemon background dispatch: ignore the developer's checked-out branch
         // and treat the project as being on its default branch. This suppresses
-        // `branch:<current>` auto-labeling while leaving parent-bead branch-label
+        // `branch:<current>` auto-labeling while leaving parent-task branch-label
         // inheritance intact (that path keys off task.parent, not currentBranch).
         currentBranch = defaultBranch;
       } else {
@@ -616,8 +580,8 @@ export class Dispatcher {
         continue;
       }
 
-      // ── Epic beads: dispatch through epic pipeline ─────────────────────────
-      // Epic beads are dispatched as a single epic runner that executes all
+      // ── Epic tasks: dispatch through epic pipeline ─────────────────────────
+      // Epic tasks are dispatched as a single epic runner that executes all
       // child tasks sequentially within one worktree. Native task store does not
       // have children support, so epics dispatch as single-agent tasks.
       if (task.type === "epic") {
@@ -717,9 +681,9 @@ export class Dispatcher {
       // NativeTaskClient implements comments() via task_notes table when using postgres backend.
       // Non-native/legacy mode may return null if the backend doesn't support comments.
       // This is non-fatal — dispatch proceeds even if comment fetch fails.
-      let beadComments: string | null = null;
+      let taskComments: string | null = null;
       try {
-        beadComments = await this.tasks.comments?.(task.id) ?? null;
+        taskComments = await this.tasks.comments?.(task.id) ?? null;
       } catch (commentErr: unknown) {
         const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
         log(`Warning: failed to fetch comments for ${task.id}: ${msg}`);
@@ -727,13 +691,13 @@ export class Dispatcher {
 
       // ── Branch label auto-labeling ─────────────────────────────────────────
       // If the current branch is not the default (main/master/dev), automatically
-      // add a `branch:<currentBranch>` label to the bead so that refinery merges
+      // add a `branch:<currentBranch>` label to the task so that refinery merges
       // the work into the correct branch instead of always targeting main/dev.
       //
-      // Inheritance: if the task has a parent bead with a branch: label, the child
+      // Inheritance: if the task has a parent task with a branch: label, the child
       // inherits that label (even when the current branch is the default).
       //
-      // Only applied when the bead doesn't already have a branch: label.
+      // Only applied when the task doesn't already have a branch: label.
       if (currentBranch && defaultBranch) {
         const existingLabels: string[] = taskDetail?.labels ?? task.labels ?? [];
         const existingBranchLabel = await resolveUsableBranchLabel(extractBranchLabel(existingLabels));
@@ -789,9 +753,9 @@ export class Dispatcher {
         }
       }
 
-      const taskInfo = taskToInfo(task, taskDetail, beadComments);
+      const taskInfo = taskToInfo(task, taskDetail, taskComments);
       const runtime: RuntimeSelection = "claude-code";
-      // Pipeline model is now resolved per-phase from the workflow YAML + bead priority.
+      // Pipeline model is now resolved per-phase from the workflow YAML + task priority.
       // Use opts.model if provided (e.g. --model flag), otherwise fall back to the
       // developer-role default.  This value is the outer fallback only — executePipeline
       // will override it per phase via resolvePhaseModel().
@@ -899,11 +863,11 @@ export class Dispatcher {
           log(`[foreman] VcsBackend creation failed: ${vcsMsg} — continuing without VcsBackend instance`);
         }
 
-        // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<beadId> via WorktreeManager (TRD-037)
+        // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<taskId> via WorktreeManager (TRD-037)
         const worktreeManager = new WorktreeManager();
         const worktreeInfo = await worktreeManager.createWorktree({
           projectId,
-          beadId: task.id,
+          taskId: task.id,
           repoPath: this.projectPath,
           baseBranch: baseBranch ?? defaultBranch,
         });
@@ -983,7 +947,7 @@ export class Dispatcher {
 
         // 6. Mark task as in_progress before spawning agent.
         // Atomic claim: UPDATE tasks SET status='in-progress', run_id=? WHERE id=? AND status='ready'
-        // Native-only: use nativeTaskOps.claimTask() — never use legacy beads claim
+        // Native-only: use nativeTaskOps.claimTask() — never use legacy tasks claim
         const claimed = this.overrides?.nativeTaskOps
           ? await this.overrides.nativeTaskOps.claimTask(task.id, run.id)
           : typeof this.store.claimTask === "function"
@@ -1006,9 +970,9 @@ export class Dispatcher {
           continue;
         }
 
-        // 6a. Send bead-claimed mail so inbox shows bead lifecycle event
+        // 6a. Send task-claimed mail so inbox shows task lifecycle event
         try {
-          await this.sendMailRecord(run.id, "foreman", "foreman", "bead-claimed", JSON.stringify({
+          await this.sendMailRecord(run.id, "foreman", "foreman", "task-claimed", JSON.stringify({
             taskId: task.id,
             title: task.title,
             model,
@@ -1364,14 +1328,14 @@ export class Dispatcher {
   buildSpawnPrompt(taskId: string, taskTitle: string): string {
     return [
       `Read TASK.md and implement the task described.`,
-      `Use br (beads_rust) to track your progress.`,
+      `Use native task store (native task store) to track your progress.`,
       `When completely finished:`,
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
-      `  br sync --flush-only`,
+      `  native task store sync --flush-only`,
       `  git add .`,
       `  git commit -m "${taskTitle} (${taskId})"`,
       `  git push -u origin foreman/${taskId}`,
-      `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
+      `NOTE: Do NOT close the task manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
 
@@ -1384,11 +1348,11 @@ export class Dispatcher {
       `Continue where you left off. Check your progress so far and complete the remaining work.`,
       `When completely finished:`,
       `  Save your session log to SessionLogs/session-$(date +%d%m%y-%H:%M).md (mkdir -p SessionLogs first)`,
-      `  br sync --flush-only`,
+      `  native task store sync --flush-only`,
       `  git add .`,
       `  git commit -m "${taskTitle} (${taskId})"`,
       `  git push -u origin foreman/${taskId}`,
-      `NOTE: Do NOT close the bead manually — it will be closed automatically after the branch merges to main.`,
+      `NOTE: Do NOT close the task manually — it will be closed automatically after the branch merges to main.`,
     ].join("\n");
   }
 
@@ -1790,14 +1754,14 @@ export class Dispatcher {
    *      that transition to terminal state while the daemon is running.
    *   2. The daemon startup path calls cleanupTerminalStateWorktrees() to catch
    *      issues that were closed while the daemon was not running. However, since
-   *      the native dispatcher does not call beads for status, and the native
+   *      the native dispatcher does not call tasks for status, and the native
    *      store does not expose a way to iterate all tasks with their worktrees,
    *      we rely on the reconciliation pass at the start of each dispatch cycle
    *      to catch terminal issues. Orphaned worktrees will be cleaned up on the
    *      next daemon restart if the issue status has been updated externally.
    */
   private async cleanupTerminalStateWorktrees(_projectId: string): Promise<number> {
-    // Native-only dispatcher: no Beads calls
+    // Native-only dispatcher: no Tasks calls
     // Worktree cleanup for terminal issues is handled by reconcileRunningIssues()
     // during the dispatch cycle, which archives worktrees for runs whose issues
     // have transitioned to terminal state.
@@ -1805,8 +1769,8 @@ export class Dispatcher {
   }
 
   /**
-   * Once a bead has a merged/PR-created run, it must not be dispatched again
-   * unless a later explicit reset exists. This protects against stale bead
+   * Once a task has a merged/PR-created run, it must not be dispatched again
+   * unless a later explicit reset exists. This protects against stale task
    * status or delayed queue writes causing accidental redispatch after merge.
    */
   private async hasMergedOutcomeWithoutLaterReset(
@@ -1841,10 +1805,10 @@ export class Dispatcher {
  * Resolve the base branch for a task's worktree.
  *
  * For native-only mode: Native tasks do not have dependency information (unlike
- * Beads issues which support `br dep add`). This function returns undefined
+ * Tasks issues which support `native task store dep add`). This function returns undefined
  * (no stacking) for native tasks.
  *
- * For Beads mode (when nativeTaskOps is not configured): If any of the task's
+ * For Tasks mode (when nativeTaskOps is not configured): If any of the task's
  * blocking dependencies have an unmerged local branch (i.e. a `foreman/<depId>`
  * branch exists locally and its latest run is "completed" but not yet "merged"),
  * stack the new worktree on top of that dependency branch instead of the default
@@ -1856,7 +1820,7 @@ export class Dispatcher {
  * Returns the dependency branch name (e.g. "foreman/story-1") or undefined
  * when no stacking is needed.
  *
- * Native-only: This function does not call Beads client.
+ * Native-only: This function does not call Tasks client.
  * Stacking is disabled for native tasks since they lack dependency metadata.
  */
 export async function resolveBaseBranch(
@@ -1866,7 +1830,7 @@ export async function resolveBaseBranch(
   _backend?: Pick<VcsBackend, "branchExists">,
 ): Promise<string | undefined> {
   // Native-only: Native tasks do not have dependency information.
-  // Beads dependency stacking is not supported in native-only mode.
+  // Tasks dependency stacking is not supported in native-only mode.
   // Return undefined to disable stacking — tasks branch from default branch.
   return undefined;
 }
@@ -1882,7 +1846,7 @@ export interface WorkerConfig {
   taskComments?: string;
   model: string;
   worktreePath: string;
-  /** Project root directory (contains .beads/). Used as cwd for br commands. */
+  /** Project root directory (contains .tasks/). Used as cwd for native task store commands. */
   projectPath?: string;
   prompt: string;
   env: Record<string, string>;
@@ -1894,17 +1858,17 @@ export interface WorkerConfig {
   workflowPath?: string;
   /**
    * Resolved workflow type (e.g. "smoke", "feature", "bug").
-   * Derived from label-based override or bead type field.
+   * Derived from label-based override or task type field.
    * Used for prompt-loader workflow scoping and spawn strategy selection.
    */
   taskType?: string;
   /**
-   * Labels from the bead. Forwarded to agent-worker so it can resolve
+   * Labels from the task. Forwarded to agent-worker so it can resolve
    * `workflow:<name>` label overrides.
    */
   taskLabels?: string[];
   /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Task priority string ("P0"–"P4", "0"–"4", or undefined).
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   taskPriority?: string;
@@ -1925,14 +1889,14 @@ export interface WorkerConfig {
    */
   epicTasks?: EpicTask[];
   /**
-   * Parent epic bead ID (TRD-2026-007).
+   * Parent epic task ID (TRD-2026-007).
    * When set, this run is an epic execution — the worker executes all
    * epicTasks within a single worktree.
    */
   epicId?: string;
   /**
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
-   * Populated from the bead/task that triggered this run.
+   * Populated from the task/task that triggered this run.
    */
   taskMeta?: TaskMeta;
   /**
@@ -2150,12 +2114,12 @@ function extractSessionId(sessionKey: string | null): string | null {
 function taskToInfo(
   task: Issue,
   detail?: { description?: string | null; notes?: string | null; labels?: string[] },
-  beadComments?: string | null,
+  taskComments?: string | null,
 ): TaskInfo {
-  // Combine notes (from br show) and comments (from br comments) into a single
+  // Combine notes (from native task store show) and comments (from native task store comments) into a single
   // "Additional Context" block so agents receive all annotated context.
   const notesSection = detail?.notes ?? undefined;
-  const commentsSection = beadComments ?? undefined;
+  const commentsSection = taskComments ?? undefined;
   let combinedComments: string | undefined;
   if (notesSection && commentsSection) {
     combinedComments = `${notesSection}\n\n---\n\n**Comments:**\n\n${commentsSection}`;

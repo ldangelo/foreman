@@ -94,7 +94,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
-      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;
@@ -176,17 +176,17 @@ describe("finalize() — push succeeds", () => {
     expect(result.success).toBe(true);
   });
 
-  it("finalize returns true when push succeeds (bead closed by refinery, not here)", async () => {
+  it("finalize returns true when push succeeds (task closed by refinery, not here)", async () => {
     const result = await finalize(makeConfig({ worktreePath: tmpDir, projectPath: "/my/project" }), logFile, mockVcs);
     expect(result.success).toBe(true);
   });
 
-  it("sets bead to 'review' status after successful push (not closing it)", async () => {
+  it("sets task to 'review' status after successful push (not closing it)", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir, taskId: "bd-test-001" }), logFile, mockVcs);
     expect(mockUpdateTaskStatus).toHaveBeenCalledWith("bd-test-001", "review");
   });
 
-  it("does NOT call br close after push succeeds (bead lifecycle fix)", async () => {
+  it("does NOT call native task store close after push succeeds (task lifecycle fix)", async () => {
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile, mockVcs);
     // execFileSync should only be called for tsc (not for git commands)
     const gitClose = mockExecFileSync.mock.calls.find(

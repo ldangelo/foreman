@@ -1073,7 +1073,7 @@ The matrix above is requirement-level. Detailed AC coverage is carried by each t
 | AC-003-2 | TRD-004; TRD-004-TEST | Given a run emits phase/worker events, when `foreman status` is called, then the run projection displays active, in-progress, failed, blocked, and completed counts without log inference. |
 | AC-003-3 | TRD-004; TRD-004-TEST | Given projection corruption or drift is detected, when a rebuild is requested, then projections can be dropped and rebuilt from events. |
 | AC-004-1 | TRD-005, TRD-006; TRD-005-TEST, TRD-006-TEST | Given the server is running, when a user runs `foreman task create`, `foreman run`, `foreman status`, or `foreman logs`, then the CLI calls the server API rather than mutating DB state directly. |
-| AC-004-2 | TRD-005, TRD-006; TRD-005-TEST, TRD-006-TEST | Given legacy aliases such as `--bead`, `dashboard`, or deprecated command names are used, when compatibility mode is enabled, then the CLI warns and maps to the new command. |
+| AC-004-2 | TRD-005, TRD-006; TRD-005-TEST, TRD-006-TEST | Given legacy aliases such as `--task`, `dashboard`, or deprecated command names are used, when compatibility mode is enabled, then the CLI warns and maps to the new command. |
 | AC-004-3 | TRD-005, TRD-006; TRD-005-TEST, TRD-006-TEST | Given the server is not running, when a command requires it, then the CLI auto-starts the local server by default or prints a clear `foreman server start` instruction if auto-start fails or is disabled. |
 | AC-005-1 | TRD-006, TRD-007; TRD-006-TEST, TRD-007-TEST | Given a user runs a legacy command, when an equivalent new command exists, then the CLI prints the new spelling. |
 | AC-005-2 | TRD-006, TRD-007; TRD-006-TEST, TRD-007-TEST | Given documentation is generated, when CLI reference is built, then deprecated aliases are clearly marked. |
@@ -1195,7 +1195,7 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 
 1. Review and approve this TRD.
 2. Run `/ensemble:configure-team docs/TRD/TRD-2026-014-elixir-backend-orchestration.md` to auto-configure the team.
-3. Run `/ensemble:implement-trd-beads docs/TRD/TRD-2026-014-elixir-backend-orchestration.md` only after approval.
+3. Run `/ensemble:implement-trd-tasks docs/TRD/TRD-2026-014-elixir-backend-orchestration.md` only after approval.
 
 ## 13. Revision History
 
@@ -1204,8 +1204,8 @@ Traceability check: 25 requirements covered, 0 uncovered, 0 orphaned annotations
 | 2026-06-16 | 1.0.0 | Pi Agent | Initial TRD from PRD-2026-014 |
 | 2026-06-16 | 1.0.1 | Pi Agent | Clarified conditional architecture gate, API/event/worker contracts, recovery rules, dependency parallelization, team config, test specificity, and AC-level coverage notes |
 | 2026-06-16 | 1.0.2 | Pi Agent | Added fixture schemas, integration and VCS/PR contracts, quality requirements, concrete AC-to-task coverage, refined team metrics, and further dependency parallelization |
-| 2026-06-16 | 1.0.3 | Pi Agent | Converted Master Task List to parser-compatible checkbox task format for implement-trd-beads |
-| 2026-06-16 | 1.0.4 | Pi Agent | Converted Team Configuration to implement-trd-beads role-list schema and added local agent registry entries |
+| 2026-06-16 | 1.0.3 | Pi Agent | Converted Master Task List to parser-compatible checkbox task format for implement-trd-tasks |
+| 2026-06-16 | 1.0.4 | Pi Agent | Converted Team Configuration to implement-trd-tasks role-list schema and added local agent registry entries |
 | 2026-06-16 | 1.0.5 | Pi Agent | Recorded TRD-001 comparative architecture spike result and confirmed Elixir/OTP target architecture |
 | 2026-06-17 | 1.0.6 | Pi Agent | Added explicit Elixir cutover gates to disable the Node daemon scheduler and legacy TS delegation during backend migration completion |
 | 2026-06-17 | 1.0.7 | Pi Agent | Reopened Elixir migration scope for CLI cutover parity: board/task/status/watch/logs/inbox mutations and migration export/import remain incomplete |

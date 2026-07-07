@@ -2,7 +2,7 @@
  * Tests for epic resume detection (TRD-009).
  *
  * Verifies:
- *  1. parseCompletedTaskIds extracts bead IDs from git log output
+ *  1. parseCompletedTaskIds extracts task IDs from git log output
  *  2. Resume skips tasks with existing commits
  *  3. Partial task (no commit) restarts from beginning
  *  4. Resume with 0 completed tasks starts from task 1
@@ -119,7 +119,7 @@ function initGitWithCommits(dir: string, taskIds: string[]): void {
 // ── Unit tests for parseCompletedTaskIds ────────────────────────────────
 
 describe("parseCompletedTaskIds", () => {
-  it("extracts bead IDs from git log --oneline output", () => {
+  it("extracts task IDs from git log --oneline output", () => {
     const gitLog = [
       "abc1234 Implement feature (task-3)",
       "def5678 Add user auth (task-2)",
@@ -158,7 +158,7 @@ describe("parseCompletedTaskIds", () => {
     expect(result).toEqual(new Set(["task-15", "task-10"]));
   });
 
-  it("handles bead IDs with various formats", () => {
+  it("handles task IDs with various formats", () => {
     const gitLog = [
       "aaa1111 Fix bug (BUG-123)",
       "bbb2222 Add feature (feat/user-auth)",
@@ -221,7 +221,7 @@ describe("epic resume detection (TRD-009)", () => {
         integrateTargetCommand: "git rebase",
         branchVerifyCommand: "git branch",
         cleanCommand: "git clean",
-        restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+        restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
       }),
     };
 

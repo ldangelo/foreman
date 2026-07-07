@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 
 interface ManifestEntry {
   path: string;
-  variant: "standard" | "comparison" | "migration" | "beads-rust-only";
+  variant: "standard" | "comparison" | "migration" | "task-client-only";
   rationale: string;
   lastReviewed?: string;
   status: "archived" | "review" | "active";

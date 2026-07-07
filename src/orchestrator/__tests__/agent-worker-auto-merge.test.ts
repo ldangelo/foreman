@@ -26,7 +26,7 @@ describe("agent-worker.ts — merge queue handoff", () => {
 
   it("routes worker runtime task selection through the shared factory using native tasks only", () => {
     expect(source).toContain("createTaskClient");
-    expect(source).not.toContain("forceBeadsFallback");
+    expect(source).not.toContain("forceTasksFallback");
   });
 
   it("creates one shared runtime task client for epic QA hooks and status updates", () => {
@@ -61,7 +61,7 @@ describe("agent-worker.ts — merge queue handoff", () => {
   it("routes epic QA failure/pass hooks through the shared runtime task client", () => {
     expect(source).toContain("if (!runtimeTaskClient.create) {");
     expect(source).toContain("const bug = await runtimeTaskClient.create(`QA failure: ${taskTitle}`,");
-    expect(source).toContain("await runtimeTaskClient.close(bugBeadId, \"QA passed on retry\")");
+    expect(source).toContain("await runtimeTaskClient.close(bugTaskId, \"QA passed on retry\")");
   });
 });
 
@@ -72,8 +72,8 @@ describe("auto-merge.ts — module invariants", () => {
     expect(source).toContain("export async function autoMerge(");
   });
 
-  it("exports syncBeadStatusAfterMerge function", () => {
-    expect(source).toContain("export async function syncBeadStatusAfterMerge(");
+  it("exports syncTaskStatusAfterMerge function", () => {
+    expect(source).toContain("export async function syncTaskStatusAfterMerge(");
   });
 
   it("exports AutoMergeOpts interface", () => {
@@ -118,7 +118,7 @@ describe("run.ts — still exports autoMerge (backwards compat)", () => {
     expect(runSource).not.toContain("export async function autoMerge(");
   });
 
-  it("does NOT contain the old inline syncBeadStatusAfterMerge", () => {
-    expect(runSource).not.toContain("async function syncBeadStatusAfterMerge(");
+  it("does NOT contain the old inline syncTaskStatusAfterMerge", () => {
+    expect(runSource).not.toContain("async function syncTaskStatusAfterMerge(");
   });
 });

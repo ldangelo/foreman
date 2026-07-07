@@ -8,10 +8,10 @@ import {
   type TaskOrderingIssueDetail,
 } from "../task-ordering.js";
 
-// ── Mock BvClient ──────────────────────────────────────────────────────────
+// ── Mock TaskOrderingClient ──────────────────────────────────────────────────────────
 
-vi.mock("../../lib/bv.js", () => ({
-  BvClient: vi.fn().mockImplementation(() => ({
+vi.mock("../../lib/task-ordering.js", () => ({
+  TaskOrderingClient: vi.fn().mockImplementation(() => ({
     robotTriage: vi.fn().mockResolvedValue(null),
     robotNext: vi.fn().mockResolvedValue(null),
   })),
@@ -54,7 +54,7 @@ function makeBrClient(details: Map<string, TaskOrderingIssueDetail>) {
   return {
     show: vi.fn().mockImplementation(async (id: string) => {
       const d = details.get(id);
-      if (!d) throw new Error(`Bead ${id} not found`);
+      if (!d) throw new Error(`Task ${id} not found`);
       return d;
     }),
     // Stub remaining methods that may be called
@@ -161,7 +161,7 @@ describe("getTaskOrder", () => {
     expect(result[0].taskId).toBe("t1");
   });
 
-  it("includes taskDescription from bead description", async () => {
+  it("includes taskDescription from task description", async () => {
     const task1 = makeDetail("t1", "Task 1", "P1", []);
 
     const epic = makeDetail("epic-1", "Epic", "P1", [], "epic");

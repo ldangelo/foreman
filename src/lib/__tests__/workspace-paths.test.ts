@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildTrackedStateRestoreCommand,
-  getBeadsIssuesPathForWorkspace,
+  getTasksIssuesPathForWorkspace,
   getWorkspacePath,
   getWorkspaceRoot,
   inferProjectPathFromWorkspacePath,
@@ -14,18 +14,18 @@ describe("workspace path helpers", () => {
     expect(inferProjectPathFromWorkspacePath("/tmp/.foreman-worktrees/repo/foreman-123")).toBe("/tmp/repo");
   });
 
-  it("uses local beads state for external workspaces", () => {
-    expect(getBeadsIssuesPathForWorkspace("/tmp/.foreman-worktrees/repo/foreman-123", "/tmp/repo")).toBe(".beads/issues.jsonl");
+  it("uses local tasks state for external workspaces", () => {
+    expect(getTasksIssuesPathForWorkspace("/tmp/.foreman-worktrees/repo/foreman-123", "/tmp/repo")).toBe(".tasks/issues.jsonl");
   });
 
-  it("uses main repo beads state for nested legacy workspaces", () => {
-    expect(getBeadsIssuesPathForWorkspace("/tmp/repo/.foreman-worktrees/foreman-123", "/tmp/repo")).toBe("../../.beads/issues.jsonl");
+  it("uses main repo tasks state for nested legacy workspaces", () => {
+    expect(getTasksIssuesPathForWorkspace("/tmp/repo/.foreman-worktrees/foreman-123", "/tmp/repo")).toBe("../../.tasks/issues.jsonl");
   });
 
   it("unstages node_modules symlinks and runtime artifacts before finalize commits", () => {
     const command = buildTrackedStateRestoreCommand("/tmp/.foreman-worktrees/repo/foreman-123", "/tmp/repo");
 
-    expect(command).toContain(".beads/issues.jsonl");
+    expect(command).toContain(".tasks/issues.jsonl");
     expect(command).toContain("node_modules");
     expect(command).toContain("SESSION_LOG.md");
     expect(command).toContain("RUN_LOG.md");

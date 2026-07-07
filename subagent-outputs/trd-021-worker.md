@@ -9,8 +9,8 @@ Commits:
 - 346e2e94 test: verify Elixir attach recovery bridge
 
 Files changed:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - docs/TRD/TRD-2026-014-elixir-backend-orchestration.md
 - packages/foreman_server/README.md
 - packages/foreman_server/lib/foreman_server/attach_bridge.ex
@@ -66,7 +66,7 @@ Current git status:
     {
       "id": "criterion-4",
       "status": "satisfied",
-      "evidence": "Committed implementation separately as 764257a8 and test/bead changes separately as 346e2e94."
+      "evidence": "Committed implementation separately as 764257a8 and test/task changes separately as 346e2e94."
     },
     {
       "id": "criterion-5",
@@ -75,8 +75,8 @@ Current git status:
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "docs/TRD/TRD-2026-014-elixir-backend-orchestration.md",
     "packages/foreman_server/README.md",
     "packages/foreman_server/lib/foreman_server/attach_bridge.ex",
@@ -89,9 +89,9 @@ Current git status:
   ],
   "commandsRun": [
     {
-      "command": "br update bd-hper --status in_progress --json && br comment add bd-hper ... && br sync --flush-only",
+      "command": "native task store update bd-hper --status in_progress --json && native task store comment add bd-hper ... && native task store sync --flush-only",
       "result": "passed",
-      "summary": "Claimed TRD-021 bead before editing."
+      "summary": "Claimed TRD-021 task before editing."
     },
     {
       "command": "cd packages/foreman_server && mix format && mix test && cd ../.. && npx tsc --noEmit && node /Users/ldangelo/Development/Fortium/ensemble/packages/development/lib/trd-cli.js parse docs/TRD/TRD-2026-014-elixir-backend-orchestration.md",
@@ -99,12 +99,12 @@ Current git status:
       "summary": "Implementation validation passed before closing TRD-021; 73 tests, TypeScript pass, TRD parser warnings []."
     },
     {
-      "command": "br close bd-hper --reason 'Completed TRD-021 attach and interactive recovery bridge' && br sync --flush-only && git commit -m 'feat: add Elixir attach recovery bridge'",
+      "command": "native task store close bd-hper --reason 'Completed TRD-021 attach and interactive recovery bridge' && native task store sync --flush-only && git commit -m 'feat: add Elixir attach recovery bridge'",
       "result": "passed",
       "summary": "Closed TRD-021 and committed implementation as 764257a8."
     },
     {
-      "command": "br update bd-foiw --status in_progress --json && br comment add bd-foiw ... && br sync --flush-only",
+      "command": "native task store update bd-foiw --status in_progress --json && native task store comment add bd-foiw ... && native task store sync --flush-only",
       "result": "passed",
       "summary": "Claimed TRD-021-TEST after dependency unlocked."
     },
@@ -114,9 +114,9 @@ Current git status:
       "summary": "Final validation passed; 77 tests, 0 failures; TypeScript pass; TRD parser pass."
     },
     {
-      "command": "br close bd-foiw --reason 'Completed TRD-021-TEST; attach bridge tests pass' && br sync --flush-only && git commit -m 'test: verify Elixir attach recovery bridge'",
+      "command": "native task store close bd-foiw --reason 'Completed TRD-021-TEST; attach bridge tests pass' && native task store sync --flush-only && git commit -m 'test: verify Elixir attach recovery bridge'",
       "result": "passed",
-      "summary": "Closed TRD-021-TEST and committed tests/bead changes as 346e2e94."
+      "summary": "Closed TRD-021-TEST and committed tests/task changes as 346e2e94."
     },
     {
       "command": "git status --short && git log --oneline -4",

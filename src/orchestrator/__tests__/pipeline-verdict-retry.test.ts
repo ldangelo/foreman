@@ -530,7 +530,7 @@ describe("verdict-triggered retry", () => {
         if (ref === "origin/dev" || ref === "dev") return "rev-dev-123";
         throw new Error(`unknown ref ${ref}`);
       }),
-      getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      getHeadId: vi.fn().mockResolvedValue("head-task-456"),
       isAncestor: vi.fn().mockResolvedValue(true),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
@@ -563,7 +563,7 @@ describe("verdict-triggered retry", () => {
       expect.objectContaining({
         qaValidatedTargetBranch: "dev",
         qaValidatedTargetRef: "rev-dev-123",
-        qaValidatedHeadRef: "head-bead-456",
+        qaValidatedHeadRef: "head-task-456",
       }),
     );
     expect(args.store.updateRunProgress).toHaveBeenCalledWith(
@@ -602,7 +602,7 @@ describe("verdict-triggered retry", () => {
         if (ref === "origin/dev" || ref === "dev") return "rev-dev-123";
         throw new Error(`unknown ref ${ref}`);
       }),
-      getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      getHeadId: vi.fn().mockResolvedValue("head-task-456"),
       isAncestor: vi.fn().mockResolvedValue(true),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
@@ -656,7 +656,7 @@ describe("verdict-triggered retry", () => {
       name: "jujutsu",
       detectDefaultBranch: vi.fn().mockResolvedValue("dev"),
       resolveRef: vi.fn().mockResolvedValue("rev-dev-same"),
-      getHeadId: vi.fn().mockResolvedValue("head-bead-123"),
+      getHeadId: vi.fn().mockResolvedValue("head-task-123"),
       isAncestor: vi.fn().mockResolvedValue(true),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
@@ -714,7 +714,7 @@ describe("verdict-triggered retry", () => {
         resolveCount += 1;
         return resolveCount === 1 ? "rev-dev-qa" : "rev-dev-finalize";
       }),
-      getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      getHeadId: vi.fn().mockResolvedValue("head-task-456"),
       isAncestor: vi.fn().mockResolvedValue(false),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",
@@ -770,7 +770,7 @@ describe("verdict-triggered retry", () => {
         resolveCount += 1;
         return resolveCount === 1 ? "rev-dev-qa" : "rev-dev-finalize";
       }),
-      getHeadId: vi.fn().mockResolvedValue("head-bead-456"),
+      getHeadId: vi.fn().mockResolvedValue("head-task-456"),
       isAncestor: vi.fn().mockResolvedValue(false),
       getFinalizeCommands: vi.fn().mockReturnValue({
         stageCommand: "",

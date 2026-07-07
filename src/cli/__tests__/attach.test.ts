@@ -205,7 +205,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "task-running",
+              task_id: "task-running",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",
@@ -262,7 +262,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "task-1",
+              task_id: "task-1",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",
@@ -303,7 +303,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "task-1",
+              task_id: "task-1",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",
@@ -344,7 +344,7 @@ describe("attach command", () => {
             {
               id: "run-1",
               project_id: "project-1",
-              bead_id: "task-1",
+              task_id: "task-1",
               status: "running",
               branch: "feature/a",
               agent_type: "developer",

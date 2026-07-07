@@ -340,7 +340,7 @@ interface WorkerConfig {
   workflowName?: string;
   workflowPath?: string;
   /**
-   * Bead type field (e.g. "feature", "bug", "task", "smoke").
+   * Task type field (e.g. "feature", "bug", "task", "smoke").
    * Used to resolve the workflow name when no `workflow:<name>` label is set.
    */
   taskType?: string;
@@ -350,7 +350,7 @@ interface WorkerConfig {
    */
   taskLabels?: string[];
   /**
-   * Bead priority string ("P0"–"P4", "0"–"4", or undefined).
+   * Task priority string ("P0"–"P4", "0"–"4", or undefined).
    * Forwarded to the pipeline executor to resolve per-priority models from YAML.
    */
   taskPriority?: string;
@@ -434,7 +434,7 @@ function initLogContext(config: WorkerConfig): void {
 
 function installTestWorkerGuard(config: WorkerConfig): void {
   const homeDir = config.env.HOME;
-  const isTempTestHome = Boolean(homeDir?.includes("foreman-test-home-") || homeDir?.includes("foreman-no-br-home-"));
+  const isTempTestHome = Boolean(homeDir?.includes("foreman-test-home-") || homeDir?.includes("foreman-no-task-backend-home-"));
   if (config.env.FOREMAN_WORKER_TEST_GUARD !== "1" && !isTempTestHome) return;
   const parentPid = Number(config.env.FOREMAN_WORKER_PARENT_PID);
   const interval = setInterval(() => {
@@ -2100,21 +2100,21 @@ async function runPipeline(
       promptOpts: { projectRoot: pipelineProjectPath, workflow: resolvedWorkflow },
       taskMeta: config.taskMeta,
 
-    // Epic mode: sync child task bead status into br as the pipeline progresses.
+    // Epic mode: sync child task status as the pipeline progresses.
     async onTaskStatusChange(taskTaskId, status) {
       if (status === "in_progress") {
         await runtimeTaskClient.update(taskTaskId, { status: "in_progress" });
-        log(`[EPIC] br update ${taskTaskId} → in_progress`);
+        log(`[EPIC] task update ${taskTaskId} → in_progress`);
       } else if (status === "completed") {
         await runtimeTaskClient.close(taskTaskId, "Completed via epic pipeline");
-        log(`[EPIC] br close ${taskTaskId} (completed)`);
+        log(`[EPIC] task close ${taskTaskId} (completed)`);
       } else if (status === "failed") {
         await runtimeTaskClient.update(taskTaskId, { status: "failed" });
-        log(`[EPIC] br update ${taskTaskId} → failed`);
+        log(`[EPIC] task update ${taskTaskId} → failed`);
       }
     },
 
-    // Epic mode: create a bug bead when QA fails on a child task.
+    // Epic mode: create a bug task when QA fails on a child task.
     async onTaskQaFailure(taskTaskId, taskTitle, epicId) {
       if (!runtimeTaskClient.create) {
         throw new Error("Runtime task client does not support create");
@@ -2126,14 +2126,14 @@ async function runPipeline(
         parent: epicId,
         description: `QA failed for task ${taskTaskId} (${taskTitle}) during epic pipeline run.`,
       });
-      log(`[EPIC] Created bug bead ${bug.id} for QA failure on ${taskTaskId}`);
+      log(`[EPIC] Created bug task ${bug.id} for QA failure on ${taskTaskId}`);
       return bug.id;
     },
 
-    // Epic mode: close a bug bead when QA passes on retry.
-    async onTaskQaPass(bugBeadId) {
-      await runtimeTaskClient.close(bugBeadId, "QA passed on retry");
-      log(`[EPIC] Closed bug bead ${bugBeadId} (QA passed on retry)`);
+    // Epic mode: close a bug task when QA passes on retry.
+    async onTaskQaPass(bugTaskId) {
+      await runtimeTaskClient.close(bugTaskId, "QA passed on retry");
+      log(`[EPIC] Closed bug task ${bugTaskId} (QA passed on retry)`);
     },
 
     // P1: Rate limit alert callback - log rate limit events for alerting
@@ -2276,10 +2276,10 @@ async function runPipeline(
             log(`[FINALIZE] agent-error mail received — error: ${errorDetail}, retryable: ${String(finalizeRetryable)}`);
 
             if (errorDetail === "nothing_to_commit") {
-              const beadType = config.taskType ?? "";
-              const beadTitle = config.taskTitle ?? "";
-              const isVerificationBead = beadType === "test" ||
-                /verify|validate|test/i.test(beadTitle);
+              const taskType = config.taskType ?? "";
+              const taskTitle = config.taskTitle ?? "";
+              const isVerificationTask = taskType === "test" ||
+                /verify|validate|test/i.test(taskTitle);
 
               let hasCommitsAhead = false;
               {
@@ -2303,9 +2303,9 @@ async function runPipeline(
               if (hasCommitsAhead) {
                 finalizeSucceeded = true;
                 log(`[FINALIZE] nothing_to_commit but branch has prior commits — treating as success (reused worktree)`);
-              } else if (isVerificationBead) {
+              } else if (isVerificationTask) {
                 finalizeSucceeded = true;
-                log(`[FINALIZE] nothing_to_commit on verification bead (type="${beadType}", title="${beadTitle}") — treating as success`);
+                log(`[FINALIZE] nothing_to_commit on verification task (type="${taskType}", title="${taskTitle}") — treating as success`);
               } else {
                 finalizeSucceeded = true;
                 log(`[FINALIZE] nothing_to_commit and no commits ahead — work already on target branch, treating as success`);
@@ -2422,7 +2422,7 @@ async function runPipeline(
               });
               notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
               await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");
-              log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating bead as merged`);
+              log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating task as merged`);
             }
           } catch (alreadyMergedErr: unknown) {
             const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);

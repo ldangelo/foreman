@@ -250,7 +250,7 @@ Foreman shall expose read models through projections optimized for CLI, board, w
 Foreman shall retain a Node CLI that delegates orchestration commands to the Elixir server and streamlines overlapping commands.
 
 - AC-004-1: Given the server is running, when a user runs `foreman task create`, `foreman run`, `foreman status`, or `foreman logs`, then the CLI calls the server API rather than mutating DB state directly.
-- AC-004-2: Given legacy aliases such as `--bead`, `dashboard`, or deprecated command names are used, when compatibility mode is enabled, then the CLI warns and maps to the new command.
+- AC-004-2: Given legacy aliases such as `--task`, `dashboard`, or deprecated command names are used, when compatibility mode is enabled, then the CLI warns and maps to the new command.
 - AC-004-3: Given the server is not running, when a command requires it, then the CLI auto-starts the local server by default or prints a clear `foreman server start` instruction if auto-start fails or is disabled.
 
 ### REQ-005: Simplified CLI Command Surface
@@ -761,7 +761,7 @@ Default hypothesis: **Elixir/OTP remains preferred** because Foreman's core risk
 | Inbox/mail | Event-backed message projection |
 | Workflow YAML/prompts | Existing workflows loaded/migrated; validation in server |
 | PRD/TRD planning | Worker-backed planning phases |
-| Beads legacy compatibility | Import/compat layer only; not primary backend |
+| Tasks legacy compatibility | Import/compat layer only; not primary backend |
 | Doctor/purge | Server health/projection/log maintenance |
 
 ---

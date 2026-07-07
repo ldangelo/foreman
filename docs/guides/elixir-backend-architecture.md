@@ -21,7 +21,7 @@ Legacy spellings remain hidden or compatibility-only during migration and point 
 | Old spelling | Replacement |
 |--------------|-------------|
 | `foreman dashboard` | `foreman watch` |
-| `foreman bead` | Removed; use structured `foreman task create --title ...` |
+| `foreman task` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow without those phases |

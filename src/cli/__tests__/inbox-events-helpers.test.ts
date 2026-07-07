@@ -72,7 +72,7 @@ describe("inbox event helpers", () => {
         { id: "evt-1", run_id: "run-1", event_type: "fail", payload: JSON.stringify({ taskId: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
       ]),
       listProjectPipelineEvents: vi.fn().mockResolvedValue([
-        { id: "evt-2", run_id: null, event_type: "dispatch", payload: { bead_id: "task-2" }, created_at: new Date("2026-01-01T00:01:00.000Z") },
+        { id: "evt-2", run_id: null, event_type: "dispatch", payload: { task_id: "task-2" }, created_at: new Date("2026-01-01T00:01:00.000Z") },
       ]),
     } as any;
 
@@ -83,7 +83,7 @@ describe("inbox event helpers", () => {
     expect(adapter.listPipelineEventsForRun).toHaveBeenCalledWith("run-1", 10);
     expect(adapter.listProjectPipelineEvents).toHaveBeenCalledWith("proj-1", 10);
     expect(byRun[0]).toMatchObject({ eventType: "fail", details: { taskId: "task-1" } });
-    expect(byProject[0]).toMatchObject({ eventType: "dispatch", details: { bead_id: "task-2" } });
+    expect(byProject[0]).toMatchObject({ eventType: "dispatch", details: { task_id: "task-2" } });
     expect(empty).toEqual([]);
   });
 
@@ -96,9 +96,9 @@ describe("inbox event helpers", () => {
     ["fail", {}, "Failed"],
     ["merge", {}, "Merged"],
     ["pr-created", {}, "PR created"],
-    ["merge-queue-fallback", { bead_id: "bd-1" }, "merge-queue-fallback: bd-1"],
+    ["merge-queue-fallback", { task_id: "bd-1" }, "merge-queue-fallback: bd-1"],
     ["merge-cleanup-fallback", {}, "merge-cleanup-fallback"],
-    ["conflict", { bead_id: "bd-2" }, "conflict: bd-2"],
+    ["conflict", { task_id: "bd-2" }, "conflict: bd-2"],
     ["test-fail", {}, "test-fail"],
     ["stuck", {}, "Stuck"],
     ["custom", { taskId: "task-1" }, "custom: task-1"],
@@ -238,7 +238,7 @@ describe("inbox event helpers", () => {
       client: {
         listEvents: vi.fn().mockImplementation(async ({ runId }: { runId?: string }) => {
           const rows = [
-            { event_id: "evt-1", run_id: "run-1", event_type: "dispatch", payload: { bead_id: "task-1" }, occurred_at: "2026-01-01T00:00:00.000Z" },
+            { event_id: "evt-1", run_id: "run-1", event_type: "dispatch", payload: { task_id: "task-1" }, occurred_at: "2026-01-01T00:00:00.000Z" },
             { event_id: "evt-2", run_id: "run-2", event_type: "fail", payload: { taskId: "task-2" }, occurred_at: "2026-01-01T00:02:00.000Z" },
           ];
           return rows.filter((row) => (runId ? row.run_id === runId : true));
@@ -256,7 +256,7 @@ describe("inbox event helpers", () => {
           ]),
           listEvents: vi.fn()
             .mockResolvedValueOnce([
-              { id: "evt-1", run_id: "run-1", event_type: "dispatch", details: JSON.stringify({ bead_id: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
+              { id: "evt-1", run_id: "run-1", event_type: "dispatch", details: JSON.stringify({ task_id: "task-1" }), created_at: "2026-01-01T00:00:00.000Z" },
             ])
             .mockResolvedValueOnce([
               { id: "evt-2", run_id: "run-2", event_type: "fail", details: JSON.stringify({ taskId: "task-2" }), created_at: "2026-01-01T00:02:00.000Z" },

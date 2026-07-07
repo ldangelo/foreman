@@ -11,7 +11,7 @@
 
 ### Problem Statement
 
-Foreman agents and developers currently manage task status changes through CLI commands (`foreman task update <id> --status <status>`) or direct bead manipulation. There is no visual, terminal-native way to see the full state of a project's task queue at a glance, move tasks between statuses, or quickly edit task metadata.
+Foreman agents and developers currently manage task status changes through CLI commands (`foreman task update <id> --status <status>`) or direct task manipulation. There is no visual, terminal-native way to see the full state of a project's task queue at a glance, move tasks between statuses, or quickly edit task metadata.
 
 ### Solution Overview
 
@@ -59,7 +59,7 @@ User runs `foreman board`
 3. Change a task's status directly from the board via a keypress
 4. Close a task directly from the board via a keypress
 5. Open task for editing in `$EDITOR` in YAML format; parse and save on editor exit
-6. Work with both Beads (native store) and the native task backend
+6. Work with both Tasks (native store) and the native task backend
 7. Render within 100ms on boards with up to 200 tasks
 8. Fully keyboard-driven (no mouse required)
 
@@ -188,7 +188,7 @@ Help overlay renders as a centered panel with keybinding table, semi-transparent
 ### NFR-3: Task Store Integration
 - Read tasks from `foreman task list` via task store abstraction
 - Write status changes via `foreman task update <id> --status <status>`
-- Must work with Beads backend and native task store
+- Must work with Tasks backend and native task store
 
 ### NFR-4: Error Handling
 - If task store is unavailable, show error banner and disable mutations

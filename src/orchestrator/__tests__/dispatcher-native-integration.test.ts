@@ -10,7 +10,7 @@
  * with native task store operations, without depending on a live database.
  *
  * TRD-007 / REQ-017 characterization: documents that the dispatcher exclusively
- * uses the native Postgres task store (no beads/br fallback path exists).
+ * uses the native Postgres task store (no tasks/native task store fallback path exists).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
@@ -47,12 +47,12 @@ vi.mock("../../lib/vcs/index.js", () => ({
 
 vi.mock("../../lib/worktree-manager.js", () => ({
   WorktreeManager: class {
-    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
+    async createWorktree(opts: { projectId: string; taskId: string; repoPath: string; baseBranch?: string }) {
       return {
         projectId: opts.projectId,
-        beadId: opts.beadId,
-        branchName: `foreman/${opts.beadId}`,
-        path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`,
+        taskId: opts.taskId,
+        branchName: `foreman/${opts.taskId}`,
+        path: `/tmp/worktrees/${opts.projectId}/${opts.taskId}`,
         exists: false,
       };
     }
@@ -119,7 +119,7 @@ function makeNativeTask(id: string, priority = 2): NativeTask {
   };
 }
 
-function makeMockBeadsClient(): ITaskClient {
+function makeMockTasksClient(): ITaskClient {
   return {
     ready: vi.fn().mockResolvedValue([]),
     show: vi.fn().mockResolvedValue({ status: "open" }),
@@ -164,7 +164,7 @@ function makeMockStore(opts: {
 
 /**
  * Characterization: the dispatcher reads ready tasks exclusively from the native
- * task store (ForemanStore.getReadyTasks). No beads/br fallback path exists.
+ * task store (ForemanStore.getReadyTasks). No tasks/native task store fallback path exists.
  *
  * This test documents that native tasks are the only task source.
  */
@@ -173,12 +173,12 @@ describe("Dispatcher — native task store is the sole task source (characteriza
     vi.restoreAllMocks();
   });
 
-  it("dispatches native tasks via dry-run without querying beads client", async () => {
+  it("dispatches native tasks via dry-run without querying tasks client", async () => {
     const nativeTasks = [makeNativeTask("t-native-001"), makeNativeTask("t-native-002")];
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks });
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: true });
@@ -189,9 +189,9 @@ describe("Dispatcher — native task store is the sole task source (characteriza
     expect(result.dispatched.map((d) => d.taskId)).toContain("t-native-001");
     expect(result.dispatched.map((d) => d.taskId)).toContain("t-native-002");
 
-    // Beads client must NOT be called — native is the only path
-    expect(beadsClient.ready).not.toHaveBeenCalled();
-    expect(beadsClient.show).not.toHaveBeenCalled();
+    // Tasks client must NOT be called — native is the only path
+    expect(tasksClient.ready).not.toHaveBeenCalled();
+    expect(tasksClient.show).not.toHaveBeenCalled();
 
     // Native store must be queried
     expect(store.getReadyTasks).toHaveBeenCalled();
@@ -199,9 +199,9 @@ describe("Dispatcher — native task store is the sole task source (characteriza
 
   it("returns zero dispatches when native task store has no ready tasks", async () => {
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [] });
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: true });
@@ -210,11 +210,11 @@ describe("Dispatcher — native task store is the sole task source (characteriza
 
     // No tasks dispatched
     expect(result.dispatched).toHaveLength(0);
-    // Beads NOT consulted
-    expect(beadsClient.ready).not.toHaveBeenCalled();
+    // Tasks NOT consulted
+    expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 
-  it("skips tasks with active runs and does not query beads for those tasks", async () => {
+  it("skips tasks with active runs and does not query tasks for those tasks", async () => {
     const task = makeNativeTask("t-active-001");
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [task] });
     // Simulate an active run already exists for this task
@@ -227,9 +227,9 @@ describe("Dispatcher — native task store is the sole task source (characteriza
         created_at: new Date().toISOString(),
       },
     ]);
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: true });
@@ -239,11 +239,11 @@ describe("Dispatcher — native task store is the sole task source (characteriza
     // Task should be skipped (already has active run)
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/active run/i);
-    // Beads still not called
-    expect(beadsClient.ready).not.toHaveBeenCalled();
+    // Tasks still not called
+    expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 
-  it("skips tasks with completed (unmerged) runs and does not query beads", async () => {
+  it("skips tasks with completed (unmerged) runs and does not query tasks", async () => {
     const task = makeNativeTask("t-merged-001");
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks: [task] });
     // Simulate a completed-but-unmerged run
@@ -256,9 +256,9 @@ describe("Dispatcher — native task store is the sole task source (characteriza
         created_at: new Date().toISOString(),
       },
     ]);
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await dispatcher.dispatch({ dryRun: true });
@@ -268,7 +268,7 @@ describe("Dispatcher — native task store is the sole task source (characteriza
     // Task should be skipped (has completed run awaiting merge)
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/merge/i);
-    expect(beadsClient.ready).not.toHaveBeenCalled();
+    expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 });
 
@@ -318,9 +318,9 @@ describe("Dispatcher — atomic claim against native task store (characterizatio
     const taskId = "t-claim-001";
     const runId = "run-claim-001";
     const store = makeStoreWithRun(taskId, runId);
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "mock-session" });
@@ -348,9 +348,9 @@ describe("Dispatcher — atomic claim against native task store (characterizatio
     const store = makeStoreWithRun(taskId, runId);
     // Simulate race: another dispatcher already claimed the task
     (store.claimTask as ReturnType<typeof vi.fn>).mockReturnValue(false);
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "mock-session" });
@@ -405,10 +405,10 @@ describe("Dispatcher — native tasks dispatched in priority order (characteriza
       makeNativeTask("mid-prio", 2),
       makeNativeTask("low-prio", 3),
     ]);
-    const beadsClient = makeMockBeadsClient();
+    const tasksClient = makeMockTasksClient();
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
     consoleSpy.mockRestore();

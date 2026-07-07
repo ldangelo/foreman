@@ -108,7 +108,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Routed ExternalTriggerCommand through CommandRouter to IntegrationIngestion, added HTTP command coverage, aligned GitHub/sentinel fallback dedupe keys with TRD, required Jira/GitHub links, made dedupe-only partial state retry-safe, and replaced unsafe command-router string-to-atom key normalization with a whitelist.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-019 review fixes only. Did not reopen beads.",
+  "manualNotes": "Scoped to TRD-019 review fixes only. Did not reopen tasks.",
   "notes": "Output report file is untracked after final write by design."
 }
 ```

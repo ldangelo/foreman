@@ -1,7 +1,7 @@
 # Feature workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
 #
 # Full feature development pipeline. Identical to the default workflow but
-# explicitly selects this workflow when bead type is "feature".
+# explicitly selects this workflow when task type is "feature".
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
 # Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.

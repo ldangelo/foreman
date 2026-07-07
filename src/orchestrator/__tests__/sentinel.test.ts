@@ -5,7 +5,7 @@ import type { VcsBackend } from "../../lib/vcs/interface.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function makeMocks(existingBeads: Array<{ id: string; title: string }> = []) {
+function makeMocks(existingTasks: Array<{ id: string; title: string }> = []) {
   const store = {
     logEvent: vi.fn(),
     recordSentinelRun: vi.fn(),
@@ -16,7 +16,7 @@ function makeMocks(existingBeads: Array<{ id: string; title: string }> = []) {
   };
   const tasks = {
     create: vi.fn(async () => ({ id: "bd-001", title: "bug" })),
-    list: vi.fn(async () => existingBeads),
+    list: vi.fn(async () => existingTasks),
   };
   const agent = new SentinelAgent(store as any, tasks as any, "proj-1", "/tmp/project");
   return { store, tasks, agent };
@@ -227,7 +227,7 @@ describe("SentinelAgent", () => {
     });
   });
 
-  describe("duplicate bead prevention", () => {
+  describe("duplicate task prevention", () => {
     /**
      * Helper: invoke `createBugTask` indirectly by exercising the private method
      * via a direct cast. This lets us test the deduplication logic without
@@ -245,7 +245,7 @@ describe("SentinelAgent", () => {
       }).createBugTask(branch, commitHash, output);
     }
 
-    it("skips bead creation when an open bead with the same title already exists", async () => {
+    it("skips task creation when an open task with the same title already exists", async () => {
       const shortHash = "abc12345";
       const existingTitle = `[Sentinel] Test failures on main @ ${shortHash}`;
       const { tasks, agent } = makeMocks([
@@ -261,8 +261,8 @@ describe("SentinelAgent", () => {
       expect(tasks.create).not.toHaveBeenCalled();
     });
 
-    it("creates a new bead when no matching open bead exists", async () => {
-      const { tasks, agent } = makeMocks([]); // empty — no existing beads
+    it("creates a new task when no matching open task exists", async () => {
+      const { tasks, agent } = makeMocks([]); // empty — no existing tasks
 
       await callCreateBugTask(agent, "main", "deadbeef" + "0".repeat(32), "test output");
 
@@ -281,8 +281,8 @@ describe("SentinelAgent", () => {
       );
     });
 
-    it("creates a new bead when existing beads have a different commit hash", async () => {
-      // Existing bead is for a DIFFERENT commit
+    it("creates a new task when existing tasks have a different commit hash", async () => {
+      // Existing task is for a DIFFERENT commit
       const { tasks, agent } = makeMocks([
         { id: "bd-old", title: "[Sentinel] Test failures on main @ 00000000" },
       ]);
@@ -292,8 +292,8 @@ describe("SentinelAgent", () => {
       expect(tasks.create).toHaveBeenCalledOnce();
     });
 
-    it("creates a new bead when existing beads are for a different branch", async () => {
-      // Existing bead is for a different branch
+    it("creates a new task when existing tasks are for a different branch", async () => {
+      // Existing task is for a different branch
       const { tasks, agent } = makeMocks([
         { id: "bd-other", title: "[Sentinel] Test failures on develop @ deadbeef" },
       ]);
@@ -303,7 +303,7 @@ describe("SentinelAgent", () => {
       expect(tasks.create).toHaveBeenCalledOnce();
     });
 
-    it("handles null commit hash — skips duplicate when unknown-hash bead exists", async () => {
+    it("handles null commit hash — skips duplicate when unknown-hash task exists", async () => {
       const existingTitle = "[Sentinel] Test failures on main @ unknown";
       const { tasks, agent } = makeMocks([
         { id: "bd-unknown", title: existingTitle },
@@ -317,7 +317,7 @@ describe("SentinelAgent", () => {
     it("proceeds with creation even if list() throws (non-fatal)", async () => {
       const { tasks, agent } = makeMocks();
       // Override list to throw
-      tasks.list.mockRejectedValueOnce(new Error("br list failed"));
+      tasks.list.mockRejectedValueOnce(new Error("native task store list failed"));
 
       // Should not throw — error is caught and logged
       await expect(

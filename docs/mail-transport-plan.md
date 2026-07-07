@@ -1,5 +1,5 @@
 > ⚠️ Historical Context
-> This document describes Foreman's beads-first architecture, which has been
+> This document describes Foreman's tasks-first architecture, which has been
 > superseded by native task management (TRD-2026-006). Some instructions,
 > configurations, or comparisons in this document may no longer reflect
 > current behavior.
@@ -303,10 +303,10 @@ Prompt markdown files use `{{variableName}}` placeholders. All variables are opt
 
 | Variable | Available in phases | Description |
 |---|---|---|
-| `{{taskId}}` | all | Bead/task ID (e.g. `bd-abc1`) |
+| `{{taskId}}` | all | Task/task ID (e.g. `bd-abc1`) |
 | `{{taskTitle}}` | all | One-line title of the task |
 | `{{taskDescription}}` | explorer, developer, reviewer | Full task description |
-| `{{taskComments}}` | explorer, developer, reviewer | Comments from the bead |
+| `{{taskComments}}` | explorer, developer, reviewer | Comments from the task |
 | `{{feedbackContext}}` | developer | QA or Reviewer findings injected on retry |
 | `{{hasExplorerReport}}` | developer | `"true"` or `"false"` |
 
@@ -370,7 +370,7 @@ Replaces the `buildRoleConfigs()` function in `roles.ts`. Environment variable o
 
 ### `~/.foreman/workflows.json`
 
-Defines which phases run for each task type, in order. The task type comes from the bead's `type` field (already stored in Postgres). Unknown types fall back to `"feature"`.
+Defines which phases run for each task type, in order. The task type comes from the task's `type` field (already stored in Postgres). Unknown types fall back to `"feature"`.
 
 ```json
 {
@@ -599,13 +599,13 @@ npm test
 # --- Part 1: Agent Mail transport ---
 
 # Integration smoke test (requires running Agent Mail server)
-foreman run --bead <task-id>
+foreman run --task <task-id>
 # Watch logs for:
 #   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{taskId}" (id=...)
 #   [agent-mail] Fetched "Review Findings" from inbox "developer-{taskId}" (id=...)
 
 # Backward compat test (stop Agent Mail server first)
-foreman run --bead <task-id>
+foreman run --task <task-id>
 # Should complete normally using disk fallback — no errors logged
 
 # --- Part 2: External prompts and workflow config ---
@@ -618,7 +618,7 @@ foreman init
 # Re-run a task and verify the custom line appears in the agent session log
 
 # Bug workflow test: create a task with type=bug
-foreman run --bead <bug-task-id>
+foreman run --task <bug-task-id>
 # Verify: logs show phases ["reproducer", "developer", "qa", "finalize"] — no Explorer, no Reviewer
 
 # Custom workflow test: add "chore" workflow to ~/.foreman/workflows.json

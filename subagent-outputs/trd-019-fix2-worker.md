@@ -101,7 +101,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Accepted TRD-shaped top-level ExternalTriggerCommand at CommandRouter and HTTP /api/v1/commands while preserving existing envelope-style behavior; added direct and HTTP regression tests proving top-level command acceptance and duplicate dedupe.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-019 API contract fix only. Did not alter bead state or broader integration behavior.",
+  "manualNotes": "Scoped to TRD-019 API contract fix only. Did not alter task state or broader integration behavior.",
   "notes": "Output report file is untracked after final write by design."
 }
 ```

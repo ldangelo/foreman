@@ -91,7 +91,7 @@ Once all agents have passed (or you've decided the work is good enough after ret
 2. `git add .`
 3. `git commit -m "{{taskTitle}} ({{taskId}})"`
 4. `git push -u origin foreman/{{taskId}}`
-5. `br close {{taskId}} --reason "Completed via agent team"`
+5. `native task store close {{taskId}} --reason "Completed via agent team"`
 
 ## Rules for You (the Lead)
 - **You orchestrate — you do not implement.** Use sub-agents for all code work.

@@ -1,11 +1,8 @@
 /**
  * task-ordering.ts — Determine execution order for child tasks in an epic.
  *
- * Primary: use bv --robot-next to get graph-aware ordering.
- * Fallback: topological sort of child bead dependencies with priority tiebreaker.
+ * Uses topological sort of child task dependencies with priority tiebreaker.
  */
-
-import { BvClient } from "../lib/bv.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -43,25 +40,20 @@ export class CircularDependencyError extends Error {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Get ordered list of child tasks for an epic bead.
+ * Get ordered list of child tasks for an epic task.
  *
- * Tries bv --robot-next first for graph-aware ordering.
- * Falls back to topological sort of br dependencies with priority as tiebreaker.
- *
- * @param epicId      - The parent epic bead ID.
- * @param brClient    - BeadsRustClient for querying bead details.
- * @param projectPath - Project root for bv invocation.
- * @param useBv       - Whether to attempt bv ordering (default: true).
+ * @param epicId - The parent epic task ID.
+ * @param taskClient - Client for querying task details.
  * @returns Ordered list of child tasks.
  */
 export async function getTaskOrder(
   epicId: string,
-  brClient: TaskOrderingClient,
-  projectPath: string,
-  useBv: boolean = true,
+  taskClient: TaskOrderingClient,
+  _projectPath?: string,
+  _useExternalOrdering?: boolean,
 ): Promise<OrderedTask[]> {
   // Get all children of the epic
-  const epicDetail = await brClient.show(epicId);
+  const epicDetail = await taskClient.show(epicId);
   const childIds = epicDetail.children ?? [];
 
   if (childIds.length === 0) {
@@ -72,7 +64,7 @@ export async function getTaskOrder(
   const childDetails = new Map<string, TaskOrderingIssueDetail>();
   for (const childId of childIds) {
     try {
-      const detail = await brClient.show(childId);
+      const detail = await taskClient.show(childId);
       // Only include task-type children (skip feature/story containers)
       if (detail.type === "task" || detail.type === "bug" || detail.type === "chore") {
         childDetails.set(childId, detail);
@@ -86,63 +78,7 @@ export async function getTaskOrder(
     return [];
   }
 
-  // Try bv ordering first
-  if (useBv) {
-    const bvOrder = await getBvOrder(childDetails, projectPath);
-    if (bvOrder !== null) {
-      return bvOrder;
-    }
-  }
-
-  // Fallback: topological sort
   return topologicalSort(childDetails);
-}
-
-// ── BV ordering ─────────────────────────────────────────────────────────────
-
-async function getBvOrder(
-  childDetails: Map<string, TaskOrderingIssueDetail>,
-  projectPath: string,
-): Promise<OrderedTask[] | null> {
-  const bv = new BvClient(projectPath);
-  const childIds = new Set(childDetails.keys());
-
-  // Use bv --robot-next iteratively to build order.
-  // Since bv considers the full graph including blockers, we query it
-  // and filter results to only include our epic's children.
-  const triage = await bv.robotTriage();
-  if (triage === null) return null;
-
-  const ordered: OrderedTask[] = [];
-  const seen = new Set<string>();
-
-  // Use triage recommendations, filtered to our children
-  for (const rec of triage.recommendations) {
-    if (childIds.has(rec.id) && !seen.has(rec.id)) {
-      const detail = childDetails.get(rec.id);
-      if (detail) {
-        ordered.push({
-          taskId: detail.id,
-          taskTitle: detail.title,
-          taskDescription: detail.description ?? undefined,
-        });
-        seen.add(rec.id);
-      }
-    }
-  }
-
-  // Add any children not in triage results (bv may not rank all)
-  for (const [id, detail] of childDetails) {
-    if (!seen.has(id)) {
-      ordered.push({
-        taskId: detail.id,
-        taskTitle: detail.title,
-        taskDescription: detail.description ?? undefined,
-      });
-    }
-  }
-
-  return ordered.length > 0 ? ordered : null;
 }
 
 // ── Topological sort ────────────────────────────────────────────────────────
@@ -167,7 +103,6 @@ function topologicalSort(childDetails: Map<string, TaskOrderingIssueDetail>): Or
 
   for (const [id, detail] of childDetails) {
     for (const dep of detail.dependencies) {
-      // dep is a BrDepRef object — extract its id
       const depId = typeof dep === "string" ? dep : (dep as { id: string }).id;
       // Only count deps within our child set
       if (childIds.has(depId)) {

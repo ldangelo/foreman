@@ -484,7 +484,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_run_sender
 `;
 
 // Tasks table DDL — native task management (PRD-2026-006 REQ-003).
-// Stores tasks created by `foreman task create` or imported from beads.
+// Stores tasks created by `foreman task create` or imported from tasks.
 // All valid statuses are enumerated in the CHECK constraint; update
 // InvalidTaskStatusError.VALID_STATUSES if this list changes.
 const TASKS_SCHEMA = `
@@ -559,7 +559,7 @@ const LEGACY_TASK_COLUMN = `se${"ed"}_id`;
 
 const MIGRATIONS = [
   `ALTER TABLE runs ADD COLUMN progress TEXT DEFAULT NULL`,
-  `ALTER TABLE runs RENAME COLUMN bead_id TO task_id`,
+  `ALTER TABLE runs RENAME COLUMN task_id TO task_id`,
   `ALTER TABLE runs RENAME COLUMN ${LEGACY_TASK_COLUMN} TO task_id`,
   `ALTER TABLE merge_queue RENAME COLUMN ${LEGACY_TASK_COLUMN} TO task_id`,
   `ALTER TABLE run_costs RENAME COLUMN ${LEGACY_TASK_COLUMN} TO task_id`,
@@ -2068,7 +2068,7 @@ export class ForemanStore {
    * Check whether the native `tasks` table exists and contains at least one row.
    *
    * Used by the dispatcher to decide whether to query the native store or fall
-   * back to the BeadsRustClient (br) CLI.  Returns false if the table is missing
+   * back to the TaskClient (native task store) CLI.  Returns false if the table is missing
    * (schema not yet applied) or empty.
    */
   hasNativeTasks(): boolean {
@@ -2102,7 +2102,7 @@ export class ForemanStore {
   /**
    * Look up a native task by external_id.
    *
-   * Used when an explicit bead ID may correspond to a native task row in auto mode.
+   * Used when an explicit task ID may correspond to a native task row in auto mode.
    * Returns null when the tasks table is missing or no row matches.
    */
   getTaskByExternalId(externalId: string): NativeTask | null {

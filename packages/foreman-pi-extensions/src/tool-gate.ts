@@ -12,8 +12,8 @@ export const DEFAULT_BASH_BLOCKLIST = [
   'mkfs',
 ];
 
-// .beads/ is always protected (regardless of allowed tools)
-const PROTECTED_PATHS = ['.beads/', '.beads\\'];
+// .tasks/ is always protected (regardless of allowed tools)
+const PROTECTED_PATHS = ['.tasks/', '.tasks\\'];
 
 export function createToolGateExtension(auditCallback?: (event: object) => void): ForemanExtension {
   return {
@@ -55,14 +55,14 @@ export function createToolGateExtension(auditCallback?: (event: object) => void)
         }
       }
 
-      // Protect .beads/ directory for Write/Edit/Bash tools
+      // Protect .tasks/ directory for Write/Edit/Bash tools
       const filePath = (event.input.file_path ?? event.input.path ?? '') as string;
       if (typeof filePath === 'string' && filePath.length > 0 && PROTECTED_PATHS.some(p => filePath.includes(p))) {
         const decision = {
           toolName: event.toolName,
           phase,
           blocked: true,
-          reason: `Writing to .beads/ directory is not allowed`,
+          reason: `Writing to .tasks/ directory is not allowed`,
           path: filePath,
         };
         auditCallback?.(decision);

@@ -9,8 +9,8 @@ Commits:
 - 586361d0 test: verify Elixir integration ingestion
 
 Files changed:
-- .beads/issues.jsonl
-- .beads/last-touched
+- .tasks/issues.jsonl
+- .tasks/last-touched
 - docs/TRD/TRD-2026-014-elixir-backend-orchestration.md
 - packages/foreman_server/README.md
 - packages/foreman_server/lib/foreman_server/command_router.ex
@@ -62,7 +62,7 @@ Current git status:
     {
       "id": "criterion-4",
       "status": "satisfied",
-      "evidence": "Committed implementation as f1aae950 and tests/bead state as 586361d0."
+      "evidence": "Committed implementation as f1aae950 and tests/task state as 586361d0."
     },
     {
       "id": "criterion-5",
@@ -71,8 +71,8 @@ Current git status:
     }
   ],
   "changedFiles": [
-    ".beads/issues.jsonl",
-    ".beads/last-touched",
+    ".tasks/issues.jsonl",
+    ".tasks/last-touched",
     "docs/TRD/TRD-2026-014-elixir-backend-orchestration.md",
     "packages/foreman_server/README.md",
     "packages/foreman_server/lib/foreman_server/command_router.ex",
@@ -87,9 +87,9 @@ Current git status:
   ],
   "commandsRun": [
     {
-      "command": "br update bd-tncc --status in_progress --json && br comment add bd-tncc ... && br sync --flush-only",
+      "command": "native task store update bd-tncc --status in_progress --json && native task store comment add bd-tncc ... && native task store sync --flush-only",
       "result": "passed",
-      "summary": "Claimed TRD-019 bead before editing."
+      "summary": "Claimed TRD-019 task before editing."
     },
     {
       "command": "cd packages/foreman_server && mix format && mix test && cd ../.. && npx tsc --noEmit && node /Users/ldangelo/Development/Fortium/ensemble/packages/development/lib/trd-cli.js parse docs/TRD/TRD-2026-014-elixir-backend-orchestration.md ...",
@@ -97,12 +97,12 @@ Current git status:
       "summary": "Implementation validation passed before closing TRD-019; 52 tests at that point, TypeScript pass, TRD parser warnings []."
     },
     {
-      "command": "br close bd-tncc --reason 'Completed TRD-019 integration command ingestion' && br sync --flush-only && git commit -m 'feat: add Elixir integration ingestion'",
+      "command": "native task store close bd-tncc --reason 'Completed TRD-019 integration command ingestion' && native task store sync --flush-only && git commit -m 'feat: add Elixir integration ingestion'",
       "result": "passed",
       "summary": "Closed TRD-019 and committed implementation as f1aae950."
     },
     {
-      "command": "br update bd-rklt --status in_progress --json && br comment add bd-rklt ... && br sync --flush-only",
+      "command": "native task store update bd-rklt --status in_progress --json && native task store comment add bd-rklt ... && native task store sync --flush-only",
       "result": "passed",
       "summary": "Claimed TRD-019-TEST after dependency unlocked."
     },
@@ -112,9 +112,9 @@ Current git status:
       "summary": "Final validation passed; 56 tests, 0 failures; TypeScript pass; TRD parser pass."
     },
     {
-      "command": "br close bd-rklt --reason 'Completed TRD-019-TEST; integration ingestion tests pass' && br sync --flush-only && git commit -m 'test: verify Elixir integration ingestion'",
+      "command": "native task store close bd-rklt --reason 'Completed TRD-019-TEST; integration ingestion tests pass' && native task store sync --flush-only && git commit -m 'test: verify Elixir integration ingestion'",
       "result": "passed",
-      "summary": "Closed TRD-019-TEST and committed test/bead changes as 586361d0."
+      "summary": "Closed TRD-019-TEST and committed test/task changes as 586361d0."
     },
     {
       "command": "git status --short",
@@ -132,7 +132,7 @@ Current git status:
   "noStagedFiles": true,
   "diffSummary": "Added idempotent sentinel/Jira/GitHub integration ingestion through ForemanServer.IntegrationIngestion, preserving external links/dedupe metadata in task projections, preventing duplicate integration processing, and adding tests for sentinel threshold bug tasks, Jira/GitHub task creation, duplicate idempotency, and durable rebuild.",
   "reviewFindings": [],
-  "manualNotes": "Closed TRD-019 / bd-tncc and TRD-019-TEST / bd-rklt. Current TRD progress from br list: 38 closed, 14 open.",
+  "manualNotes": "Closed TRD-019 / bd-tncc and TRD-019-TEST / bd-rklt. Current TRD progress from native task store list: 38 closed, 14 open.",
   "notes": "Output file itself is untracked after final write by design."
 }
 ```

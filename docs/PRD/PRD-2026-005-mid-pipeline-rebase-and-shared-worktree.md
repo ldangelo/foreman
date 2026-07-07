@@ -1,5 +1,5 @@
 > ⚠️ Historical Context
-> This document describes Foreman's beads-first architecture, which has been
+> This document describes Foreman's tasks-first architecture, which has been
 > superseded by native task management (TRD-2026-006). Some instructions,
 > configurations, or comparisons in this document may no longer reflect
 > current behavior.
@@ -65,7 +65,7 @@ The primary success metric is reducing conflict-driven retries from ~50% to unde
 The current Foreman pipeline inserts a rebase step only during finalize, immediately before pushing the completed branch. By this point, the developer agent has finished its work, QA has run, and the reviewer has signed off. If the rebase conflicts:
 
 1. The pipeline fails with status `failed` or `stuck`.
-2. The operator runs `foreman reset --bead <id>` and then `foreman retry <task>`.
+2. The operator runs `foreman reset --task <id>` and then `foreman retry <task>`.
 3. The retry re-runs every phase from explorer onward, including the developer, QA, and reviewer -- phases whose work was entirely valid before the conflict.
 4. Token cost per retry is substantial (explorer + developer + QA + reviewer = 4 phase budgets consumed for no new value).
 
@@ -243,7 +243,7 @@ When `vcs.rebase()` returns a non-empty conflict list, the pipeline executor sha
 
 - **AC-002-1:** Given a mid-pipeline rebase that produces conflicting files, when `vcs.getConflictingFiles()` returns a non-empty array, then the run's `status` field in the `runs` table is updated to `rebase_conflict` before any further action is taken.
 - **AC-002-2:** Given the run is marked `rebase_conflict`, when `foreman status` is run, then the run appears with status `rebase_conflict` and the list of conflicting files is shown.
-- **AC-002-3:** Given a `rebase_conflict` run, when `foreman reset --bead <id>` is run, then the run is reset to `open` status (consistent with existing reset behavior for failed runs).
+- **AC-002-3:** Given a `rebase_conflict` run, when `foreman reset --task <id>` is run, then the run is reset to `open` status (consistent with existing reset behavior for failed runs).
 
 ### REQ-003: Troubleshooter Escalation
 
@@ -446,7 +446,7 @@ The pipeline executor shall send agent mail notifications at key mid-pipeline re
 **Acceptance Criteria:**
 
 - **AC-015-1:** Given multiple runs have completed with mid-pipeline rebases, when `foreman inbox --type rebase-context` is run, then only mails of type `rebase-context` are shown, with run ID and upstream change count visible.
-- **AC-015-2:** Given a run that hit a `rebase_conflict`, when `foreman inbox --bead <id>` is run, then the rebase conflict mail, the troubleshooter mail, and the resume notification are all visible in chronological order.
+- **AC-015-2:** Given a run that hit a `rebase_conflict`, when `foreman inbox --task <id>` is run, then the rebase conflict mail, the troubleshooter mail, and the resume notification are all visible in chronological order.
 
 ---
 
@@ -604,7 +604,7 @@ The troubleshooter does not need modification for v1; it receives the conflict c
 | Metric | Baseline | Target | Measurement Method |
 |--------|----------|--------|--------------------|
 | Conflict-driven retry rate | ~50% of pipeline runs | < 10% of pipeline runs | Run status tracking in Postgres; ratio of `rebase_conflict` + `failed` (conflict cause) to total completed runs |
-| Token cost per delivered task | 2x average (due to retries) | <= 1.15x average | Aggregate token usage per closed bead divided by count of closed beads, before vs. after |
+| Token cost per delivered task | 2x average (due to retries) | <= 1.15x average | Aggregate token usage per closed task divided by count of closed tasks, before vs. after |
 | Troubleshooter conflict resolution rate | N/A (new) | >= 70% | Count of `rebase_conflict` → `in_progress` (resolved) vs. `rebase_conflict` → `failed` (unresolved) |
 | Regression rate on non-rebase pipelines | 0% | 0% | Existing CI test suite pass rate |
 | Rebase step latency (clean path) | N/A | < 30 seconds P95 | Pipeline executor timing logs |

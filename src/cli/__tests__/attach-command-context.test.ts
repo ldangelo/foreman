@@ -87,7 +87,7 @@ describe("attach command context", () => {
           {
             id: "run-1",
             project_id: "proj-1",
-            bead_id: "task-1",
+            task_id: "task-1",
             status: "running",
             branch: "foreman/task-1",
             agent_type: "developer",

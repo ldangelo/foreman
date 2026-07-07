@@ -23,19 +23,9 @@ brew install foreman
 
 ### Requirements
 
-After installation, you need two additional dependencies:
+After installation, configure an API key:
 
-#### 1. beads_rust (`br`) — Task tracking CLI
-
-```bash
-# Install via Cargo
-cargo install beads_rust
-
-# Or download a pre-built binary
-# https://github.com/Dicklesworthstone/beads_rust/releases
-```
-
-#### 2. Anthropic API key
+#### Anthropic API key
 
 ```bash
 # Add to ~/.zshrc or ~/.bash_profile
@@ -55,8 +45,6 @@ cd ~/your-project
 foreman init --name my-project
 
 # Create tasks
-br create --title "Add user auth" --type feature --priority 1
-
 # Dispatch AI agents
 foreman run
 

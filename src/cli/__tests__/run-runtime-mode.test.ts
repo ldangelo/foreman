@@ -3,7 +3,7 @@
  *
  * Verifies:
  * - resolveRuntimeMode correctly resolves explicit values and env var
- * - createTaskClients always uses native backend (beads fallback removed)
+ * - createTaskClients always uses native backend (tasks fallback removed)
  *
  * Note: The FOREMAN_TASK_STORE env var is not read by createTaskClients.
  * The native task store is the only supported backend — this is intentional
@@ -13,8 +13,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const {
   mockEnsureBrInstalled,
-  MockBeadsRustClient,
-  MockBvClient,
+  MockTaskClient,
+  MockTaskOrderingClient,
   mockHasNativeTasks,
   mockPostgresHasNativeTasks,
   mockRegistryList,
@@ -23,10 +23,10 @@ const {
   MockProjectRegistry,
 } = vi.hoisted(() => {
   const mockEnsureBrInstalled = vi.fn().mockResolvedValue(undefined);
-  const MockBeadsRustClient = vi.fn(function (this: Record<string, unknown>) {
+  const MockTaskClient = vi.fn(function (this: Record<string, unknown>) {
     this.ensureBrInstalled = mockEnsureBrInstalled;
   });
-  const MockBvClient = vi.fn(function () { /* noop */ });
+  const MockTaskOrderingClient = vi.fn(function () { /* noop */ });
   const mockHasNativeTasks = vi.fn().mockReturnValue(true);
   const mockPostgresHasNativeTasks = vi.fn().mockResolvedValue(true);
   const mockRegistryList = vi.fn().mockResolvedValue([]);
@@ -46,8 +46,8 @@ const {
 
   return {
     mockEnsureBrInstalled,
-    MockBeadsRustClient,
-    MockBvClient,
+    MockTaskClient,
+    MockTaskOrderingClient,
     mockHasNativeTasks,
     mockPostgresHasNativeTasks,
     mockRegistryList,
@@ -57,8 +57,8 @@ const {
   };
 });
 
-vi.mock("../../lib/beads-rust.js", () => ({ BeadsRustClient: MockBeadsRustClient }));
-vi.mock("../../lib/bv.js", () => ({ BvClient: MockBvClient }));
+vi.mock("../../lib/task-client.js", () => ({ TaskClient: MockTaskClient }));
+vi.mock("../../lib/task-ordering.js", () => ({ TaskOrderingClient: MockTaskOrderingClient }));
 vi.mock("../../lib/store.js", () => ({ ForemanStore: MockForemanStore }));
 vi.mock("../../lib/db/postgres-adapter.js", () => ({ PostgresAdapter: MockPostgresAdapter }));
 vi.mock("../../lib/project-registry.js", () => ({ ProjectRegistry: MockProjectRegistry }));
@@ -87,10 +87,10 @@ describe("run runtime mode", () => {
     mockHasNativeTasks.mockReturnValue(true);
     mockPostgresHasNativeTasks.mockResolvedValue(true);
     mockRegistryList.mockResolvedValue([]);
-    MockBeadsRustClient.mockImplementation(function (this: Record<string, unknown>) {
+    MockTaskClient.mockImplementation(function (this: Record<string, unknown>) {
       this.ensureBrInstalled = mockEnsureBrInstalled;
     });
-    MockBvClient.mockImplementation(function () { /* noop */ });
+    MockTaskOrderingClient.mockImplementation(function () { /* noop */ });
     MockForemanStore.mockImplementation(function (this: Record<string, unknown>) {
       this.hasNativeTasks = mockHasNativeTasks;
       this.close = vi.fn();
@@ -117,7 +117,7 @@ describe("run runtime mode", () => {
 
     expect(result.backendType).toBe("native");
     expect(result.bvClient).toBeNull();
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(MockTaskClient).not.toHaveBeenCalled();
     expect(result.taskClient).toBeDefined();
     expect(MockForemanStore.forProject).not.toHaveBeenCalled();
   });
@@ -126,9 +126,9 @@ describe("run runtime mode", () => {
     const result = await createTaskClients(projectPath, "normal", "proj-1");
 
     expect(result.backendType).toBe("native");
-    expect(MockBeadsRustClient).not.toHaveBeenCalled();
+    expect(MockTaskClient).not.toHaveBeenCalled();
     expect(mockEnsureBrInstalled).not.toHaveBeenCalled();
-    expect(MockBvClient).not.toHaveBeenCalled();
+    expect(MockTaskOrderingClient).not.toHaveBeenCalled();
     expect(result.bvClient).toBeNull();
   });
 });

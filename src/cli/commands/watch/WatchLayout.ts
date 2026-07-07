@@ -449,7 +449,7 @@ function formatEventSummary(entry: {
         : et;
 
     case "dispatch":
-      return d?.bead_id ? `Dispatch: ${d.bead_id}` : "Dispatch";
+      return d?.task_id ? `Dispatch: ${d.task_id}` : "Dispatch";
 
     case "complete":
       return d?.taskId ? `Complete: ${d.taskId}` : "Complete";
@@ -458,31 +458,31 @@ function formatEventSummary(entry: {
       return d?.taskId ? `Failed: ${d.taskId}` : "Failed";
 
     case "merge":
-      return d?.bead_id ? `Merged: ${d.bead_id}` : "Merged";
+      return d?.task_id ? `Merged: ${d.task_id}` : "Merged";
 
     case "pr-created":
       return d?.pr_number ? `PR #${d.pr_number} created` : "PR created";
 
     case "merge-queue-enqueue":
-      return d?.bead_id ? `Enqueued: ${d.bead_id}` : "Enqueued";
+      return d?.task_id ? `Enqueued: ${d.task_id}` : "Enqueued";
 
     case "merge-queue-dequeue":
-      return d?.bead_id ? `Dequeued: ${d.bead_id}` : "Dequeued";
+      return d?.task_id ? `Dequeued: ${d.task_id}` : "Dequeued";
 
     case "merge-queue-resolve":
-      return d?.bead_id ? `Resolved: ${d.bead_id}` : "Resolved";
+      return d?.task_id ? `Resolved: ${d.task_id}` : "Resolved";
 
     case "merge-queue-fallback":
-      return d?.bead_id ? `Fallback: ${d.bead_id}` : "Fallback";
+      return d?.task_id ? `Fallback: ${d.task_id}` : "Fallback";
 
     case "merge-cleanup-fallback":
-      return d?.bead_id ? `Cleanup: ${d.bead_id}` : "Cleanup";
+      return d?.task_id ? `Cleanup: ${d.task_id}` : "Cleanup";
 
     case "conflict":
-      return d?.bead_id ? `Conflict: ${d.bead_id}` : "Conflict";
+      return d?.task_id ? `Conflict: ${d.task_id}` : "Conflict";
 
     case "test-fail":
-      return d?.bead_id ? `Test fail: ${d.bead_id}` : "Test fail";
+      return d?.task_id ? `Test fail: ${d.task_id}` : "Test fail";
 
     case "stuck":
       return d?.taskId ? `Stuck: ${d.taskId}` : "Stuck";
@@ -490,7 +490,7 @@ function formatEventSummary(entry: {
     case "sentinel-start":
     case "sentinel-pass":
     case "sentinel-fail":
-      return d?.bead_id ? `Sentinel ${et.split("-")[1]}: ${d.bead_id}` : `Sentinel ${et.split("-")[1]}`;
+      return d?.task_id ? `Sentinel ${et.split("-")[1]}: ${d.task_id}` : `Sentinel ${et.split("-")[1]}`;
 
     case "worktree-rebased":
       return d?.worktreePath ? `Rebased: ${truncateMiddle(d.worktreePath as string, 30)}` : "Worktree rebased";
@@ -500,7 +500,7 @@ function formatEventSummary(entry: {
 
     default:
       // Generic fallback: show event type + any known fields
-      if (d?.bead_id) return `${et}: ${d.bead_id}`;
+      if (d?.task_id) return `${et}: ${d.task_id}`;
       if (d?.taskId) return `${et}: ${d.taskId}`;
       return et;
   }

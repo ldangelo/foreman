@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Add standardized historical context banners to archived Foreman documents so readers immediately know when they're reading a description of the older beads-first architecture, not current behavior.
+Add standardized historical context banners to archived Foreman documents so readers immediately know when they're reading a description of the older tasks-first architecture, not current behavior.
 
 ## Status: ✅ Complete
 
@@ -18,7 +18,7 @@ All archived documents have been identified and have banners injected. The valid
 
 | Directory | Archival? | Rationale |
 |-----------|-----------|-----------|
-| `docs/` (root) | **Yes** | Legacy comparison docs, migration guides, draft PRDs from beads-first era |
+| `docs/` (root) | **Yes** | Legacy comparison docs, migration guides, draft PRDs from tasks-first era |
 | `docs/PRD/` | **Partial** | Review each PRD individually; PRD-2026-007 excluded (current) |
 | `docs/PRD/completed/` | **Yes** | Historical PRD artifacts (by definition post-hoc records) |
 | `docs/TRD/` | **Partial** | TRDs prior to TRD-2026-006 reviewed; TRD-2026-007 excluded (current) |
@@ -31,7 +31,7 @@ All archived documents have been identified and have banners injected. The valid
 | `standard` | Default archival | (base banner only) |
 | `comparison` | Compares Foreman to external tools | Comparisons to external tools reflect Foreman at a specific historical point and may be outdated. |
 | `migration` | Migration guide | This migration guide is preserved for historical reference. See TRD-2026-006 for current task management architecture. |
-| `beads-rust-only` | Deprecated BeadsRustClient era | The BeadsRustClient is deprecated. See TRD-2026-019 for deprecation schedule. |
+| `task-client-only` | Deprecated TaskClient era | The TaskClient is deprecated. See TRD-2026-019 for deprecation schedule. |
 
 **Full banner text:** [banner-variants.json](./banner-variants.json)
 
@@ -49,7 +49,7 @@ All archived documents have been identified and have banners injected. The valid
 
 | File | Variant | Status |
 |------|---------|--------|
-| `docs/migration-tasks-to-br.md` | migration | ✅ Banner injected |
+| `docs/migration-tasks-to-native task store.md` | migration | ✅ Banner injected |
 | `docs/Overstory_comparison.md` | comparison | ✅ Banner injected |
 | `docs/flywheel_comparison.md` | comparison | ✅ Banner injected |
 | `docs/mail-transport-plan.md` | standard | ✅ Banner injected |
@@ -57,7 +57,7 @@ All archived documents have been identified and have banners injected. The valid
 | `docs/PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md` | standard | ✅ Banner injected |
 | `docs/TRD/TRD-2026-004-vcs-backend-abstraction.md` | standard | ✅ Banner injected |
 | `docs/TRD/TRD-2026-005-mid-pipeline-rebase.md` | standard | ✅ Banner injected |
-| `docs/TRD/tasks-to-br-bv-migration.md` | comparison | ✅ Banner injected |
+| `docs/TRD/tasks-to-native task store-native task ordering-migration.md` | comparison | ✅ Banner injected |
 
 ## Validation
 
@@ -76,7 +76,7 @@ npx tsx docs/experiments/historical-context-prd-rerun/validate-historical-banner
 
 **Current validation result:**
 ```
-✅  migration-tasks-to-br.md: banner present (migration)
+✅  migration-tasks-to-native task store.md: banner present (migration)
 ✅  Overstory_comparison.md: banner present (comparison)
 ✅  flywheel_comparison.md: banner present (comparison)
 ✅  mail-transport-plan.md: banner present (standard)
@@ -84,7 +84,7 @@ npx tsx docs/experiments/historical-context-prd-rerun/validate-historical-banner
 ✅  PRD/PRD-2026-005-mid-pipeline-rebase-and-shared-worktree.md: banner present (standard)
 ✅  TRD/TRD-2026-004-vcs-backend-abstraction.md: banner present (standard)
 ✅  TRD/TRD-2026-005-mid-pipeline-rebase.md: banner present (standard)
-✅  TRD/tasks-to-br-bv-migration.md: banner present (comparison)
+✅  TRD/tasks-to-native task store-native task ordering-migration.md: banner present (comparison)
 ✅  guides//*: no banners (excluded as active-operator-doc)
 
 ✅  All historical banner validations passed.

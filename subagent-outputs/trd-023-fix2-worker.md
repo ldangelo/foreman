@@ -116,7 +116,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Hardened TRD-023 MigrationImporter run pre-validation by checking current_phase, phase_order, and retry_history before any events are appended; added regression coverage proving malformed later phase_order leaves EventStore unchanged; passed computed fallback phase to failed terminal run events.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to parent-synthesized TRD-023 review round 2 fix only. No bead state or migration JSON scope changes. One earlier combined shell command was rerun correctly from repo root for TS/TRD validation after a cwd mistake.",
+  "manualNotes": "Scoped to parent-synthesized TRD-023 review round 2 fix only. No task state or migration JSON scope changes. One earlier combined shell command was rerun correctly from repo root for TS/TRD validation after a cwd mistake.",
   "notes": "Report file is untracked by design. Pre-existing untracked reviewer artifact remains: subagent-outputs/review2-trd-023-correctness.md."
 }
 ```

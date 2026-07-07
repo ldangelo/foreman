@@ -16,9 +16,9 @@ Migrate the broken local-store tests and remaining local-store production paths 
 
 3. **Add missing PostgresStore compatibility methods used by existing tests/commands**: Fill current no-op gaps that were hidden by local `ForemanStore` tests.
    - File: `src/lib/postgres-store.ts`
-   - Changes: Implement real Postgres-backed versions of methods currently stubbed or incomplete, starting with `getCosts`, `getCostBreakdown`, `getPhaseMetrics`, `getSuccessRate`, `getPendingBeadWrites`, `markBeadWriteProcessed`, merge strategy/config accessors, and any method directly used by failing tests.
+   - Changes: Implement real Postgres-backed versions of methods currently stubbed or incomplete, starting with `getCosts`, `getCostBreakdown`, `getPhaseMetrics`, `getSuccessRate`, `getPendingTaskWrites`, `markTaskWriteProcessed`, merge strategy/config accessors, and any method directly used by failing tests.
    - File: `src/lib/db/postgres-adapter.ts`
-   - Changes: Add focused query methods where `PostgresStore` cannot reuse existing adapter methods cleanly, e.g. list costs by project/run, list/dequeue bead-write queue entries, merge strategy config CRUD.
+   - Changes: Add focused query methods where `PostgresStore` cannot reuse existing adapter methods cleanly, e.g. list costs by project/run, list/dequeue task-write queue entries, merge strategy config CRUD.
    - Acceptance: New/updated PostgresStore integration tests verify persisted rows, not in-memory objects or mocks.
 
 4. **Create a production Postgres task-store wrapper for NativeTaskStore coverage**: Replace sync local `NativeTaskStore` test dependency with async Postgres behavior.
@@ -41,7 +41,7 @@ Migrate the broken local-store tests and remaining local-store production paths 
    - Reason for test changes: File-backed local DB behavior is intentionally removed and no longer represents production.
 
 7. **Rewrite store-adjacent library tests to PostgresStore**: Convert smaller failing store groups after Tasks 3 and 6.
-   - Files: `src/lib/__tests__/mail.test.ts`, `src/lib/__tests__/bead-write-queue.test.ts`, `src/lib/__tests__/store-metrics.test.ts`, `src/lib/__tests__/merge-strategy-store.test.ts`, `src/lib/__tests__/native-task-client.test.ts`
+   - Files: `src/lib/__tests__/mail.test.ts`, `src/lib/__tests__/task-write-queue.test.ts`, `src/lib/__tests__/store-metrics.test.ts`, `src/lib/__tests__/merge-strategy-store.test.ts`, `src/lib/__tests__/native-task-client.test.ts`
    - Changes: Use Testcontainers fixture and production Postgres classes; update only setup/awaiting and expectations that asserted local sqlite/file behavior.
    - Acceptance: Each file passes individually with `npx vitest run <file> --reporter=dot`.
    - Reason for test changes: These tests currently validate local `ForemanStore` persistence or no-op-broken behavior, not the production Postgres path.
@@ -49,7 +49,7 @@ Migrate the broken local-store tests and remaining local-store production paths 
 8. **Fix registered-project Postgres initialization in CLI commands**: Ensure commands initialize `PoolManager` before creating task clients/stores/adapters.
    - Files: `src/cli/commands/reset.ts`, `src/cli/commands/retry.ts`, `src/cli/commands/stop.ts`, `src/cli/commands/attach.ts`, `src/cli/commands/inbox.ts`, `src/cli/commands/purge-logs.ts`, `src/cli/commands/purge-zombie-runs.ts`, `src/cli/commands/task.ts`, `src/cli/commands/doctor.ts`
    - Changes: Call `ensureCliPostgresPool(projectPath)` immediately after resolving a registered project and before any `createTaskClient`, `PostgresStore.forProject`, `PostgresAdapter`, or `ProjectRegistry({ pg })` use.
-   - Acceptance: `foreman reset --bead foreman-b91dc --project foreman --dry-run` no longer throws `PoolManager not initialised`; command tests no longer fail for Postgres init order.
+   - Acceptance: `foreman reset --task foreman-b91dc --project foreman --dry-run` no longer throws `PoolManager not initialised`; command tests no longer fail for Postgres init order.
 
 9. **Rewrite CLI tests that task local ForemanStore state**: Migrate command fixtures to registered Postgres project fixtures.
    - Files: `src/cli/__tests__/task.test.ts`, `src/cli/__tests__/attach.test.ts`, `src/cli/__tests__/attach-follow.test.ts`, `src/cli/__tests__/retry.test.ts`, `src/cli/__tests__/stop.test.ts`, `src/cli/__tests__/inbox.test.ts`, `src/cli/__tests__/purge-logs.test.ts`, `src/cli/__tests__/purge-zombie-runs.test.ts`, `src/cli/__tests__/doctor.test.ts`, `src/cli/__tests__/doctor-native-mode.test.ts`, `src/cli/__tests__/task-project-resolution.test.ts`, `src/cli/commands/__tests__/task-project-resolution.test.ts`
@@ -58,9 +58,9 @@ Migrate the broken local-store tests and remaining local-store production paths 
    - Reason for test changes: CLI production path for this repo is registered Postgres; local sync DB setup is obsolete.
 
 10. **Rewrite orchestrator tests that require DB persistence**: Convert only tests that instantiate `ForemanStore.forProject` or `NativeTaskStore`; leave pure mocked store unit tests alone.
-   - Files: `src/orchestrator/__tests__/bead-writer-drain.test.ts`, `src/orchestrator/__tests__/task-backend-ops-enqueue.test.ts`, `src/orchestrator/__tests__/doctor.test.ts`, `src/orchestrator/__tests__/doctor-native-task-store.test.ts`, `src/orchestrator/__tests__/task-backend-ops.test.ts`, `src/orchestrator/__tests__/worker-spawn.test.ts`, `src/orchestrator/__tests__/dispatcher-native-integration.test.ts`
+   - Files: `src/orchestrator/__tests__/task-writer-drain.test.ts`, `src/orchestrator/__tests__/task-backend-ops-enqueue.test.ts`, `src/orchestrator/__tests__/doctor.test.ts`, `src/orchestrator/__tests__/doctor-native-task-store.test.ts`, `src/orchestrator/__tests__/task-backend-ops.test.ts`, `src/orchestrator/__tests__/worker-spawn.test.ts`, `src/orchestrator/__tests__/dispatcher-native-integration.test.ts`
    - Changes: Use Testcontainers project fixture and `PostgresStore`/`PostgresAdapter`; update dispatcher/test helpers to accept `IStore`/Postgres-compatible interfaces instead of concrete `ForemanStore` where needed.
-   - Acceptance: Listed files pass individually; bead writer tests verify rows in Postgres `bead_write_queue`.
+   - Acceptance: Listed files pass individually; task writer tests verify rows in Postgres `task_write_queue`.
    - Reason for test changes: These tests currently task/query a disabled local DB, causing null/undefined failures.
 
 11. **Retire or quarantine obsolete local-store-only assertions**: Remove tests whose only purpose was sqlite/local file behavior, not Foreman behavior.
@@ -71,7 +71,7 @@ Migrate the broken local-store tests and remaining local-store production paths 
 
 12. **Clean production local fallback paths**: Remove remaining code that silently falls back to no-op `ForemanStore` for commands expected to be Postgres-only.
    - Files: `src/cli/commands/project-task-support.ts`, `src/lib/task-client-factory.ts`, `src/lib/native-task-client.ts`, command files listed in Task 8.
-   - Changes: For production registered-project mode, always use `PostgresStore`/`PostgresAdapter`; for unregistered mode, either fail fast with a clear `foreman init`/project registration message or use beads-only paths that do not touch `ForemanStore` persistence.
+   - Changes: For production registered-project mode, always use `PostgresStore`/`PostgresAdapter`; for unregistered mode, either fail fast with a clear `foreman init`/project registration message or use tasks-only paths that do not touch `ForemanStore` persistence.
    - Acceptance: Grep shows no command uses `ForemanStore` for registered projects; unregistered command behavior is explicit and tested.
 
 13. **Run targeted validation in dependency order**: Validate smallest batches before full suite.
@@ -79,9 +79,9 @@ Migrate the broken local-store tests and remaining local-store production paths 
    - Changes: Run these commands after implementation:
      - `npx vitest run src/lib/__tests__/task-store.test.ts --reporter=dot`
      - `npx vitest run src/lib/__tests__/store.test.ts --reporter=dot`
-     - `npx vitest run src/lib/__tests__/mail.test.ts src/lib/__tests__/bead-write-queue.test.ts src/lib/__tests__/store-metrics.test.ts src/lib/__tests__/merge-strategy-store.test.ts --reporter=dot`
+     - `npx vitest run src/lib/__tests__/mail.test.ts src/lib/__tests__/task-write-queue.test.ts src/lib/__tests__/store-metrics.test.ts src/lib/__tests__/merge-strategy-store.test.ts --reporter=dot`
      - `npx vitest run src/cli/__tests__/task.test.ts src/cli/__tests__/retry.test.ts src/cli/__tests__/stop.test.ts --reporter=dot`
-     - `npx vitest run src/orchestrator/__tests__/bead-writer-drain.test.ts src/orchestrator/__tests__/task-backend-ops-enqueue.test.ts --reporter=dot`
+     - `npx vitest run src/orchestrator/__tests__/task-writer-drain.test.ts src/orchestrator/__tests__/task-backend-ops-enqueue.test.ts --reporter=dot`
    - Acceptance: Failures decrease from 25 files / 312 tests to 0 in the converted groups.
 
 14. **Run final validation**: Verify build and full test suite.
@@ -92,12 +92,12 @@ Migrate the broken local-store tests and remaining local-store production paths 
 ## Files to Modify
 - `src/test-support/postgres-testcontainer.ts` - make the real Postgres test fixture reusable for project/store setup and cleanup.
 - `src/lib/postgres-store.ts` - implement missing real store methods currently stubbed/no-op.
-- `src/lib/db/postgres-adapter.ts` - add focused Postgres queries for costs, metrics, bead-write queue, merge strategy/config, and task lifecycle gaps.
+- `src/lib/db/postgres-adapter.ts` - add focused Postgres queries for costs, metrics, task-write queue, merge strategy/config, and task lifecycle gaps.
 - `src/lib/postgres-task-store.ts` - production-capable async native task wrapper, if keeping task-store semantics clearer than expanding adapter directly.
 - `src/lib/__tests__/task-store.test.ts` - migrate from local sync NativeTaskStore to Postgres task path.
 - `src/lib/__tests__/store.test.ts` - migrate from ForemanStore/local file tests to PostgresStore tests.
 - `src/lib/__tests__/mail.test.ts` - migrate mail persistence tests to PostgresStore/PostgresMailClient.
-- `src/lib/__tests__/bead-write-queue.test.ts` - migrate bead write queue tests to Postgres rows.
+- `src/lib/__tests__/task-write-queue.test.ts` - migrate task write queue tests to Postgres rows.
 - `src/lib/__tests__/store-metrics.test.ts` - migrate metric aggregation tests to PostgresStore/Adapter.
 - `src/lib/__tests__/merge-strategy-store.test.ts` - migrate merge strategy config tests to Postgres implementation.
 - `src/lib/__tests__/native-task-client.test.ts` - ensure registered-project NativeTaskClient tests use real Postgres adapter where integration-level.
@@ -122,7 +122,7 @@ Migrate the broken local-store tests and remaining local-store production paths 
 - `src/cli/__tests__/doctor-native-mode.test.ts` - migrate native task setup to Postgres.
 - `src/cli/__tests__/task-project-resolution.test.ts` - adjust project resolution fixtures to registered Postgres path.
 - `src/cli/commands/__tests__/task-project-resolution.test.ts` - same as above.
-- `src/orchestrator/__tests__/bead-writer-drain.test.ts` - migrate queue setup/assertions to Postgres.
+- `src/orchestrator/__tests__/task-writer-drain.test.ts` - migrate queue setup/assertions to Postgres.
 - `src/orchestrator/__tests__/task-backend-ops-enqueue.test.ts` - migrate queue setup/assertions to Postgres.
 - `src/orchestrator/__tests__/doctor.test.ts` - replace local sqlite store scenarios with Postgres equivalents or remove obsolete sections.
 - `src/orchestrator/__tests__/doctor-native-task-store.test.ts` - migrate native task setup to Postgres.
@@ -153,4 +153,4 @@ Migrate the broken local-store tests and remaining local-store production paths 
 - Some old tests assert sqlite-specific behavior (`.foreman/foreman.db`, readonly sqlite handle, local/global DB migration). Those must be removed/replaced, not preserved.
 - A synchronous wrapper around Postgres would be a hidden fake/anti-pattern; avoid it even if it appears to minimize test edits.
 - Do not use sqlite as a temporary restore. It would make tests pass against non-production storage and violate the stated Postgres-only requirement.
-- If unregistered/local beads mode must remain supported, clarify its expected storage behavior; otherwise fail fast instead of silently using no-op `ForemanStore`.
+- If unregistered/local tasks mode must remain supported, clarify its expected storage behavior; otherwise fail fast instead of silently using no-op `ForemanStore`.

@@ -106,7 +106,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Hardened ForemanServer.AttachBridge to support recent completed-session attach, reject stale metadata, prevent phantom interrupt/resume projections through run/phase/state validation, make attach GET non-duplicating with deterministic idempotency keys, map HTTP not-found/conflict responses, and add focused direct/HTTP/restart tests.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-021 attach/interactive recovery fixes only. Did not alter bead state or implement CLI attach plumbing.",
+  "manualNotes": "Scoped to TRD-021 attach/interactive recovery fixes only. Did not alter task state or implement CLI attach plumbing.",
   "notes": "Output report file is untracked after final write by design."
 }
 ```

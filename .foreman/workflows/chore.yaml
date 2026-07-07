@@ -4,7 +4,7 @@
 # maintenance tasks. Uses command + bash phases for efficiency (TRD-2026-008).
 # No explorer (scope is already known) and no reviewer (changes are well-scoped).
 #
-# Auto-selected when bead type is "chore".
+# Auto-selected when task type is "chore".
 
 name: chore
 merge: auto

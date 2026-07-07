@@ -6,7 +6,7 @@
 #   - developer prompt — retry-only target for QA/review/finalize findings
 #   - merge: auto — auto-merge on green CI and PR review
 #
-# Auto-selected when a bead has type "bug" (TRD-006 type-based dispatch).
+# Auto-selected when a task has type "bug" (TRD-006 type-based dispatch).
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
 
 name: bug

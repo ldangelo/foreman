@@ -62,8 +62,8 @@ describe("full-run test runtime e2e", () => {
     }
   });
 
-  it.skip("runs a detached native-task flow in test runtime without br installed", { timeout: 70_000 }, async () => {
-    tempHome = mkdtempSync(join(tmpdir(), "foreman-no-br-home-"));
+  it.skip("runs a detached native-task flow in test runtime without native task store installed", { timeout: 70_000 }, async () => {
+    tempHome = mkdtempSync(join(tmpdir(), "foreman-no-native task store-home-"));
     mkdirSync(join(tempHome, ".foreman"), { recursive: true });
     process.env.HOME = tempHome;
     process.env.FOREMAN_REGISTRY_BASE_DIR = join(tempHome, ".foreman");

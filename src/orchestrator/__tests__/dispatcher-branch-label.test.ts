@@ -2,10 +2,10 @@
  * Tests for branch: label auto-labeling during dispatch.
  *
  * Verifies that:
- * 1. On a non-default branch, dispatched beads get branch:<name> label
+ * 1. On a non-default branch, dispatched tasks get branch:<name> label
  * 2. On the default branch, no label is added
- * 3. Beads that already have a branch: label are not re-labeled
- * 4. Child beads inherit branch: label from parent (even on default branch)
+ * 3. Tasks that already have a branch: label are not re-labeled
+ * 4. Child tasks inherit branch: label from parent (even on default branch)
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -253,9 +253,9 @@ describe("Dispatcher — branch label auto-labeling", () => {
     expect(branchLabelCalls).toHaveLength(0);
   });
 
-  it("does NOT re-label a bead that already has a branch: label", async () => {
+  it("does NOT re-label a task that already has a branch: label", async () => {
     const task = makeIssue("task-001");
-    // Bead already has branch:another-branch label
+    // Task already has branch:another-branch label
     const taskClient = makeTaskClient([task], { "task-001": ["branch:another-branch"] });
     const store = makeStore();
     const dispatcher = new Dispatcher(taskClient, store, "/tmp");
@@ -269,7 +269,7 @@ describe("Dispatcher — branch label auto-labeling", () => {
     expect(branchLabelCalls).toHaveLength(0);
   });
 
-  it("inherits branch: label from parent bead", async () => {
+  it("inherits branch: label from parent task", async () => {
     // On default branch but parent has branch:feature-x
     mockGetCurrentBranch = vi.fn().mockResolvedValue("main");
     mockDetectDefaultBranch = vi.fn().mockResolvedValue("main");

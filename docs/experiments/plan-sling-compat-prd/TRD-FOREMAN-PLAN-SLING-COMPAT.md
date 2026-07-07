@@ -214,8 +214,8 @@ foreman sling prd <prd-file> [opts]
 - Verify TRD created at `docs/TRD/TRD-YYYY-NNN.md`
 - Run `foreman sling prd docs/PRD/PRD-YYYY-NNN.md --auto --dry-run`
 - Run `foreman sling prd docs/PRD/PRD-YYYY-NNN.md --auto`
-- Verify tasks in native store (query `br list --status=open`)
-- Verify tasks are unblocked (query `br ready`)
+- Verify tasks in native store (query `native task store list --status=open`)
+- Verify tasks are unblocked (query `native task store ready`)
 - Verify `foreman run --dry-run` shows the created tasks as dispatch candidates
 - Estimate: 6h
 - Validates PRD ACs: AC-006-1, AC-006-2
@@ -223,7 +223,7 @@ foreman sling prd <prd-file> [opts]
 ---
 
 **TRD-FSC-008: Backward compatibility test** [satisfies REQ-005][depends: TRD-FSC-006]
-- Use an existing TRD file from `docs/TRD/` (beads path output)
+- Use an existing TRD file from `docs/TRD/` (tasks path output)
 - Run `foreman sling trd <existing-trd> --dry-run`; assert parses correctly
 - Run `foreman sling trd <existing-trd> --auto`; assert tasks created
 - Verify existing TRDs (non-table format) fail with `SLING-002` gracefully
@@ -287,7 +287,7 @@ foreman sling prd <prd-file> [opts]
 | REQ-001 | AC-001-2 | TRD-FSC-001-TEST | Run `parseTrd()` on output; no errors |
 | REQ-001 | AC-001-3 | TRD-FSC-001, TRD-FSC-001-TEST | Count `[x]` in output → 0 |
 | REQ-002 | AC-002-1 | TRD-FSC-003 | `sling prd --dry-run --json` → valid SlingPlan |
-| REQ-002 | AC-002-2 | TRD-FSC-006 | Query `br ready` → tasks present |
+| REQ-002 | AC-002-2 | TRD-FSC-006 | Query `native task store ready` → tasks present |
 | REQ-002 | AC-002-3 | TRD-FSC-003-TEST | `--auto` → no confirmation prompt |
 | REQ-002 | AC-002-4 | TRD-FSC-003-TEST | `--dry-run` → no tasks in store |
 | REQ-002 | AC-002-5 | TRD-FSC-003-TEST | `--project`/`--project-path` → correct targeting |
@@ -297,12 +297,12 @@ foreman sling prd <prd-file> [opts]
 | REQ-003 | AC-003-4 | TRD-FSC-004 | Count `[x]` → 0 |
 | REQ-003 | AC-003-5 | TRD-FSC-004 | Deps column format inspection |
 | REQ-003 | AC-003-6 | TRD-FSC-001-TEST | Task ID regex test |
-| REQ-004 | AC-004-1 | TRD-FSC-006 | `br ready` query |
+| REQ-004 | AC-004-1 | TRD-FSC-006 | `native task store ready` query |
 | REQ-004 | AC-004-2 | TRD-FSC-006 | Parent-child dependency query |
 | REQ-004 | AC-004-3 | TRD-FSC-006 | externalId field query |
 | REQ-004 | AC-004-4 | TRD-FSC-006 | Type field query |
 | REQ-004 | AC-004-5 | TRD-FSC-006 | Priority field query |
-| REQ-005 | AC-005-1 | TRD-FSC-008 | `sling trd` on beads-path TRD |
+| REQ-005 | AC-005-1 | TRD-FSC-008 | `sling trd` on tasks-path TRD |
 | REQ-005 | AC-005-2 | TRD-FSC-008 | `sling trd` on foreman-path TRD |
 | REQ-005 | AC-005-3 | N/A (existing API) | Existing tests pass |
 | REQ-005 | AC-005-4 | N/A (existing API) | Existing tests pass |

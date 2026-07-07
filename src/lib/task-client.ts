@@ -1,7 +1,7 @@
 /**
  * ITaskClient — common interface for task-tracking back-ends.
  *
- * BeadsRustClient (br) implements this interface, allowing the Dispatcher
+ * TaskClient (native task store) implements this interface, allowing the Dispatcher
  * (and other orchestrator components) to be decoupled from a specific
  * task-tracker implementation.
  */
@@ -11,22 +11,22 @@
 /**
  * Normalized representation of a task-tracker issue.
  *
- * Maps fields that exist on both Bead (sd) and BrIssue (br):
- *   Bead.id          ↔ BrIssue.id
- *   Bead.title       ↔ BrIssue.title
- *   Bead.type        ↔ BrIssue.type
- *   Bead.priority    ↔ BrIssue.priority  (string, e.g. "P0"–"P4" or "0"–"4")
- *   Bead.status      ↔ BrIssue.status
- *   Bead.assignee    ↔ BrIssue.assignee
- *   Bead.parent      ↔ BrIssue.parent
- *   Bead.created_at  ↔ BrIssue.created_at
- *   Bead.updated_at  ↔ BrIssue.updated_at
+ * Maps fields that exist on both Task (sd) and BrIssue (native task store):
+ *   Task.id          ↔ BrIssue.id
+ *   Task.title       ↔ BrIssue.title
+ *   Task.type        ↔ BrIssue.type
+ *   Task.priority    ↔ BrIssue.priority  (string, e.g. "P0"–"P4" or "0"–"4")
+ *   Task.status      ↔ BrIssue.status
+ *   Task.assignee    ↔ BrIssue.assignee
+ *   Task.parent      ↔ BrIssue.parent
+ *   Task.created_at  ↔ BrIssue.created_at
+ *   Task.updated_at  ↔ BrIssue.updated_at
  */
 export interface Issue {
   id: string;
   title: string;
   type: string;
-  /** Priority string — "P0"–"P4" (sd) or "0"–"4" (br). Use normalizePriority() for comparisons. */
+  /** Priority string — "P0"–"P4" (sd) or "0"–"4" (native task store). Use normalizePriority() for comparisons. */
   priority: string;
   status: string;
   assignee: string | null;
@@ -46,7 +46,7 @@ export interface Issue {
 /**
  * Options accepted by ITaskClient.update().
  *
- * The union of update options supported by BeadsRustClient.
+ * The union of update options supported by TaskClient.
  * Individual implementations may ignore unsupported fields.
  */
 export interface UpdateOptions {
@@ -72,7 +72,7 @@ export interface CreateOptions {
 // ── ITaskClient interface ────────────────────────────────────────────────
 
 /**
- * Common interface for the task-tracking back-end (br).
+ * Common interface for the task-tracking back-end (native task store).
  *
  * Covers the methods used by Dispatcher. Implementations must map their
  * native issue types to the common Issue type.
@@ -100,7 +100,7 @@ export interface ITaskClient {
    * Used by Monitor to detect completion (status === "closed" | "completed")
    * and by Dispatcher to fetch the description and notes for agent prompts.
    * The return type is intentionally loose — concrete implementations return
-   * BrIssueDetail or BeadDetail respectively, both of which include these fields.
+   * BrIssueDetail or TaskDetail respectively, both of which include these fields.
    */
   show(id: string): Promise<{ status: string; description?: string | null; notes?: string | null }>;
 
@@ -117,7 +117,7 @@ export interface ITaskClient {
   /**
    * Reset a native task back to the retryable ready state.
    *
-   * Optional because beads-style backends reset via `update(..., {status:"open"})`
+   * Optional because tasks-style backends reset via `update(..., {status:"open"})`
    * instead of a dedicated method.
    */
   resetToReady?(id: string, reason?: string): Promise<void>;

@@ -20,7 +20,7 @@ import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
 import { PIPELINE_TIMEOUTS } from "../lib/config.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
-import { enqueueSetBeadStatus } from "./task-backend-ops.js";
+import { enqueueSetTaskStatus } from "./task-backend-ops.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import { inferProjectPathFromWorkspacePath } from "../lib/workspace-paths.js";
 import { resolveArtifactPath } from "../lib/report-paths.js";
@@ -39,8 +39,8 @@ export interface FinalizeConfig {
   /** Absolute path to the git worktree directory. */
   worktreePath: string;
   /**
-   * Absolute path to the project root (contains .beads/).
-   * Used as cwd for br commands. When omitted, Foreman infers the project root
+   * Absolute path to the project root (contains .tasks/).
+   * Used as cwd for native task store commands. When omitted, Foreman infers the project root
    * from the workspace path so both legacy nested and external workspace roots work.
    */
   projectPath?: string;
@@ -353,24 +353,24 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // Note: merge queue enqueue already happened before push (pre-push enqueue above).
   // No second enqueue needed here — the pre-push entry covers the successful-push case too.
 
-  // Task lifecycle: set bead to 'review' after a successful push.
+  // Task lifecycle: set task to 'review' after a successful push.
   // This signals "pipeline done, branch pushed, awaiting foreman merge".
   // Closing happens only after the branch successfully merges (via refinery.ts).
-  // On push failure the bead stays in_progress (caller resets to open via resetTaskToOpen).
+  // On push failure the task stays in_progress (caller resets to open via resetTaskToOpen).
   if (pushSucceeded) {
-    // Queue the status update instead of calling br directly — prevents
-    // Postgres contention with concurrent agent-workers (all br writes go
+    // Queue the status update instead of calling native task store directly — prevents
+    // Postgres contention with concurrent agent-workers (all native task store writes go
     // through the dispatcher's sequential drain).
     try {
       const statusStore = ForemanStore.forProject(storeProjectPath);
-      enqueueSetBeadStatus(statusStore, taskId, "review", "agent-worker-finalize");
+      enqueueSetTaskStatus(statusStore, taskId, "review", "agent-worker-finalize");
       statusStore.close();
-      log(`[FINALIZE] Enqueued task ${taskId} → review — bead will be closed by refinery after merge`);
-      report.push(`## Task Status`, `- Status: AWAITING_MERGE (review)`, `- Note: bead closed by refinery after successful merge`, "");
+      log(`[FINALIZE] Enqueued task ${taskId} → review — task will be closed by refinery after merge`);
+      report.push(`## Task Status`, `- Status: AWAITING_MERGE (review)`, `- Note: task closed by refinery after successful merge`, "");
     } catch (brErr: unknown) {
       const brMsg = brErr instanceof Error ? brErr.message : String(brErr);
       log(`[FINALIZE] Warning: enqueue set-status review failed for ${taskId}: ${brMsg.slice(0, 200)}`);
-      report.push(`## Task Status`, `- Status: AWAITING_MERGE`, `- Note: bead status update to review failed (non-fatal)`, "");
+      report.push(`## Task Status`, `- Status: AWAITING_MERGE`, `- Note: task status update to review failed (non-fatal)`, "");
     }
   } else {
     log(`[FINALIZE] Push failed for ${taskId} — merge queue entry written pre-push; refinery will handle gracefully on re-dispatch`);

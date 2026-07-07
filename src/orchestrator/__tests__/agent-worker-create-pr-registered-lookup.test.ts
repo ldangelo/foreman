@@ -38,7 +38,7 @@ describe("agent-worker.ts — create-pr Elixir run lookup", () => {
     expect(block).not.toContain("registeredProjectId && registeredReadStore ?");
   });
 
-  it("helper is called by create-pr and post-finalize paths", () => {
+  it("helper is called by the finalize/create-pr refinery setup", () => {
     const callPattern = "deriveFallbackRefineryOptions(";
     let callCount = 0;
     let searchFrom = 0;
@@ -49,6 +49,6 @@ describe("agent-worker.ts — create-pr Elixir run lookup", () => {
       if (!prefix.includes("function")) callCount++;
       searchFrom = callIdx + 1;
     }
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(1);
   });
 });

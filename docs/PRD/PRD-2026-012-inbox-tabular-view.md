@@ -161,7 +161,7 @@ Add `--raw` flag for minimal processing (shows raw body, no JSON parsing):
 - Target: < 50ms additional overhead for 100 messages
 
 ### 6.2 Compatibility
-- Must work with existing `--agent`, `--run`, `--bead`, `--watch`, `--unread`, `--limit`, `--ack` flags
+- Must work with existing `--agent`, `--run`, `--task`, `--watch`, `--unread`, `--limit`, `--ack` flags
 - Must work in both Postgres-store mode and daemon/trpc-client mode
 
 ### 6.3 Output Width

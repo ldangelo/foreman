@@ -4,7 +4,7 @@
 # examples, and guides. No testing phase (docs don't need CI) and no reviewer
 # (docs are low-risk). Auto-merges on finalize validation.
 #
-# Auto-selected when bead type is "docs".
+# Auto-selected when task type is "docs".
 
 name: docs
 task_type: docs

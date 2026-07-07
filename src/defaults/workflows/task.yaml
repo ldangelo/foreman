@@ -4,7 +4,7 @@
 # explorer/reviewer phases. Appropriate for well-scoped implementation tasks,
 # improvements, and non-feature work that still benefits from validation.
 #
-# Auto-selected when bead type is "task".
+# Auto-selected when task type is "task".
 
 name: task
 task_type: task

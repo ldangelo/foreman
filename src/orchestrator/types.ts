@@ -20,9 +20,6 @@ export interface TaskInfo {
   githubIssueNumber?: number;
 }
 
-/** @deprecated Use TaskInfo instead */
-export type BeadInfo = TaskInfo;
-
 export interface DispatchedTask {
   taskId: string;
   title: string;

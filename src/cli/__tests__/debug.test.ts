@@ -133,7 +133,7 @@ describe("foreman debug", () => {
           {
             id: "run-12345678",
             project_id: "proj-1",
-            bead_id: "foreman-a01cf",
+            task_id: "foreman-a01cf",
             status: "running",
             branch: "foreman/foreman-a01cf",
             queued_at: "2026-04-25T00:00:00.000Z",
@@ -156,7 +156,7 @@ describe("foreman debug", () => {
             run_id: "run-12345678",
             sender_agent_type: "foreman",
             recipient_agent_type: "developer",
-            subject: "bead-claimed",
+            subject: "task-claimed",
             body: '{"taskId":"foreman-a01cf"}',
             read: 0,
             created_at: "2026-04-25T00:02:00.000Z",
@@ -172,7 +172,7 @@ describe("foreman debug", () => {
     const output = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(output).toContain("Analyzing foreman-a01cf");
     expect(output).toContain("run run-123");
-    expect(output).toContain("bead-claimed");
+    expect(output).toContain("task-claimed");
   });
 
   it("fails clearly when no runs exist for the task", async () => {

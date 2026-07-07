@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, normalize, relative } from "node:p
  * Resolve the directory that stores Foreman workspaces for a repository.
  *
  * Default layout keeps workspaces outside the repository root to avoid parent
- * repo state writes (for example .beads/issues.jsonl) dirtying active agent
+ * repo state writes (for example .tasks/issues.jsonl) dirtying active agent
  * workspaces:
  *   <repo-parent>/.foreman-worktrees/<repo-name>/<taskId>
  *
@@ -50,12 +50,12 @@ export function inferProjectPathFromWorkspacePath(workspacePath: string): string
 }
 
 /**
- * Return the beads JSONL path as it should be referenced from a workspace.
+ * Return the tasks JSONL path as it should be referenced from a workspace.
  *
  * - Nested legacy workspaces need a relative path back to the main repo copy.
- * - External workspaces should use their local checkout path `.beads/issues.jsonl`.
+ * - External workspaces should use their local checkout path `.tasks/issues.jsonl`.
  */
-export function getBeadsIssuesPathForWorkspace(
+export function getTasksIssuesPathForWorkspace(
   workspacePath: string,
   mainRepoRoot: string,
 ): string {
@@ -63,10 +63,10 @@ export function getBeadsIssuesPathForWorkspace(
   const isNestedWorkspace = relWorkspace !== "" && !relWorkspace.startsWith("..");
 
   if (isNestedWorkspace) {
-    return relative(workspacePath, join(mainRepoRoot, ".beads", "issues.jsonl"));
+    return relative(workspacePath, join(mainRepoRoot, ".tasks", "issues.jsonl"));
   }
 
-  return ".beads/issues.jsonl";
+  return ".tasks/issues.jsonl";
 }
 
 /**
@@ -79,9 +79,9 @@ export function buildTrackedStateRestoreCommand(
   workspacePath: string,
   mainRepoRoot: string,
 ): string {
-  const beadsPath = getBeadsIssuesPathForWorkspace(workspacePath, mainRepoRoot);
+  const tasksPath = getTasksIssuesPathForWorkspace(workspacePath, mainRepoRoot);
   return [
-    `git restore --source=HEAD --staged --worktree -- ${beadsPath} 2>/dev/null || git restore --source=HEAD --worktree -- ${beadsPath} 2>/dev/null || true`,
+    `git restore --source=HEAD --staged --worktree -- ${tasksPath} 2>/dev/null || git restore --source=HEAD --worktree -- ${tasksPath} 2>/dev/null || true`,
     `git restore --source=HEAD --staged --worktree -- node_modules SESSION_LOG.md RUN_LOG.md DOCUMENTATION_REPORT.md DEVELOPER_REPORT.md QA_REPORT.md REVIEW.md FINALIZE_REPORT.md FINALIZE_VALIDATION.md 2>/dev/null || true`,
     `git rm -r --cached --ignore-unmatch node_modules docs/reports SESSION_LOG.md RUN_LOG.md DOCUMENTATION_REPORT.md DEVELOPER_REPORT.md QA_REPORT.md REVIEW.md FINALIZE_REPORT.md FINALIZE_VALIDATION.md 2>/dev/null || true`,
   ].join("\n");

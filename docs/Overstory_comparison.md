@@ -1,5 +1,5 @@
 > ⚠️ Historical Context
-> This document describes Foreman's beads-first architecture, which has been
+> This document describes Foreman's tasks-first architecture, which has been
 > superseded by native task management (TRD-2026-006). Some instructions,
 > configurations, or comparisons in this document may no longer reflect
 > current behavior.
@@ -20,7 +20,7 @@
 |---|---|---|---|
 | **Agent isolation** | Git worktrees + tmux | Git worktrees + detached processes | Minor |
 | **Pipeline phases** | Role-based (9 roles) | TypeScript-orchestrated (4 phases) | Different approach, foreman's is fine |
-| **Task tracking** | Tasks/beads (pluggable) | Tasks (migrated) | Parity |
+| **Task tracking** | Tasks/tasks (pluggable) | Tasks (migrated) | Parity |
 | **Inter-agent messaging** | Postgres mail system | Report files only | **Gap** |
 | **Merge system** | FIFO queue + 4-tier conflict resolution | Basic merge + theirs strategy | **Gap** |
 | **Health monitoring** | 3-tier watchdog + `ov doctor` | Basic monitor + stuck detection | **Gap** |

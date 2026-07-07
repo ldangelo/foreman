@@ -9,7 +9,6 @@
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
 import type { ForemanStore } from "../lib/store.js";
-import type { BvClient } from "../lib/bv.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 import type { NativeTask, Run, EventType } from "../lib/store.js";
 import type { RunStoreReadModel } from "./read-models.js";
@@ -27,7 +26,7 @@ export type Awaitable<T> = T | Promise<T>;
 
 /**
  * Interface for task store operations used by the dispatcher.
- * Abstracts over native Postgres tasks and Beads.
+ * Abstracts over native Postgres tasks and Tasks.
  */
 export interface TaskStoreOps {
   /** Check whether the store has any tasks. */
@@ -235,8 +234,8 @@ export interface DispatcherDeps {
   vcsBackend: VcsBackend;
   /** Project path for workspace operations. */
   projectPath: string;
-  /** Optional BV client for beads operations. */
-  bvClient?: BvClient | null;
+  /** Optional NATIVE TASK ORDERING client for tasks operations. */
+  bvClient?: null;
   /** Optional overrides for testing/external use. */
   overrides?: DispatcherOverrides;
 }

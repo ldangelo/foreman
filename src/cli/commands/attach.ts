@@ -10,7 +10,7 @@ import { getWorkspacePath } from "../../lib/workspace-paths.js";
 interface DaemonRunRow {
   id: string;
   project_id: string;
-  bead_id: string;
+  task_id: string;
   status: string;
   branch: string;
   agent_type: string | null;
@@ -55,10 +55,10 @@ export function adaptDaemonRun(row: DaemonRunRow, projectPath: string): Run {
   return {
     id: row.id,
     project_id: row.project_id,
-    task_id: row.bead_id,
+    task_id: row.task_id,
     agent_type: row.agent_type ?? "daemon",
     session_key: row.session_key,
-    worktree_path: row.worktree_path ?? getWorkspacePath(projectPath, row.bead_id),
+    worktree_path: row.worktree_path ?? getWorkspacePath(projectPath, row.task_id),
     status: statusMap[row.status] ?? "failed",
     started_at: row.started_at,
     completed_at: row.finished_at,
@@ -86,7 +86,7 @@ export async function resolveDaemonAttachContext(projectPath: string): Promise<D
 
 export async function resolveDaemonRun(context: DaemonAttachContext, id: string): Promise<Run | null> {
   const runs = await context.client.runs.list({ projectId: context.projectId, limit: 100 }) as DaemonRunRow[];
-  const row = runs.find((run) => run.id === id || run.id.startsWith(id) || run.bead_id === id);
+  const row = runs.find((run) => run.id === id || run.id.startsWith(id) || run.task_id === id);
   return row ? adaptDaemonRun(row, context.projectPath) : null;
 }
 

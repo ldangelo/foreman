@@ -155,7 +155,7 @@ Refinery Agent proceeds based on response → Completes or aborts
 The Refinery Agent analyzes each completed branch and decides:
 
 1. **Target branch selection**
-   - Parse `branch:<name>` label from bead
+   - Parse `branch:<name>` label from task
    - Fall back to project default (e.g., `dev`)
    - Support branch aliases via configuration
 
@@ -291,7 +291,7 @@ interface MergePattern {
 Enhanced queue management with AI insights:
 
 1. **Smart ordering**
-   - Dependencies first (respect bead graph)
+   - Dependencies first (respect task graph)
    - High-confidence merges before low-confidence
    - Age-based prioritization (avoid stale branches)
 
@@ -654,7 +654,7 @@ refinery_agent:
 | VcsBackend | Git/Jujutsu operations | Direct |
 | Foreman Store | Run state, events | Postgres |
 | Agent Mail | Notifications | Postgres mail client |
-| Beads | Task status sync | br CLI |
+| Tasks | Task status sync | native task store CLI |
 | CI/CD | Test results | Webhook callback |
 | Secrets Manager | API keys | Env/Secrets |
 
@@ -710,7 +710,7 @@ refinery_agent:
 |----|----------|---------------|
 | IT-001 | Works with GitBackend | Merge completes successfully |
 | IT-002 | Works with JujutsuBackend | Merge completes successfully |
-| IT-003 | Syncs with Beads | Bead status updated after merge |
+| IT-003 | Syncs with Tasks | Task status updated after merge |
 | IT-004 | Integrates with auto-merge | Queue drained correctly |
 | IT-005 | Logs events to store | Events queryable after merge |
 

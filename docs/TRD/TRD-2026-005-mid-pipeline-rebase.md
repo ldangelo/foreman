@@ -1,5 +1,5 @@
 > ⚠️ Historical Context
-> This document describes Foreman's beads-first architecture, which has been
+> This document describes Foreman's tasks-first architecture, which has been
 > superseded by native task management (TRD-2026-006). Some instructions,
 > configurations, or comparisons in this document may no longer reflect
 > current behavior.
@@ -797,13 +797,13 @@ Add visual indicators for the two new run statuses in the live dashboard:
 **Estimate:** 1h
 **Depends:** None (additive to existing --type flag if present, or new flag)
 
-Extend `foreman inbox` to support filtering by mail type via `--type <type>`. Supported type values include `rebase-context` and `rebase-conflict` (in addition to any existing mail types). When `--type rebase-context` is specified, only `rebase-context` mails are returned. Combined with `--bead <id>`, shows the full rebase event chain for a given run in chronological order.
+Extend `foreman inbox` to support filtering by mail type via `--type <type>`. Supported type values include `rebase-context` and `rebase-conflict` (in addition to any existing mail types). When `--type rebase-context` is specified, only `rebase-context` mails are returned. Combined with `--task <id>`, shows the full rebase event chain for a given run in chronological order.
 
 **Validates PRD ACs:** AC-015-1, AC-015-2
 
 **Implementation ACs:**
 - ( ) AC-I-014-1: Given a mailbox containing `rebase-context`, `rebase-conflict`, and other mail types, when `foreman inbox --type rebase-context` runs, then only `rebase-context` mails are shown.
-- ( ) AC-I-014-2: Given `foreman inbox --bead <id>`, when a run has both `rebase-context` and `rebase-conflict` mails, then all rebase-related mails for that run appear in chronological order.
+- ( ) AC-I-014-2: Given `foreman inbox --task <id>`, when a run has both `rebase-context` and `rebase-conflict` mails, then all rebase-related mails for that run appear in chronological order.
 
 ---
 
@@ -813,7 +813,7 @@ Extend `foreman inbox` to support filtering by mail type via `--type <type>`. Su
 **Estimate:** 1h
 
 - ( ) AC-T-014-1: Given a tasked mailbox with 3 mail types, when `inbox --type rebase-context` runs, then only mails with `type === 'rebase-context'` are returned.
-- ( ) AC-T-014-2: Given `inbox --bead <id>` with multiple rebase event mails, when rendered, then mails are sorted ascending by `createdAt`.
+- ( ) AC-T-014-2: Given `inbox --task <id>` with multiple rebase event mails, when rendered, then mails are sorted ascending by `createdAt`.
 
 ---
 
@@ -1249,7 +1249,7 @@ Implement a new troubleshooter skill specifically for mid-pipeline rebase confli
 | AC-014-2 | Conflict escalation mail subject format correct | TRD-008, TRD-015 | TRD-008-TEST, TRD-015-TEST |
 | AC-014-3 | Resolution outcome notification logged | TRD-015 | TRD-015-TEST |
 | AC-015-1 | `inbox --type rebase-context` filters correctly | TRD-014 | TRD-014-TEST |
-| AC-015-2 | `inbox --bead <id>` shows rebase event chain in order | TRD-014 | TRD-014-TEST |
+| AC-015-2 | `inbox --task <id>` shows rebase event chain in order | TRD-014 | TRD-014-TEST |
 | AC-016-1 | Clean rebase step < 30s | TRD-019 | TRD-019-TEST |
 | AC-016-2 | Conflict detection + escalation < 10s | TRD-019 | TRD-019-TEST |
 | AC-017-1 | Default workflow pipelines: zero behavioral change | TRD-002, TRD-018 | TRD-002-TEST, TRD-018-TEST |

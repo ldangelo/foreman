@@ -121,7 +121,7 @@ describe("buildPhasePrompt finalize: GitBackend VCS command substitution (AC-T-0
       vcsCleanCommand: finalizeCommands.cleanCommand,
       vcsRestoreTrackedStateCommand: finalizeCommands.restoreTrackedStateCommand,
     });
-    expect(prompt).toContain("git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl");
+    expect(prompt).toContain("git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl");
     expect(prompt).not.toContain("{{vcsRestoreTrackedStateCommand}}");
   });
 

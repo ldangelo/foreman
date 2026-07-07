@@ -611,23 +611,23 @@ describe("resolveWorkflowName", () => {
     delete process.env["FOREMAN_HOME"];
   });
 
-  it("returns 'smoke' for smoke bead type", () => {
+  it("returns 'smoke' for smoke task type", () => {
     expect(resolveWorkflowName("smoke")).toBe("smoke");
   });
 
-  it("returns 'epic' for epic bead type", () => {
+  it("returns 'epic' for epic task type", () => {
     expect(resolveWorkflowName("epic")).toBe("epic");
   });
 
-  it("returns 'feature' for feature bead type (feature.yaml exists)", () => {
+  it("returns 'feature' for feature task type (feature.yaml exists)", () => {
     expect(resolveWorkflowName("feature")).toBe("feature");
   });
 
-  it("returns 'bug' for bug bead type (bug.yaml exists — TRD-008)", () => {
+  it("returns 'bug' for bug task type (bug.yaml exists — TRD-008)", () => {
     expect(resolveWorkflowName("bug")).toBe("bug");
   });
 
-  it("returns 'task' for task bead type (task.yaml exists)", () => {
+  it("returns 'task' for task task type (task.yaml exists)", () => {
     expect(resolveWorkflowName("task")).toBe("task");
   });
 
@@ -636,7 +636,7 @@ describe("resolveWorkflowName", () => {
     expect(resolveWorkflowName("feature", ["phase:explorer", "workflow:custom"])).toBe("custom");
   });
 
-  it("label override takes precedence over bead type", () => {
+  it("label override takes precedence over task type", () => {
     expect(resolveWorkflowName("smoke", ["workflow:default"])).toBe("default");
   });
 

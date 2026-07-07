@@ -21,7 +21,6 @@ import { Dispatcher, DetachedSpawnStrategy, buildWorkerEnv, purgeOrphanedWorkerC
 import { PLAN_STEP_CONFIG } from "../roles.js";
 import type { TaskInfo } from "../types.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
-import type { BvClient, BvTriageResult } from "../../lib/bv.js";
 import { WorktreeManager } from "../../lib/worktree-manager.js";
 import type { ForemanStore } from "../../lib/store.js";
 
@@ -37,8 +36,8 @@ const mockStore = {
 } as unknown as ForemanStore;
 const mockTasks = {} as unknown as ITaskClient;
 
-function makeDispatcher(client?: ITaskClient, bvClient?: BvClient | null) {
-  return new Dispatcher(client ?? mockTasks, mockStore, "/tmp", bvClient);
+function makeDispatcher(client?: ITaskClient) {
+  return new Dispatcher(client ?? mockTasks, mockStore, "/tmp");
 }
 
 function makeTask(title: string, description?: string, priority?: string): TaskInfo {
@@ -246,7 +245,7 @@ describe("Dispatcher override-backed control-plane reads", () => {
         throw new Error("local getRunsForTask should not be used");
       }),
       hasNativeTasks: vi.fn().mockReturnValue(false),
-      // Provide tasks via native store — Beads fallback removed
+      // Provide tasks via native store — Tasks fallback removed
       getReadyTasks: vi.fn().mockReturnValue([{
         id: "bd-registered",
         title: "Registered task",
@@ -278,7 +277,7 @@ describe("Dispatcher override-backed control-plane reads", () => {
     expect(overrides.getActiveRuns).toHaveBeenCalledWith("proj-registered");
     expect(overrides.getRunsByStatus).toHaveBeenCalledWith("completed", "proj-registered");
     expect(overrides.getRunsForTask).toHaveBeenCalledWith("bd-registered", "proj-registered");
-    // Verify tasks.ready() was never called (Beads fallback removed)
+    // Verify tasks.ready() was never called (Tasks fallback removed)
     expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 
@@ -296,7 +295,7 @@ describe("Dispatcher override-backed control-plane reads", () => {
       getRunsByStatus: vi.fn().mockReturnValue([]),
       getRunsByStatuses: vi.fn().mockReturnValue([]),
       getStuckRunsForTask: vi.fn().mockReturnValue([]),
-      getPendingBeadWrites: vi.fn().mockReturnValue([]),
+      getPendingTaskWrites: vi.fn().mockReturnValue([]),
       hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
       getRunsForTask: vi.fn().mockReturnValue([]),
       createRun: vi.fn().mockReturnValue({ id: "run-001" }),
@@ -583,250 +582,7 @@ describe("buildWorkerEnv — PATH includes ~/.local/bin", () => {
   });
 });
 
-describe("Dispatcher — BvClient ordering", () => {
-  function makeIssue(id: string, priority?: string): Issue {
-    return {
-      id,
-      title: `Task ${id}`,
-      status: "open",
-      priority: priority ?? "P2",
-      type: "task",
-      assignee: null,
-      parent: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-  }
-
-  function makeBvClient(result: BvTriageResult | null): BvClient {
-    return {
-      robotTriage: vi.fn().mockResolvedValue(result),
-      robotNext: vi.fn(),
-      robotPlan: vi.fn(),
-      robotInsights: vi.fn(),
-      robotAlerts: vi.fn(),
-    } as unknown as BvClient;
-  }
-
-  it("orders tasks by bv score when robotTriage returns recommendations", async () => {
-    // Native-only: provide tasks via store.getReadyTasks(), not tasks.ready()
-    const triageResult: BvTriageResult = {
-      recommendations: [
-        { id: "bd-003", title: "Task bd-003", score: 0.9 },
-        { id: "bd-001", title: "Task bd-001", score: 0.7 },
-        { id: "bd-002", title: "Task bd-002", score: 0.3 },
-      ],
-    };
-
-    const bvClient = makeBvClient(triageResult);
-    const tasksClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue([]),
-      show: vi.fn().mockResolvedValue({ status: "open" }),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForTask: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      // Native tasks with priorities mapped from issue priority strings
-      getReadyTasks: vi.fn().mockReturnValue([
-        { id: "bd-001", title: "Task bd-001", description: null, type: "task", priority: 2, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-002", title: "Task bd-002", description: null, type: "task", priority: 1, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-003", title: "Task bd-003", description: null, type: "task", priority: 3, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-      ]),
-    } as unknown as ForemanStore;
-
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp", bvClient);
-    const result = await dispatcher.dispatch({ dryRun: true });
-
-    // Should be ordered by bv score: bd-003 (0.9) > bd-001 (0.7) > bd-002 (0.3)
-    expect(result.dispatched.map((d) => d.taskId)).toEqual(["bd-003", "bd-001", "bd-002"]);
-    expect(bvClient.robotTriage).toHaveBeenCalledOnce();
-    // Verify tasks.ready() was never called (Beads fallback removed)
-    expect(tasksClient.ready).not.toHaveBeenCalled();
-  });
-
-  it("falls back to priority-sort when robotTriage returns null", async () => {
-    // Native-only: provide tasks via store.getReadyTasks(), not tasks.ready()
-    const bvClient = makeBvClient(null);
-    const tasksClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue([]),
-      show: vi.fn().mockResolvedValue({ status: "open" }),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForTask: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      // Native tasks: bd-001 (P3→priority 3), bd-002 (P1→priority 1), bd-003 (P2→priority 2)
-      getReadyTasks: vi.fn().mockReturnValue([
-        { id: "bd-001", title: "Task bd-001", description: null, type: "task", priority: 3, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-002", title: "Task bd-002", description: null, type: "task", priority: 1, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-003", title: "Task bd-003", description: null, type: "task", priority: 2, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-      ]),
-    } as any;
-
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp", bvClient);
-    const result = await dispatcher.dispatch({ dryRun: true });
-
-    // Should be sorted by priority: P1 (bd-002) < P2 (bd-003) < P3 (bd-001)
-    expect(result.dispatched.map((d) => d.taskId)).toEqual(["bd-002", "bd-003", "bd-001"]);
-    // Should log a warning about fallback
-    const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
-    expect(warnCalls.some((msg) => msg.includes("bv unavailable"))).toBe(true);
-    consoleSpy.mockRestore();
-    expect(tasksClient.ready).not.toHaveBeenCalled();
-  });
-
-  it("uses priority-sort and does not error when bvClient is not provided", async () => {
-    // Native-only: provide tasks via store.getReadyTasks(), not tasks.ready()
-    const tasksClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue([]),
-      show: vi.fn().mockResolvedValue({ status: "open" }),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForTask: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      // Native tasks: bd-001 (P3→priority 3), bd-002 (P1→priority 1)
-      getReadyTasks: vi.fn().mockReturnValue([
-        { id: "bd-001", title: "Task bd-001", description: null, type: "task", priority: 3, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-002", title: "Task bd-002", description: null, type: "task", priority: 1, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-      ]),
-    } as any;
-
-    // No bvClient passed (undefined)
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
-    const result = await dispatcher.dispatch({ dryRun: true });
-    // P1 should come before P3
-    expect(result.dispatched[0].taskId).toBe("bd-002");
-    expect(tasksClient.ready).not.toHaveBeenCalled();
-  });
-
-  it("logs warning on null return from robotTriage", async () => {
-    const issues: Issue[] = [makeIssue("bd-001", "P2")];
-    const bvClient = makeBvClient(null);
-    const tasksClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue(issues),
-      show: vi.fn().mockResolvedValue({ status: "open" }),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForTask: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      getReadyTasks: vi.fn().mockReturnValue([]),
-    } as any;
-
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp", bvClient);
-    await dispatcher.dispatch({ dryRun: true });
-
-    const warnCalls = consoleSpy.mock.calls.map((args) => args.join(" "));
-    expect(warnCalls.some((msg) => msg.includes("bv unavailable, using priority-sort fallback"))).toBe(true);
-    consoleSpy.mockRestore();
-  });
-
-  it("logs 'bv unavailable' warning only once across multiple dispatch calls", async () => {
-    const issues: Issue[] = [makeIssue("bd-001", "P2")];
-    const bvClient = makeBvClient(null);
-    const tasksClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue(issues),
-      show: vi.fn().mockResolvedValue({ status: "open" }),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForTask: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      getReadyTasks: vi.fn().mockReturnValue([]),
-    } as any;
-
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp", bvClient);
-
-    // Dispatch three times on the same instance
-    await dispatcher.dispatch({ dryRun: true });
-    await dispatcher.dispatch({ dryRun: true });
-    await dispatcher.dispatch({ dryRun: true });
-
-    const warnCalls = consoleSpy.mock.calls
-      .map((args) => args.join(" "))
-      .filter((msg) => msg.includes("bv unavailable, using priority-sort fallback"));
-
-    // Warning should appear exactly once, not once per dispatch call
-    expect(warnCalls).toHaveLength(1);
-    consoleSpy.mockRestore();
-  });
-
-  it("tasks not in bv recommendations are sorted by priority and appended after ranked tasks", async () => {
-    // Native-only: provide tasks via store.getReadyTasks(), not tasks.ready()
-    const triageResult: BvTriageResult = {
-      recommendations: [
-        { id: "bd-001", title: "Task bd-001", score: 0.8 },
-        { id: "bd-003", title: "Task bd-003", score: 0.5 },
-        { id: "bd-002", title: "Task bd-002", score: 0.2 },
-        // bd-004 is NOT in recommendations
-      ],
-    };
-
-    const bvClient = makeBvClient(triageResult);
-    const tasksClient: ITaskClient = {
-      ready: vi.fn().mockResolvedValue([]),
-      show: vi.fn().mockResolvedValue({ status: "open" }),
-      update: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const store = {
-      getActiveRuns: vi.fn().mockReturnValue([]),
-      getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1" }),
-      getRunsForTask: vi.fn().mockReturnValue([]),
-      getRunsByStatus: vi.fn().mockReturnValue([]),
-      hasNativeTasks: vi.fn().mockReturnValue(false),
-      // Native tasks: bd-001 (P3→3), bd-002 (P1→1), bd-003 (P2→2), bd-004 (P0→0 - not in bv recs)
-      getReadyTasks: vi.fn().mockReturnValue([
-        { id: "bd-001", title: "Task bd-001", description: null, type: "task", priority: 3, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-002", title: "Task bd-002", description: null, type: "task", priority: 1, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-003", title: "Task bd-003", description: null, type: "task", priority: 2, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-        { id: "bd-004", title: "Task bd-004", description: null, type: "task", priority: 0, status: "ready", run_id: null, branch: null, external_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), approved_at: null, closed_at: null },
-      ]),
-    } as unknown as ForemanStore;
-
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp", bvClient);
-    const result = await dispatcher.dispatch({ dryRun: true });
-
-    const dispatchedIds = result.dispatched.map((d) => d.taskId);
-    // bd-001, bd-003, bd-002 in bv score order; bd-004 (P0) appended
-    expect(dispatchedIds.slice(0, 3)).toEqual(["bd-001", "bd-003", "bd-002"]);
-    expect(dispatchedIds[3]).toBe("bd-004");
-    expect(tasksClient.ready).not.toHaveBeenCalled();
-  });
-});
-
-describe("Dispatcher — merged bead redispatch guard", () => {
+describe("Dispatcher — merged task redispatch guard", () => {
   function makeIssue(id: string, priority = "P2"): Issue {
     return {
       id,
@@ -841,7 +597,7 @@ describe("Dispatcher — merged bead redispatch guard", () => {
     };
   }
 
-  it("skips a ready bead when a merged run exists without a later reset", async () => {
+  it("skips a ready task when a merged run exists without a later reset", async () => {
     // Native-only: provide tasks via store.getReadyTasks(), not tasks.ready()
     const tasksClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([]),
@@ -966,7 +722,7 @@ describe("Dispatcher — merged bead redispatch guard", () => {
     expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 
-  it("skips a ready bead when a pr-created run exists without a later reset", async () => {
+  it("skips a ready task when a pr-created run exists without a later reset", async () => {
     // Native-only: provide tasks via store.getReadyTasks(), not tasks.ready()
     const tasksClient: ITaskClient = {
       ready: vi.fn().mockResolvedValue([]),
@@ -1261,7 +1017,7 @@ describe("Dispatcher.dispatch — description fetching", () => {
     const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
-    // Native-only: tasks.show() is NOT called (Beads fallback removed)
+    // Native-only: tasks.show() is NOT called (Tasks fallback removed)
     expect(tasksClient.show).not.toHaveBeenCalled();
     // Description is fetched via native store
     expect(store.getTaskById).toHaveBeenCalledWith("bd-001");
@@ -1545,7 +1301,7 @@ describe("Dispatcher.dispatch — fetches task details via native store", () => 
   });
 });
 
-describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
+describe("Dispatcher.dispatch — fetches task comments via comments()", () => {
   function makeIssue(): Issue {
     return {
       id: "bd-001",
@@ -1564,7 +1320,7 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
   // via postgres task_notes). Comments are fetched with error handling so failures are non-fatal.
   // Tests below verify taskInfo.comments integration and error handling.
 
-  it("includes bead comments in agent instructions via taskInfo.comments", async () => {
+  it("includes task comments in agent instructions via taskInfo.comments", async () => {
     const dispatcher = makeDispatcher();
     const taskInfo: TaskInfo = {
       id: "bd-001",
@@ -1620,7 +1376,7 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
-    // Native-only mode: no tasks dispatched via beads, comments() not called
+    // Native-only mode: no tasks dispatched via tasks, comments() not called
     expect(result.dispatched).toHaveLength(0);
     consoleSpy.mockRestore();
   });
@@ -1649,7 +1405,7 @@ describe("Dispatcher.dispatch — fetches bead comments via comments()", () => {
     const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
 
-    // Native-only mode: no tasks dispatched via beads
+    // Native-only mode: no tasks dispatched via tasks
     expect(result.dispatched).toHaveLength(0);
     expect(tasksClient.comments).toBeUndefined();
   });
@@ -2263,7 +2019,7 @@ describe("Dispatcher.reconcileRunningIssues", () => {
 });
 
 describe("Dispatcher.cleanupTerminalStateWorktrees", () => {
-  it("returns 0 — Beads fallback removed (native-only dispatcher)", async () => {
+  it("returns 0 — Tasks fallback removed (native-only dispatcher)", async () => {
     const tasksClient = {
       ready: vi.fn().mockResolvedValue([]),
       show: vi.fn().mockResolvedValue({ status: "open" }),
@@ -2289,11 +2045,11 @@ describe("Dispatcher.cleanupTerminalStateWorktrees", () => {
     // cleanupTerminalStateWorktrees returns 0 unconditionally.
     const removed = await (dispatcher as any).cleanupTerminalStateWorktrees("proj-1");
     expect(removed).toBe(0);
-    // Verify tasks.list() was never called (Beads fallback removed)
+    // Verify tasks.list() was never called (Tasks fallback removed)
     expect(tasksClient.list).not.toHaveBeenCalled();
   });
 
-  it("returns 0 when nativeTaskOps is set — no Beads call", async () => {
+  it("returns 0 when nativeTaskOps is set — no Tasks call", async () => {
     const tasksClient = {
       ready: vi.fn().mockResolvedValue([]),
       show: vi.fn().mockResolvedValue({ status: "open" }),

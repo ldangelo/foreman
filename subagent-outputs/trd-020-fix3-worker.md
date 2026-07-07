@@ -102,7 +102,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "ForemanServer.DebugViews now redacts inline secrets using all configured secret key names, including snake_case aliases and quoted JSON-ish key/value strings, while preserving authorization/bearer redaction and UTF-8-safe truncation. Debug view and HTTP route tests now cover access_token, auth_token, client_secret, quoted token/client_secret, and previous redaction/truncation behavior.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-020 debug view redaction fix only. Did not alter bead state or broader debug view behavior.",
+  "manualNotes": "Scoped to TRD-020 debug view redaction fix only. Did not alter task state or broader debug view behavior.",
   "notes": "Output report file and prior review output artifact are untracked after final write by design."
 }
 ```

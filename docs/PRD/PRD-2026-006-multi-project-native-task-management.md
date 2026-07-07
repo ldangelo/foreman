@@ -17,10 +17,10 @@
 | Completeness | 4 | All feature areas covered; sling integration and coexistence period well-defined |
 | Testability | 4 | Acceptance criteria are measurable and specific |
 | Clarity | 4 | Workflow-aware statuses and approval gate are precisely defined |
-| Feasibility | 3 | **Concern: large scope.** Beads replacement is a multi-sprint effort; dispatcher refactor, native task store, dashboard aggregation, and migration tooling all require coordination. Recommend phased delivery (see Section 13). |
+| Feasibility | 3 | **Concern: large scope.** Tasks replacement is a multi-sprint effort; dispatcher refactor, native task store, dashboard aggregation, and migration tooling all require coordination. Recommend phased delivery (see Section 13). |
 | **Overall** | **3.75** | Proceed — operator is aware this is a strategic initiative |
 
-> **Feasibility note:** This PRD describes a significant architectural shift. The beads/bv replacement is intentional and strategic, but teams should plan 3-4 sprints for full delivery. The coexistence mechanism (REQ-017) de-risks the transition by allowing incremental adoption.
+> **Feasibility note:** This PRD describes a significant architectural shift. The tasks/native task ordering replacement is intentional and strategic, but teams should plan 3-4 sprints for full delivery. The coexistence mechanism (REQ-017) de-risks the transition by allowing incremental adoption.
 
 ---
 
@@ -28,7 +28,7 @@
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
-| 1.0 | 2026-03-29 | Product Management | Initial draft. 22 requirements across 7 feature areas: project registry, native task store, task management CLI, unified dashboard, beads migration, cross-project dispatch, and non-functional requirements. Pre-resolved 6 adversarial gaps prior to publication. |
+| 1.0 | 2026-03-29 | Product Management | Initial draft. 22 requirements across 7 feature areas: project registry, native task store, task management CLI, unified dashboard, tasks migration, cross-project dispatch, and non-functional requirements. Pre-resolved 6 adversarial gaps prior to publication. |
 
 ---
 
@@ -44,7 +44,7 @@
 8. [Functional Requirements -- Part 2: Native Task Store](#8-functional-requirements----part-2-native-task-store)
 9. [Functional Requirements -- Part 3: Task Management CLI](#9-functional-requirements----part-3-task-management-cli)
 10. [Functional Requirements -- Part 4: Unified Dashboard](#10-functional-requirements----part-4-unified-dashboard)
-11. [Functional Requirements -- Part 5: Beads Migration](#11-functional-requirements----part-5-beads-migration)
+11. [Functional Requirements -- Part 5: Tasks Migration](#11-functional-requirements----part-5-tasks-migration)
 12. [Functional Requirements -- Part 6: Cross-Project Dispatch](#12-functional-requirements----part-6-cross-project-dispatch)
 13. [Non-Functional Requirements](#13-non-functional-requirements)
 14. [Implementation Strategy](#14-implementation-strategy)
@@ -63,7 +63,7 @@ Foreman today is a per-project tool: each invocation operates on the project in 
 This PRD transforms Foreman into a **self-contained, multi-project orchestration platform** by introducing three interlocking capabilities:
 
 1. **A global project registry** (`~/.foreman/projects.json`) that lets the operator register named project paths once and reference them from any directory.
-2. **A native task store** embedded in each project's existing Postgres database, replacing beads (`br`) and beads-viewer (`bv`) with workflow-aware task tracking that models the full pipeline lifecycle.
+2. **A native task store** embedded in each project's existing Postgres database, replacing tasks (`native task store`) and tasks-viewer (`native task ordering`) with workflow-aware task tracking that models the full pipeline lifecycle.
 3. **A unified cross-project dashboard** that aggregates state across all registered projects, surfaces a "needs human" priority column, and allows dispatch operations without requiring `cd`.
 
 The result is a single interface -- `foreman dashboard` -- where the operator sees everything, approves work, and intervenes on failures across all projects simultaneously.
@@ -88,12 +88,12 @@ There is no concept in the current system of "this task requires operator attent
 
 ### 2.3 External Task Tracking Dependency
 
-Foreman currently delegates all task management to beads (`br`), an external CLI tool with its own database, status model, and conventions. This creates friction:
+Foreman currently delegates all task management to tasks (`native task store`), an external CLI tool with its own database, status model, and conventions. This creates friction:
 
-- Foreman operators must learn two CLIs (`foreman` and `br`) with different conventions
-- The beads status model (`open`, `in_progress`, `closed`) does not map to pipeline phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`), causing semantic mismatch when monitoring pipeline progress
-- `foreman sling trd X` creates beads tasks via the external `br` binary -- if `br` is unavailable or misconfigured, sling fails
-- The dashboard (`foreman dashboard`) cannot display pipeline phase granularity because beads has no pipeline-aware status
+- Foreman operators must learn two CLIs (`foreman` and `native task store`) with different conventions
+- The tasks status model (`open`, `in_progress`, `closed`) does not map to pipeline phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`), causing semantic mismatch when monitoring pipeline progress
+- `foreman sling trd X` creates tasks tasks via the external `native task store` binary -- if `native task store` is unavailable or misconfigured, sling fails
+- The dashboard (`foreman dashboard`) cannot display pipeline phase granularity because tasks has no pipeline-aware status
 
 ### 2.4 Cross-Directory Operations Require `cd`
 
@@ -107,12 +107,12 @@ Every `foreman run`, `foreman reset`, and `foreman retry` command requires the o
 
 1. **Introduce a global project registry** at `~/.foreman/projects.json` with `foreman project add/list/remove` commands.
 2. **Build a native task store** into each project's existing `.foreman/foreman.db` Postgres database with workflow-aware statuses and a dependency graph.
-3. **Replace `br` and `bv`** as the task management interface with `foreman task` subcommands and the enhanced `foreman dashboard`.
+3. **Replace `native task store` and `native task ordering`** as the task management interface with `foreman task` subcommands and the enhanced `foreman dashboard`.
 4. **Add a "needs human" view** to the dashboard that surfaces `conflict`, `failed`, `stuck`, and awaiting-approval (`backlog`) tasks across all projects.
 5. **Enable cross-project dispatch** via `--project <name>` flags on `foreman run`, `foreman reset`, and `foreman retry`.
-6. **Provide a migration path** from `.beads/` data via `foreman task import --from-beads`.
-7. **Integrate native task creation into `foreman sling trd`** so the sling pipeline creates native tasks instead of calling `br`.
-8. **Support coexistence** -- foreman reads from the native task store if present, falls back to beads if not, so migration can be incremental.
+6. **Provide a migration path** from `.tasks/` data via `foreman task import --from-tasks`.
+7. **Integrate native task creation into `foreman sling trd`** so the sling pipeline creates native tasks instead of calling `native task store`.
+8. **Support coexistence** -- foreman reads from the native task store if present, falls back to tasks if not, so migration can be incremental.
 
 ### 3.2 Non-Goals
 
@@ -122,7 +122,7 @@ Every `foreman run`, `foreman reset`, and `foreman retry` command requires the o
 4. **Real-time task sync across machines** -- task state is local to each machine.
 5. **Custom workflow YAML changes** -- the pipeline phase sequence is unchanged; only status tracking is enhanced.
 6. **External integrations** (Jira, Linear, GitHub Issues) -- out of scope.
-7. **Immediate removal of `br` binary** -- beads remains available during the coexistence period.
+7. **Immediate removal of `native task store` binary** -- tasks remains available during the coexistence period.
 
 ---
 
@@ -131,19 +131,19 @@ Every `foreman run`, `foreman reset`, and `foreman retry` command requires the o
 ### 4.1 Multi-Project Operator
 
 **Name:** Alex, Senior Engineer / Tech Lead
-**Context:** Manages 6 active Foreman projects. Has Foreman running in parallel across multiple git repositories. Currently uses 6 tmux windows and must manually check each for failures. Uses `br` for task tracking but finds the status model too coarse to understand pipeline progress.
+**Context:** Manages 6 active Foreman projects. Has Foreman running in parallel across multiple git repositories. Currently uses 6 tmux windows and must manually check each for failures. Uses `native task store` for task tracking but finds the status model too coarse to understand pipeline progress.
 **Needs:** A single terminal view showing all projects, which agents are active, and which tasks need intervention. Wants to approve or dispatch work without `cd`.
 
 ### 4.2 Single-Project Power User (Existing)
 
 **Name:** Dana, Senior Engineer
-**Context:** Uses Foreman on one large repository today. Happy with the existing workflow but finds `br` ergonomically inconsistent with `foreman` conventions. Wants pipeline-phase-level status visibility.
-**Needs:** Zero regression on existing functionality. Richer task statuses. `foreman task` commands as a drop-in replacement for common `br` commands.
+**Context:** Uses Foreman on one large repository today. Happy with the existing workflow but finds `native task store` ergonomically inconsistent with `foreman` conventions. Wants pipeline-phase-level status visibility.
+**Needs:** Zero regression on existing functionality. Richer task statuses. `foreman task` commands as a drop-in replacement for common `native task store` commands.
 
 ### 4.3 Operator Onboarding a New Project
 
 **Name:** Jordan, Platform Engineer
-**Context:** Setting up a new project to use Foreman. Currently must install `br` separately, initialize `.beads/`, and learn beads conventions before Foreman can dispatch any work.
+**Context:** Setting up a new project to use Foreman. Currently must install `native task store` separately, initialize `.tasks/`, and learn tasks conventions before Foreman can dispatch any work.
 **Needs:** `foreman project add` and `foreman task create` as the only onboarding steps -- no external tool installation.
 
 ---
@@ -153,26 +153,26 @@ Every `foreman run`, `foreman reset`, and `foreman retry` command requires the o
 ### 5.1 Current Task Flow
 
 ```
-Operator                  beads (br)               Foreman
+Operator                  tasks (native task store)               Foreman
    |                         |                         |
-   |-- br create ---------> beads DB                  |
-   |-- br ready ----------> [ready tasks] ----------> dispatcher
+   |-- native task store create ---------> tasks DB                  |
+   |-- native task store ready ----------> [ready tasks] ----------> dispatcher
    |                                                    |
    |                                                    |-- agent runs
    |                                                    |
-   |                         syncBeadStatusAfterMerge()<-- refinery
-   |-- br show -----------> [status]                   |
+   |                         syncTaskStatusAfterMerge()<-- refinery
+   |-- native task store show -----------> [status]                   |
 ```
 
 ### 5.2 Coupling Points to Replace
 
 | Current Component | Location | Replacement |
 |------------------|----------|-------------|
-| `BeadsRustClient` | `src/lib/beads-rust.ts` | `NativeTaskStore` in `src/lib/task-store.ts` |
-| `br ready` query in dispatcher | `src/orchestrator/dispatcher.ts` | Query `tasks` table WHERE `status = 'ready'` |
-| `syncBeadStatusAfterMerge()` in refinery | `src/orchestrator/refinery.ts` | `taskStore.updateStatus(id, 'merged')` |
-| `br create` in sling | `src/cli/commands/sling.ts` | `taskStore.create(...)` |
-| `bv` dashboard view | external binary | `foreman dashboard` cross-project view |
+| `TaskClient` | `src/lib/task-client.ts` | `NativeTaskStore` in `src/lib/task-store.ts` |
+| `native task store ready` query in dispatcher | `src/orchestrator/dispatcher.ts` | Query `tasks` table WHERE `status = 'ready'` |
+| `syncTaskStatusAfterMerge()` in refinery | `src/orchestrator/refinery.ts` | `taskStore.updateStatus(id, 'merged')` |
+| `native task store create` in sling | `src/cli/commands/sling.ts` | `taskStore.create(...)` |
+| `native task ordering` dashboard view | external binary | `foreman dashboard` cross-project view |
 | Per-project `foreman status` | `src/cli/commands/status.ts` | `foreman status --all` aggregation |
 
 ### 5.3 Existing Postgres Schema
@@ -386,7 +386,7 @@ foreman task create --title "Implement OAuth login" \
 **Acceptance Criteria:**
 
 - AC-006.1: `foreman task create` requires `--title`. All other flags are optional with defaults: `--type task`, `--priority 2`, `--description ""`. The created task enters `backlog` status. The command prints `"Created task <id>: <title> [backlog]"`.
-- AC-006.2: `--priority` accepts integers 0-4 only. Values outside this range exit with error `"Priority must be 0 (critical) through 4 (backlog)."`. The aliases `critical`, `high`, `medium`, `low`, `backlog` are also accepted as input (mapped to 0-4 respectively) for ergonomic compatibility with beads conventions.
+- AC-006.2: `--priority` accepts integers 0-4 only. Values outside this range exit with error `"Priority must be 0 (critical) through 4 (backlog)."`. The aliases `critical`, `high`, `medium`, `low`, `backlog` are also accepted as input (mapped to 0-4 respectively) for ergonomic compatibility with tasks conventions.
 - AC-006.3: `--type` accepts the enumerated task types. An unrecognized type exits with an error listing valid types.
 
 ---
@@ -396,7 +396,7 @@ foreman task create --title "Implement OAuth login" \
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-The system shall provide `foreman task list`, `foreman task show <id>`, and `foreman task update <id>` commands that replace the equivalent `br list`, `br show`, and `br update` commands for day-to-day task management.
+The system shall provide `foreman task list`, `foreman task show <id>`, and `foreman task update <id>` commands that replace the equivalent `native task store list`, `native task store show`, and `native task store update` commands for day-to-day task management.
 
 **Acceptance Criteria:**
 
@@ -425,11 +425,11 @@ The system shall provide `foreman task close <id>` and unrestricted manual statu
 **Priority:** P1 (high)
 **MoSCoW:** Must
 
-`foreman sling trd <trd-file>` shall create tasks in the native task store instead of calling the `br` binary. The sling pipeline's task creation output shall be identical in content but stored natively.
+`foreman sling trd <trd-file>` shall create tasks in the native task store instead of calling the `native task store` binary. The sling pipeline's task creation output shall be identical in content but stored natively.
 
 **Acceptance Criteria:**
 
-- AC-009.1: After this change, `foreman sling trd <file>` does not invoke `br create` or any `BeadsRustClient` method. All task creation goes through `NativeTaskStore.create()`. Existing sling output format (task titles, descriptions, dependencies, priorities) is preserved.
+- AC-009.1: After this change, `foreman sling trd <file>` does not invoke `native task store create` or any `TaskClient` method. All task creation goes through `NativeTaskStore.create()`. Existing sling output format (task titles, descriptions, dependencies, priorities) is preserved.
 - AC-009.2: Tasks created by sling enter `backlog` status. The operator must run `foreman task approve <id>` (or `foreman task approve --all --from-sling <task>`) before the dispatcher will pick them up.
 - AC-009.3: If the current project has not yet been initialized with the native task store (no `tasks` table in `foreman.db`), `foreman sling trd` automatically runs the schema migration before creating tasks, with a one-time message: `"Migrating task store to native format..."`.
 
@@ -463,7 +463,7 @@ The dashboard shall display a dedicated "Needs Human" panel that surfaces all ta
 
 - AC-011.1: The "Needs Human" panel lists all tasks where `status IN ('conflict', 'failed', 'stuck', 'backlog')` across all registered, accessible projects. Each row shows: `PROJECT`, `TASK ID`, `TITLE`, `STATUS`, `AGE` (time since `updated_at`). Rows are sorted by priority (P0 first) then age (oldest first).
 - AC-011.2: The panel is always visible and is the topmost section of the dashboard layout. When the panel is empty (no tasks needing attention), it displays `"No tasks need attention."` in a visually distinct style.
-- AC-011.3: The operator can navigate to any item in the "Needs Human" panel and press `a` to approve a `backlog` task, `r` to retry a `failed` or `stuck` task (equivalent to `foreman reset --bead <id> --project <name>`), or `Enter` to show full task detail. These actions are dispatched to the appropriate project without requiring a directory change.
+- AC-011.3: The operator can navigate to any item in the "Needs Human" panel and press `a` to approve a `backlog` task, `r` to retry a `failed` or `stuck` task (equivalent to `foreman reset --task <id> --project <name>`), or `Enter` to show full task detail. These actions are dispatched to the appropriate project without requiring a directory change.
 
 ---
 
@@ -472,7 +472,7 @@ The dashboard shall display a dedicated "Needs Human" panel that surfaces all ta
 **Priority:** P1 (high)
 **MoSCoW:** Must
 
-The dashboard shall display the current pipeline phase for in-progress tasks, not just a generic "in-progress" status. This replaces the coarse beads `in_progress` status with phase-level granularity.
+The dashboard shall display the current pipeline phase for in-progress tasks, not just a generic "in-progress" status. This replaces the coarse tasks `in_progress` status with phase-level granularity.
 
 **Acceptance Criteria:**
 
@@ -481,21 +481,21 @@ The dashboard shall display the current pipeline phase for in-progress tasks, no
 
 ---
 
-## 11. Functional Requirements -- Part 5: Beads Migration
+## 11. Functional Requirements -- Part 5: Tasks Migration
 
-### REQ-013: Beads Import Command
+### REQ-013: Tasks Import Command
 
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-The system shall provide `foreman task import --from-beads` to migrate existing beads data from `.beads/beads.jsonl` into the native task store, enabling operators to transition without losing task history.
+The system shall provide `foreman task import --from-tasks` to migrate existing tasks data from `.tasks/tasks.jsonl` into the native task store, enabling operators to transition without losing task history.
 
 **Acceptance Criteria:**
 
-- AC-013.1: `foreman task import --from-beads` reads `.beads/beads.jsonl` from the current project directory, maps each bead to a native task using the field mapping in Section 5.2, and inserts all tasks into the `tasks` table. It prints a summary: `"Imported N tasks (M skipped: already exist by title match)."`.
-- AC-013.2: The beads `status` field is mapped to native task statuses as follows: `open` -> `backlog`, `in_progress` -> `ready` (not auto-approved; operator must approve), `closed` -> `merged`. Beads with `type=epic` are imported as `type=epic`. Dependencies in beads (`blocks` type) are imported into `task_dependencies` with type `blocks`; `parent-child` type is preserved.
-- AC-013.3: `foreman task import --from-beads --dry-run` performs the import logic and prints what would be created without writing to the database. The dry-run output includes field-level mapping for the first 5 tasks to aid verification.
-- AC-013.4: If a task with the same `id` already exists in the native store (by bead ID stored in a `external_id` column), it is skipped rather than duplicated. The `external_id TEXT` column shall be added to the `tasks` schema to store the original bead ID.
+- AC-013.1: `foreman task import --from-tasks` reads `.tasks/tasks.jsonl` from the current project directory, maps each task to a native task using the field mapping in Section 5.2, and inserts all tasks into the `tasks` table. It prints a summary: `"Imported N tasks (M skipped: already exist by title match)."`.
+- AC-013.2: The tasks `status` field is mapped to native task statuses as follows: `open` -> `backlog`, `in_progress` -> `ready` (not auto-approved; operator must approve), `closed` -> `merged`. Tasks with `type=epic` are imported as `type=epic`. Dependencies in tasks (`blocks` type) are imported into `task_dependencies` with type `blocks`; `parent-child` type is preserved.
+- AC-013.3: `foreman task import --from-tasks --dry-run` performs the import logic and prints what would be created without writing to the database. The dry-run output includes field-level mapping for the first 5 tasks to aid verification.
+- AC-013.4: If a task with the same `id` already exists in the native store (by task ID stored in a `external_id` column), it is skipped rather than duplicated. The `external_id TEXT` column shall be added to the `tasks` schema to store the original task ID.
 
 ---
 
@@ -504,26 +504,26 @@ The system shall provide `foreman task import --from-beads` to migrate existing 
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-Foreman uses the native Postgres task store exclusively. The beads (`br`) fallback has been removed. All task operations (create, list, ready, dispatch, merge) use the native store.
+Foreman uses the native Postgres task store exclusively. The tasks (`native task store`) fallback has been removed. All task operations (create, list, ready, dispatch, merge) use the native store.
 
 **Acceptance Criteria:**
 
-- AC-014.1: The dispatcher's `getReadyTasks()` method queries the native store. No fallback to `BeadsRustClient` exists. A debug-level log records the query.
-- AC-014.2: `foreman doctor` reports the task store status: `"Native task store active (N tasks)"`. No beads fallback mode is reported.
+- AC-014.1: The dispatcher's `getReadyTasks()` method queries the native store. No fallback to `TaskClient` exists. A debug-level log records the query.
+- AC-014.2: `foreman doctor` reports the task store status: `"Native task store active (N tasks)"`. No tasks fallback mode is reported.
 
 ---
 
-### REQ-015: Beads Legacy Support
+### REQ-015: Tasks Legacy Support
 
 **Priority:** P2 (medium)
 **MoSCoW:** Should
 
-The `BeadsRustClient` interface and `src/lib/beads-rust.ts` are deprecated. The `foreman task import --from-beads` command provides a migration path from beads data to native tasks.
+The `TaskClient` interface and `src/lib/task-client.ts` are deprecated. The `foreman task import --from-tasks` command provides a migration path from tasks data to native tasks.
 
 **Acceptance Criteria:**
 
-- AC-015.1: `src/lib/beads-rust.ts` has `@deprecated` JSDoc tags on all exported symbols. No internal code (outside compatibility shim) uses `BeadsRustClient`.
-- AC-015.2: `foreman doctor` emits an informational notice when `br` binary is absent: `"beads (br) not found -- native task store active."` This is informational, not an error.
+- AC-015.1: `src/lib/task-client.ts` has `@deprecated` JSDoc tags on all exported symbols. No internal code (outside compatibility shim) uses `TaskClient`.
+- AC-015.2: `foreman doctor` emits an informational notice when `native task store` binary is absent: `"tasks (native task store) not found -- native task store active."` This is informational, not an error.
 
 ---
 
@@ -553,7 +553,7 @@ The dispatcher queries the local project's Postgres `tasks` table for ready task
 
 **Acceptance Criteria:**
 
-- AC-017.1: `dispatcher.getReadyTasks()` executes `SELECT * FROM tasks WHERE status = 'ready' ORDER BY priority ASC, created_at ASC` against the project's `foreman.db`. It does not invoke `execFileAsync` or any shell command to query beads.
+- AC-017.1: `dispatcher.getReadyTasks()` executes `SELECT * FROM tasks WHERE status = 'ready' ORDER BY priority ASC, created_at ASC` against the project's `foreman.db`. It does not invoke `execFileAsync` or any shell command to query tasks.
 - AC-017.2: When the dispatcher claims a task for execution, it updates `status = 'in-progress'` and sets `run_id` to the newly created run ID atomically in the same Postgres transaction as run creation. This prevents double-dispatch if two foreman processes race.
 - AC-017.3: When the pipeline executor transitions between phases, it calls `taskStore.updatePhase(taskId, phaseName)` to update the task status to the current phase name.
 
@@ -594,13 +594,13 @@ The unified dashboard shall refresh its aggregated view across all registered pr
 **Priority:** P0 (critical)
 **MoSCoW:** Must
 
-All existing `foreman` commands continue to work with the native task store. The migration from beads data is provided via `foreman task import --from-beads`.
+All existing `foreman` commands continue to work with the native task store. The migration from tasks data is provided via `foreman task import --from-tasks`.
 
 **Acceptance Criteria:**
 
 - AC-020.1: Projects with native tasks in the `tasks` table function normally. `foreman run`, `foreman status`, `foreman merge`, `foreman dashboard`, and `foreman doctor` commands all function as designed.
 - AC-020.2: The `foreman task` command group is additive -- no existing command is renamed or removed. `foreman status` retains its current behavior; `foreman status --all` is the new cross-project addition.
-- AC-020.3: The `FOREMAN_TASK_STORE` environment variable (accepted values: `beads`, `native`, `auto`) is accepted for backward compatibility but has no operational effect in native-only mode. When the system is running in native-only backend mode (the only supported mode), the environment variable is ignored and the native Postgres task store is always used. This ensures existing scripts and configurations continue to function without error.
+- AC-020.3: The `FOREMAN_TASK_STORE` environment variable (accepted values: `tasks`, `native`, `auto`) is accepted for backward compatibility but has no operational effect in native-only mode. When the system is running in native-only backend mode (the only supported mode), the environment variable is ignored and the native Postgres task store is always used. This ensures existing scripts and configurations continue to function without error.
 
 ---
 
@@ -638,7 +638,7 @@ The system shall gracefully handle registered projects whose directories have be
 
 ### 14.1 Phased Delivery
 
-This PRD is explicitly multi-sprint. The recommended delivery sequence minimizes risk by establishing the foundation before replacing beads.
+This PRD is explicitly multi-sprint. The recommended delivery sequence minimizes risk by establishing the foundation before replacing tasks.
 
 **Sprint 1 -- Foundation (REQ-001, REQ-002, REQ-003, REQ-004, REQ-020)**
 - Global project registry (`~/.foreman/projects.json`)
@@ -651,7 +651,7 @@ This PRD is explicitly multi-sprint. The recommended delivery sequence minimizes
 - `foreman task create/list/show/update/close/approve`
 - Approval gate logic
 - Dependency graph management
-- Replaces `br` for new projects
+- Replaces `native task store` for new projects
 
 **Sprint 3 -- Dispatcher and Pipeline Integration (REQ-009, REQ-017, REQ-018)**
 - Dispatcher queries native task store
@@ -666,9 +666,9 @@ This PRD is explicitly multi-sprint. The recommended delivery sequence minimizes
 - `foreman status --all`
 
 **Sprint 5 -- Migration and Deprecation (REQ-013, REQ-014, REQ-015)**
-- `foreman task import --from-beads`
+- `foreman task import --from-tasks`
 - Coexistence / fallback logic
-- `BeadsRustClient` deprecation
+- `TaskClient` deprecation
 - `foreman doctor` native task store awareness
 
 ### 14.2 Module Structure
@@ -677,7 +677,7 @@ This PRD is explicitly multi-sprint. The recommended delivery sequence minimizes
 src/lib/
   task-store.ts              -- NativeTaskStore class
   project-registry.ts        -- ProjectRegistry class (reads/writes projects.json)
-  beads-rust.ts              -- @deprecated, kept as compatibility shim
+  task-client.ts              -- @deprecated, kept as compatibility shim
 
 src/cli/commands/
   project.ts                 -- foreman project add/list/remove
@@ -708,7 +708,7 @@ src/lib/
 
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
-| Beads data needs migration to native store | Medium | Medium | `foreman task import --from-beads` provides one-time migration. Beads data in `.beads/` can be archived after import. |
+| Tasks data needs migration to native store | Medium | Medium | `foreman task import --from-tasks` provides one-time migration. Tasks data in `.tasks/` can be archived after import. |
 | Postgres write contention between agent workers and dashboard reads | Medium | Medium | Dashboard opens DBs read-only (AC-019.2). Agent writes use WAL mode (already configured). |
 | Circular dependency introduced in task graph via import | Low | Medium | Cycle detection at `NativeTaskStore` layer with typed error (AC-021.3). Import performs cycle check before committing. |
 | Registered project path deleted; commands crash | Low | Low | Stale project checks on all cross-project paths (REQ-022). |
@@ -734,9 +734,9 @@ src/lib/
 | REQ-010 | Cross-Project Dashboard Aggregation | 3 | P0 | Must |
 | REQ-011 | "Needs Human" Panel | 3 | P0 | Must |
 | REQ-012 | Pipeline Phase Visibility | 2 | P1 | Must |
-| REQ-013 | Beads Import Command | 4 | P0 | Must |
+| REQ-013 | Tasks Import Command | 4 | P0 | Must |
 | REQ-014 | Native Task Store (Mandatory) | 2 | P0 | Must |
-| REQ-015 | Beads Legacy Support | 2 | P2 | Should |
+| REQ-015 | Tasks Legacy Support | 2 | P2 | Should |
 | REQ-016 | `--project` Flag on Dispatch Commands | 3 | P0 | Must |
 | REQ-017 | Dispatcher Reads Native Task Store | 3 | P0 | Must |
 | REQ-018 | Refinery Closes Native Tasks Post-Merge | 2 | P1 | Must |
@@ -754,7 +754,7 @@ src/lib/
 |--------|--------|-------------|
 | Time to identify a task needing human attention (cross-project) | < 5 seconds from `foreman dashboard` open | Operator observation; dashboard "Needs Human" panel load time |
 | Dashboard refresh time (7 projects) | < 2 seconds | Automated benchmark (AC-019.1) |
-| `br` invocations remaining in Foreman codebase post-implementation | 0 (outside compatibility shim) | `grep -r "BeadsRustClient" src/ --include="*.ts"` excluding `beads-rust.ts` |
+| `native task store` invocations remaining in Foreman codebase post-implementation | 0 (outside compatibility shim) | `grep -r "TaskClient" src/ --include="*.ts"` excluding `task-client.ts` |
 | Pipeline phase visibility in dashboard | All in-progress tasks show phase name (not generic "in-progress") | Dashboard screenshot at each phase transition |
 
 ---
@@ -786,9 +786,9 @@ src/lib/
 - Dashboard benchmark passes (< 2s for 7 projects)
 
 **Sprint 5 complete when:**
-- `foreman task import --from-beads` tested on real beads data
+- `foreman task import --from-tasks` tested on real tasks data
 - `foreman doctor` reports native task store mode correctly
-- `BeadsRustClient` deprecated with no internal usages outside shim
+- `TaskClient` deprecated with no internal usages outside shim
 
 ---
 
@@ -801,6 +801,6 @@ All adversarial gaps identified during pre-publication review have been resolved
 | OQ-1 | How does the dispatcher know which task store to query? | Dispatcher reads from local project's Postgres (cwd-based); global dashboard aggregates read-only. | REQ-017, REQ-014 |
 | OQ-2 | What is the definition of "needs human"? | Any task with status `conflict`, `failed`, `stuck`, or `backlog` (awaiting approval). | REQ-011 |
 | OQ-3 | Does the native task store support a dependency graph? | Yes -- `task_dependencies` table with `blocks` and `parent-child` types. | REQ-004 |
-| OQ-4 | Big-bang beads replacement risk? | Coexistence period with per-project opt-in migration. Dispatcher falls back to beads if native store empty. | REQ-014, REQ-020 |
+| OQ-4 | Big-bang tasks replacement risk? | Coexistence period with per-project opt-in migration. Dispatcher falls back to tasks if native store empty. | REQ-014, REQ-020 |
 | OQ-5 | How are tasks created by `foreman sling trd`? | Sling creates native tasks directly via `NativeTaskStore.create()` after this PRD. | REQ-009 |
 | OQ-6 | What if a registered project's directory is deleted? | `foreman project list` flags stale entries; all cross-project commands check accessibility before operating. | REQ-022 |

@@ -19,12 +19,12 @@
 
 ## Product Summary
 
-**Problem:** Foreman workflows are rigid — every phase must be an AI agent session, merge behavior is hardcoded to auto-merge, and the dispatcher maps almost all bead types to `default.yaml`. This prevents lightweight workflows like "run a skill, test, merge" for bugs, and forces all completed work through the same merge path regardless of risk.
+**Problem:** Foreman workflows are rigid — every phase must be an AI agent session, merge behavior is hardcoded to auto-merge, and the dispatcher maps almost all task types to `default.yaml`. This prevents lightweight workflows like "run a skill, test, merge" for bugs, and forces all completed work through the same merge path regardless of risk.
 
 **Solution:** Extend the workflow YAML schema with three capabilities:
 1. **Bash command phases** that run shell commands in the worktree alongside AI phases
 2. **Per-workflow merge strategy** (`auto`, `pr`, or `none`) controlling post-finalize behavior
-3. **Type-based workflow dispatch** mapping bead type to workflow filename with fallback
+3. **Type-based workflow dispatch** mapping task type to workflow filename with fallback
 
 **Value proposition:** A `bug.yaml` workflow can invoke `/ensemble:fix-issue`, run `npm run test`, and auto-merge — all without touching the pipeline executor's core logic. New workflow types are just YAML files.
 
@@ -35,7 +35,7 @@
 ### Goals
 - Enable mixed-mode workflows (AI phases + bash phases + skill/command phases)
 - Let each workflow declare its own merge strategy
-- Automatically select workflow by bead type without manual labeling
+- Automatically select workflow by task type without manual labeling
 - Maintain backward compatibility — existing workflows and dispatch behavior unchanged
 
 ### Non-Goals
@@ -87,7 +87,7 @@ A workflow phase can specify a `command:` field containing a skill invocation (e
 ```
 
 - AC-002-1: Given a phase with `command:`, when the pipeline executor reaches it, then it creates a Pi SDK session and sends the command string as the prompt.
-- AC-002-2: Given a command string with `{task.title}` or `{task.description}` placeholders, when the phase starts, then placeholders are interpolated from the bead's metadata.
+- AC-002-2: Given a command string with `{task.title}` or `{task.description}` placeholders, when the phase starts, then placeholders are interpolated from the task's metadata.
 - AC-002-3: Given a `command:` phase with `verdict: true` and `retryWith: developer`, when the command phase produces a FAIL verdict, then the pipeline retries with the developer phase (same as `prompt:` phase behavior).
 
 ### REQ-003: Phase Type Resolution
@@ -138,20 +138,20 @@ The persisted run merge strategy is internal compatibility state derived from ph
 
 ## Type-Based Dispatch
 
-### REQ-006: Workflow Resolution by Bead Type
+### REQ-006: Workflow Resolution by Task Type
 
 **Priority:** Must | **Complexity:** Low
 
-`resolveWorkflowName()` maps bead type to workflow filename: `bug` to `bug.yaml`, `feature` to `feature.yaml`, `chore` to `chore.yaml`, etc. If the resolved file does not exist in either `.foreman/workflows/` or bundled defaults, falls back to `default.yaml`.
+`resolveWorkflowName()` maps task type to workflow filename: `bug` to `bug.yaml`, `feature` to `feature.yaml`, `chore` to `chore.yaml`, etc. If the resolved file does not exist in either `.foreman/workflows/` or bundled defaults, falls back to `default.yaml`.
 
 Resolution precedence (unchanged for labels, extended for types):
-1. `workflow:<name>` label on the bead (highest priority)
-2. Bead type to matching workflow filename
+1. `workflow:<name>` label on the task (highest priority)
+2. Task type to matching workflow filename
 3. `default.yaml` (fallback)
 
-- AC-006-1: Given a bead of type `bug` and a `bug.yaml` workflow file exists, when dispatched, then `bug.yaml` is used.
-- AC-006-2: Given a bead of type `bug` and no `bug.yaml` exists, when dispatched, then `default.yaml` is used.
-- AC-006-3: Given a bead with label `workflow:smoke` and type `bug`, when dispatched, then `smoke.yaml` is used (label takes precedence).
+- AC-006-1: Given a task of type `bug` and a `bug.yaml` workflow file exists, when dispatched, then `bug.yaml` is used.
+- AC-006-2: Given a task of type `bug` and no `bug.yaml` exists, when dispatched, then `default.yaml` is used.
+- AC-006-3: Given a task with label `workflow:smoke` and type `bug`, when dispatched, then `smoke.yaml` is used (label takes precedence).
 
 ### REQ-007: Workflow File Discovery
 
@@ -169,11 +169,11 @@ Resolution precedence (unchanged for labels, extended for types):
 
 **Priority:** Should | **Complexity:** Low
 
-Command strings and bash strings support `{task.*}` placeholders interpolated from the bead's metadata at phase start time. Supported placeholders: `{task.title}`, `{task.description}`, `{task.id}`, `{task.type}`, `{task.priority}`.
+Command strings and bash strings support `{task.*}` placeholders interpolated from the task's metadata at phase start time. Supported placeholders: `{task.title}`, `{task.description}`, `{task.id}`, `{task.type}`, `{task.priority}`.
 
 Literal braces can be escaped with a backslash: `\{task.title\}` emits the literal text `{task.title}` without interpolation.
 
-- AC-008-1: Given a command `/ensemble:fix-issue {task.title}` and a bead with title "Fix login timeout", when the phase starts, then the prompt sent to Pi SDK is `/ensemble:fix-issue Fix login timeout`.
+- AC-008-1: Given a command `/ensemble:fix-issue {task.title}` and a task with title "Fix login timeout", when the phase starts, then the prompt sent to Pi SDK is `/ensemble:fix-issue Fix login timeout`.
 - AC-008-2: Given a placeholder `{task.foo}` that doesn't match any known field, when the phase starts, then it is left as-is (not interpolated) and a warning is logged.
 - AC-008-3: Given a command containing `\{task.title\}`, when the phase starts, then the literal text `{task.title}` is emitted without interpolation.
 
@@ -188,7 +188,7 @@ Literal braces can be escaped with a backslash: `\{task.title\}` emits the liter
 | REQ-003 | Phase type resolution | Must | Low | 2 |
 | REQ-004 | Per-workflow merge strategy | Must | Medium | 4 |
 | REQ-005 | Merge strategy propagation | Must | Low | 1 |
-| REQ-006 | Workflow resolution by bead type | Must | Low | 3 |
+| REQ-006 | Workflow resolution by task type | Must | Low | 3 |
 | REQ-007 | Workflow file discovery | Should | Low | 1 |
 | REQ-008 | Task metadata interpolation | Should | Low | 3 |
 

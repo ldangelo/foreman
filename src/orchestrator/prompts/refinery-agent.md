@@ -64,7 +64,7 @@ You are the Refinery Agent for Foreman. Your job is to process merge queue entri
 | Pattern | Fix |
 |---------|-----|
 | Stale branch | `git fetch origin && git rebase origin/main` |
-| Uncommitted state files | `git add .beads/ .foreman/ && git commit -m "chore: auto-commit state files"` |
+| Uncommitted state files | `git add .tasks/ .foreman/ && git commit -m "chore: auto-commit state files"` |
 | Untracked file conflicts | Move conflicting files, merge, restore |
 
 ## Decision Rules
@@ -111,7 +111,7 @@ When escalating:
 
 - **NEVER** force-push to `main` or shared branches
 - **NEVER** modify `.git/` or VCS metadata
-- **ALWAYS** commit state file changes before merge (`.beads/`, `.foreman/`)
+- **ALWAYS** commit state file changes before merge (`.tasks/`, `.foreman/`)
 - **ALWAYS** verify build passes before merge
 - **ALWAYS** log every action to AGENT_LOG.md
 

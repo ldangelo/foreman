@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
     mockEnsureCliPostgresPool,
     mockGetProjectByPath,
     mockLocalGetRun,
-    mockSyncBeadStatusAfterMerge,
+    mockSyncTaskStatusAfterMerge,
     mockCreateVcsBackend,
     MockForemanStore,
     MockPostgresStore,
@@ -23,7 +23,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
   const mockEnsureCliPostgresPool = vi.fn();
   const mockGetProjectByPath = vi.fn().mockReturnValue({ id: "proj-local", path: "/mock/project" });
   const mockLocalGetRun = vi.fn().mockReturnValue(null);
-  const mockSyncBeadStatusAfterMerge = vi.fn().mockResolvedValue(undefined);
+  const mockSyncTaskStatusAfterMerge = vi.fn().mockResolvedValue(undefined);
   const mockCreateVcsBackend = vi.fn().mockResolvedValue({
     name: "git",
     getRepoRoot: vi.fn().mockResolvedValue("/mock/project"),
@@ -102,7 +102,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
     mockEnsureCliPostgresPool,
     mockGetProjectByPath,
     mockLocalGetRun,
-    mockSyncBeadStatusAfterMerge,
+    mockSyncTaskStatusAfterMerge,
     mockCreateVcsBackend,
     MockForemanStore,
     MockPostgresStore,
@@ -142,7 +142,7 @@ vi.mock("../../orchestrator/refinery.js", () => ({
 }));
 
 vi.mock("../../orchestrator/auto-merge.js", () => ({
-  syncBeadStatusAfterMerge: mockSyncBeadStatusAfterMerge,
+  syncTaskStatusAfterMerge: mockSyncTaskStatusAfterMerge,
 }));
 
 vi.mock("../../orchestrator/merge-queue.js", () => ({
@@ -185,7 +185,7 @@ describe("merge command registered context", () => {
     mockCreateTaskClient.mockResolvedValue({ taskClient: { kind: "task-client" }, backendType: "native" });
     mockListRegisteredProjects.mockResolvedValue([]);
     mockResolveRepoRootProjectPath.mockResolvedValue("/mock/project");
-    mockSyncBeadStatusAfterMerge.mockResolvedValue(undefined);
+    mockSyncTaskStatusAfterMerge.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -348,7 +348,7 @@ describe("merge command registered context", () => {
       "proj-1",
       "proj-1",
     ]);
-    expect(mockSyncBeadStatusAfterMerge.mock.calls).toEqual([
+    expect(mockSyncTaskStatusAfterMerge.mock.calls).toEqual([
       [expect.any(Object), expect.any(Object), "run-1", "task-1", "/mock/project", undefined, MockPostgresStore.mock.results[0].value],
       [expect.any(Object), expect.any(Object), "run-2", "task-2", "/mock/project", undefined, MockPostgresStore.mock.results[0].value],
     ]);
@@ -393,7 +393,7 @@ describe("merge command registered context", () => {
     await runCommand(["--auto-retry"]);
 
     expect(mockLocalGetRun).toHaveBeenCalledWith("run-3");
-    expect(mockSyncBeadStatusAfterMerge).toHaveBeenCalledWith(
+    expect(mockSyncTaskStatusAfterMerge).toHaveBeenCalledWith(
       expect.any(Object),
       expect.any(Object),
       "run-3",
@@ -464,7 +464,7 @@ describe("merge command registered context", () => {
     expect(MockRefinery.mock.results[0]?.value.mergeCompleted).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "proj-local" }),
     );
-    expect(mockSyncBeadStatusAfterMerge).toHaveBeenCalledWith(
+    expect(mockSyncTaskStatusAfterMerge).toHaveBeenCalledWith(
       expect.any(Object),
       expect.any(Object),
       "run-2",
@@ -663,7 +663,7 @@ describe("merge command registered context", () => {
 
     await runCommand(["--list"]);
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No beads in merge queue."));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No tasks in merge queue."));
   });
 
   it("prints branch-missing reconcile warnings before reporting no completed tasks", async () => {

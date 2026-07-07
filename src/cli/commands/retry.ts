@@ -42,7 +42,7 @@ function elixirTaskStatus(task: Record<string, unknown>): string {
 }
 
 async function retryElixirTask(
-  beadId: string,
+  taskId: string,
   opts: RetryOpts,
   projectPath: string,
   projectId: string,
@@ -51,21 +51,21 @@ async function retryElixirTask(
   printDryRunNotice(dryRun);
 
   const client = await createElixirRetryClient();
-  const task = await client.getTask(beadId);
+  const task = await client.getTask(taskId);
   if (!task || (task.project_id && task.project_id !== projectId)) {
-    console.error(chalk.red(`Bead "${beadId}" not found: Task '${beadId}' not found`));
+    console.error(chalk.red(`Task "${taskId}" not found: Task '${taskId}' not found`));
     return 1;
   }
 
-  const beadStatus = elixirTaskStatus(task as unknown as Record<string, unknown>);
+  const taskStatus = elixirTaskStatus(task as unknown as Record<string, unknown>);
   console.log(
-    chalk.bold(`Retrying bead: ${chalk.cyan(beadId)}`) +
+    chalk.bold(`Retrying task: ${chalk.cyan(taskId)}`) +
       (typeof task.title === "string" ? chalk.dim(` (${task.title})`) : ""),
   );
-  console.log(`  Status: ${chalk.yellow(beadStatus)}`);
+  console.log(`  Status: ${chalk.yellow(taskStatus)}`);
 
   const runs = (await client.listRuns({ projectId }))
-    .filter((run) => run.task_id === beadId)
+    .filter((run) => run.task_id === taskId)
     .sort((a, b) => String(b.run_id ?? "").localeCompare(String(a.run_id ?? "")));
   const latestRun = runs[0] ?? null;
 
@@ -75,31 +75,31 @@ async function retryElixirTask(
     console.log(`  Latest run: ${chalk.dim("(none)")}`);
   }
 
-  const beadResetTarget = getTaskRetryTargetStatus(beadStatus, { command: "retry", backendType: "native" });
-  const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== beadStatus;
-  const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === beadStatus;
+  const taskResetTarget = getTaskRetryTargetStatus(taskStatus, { command: "retry", backendType: "native" });
+  const taskNeedsReset = taskResetTarget !== null && taskResetTarget !== taskStatus;
+  const taskIsAlreadyRetryable = taskResetTarget !== null && taskResetTarget === taskStatus;
 
   if (!dryRun) {
-    if (beadNeedsReset) {
-      console.log(`  ${chalk.yellow("reset")} bead status: ${beadStatus} → ${beadResetTarget}`);
+    if (taskNeedsReset) {
+      console.log(`  ${chalk.yellow("reset")} task status: ${taskStatus} → ${taskResetTarget}`);
       await client.sendCommand({
-        command_id: `retry-task-${beadId}-${Date.now()}`,
+        command_id: `retry-task-${taskId}-${Date.now()}`,
         command_type: "task.update",
-        payload: { project_id: projectId, task_id: beadId, status: beadResetTarget },
+        payload: { project_id: projectId, task_id: taskId, status: taskResetTarget },
         metadata: { source: "foreman-retry" },
       }).then((response) => {
         if (!response.ok) throw new Error(response.error.message);
       });
-    } else if (beadIsAlreadyRetryable) {
-      console.log(`  ${chalk.dim("ok")} bead status is already "${beadStatus}"`);
+    } else if (taskIsAlreadyRetryable) {
+      console.log(`  ${chalk.dim("ok")} task status is already "${taskStatus}"`);
     } else {
-      console.log(`  ${chalk.dim("skip")} bead status is terminal: ${beadStatus}`);
+      console.log(`  ${chalk.dim("skip")} task status is terminal: ${taskStatus}`);
     }
   } else {
-    if (beadNeedsReset) {
-      console.log(chalk.dim(`  Would reset bead status: ${beadStatus} → ${beadResetTarget}`));
-    } else if (beadResetTarget == null) {
-      console.log(chalk.dim(`  Would leave bead status unchanged: ${beadStatus} is terminal`));
+    if (taskNeedsReset) {
+      console.log(chalk.dim(`  Would reset task status: ${taskStatus} → ${taskResetTarget}`));
+    } else if (taskResetTarget == null) {
+      console.log(chalk.dim(`  Would leave task status unchanged: ${taskStatus} is terminal`));
     }
   }
 
@@ -107,7 +107,7 @@ async function retryElixirTask(
     console.log();
     console.log(chalk.bold("Dispatching…"));
     if (dryRun) {
-      console.log(chalk.dim(`  Would request scheduler dispatch for ${beadId}`));
+      console.log(chalk.dim(`  Would request scheduler dispatch for ${taskId}`));
     } else {
       const result = await client.schedulerTick();
       console.log(`  ${chalk.green("queued")} scheduler tick accepted`);
@@ -135,9 +135,9 @@ async function retryElixirTask(
  * Returns the exit code (0 = success, 1 = error).
  */
 export async function retryAction(
-  beadId: string,
+  taskId: string,
   opts: RetryOpts,
-  beadsClient: ITaskClient,
+  tasksClient: ITaskClient,
   store: RetryStore,
   projectPath: string,
   dispatcher?: Dispatcher,
@@ -156,29 +156,29 @@ export async function retryAction(
     return 1;
   }
 
-  // 2. Look up bead via the active task client
-  let bead: Awaited<ReturnType<ITaskClient["show"]>>;
+  // 2. Look up task via the active task client
+  let task: Awaited<ReturnType<ITaskClient["show"]>>;
   try {
-    bead = await beadsClient.show(beadId);
+    task = await tasksClient.show(taskId);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(chalk.red(`Bead "${beadId}" not found: ${msg}`));
+    console.error(chalk.red(`Task "${taskId}" not found: ${msg}`));
     return 1;
   }
 
-  const beadTitle =
-    typeof bead === "object" && bead !== null && "title" in bead && typeof bead.title === "string"
-      ? bead.title
+  const taskTitle =
+    typeof task === "object" && task !== null && "title" in task && typeof task.title === "string"
+      ? task.title
       : undefined;
 
   console.log(
-    chalk.bold(`Retrying bead: ${chalk.cyan(beadId)}`) +
-      (beadTitle ? chalk.dim(` (${beadTitle})`) : ""),
+    chalk.bold(`Retrying task: ${chalk.cyan(taskId)}`) +
+      (taskTitle ? chalk.dim(` (${taskTitle})`) : ""),
   );
-  console.log(`  Status: ${chalk.yellow(bead.status)}`);
+  console.log(`  Status: ${chalk.yellow(task.status)}`);
 
   // 3. Look up run history
-  const runs = await store.getRunsForTask(beadId, project.id);
+  const runs = await store.getRunsForTask(taskId, project.id);
   const latestRun = runs.length > 0 ? runs[0] : null;
 
   if (latestRun) {
@@ -190,9 +190,9 @@ export async function retryAction(
   }
 
   // 4. Determine what needs to be reset
-  const beadResetTarget = getTaskRetryTargetStatus(bead.status, { command: "retry", backendType });
-  const beadNeedsReset = beadResetTarget !== null && beadResetTarget !== bead.status;
-  const beadIsAlreadyRetryable = beadResetTarget !== null && beadResetTarget === bead.status;
+  const taskResetTarget = getTaskRetryTargetStatus(task.status, { command: "retry", backendType });
+  const taskNeedsReset = taskResetTarget !== null && taskResetTarget !== task.status;
+  const taskIsAlreadyRetryable = taskResetTarget !== null && taskResetTarget === task.status;
 
   const runNeedsReset =
     latestRun !== null &&
@@ -211,21 +211,21 @@ export async function retryAction(
 
   // 5. Apply resets
   if (!dryRun) {
-    // Reset bead status to a retryable state when appropriate.
-    if (beadNeedsReset) {
+    // Reset task status to a retryable state when appropriate.
+    if (taskNeedsReset) {
       console.log(
-        `  ${chalk.yellow("reset")} bead status: ${bead.status} → ${beadResetTarget}`,
+        `  ${chalk.yellow("reset")} task status: ${task.status} → ${taskResetTarget}`,
       );
-      if (beadResetTarget === "ready" && typeof beadsClient.resetToReady === "function") {
-        await beadsClient.resetToReady(beadId);
+      if (taskResetTarget === "ready" && typeof tasksClient.resetToReady === "function") {
+        await tasksClient.resetToReady(taskId);
       } else {
-        await beadsClient.update(beadId, { status: beadResetTarget! });
+        await tasksClient.update(taskId, { status: taskResetTarget! });
       }
-    } else if (beadIsAlreadyRetryable) {
-      console.log(`  ${chalk.dim("ok")} bead status is already "${bead.status}"`);
+    } else if (taskIsAlreadyRetryable) {
+      console.log(`  ${chalk.dim("ok")} task status is already "${task.status}"`);
     } else {
       console.log(
-        `  ${chalk.dim("skip")} bead status is terminal: ${bead.status}`,
+        `  ${chalk.dim("skip")} task status is terminal: ${task.status}`,
       );
     }
 
@@ -241,7 +241,7 @@ export async function retryAction(
         await store.logEvent(
           project.id,
           "restart",
-          { reason: "foreman retry", beadId, previousRunId: latestRun.id },
+          { reason: "foreman retry", taskId, previousRunId: latestRun.id },
           latestRun.id,
         );
     } else if (runNeedsExplicitReset && latestRun) {
@@ -255,7 +255,7 @@ export async function retryAction(
         await store.logEvent(
           project.id,
           "restart",
-          { reason: "foreman retry", beadId, previousRunId: latestRun.id },
+          { reason: "foreman retry", taskId, previousRunId: latestRun.id },
           latestRun.id,
       );
     } else if (latestRun) {
@@ -266,16 +266,16 @@ export async function retryAction(
     }
   } else {
     // Dry-run: just describe what would happen
-    if (beadNeedsReset) {
+    if (taskNeedsReset) {
       console.log(
         chalk.dim(
-          `  Would reset bead status: ${bead.status} → ${beadResetTarget}`,
+          `  Would reset task status: ${task.status} → ${taskResetTarget}`,
         ),
       );
-    } else if (beadResetTarget == null) {
+    } else if (taskResetTarget == null) {
       console.log(
         chalk.dim(
-          `  Would leave bead status unchanged: ${bead.status} is terminal`,
+          `  Would leave task status unchanged: ${task.status} is terminal`,
         ),
       );
     }
@@ -301,7 +301,7 @@ export async function retryAction(
     console.log(chalk.bold("Dispatching…"));
     const disp = dispatcher
       ?? (store instanceof ForemanStore
-        ? new Dispatcher(beadsClient, store, projectPath)
+        ? new Dispatcher(tasksClient, store, projectPath)
         : null);
     if (!disp) {
       throw new Error("Dispatcher unavailable for daemon-backed retry path.");
@@ -309,7 +309,7 @@ export async function retryAction(
     const result = await disp.dispatch({
       maxAgents: 1,
       model: opts.model,
-      taskId: beadId,
+      taskId: taskId,
       dryRun,
     });
 
@@ -353,13 +353,13 @@ export const retryCommand = new Command("retry")
   .description(
     "Reset a task and optionally re-dispatch it for execution",
   )
-  .argument("<task-id>", "Task ID to retry (alias: bead-id for backward compatibility)")
+  .argument("<task-id>", "Task ID to retry (alias: task-id for backward compatibility)")
   .option("--dispatch", "Dispatch the task immediately after resetting")
   .option("--model <model>", "Override agent model for dispatch")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .action(async (beadId: string, opts: RetryOpts & { project?: string; projectPath?: string }) => {
+  .action(async (taskId: string, opts: RetryOpts & { project?: string; projectPath?: string }) => {
     // Require --project in multi-project mode
     await requireProjectOrAllInMultiMode(opts.project, false);
 
@@ -395,7 +395,7 @@ export const retryCommand = new Command("retry")
       }
 
       try {
-        const exitCode = await retryElixirTask(beadId, opts, projectPath, registered.id);
+        const exitCode = await retryElixirTask(taskId, opts, projectPath, registered.id);
         localStore.close();
         process.exit(exitCode);
       } catch (err: unknown) {
@@ -409,7 +409,7 @@ export const retryCommand = new Command("retry")
 
     if (registered) {
       try {
-        const exitCode = await retryElixirTask(beadId, opts, projectPath, registered.id);
+        const exitCode = await retryElixirTask(taskId, opts, projectPath, registered.id);
         localStore.close();
         process.exit(exitCode);
       } catch (err: unknown) {
@@ -427,7 +427,7 @@ export const retryCommand = new Command("retry")
 
     try {
       const exitCode = await retryAction(
-        beadId,
+        taskId,
         opts,
         taskClient,
         store,

@@ -130,7 +130,7 @@ Git status before writing this report: clean.
   "noStagedFiles": true,
   "diffSummary": "Hardened TRD-023 migration import by validating the full normalized payload before appending events, rejecting malformed records, unknown run statuses, invalid config, and duplicate ids without side effects; preserved completed migration retry idempotency; added ExUnit edge coverage and a CLI server-dispatch Vitest for `foreman import --to-elixir --file`.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-023 review fixes only. No bead state changes made.",
+  "manualNotes": "Scoped to TRD-023 review fixes only. No task state changes made.",
   "notes": "Writing this report leaves subagent-outputs/trd-023-fix-worker.md untracked by design."
 }
 ```

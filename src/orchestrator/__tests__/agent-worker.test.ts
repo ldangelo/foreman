@@ -116,7 +116,7 @@ describe("agent-worker.ts", () => {
       expect(source).toContain('await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker");');
       expect(source).toContain('await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "ready", "agent-worker");');
       expect(source).not.toContain("enqueueResetTaskToOpen(");
-      expect(source).not.toContain("enqueueMarkBeadFailed(");
+      expect(source).not.toContain("enqueueMarkTaskFailed(");
     });
   });
 });
@@ -185,8 +185,8 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).not.toContain('store.logEvent(projectId, "stuck"');
     expect(source).not.toContain('store.logEvent(projectId, "fail"');
     expect(source).not.toContain('enqueueResetTaskToOpen(');
-    expect(source).not.toContain('enqueueMarkBeadFailed(');
-    expect(source).not.toContain('enqueueAddNotesToBead(');
+    expect(source).not.toContain('enqueueMarkTaskFailed(');
+    expect(source).not.toContain('enqueueAddNotesToTask(');
   });
 
   it("routes single-agent progress and terminal observability without DB store writes", () => {

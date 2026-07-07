@@ -56,24 +56,24 @@ vi.mock("../../lib/db/postgres-adapter.js", () => ({
   PostgresAdapter: MockPostgresAdapter,
 }));
 
-// Mock task-backend-ops so closeTask() / resetTaskToOpen() don't try to execute the real `br` binary.
+// Mock task-backend-ops so closeTask() / resetTaskToOpen() don't try to execute the real `native task store` binary.
 vi.mock("../task-backend-ops.js", () => ({
   enqueueCloseTask: vi.fn(),
   enqueueResetTaskToOpen: vi.fn(),
-  enqueueAddNotesToBead: vi.fn(),
-  enqueueSetBeadStatus: vi.fn(),
+  enqueueAddNotesToTask: vi.fn(),
+  enqueueSetTaskStatus: vi.fn(),
 }));
 
-// Mock auto-merge so syncBeadStatusAfterMerge can be spied on in tests.
+// Mock auto-merge so syncTaskStatusAfterMerge can be spied on in tests.
 vi.mock("../auto-merge.js", () => ({
-  syncBeadStatusAfterMerge: vi.fn().mockResolvedValue(undefined),
+  syncTaskStatusAfterMerge: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Import mocked modules AFTER vi.mock declarations
 import { execFile } from "node:child_process";
 import { removeWorktree } from "../../lib/git.js";
-import { enqueueCloseTask, enqueueResetTaskToOpen, enqueueAddNotesToBead } from "../task-backend-ops.js";
-import { syncBeadStatusAfterMerge } from "../auto-merge.js";
+import { enqueueCloseTask, enqueueResetTaskToOpen, enqueueAddNotesToTask } from "../task-backend-ops.js";
+import { syncTaskStatusAfterMerge } from "../auto-merge.js";
 import { Refinery } from "../refinery.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
-      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;
@@ -268,7 +268,7 @@ describe("Refinery.resolveConflict()", () => {
       expect.objectContaining({ reason: expect.stringContaining("abort") }),
       run.id,
     );
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
   });
 
   it("theirs strategy calls git checkout and merge, marks run as merged, returns true", async () => {
@@ -316,7 +316,7 @@ describe("Refinery.resolveConflict()", () => {
     );
 
     expect(vcs.abortMerge).toHaveBeenCalledWith("/tmp/project");
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
 
     // Merge conflicts remain blocked until an explicit human retry/reset.
     expect(enqueueResetTaskToOpen).not.toHaveBeenCalled();
@@ -386,7 +386,7 @@ describe("Refinery.resolveConflict()", () => {
     );
 
     expect(vcs.rollbackFailedMerge).toHaveBeenCalled();
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
 
     // Test failures remain blocked until an explicit human retry/reset.
     expect(enqueueResetTaskToOpen).not.toHaveBeenCalled();
@@ -679,15 +679,15 @@ describe("Refinery.mergeCompleted()", () => {
     expect(store.updateRun).not.toHaveBeenCalled();
   });
 
-  it("uses branch: label from bead as target branch instead of default", async () => {
+  it("uses branch: label from task as target branch instead of default", async () => {
     const { store, tasks, refinery, vcs } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
     (removeWorktree as any).mockResolvedValue(undefined);
 
-    // Mock tasks.show to return a bead with a branch: label
+    // Mock tasks.show to return a task with a branch: label
     tasks.show.mockResolvedValue({
-      title: "Test bead",
+      title: "Test task",
       description: null,
       status: "completed",
       labels: ["workflow:smoke", "branch:installer"],
@@ -707,15 +707,15 @@ describe("Refinery.mergeCompleted()", () => {
     );
   });
 
-  it("falls back to default branch when bead has no branch: label", async () => {
+  it("falls back to default branch when task has no branch: label", async () => {
     const { store, tasks, refinery, vcs } = makeMocks();
     const run = makeRun();
     store.getRunsByStatus.mockReturnValue([run]);
     (removeWorktree as any).mockResolvedValue(undefined);
 
-    // Mock tasks.show to return a bead with no branch: label
+    // Mock tasks.show to return a task with no branch: label
     tasks.show.mockResolvedValue({
-      title: "Test bead",
+      title: "Test task",
       description: null,
       status: "completed",
       labels: ["workflow:smoke"],
@@ -793,7 +793,7 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
   });
 
   it("adds failure note when rebase-conflict PR creation fails", async () => {
@@ -833,7 +833,7 @@ describe("Refinery.mergeCompleted()", () => {
     const report = await refinery.mergeCompleted({ runTests: false });
 
     expect(report.conflicts).toHaveLength(1);
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
   });
 
   it("marks run as test-failed when tests fail after merge", async () => {
@@ -872,7 +872,7 @@ describe("Refinery.mergeCompleted()", () => {
       run.id,
       expect.objectContaining({ status: "test-failed" }),
     );
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
   });
 
   it("merges in dependency order", async () => {
@@ -925,7 +925,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(report.testFailures).toHaveLength(0);
     expect(report.unexpectedErrors).toHaveLength(1);
     expect(report.unexpectedErrors[0].error).toContain("Unexpected git failure");
-    expect(enqueueAddNotesToBead).not.toHaveBeenCalled();
+    expect(enqueueAddNotesToTask).not.toHaveBeenCalled();
   });
 
   it("does not use direct Postgres task status sync when merge marks run failed", async () => {
@@ -952,7 +952,7 @@ describe("Refinery.mergeCompleted()", () => {
 
   it("retries a previously-failed task: finds run in test-failed state when taskId is specified", async () => {
     // Reproduces: "no completed run found for task <taskid>" after a failed merge.
-    // When --bead is supplied, getCompletedRuns() must also look in terminal failure
+    // When --task is supplied, getCompletedRuns() must also look in terminal failure
     // states so the user can retry without manually resetting the run.
     const { store, refinery } = makeMocks();
     const run = makeRun({ id: "run-retry", task_id: "task-retry", status: "test-failed" });
@@ -1019,7 +1019,7 @@ describe("Refinery.mergeCompleted()", () => {
     expect(store.getRunsByStatuses).not.toHaveBeenCalled();
   });
 
-  // ── bead close-after-merge tests (bd-jpt4 fix) ───────────────────────────
+  // ── task close-after-merge tests (bd-jpt4 fix) ───────────────────────────
 
   it("updates task client after successful merge in mergeCompleted()", async () => {
     const { store, tasks, refinery } = makeMocks();
@@ -1193,9 +1193,9 @@ describe("Refinery.createPRs()", () => {
   });
 });
 
-// ── resolveConflict() bead close tests (bd-jpt4 fix) ─────────────────────────
+// ── resolveConflict() task close tests (bd-jpt4 fix) ─────────────────────────
 
-describe("Refinery.resolveConflict() — bead close after merge", () => {
+describe("Refinery.resolveConflict() — task close after merge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1401,13 +1401,13 @@ describe("Refinery.closeNativeTaskPostMerge() (REQ-018)", () => {
       const run = makeRun({ id: "run-no-task", task_id: "task-no-task" });
       store.getRunsByStatus.mockReturnValue([run]);
       (removeWorktree as any).mockResolvedValue(undefined);
-      (syncBeadStatusAfterMerge as any).mockClear();
+      (syncTaskStatusAfterMerge as any).mockClear();
 
       await refinery.mergeCompleted({ runTests: false });
 
       expect(tasks.update).toHaveBeenCalledWith("task-no-task", { status: "merged" });
       expect(enqueueCloseTask).not.toHaveBeenCalled();
-      expect(syncBeadStatusAfterMerge).not.toHaveBeenCalled();
+      expect(syncTaskStatusAfterMerge).not.toHaveBeenCalled();
     });
   });
 

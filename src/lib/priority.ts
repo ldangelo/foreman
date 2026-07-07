@@ -30,7 +30,7 @@ export function normalizePriority(p: string | number): number {
 }
 
 /**
- * Format a priority value as a string for the br CLI (returns "0"-"4").
+ * Format a priority value as a string for the native task store CLI (returns "0"-"4").
  */
 export function formatPriorityForBr(p: string | number): string {
   return String(normalizePriority(p));

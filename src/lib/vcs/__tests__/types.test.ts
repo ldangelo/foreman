@@ -197,7 +197,7 @@ describe('FinalizeCommands type', () => {
       integrateTargetCommand: 'git rebase origin/dev',
       branchVerifyCommand: 'git ls-remote --heads origin foreman/bd-deoi',
       cleanCommand: 'git worktree remove /tmp/worktrees/bd-deoi',
-      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
+      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl',
     };
     // Verify all 7 are present and string-typed
     expect(typeof cmds.stageCommand).toBe('string');
@@ -217,7 +217,7 @@ describe('FinalizeCommands type', () => {
       integrateTargetCommand: 'jj rebase -d main',
       branchVerifyCommand: 'jj bookmark list',
       cleanCommand: 'jj workspace forget foreman-bd-deoi',
-      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl',
+      restoreTrackedStateCommand: 'git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl',
     };
     expect(cmds.stageCommand).toBe('');
   });

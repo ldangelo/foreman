@@ -129,7 +129,7 @@ Git status after report write:
   "noStagedFiles": true,
   "diffSummary": "Added server-backed `foreman plan prd` and `foreman plan trd` CLI subcommands that route to Elixir `plan.prd` / `plan.trd` commands via ElixirServerManager and ElixirServerClient while preserving legacy `foreman plan <description>` behavior; added Vitest coverage for both subcommands; fixed planning_flow_test auth_token env restoration; updated CLAUDE.md, README.md, and docs/cli-reference.md for the new command surface.",
   "reviewFindings": [],
-  "manualNotes": "Scoped to TRD-022 review round 2 fixes only. Bead state was not changed.",
+  "manualNotes": "Scoped to TRD-022 review round 2 fixes only. Task state was not changed.",
   "notes": "Output report file is untracked after final write by design."
 }
 ```

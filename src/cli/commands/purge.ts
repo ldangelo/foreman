@@ -43,7 +43,7 @@ const purgeLogsSubcommand = withPurgeLogsOptions(
 
 const purgeRunsSubcommand = withPurgeRunsOptions(
   new Command("runs").description(
-    "Remove failed run records whose beads are already closed or no longer exist",
+    "Remove failed run records whose tasks are already closed or no longer exist",
   ),
 ).action(async (opts: PurgeZombieRunsOpts) => {
   process.exit(await purgeZombieRunsCommandAction(opts));

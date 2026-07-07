@@ -2,7 +2,7 @@
  * Unit tests for Dispatcher — native task store path and atomic claim transaction.
  *
  * Verifies TRD-007 / REQ-017. The dispatcher exclusively uses the native
- * Postgres task store; beads fallback has been removed.
+ * Postgres task store; tasks fallback has been removed.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
@@ -44,12 +44,12 @@ vi.mock("../../lib/vcs/index.js", () => ({
 
 vi.mock("../../lib/worktree-manager.js", () => ({
   WorktreeManager: class {
-    async createWorktree(opts: { projectId: string; beadId: string; repoPath: string; baseBranch?: string }) {
+    async createWorktree(opts: { projectId: string; taskId: string; repoPath: string; baseBranch?: string }) {
       return {
         projectId: opts.projectId,
-        beadId: opts.beadId,
-        branchName: `foreman/${opts.beadId}`,
-        path: `/tmp/worktrees/${opts.projectId}/${opts.beadId}`,
+        taskId: opts.taskId,
+        branchName: `foreman/${opts.taskId}`,
+        path: `/tmp/worktrees/${opts.projectId}/${opts.taskId}`,
         exists: false,
       };
     }
@@ -98,11 +98,11 @@ vi.mock("../../lib/workflow-config-loader.js", () => ({
 
 // ── Test Fixtures ────────────────────────────────────────────────────────
 
-/** Create a minimal Issue as returned by BeadsRustClient.ready() */
-function makeBeadsIssue(id: string, priority = "P2"): Issue {
+/** Create a minimal Issue as returned by TaskClient.ready() */
+function makeTasksIssue(id: string, priority = "P2"): Issue {
   return {
     id,
-    title: `Beads task ${id}`,
+    title: `Tasks task ${id}`,
     type: "task",
     priority,
     status: "open",
@@ -133,7 +133,7 @@ function makeNativeTask(id: string, priority = 2): NativeTask {
 }
 
 /** Build a minimal ITaskClient mock */
-function makeMockBeadsClient(issues: Issue[] = []): ITaskClient {
+function makeMockTasksClient(issues: Issue[] = []): ITaskClient {
   return {
     ready: vi.fn().mockResolvedValue(issues),
     show: vi.fn().mockResolvedValue({ status: "open" }),
@@ -232,28 +232,28 @@ describe("Dispatcher — Native task store (AC-014.1)", () => {
   it("uses native store when hasNativeTasks() returns true", async () => {
     const nativeTasks = [makeNativeTask("n-001"), makeNativeTask("n-002")];
     const store = makeMockStore({ hasNativeTasks: true, nativeTasks });
-    const beadsClient = makeMockBeadsClient([makeBeadsIssue("b-001")]);
+    const tasksClient = makeMockTasksClient([makeTasksIssue("b-001")]);
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const result = await dispatcher.dispatch({ dryRun: true });
     consoleSpy.mockRestore();
 
-    // Native tasks dispatched, not beads
+    // Native tasks dispatched, not tasks
     expect(result.dispatched.map((d) => d.taskId)).toContain("n-001");
     expect(result.dispatched.map((d) => d.taskId)).toContain("n-002");
     expect(result.dispatched.map((d) => d.taskId)).not.toContain("b-001");
 
     // Native store queried
     expect(store.getReadyTasks).toHaveBeenCalled();
-    // Beads NOT queried
-    expect(beadsClient.ready).not.toHaveBeenCalled();
+    // Tasks NOT queried
+    expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 
-  it("skips explicit bead dispatch when no native task matches external_id", async () => {
-    const beadsIssue = makeBeadsIssue("bd-explicit");
-    const beadsClient = makeMockBeadsClient([]);
-    beadsClient.show = vi.fn().mockResolvedValue({ ...beadsIssue, status: "open" });
+  it("skips explicit task dispatch when no native task matches external_id", async () => {
+    const tasksIssue = makeTasksIssue("bd-explicit");
+    const tasksClient = makeMockTasksClient([]);
+    tasksClient.show = vi.fn().mockResolvedValue({ ...tasksIssue, status: "open" });
 
     const store = makeMockStore({
       hasNativeTasks: true,
@@ -261,7 +261,7 @@ describe("Dispatcher — Native task store (AC-014.1)", () => {
       externalIdTask: null,
     });
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "mock-session" });
@@ -318,10 +318,10 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
   it("calls claimTask() with taskId and runId on successful dispatch", async () => {
     const task = makeNativeTask("t-claim-001");
     const store = makeStoreForClaim({ nativeTasks: [task], claimResult: true });
-    const beadsClient = makeMockBeadsClient([]);
+    const tasksClient = makeMockTasksClient([]);
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     // Use dryRun: true to avoid actual worktree creation
     // Note: dryRun skips the try block where claimTask() is called.
     // For atomic claim we need dryRun: false but with spawnAgent mocked.
@@ -362,10 +362,10 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       sendMessage: vi.fn(),
     } as unknown as ForemanStore;
 
-    const beadsClient = makeMockBeadsClient([]);
+    const tasksClient = makeMockTasksClient([]);
 
     // Mock spawnAgent to avoid actually spawning processes
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     // Inject a spy on the private spawnAgent by patching the prototype
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
@@ -417,8 +417,8 @@ describe("Dispatcher — Atomic claim transaction (AC-017.2)", () => {
       sendMessage: vi.fn(),
     } as unknown as ForemanStore;
 
-    const beadsClient = makeMockBeadsClient([]);
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const tasksClient = makeMockTasksClient([]);
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const spawnSpy = vi
       .spyOn(dispatcher as unknown as { spawnAgent: () => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "sess-mock" });
@@ -501,10 +501,10 @@ describe("Dispatcher — Native task priority ordering", () => {
       makeNativeTask("mid-prio", 2),
       makeNativeTask("low-prio", 3),
     ]);
-    const beadsClient = makeMockBeadsClient([]);
+    const tasksClient = makeMockTasksClient([]);
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const dispatcher = new Dispatcher(beadsClient, store, "/tmp");
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp");
     const result = await dispatcher.dispatch({ dryRun: true });
     consoleSpy.mockRestore();
 

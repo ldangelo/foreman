@@ -16,14 +16,14 @@ Foreman's existing `decompose` command converts TRDs into tasks using heuristic 
 
 The merge-queue TRD (docs/TRD/merge-queue.md) exemplifies this: 79 tasks across 9 sprints with explicit dependency chains (e.g., `MQ-T027` depends on `MQ-T026, MQ-T012`), hour estimates, file paths, and completion status — none of which `decompose` can extract from its table format.
 
-Additionally, the project now uses **two task tracking systems** — tasks (`sd`) for Foreman's agent pipeline and beads_rust (`br`) for broader project management — but no command writes to both simultaneously.
+Additionally, the project now uses **two task tracking systems** — tasks (`sd`) for Foreman's agent pipeline and native task store (`native task store`) for broader project management — but no command writes to both simultaneously.
 
 ### 1.2 Solution
 
 A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `trd` subcommand — extensible to `sling prd`, `sling spec`, etc.) that:
 
 1. **Parses TRD table format** — extracts tasks from markdown tables (not checklists), reading ID, title/description, estimate, dependencies, files, and status columns
-2. **Dual-writes to sd and br** — creates the full hierarchy in both task trackers simultaneously
+2. **Dual-writes to sd and native task store** — creates the full hierarchy in both task trackers simultaneously
 3. **Preserves explicit dependencies** — uses the TRD's "Deps" column instead of inferring sequential order
 4. **Identifies parallel sprints** — auto-computes from task deps AND validates against TRD dependency graph section
 5. **Creates all tasks as open** — default behavior creates all tasks regardless of TRD status, preserving the full plan for re-planning and agent dispatch
@@ -34,7 +34,7 @@ A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `t
 - **Eliminates manual task creation**: A single command turns a 79-task TRD into fully-wired task hierarchies in both trackers
 - **Preserves TRD fidelity**: Task IDs, estimates, dependencies, and file references are carried through — not inferred or lost
 - **Enables parallel sprint execution**: Agents can pick up work from independent sprints simultaneously
-- **Dual-tracker parity**: Both sd and br stay in sync from the start, reducing cross-system drift
+- **Dual-tracker parity**: Both sd and native task store stay in sync from the start, reducing cross-system drift
 
 ---
 
@@ -45,7 +45,7 @@ A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `t
 | Persona | Description | Pain Point |
 |---------|-------------|------------|
 | **Foreman Operator** | Engineer running `foreman run` to dispatch AI agents | Manually creates 50-80 tasks after TRD is written; deps are error-prone |
-| **Project Lead** | Uses br/bd for project-level tracking, sd for agent dispatch | Must duplicate task creation across two systems |
+| **Project Lead** | Uses native task store/bd for project-level tracking, sd for agent dispatch | Must duplicate task creation across two systems |
 | **AI Agent Pipeline** | Automated pipeline consuming `sd ready` | Blocked tasks must be correctly wired or agents pick up unready work |
 
 ### 2.2 User Journey
@@ -54,10 +54,10 @@ A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `t
 1. Team creates PRD → TRD (via /ensemble:create-prd → /ensemble:create-trd)
 2. TRD reviewed and refined (via /ensemble:refine-trd)
 3. >>> foreman sling trd docs/TRD/merge-queue.md <<<
-4. Preview: "79 tasks, 9 sprints, 4 parallel groups — create in sd + br? [y/N]"
+4. Preview: "79 tasks, 9 sprints, 4 parallel groups — create in sd + native task store? [y/N]"
 5. Tasks created with full hierarchy, dependency wiring, and ACs on stories
 6. `sd ready` returns Sprint 1 tasks immediately
-7. `br ready` returns the same set
+7. `native task store ready` returns the same set
 8. `foreman run` dispatches agents to ready tasks
 ```
 
@@ -70,7 +70,7 @@ A new `foreman sling trd <file>` command (subcommand pattern: `sling` parent, `t
 | ID | Goal | Success Criteria |
 |----|------|-----------------|
 | G-1 | Parse TRD markdown table format into structured task hierarchy | All tasks from merge-queue.md TRD extracted with correct IDs, estimates, deps, files |
-| G-2 | Create tasks in both sd and br simultaneously | Epic → Sprint → Story → Task hierarchy exists in both systems after one command |
+| G-2 | Create tasks in both sd and native task store simultaneously | Epic → Sprint → Story → Task hierarchy exists in both systems after one command |
 | G-3 | Wire explicit dependencies from TRD | Dependencies match TRD "Deps" column, not positional inference |
 | G-4 | Identify and label parallel sprints | Sprints with no cross-dependencies marked as parallelizable |
 | G-5 | Handle already-completed tasks | All tasks created as open by default; `--skip-completed` and `--close-completed` available as overrides |
@@ -137,13 +137,13 @@ Parse the TRD markdown format to extract the task hierarchy.
 - AC-1.17: Section 7 "Risk Register" parsed; risk labels applied to tasks listed in "Tasks Affected" column
 - AC-1.18: Section 6 "Quality Requirements" appended to epic description/notes
 
-### FR-2: Dual-Write to Tasks (sd) and Beads Rust (br)
+### FR-2: Dual-Write to Tasks (sd) and Tasks Rust (native task store)
 
 Create the full task hierarchy in both tracking systems.
 
 **Hierarchy mapping:**
 
-| TRD Level | sd Type | sd Label | br Type | br Label |
+| TRD Level | sd Type | sd Label | native task store Type | native task store Label |
 |-----------|---------|----------|---------|----------|
 | Epic | `epic` | — | `epic` | — |
 | Sprint | `feature` | `kind:sprint` | `feature` | `kind:sprint` |
@@ -154,7 +154,7 @@ Create the full task hierarchy in both tracking systems.
 
 **Metadata mapping:**
 
-| TRD Field | sd Field | br Field |
+| TRD Field | sd Field | native task store Field |
 |-----------|----------|----------|
 | Task ID (MQ-T001) | label `trd:MQ-T001` | label `trd:MQ-T001` |
 | Estimate (3h) | label `est:3h` | `--estimate 180` (minutes) |
@@ -164,18 +164,18 @@ Create the full task hierarchy in both tracking systems.
 | Priority | Parsed from TRD sprint headers (e.g., "P1 - Critical"); falls back to sprint-number mapping if not found | Same mapping |
 
 **Acceptance Criteria:**
-- AC-2.1: Creates identical hierarchy in both sd and br
+- AC-2.1: Creates identical hierarchy in both sd and native task store
 - AC-2.2: TRD task IDs stored as `trd:<ID>` labels in both systems
-- AC-2.3: Hour estimates stored as `est:<N>h` labels in sd and `--estimate` in br
+- AC-2.3: Hour estimates stored as `est:<N>h` labels in sd and `--estimate` in native task store
 - AC-2.4: File references appended to task descriptions
-- AC-2.5: `--sd-only` flag skips br creation
-- AC-2.6: `--br-only` flag skips sd creation
-- AC-2.7: If sd CLI is missing, warns and continues with br only (and vice versa)
+- AC-2.5: `--sd-only` flag skips native task store creation
+- AC-2.6: `--native-only` flag skips sd creation
+- AC-2.7: If sd CLI is missing, warns and continues with native task store only (and vice versa)
 - AC-2.8: Parent-child relationships use `--parent` (organizational, non-blocking)
-- AC-2.9: Both systems share `trd:<ID>` labels as the join key — no cross-references between sd and br IDs (independent systems)
+- AC-2.9: Both systems share `trd:<ID>` labels as the join key — no cross-references between sd and native task store IDs (independent systems)
 - AC-2.10: Priority parsed from TRD sprint headers (e.g., `### P1 - Critical` or section notes); falls back to sprint-number ordinal mapping (Sprint 1-2 → P1, 3-5 → P2, 6+ → P3) if header lacks priority indicator
-- AC-2.11: Auto-detects existing epic by searching for `trd:<doc-id>` label in sd/br. If found, reuses as parent. If not found, creates new epic
-- AC-2.12: Creation order: all sd issues first (sequential), then all br issues (sequential). Within each tracker: epic → sprints → stories → tasks (hierarchy order)
+- AC-2.11: Auto-detects existing epic by searching for `trd:<doc-id>` label in sd/native task store. If found, reuses as parent. If not found, creates new epic
+- AC-2.12: Creation order: all sd issues first (sequential), then all native task store issues (sequential). Within each tracker: epic → sprints → stories → tasks (hierarchy order)
 - AC-2.13: Sprint description populated from Section 3 "Sprint Planning Summary" (focus, est. hours, key deliverables)
 - AC-2.14: Risk labels from Section 7 applied to affected tasks in both trackers
 - AC-2.15: Quality requirements from Section 6 appended to epic notes in both trackers
@@ -188,7 +188,7 @@ Wire task dependencies from the TRD's explicit "Deps" column.
 - Dependencies from the Deps column → blocking `dep add` (not `--parent`)
 - `--` in Deps column → no blocking dependencies
 - Cross-sprint dependencies resolved by TRD task ID lookup
-- Dependencies reference TRD task IDs (e.g., `MQ-T001`) which are mapped to actual sd/br issue IDs via a lookup table built during creation
+- Dependencies reference TRD task IDs (e.g., `MQ-T001`) which are mapped to actual sd/native task store issue IDs via a lookup table built during creation
 
 **Acceptance Criteria:**
 - AC-3.1: Blocking dependencies match TRD Deps column exactly
@@ -196,7 +196,7 @@ Wire task dependencies from the TRD's explicit "Deps" column.
 - AC-3.3: Cross-sprint dependencies correctly wired (e.g., Sprint 5 task depends on Sprint 2 task)
 - AC-3.4: Missing dependency targets produce warnings, not errors
 - AC-3.5: Circular dependency detection with clear error message
-- AC-3.6: Dependencies wired in both sd and br identically
+- AC-3.6: Dependencies wired in both sd and native task store identically
 
 ### FR-4: Sprint Parallelization Detection
 
@@ -208,12 +208,12 @@ Analyze the dependency graph to identify which sprints can run in parallel.
 3. **Validate**: Compare auto-computed result with TRD-stated parallelization. Warn on discrepancy (e.g., "TRD says Sprint 5 and 6 are parallel but task MQ-T049 depends on MQ-T018 in Sprint 2"). Use auto-computed result as source of truth
 4. **Label**: Apply `parallel:<group>` labels (e.g., `parallel:A`, `parallel:B`) to sprint issues
 
-**Scope**: Sprint-level parallelism only. Story-level and task-level parallelism is an agent scheduling concern handled by `sd ready` / `br ready`.
+**Scope**: Sprint-level parallelism only. Story-level and task-level parallelism is an agent scheduling concern handled by `sd ready` / `native task store ready`.
 
 **Acceptance Criteria:**
 - AC-4.1: For merge-queue.md: Sprint 5 and Sprint 6 identified as parallel; Sprint 7 and Sprint 8 identified as parallel
 - AC-4.2: Sprints with cross-dependencies NOT marked parallel
-- AC-4.3: Parallel group labels applied to sprint issues in both sd and br
+- AC-4.3: Parallel group labels applied to sprint issues in both sd and native task store
 - AC-4.4: `--no-parallel` flag disables parallel detection (all sprints sequential)
 - AC-4.5: Parallel sprints displayed in preview output with visual grouping
 
@@ -242,7 +242,7 @@ Epic: TRD: Merge Queue Epic (79 tasks, 9 sprints)
   ║  Sprint 8: Polish (15h, 6 tasks) [P3]
 
 Summary: 79 tasks (75 completed, 4 open), 231 est. hours
-Targets: sd (tasks) + br (beads_rust)
+Targets: sd (tasks) + native task store (native task store)
 ```
 
 **Acceptance Criteria:**
@@ -279,7 +279,7 @@ Support re-running sling-trd on an already-slung TRD.
 **Epic auto-detection**: Before creating a new epic, search both trackers for an existing issue with label `trd:<document-id>` (e.g., `trd:TRD-MERGE-QUEUE`). If found, reuse it as the parent epic. This enables partial re-runs and avoids duplicate epics.
 
 **Acceptance Criteria:**
-- AC-7.1: If `trd:<ID>` label already exists in sd/br, skip that task (do not duplicate)
+- AC-7.1: If `trd:<ID>` label already exists in sd/native task store, skip that task (do not duplicate)
 - AC-7.2: `--force` flag recreates tasks even if labels match (for re-slinging after TRD update)
 - AC-7.3: Resumable: if creation fails mid-way, re-running picks up where it left off
 - AC-7.4: Reports "X created, Y skipped (already exist), Z failed" summary
@@ -300,15 +300,15 @@ Support re-running sling-trd on an already-slung TRD.
 
 ### 5.2 Reliability
 
-- sd or br CLI unavailability degrades gracefully to single-tracker mode
+- sd or native task store CLI unavailability degrades gracefully to single-tracker mode
 - Individual task creation failures do not abort the batch — collect errors, report at end
 - Dependency wiring errors are warnings, not fatal
 
 ### 5.3 Compatibility
 
 - Works with TRD format as exemplified by docs/TRD/merge-queue.md
-- Compatible with existing sd and br CLI versions
-- Does not modify existing tasks/beads data (additive only, unless `--force`)
+- Compatible with existing sd and native task store CLI versions
+- Does not modify existing tasks/tasks data (additive only, unless `--force`)
 
 ---
 
@@ -325,7 +325,7 @@ Options:
   --auto                Skip confirmation prompt
   --json                Output parsed structure as JSON
   --sd-only             Write to tasks (sd) only
-  --br-only             Write to beads_rust (br) only
+  --native-only             Write to native task store (native task store) only
   --skip-completed      Skip [x] tasks (not created)
   --close-completed     Create [x] tasks and immediately close them
   --no-parallel         Disable parallel sprint detection
@@ -337,7 +337,7 @@ Options:
 
 **Subcommand pattern**: `sling` is the parent command, `trd` is the first subcommand. Future subcommands (e.g., `sling prd`) can be added without breaking the CLI surface.
 
-**Progress UX**: During creation, displays a spinner with counter: `Creating tasks... 42/79 (sd: 42, br: 42)`. Compact, shows progress for the 40-80s creation phase.
+**Progress UX**: During creation, displays a spinner with counter: `Creating tasks... 42/79 (sd: 42, native task store: 42)`. Compact, shows progress for the 40-80s creation phase.
 
 ---
 
@@ -347,9 +347,9 @@ Options:
 |------------|-----------|----------|
 | SLING-001 | TRD file not found | Fatal error with path suggestion |
 | SLING-002 | No tasks extracted from TRD | Fatal error — TRD format may not match expected structure |
-| SLING-003 | sd CLI not found | Warning, continue with br only (unless --sd-only) |
-| SLING-004 | br CLI not found | Warning, continue with sd only (unless --br-only) |
-| SLING-005 | Neither sd nor br available | Fatal error |
+| SLING-003 | sd CLI not found | Warning, continue with native task store only (unless --sd-only) |
+| SLING-004 | native task store CLI not found | Warning, continue with sd only (unless --native-only) |
+| SLING-005 | Neither sd nor native task store available | Fatal error |
 | SLING-006 | Task creation failed | Warning per task, continue batch, report at end |
 | SLING-007 | Dependency target not found | Warning, skip that dependency |
 | SLING-008 | Circular dependency detected | Fatal error with cycle details |
@@ -365,17 +365,17 @@ Options:
 | ID | Scenario | Expected Result |
 |----|----------|----------------|
 | TS-1 | Parse merge-queue.md TRD | 79 tasks, 9 sprints, correct hierarchy, ACs extracted |
-| TS-2 | Dry-run mode | No sd/br calls, full preview displayed |
-| TS-3 | Default (create all as open) | All 79 tasks created in open status in both sd and br |
+| TS-2 | Dry-run mode | No sd/native task store calls, full preview displayed |
+| TS-3 | Default (create all as open) | All 79 tasks created in open status in both sd and native task store |
 | TS-4 | --skip-completed | Only `[ ]` and `[~]` tasks created; deps on skipped tasks dropped |
 | TS-5 | --close-completed | All tasks created, `[x]` immediately closed |
-| TS-6 | sd-only mode | Only sd receives tasks, br untouched |
-| TS-7 | br-only mode | Only br receives tasks, sd untouched |
+| TS-6 | sd-only mode | Only sd receives tasks, native task store untouched |
+| TS-7 | native-only mode | Only native task store receives tasks, sd untouched |
 | TS-8 | Parallel sprint detection (auto-compute) | Sprints 5+6 parallel, Sprints 7+8 parallel |
 | TS-9 | Parallel validation (TRD Section 4) | Warns if auto-computed disagrees with TRD notes |
 | TS-10 | Cross-sprint dependency | Sprint 5 task → Sprint 2 task correctly wired |
 | TS-11 | Idempotent re-run | Second run skips all existing tasks (trd:<ID> labels match) |
-| TS-12 | sd unavailable | Degrades to br-only with warning |
+| TS-12 | sd unavailable | Degrades to native-only with warning |
 | TS-13 | Malformed TRD table | Graceful degradation with warnings |
 | TS-14 | JSON output | Valid JSON matching extended DecompositionPlan |
 | TS-15 | AC parsing | Section 5 ACs attached to correct story issues by FR number |
@@ -397,7 +397,7 @@ Options:
 | Command | Input | Parser | Output | Difference |
 |---------|-------|--------|--------|------------|
 | `foreman decompose` | PRD/TRD (loose markdown) | Heuristic (H2→stories, checklists→tasks) | sd only | **Retired** — use `sling trd` instead |
-| `foreman sling trd` | TRD (structured tables) | Table parser (columns: ID, Task, Est, Deps, Files, Status) | sd + br | Uses explicit deps from table, stores ACs on stories |
+| `foreman sling trd` | TRD (structured tables) | Table parser (columns: ID, Task, Est, Deps, Files, Status) | sd + native task store | Uses explicit deps from table, stores ACs on stories |
 
 ### 9.2 Reuse Opportunities
 
@@ -412,8 +412,8 @@ Options:
 |------|---------|
 | `src/cli/commands/sling.ts` | Parent `sling` command with `trd` subcommand |
 | `src/orchestrator/trd-parser.ts` | TRD table format parser (tasks, deps, ACs, parallel detection) |
-| `src/orchestrator/sling-executor.ts` | Dual-write execution engine (sd + br) |
-| `src/lib/beads-rust.ts` | br CLI wrapper (mirrors tasks.ts pattern — typed methods: create, close, addDependency, list, update, search) |
+| `src/orchestrator/sling-executor.ts` | Dual-write execution engine (sd + native task store) |
+| `src/lib/task-client.ts` | native task store CLI wrapper (mirrors tasks.ts pattern — typed methods: create, close, addDependency, list, update, search) |
 
 ---
 
@@ -423,17 +423,17 @@ Options:
 |---|----------|----------|-----------|
 | 1 | Should sling-trd update existing tasks if TRD changes? | No — use `--force` to re-create | Sync is out of scope for v1; one-shot import with idempotency via `trd:<ID>` labels |
 | 2 | Should parallel groups be auto-detected or parsed from TRD? | Both with validation | Auto-compute from task deps (source of truth), parse TRD Section 4 for validation, warn on discrepancy |
-| 3 | Should br cross-reference sd IDs and vice versa? | No — independent systems | Both share `trd:<ID>` labels as join key; no cross-references needed |
+| 3 | Should native task store cross-reference sd IDs and vice versa? | No — independent systems | Both share `trd:<ID>` labels as join key; no cross-references needed |
 | 4 | Default completed-task behavior? | Create all as open | Tracker is source of truth; TRD status is informational. `--skip-completed` and `--close-completed` as overrides |
 | 5 | Command name structure? | `foreman sling trd <file>` | Subcommand pattern extensible to `sling prd`, `sling spec`, etc. |
 | 6 | Priority derivation? | Parse from TRD headers, fallback to sprint-number mapping | Respects TRD author intent; ordinal fallback for TRDs without explicit priority indicators |
 | 7 | Acceptance criteria handling? | Store ACs on stories | Parse Section 5, match to stories by FR number, store as acceptance/description field |
-| 8 | br wrapper architecture? | New beads-rust.ts module | Mirrors tasks.ts pattern; typed wrapper reusable by future commands |
-| 9 | Parallel detection scope? | Sprint-level only | Story/task parallelism is an agent scheduling concern handled by `sd ready` / `br ready` |
+| 8 | native task store wrapper architecture? | New task-client.ts module | Mirrors tasks.ts pattern; typed wrapper reusable by future commands |
+| 9 | Parallel detection scope? | Sprint-level only | Story/task parallelism is an agent scheduling concern handled by `sd ready` / `native task store ready` |
 | 10 | Table column parsing? | Auto-detect from header row | Identifies columns by name; handles reordered/optional columns. Only ID and Task required |
-| 11 | Creation concurrency? | Sequential per-tracker | All sd issues first, then all br issues. Predictable ordering, no concurrency bugs |
+| 11 | Creation concurrency? | Sequential per-tracker | All sd issues first, then all native task store issues. Predictable ordering, no concurrency bugs |
 | 12 | Sprint summary metadata? | Store as sprint description | Parse Section 3 for focus, hours, deliverables. Enriches sprint issues |
-| 13 | Progress UX during creation? | Spinner with counter | Single line: `Creating tasks... 42/79 (sd: 42, br: 42)`. Clean and informative |
+| 13 | Progress UX during creation? | Spinner with counter | Single line: `Creating tasks... 42/79 (sd: 42, native task store: 42)`. Clean and informative |
 | 14 | Quality reqs and risk register? | Both: risks as labels, quality as epic notes | Risk labels on affected tasks; quality reqs appended to epic description |
 | 15 | Existing epic handling? | Auto-detect by `trd:<doc-id>` label | Search trackers before creating; reuse if found. Enables partial re-runs |
 
@@ -448,5 +448,5 @@ Options:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-03-13 | Initial PRD |
-| 1.1 | 2026-03-13 | Refinement pass 1: (1) Command renamed to `foreman sling trd` (subcommand pattern); (2) Default changed to create-all-as-open; (3) Cross-references removed — `trd:<ID>` as join key; (4) Parallel detection: dual-source with validation; (5) Priority: parse from TRD headers; (6) ACs stored on stories by FR number; (7) br wrapper as beads-rust.ts; (8) Sprint-level parallelism only; (9) Resolved decisions table |
-| 1.2 | 2026-03-13 | Refinement pass 2: (1) Table columns auto-detected from header row — handles reordered/optional columns, only ID+Task required; (2) Creation order: sequential per-tracker (sd first, then br) for predictable ordering; (3) Section 3 sprint summary parsed and stored as sprint descriptions; (4) Spinner with counter progress UX during creation; (5) Risk register (Section 7) parsed — risk labels applied to affected tasks; (6) Quality requirements (Section 6) appended to epic notes; (7) Epic auto-detection by `trd:<doc-id>` label — reuses existing epic on re-runs; (8) New error codes SLING-010/011/012 for column parsing, risk references, and AC references; (9) 7 additional test scenarios (TS-17 through TS-23) |
+| 1.1 | 2026-03-13 | Refinement pass 1: (1) Command renamed to `foreman sling trd` (subcommand pattern); (2) Default changed to create-all-as-open; (3) Cross-references removed — `trd:<ID>` as join key; (4) Parallel detection: dual-source with validation; (5) Priority: parse from TRD headers; (6) ACs stored on stories by FR number; (7) native task store wrapper as task-client.ts; (8) Sprint-level parallelism only; (9) Resolved decisions table |
+| 1.2 | 2026-03-13 | Refinement pass 2: (1) Table columns auto-detected from header row — handles reordered/optional columns, only ID+Task required; (2) Creation order: sequential per-tracker (sd first, then native task store) for predictable ordering; (3) Section 3 sprint summary parsed and stored as sprint descriptions; (4) Spinner with counter progress UX during creation; (5) Risk register (Section 7) parsed — risk labels applied to affected tasks; (6) Quality requirements (Section 6) appended to epic notes; (7) Epic auto-detection by `trd:<doc-id>` label — reuses existing epic on re-runs; (8) New error codes SLING-010/011/012 for column parsing, risk references, and AC references; (9) 7 additional test scenarios (TS-17 through TS-23) |

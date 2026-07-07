@@ -4,7 +4,7 @@
 
 Analysis of `src/orchestrator/dispatcher.ts`, `src/orchestrator/pipeline-executor.ts`, and related modules reveals three primary coupling hotspots that make the codebase difficult to test, extend, and reason about:
 
-1. **`dispatcher.ts`**: 94KB, imports 35+ modules directly — tight coupling to lib, db, vcs, config, beads, and workflow subsystems
+1. **`dispatcher.ts`**: 94KB, imports 35+ modules directly — tight coupling to lib, db, vcs, config, tasks, and workflow subsystems
 2. **Type-level leakage**: `src/orchestrator/types.ts` imports `Run`, `RunProgress`, `ForemanStore` from `../lib/store.js`, creating cross-module type dependencies that force changes in one module to ripple into the other
 3. **Read-model缺口**: The dispatcher reads `Run`/`RunProgress` objects directly from the store rather than through abstracted read-model interfaces, making it difficult to substitute implementations or add caching
 
@@ -214,7 +214,7 @@ import type { DispatcherDeps } from "./dispatcher-dependencies.js";
 - `src/lib/postgres-store.ts` — concrete implementation unchanged
 - `src/lib/db/postgres-adapter.ts` — concrete implementation unchanged
 - `src/lib/db/pool-manager.ts` — concrete implementation unchanged
-- `src/lib/beads-rust.ts` — unchanged
+- `src/lib/task-client.ts` — unchanged
 - `src/lib/vcs/*.ts` — unchanged
 
 ---

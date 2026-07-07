@@ -4,7 +4,7 @@
 # proof-of-concepts, and architecture explorations. No code is merged — the agent
 # produces a written answer/analysis as the artifact.
 #
-# Auto-selected when bead type is "question".
+# Auto-selected when task type is "question".
 
 name: question
 merge: none

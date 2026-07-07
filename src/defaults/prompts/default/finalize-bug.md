@@ -24,7 +24,7 @@ Run:
 {{vcsStageCommand}}
 {{vcsRestoreTrackedStateCommand}}
 ```
-The restore command must remove workspace-only paths from the index after staging, including `.beads/issues.jsonl`, `node_modules` (including symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, and `docs/reports/**`.
+The restore command must remove workspace-only paths from the index after staging, including `.tasks/issues.jsonl`, `node_modules` (including symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, and `docs/reports/**`.
 
 ### Step 2: Commit
 Run:
@@ -38,7 +38,7 @@ git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranc
 ```
 
 - If output is non-empty, work was already committed; continue.
-- If there are no commits ahead and this is a verification/test bead (`{{taskType}}` is `test` OR title contains "verify", "validate", or "test"), continue.
+- If there are no commits ahead and this is a verification/test task (`{{taskType}}` is `test` OR title contains "verify", "validate", or "test"), continue.
 - Otherwise send `nothing_to_commit` mail and stop.
 
 ### Step 3: Verify branch
@@ -139,4 +139,4 @@ Write `{{reportDir}}/FINALIZE_REPORT.md`:
 ## Rules
 - Do not modify source code files; only write finalize artifacts and run git commands.
 - Do not run `npm ci`, `tsc`, or tests unless target drift requires validation.
-- Do not commit `node_modules`, `SESSION_LOG.md`, `RUN_LOG.md`, `.beads/issues.jsonl`, repository-root report artifacts, or `docs/reports/**`.
+- Do not commit `node_modules`, `SESSION_LOG.md`, `RUN_LOG.md`, `.tasks/issues.jsonl`, repository-root report artifacts, or `docs/reports/**`.

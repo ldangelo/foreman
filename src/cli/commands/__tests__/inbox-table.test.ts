@@ -176,7 +176,7 @@ describe("daemon adapters", () => {
   it("adapts daemon runs across success/failure/cancelled fallback statuses", () => {
     const successRun = adaptDaemonRun({
       id: "run-1",
-      bead_id: "task-1",
+      task_id: "task-1",
       status: "success",
       branch: "foreman/task-1",
       queued_at: "2026-01-01T00:00:00.000Z",
@@ -186,7 +186,7 @@ describe("daemon adapters", () => {
     });
     const cancelledRun = adaptDaemonRun({
       id: "run-2",
-      bead_id: "task-2",
+      task_id: "task-2",
       status: "cancelled",
       branch: "foreman/task-2",
       queued_at: "2026-01-01T00:00:00.000Z",
@@ -196,7 +196,7 @@ describe("daemon adapters", () => {
     });
     const unknownRun = adaptDaemonRun({
       id: "run-3",
-      bead_id: "task-3",
+      task_id: "task-3",
       status: "mystery",
       branch: "foreman/task-3",
       queued_at: "2026-01-01T00:00:00.000Z",
@@ -218,15 +218,15 @@ describe("pipeline event formatting", () => {
   it("formats phase and dispatch event summaries from structured details", () => {
     expect(formatEventSummary("phase-start", { phase: "developer" })).toBe("Start: developer");
     expect(formatEventSummary("phase-complete", { phase: "qa" })).toBe("Complete: qa");
-    expect(formatEventSummary("dispatch", { bead_id: "task-1" })).toBe("Dispatch: task-1");
+    expect(formatEventSummary("dispatch", { task_id: "task-1" })).toBe("Dispatch: task-1");
   });
 
   it("falls back through known event detail keys and raw event type", () => {
     expect(formatEventSummary("pr-created", { pr_number: 42 })).toBe("PR #42 created");
     expect(formatEventSummary("stuck", { taskId: "task-9" })).toBe("Stuck: task-9");
-    expect(formatEventSummary("merge-queue-fallback", { bead_id: "task-8" })).toBe("merge-queue-fallback: task-8");
-    expect(formatEventSummary("merge-cleanup-fallback", { bead_id: "task-7" })).toBe("merge-cleanup-fallback: task-7");
-    expect(formatEventSummary("unknown-event", { bead_id: "task-2" })).toBe("unknown-event: task-2");
+    expect(formatEventSummary("merge-queue-fallback", { task_id: "task-8" })).toBe("merge-queue-fallback: task-8");
+    expect(formatEventSummary("merge-cleanup-fallback", { task_id: "task-7" })).toBe("merge-cleanup-fallback: task-7");
+    expect(formatEventSummary("unknown-event", { task_id: "task-2" })).toBe("unknown-event: task-2");
     expect(formatEventSummary("unknown-event", { taskId: "task-3" })).toBe("unknown-event: task-3");
     expect(formatEventSummary("unknown-event", null)).toBe("unknown-event");
   });
@@ -236,7 +236,7 @@ describe("pipeline event formatting", () => {
       id: "evt-1",
       runId: "run-1",
       eventType: "merge",
-      details: { bead_id: "task-3" },
+      details: { task_id: "task-3" },
       createdAt: "2026-01-01T00:00:00.000Z",
     });
 

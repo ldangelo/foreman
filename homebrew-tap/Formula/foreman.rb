@@ -82,23 +82,9 @@ class Foreman < Formula
       ║              Foreman Post-Install Setup                      ║
       ╚══════════════════════════════════════════════════════════════╝
 
-      Foreman requires two additional dependencies:
+      Foreman requires an API key:
 
-      ┌─ 1. beads_rust (br) — Task Tracking CLI ──────────────────────
-      │
-      │  Install via Cargo (recommended):
-      │    cargo install beads_rust
-      │
-      │  Or download a pre-built binary:
-      │    https://github.com/Dicklesworthstone/beads_rust/releases
-      │    → place the binary as ~/.local/bin/br and chmod +x it
-      │
-      │  Verify installation:
-      │    br --version
-      │
-      └───────────────────────────────────────────────────────────────
-
-      ┌─ 2. ANTHROPIC_API_KEY — Claude API Key ───────────────────────
+      ┌─ ANTHROPIC_API_KEY — Claude API Key ───────────────────────
       │
       │  Add to your shell profile (~/.zshrc or ~/.bash_profile):
       │    export ANTHROPIC_API_KEY="sk-ant-..."
@@ -113,7 +99,6 @@ class Foreman < Formula
       Quick Start:
         cd ~/your-project
         foreman init --name my-project
-        br create --title "My first task" --type task --priority 2
         foreman run
 
       Full documentation:
@@ -132,7 +117,7 @@ class Foreman < Formula
     assert_match "run", help_output
 
     # Verify doctor runs without crashing (exit code may be non-zero in sandbox
-    # because br and ANTHROPIC_API_KEY won't be present — that's expected).
+    # because ANTHROPIC_API_KEY will not be present — that's expected).
     system "bash", "-c", "#{bin}/foreman doctor --no-color 2>&1 || true"
   end
 end

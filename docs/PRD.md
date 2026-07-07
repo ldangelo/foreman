@@ -1,5 +1,5 @@
 > ⚠️ Historical Context
-> This document describes Foreman's beads-first architecture, which has been
+> This document describes Foreman's tasks-first architecture, which has been
 > superseded by native task management (TRD-2026-006). Some instructions,
 > configurations, or comparisons in this document may no longer reflect
 > current behavior.
@@ -16,14 +16,14 @@
 
 ## 1. Executive Summary
 
-Foreman is a multi-agent coding orchestration system built on OpenClaw and Beads that decomposes development work into parallelizable tasks, dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and merges results back — all monitored through a real-time web dashboard.
+Foreman is a multi-agent coding orchestration system built on OpenClaw and Tasks that decomposes development work into parallelizable tasks, dispatches them to AI coding agents (Claude Code, Pi, Codex), manages git isolation per agent, and merges results back — all monitored through a real-time web dashboard.
 
 Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to one AI provider), **integrated with existing workflows** (OpenClaw, TaskNotes, Obsidian), and designed to be **client-deployable** as part of the Ensemble framework.
 
 ### Key Differentiators
 - Runtime-agnostic: Claude Code, Pi, Codex, Gemini — pick per task
 - Built on OpenClaw (maintained platform, not a greenfield orchestrator)
-- Beads for structured work tracking (dependency graph, atomic claiming)
+- Tasks for structured work tracking (dependency graph, atomic claiming)
 - Real-time dashboard with multi-project monitoring and drill-down
 - Client-ready via Ensemble
 
@@ -50,7 +50,7 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 
 | Goal | Success Metric |
 |---|---|
-| Decompose PRD into parallelizable tasks | PRD → Beads hierarchy in <2 minutes |
+| Decompose PRD into parallelizable tasks | PRD → Tasks hierarchy in <2 minutes |
 | Dispatch agents with git isolation | N agents running on N worktrees, zero conflicts |
 | Automatic merge on completion | Worktree → main merge with test validation |
 | Real-time dashboard | See all projects, all agents, live status |
@@ -79,7 +79,7 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 │                                                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │
 │  │ Decomposer  │  │ Dispatcher  │  │    Refinery      │ │
-│  │ PRD → Beads │  │ bd ready →  │  │ Merge + Test +   │ │
+│  │ PRD → Tasks │  │ bd ready →  │  │ Merge + Test +   │ │
 │  │ hierarchy   │  │ worktree →  │  │ Validate         │ │
 │  │             │  │ spawn agent │  │                   │ │
 │  └─────────────┘  └─────────────┘  └─────────────────┘ │
@@ -106,11 +106,11 @@ Unlike Gastown or similar tools, Foreman is **runtime-agnostic** (not locked to 
 ### 4.2 Component Breakdown
 
 #### 4.2.1 Foreman CLI (`foreman`)
-A lightweight CLI wrapper that coordinates Beads + OpenClaw + Git:
+A lightweight CLI wrapper that coordinates Tasks + OpenClaw + Git:
 
 ```bash
 foreman init                          # Initialize Foreman in a project
-foreman plan <prd.md>                 # Decompose PRD → beads
+foreman plan <prd.md>                 # Decompose PRD → tasks
 foreman run                           # Dispatch ready tasks to agents
 foreman status                        # Show project status
 foreman merge                         # Trigger refinery for completed work
@@ -119,7 +119,7 @@ foreman dashboard                     # Launch web dashboard
 
 #### 4.2.2 Foreman OpenClaw Skill
 The brain — SKILL.md instructions that enable Jarvis (or any OpenClaw agent) to:
-- Parse PRDs and create bead hierarchies
+- Parse PRDs and create task hierarchies
 - Select appropriate runtime per task (Claude Code vs Pi vs Codex)
 - Manage worktree lifecycle
 - Monitor agent progress
@@ -131,7 +131,7 @@ Real-time web UI for monitoring all active projects and agents.
 #### 4.2.4 Foreman State Store
 Postgres database (`~/.foreman/foreman.db`) tracking:
 - Projects (repo path, status, created_at)
-- Runs (project_id, bead_id, agent_type, session_key, worktree_path, status, started_at, completed_at)
+- Runs (project_id, task_id, agent_type, session_key, worktree_path, status, started_at, completed_at)
 - Costs (run_id, tokens_in, tokens_out, estimated_cost)
 - Events (run_id, event_type, timestamp, details)
 
@@ -174,7 +174,7 @@ Multi-project view showing all registered Foreman projects at a glance.
 ```
 
 #### Project Detail (Drill-Down)
-Clicking a project shows its full bead graph, agent assignments, and live status.
+Clicking a project shows its full task graph, agent assignments, and live status.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -212,7 +212,7 @@ Clicking a project shows its full bead graph, agent assignments, and live status
 │  08:10:45  bd-x7k2m.5 claimed by worker-2 (Pi)         │
 │  08:10:44  bd-x7k2m.4 claimed by worker-1 (Claude)     │
 │  08:10:02  Dispatched 2 agents for ready tasks          │
-│  08:09:15  PRD decomposed into 5 beads                  │
+│  08:09:15  PRD decomposed into 5 tasks                  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -265,7 +265,7 @@ Alternative: **Elixir/Phoenix LiveView** — would be more aligned with Leo's cl
 
 ```
 GET  /api/projects                    # List all projects
-GET  /api/projects/:id                # Project detail + beads
+GET  /api/projects/:id                # Project detail + tasks
 GET  /api/projects/:id/runs           # Active/completed runs
 GET  /api/projects/:id/events         # Event log
 GET  /api/projects/:id/costs          # Cost breakdown
@@ -293,7 +293,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Set up Node.js project (`package.json`, TypeScript config)
 - [ ] Create `foreman` CLI entry point with subcommands (commander.js)
 - [ ] Implement `foreman init` — registers project in `~/.foreman/foreman.db`
-- [ ] Implement `foreman status` — reads beads + shows summary
+- [ ] Implement `foreman status` — reads tasks + shows summary
 
 #### P1.2 — Postgres State Store
 **Priority:** P0 | **Estimate:** 3h | **Runtime:** Claude Code
@@ -302,18 +302,18 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Implement data access layer (pg)
 - [ ] Write tests for CRUD operations
 
-#### P1.3 — Beads Integration Layer
+#### P1.3 — Tasks Integration Layer
 **Priority:** P0 | **Estimate:** 4h | **Runtime:** Claude Code
 - [ ] Wrapper module around `bd` CLI (`exec` → parse JSON output)
-- [ ] Functions: `createBead`, `listReady`, `claim`, `close`, `listAll`, `getGraph`
-- [ ] Handle bead hierarchies (epic → task → subtask)
+- [ ] Functions: `createTask`, `listReady`, `claim`, `close`, `listAll`, `getGraph`
+- [ ] Handle task hierarchies (epic → task → subtask)
 - [ ] Dependency resolution (`bd dep add`)
-- [ ] Error handling for Dolt/Beads edge cases
+- [ ] Error handling for Dolt/Tasks edge cases
 
 #### P1.4 — Git Worktree Manager
 **Priority:** P0 | **Estimate:** 3h | **Runtime:** Pi
-- [ ] Create worktree for a given bead ID (`git worktree add`)
-- [ ] Branch naming convention: `foreman/<bead-id>`
+- [ ] Create worktree for a given task ID (`git worktree add`)
+- [ ] Branch naming convention: `foreman/<task-id>`
 - [ ] Cleanup worktree on task completion
 - [ ] List active worktrees
 - [ ] Handle worktree conflicts gracefully
@@ -323,10 +323,10 @@ WS   /ws/events                       # Real-time event stream
 #### P2.1 — PRD Decomposer
 **Priority:** P0 | **Estimate:** 6h | **Runtime:** Claude Code
 - [ ] Accept PRD as markdown file or inline text
-- [ ] Use LLM (via OpenClaw `sessions_spawn`) to decompose into bead hierarchy
+- [ ] Use LLM (via OpenClaw `sessions_spawn`) to decompose into task hierarchy
 - [ ] Prompt engineering for good task granularity
 - [ ] Auto-detect dependencies between tasks
-- [ ] Create beads via `bd create` with proper hierarchy
+- [ ] Create tasks via `bd create` with proper hierarchy
 - [ ] Human review step before dispatch (show plan, confirm)
 - [ ] Implement `foreman plan <prd.md>`
 
@@ -335,9 +335,9 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Query `bd ready --json` for dispatchable tasks
 - [ ] Runtime selection logic (task complexity → Claude Code vs Pi vs Codex)
 - [ ] Create worktree per task
-- [ ] Generate agent instructions (AGENTS.md with task context, bead ID, bd commands)
+- [ ] Generate agent instructions (AGENTS.md with task context, task ID, bd commands)
 - [ ] Spawn via OpenClaw `sessions_spawn` (runtime: "acp")
-- [ ] Record run in Postgres (session_key, worktree, bead_id, started_at)
+- [ ] Record run in Postgres (session_key, worktree, task_id, started_at)
 - [ ] Configurable max concurrent agents
 - [ ] Implement `foreman run`
 
@@ -346,7 +346,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] Poll active runs for completion (via OpenClaw `subagents list`)
 - [ ] Detect stuck agents (no progress for configurable timeout)
 - [ ] Auto-restart stuck agents (with retry count limit)
-- [ ] On completion: update bead status, record costs, trigger merge check
+- [ ] On completion: update task status, record costs, trigger merge check
 - [ ] Event logging to Postgres
 - [ ] Implement as background process or cron-triggered
 
@@ -358,7 +358,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] On conflict: spawn a "resolver" agent or flag for human review
 - [ ] On test failure: spawn a "fixer" agent or flag
 - [ ] Clean up worktree after successful merge
-- [ ] Update beads status
+- [ ] Update tasks status
 - [ ] Optional: blind validation step (spawn review agent that hasn't seen implementation)
 - [ ] Implement `foreman merge`
 
@@ -370,7 +370,7 @@ WS   /ws/events                       # Real-time event stream
 - [ ] REST API endpoints (see §5.3)
 - [ ] WebSocket server for real-time events
 - [ ] Postgres queries for project/run/cost data
-- [ ] Beads CLI integration for live bead graph
+- [ ] Tasks CLI integration for live task graph
 - [ ] OpenClaw integration for agent status
 - [ ] Implement `foreman dashboard`
 
@@ -414,7 +414,7 @@ WS   /ws/events                       # Real-time event stream
 **Priority:** P1 | **Estimate:** 3h | **Runtime:** Manual
 - [ ] AGENTS.md template for spawned coding agents
 - [ ] Instructions for using `bd` within the worktree
-- [ ] "Land the plane" protocol (push, close bead, clean up)
+- [ ] "Land the plane" protocol (push, close task, clean up)
 - [ ] Runtime-specific templates (Claude Code vs Pi vs Codex differences)
 
 #### P4.3 — Refinery Agent Template
@@ -430,7 +430,7 @@ WS   /ws/events                       # Real-time event stream
 #### P5.1 — Installation & Setup Script
 **Priority:** P2 | **Estimate:** 3h | **Runtime:** Pi
 - [ ] `foreman install` or setup script
-- [ ] Check dependencies (Beads, Dolt, OpenClaw, Node.js)
+- [ ] Check dependencies (Tasks, Dolt, OpenClaw, Node.js)
 - [ ] Auto-configure OpenClaw skill
 - [ ] Generate default config file (`~/.foreman/config.toml`)
 
@@ -499,7 +499,7 @@ notify_on_failure = true
 | Risk | Impact | Likelihood | Mitigation |
 |---|---|---|---|
 | Agents produce conflicting code | Merge failures | Medium | Git worktree isolation, one task per agent |
-| Beads/Dolt instability | Data loss | Low | Dolt is version-controlled, regular backups |
+| Tasks/Dolt instability | Data loss | Low | Dolt is version-controlled, regular backups |
 | Agent token runaway | Cost overrun | Medium | Model ceilings in config, monitor kill switch |
 | Dashboard scope creep | Timeline slip | High | MVP dashboard first, iterate after dogfooding |
 | Decomposer creates bad tasks | Wasted agent time | Medium | Human review step before dispatch |
@@ -511,7 +511,7 @@ notify_on_failure = true
 
 | Week | Phase | Deliverable |
 |---|---|---|
-| Week 1 | Foundation | CLI skeleton, Postgres store, Beads integration, Git worktree manager |
+| Week 1 | Foundation | CLI skeleton, Postgres store, Tasks integration, Git worktree manager |
 | Week 2 | Orchestration (pt 1) | PRD decomposer, Agent dispatcher |
 | Week 3 | Orchestration (pt 2) + Dashboard start | Monitor, Refinery, Dashboard backend |
 | Week 4 | Dashboard + Skill | Dashboard UI (all 3 pages), OpenClaw skill, Agent templates |
@@ -539,15 +539,15 @@ notify_on_failure = true
 
 | Date | Decision | Rationale |
 |---|---|---|
-| 2026-03-10 | Use Beads over TaskNotes for agent work tracking | Beads is purpose-built for agent workflows (atomic claiming, dependency graph, context compaction). TaskNotes stays for human task management. |
+| 2026-03-10 | Use Tasks over TaskNotes for agent work tracking | Tasks is purpose-built for agent workflows (atomic claiming, dependency graph, context compaction). TaskNotes stays for human task management. |
 | 2026-03-10 | Build on OpenClaw rather than forking Gastown | Already running OpenClaw, runtime-agnostic, integrated with existing workflows, maintained platform |
-| 2026-03-10 | Postgres for dashboard state (not Dolt) | Dashboard needs fast reads for real-time UI. Beads/Dolt handles work tracking. Postgres handles operational state (runs, costs, events). |
+| 2026-03-10 | Postgres for dashboard state (not Dolt) | Dashboard needs fast reads for real-time UI. Tasks/Dolt handles work tracking. Postgres handles operational state (runs, costs, events). |
 | 2026-03-10 | Svelte + Node for dashboard (not Phoenix) | Faster to prototype, lower barrier for client deployment. Can migrate to Phoenix later if needed. |
 
 ---
 
 *See also:*
 - [[Multi-Agent Coding Orchestration - Comparison Matrix]]
-- [[OpenClaw + Beads - Multi-Agent Coding Orchestration Architecture]]
+- [[OpenClaw + Tasks - Multi-Agent Coding Orchestration Architecture]]
 
 *Tags:* #prd #ai #multi-agent #openclaw #fortium #ensemble #foreman

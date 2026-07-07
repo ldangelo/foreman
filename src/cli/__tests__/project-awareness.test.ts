@@ -135,7 +135,7 @@ describe("TRD-048: CLI --project flag and multi-project mode", () => {
       // Core inbox options
       expect(output).toContain("--agent");
       expect(output).toContain("--run");
-      expect(output).toContain("--bead");
+      expect(output).toContain("--task");
       expect(output).toContain("--watch");
       expect(output).toContain("--ack");
     });

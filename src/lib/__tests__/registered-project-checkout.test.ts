@@ -44,10 +44,10 @@ describe("syncRegisteredProjectCheckout", () => {
       "fetch origin main --prune": "",
       "rev-parse --verify origin/main": "39eb3d7b\n",
       "symbolic-ref --quiet --short HEAD": "main\n",
-      "diff --name-only": ".beads/issues.jsonl\n",
+      "diff --name-only": ".tasks/issues.jsonl\n",
       "diff --cached --name-only": "",
-      "ls-files --others --exclude-standard": ".beads/last-touched\n",
-      "restore --source=HEAD --staged --worktree -- .beads/issues.jsonl": "",
+      "ls-files --others --exclude-standard": ".tasks/last-touched\n",
+      "restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl": "",
       "reset --hard origin/main": "HEAD is now at 39eb3d7b\n",
     });
 
@@ -57,8 +57,8 @@ describe("syncRegisteredProjectCheckout", () => {
       defaultBranch: "main",
     });
 
-    expect(mockExecFileSync).toHaveBeenCalledWith("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", ".beads/issues.jsonl"], expect.objectContaining({ cwd: "/repo" }));
-    expect(mockRmSync).toHaveBeenCalledWith("/repo/.beads/last-touched", { recursive: true, force: true });
+    expect(mockExecFileSync).toHaveBeenCalledWith("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", ".tasks/issues.jsonl"], expect.objectContaining({ cwd: "/repo" }));
+    expect(mockRmSync).toHaveBeenCalledWith("/repo/.tasks/last-touched", { recursive: true, force: true });
     expect(mockExecFileSync).toHaveBeenCalledWith("git", ["reset", "--hard", "origin/main"], expect.objectContaining({ cwd: "/repo" }));
     // Already on the default branch — no checkout needed
     expect(gitCallKeys()).not.toContain("checkout main");

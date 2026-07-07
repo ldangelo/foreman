@@ -318,7 +318,7 @@ export async function runTaskAction(
   try {
     const worktreeInfo = await worktreeManager.createWorktree({
       projectId,
-      beadId: taskId,
+      taskId: taskId,
       repoPath: resolvedProjectPath,
       baseBranch: targetBranch ?? baseBranch,
     });

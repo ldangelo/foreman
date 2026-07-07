@@ -220,10 +220,10 @@ Prompt markdown files use `{{variableName}}` placeholders. Missing variables ren
 
 | Variable | Available in phases | Description |
 |---|---|---|
-| `{{taskId}}` | all | Bead/task ID (e.g. `bd-abc1`) |
+| `{{taskId}}` | all | Task/task ID (e.g. `bd-abc1`) |
 | `{{taskTitle}}` | all | One-line title of the task |
 | `{{taskDescription}}` | explorer, developer, reviewer | Full task description |
-| `{{taskComments}}` | explorer, developer, reviewer | Comments from the bead |
+| `{{taskComments}}` | explorer, developer, reviewer | Comments from the task |
 | `{{feedbackContext}}` | developer | QA or Reviewer findings injected on retry |
 | `{{hasExplorerReport}}` | developer | `"true"` or `"false"` |
 
@@ -598,13 +598,13 @@ npm test -- prompt-loader workflow-config-loader phase-config-loader
 npm test
 
 # Part 1: Integration smoke test (requires Agent Mail server)
-foreman run --bead <task-id>
+foreman run --task <task-id>
 # Watch logs for:
 #   [agent-mail] Fetched "QA Feedback - Retry 1" from inbox "developer-{taskId}"
 #   [agent-mail] Fetched "Review Findings" from inbox "developer-{taskId}"
 
 # Part 1: Backward compat test (stop Agent Mail server)
-foreman run --bead <task-id>
+foreman run --task <task-id>
 # Pipeline completes normally using disk fallback -- no errors
 
 # Part 2: Task defaults
@@ -615,7 +615,7 @@ foreman init
 # Edit ~/.foreman/prompts/explorer.md, re-run, verify custom text in session log
 
 # Part 2: Bug workflow test
-foreman run --bead <bug-task-id>
+foreman run --task <bug-task-id>
 # Verify: logs show ["reproducer", "developer", "qa", "finalize"]
 
 # Part 2: Validation test

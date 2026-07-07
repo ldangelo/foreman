@@ -100,7 +100,6 @@ interface ProjectStats {
 export interface DaemonRunSummary {
   id: string;
   task_id?: string;
-  bead_id?: string;
   status: string;
   branch?: string | null;
   started_at?: string | null;
@@ -206,7 +205,7 @@ export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<Da
 export function renderDaemonRunCard(run: DaemonRunSummary): string {
   const since = run.started_at ?? run.queued_at ?? run.created_at;
   const time = since ? elapsed(since) : "—";
-  const taskId = run.task_id ?? run.bead_id ?? run.id;
+  const taskId = run.task_id ?? run.task_id ?? run.id;
   const branch = run.branch ?? (taskId !== run.id ? `foreman/${taskId}` : "—");
   return `${chalk.dim("▶")} ${chalk.cyan.bold(taskId)} ${chalk.yellow(run.status.toUpperCase())} ${chalk.dim(time)}  ${chalk.dim(branch)}`;
 }
@@ -363,7 +362,7 @@ async function renderStatus(projectPath: string): Promise<void> {
 
 /**
  * Render a compact task-count header for use in the live dashboard view.
- * Shows br task counts (ready, in-progress, blocked, completed) as a
+ * Shows native task store task counts (ready, in-progress, blocked, completed) as a
  * one-line summary suitable for prepending to the dashboard display.
  */
 export function renderLiveStatusHeader(counts: StatusCounts): string {
@@ -594,7 +593,7 @@ export const statusCommand = new Command("status")
 
     if (opts.live) {
       // ── Full dashboard TUI mode (--live) ─────────────────────────────────
-      // Combines br task counts with the dashboard's multi-project display,
+      // Combines native task store task counts with the dashboard's multi-project display,
       // event timeline, and recently-completed agents.
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 3;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 3;
@@ -609,7 +608,7 @@ export const statusCommand = new Command("status")
             counts = await fetchStatusCounts(projectPath);
           } catch (err) {
             if (foremanBackendMode() === "elixir") throw err;
-            /* br not available — show zero counts */
+            /* native task store not available — show zero counts */
           }
 
           const daemonDashboard = await fetchDaemonDashboardState(projectPath);

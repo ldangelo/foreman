@@ -30,7 +30,7 @@ describe("TRD-2026-014 operator docs", () => {
 
     expect(combined).toContain("foreman dashboard");
     expect(combined).toContain("foreman watch");
-    expect(combined).toContain("foreman bead");
+    expect(combined).toContain("foreman task");
     expect(combined).toContain("foreman task create --title");
     expect(combined).toContain("foreman purge-logs");
     expect(combined).toContain("foreman purge logs");

@@ -1,5 +1,5 @@
 > ⚠️ Historical Context
-> This document describes Foreman's beads-first architecture, which has been
+> This document describes Foreman's tasks-first architecture, which has been
 > superseded by native task management (TRD-2026-006). Some instructions,
 > configurations, or comparisons in this document may no longer reflect
 > current behavior.
@@ -17,7 +17,7 @@
 | **Philosophy** | Single binary that owns the full pipeline | Loosely-coupled tools that amplify each other |
 | **Language** | TypeScript | Rust, Go, Bash, Python, TypeScript |
 | **Agent runtime** | Claude Agent SDK (`query()`) | Claude Code + tmux orchestration (NTM) |
-| **Task tracking** | Tasks (sd) — git-tracked JSONL | Beads Rust — git-tracked local issue tracking |
+| **Task tracking** | Tasks (sd) — git-tracked JSONL | Tasks Rust — git-tracked local issue tracking |
 | **Started** | ~2025 | October 2025 |
 
 ## Core Comparison
@@ -26,11 +26,11 @@
 
 | Feature | Foreman | Flywheel |
 |---------|---------|----------|
-| Backend | Tasks (sd) — JSONL in `.tasks/` | Beads Rust — local git-integrated tracking |
+| Backend | Tasks (sd) — JSONL in `.tasks/` | Tasks Rust — local git-integrated tracking |
 | Prioritization | Manual P0-P4 priorities | PageRank-weighted automatic prioritization |
-| UI | CLI (`foreman status`, `sd list`) | Beads Viewer — keyboard-driven terminal UI |
+| UI | CLI (`foreman status`, `sd list`) | Tasks Viewer — keyboard-driven terminal UI |
 | Dependencies | Explicit `blocks` dep type | Structural via PageRank graph |
-| Decomposition | Structured TRD parser (`foreman sling trd`, `foreman plan`) | Implicit through beads prioritization |
+| Decomposition | Structured TRD parser (`foreman sling trd`, `foreman plan`) | Implicit through tasks prioritization |
 
 **Takeaway**: Flywheel's PageRank prioritization is more sophisticated — tasks bubble up based on graph centrality rather than manual priority assignment. Foreman has stronger structured TRD decomposition (PRD → TRD → task hierarchy via `sling trd`).
 
@@ -91,7 +91,7 @@
 | 1 | Destructive command guard | DCG | P1 | Agents run with `bypassPermissions` — a guardrail against `rm -rf` etc. is critical |
 | 2 | Pre-commit bug scanning | UBS | P2 | Pattern-based scanning before finalize phase would catch classes of bugs QA misses |
 | 3 | Cross-session memory | CASS Memory | P2 | Three-layer memory would help agents learn from past runs on the same codebase |
-| 4 | PageRank task prioritization | Beads Viewer | P3 | Auto-prioritization based on dependency graph centrality vs manual P0-P4 |
+| 4 | PageRank task prioritization | Tasks Viewer | P3 | Auto-prioritization based on dependency graph centrality vs manual P0-P4 |
 | 5 | Agent messaging system | MCP Agent Mail | P3 | More flexible than report files for complex multi-agent workflows |
 | 6 | Skill mining from history | Meta Skill | P3 | Agents should progressively learn what works in each codebase |
 | 7 | Multi-repo orchestration | RU | P4 | Useful for monorepo-adjacent workflows |

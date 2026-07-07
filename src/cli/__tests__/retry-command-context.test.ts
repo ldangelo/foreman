@@ -18,7 +18,7 @@ const mockSendCommand = vi.hoisted(() => vi.fn());
 const mockSchedulerTick = vi.hoisted(() => vi.fn());
 
 const mockLocalTaskClient = {
-  show: vi.fn().mockResolvedValue({ status: "open", title: "Local bead" }),
+  show: vi.fn().mockResolvedValue({ status: "open", title: "Local task" }),
   update: vi.fn().mockResolvedValue(undefined),
   resetToReady: vi.fn().mockResolvedValue(undefined),
   ready: vi.fn().mockResolvedValue([]),
@@ -28,7 +28,7 @@ const mockLocalTaskClient = {
 
 const mockTrpcClient = {
   tasks: {
-    get: vi.fn().mockResolvedValue({ status: "open", title: "Registered bead" }),
+    get: vi.fn().mockResolvedValue({ status: "open", title: "Registered task" }),
     retry: vi.fn().mockResolvedValue(undefined),
     update: vi.fn().mockResolvedValue(undefined),
   },
@@ -122,7 +122,7 @@ describe("retry command bootstrap", () => {
     mockListRegisteredProjects.mockResolvedValue([]);
     mockListRegisteredProjects.mockResolvedValue([]);
     mockEnsureCliPostgresPool.mockImplementation(() => undefined);
-    mockCreateTaskClient.mockResolvedValue({ taskClient: mockLocalTaskClient, backendType: "beads" });
+    mockCreateTaskClient.mockResolvedValue({ taskClient: mockLocalTaskClient, backendType: "tasks" });
     mockCreateTrpcClient.mockReturnValue(mockTrpcClient);
     mockForemanForProject.mockReturnValue(mockLocalStore);
     mockPostgresForProject.mockReturnValue(mockRegisteredStore);
@@ -130,7 +130,7 @@ describe("retry command bootstrap", () => {
       this.dispatch = vi.fn();
     });
     mockEnsureRunning.mockResolvedValue({ running: true, url: "http://127.0.0.1:4766", pid: 1 });
-    mockGetTask.mockResolvedValue({ task_id: "bead-1", project_id: "proj-1", status: "failed", title: "Registered bead" });
+    mockGetTask.mockResolvedValue({ task_id: "task-1", project_id: "proj-1", status: "failed", title: "Registered task" });
     mockListRuns.mockResolvedValue([]);
     mockSendCommand.mockResolvedValue({ ok: true, events: ["evt-1"], projection_version: 1, correlation_id: "corr-1" });
     mockSchedulerTick.mockResolvedValue({ claimed: [], skipped: [] });
@@ -154,7 +154,7 @@ describe("retry command bootstrap", () => {
       { id: "proj-1", name: "my-project", path: "/canonical/project/../project" },
     ]);
 
-    await runCommand(["bead-1", "--dry-run", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
+    await runCommand(["task-1", "--dry-run", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({
       project: "my-project",
@@ -165,7 +165,7 @@ describe("retry command bootstrap", () => {
     expect(mockPostgresForProject).not.toHaveBeenCalled();
     expect(mockPostgresAdapterCtor).not.toHaveBeenCalled();
     expect(mockDispatcherCtor).not.toHaveBeenCalled();
-    expect(mockGetTask).toHaveBeenCalledWith("bead-1");
+    expect(mockGetTask).toHaveBeenCalledWith("task-1");
     expect(mockListRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
 
   });
@@ -176,11 +176,11 @@ describe("retry command bootstrap", () => {
       { id: "proj-1", name: "my-project", path: "/canonical/project" },
     ]);
 
-    await runCommand(["bead-1", "--dry-run", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
+    await runCommand(["task-1", "--dry-run", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
 
     expect(mockCreateTrpcClient).not.toHaveBeenCalled();
     expect(mockCreateTaskClient).not.toHaveBeenCalled();
-    expect(mockGetTask).toHaveBeenCalledWith("bead-1");
+    expect(mockGetTask).toHaveBeenCalledWith("task-1");
     expect(mockListRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
     expect(mockSendCommand).not.toHaveBeenCalled();
     expect(mockSchedulerTick).not.toHaveBeenCalled();
@@ -194,11 +194,11 @@ describe("retry command bootstrap", () => {
       { id: "proj-1", name: "my-project", path: "/canonical/project" },
     ]);
 
-    await runCommand(["bead-1", "--dispatch", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
+    await runCommand(["task-1", "--dispatch", "--project", "my-project", "--project-path", "/worktrees/my-project"]);
 
     expect(mockSendCommand).toHaveBeenCalledWith(expect.objectContaining({
       command_type: "task.update",
-      payload: expect.objectContaining({ project_id: "proj-1", task_id: "bead-1", status: "ready" }),
+      payload: expect.objectContaining({ project_id: "proj-1", task_id: "task-1", status: "ready" }),
     }));
     expect(mockSchedulerTick).toHaveBeenCalledTimes(1);
   });
@@ -207,14 +207,14 @@ describe("retry command bootstrap", () => {
     mockForemanBackendMode.mockReturnValue("elixir");
     mockListRegisteredProjects.mockResolvedValue([]);
 
-    await runCommand(["bead-1", "--project-path", "/canonical/project"]);
+    await runCommand(["task-1", "--project-path", "/canonical/project"]);
 
     expect(mockGetTask).not.toHaveBeenCalled();
     expect(vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n")).toContain("not registered in Elixir projections");
   });
 
   it("keeps local/unregistered behavior unchanged", async () => {
-    await runCommand(["bead-1", "--dry-run"]);
+    await runCommand(["task-1", "--dry-run"]);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockForemanForProject).toHaveBeenCalledWith("/canonical/project");
@@ -227,7 +227,7 @@ describe("retry command bootstrap", () => {
   it("keeps outside-a-repo behavior unchanged", async () => {
     mockResolveRepoRootProjectPath.mockRejectedValue(new Error("not a repo"));
 
-    await runCommand(["bead-1", "--dry-run"]);
+    await runCommand(["task-1", "--dry-run"]);
 
     expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({});
     expect(mockForemanForProject).not.toHaveBeenCalled();

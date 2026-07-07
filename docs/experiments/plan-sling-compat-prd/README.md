@@ -48,7 +48,7 @@ A variant of `create-trd` that outputs a Foreman-native TRD:
 - All task status values: `[ ]` (never `[x]`)
 - Task IDs follow `[A-Z]+-T\d+` pattern
 - Sprint/Story headers match existing `parseTrd()` regex patterns
-- No beads-specific annotations in task tables
+- No tasks-specific annotations in task tables
 
 **File to create:** `packages/development/commands/create-trd-foreman.yaml`
 
@@ -97,7 +97,7 @@ Next step: foreman sling prd docs/PRD/PRD-YYYY-NNN.md --auto
 
 ### Decision 2: Same Filename for Both TRD Formats
 
-`create-trd-foreman` outputs to `docs/TRD/TRD-YYYY-NNN.md` (same as beads path). Both `sling trd` and `sling prd` can consume the same file. Using the same filename maximizes backward compatibility.
+`create-trd-foreman` outputs to `docs/TRD/TRD-YYYY-NNN.md` (same as tasks path). Both `sling trd` and `sling prd` can consume the same file. Using the same filename maximizes backward compatibility.
 
 ### Decision 3: Status Always [ ]
 
@@ -114,7 +114,7 @@ All task status values in `create-trd-foreman` output must be `[ ]` (open). This
 | Risk | Severity | Mitigation |
 |------|----------|-------------|
 | **RISK-5:** Task status `[x]` causes silent task dropping | High | Validation step: assert no `[x]` in task tables |
-| **RISK-3:** Beads TRD format mismatch breaks existing sling trd | High | Backward compat test + CI validation of all TRDs |
+| **RISK-3:** Tasks TRD format mismatch breaks existing sling trd | High | Backward compat test + CI validation of all TRDs |
 | **RISK-1:** Column name ambiguity (e.g., `TRD ID` instead of `ID`) | Medium | Explicit constraint + integration test |
 | **RISK-7:** Forward dependency references silently dropped | Medium | Ordering constraint + validation step |
 
@@ -161,7 +161,7 @@ Total: ~61h (~9-10 days)
 ## What Was Deliberately Excluded
 
 1. **No TRD parser redesign.** The parser is stable. We adapt to it.
-2. **No beads-to-native task migration.** Beads remain for projects that use them. `create-trd-foreman` is a parallel path.
+2. **No tasks-to-native task migration.** Tasks remain for projects that use them. `create-trd-foreman` is a parallel path.
 3. **No `foreman run` modifications.** `foreman run` dispatches `ready` tasks as it does today.
 4. **No automatic PRD→TRD→task pipeline.** `foreman sling prd` is a separate command invocation (not auto-triggered after `foreman plan`). Users maintain control over when tasks are created.
 5. **No `[satisfies REQ-NNN]` parsing.** The parser doesn't extract these annotations. They remain informational in task descriptions.

@@ -25,8 +25,8 @@ vi.mock("node:child_process", () => ({
 vi.mock("../task-backend-ops.js", () => ({
   enqueueResetTaskToOpen: vi.fn(),
   enqueueCloseTask: vi.fn(),
-  enqueueSetBeadStatus: vi.fn(),
-  enqueueAddNotesToBead: vi.fn(),
+  enqueueSetTaskStatus: vi.fn(),
+  enqueueAddNotesToTask: vi.fn(),
 }));
 
 vi.mock("../../lib/db/postgres-adapter.js", () => ({
@@ -111,7 +111,7 @@ function makeMockVcs(overrides: Partial<Record<keyof VcsBackend, ReturnType<type
       integrateTargetCommand: "git pull --rebase origin",
       branchVerifyCommand: "git rev-parse --abbrev-ref HEAD",
       cleanCommand: "git clean -fd",
-      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .beads/issues.jsonl",
+      restoreTrackedStateCommand: "git restore --source=HEAD --staged --worktree -- .tasks/issues.jsonl",
     }),
     ...overrides,
   } as VcsBackend;

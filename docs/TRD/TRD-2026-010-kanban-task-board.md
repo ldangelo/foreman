@@ -35,13 +35,13 @@ This TRD specifies the technical implementation of a terminal UI (TUI) kanban bo
 |-----------|--------|-----------|
 | TUI Framework | `ink` (React for CLIs) | Lightweight, component-based, compatible with existing TS patterns |
 | State Management | React hooks (`useState`, `useReducer`) | Simple state, no external library needed |
-| Task Data | `br list --status=open --format=json` | Uses existing br client, no new API |
-| Task Mutations | `br update <id> --status <status>` | Uses existing br CLI |
+| Task Data | `native task store list --status=open --format=json` | Uses existing native task store client, no new API |
+| Task Mutations | `native task store update <id> --status <status>` | Uses existing native task store CLI |
 | YAML Parsing | `js-yaml` (already in dependencies) | Parse task YAML for editor |
 
 ### 1.3 Constraints
 
-- **No new native API**: The board uses existing `br` CLI commands
+- **No new native API**: The board uses existing `native task store` CLI commands
 - **ANSI terminal support**: Must work with iTerm2, Terminal.app, tmux, Kitty
 - **Minimum width**: 80 columns
 - **Color**: 256-color mode required
@@ -310,7 +310,7 @@ foreman board --project x  # Board for specific project (future)
 | `C` | Close with reason | `status = 'closed'`, prompt reason |
 | `e` | Edit in $EDITOR | Open YAML, parse on exit |
 | `E` | Edit with full schema | Open full YAML |
-| `r` | Refresh | Reload from br |
+| `r` | Refresh | Reload from native task store |
 | `?` | Toggle help | `showHelp = !showHelp` |
 | `Esc` | Dismiss detail/help | `showDetail = false` or `showHelp = false` |
 
@@ -338,7 +338,7 @@ Board.tsx mounts
 useBoard hook (useEffect)
     │
     ▼
-br list --status=open --format=json
+native task store list --status=open --format=json
     │
     ▼
 Parse JSON → Task[]
@@ -359,7 +359,7 @@ User presses 's'
 calculateNextStatus(currentStatus)
     │
     ▼
-br update <taskId> --status <newStatus>
+native task store update <taskId> --status <newStatus>
     │
     ▼
 On success: refresh board (go to step 5.1)
@@ -390,7 +390,7 @@ Parse YAML from temp file
 For each changed field:
     │
     ▼
-br update <taskId> --<field> <value>
+native task store update <taskId> --<field> <value>
     │
     ▼
 Refresh board, remove temp file
@@ -519,7 +519,7 @@ export interface TaskStore {
 
 export class BrTaskStore implements TaskStore {
   async listTasks(): Promise<Task[]> {
-    const result = execFileSync('br', ['list', '--status=open', '--format=json'], {
+    const result = execFileSync('native task store', ['list', '--status=open', '--format=json'], {
       encoding: 'utf-8',
     });
     return JSON.parse(result);
@@ -530,13 +530,13 @@ export class BrTaskStore implements TaskStore {
     if (updates.status) args.push('--status', updates.status);
     if (updates.priority) args.push('--priority', updates.priority);
     if (updates.title) args.push('--title', updates.title);
-    execFileSync('br', args, { encoding: 'utf-8' });
+    execFileSync('native task store', args, { encoding: 'utf-8' });
   }
   
   async closeTask(id: string, reason?: string): Promise<void> {
     const args = ['close', id];
     if (reason) args.push('--reason', reason);
-    execFileSync('br', args, { encoding: 'utf-8' });
+    execFileSync('native task store', args, { encoding: 'utf-8' });
   }
 }
 ```
@@ -872,7 +872,7 @@ src/
       useBoard.ts      # Task loading + refresh logic
       useNavigation.ts # Keyboard navigation + reducer
     utils/
-      taskStore.ts     # Task store interface (br client)
+      taskStore.ts     # Task store interface (native task store client)
       yaml.ts          # YAML serialization/deserialization
       editor.ts        # $EDITOR integration
       constants.ts     # STATUS_ORDER, etc.
@@ -900,7 +900,7 @@ No new dependencies required:
 | OQ-4 | How do we handle very long task titles? | Truncate to 40 chars with ellipsis |
 | OQ-5 | Should we persist navigation position between refreshes? | No, reset to first column on refresh |
 | OQ-6 | Do we need to support multiple projects? | Not in v1, focus on single project |
-| OQ-7 | How to handle br not installed? | Show error with install instructions |
+| OQ-7 | How to handle native task store not installed? | Show error with install instructions |
 
 ---
 

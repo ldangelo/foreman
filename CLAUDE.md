@@ -43,12 +43,12 @@ foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport ht
 # In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
 # Elixir task tracking
-br ready               # Unblocked tasks
-br list --status=open  # All tasks
-br show <id>           # Task detail
-br create --title "X" --type task --priority 2
-br update <id> --status=in_progress
-br close <id>          # Complete
+native task store ready               # Unblocked tasks
+native task store list --status=open  # All tasks
+native task store show <id>           # Task detail
+native task store create --title "X" --type task --priority 2
+native task store update <id> --status=in_progress
+native task store close <id>          # Complete
 ```
 
 ## Architecture
@@ -226,7 +226,7 @@ foreman debug <task-id> --raw   # Dump all artifacts without AI
 foreman debug <task-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 
 # Stuck or failed runs
-foreman doctor         # Check br/Pi, DB integrity, stale runs/worktrees
+foreman doctor         # Check native task store/Pi, DB integrity, stale runs/worktrees
 foreman status         # See all active/failed agents
 foreman retry <task>   # Re-run a specific pipeline phase
 
@@ -256,10 +256,10 @@ npx tsc --noEmit       # Type-check without building
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
-- br state diverged from git → `br sync --flush-only && git add .tasks/ && git commit -m "sync tasks"`
+- native task store state diverged from git → `native task store sync --flush-only && git add .tasks/ && git commit -m "sync tasks"`
 - agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
 
-<!-- br-agent-instructions-v1 -->
+<!-- native task store-agent-instructions-v1 -->
 
 ### Session Protocol
 
@@ -289,13 +289,13 @@ Session logging is required, not optional. The worker also writes automatic logs
 
 ### Best Practices
 
-- Check `br ready` at session start to find available work
+- Check `native task store ready` at session start to find available work
 - Update status as you work (in_progress → closed)
-- Create new issues with `br create` when you discover tasks
+- Create new issues with `native task store create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
 - Always sync before ending session
 
-<!-- end-br-agent-instructions -->
+<!-- end-native task store-agent-instructions -->
 
 <!-- mulch:start -->
 ## Project Expertise (Mulch)

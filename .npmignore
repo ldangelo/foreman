@@ -18,7 +18,7 @@ vitest.config.ts
 # Development/runtime state directories
 .foreman/
 .foreman-worktrees/
-.beads/
+.tasks/
 .claude/
 
 # CI/CD workflows (not needed in published package)

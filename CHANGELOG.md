@@ -129,7 +129,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * add onError workflow config to stop dispatch on failures ([6a27e10](https://github.com/ldangelo/foreman/commit/6a27e10c012aacbff51c3390f0554757e021c3ad))
 * add PR review phase ([#194](https://github.com/ldangelo/foreman/issues/194)) ([95ce88c](https://github.com/ldangelo/foreman/commit/95ce88cce23e4335230806b697fc893857c73c95))
 * Add PRD and TRD for Jira Issue Monitor (PRD-2026-013) ([2ad2d11](https://github.com/ldangelo/foreman/commit/2ad2d1189ef556ca9464607e42ea2def6a5a52e7))
-* add workflows for all bead types (feature, chore, docs, question, task) ([afb7752](https://github.com/ldangelo/foreman/commit/afb775209328c924c95e3e3b440eacfa21d7e4f0))
+* add workflows for all task types (feature, chore, docs, question, task) ([afb7752](https://github.com/ldangelo/foreman/commit/afb775209328c924c95e3e3b440eacfa21d7e4f0))
 * block pr-wait on merge conflicts ([76f01d3](https://github.com/ldangelo/foreman/commit/76f01d35154d0e051b56eddeae3fd82ef6af4a4e))
 * block pr-wait on merge conflicts ([3b975e4](https://github.com/ldangelo/foreman/commit/3b975e46b720b3636fdef20031f7432fb0d7851c))
 * **board:** add task creation shortcut ([b5b9a83](https://github.com/ldangelo/foreman/commit/b5b9a83e0576f607bf9171d669c453ab65177b44))
@@ -190,7 +190,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * **auto-merge:** create PR on unexpected errors instead of just failing ([5d23951](https://github.com/ldangelo/foreman/commit/5d23951ae6e632d43f43ad38cc32e4a116b69265))
 * avoid branch HEAD auto-labeling in dispatch ([e8b84d7](https://github.com/ldangelo/foreman/commit/e8b84d7073f12ae68f7dd8a05879fcc051c28519))
 * avoid haiku finalize phases ([2ea2fa4](https://github.com/ldangelo/foreman/commit/2ea2fa4272ece6ff029295b5b0551f76cd8e6c01))
-* **beads-rust:** normalize issue_type → type in unwrapBrResponse ([625f640](https://github.com/ldangelo/foreman/commit/625f640a4c34b61c1f7e7b89a8ee138af95ce4e3))
+* **task-client:** normalize issue_type → type in unwrapBrResponse ([625f640](https://github.com/ldangelo/foreman/commit/625f640a4c34b61c1f7e7b89a8ee138af95ce4e3))
 * block branch-ready when finalize mail is missing ([a62717e](https://github.com/ldangelo/foreman/commit/a62717ee9518cda3aa65be28ef2470544d5ab4ab))
 * **board:** normalize status names and add 'merged' status ([3546e64](https://github.com/ldangelo/foreman/commit/3546e64dc45a140d449984e5c1bb4a2d5f71a5ad))
 * **board:** render columns side-by-side not stacked vertically ([288ed2f](https://github.com/ldangelo/foreman/commit/288ed2f1d946aed6253742d260eefbbf5d26e333))
@@ -234,7 +234,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * improve PR review retries and finding count ([cac5902](https://github.com/ldangelo/foreman/commit/cac590290ed49a5b67c5874977ca8f1435d12a35))
 * isolate refinery merge worktree ([853f8ff](https://github.com/ldangelo/foreman/commit/853f8ff0789608a2c9717c5e23b17cdc283f5d36))
 * isolate stream event callback errors ([30d9126](https://github.com/ldangelo/foreman/commit/30d9126d94377e3cae091f4147910ce408306b3d))
-* isolate workspace beads state from finalize commits ([3930233](https://github.com/ldangelo/foreman/commit/39302330e02b6a1cd1bb474c02aff48961eabc0f))
+* isolate workspace tasks state from finalize commits ([3930233](https://github.com/ldangelo/foreman/commit/39302330e02b6a1cd1bb474c02aff48961eabc0f))
 * keep merged native tasks terminal ([59577b4](https://github.com/ldangelo/foreman/commit/59577b4c6df5e36492604de25af8ac51652cebf2))
 * make merge an explicit workflow phase ([766dbbd](https://github.com/ldangelo/foreman/commit/766dbbd7d9215d1f88844ed75b3f568cec574dac))
 * make PR review phase read-only ([e22d79a](https://github.com/ldangelo/foreman/commit/e22d79a7fd9aa8745b7604a3f4853ee96c3d5b2c))
@@ -256,7 +256,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * reap test worker processes ([4bcaac5](https://github.com/ldangelo/foreman/commit/4bcaac5ad58c48766b548e06861e0b8eb537c361))
 * reconcile landed finalize failures as merged ([e094884](https://github.com/ldangelo/foreman/commit/e09488434793a0be4eb72d98a565c928de8fb26f))
 * **refinery-agent:** critical fixes before merge ([a523a95](https://github.com/ldangelo/foreman/commit/a523a955c275c73cfafe023471b458cd9a1451cb))
-* **refinery:** shell quoting, bead-closed gating, error classification, and test noise ([58f70ab](https://github.com/ldangelo/foreman/commit/58f70ab25ba8ccad96bd0f1b8a4d9a5d7236b3fe))
+* **refinery:** shell quoting, task-closed gating, error classification, and test noise ([58f70ab](https://github.com/ldangelo/foreman/commit/58f70ab25ba8ccad96bd0f1b8a4d9a5d7236b3fe))
 * **refinery:** support registered run updates without lookup ([726d443](https://github.com/ldangelo/foreman/commit/726d4430d05456a24e69b5685509ab3ce735223e))
 * **refinery:** use VcsBackend for merge operations instead of raw git ([013b574](https://github.com/ldangelo/foreman/commit/013b574dca6f33245c08f911a10a3c518780d26e))
 * refresh base before worktree creation ([c47b011](https://github.com/ldangelo/foreman/commit/c47b011ef4be9ca3c6f76c029fa04406e7913057))
@@ -292,7 +292,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 * **test:** stabilize smoke conflict outcome ([3a981e7](https://github.com/ldangelo/foreman/commit/3a981e7e6fa4cfee967edb250833d01bfa3cc1ab))
 * **tests:** update expected models from anthropic to MiniMax ([802cab3](https://github.com/ldangelo/foreman/commit/802cab3a3a579580f3773e063a97427667de8970))
 * **tests:** use expect.stringContaining for enriched error messages ([c8c7e6c](https://github.com/ldangelo/foreman/commit/c8c7e6c012679096a6d55c641816b87e2655aafd))
-* **test:** WorktreeManager mocks, drainBeadWriterInbox, run-watch-loop + merge main ([#135](https://github.com/ldangelo/foreman/issues/135)) ([e980e27](https://github.com/ldangelo/foreman/commit/e980e27f3f852c4f21178c901581758008c7543b))
+* **test:** WorktreeManager mocks, drainTaskWriterInbox, run-watch-loop + merge main ([#135](https://github.com/ldangelo/foreman/issues/135)) ([e980e27](https://github.com/ldangelo/foreman/commit/e980e27f3f852c4f21178c901581758008c7543b))
 * tighten qa and finalize validation guards ([eafe48b](https://github.com/ldangelo/foreman/commit/eafe48bcd761f233bb2cea1521aaafa9d2703666))
 * truncate long JSON payloads in inbox watch output ([ffbb5bb](https://github.com/ldangelo/foreman/commit/ffbb5bb4c7519b35bd41c19dbd154bfc0e1e3a76))
 * use runId instead of overrideRun to eliminate auto-merge race condition ([e7f5489](https://github.com/ldangelo/foreman/commit/e7f5489d0c6f195e7c4348925ce673f1de39a347))
@@ -332,7 +332,7 @@ based on [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Features
 
-- Multi-agent pipeline orchestrator with beads_rust task graph integration
+- Multi-agent pipeline orchestrator with native task store task graph integration
 - Pipeline phases: Explorer → Developer → QA → Reviewer → Finalize
 - YAML-driven workflow configuration (`src/defaults/workflows/`)
 - Postgres-backed Agent Mail system (`postgres-mail-client.ts`)

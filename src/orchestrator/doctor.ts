@@ -15,7 +15,7 @@ import type { ITaskClient } from "../lib/task-client.js";
 import type { TaskClientBackend } from "../lib/task-client-factory.js";
 import { findMissingPrompts, findStalePrompts, installBundledPrompts, findMissingSkills, installBundledSkills } from "../lib/prompt-loader.js";
 import { findMissingWorkflows, findStaleWorkflows, installBundledWorkflows, validateTaskTypeUniqueness } from "../lib/workflow-loader.js";
-import { syncBeadStatusOnStartup } from "./task-backend-ops.js";
+import { syncTaskStatusOnStartup } from "./task-backend-ops.js";
 import { loadProjectConfig, resolveDefaultBranch } from "../lib/project-config.js";
 import { VcsBackendFactory, type VcsBackend } from "../lib/vcs/index.js";
 import { GhCli } from "../lib/gh-cli.js";
@@ -168,10 +168,10 @@ export class Doctor {
     }
   }
 
-  private getBeadsJsonlPath(): string | null {
+  private getTasksJsonlPath(): string | null {
     const candidates = [
-      join(this.projectPath, ".beads", "issues.jsonl"),
-      join(this.projectPath, ".beads", "beads.jsonl"),
+      join(this.projectPath, ".tasks", "issues.jsonl"),
+      join(this.projectPath, ".tasks", "tasks.jsonl"),
     ];
 
     for (const candidate of candidates) {
@@ -183,8 +183,8 @@ export class Doctor {
     return null;
   }
 
-  private async getBeadsIssueCount(): Promise<number> {
-    const jsonlPath = this.getBeadsJsonlPath();
+  private async getTasksIssueCount(): Promise<number> {
+    const jsonlPath = this.getTasksJsonlPath();
     if (!jsonlPath) {
       return 0;
     }
@@ -197,72 +197,6 @@ export class Doctor {
   }
 
   // ── System checks ──────────────────────────────────────────────────
-
-  async checkBrBinary(): Promise<CheckResult> {
-    if (this.isNativeTaskBackend()) {
-      return {
-        name: "br (beads_rust) CLI binary",
-        status: "pass",
-        message: "Native task backend active — br not required.",
-      };
-    }
-
-    const brPath = join(homedir(), ".local", "bin", "br");
-    try {
-      await access(brPath);
-      return {
-        name: "br (beads_rust) CLI binary",
-        status: "pass",
-        message: `Found at ${brPath}`,
-      };
-    } catch {
-      if (this.getNativeTaskCount() > 0) {
-        return {
-          name: "br (beads_rust) CLI binary",
-          status: "pass",
-          message: "beads (br) not found -- native task store active.",
-        };
-      }
-      return {
-        name: "br (beads_rust) CLI binary",
-        status: "fail",
-        message: `Not found at ${brPath}. Install via: cargo install beads_rust`,
-      };
-    }
-  }
-
-  async checkBvBinary(): Promise<CheckResult> {
-    if (this.isNativeTaskBackend()) {
-      return {
-        name: "bv (beads_viewer) CLI binary",
-        status: "pass",
-        message: "Native task backend active — bv not required.",
-      };
-    }
-
-    const bvPath = join(homedir(), ".local", "bin", "bv");
-    try {
-      await access(bvPath);
-      return {
-        name: "bv (beads_viewer) CLI binary",
-        status: "pass",
-        message: `Found at ${bvPath}`,
-      };
-    } catch {
-      if (this.getNativeTaskCount() > 0) {
-        return {
-          name: "bv (beads_viewer) CLI binary",
-          status: "pass",
-          message: "beads_viewer (bv) not found -- native task store active.",
-        };
-      }
-      return {
-        name: "bv (beads_viewer) CLI binary",
-        status: "fail",
-        message: `Not found at ${bvPath}. Install via: cargo install beads_viewer`,
-      };
-    }
-  }
 
   async checkGitBinary(): Promise<CheckResult> {
     try {
@@ -702,14 +636,11 @@ export class Doctor {
     };
   }
   async checkSystem(): Promise<CheckResult[]> {
-    // TRD-024: sd backend removed. Always check br and bv binaries.
     // TRD-028: Add Jujutsu binary and colocated mode checks.
     // TRD-067: Add legacy daemon health, Postgres connectivity, and gh auth checks.
     // TRD-013: Add Jira connectivity check.
     // TRD-032: Add Jira webhook endpoint check.
-    const [brResult, bvResult, gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult, jiraResult, jiraWebhookResult] = await Promise.all([
-      this.checkBrBinary(),
-      this.checkBvBinary(),
+    const [gitResult, jjBinaryResult, jjColocatedResult, gitTownInstalled, gitTownMainBranch, oldLogsResult, daemonResult, postgresResult, ghAuthResult, poolCapacityResult, jiraResult, jiraWebhookResult] = await Promise.all([
       this.checkGitBinary(),
       this.checkJujutsuBinary(),
       this.checkJujutsuColocated(),
@@ -729,8 +660,6 @@ export class Doctor {
       ghAuthResult,
       jiraResult,
       jiraWebhookResult,
-      brResult,
-      bvResult,
       gitResult,
       jjBinaryResult,
       jjColocatedResult,
@@ -860,12 +789,12 @@ export class Doctor {
     };
   }
 
-  async checkBeadsInitialized(): Promise<CheckResult> {
-    // Native task store only — beads directory not required
+  async checkTasksInitialized(): Promise<CheckResult> {
+    // Native task store only — tasks directory not required
     return {
-      name: "beads (.beads/) initialized",
+      name: "tasks (.tasks/) initialized",
       status: "skip",
-      message: "Native task backend active — beads not required",
+      message: "Native task backend active — tasks not required",
     };
   }
 
@@ -875,7 +804,7 @@ export class Doctor {
     return {
       name: "task store",
       status: "pass",
-      message: `Native task store active (${nativeTaskCount} tasks). Beads fallback has been removed — the native Postgres store is the only supported task store.`,
+      message: `Native task store active (${nativeTaskCount} tasks). Tasks fallback has been removed — the native Postgres store is the only supported task store.`,
     };
   }
 
@@ -1129,12 +1058,12 @@ export class Doctor {
   }
 
   async checkRepository(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult[]> {
-    // TRD-024: sd backend removed. Always check for .beads initialization.
+    // TRD-024: sd backend removed. Always check for .tasks initialization.
     const results: CheckResult[] = [];
     results.push(await this.checkDatabaseFile());
     results.push(await this.checkTaskStoreMode());
     results.push(await this.checkProjectRegistered());
-    results.push(await this.checkBeadsInitialized());
+    results.push(await this.checkTasksInitialized());
     results.push(await this.checkPrompts(opts));
     results.push(await this.checkPiSkills(opts));
     results.push(await this.checkWorkflows(opts));
@@ -1512,11 +1441,11 @@ export class Doctor {
   }
 
   /**
-   * Read the beads JSONL and return a Set of task IDs that are closed.
+   * Read the tasks JSONL and return a Set of task IDs that are closed.
    * Falls back to an empty set on any read/parse error (non-fatal).
    */
   private async getClosedTaskIds(): Promise<Set<string>> {
-    const jsonlPath = join(this.projectPath, ".beads", "issues.jsonl");
+    const jsonlPath = join(this.projectPath, ".tasks", "issues.jsonl");
     const closed = new Set<string>();
     try {
       const raw = await readFile(jsonlPath, "utf8");
@@ -1640,7 +1569,7 @@ export class Doctor {
       defaultBranch = "main";
     }
 
-    // Collect task IDs that are already closed in beads so we can auto-resolve
+    // Collect task IDs that are already closed in tasks so we can auto-resolve
     // stale run records without hitting git at all.
     const closedTasks = await this.getClosedTaskIds();
 
@@ -1657,7 +1586,7 @@ export class Doctor {
       const unresolved: import("../lib/store.js").Run[] = [];
 
       for (const run of runs) {
-        // If the bead/task is already closed, the run record is stale.
+        // If the task/task is already closed, the run record is stale.
         if (closedTasks.has(run.task_id)) {
           if (fix && !dryRun) {
             await Promise.resolve(runStore.updateRun(run.id, { status: "merged" }));
@@ -1930,108 +1859,71 @@ export class Doctor {
   }
 
   /**
-   * Check for bead status drift between Postgres and the br backend.
+   * Check for task status drift between terminal runs and native tasks.
    *
-   * Calls syncBeadStatusOnStartup() to detect (and optionally fix) mismatches
-   * between the run status recorded in Postgres and the corresponding task status
-   * in br.  Drift occurs when foreman was interrupted before a br update could
-   * complete (e.g. after a crash, token exhaustion, or manual reset).
-   *
-   * Modes:
-   *   - No flags / warn-only: detects mismatches but does not fix them.
-   *   - fix=true, dryRun=false: detects and applies fixes via br update.
-   *   - dryRun=true: detects mismatches but never applies fixes (dryRun wins over fix).
-   *
-   * Returns:
-   *   pass  — no mismatches detected
-   *   warn  — mismatches detected but not fixed (no --fix or dryRun mode)
-   *   fixed — mismatches were detected and fixed
-   *   fail  — the sync operation itself threw an unexpected error
-   *   skip  — no project registered or no task client configured
+   * Calls syncTaskStatusOnStartup() to detect (and optionally fix) mismatches
+   * between the run status recorded in Postgres and the corresponding native
+   * task status. Drift occurs when foreman is interrupted before a task status
+   * update completes.
    */
-  async checkBeadStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
+  async checkTaskStatusSync(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult> {
     const { fix = false, dryRun = false } = opts;
-    const projectPath = opts.projectPath ?? this.projectPath;
     const runStore = this.getRunStore();
-
-    if (this.isNativeTaskBackend()) {
-      return {
-        name: "bead status sync (Postgres ↔ br)",
-        status: "skip",
-        message: "Native task backend active — skipping bead status reconciliation",
-      };
-    }
-
-    if (!this.taskClient) {
-      return {
-        name: "bead status sync (Postgres ↔ br)",
-        status: "skip",
-        message: "No task client configured — skipping bead status reconciliation",
-      };
-    }
 
     const project = await Promise.resolve(runStore.getProjectByPath(this.projectPath));
     if (!project) {
       return {
-        name: "bead status sync (Postgres ↔ br)",
+        name: "task status sync",
         status: "skip",
-        message: "No project registered — skipping bead status reconciliation",
+        message: "No project registered — skipping task status reconciliation",
       };
     }
 
-    let result: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+    let result: Awaited<ReturnType<typeof syncTaskStatusOnStartup>>;
     try {
-      // First pass: always run in dry-run mode to detect mismatches without side effects
-      result = await syncBeadStatusOnStartup(runStore, this.taskClient, project.id, {
-        dryRun: true,
-        projectPath,
-      });
+      result = await syncTaskStatusOnStartup(runStore, project.id, { dryRun: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {
-        name: "bead status sync (Postgres ↔ br)",
+        name: "task status sync",
         status: "fail",
-        message: `Bead status sync failed: ${msg}`,
+        message: `Task status sync failed: ${msg}`,
       };
     }
 
     if (result.mismatches.length === 0) {
       return {
-        name: "bead status sync (Postgres ↔ br)",
+        name: "task status sync",
         status: "pass",
-        message: "Postgres and br bead statuses are in sync",
+        message: "Terminal run states and native task statuses are in sync",
       };
     }
 
     const mismatchList = result.mismatches
       .slice(0, 5)
-      .map((m) => `${m.taskId}: br=${m.actualTaskStatus} → expected=${m.expectedTaskStatus}`)
+      .map((m) => `${m.taskId}: actual=${m.actualTaskStatus} → expected=${m.expectedTaskStatus}`)
       .join("; ");
     const truncated = result.mismatches.length > 5 ? ` … +${result.mismatches.length - 5} more` : "";
 
     if (dryRun) {
       return {
-        name: "bead status sync (Postgres ↔ br)",
+        name: "task status sync",
         status: "warn",
-        message: `${result.mismatches.length} bead status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
+        message: `${result.mismatches.length} task status mismatch(es) detected. Would fix (dry-run): ${mismatchList}${truncated}`,
         details: mismatchList + truncated,
       };
     }
 
     if (fix) {
-      // Second pass: apply fixes
-      let fixResult: Awaited<ReturnType<typeof syncBeadStatusOnStartup>>;
+      let fixResult: Awaited<ReturnType<typeof syncTaskStatusOnStartup>>;
       try {
-        fixResult = await syncBeadStatusOnStartup(runStore, this.taskClient, project.id, {
-          dryRun: false,
-          projectPath,
-        });
+        fixResult = await syncTaskStatusOnStartup(runStore, project.id, { dryRun: false });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          name: "bead status sync (Postgres ↔ br)",
+          name: "task status sync",
           status: "fail",
-          message: `Bead status sync (fix pass) failed: ${msg}`,
+          message: `Task status sync (fix pass) failed: ${msg}`,
           details: mismatchList + truncated,
         };
       }
@@ -2040,117 +1932,23 @@ export class Doctor {
         ? ` (${fixResult.errors.length} error(s): ${fixResult.errors[0]})`
         : "";
       return {
-        name: "bead status sync (Postgres ↔ br)",
+        name: "task status sync",
         status: fixResult.errors.length > 0 ? "warn" : "fixed",
-        message: `${fixResult.mismatches.length} bead status mismatch(es) detected`,
-        fixApplied: `Fixed ${fixResult.synced} task status(es) in br${errSuffix}`,
+        message: `${fixResult.mismatches.length} task status mismatch(es) detected`,
+        fixApplied: `Fixed ${fixResult.synced} native task status(es)${errSuffix}`,
         details: mismatchList + truncated,
       };
     }
 
     return {
-      name: "bead status sync (Postgres ↔ br)",
+      name: "task status sync",
       status: "warn",
-      message: `${result.mismatches.length} bead status mismatch(es) detected between Postgres and br. Use --fix to repair: ${mismatchList}${truncated}`,
+      message: `${result.mismatches.length} task status mismatch(es) detected. Use --fix to repair: ${mismatchList}${truncated}`,
       details: mismatchList + truncated,
     };
   }
 
-  async checkBrRecoveryArtifacts(opts: { fix?: boolean; dryRun?: boolean } = {}): Promise<CheckResult> {
-    const { fix = false, dryRun = false } = opts;
 
-    // br doctor --repair creates .br_recovery/ at the project root as a sibling to .beads/
-    // It should be removed after successful recovery; stale artifacts indicate incomplete recovery.
-    // NOTE: verify this path matches beads_rust behavior — it may also appear at .beads/.br_recovery/
-    const recoveryPath = join(this.projectPath, ".br_recovery");
-    try {
-      await stat(recoveryPath);
-      // Directory exists — stale recovery artifacts
-      // dryRun takes precedence over fix
-      if (dryRun) {
-        return {
-          name: "br recovery artifacts (.br_recovery/)",
-          status: "warn",
-          message: `.br_recovery/ directory exists — stale artifacts from incomplete recovery. Would remove (dry-run).`,
-        };
-      }
-      if (fix) {
-        try {
-          await rm(recoveryPath, { recursive: true, force: true });
-          return {
-            name: "br recovery artifacts (.br_recovery/)",
-            status: "fixed",
-            message: "Stale .br_recovery/ directory from incomplete recovery",
-            fixApplied: `Removed ${recoveryPath}`,
-          };
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            name: "br recovery artifacts (.br_recovery/)",
-            status: "warn",
-            message: `.br_recovery/ exists but could not auto-remove: ${msg}`,
-          };
-        }
-      }
-      return {
-        name: "br recovery artifacts (.br_recovery/)",
-        status: "warn",
-        message: `.br_recovery/ directory exists — stale artifacts detected. If recovery completed successfully, use --fix to remove stale artifacts; otherwise run 'br doctor --repair' to retry.`,
-      };
-    } catch {
-      // Directory does not exist — no stale artifacts
-      return {
-        name: "br recovery artifacts (.br_recovery/)",
-        status: "pass",
-        message: "No stale recovery artifacts found",
-      };
-    }
-  }
-
-  async checkBlockedTasks(): Promise<CheckResult> {
-    if (!this.taskClient) {
-      return {
-        name: "blocked tasks",
-        status: "skip",
-        message: "No task client configured",
-      };
-    }
-
-    let openTasks: Awaited<ReturnType<typeof this.taskClient.list>>;
-    let readyTasks: Awaited<ReturnType<typeof this.taskClient.ready>>;
-    try {
-      [openTasks, readyTasks] = await Promise.all([
-        this.taskClient.list({ status: "open" }),
-        this.taskClient.ready(),
-      ]);
-    } catch {
-      return {
-        name: "blocked tasks",
-        status: "warn",
-        message: "Could not list tasks (skipping check)",
-      };
-    }
-
-    const readyIds = new Set(readyTasks.map((s) => s.id));
-    const blockedTasks = openTasks.filter((s) => !readyIds.has(s.id));
-
-    if (blockedTasks.length === 0) {
-      return {
-        name: "blocked tasks",
-        status: "pass",
-        message: "No blocked tasks",
-      };
-    }
-
-    const list = blockedTasks.map((s) => `${s.id} (${s.title})`).join(", ");
-    return {
-      name: "blocked tasks",
-      status: "warn",
-      message: `${blockedTasks.length} blocked task(s): ${list}`,
-    };
-  }
-
-  // ── Merge queue checks ──────────────────────────────────────────────
 
   /**
    * Check for merge queue entries stuck in pending/merging for >24h (MQ-008).
@@ -2832,20 +2630,18 @@ export class Doctor {
   async checkDataIntegrity(opts: { fix?: boolean; dryRun?: boolean; projectPath?: string } = {}): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
 
-    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, blockedResult, recoveryResult, orphanedGlobalStoreResult, beadSyncResult] =
+    const [worktreeResults, zombieResults, staleResult, failedStuckResults, consistencyResults, orphanedGlobalStoreResult, taskSyncResult] =
       await Promise.all([
         this.checkOrphanedWorktrees(opts),
         this.checkZombieRuns(opts),
         this.checkStalePendingRuns(opts),
         this.checkFailedStuckRuns(opts),
         this.checkRunStateConsistency(opts),
-        this.checkBlockedTasks(),
-        this.checkBrRecoveryArtifacts(opts),
         this.checkOrphanedGlobalStoreRuns(opts),
-        this.checkBeadStatusSync(opts),
+        this.checkTaskStatusSync(opts),
       ]);
 
-    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, blockedResult, recoveryResult, orphanedGlobalStoreResult, beadSyncResult);
+    results.push(...worktreeResults, ...zombieResults, staleResult, ...failedStuckResults, ...consistencyResults, orphanedGlobalStoreResult, taskSyncResult);
 
     // Merge queue checks (only when merge queue is configured)
     if (this.mergeQueue) {

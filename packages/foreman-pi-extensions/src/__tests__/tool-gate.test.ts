@@ -7,7 +7,7 @@
  * 3. Developer phase + full allowlist: Write call → allowed
  * 4. Custom FOREMAN_BASH_BLOCKLIST: Bash("git push --force origin main") → blocked
  * 5. Default blocklist: Bash("npm test") → allowed
- * 6. Any phase: Write to ".beads/issues.jsonl" → blocked
+ * 6. Any phase: Write to ".tasks/issues.jsonl" → blocked
  * 7. auditCallback is called on each block with tool name, phase, blocked=true, reason
  * 8. FOREMAN_ALLOWED_TOOLS not set → all tools allowed
  */
@@ -141,33 +141,33 @@ describe('AC5: Default blocklist — safe commands are allowed', () => {
 });
 
 // ── Acceptance Criteria 6 ──────────────────────────────────────────────────
-describe('AC6: .beads/ directory is always protected', () => {
-  it('blocks Write to .beads/issues.jsonl regardless of allowlist', () => {
+describe('AC6: .tasks/ directory is always protected', () => {
+  it('blocks Write to .tasks/issues.jsonl regardless of allowlist', () => {
     process.env.FOREMAN_ALLOWED_TOOLS = 'Read,Write,Edit,Bash,Grep,Glob,LS';
     process.env.FOREMAN_PHASE = 'developer';
     const ext = createToolGateExtension();
-    const result = callSync(ext, makeEvent('Write', { file_path: '.beads/issues.jsonl' }), makeCtx('developer'));
+    const result = callSync(ext, makeEvent('Write', { file_path: '.tasks/issues.jsonl' }), makeCtx('developer'));
     expect(result).toBeDefined();
     expect(result!.block).toBe(true);
-    expect(result!.reason).toMatch(/\.beads\//i);
+    expect(result!.reason).toMatch(/\.tasks\//i);
   });
 
-  it('blocks Edit to .beads/beads.jsonl', () => {
+  it('blocks Edit to .tasks/tasks.jsonl', () => {
     process.env.FOREMAN_ALLOWED_TOOLS = 'Read,Write,Edit,Bash,Grep,Glob,LS';
     process.env.FOREMAN_PHASE = 'developer';
     const ext = createToolGateExtension();
-    const result = callSync(ext, makeEvent('Edit', { file_path: '.beads/beads.jsonl' }), makeCtx('developer'));
+    const result = callSync(ext, makeEvent('Edit', { file_path: '.tasks/tasks.jsonl' }), makeCtx('developer'));
     expect(result).toBeDefined();
     expect(result!.block).toBe(true);
   });
 
   it('blocks when FOREMAN_ALLOWED_TOOLS is not set (no allowlist enforcement)', () => {
-    // Even without allowlist, .beads/ is protected
+    // Even without allowlist, .tasks/ is protected
     process.env.FOREMAN_PHASE = 'developer';
     const ext = createToolGateExtension();
     const result = callSync(
       ext,
-      makeEvent('Write', { file_path: '/some/path/.beads/issues.jsonl' }),
+      makeEvent('Write', { file_path: '/some/path/.tasks/issues.jsonl' }),
       makeCtx('developer'),
     );
     expect(result).toBeDefined();
@@ -202,11 +202,11 @@ describe('AC7: auditCallback is invoked on every block decision', () => {
     expect(decision.toolName).toBe('Bash');
   });
 
-  it('calls callback when blocked by .beads/ path protection', () => {
+  it('calls callback when blocked by .tasks/ path protection', () => {
     process.env.FOREMAN_PHASE = 'developer';
     const audit = vi.fn();
     const ext = createToolGateExtension(audit);
-    callSync(ext, makeEvent('Write', { file_path: '.beads/issues.jsonl' }), makeCtx('developer'));
+    callSync(ext, makeEvent('Write', { file_path: '.tasks/issues.jsonl' }), makeCtx('developer'));
     expect(audit).toHaveBeenCalledOnce();
     const [decision] = audit.mock.calls[0] as [Record<string, unknown>];
     expect(decision.blocked).toBe(true);
@@ -260,19 +260,19 @@ describe('Edge cases', () => {
     expect(() => callSync(ext, makeEvent('Bash', {}), makeCtx())).not.toThrow();
   });
 
-  it('handles Windows-style .beads\\ path separator', () => {
+  it('handles Windows-style .tasks\\ path separator', () => {
     process.env.FOREMAN_PHASE = 'developer';
     const ext = createToolGateExtension();
-    const result = callSync(ext, makeEvent('Write', { file_path: '.beads\\issues.jsonl' }), makeCtx('developer'));
+    const result = callSync(ext, makeEvent('Write', { file_path: '.tasks\\issues.jsonl' }), makeCtx('developer'));
     expect(result).toBeDefined();
     expect(result!.block).toBe(true);
   });
 
-  it('does not block paths that merely contain "beads" without the directory marker', () => {
+  it('does not block paths that merely contain "tasks" without the directory marker', () => {
     process.env.FOREMAN_PHASE = 'developer';
     const ext = createToolGateExtension();
-    const result = callSync(ext, makeEvent('Write', { file_path: 'src/beads-helper.ts' }), makeCtx('developer'));
-    // "beads-helper.ts" does not contain ".beads/" so should be allowed
+    const result = callSync(ext, makeEvent('Write', { file_path: 'src/tasks-helper.ts' }), makeCtx('developer'));
+    // "tasks-helper.ts" does not contain ".tasks/" so should be allowed
     expect(result).toBeUndefined();
   });
 });

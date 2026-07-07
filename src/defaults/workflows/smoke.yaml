@@ -1,6 +1,6 @@
 # Smoke workflow: lightweight pipeline using Haiku for all phases.
 #
-# Used when a bead has the `workflow:smoke` label or type "smoke".
+# Used when a task has the `workflow:smoke` label or type "smoke".
 # Designed for fast, low-cost validation — not for production tasks.
 #
 # Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).

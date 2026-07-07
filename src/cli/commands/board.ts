@@ -354,7 +354,6 @@ interface BoardInboxMessageRow {
 interface BoardRunRow {
   id: string;
   task_id?: string | null;
-  bead_id?: string | null;
 }
 
 export interface BoardInboxUpdateResult {
@@ -388,7 +387,7 @@ export async function pollBoardInboxTaskUpdates(
 
   for (const runId of runIds) {
     const run = await client.runs.get({ runId }) as BoardRunRow | null;
-    const taskId = run?.task_id ?? run?.bead_id ?? null;
+    const taskId = run?.task_id ?? run?.task_id ?? null;
     if (taskId) taskIds.add(taskId);
   }
 
