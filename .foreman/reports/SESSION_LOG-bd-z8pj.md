@@ -15,7 +15,7 @@
 6. Read `src/orchestrator/__tests__/auto-merge-mail.test.ts` — reviewed mail test updates
 7. Read `src/orchestrator/task-backend-ops.ts` — understood `markTaskFailed()`, `resetTaskToOpen()`
 8. Read `src/lib/run-status.ts` — found key insight: `test-failed` → `blocked` in `mapRunStatusToTaskStatus()`
-9. Read `src/lib/task-client.ts` — confirmed `taskClient.update` calls `br update`
+9. Read `src/lib/task-client.ts` — confirmed `taskClient.update` calls `task update`
 10. Read `src/orchestrator/merge-queue.ts` — confirmed `RETRY_CONFIG.maxRetries = 3`
 11. Traced execution flow for retry-exhausted case — discovered the `finally`-block override bug
 12. Wrote REVIEW.md with FAIL verdict and two WARNING issues
