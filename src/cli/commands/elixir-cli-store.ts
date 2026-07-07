@@ -3,6 +3,20 @@ import type { Project, Run, SentinelConfigRow, SentinelRunRow } from "../../lib/
 import type { ElixirRun } from "../../lib/elixir-server-client.js";
 import { elixirClient, type RegisteredProjectSummary } from "./project-task-support.js";
 
+function terminalRunCommand(status: string | undefined): "run.complete" | "run.fail" | "run.block" | null {
+  switch (status) {
+    case "completed":
+    case "merged":
+      return "run.complete";
+    case "failed":
+      return "run.fail";
+    case "blocked":
+      return "run.block";
+    default:
+      return null;
+  }
+}
+
 function adaptRun(run: ElixirRun): Run {
   const runId = String(run.run_id ?? run.id ?? "");
   return {
@@ -103,9 +117,12 @@ export class ElixirCliStore {
 
   async updateRun(runId: string, updates: Partial<Run>): Promise<void> {
     const client = await elixirClient();
+    const terminalCommand = terminalRunCommand(updates.status);
+    const commandType = terminalCommand ?? "run.update";
+    const commandPrefix = terminalCommand ? terminalCommand.replace(".", "-") : "run-update";
     const response = await client.sendCommand({
-      command_id: `run-update-${runId}-${randomUUID()}`,
-      command_type: "run.update",
+      command_id: `${commandPrefix}-${runId}-${randomUUID()}`,
+      command_type: commandType,
       payload: { run_id: runId, project_id: this.project.id, ...updates },
     });
     if (!response.ok) throw new Error(response.error.message);
