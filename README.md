@@ -271,7 +271,7 @@ await session.prompt(phasePrompt);
 
 ### Custom tools
 
-The following tools are registered as custom `ToolDefinition` on every agent session:
+The following tools may be registered as custom `ToolDefinition` for an agent session, depending on phase role and backend availability:
 
 | Tool | Description |
 |------|-------------|

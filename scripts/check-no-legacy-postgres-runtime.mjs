@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const patterns = [
@@ -29,7 +29,8 @@ const ignored = [
 
 function collectFiles(path) {
   if (!existsSync(path)) return [];
-  const stat = statSync(path);
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) return [];
   if (stat.isFile()) return [path];
   if (!stat.isDirectory()) return [];
 
@@ -39,11 +40,17 @@ function collectFiles(path) {
   });
 }
 
+function readTextLines(file) {
+  const content = readFileSync(file);
+  if (content.includes(0)) return [];
+  return content.toString('utf8').split('\n');
+}
+
 const hits = paths
   .flatMap(collectFiles)
   .filter((file) => !ignored.includes(file))
   .flatMap((file) => {
-    const lines = readFileSync(file, 'utf8').split('\n');
+    const lines = readTextLines(file);
     return lines.flatMap((line, index) => (
       patterns.some((pattern) => line.includes(pattern)) ? [`${file}:${index + 1}:${line}`] : []
     ));

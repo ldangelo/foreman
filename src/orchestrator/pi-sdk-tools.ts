@@ -502,7 +502,7 @@ export function createGitStatusTool(vcsBackend: VcsBackend, context: ForemanTool
 
 const PrReviewFindingParams = Type.Object({
   prNumber: Type.Number({ description: "Pull request number" }),
-  projectPath: Type.Optional(Type.String({ description: "Project root directory (defaults to worktree parent)" })),
+  projectPath: Type.Optional(Type.String({ description: "Project root directory (defaults to the current worktree path)" })),
 });
 
 /**
@@ -548,7 +548,7 @@ export function createPrReviewFindingTool(
 
 const MergeGateStatusParams = Type.Object({
   prNumber: Type.Number({ description: "Pull request number" }),
-  projectPath: Type.Optional(Type.String({ description: "Project root directory (defaults to worktree parent)" })),
+  projectPath: Type.Optional(Type.String({ description: "Project root directory (defaults to the current worktree path)" })),
 });
 
 /**

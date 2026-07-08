@@ -856,9 +856,11 @@ async function runPhase(
     customTools.push(createGitStatusTool(vcsBackend, foremanToolContext));
     customTools.push(createPrReviewFindingTool(vcsBackend, foremanToolContext));
     customTools.push(createMergeGateStatusTool(vcsBackend, foremanToolContext));
-  } catch {
+  } catch (err: unknown) {
     // Non-fatal: VCS/PR tools unavailable (e.g., no git repo, network issues).
     // Agents fall back to shell commands for these operations.
+    const reason = err instanceof Error ? err.message : String(err);
+    await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] VCS/PR tools unavailable: ${reason}\n`);
   }
 
   let policySequence = 0;

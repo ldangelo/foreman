@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+const GH_JSON_TIMEOUT_MS = 30_000;
+
 export type BlockingSeverity = "critical" | "high" | "medium";
 
 export interface CodeRabbitFinding {
@@ -231,6 +233,7 @@ async function ghJson<T>(projectPath: string, args: string[]): Promise<T> {
   const { stdout } = await execFileAsync("gh", args, {
     cwd: projectPath,
     maxBuffer: 10 * 1024 * 1024,
+    timeout: GH_JSON_TIMEOUT_MS,
   });
   return JSON.parse(stdout) as T;
 }
