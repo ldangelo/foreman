@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
 const patterns = [
   'pool-manager',
@@ -13,7 +14,7 @@ const patterns = [
 ];
 
 const paths = ['src/cli', 'src/orchestrator', 'src/lib', 'src/daemon', 'dist/cli', 'dist/orchestrator', 'dist/lib', 'dist/daemon'];
-const glob = '!**/__tests__/**';
+const ignoredDirectory = '__tests__';
 const ignored = [
   'src/lib/project-registry.ts',
   'src/lib/postgres-mail-client.ts',
@@ -26,18 +27,27 @@ const ignored = [
   'dist/orchestrator/elixir-merge-queue.d.ts',
 ];
 
-let output = '';
-try {
-  output = execFileSync('rg', ['-n', ...patterns.flatMap((p) => ['-e', p]), '--glob', glob, ...paths], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+function collectFiles(path) {
+  if (!existsSync(path)) return [];
+  const stat = statSync(path);
+  if (stat.isFile()) return [path];
+  if (!stat.isDirectory()) return [];
+
+  return readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory() && entry.name === ignoredDirectory) return [];
+    return collectFiles(join(path, entry.name));
   });
-} catch (err) {
-  if (err.status === 1) process.exit(0);
-  throw err;
 }
 
-const hits = output.split('\n').filter(Boolean).filter((line) => !ignored.some((file) => line.startsWith(`${file}:`)));
+const hits = paths
+  .flatMap(collectFiles)
+  .filter((file) => !ignored.includes(file))
+  .flatMap((file) => {
+    const lines = readFileSync(file, 'utf8').split('\n');
+    return lines.flatMap((line, index) => (
+      patterns.some((pattern) => line.includes(pattern)) ? [`${file}:${index + 1}:${line}`] : []
+    ));
+  });
 if (hits.length > 0) {
   console.error('Legacy direct Postgres runtime references found:');
   console.error(hits.join('\n'));
