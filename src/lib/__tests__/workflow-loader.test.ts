@@ -389,6 +389,17 @@ phases:
     }
   });
 
+  it("bundled bug explorer phase is limited to lightweight file discovery tools", () => {
+    const config = loadWorkflowConfig("bug", tmpDir);
+    const explorerPhase = config.phases.find((p) => p.name === "explorer");
+
+    expect(explorerPhase?.prompt).toBe("explorer.md");
+    expect(explorerPhase?.tools?.allowed).toEqual(expect.arrayContaining(["Glob", "Grep", "Read", "Write"]));
+    expect(explorerPhase?.tools?.allowed).toHaveLength(4);
+    expect(explorerPhase?.tools?.allowed).not.toContain("GraphifyQuery");
+    expect(explorerPhase?.tools?.allowed).not.toContain("GraphifyExplain");
+  });
+
   it("loads bundled bug and chore workflows with scoped fix prompts", () => {
     for (const workflow of ["bug", "chore"] as const) {
       const config = loadWorkflowConfig(workflow, tmpDir);

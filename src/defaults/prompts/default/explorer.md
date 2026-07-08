@@ -15,12 +15,11 @@ If you hit an unrecoverable error, invoke:
 ## Instructions
 1. Use the Task/Description section above as the authoritative task context. If TASK.md exists, you may read it; if it is missing, continue without error.
 2. Discover with this exact loop. Do not skip steps unless the answer is already known from the task context:
-   - Query Graphify with the task's domain words, UI labels, command names, error text, or suspected component names.
-   - Explain 2–4 promising Graphify nodes to get neighboring files, symbols, and rationale.
-   - Use `Glob` only to list candidate files after Graphify points to a directory/name pattern.
-   - Use `Read` only with an explicit regular file path returned by Graphify/Glob or already named in the task context. Never call `Read` without `path`. Never call `Read` on a directory; use `Glob` for directories.
-   - If Graphify returns concepts but no paths, query again using one returned symbol/component name plus the task symptom.
-3. Your available discovery tools are only `GraphifyQuery`, `GraphifyExplain`, `Glob`, `Read`, and `Write`. Do not plan around Grep, shell commands, or broad text search.
+   - Use `Grep` with task domain words, UI labels, command names, error text, or suspected symbol names to locate candidate files.
+   - Use `Glob` to list candidate files when the task points to a directory/name pattern or when `Grep` identifies a directory.
+   - Use `Read` only with an explicit regular file path returned by `Grep`/`Glob` or already named in the task context. Never call `Read` without `path`. Never call `Read` on a directory; use `Glob` for directories.
+   - If `Grep` returns too much noise, narrow with one returned symbol/component name plus the task symptom.
+3. Your available discovery tools are only `Grep`, `Glob`, `Read`, and `Write`. Do not plan around shell commands or broad unfocused reads.
 4. Explore only enough to produce a developer handoff:
    - Identify the 1–3 most likely edit files and exact functions/types to inspect
    - Identify nearby tests/verification owners, but do not design a full test plan
@@ -57,8 +56,8 @@ If you hit an unrecoverable error, invoke:
 - Focus on handoff, not completeness
 - Be specific — reference actual file paths and line numbers
 - Keep the report under ~80 lines unless the task is genuinely cross-cutting
-- Start narrow. Use the task title/description to form an initial Graphify query before reading broadly
-- Treat missing optional context files, directory paths, and stale Graphify paths as normal discovery misses; recover with `Glob` or another `GraphifyQuery`
+- Start narrow. Use the task title/description to form initial exact search terms before reading broadly.
+- Treat missing optional context files, directory paths, and stale paths as normal discovery misses; recover with narrower `Grep` or `Glob`.
 - Do not map generic architecture, dependency graphs, or test strategy unless needed to identify the edit target
 - Stop after you can name likely edit files, nearby verification targets, and one concrete implementation sketch
 - Make the handoff concrete enough that Developer can start editing after reading TASK.md plus EXPLORER_REPORT.md

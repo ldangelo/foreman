@@ -13,7 +13,6 @@ import { isAbsolute, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import type { ForemanStore } from "../lib/store.js";
-import { runGraphifyExplain, runGraphifyQuery } from "./graphify-index.js";
 
 // Narrow interface for run status queries (getRun + getRunProgress)
 export type RunStatusReader = Pick<ForemanStore, "getRun" | "getRunProgress">;
@@ -317,62 +316,6 @@ const SafeCommandRunParams = Type.Object({
   timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 120000, max 600000" })),
 });
 
-const GraphifyQueryParams = Type.Object({
-  query: Type.String({ description: "Natural-language codebase question to answer from the Graphify knowledge graph" }),
-  dfs: Type.Optional(Type.Boolean({ description: "Use DFS for path/flow tracing instead of BFS" })),
-  budget: Type.Optional(Type.Number({ description: "Approximate response token budget, default 2000, max 4000" })),
-});
-
-export function createGraphifyQueryTool(context: ForemanToolContext): ToolDefinition {
-  return {
-    name: "graphify_query",
-    label: "Graphify Query",
-    description: "Query the prebuilt Graphify knowledge graph for semantic codebase exploration. Use before Grep for broad discovery, architecture, impact, and data-flow questions. Use Grep only for exact symbol/string verification or stale-index fallback.",
-    promptSnippet: "Use graphify_query first for codebase exploration; use Grep only for exact verification/fallback.",
-    promptGuidelines: ["Start exploration with graphify_query.", "Ask focused semantic questions.", "Use Grep afterward only to verify exact identifiers or if Graphify is missing context."],
-    parameters: GraphifyQueryParams,
-    async execute(_toolCallId: string, params: Static<typeof GraphifyQueryParams>) {
-      try {
-        const output = await runGraphifyQuery(context.worktreePath, params.query, {
-          dfs: params.dfs,
-          budget: Math.min(Math.max(params.budget ?? 2000, 250), 4000),
-        });
-        await appendToolLog(context, `graphify_query query=${params.query}`);
-        return { content: [{ type: "text" as const, text: truncate(output || "No Graphify results") }], details: { query: params.query } };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await appendToolLog(context, `graphify_query failed query=${params.query} error=${msg}`);
-        return { content: [{ type: "text" as const, text: `Graphify query failed; use Grep exact fallback if needed: ${msg}` }], details: { error: msg } };
-      }
-    },
-  } as ToolDefinition;
-}
-
-const GraphifyExplainParams = Type.Object({
-  node: Type.String({ description: "Graphify node/entity name to explain" }),
-});
-
-export function createGraphifyExplainTool(context: ForemanToolContext): ToolDefinition {
-  return {
-    name: "graphify_explain",
-    label: "Graphify Explain",
-    description: "Explain a Graphify node/entity from the knowledge graph. Use after graphify_query identifies relevant nodes.",
-    promptSnippet: "Use graphify_explain for important Graphify nodes found during exploration.",
-    promptGuidelines: ["Explain relevant nodes before opening many files manually."],
-    parameters: GraphifyExplainParams,
-    async execute(_toolCallId: string, params: Static<typeof GraphifyExplainParams>) {
-      try {
-        const output = await runGraphifyExplain(context.worktreePath, params.node);
-        await appendToolLog(context, `graphify_explain node=${params.node}`);
-        return { content: [{ type: "text" as const, text: truncate(output || "No Graphify explanation") }], details: { node: params.node } };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await appendToolLog(context, `graphify_explain failed node=${params.node} error=${msg}`);
-        return { content: [{ type: "text" as const, text: `Graphify explain failed: ${msg}` }], details: { error: msg } };
-      }
-    },
-  } as ToolDefinition;
-}
 
 export function createSafeCommandRunTool(context: ForemanToolContext): ToolDefinition {
   return {

@@ -54,3 +54,8 @@ docs/reports/queue-entry-*/
 
 var/
 dist-new-*/
+
+
+# Graphify-generated local artifacts
+/graphify-out/
+/.omp/agents/skills/graphify/

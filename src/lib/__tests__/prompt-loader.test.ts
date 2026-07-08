@@ -96,6 +96,15 @@ describe("prompt loader", () => {
     expect(getBundledPromptContent("default", "documentation")).toContain("Do not write `DOCUMENTATION_REPORT.md` at the worktree root");
   });
 
+  it("default explorer prompt directs lightweight discovery without mentioning Graphify", () => {
+    const content = getBundledPromptContent("default", "explorer");
+
+    expect(content).toContain("`Grep`");
+    expect(content).toContain("`Glob`");
+    expect(content).toContain("`Read`");
+    expect(content).not.toMatch(/graphify/i);
+  });
+
   it("fix-issue prompts invoke ensemble and preserve the developer artifact contract", () => {
     for (const workflow of ["task", "bug", "chore"] as const) {
       const content = getBundledPromptContent(workflow, "fix-issue");
