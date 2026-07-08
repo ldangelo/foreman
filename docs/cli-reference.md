@@ -318,7 +318,7 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Reset active Elixir-backed task work. The command stops the active worker process when present, abandons the current run while keeping the task, removes the run worktree unless `--keep-worktree` is set, sets the task back to `ready`, and requests scheduler dispatch.
+Reset Elixir-backed task work. The command stops the active worker process when present, abandons the current run while keeping the task, removes the run worktree unless `--keep-worktree` is set, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
 
 ```bash
 foreman reset foreman-abc12

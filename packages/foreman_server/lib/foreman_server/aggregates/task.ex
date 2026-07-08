@@ -194,7 +194,7 @@ defmodule ForemanServer.Aggregates.Task do
   defp allow_transition(_state, nil), do: :ok
 
   defp allow_transition(%{status: status}, new_status)
-       when status in ["closed", "merged"] and new_status != status,
+       when status == "merged" and new_status != status,
        do: {:error, {:invalid_task_transition, status, new_status}}
 
   defp allow_transition(_state, _new_status), do: :ok

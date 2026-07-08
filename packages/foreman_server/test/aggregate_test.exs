@@ -84,10 +84,26 @@ defmodule ForemanServer.AggregateTest do
         %{event_type: "TaskUpdated", payload: %{task_id: "closed-task", status: "closed"}}
       ])
 
-    assert {:error, {:invalid_task_transition, "closed", "ready"}} =
+    assert {:ok,
+            %{
+              event_type: "TaskUpdated",
+              payload: %{task_id: "closed-task", status: "ready"}
+            }} =
              Task.handle_command(closed_state, %{
                type: "task.approve",
                payload: %{task_id: "closed-task"}
+             })
+
+    merged_state =
+      Aggregate.fold(Task, [
+        %{event_type: "TaskCreated", payload: %{task_id: "merged-task", status: "open"}},
+        %{event_type: "TaskUpdated", payload: %{task_id: "merged-task", status: "merged"}}
+      ])
+
+    assert {:error, {:invalid_task_transition, "merged", "ready"}} =
+             Task.handle_command(merged_state, %{
+               type: "task.approve",
+               payload: %{task_id: "merged-task"}
              })
 
     assert {:error, :self_dependency} =
