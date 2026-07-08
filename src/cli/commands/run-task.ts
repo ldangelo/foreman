@@ -42,6 +42,7 @@ import { NotificationServer } from "../../orchestrator/notification-server.js";
 import { notificationBus } from "../../orchestrator/notification-bus.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ElixirServerClient, type ElixirTask } from "../../lib/elixir-server-client.js";
+import { collectRuntimeAssetIssues, runtimeAssetIssueMessage } from "../../lib/runtime-assets.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,13 @@ export async function runTaskAction(
 
   // ── Resolve project ───────────────────────────────────────────────────
   const resolvedProjectPath = await resolveRepoRootProjectPath({ project, projectPath: optsProjectPath });
+  if (!dryRun) {
+    const assetIssues = collectRuntimeAssetIssues(resolvedProjectPath);
+    if (assetIssues.length > 0) {
+      console.error(chalk.red(`Run preflight failed: ${runtimeAssetIssueMessage(assetIssues)}`));
+      return 1;
+    }
+  }
   const registered = await resolveRegisteredProject(resolvedProjectPath);
 
   const clients = await createTaskClient(resolvedProjectPath, { registeredProjectId: registered?.id });

@@ -189,6 +189,15 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
     expect(source).not.toContain('enqueueAddNotesToTask(');
   });
 
+  it("blocks worker startup when runtime assets are stale", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain('import { collectRuntimeAssetIssues, runtimeAssetIssueMessage } from "../lib/runtime-assets.js";');
+    expect(source).toContain("const assetIssues = collectRuntimeAssetIssues(storeProjectPath);");
+    expect(source).toContain('await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker-runtime-assets");');
+    expect(source).toContain('sendMail(agentMailClient, "foreman", "worker-error", {');
+    expect(source).toContain('if (config.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.VITEST !== "true")');
+  });
+
   it("routes single-agent progress and terminal observability without DB store writes", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
     expect(source).toContain('import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";');

@@ -66,6 +66,8 @@ Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orch
 
 Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a lightweight Explorer phase that uses `Grep`, `Glob`, and targeted `Read` discovery before implementation. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Workflow PR/merge behavior is controlled by explicit `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` YAML tags are invalid.
 
+Run `foreman init --force` after editing bundled workflow YAML or prompts. `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime prompts/workflows are stale, so scheduler-launched agents cannot run with outdated instructions.
+
 Scheduler-launched worktrees start from the registered project `defaultBranch`/`--default-branch` when configured, then fall back to VCS default-branch detection.
 
 ```bash

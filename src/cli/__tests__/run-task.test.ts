@@ -26,6 +26,7 @@ const {
   mockPgCreatePipelineRun,
   mockPgUpdateTask,
   mockPgCreateTask,
+  mockCollectRuntimeAssetIssues,
 } = vi.hoisted(() => {
   const taskClient = {
     show: vi.fn(),
@@ -74,6 +75,7 @@ const {
   const mockPgCreatePipelineRun = vi.fn();
   const mockPgUpdateTask = vi.fn();
   const mockPgCreateTask = vi.fn();
+  const mockCollectRuntimeAssetIssues = vi.fn((): string[] => []);
 
   return {
     mockCreateTaskClient,
@@ -90,6 +92,7 @@ const {
     mockPgCreatePipelineRun,
     mockPgUpdateTask,
     mockPgCreateTask,
+    mockCollectRuntimeAssetIssues,
   };
 });
 
@@ -153,6 +156,15 @@ vi.mock("../../orchestrator/notification-bus.js", () => ({
 
 vi.mock("../../orchestrator/auto-merge.js", () => ({
   autoMerge: vi.fn().mockResolvedValue({ merged: 0, conflicts: 0, failed: 0 }),
+}));
+
+vi.mock("../../lib/runtime-assets.js", () => ({
+  collectRuntimeAssetIssues: mockCollectRuntimeAssetIssues,
+  runtimeAssetIssueMessage: (issues: string[]) => [
+    "Foreman runtime assets are out of date.",
+    ...issues.map((issue) => `  - ${issue}`),
+    "Run 'foreman doctor --fix' (or reinstall prompts/workflows) before dispatching agents.",
+  ].join("\n"),
 }));
 
 vi.mock("../commands/project-task-support.js", () => ({
@@ -267,6 +279,19 @@ phases:
         workflowName: "default",
         workflowPath: "default",
       }));
+    });
+
+    it("blocks direct worker spawn when runtime assets are stale", async () => {
+      mockCollectRuntimeAssetIssues.mockReturnValueOnce(["stale prompts: default/developer.md"]);
+
+      const exitCode = await runTaskAction("task-123", "default", {
+        projectPath: testProjectPath,
+        watch: false,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(mockSpawnWorkerProcess).not.toHaveBeenCalled();
+      expect(mockCreateTaskClient).not.toHaveBeenCalled();
     });
 
     it("uses Elixir task lookup without Postgres mirroring for internal --run-id bridge", async () => {

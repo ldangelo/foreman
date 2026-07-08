@@ -56,7 +56,7 @@ Important phase reports:
 | PR wait | `PR_WAIT_REPORT.md` |
 | Merge | `MERGE_REPORT.md` |
 
-Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses `Grep`, `Glob`, and targeted `Read` discovery, and omits nested delegation tools from fix/remediation phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
+Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses `Grep`, `Glob`, and targeted `Read` discovery, and omits nested delegation tools from fix/remediation phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman run`, `foreman run --watch`, and worker startup check for stale installed prompts/workflows and abort before scheduling agents when drift is detected. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
 ### Worktrees
 

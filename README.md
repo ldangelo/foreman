@@ -743,7 +743,7 @@ Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (back
 
 ### Workflow YAML
 
-Foreman pipelines are configured via workflow YAML files. The bundled bug Explorer phase uses lightweight `Grep`, `Glob`, and targeted `Read` discovery before implementation instead of maintaining a repository graph index. After editing bundled source workflows or prompts, run `foreman init --force` before dispatch so installed runtime copies are refreshed; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
+Foreman pipelines are configured via workflow YAML files. The bundled workflows use lightweight `Grep`, `Glob`, and targeted `Read` discovery before implementation instead of maintaining a repository graph index. After editing bundled source workflows or prompts, run `foreman init --force` before dispatch; `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime copies are stale so agents cannot run with outdated prompts or workflows. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
 
 Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)

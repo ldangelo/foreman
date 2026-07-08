@@ -13,6 +13,14 @@ describe("auto-dispatch after Elixir cutover", () => {
     expect(source).toContain("return;");
   });
 
+  it("checks runtime assets before ticking the Elixir scheduler", () => {
+    const preflightIndex = source.indexOf("const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);");
+    const schedulerIndex = source.indexOf("await client.schedulerTick();");
+
+    expect(preflightIndex).toBeGreaterThan(-1);
+    expect(schedulerIndex).toBeGreaterThan(preflightIndex);
+  });
+
   it("legacy local test-runtime path still wires watch autoDispatch for compatibility tests", () => {
     expect(source).toContain("const makeAutoDispatchFn = (!dryRun && watch && enableAutoDispatch)");
     expect(source).toContain("autoDispatch: makeAutoDispatchFn");

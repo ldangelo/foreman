@@ -66,6 +66,7 @@ import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-confi
 import { foremanBackendMode } from "../lib/backend-mode.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { collectRuntimeAssetIssues, runtimeAssetIssueMessage } from "../lib/runtime-assets.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -551,6 +552,32 @@ async function main(): Promise<void> {
     log(`[agent-mail] Using ${mailClient.constructor.name} (scoped to run ${runId})`);
   } catch {
     // Non-fatal — mail is optional infrastructure
+  }
+
+  if (config.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.VITEST !== "true") {
+    const assetIssues = collectRuntimeAssetIssues(storeProjectPath);
+    if (assetIssues.length > 0) {
+      const reason = runtimeAssetIssueMessage(assetIssues);
+      const now = new Date().toISOString();
+      log(`[runtime-assets] ${reason.replace(/\n/g, " | ")}`);
+      await updateTerminalRunStatus({
+        runId,
+        projectId,
+        projectPath: storeProjectPath,
+        updates: { status: "failed", completed_at: now },
+      });
+      notifyClient.send({ type: "status", runId, status: "failed", timestamp: now, details: { reason } });
+      sendMail(agentMailClient, "foreman", "worker-error", {
+        runId,
+        taskId,
+        phase: "startup",
+        error: reason,
+      });
+      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker-runtime-assets");
+      await runAfterRunHook(config);
+      store.close?.();
+      return;
+    }
   }
 
   // Build clean env for SDK

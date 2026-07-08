@@ -19,10 +19,8 @@ import type { RegisteredProjectSummary } from "./project-task-support.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { extractBranchLabel, normalizeBranchLabel } from "../../lib/branch-label.js";
-import { findMissingPrompts, findStalePrompts } from "../../lib/prompt-loader.js";
+import { collectRuntimeAssetIssues, runtimeAssetIssueMessage } from "../../lib/runtime-assets.js";
 import {
-  ensureBundledWorkflowsInstalled,
-  findStaleWorkflows,
   listAvailableWorkflows,
   loadWorkflowConfig,
 } from "../../lib/workflow-loader.js";
@@ -419,6 +417,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 const FOREMAN_OWNED_BRANCH = "foreman-controller";
 
 export { isIgnorableControllerPath } from "../../lib/controller-paths.js";
+export { collectRuntimeAssetIssues } from "../../lib/runtime-assets.js";
 
 function withCommonBinaryPath(): NodeJS.ProcessEnv {
   const home = process.env.HOME ?? "/home/nobody";
@@ -543,46 +542,6 @@ async function resolveRunRegisteredProject(projectPath: string) {
   return projects.find((project) => project.path === projectPath) ?? null;
 }
 
-export function collectRuntimeAssetIssues(
-  projectPath: string,
-  projectCfg?: ProjectConfig | null,
-): string[] {
-  const issues: string[] = [];
-
-  try {
-    if (projectCfg === undefined) {
-      loadProjectConfig(projectPath);
-    }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    issues.push(`project config invalid: ${msg}`);
-    return issues;
-  }
-
-  const missingPrompts = findMissingPrompts(projectPath);
-  const stalePrompts = findStalePrompts(projectPath);
-  // Auto-install any missing bundled workflows (e.g. newly added bundled
-  // workflows like quick.yaml on existing installs) instead of blocking
-  // dispatch. Only workflows still missing after the install attempt are
-  // reported as preflight issues.
-  const missingWorkflows = ensureBundledWorkflowsInstalled(projectPath);
-  const staleWorkflows = findStaleWorkflows(projectPath);
-
-  if (missingPrompts.length > 0) {
-    issues.push(`missing prompts: ${missingPrompts.join(", ")}`);
-  }
-  if (stalePrompts.length > 0) {
-    issues.push(`stale prompts: ${stalePrompts.join(", ")}`);
-  }
-  if (missingWorkflows.length > 0) {
-    issues.push(`missing workflows: ${missingWorkflows.map((name) => `${name}.yaml`).join(", ")}`);
-  }
-  if (staleWorkflows.length > 0) {
-    issues.push(`stale workflows: ${staleWorkflows.map((name) => `${name}.yaml`).join(", ")}`);
-  }
-
-  return issues;
-}
 
 export async function checkBranchMismatch(
   taskClient: ITaskClient,
@@ -766,6 +725,16 @@ export const runCommand = new Command("run")
         console.error(chalk.red("Error: these foreman run dispatch-shaping options were removed after the Elixir backend cutover. The Elixir scheduler owns default dispatch policy."));
         process.exit(1);
       }
+      await requireProjectOrAllInMultiMode(opts.project ?? opts.projectPath, false);
+      const projectPath = await resolveRepoRootProjectPath(opts);
+      const projectCfg = loadProjectConfig(projectPath);
+      if (!dryRun) {
+        const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
+        if (assetIssues.length > 0) {
+          console.error(chalk.red(`\nRun preflight failed: ${runtimeAssetIssueMessage(assetIssues)}\n`));
+          process.exit(1);
+        }
+      }
       const manager = new ElixirServerManager();
       const status = await manager.ensureRunning();
       const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
@@ -835,15 +804,7 @@ export const runCommand = new Command("run")
       if (!dryRun && !resume && !resumeFailed) {
         const assetIssues = collectRuntimeAssetIssues(projectPath, projectCfg);
         if (assetIssues.length > 0) {
-          console.error(chalk.red("\nRun preflight failed: Foreman runtime assets are out of date.\n"));
-          for (const issue of assetIssues) {
-            console.error(chalk.yellow(`  - ${issue}`));
-          }
-          console.error(
-            chalk.dim(
-              "\nRun 'foreman doctor --fix' (or reinstall prompts/workflows) before dispatching agents.\n",
-            ),
-          );
+          console.error(chalk.red(`\nRun preflight failed: ${runtimeAssetIssueMessage(assetIssues)}\n`));
           process.exit(1);
         }
       }
