@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { installBundledPrompts } from "../../lib/prompt-loader.js";
-import { executePipeline } from "../pipeline-executor.js";
+import { executePipeline, promptArtifactContractError } from "../pipeline-executor.js";
 
 const successResult = {
   success: true,
@@ -377,6 +377,66 @@ describe("executePipeline command phase contract enforcement", () => {
     expect(runPhase.mock.calls[0]?.[0]).toBe("documentation");
     expect(runPhase.mock.calls[0]?.[1]).toContain(EXPECTED_DOCUMENTATION_ARTIFACT);
     expect(markStuck).not.toHaveBeenCalled();
+  });
+
+  it("runs the phase when the prompt forbids writing the report-dir artifact at the worktree root", async () => {
+    const { markStuck, runPhase, context } = makeDocumentationPromptContractPipeline(
+      tmpDir,
+      [
+        "# Documentation",
+        "Update the docs for the completed task.",
+        "Write the phase artifact exactly at `{{reportDir}}/DOCUMENTATION_REPORT.md`.",
+        "Do not write `DOCUMENTATION_REPORT.md` at the worktree root.",
+      ].join("\n"),
+    );
+    runPhase.mockImplementation(async (phaseName: string) => {
+      if (phaseName === "documentation") {
+        mkdirSync(join(tmpDir, DOCUMENTATION_REPORT_DIR), { recursive: true });
+        writeFileSync(join(tmpDir, EXPECTED_DOCUMENTATION_ARTIFACT), "# Documentation Report\n");
+      }
+      return successResult;
+    });
+
+    await executePipeline(context as never);
+
+    expect(runPhase).toHaveBeenCalled();
+    expect(runPhase.mock.calls[0]?.[0]).toBe("documentation");
+    expect(markStuck).not.toHaveBeenCalled();
+  });
+
+  it("explains whether a stale prompt omits the configured artifact or has a positive root instruction", () => {
+    const expectedArtifact = `${DOCUMENTATION_REPORT_DIR}/DOCUMENTATION_REPORT.md`;
+
+    expect(
+      promptArtifactContractError({
+        phaseName: "documentation",
+        prompt: [
+          "# Documentation",
+          "Write the phase artifact exactly at `docs/reports/foreman-task-contract/DOCUMENTATION_REPORT.md`.",
+          "Do not write `DOCUMENTATION_REPORT.md` at the worktree root.",
+        ].join("\n"),
+        artifact: expectedArtifact,
+        projectReportsDir: DOCUMENTATION_REPORT_DIR,
+      }),
+    ).toBeNull();
+
+    expect(
+      promptArtifactContractError({
+        phaseName: "documentation",
+        prompt: "Write the report to `DOCUMENTATION_REPORT.md` in the worktree root.",
+        artifact: expectedArtifact,
+        projectReportsDir: DOCUMENTATION_REPORT_DIR,
+      }),
+    ).toContain("positive worktree-root artifact instruction");
+
+    expect(
+      promptArtifactContractError({
+        phaseName: "documentation",
+        prompt: "Summarize the documentation changes for Foreman.",
+        artifact: expectedArtifact,
+        projectReportsDir: DOCUMENTATION_REPORT_DIR,
+      }),
+    ).toContain("does not mention the configured report artifact path");
   });
 
   it("fails before runPhase when a prompt points a report-dir artifact at the worktree root", async () => {

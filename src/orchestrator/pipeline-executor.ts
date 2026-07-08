@@ -317,6 +317,28 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function positiveWorktreeRootArtifactLine(prompt: string, artifactFile: string): string | null {
+  const artifactPattern = escapeRegExp(artifactFile);
+  const rootWritePattern = new RegExp(
+    `\\bwrite\\b[^\\r\\n]*\`?${artifactPattern}\`?[^\\r\\n]*\\b(?:at|in|to)\\s+the\\s+worktree\\s+root\\b`,
+    "i",
+  );
+  const negatedWritePattern = /\b(?:do\s+not|don't|never|must\s+not)\b/i;
+
+  for (const line of prompt.split(/\r?\n/)) {
+    if (rootWritePattern.test(line) && !negatedWritePattern.test(line)) {
+      return line.trim();
+    }
+  }
+
+  return null;
+}
+
+
 export function promptArtifactContractError(input: {
   phaseName: string;
   prompt: string;
@@ -331,16 +353,17 @@ export function promptArtifactContractError(input: {
   const artifactFile = basename(input.artifact);
   const expectedArtifact = `${reportsDir}/${artifactFile}`;
   const mentionsExpectedArtifact = input.prompt.includes(expectedArtifact);
-  const writesToWorktreeRoot = new RegExp(
-    `Write\\s+\`?${artifactFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\`?\\s+(?:at|in)\\s+the\\s+worktree\\s+root`,
-    "i",
-  ).test(input.prompt);
+  const worktreeRootLine = positiveWorktreeRootArtifactLine(input.prompt, artifactFile);
 
-  if (!writesToWorktreeRoot && mentionsExpectedArtifact) {
+  if (!worktreeRootLine && mentionsExpectedArtifact) {
     return null;
   }
 
-  return `Stale ${input.phaseName} prompt: workflow expects artifact at ${expectedArtifact}, but the rendered prompt ${writesToWorktreeRoot ? "instructs the agent to write it in the worktree root" : "does not instruct the agent to write there"}. Run 'foreman doctor --fix' or refresh ~/.foreman/prompts.`;
+  const reason = worktreeRootLine
+    ? `found a positive worktree-root artifact instruction: "${worktreeRootLine}"`
+    : "does not mention the configured report artifact path";
+
+  return `Stale ${input.phaseName} prompt: workflow expects artifact at ${expectedArtifact}, but the rendered prompt ${reason}. Run 'foreman doctor --fix' or refresh ~/.foreman/prompts.`;
 }
 
 
