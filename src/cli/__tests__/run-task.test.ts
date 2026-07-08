@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { Mock } from "vitest";
 import { Command } from "commander";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -183,6 +184,10 @@ const task = {
   description: "Task body",
   labels: ["workflow:task"],
 };
+
+interface MockWorktreeManagerInstance {
+  createWorktree: Mock;
+}
 
 describe("run task command", () => {
   let testProjectPath: string;
@@ -434,6 +439,47 @@ phases:
       expect(mockWatchRunsInk).not.toHaveBeenCalled();
       const storeInstance = (MockForemanStore as unknown as { forProject: ReturnType<typeof vi.fn> }).forProject.mock.results[0]?.value as { createRun?: ReturnType<typeof vi.fn> };
       expect(storeInstance?.createRun).not.toHaveBeenCalled();
+    });
+
+    it("uses a registered project's defaultBranch as the worktree base branch", async () => {
+      const previousRuntimeMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "test";
+      mockListRegisteredProjects.mockResolvedValueOnce([
+        {
+          id: "proj-registered",
+          name: "registered",
+          path: testProjectPath,
+          defaultBranch: "release/2026",
+          status: "active",
+        },
+      ]);
+      mockVcsCreate.mockResolvedValueOnce({
+        name: "git",
+        detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+      });
+
+      try {
+        const exitCode = await runTaskAction("task-123", "default", {
+          projectPath: testProjectPath,
+          dryRun: true,
+          watch: false,
+        });
+
+        expect(exitCode).toBe(0);
+        const worktreeInstance = mockWorktreeManager.mock.results[0]?.value as MockWorktreeManagerInstance | undefined;
+        expect(worktreeInstance?.createWorktree).toHaveBeenCalledWith(expect.objectContaining({
+          projectId: "proj-registered",
+          taskId: "task-123",
+          repoPath: testProjectPath,
+          baseBranch: "release/2026",
+        }));
+      } finally {
+        if (previousRuntimeMode === undefined) {
+          delete process.env.FOREMAN_RUNTIME_MODE;
+        } else {
+          process.env.FOREMAN_RUNTIME_MODE = previousRuntimeMode;
+        }
+      }
     });
 
     it("skips watch mode when watch=false", async () => {

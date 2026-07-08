@@ -62,6 +62,8 @@ Bundled workflows write these reports under the runtime report directory (`~/.fo
 
 Each dispatched task runs in its own git worktree. This isolates agent edits from your main checkout and from other agents. Avoid manually editing active worktrees unless you are intentionally intervening.
 
+Scheduler-launched worktrees start from the registered project default branch when configured, then fall back to VCS default-branch detection.
+
 ### Elixir Backend Roles
 
 During the TRD-2026-014 migration, Foreman has three runtime responsibilities:
@@ -256,11 +258,11 @@ The board also monitors agent inbox updates. When a new inbox message arrives fo
 
 Use retry and doctor cleanup surgically.
 
-- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops the worker when present, abandons the current run while keeping the task, resets the task to ready, and dispatches it again. Merged tasks remain terminal.
+- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops active workers when present, marks prior active runs failed with the reset reason, removes stale task worktrees, local/origin `foreman/<task>` branches, and prior run logs/reports, clears run linkage, resets the task to ready, and dispatches it again. Merged tasks remain terminal.
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
 - Use `foreman doctor --dry-run` to preview cleanup of zombie/stale runs and merged/orphaned worktrees.
-- Use `foreman doctor --fix` for safe cleanup after review; it does not replace inspecting valuable in-progress work.
+- Use `foreman doctor --fix` for safe cleanup after review, including reinstalling missing/stale prompt and workflow runtime files; it does not replace inspecting valuable in-progress work.
 - Use `foreman abandon <task-or-run-id> --reason "..."` when obsolete work should not land; preview with `--dry-run` and opt into branch deletion with `--delete-branch --force`.
 - Use `foreman abandon --missing-branches --dry-run` to preview bulk cleanup of completed runs whose `foreman/<task>` branch is already gone, then rerun without `--dry-run` to clear repeated merge warnings.
 - Use `foreman clean-state --dry-run` when you want to reset Foreman to a clean operator state by dropping stale/obsolete non-active work; apply with `--force`, and add `--delete-branches`/`--delete-origin-branches` only when branch deletion is intended.

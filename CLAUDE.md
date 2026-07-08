@@ -22,6 +22,7 @@ foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
+foreman reset <task>   # Fail stale active runs, clean worktree/branch artifacts, and re-dispatch
 foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy
@@ -39,7 +40,7 @@ foreman inbox          # Agent mail + selected-run lifecycle events
 foreman inbox --task X --events  # Grouped workflow→phase→message/tool timeline
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
-foreman mcp --transport stdio # MCP tools via Elixir backend; use --transport http for remote clients
+foreman mcp --transport stdio # MCP tools via Elixir backend plus local reset cleanup; use --transport http for remote clients
 # In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
 
 # Elixir task tracking

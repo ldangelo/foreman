@@ -62,6 +62,10 @@ const REQUIRED_PROMPT_MARKERS: Readonly<Record<string, Readonly<Record<string, R
   default: {
     developer: ["EXPLORER_REPORT.md", "Developer Handoff"],
     explorer: ["## Developer Handoff", "### Edit First"],
+    documentation: [
+      "{{reportDir}}/DOCUMENTATION_REPORT.md",
+      "Do not write `DOCUMENTATION_REPORT.md` at the worktree root",
+    ],
   },
 };
 

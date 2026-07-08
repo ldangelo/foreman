@@ -78,7 +78,7 @@ export function resolveRuntimeMode(value?: string): RuntimeMode {
   return raw === "test" ? "test" : "normal";
 }
 
-function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverrides {
+function createElixirTestDispatcherOverrides(projectId: string, defaultBranch?: string): DispatcherOverrides {
   const client = new ElixirServerClient(
     process.env.FOREMAN_SERVER_URL ?? "http://127.0.0.1:4766",
     process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN,
@@ -105,6 +105,7 @@ function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverr
   }) as never;
 
   return {
+    defaultBranch,
     externalProjectId: projectId,
     getActiveTaskIds: async () => {
       const runs = await client.listRuns({ projectId });
@@ -216,7 +217,7 @@ function createElixirTestDispatcherOverrides(projectId: string): DispatcherOverr
   };
 }
 
-function createRegisteredDispatcherOverrides(projectId: string, daemonStore: ElixirCliStore): DispatcherOverrides {
+function createRegisteredDispatcherOverrides(projectId: string, daemonStore: ElixirCliStore, defaultBranch?: string): DispatcherOverrides {
   const mapTask = (task: Record<string, unknown>) => ({
     id: String(task.task_id ?? task.id ?? ""),
     title: String(task.title ?? task.task_id ?? task.id ?? ""),
@@ -232,6 +233,7 @@ function createRegisteredDispatcherOverrides(projectId: string, daemonStore: Eli
   }) as never;
 
   return {
+    defaultBranch,
     externalProjectId: projectId,
     getRecentFailureCount: async (_projectId: string, since: string) => {
       const runs = await daemonStore.getRunsByStatuses(["failed", "stuck", "conflict", "test-failed"] as Run["status"][]);
@@ -815,6 +817,9 @@ export const runCommand = new Command("run")
         }
       }
       const projectCfg = loadProjectConfig(projectPath);
+      const configuredDefaultBranch = normalizeBranchLabel(
+        registered?.defaultBranch ?? projectCfg?.defaultBranch,
+      ) ?? undefined;
 
       // ── Workflow override validation ────────────────────────────────────
       // Fail fast when --workflow names a workflow that cannot be loaded.
@@ -880,9 +885,9 @@ export const runCommand = new Command("run")
         projectPath,
         null,
         registered && daemonStore && !useElixirTestBackend
-          ? createRegisteredDispatcherOverrides(registered.id, daemonStore)
+          ? createRegisteredDispatcherOverrides(registered.id, daemonStore, configuredDefaultBranch)
           : useElixirTestBackend && registered
-            ? createElixirTestDispatcherOverrides(registered.id)
+            ? createElixirTestDispatcherOverrides(registered.id, configuredDefaultBranch)
             : undefined,
       );
 
@@ -1003,15 +1008,15 @@ export const runCommand = new Command("run")
       let targetBranch: string | undefined;
       if (!dryRun) {
         try {
-          const configuredDefaultBranch = await resolveDefaultBranch(
+          const resolvedDefaultBranch = await resolveDefaultBranch(
             projectPath,
             (path) => startupVcs.detectDefaultBranch(path),
-            projectCfg,
+            { ...projectCfg, defaultBranch: configuredDefaultBranch ?? projectCfg?.defaultBranch },
           );
           const controller = await resolveOwnedControllerBranch(
             startupVcs,
             projectPath,
-            configuredDefaultBranch,
+            resolvedDefaultBranch,
           );
           if (controller.usedOwnedBranch) {
             targetBranch = controller.targetBranch;
@@ -1028,7 +1033,7 @@ export const runCommand = new Command("run")
                 await resolveDefaultBranch(
                   projectPath,
                   (path) => startupVcs.detectDefaultBranch(path),
-                  projectCfg,
+                  { ...projectCfg, defaultBranch: resolvedDefaultBranch },
                 ),
               );
           if (cb && db && cb !== db) {
@@ -1074,6 +1079,7 @@ export const runCommand = new Command("run")
               taskId: taskFilter,
               notifyUrl,
               targetBranch,
+              defaultBranch: configuredDefaultBranch,
               staggerMs,
             });
             return newResult.dispatched.map((t) => t.runId);
@@ -1184,6 +1190,7 @@ export const runCommand = new Command("run")
           taskId: taskFilter,
           notifyUrl,
           targetBranch,
+          defaultBranch: configuredDefaultBranch,
           staggerMs,
         });
 

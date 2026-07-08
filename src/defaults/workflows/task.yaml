@@ -55,15 +55,7 @@ phases:
     retryOnly: true
     prompt: repair.md
     tools:
-      allowed:
-        [
-          Bash,
-          Edit,
-          Glob,
-          Grep,
-          Read,
-          Write,
-        ]
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
     models:
       default: MiniMax
       P0: MiniMax-highspeed
@@ -134,7 +126,8 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -152,7 +145,8 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -170,7 +164,8 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -210,6 +205,7 @@ phases:
       onStart: true
       onComplete: true
       onFail: repair
+
   - name: create-pr
     builtin: true
     artifact: "{task.projectReportsDir}/PR_METADATA.json"
@@ -233,7 +229,6 @@ phases:
       onComplete: true
       onFail: repair
 
-
   - name: merge
     builtin: true
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
@@ -248,6 +243,7 @@ phases:
       onStart: true
       onComplete: true
       onFail: repair
+
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

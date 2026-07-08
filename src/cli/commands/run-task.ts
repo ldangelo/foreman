@@ -23,7 +23,7 @@ import { createTaskClient } from "../../lib/task-client-factory.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import { ForemanStore } from "../../lib/store.js";
 import { ElixirCliStore } from "./elixir-cli-store.js";
-import { loadProjectConfig, resolveVcsConfig } from "../../lib/project-config.js";
+import { loadProjectConfig, resolveDefaultBranch, resolveVcsConfig } from "../../lib/project-config.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import { WorktreeManager } from "../../lib/worktree-manager.js";
@@ -299,14 +299,14 @@ export async function runTaskAction(
     // Non-fatal: use defaults
   }
 
-  // ── Resolve base branch ───────────────────────────────────────────────
-  let baseBranch: string | undefined;
-  if (vcsBackend) {
-    try {
-      baseBranch = normalizeBranchLabel(await vcsBackend.detectDefaultBranch(resolvedProjectPath)) ?? undefined;
-    } catch {
-      // Non-fatal: continue without base branch
-    }
+  const configuredDefaultBranch = normalizeBranchLabel(registered?.defaultBranch);
+  let baseBranch = configuredDefaultBranch;
+  if (!baseBranch && vcsBackend) {
+    baseBranch = await resolveDefaultBranch(
+      resolvedProjectPath,
+      (path) => vcsBackend.detectDefaultBranch(path),
+      projectCfg,
+    );
   }
 
   // ── Create worktree ───────────────────────────────────────────────────

@@ -1,13 +1,21 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
 
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { resolveProjectContext } from "./project-context.js";
-import { abandonAction } from "./abandon.js";
 import { printDryRunNotice } from "./cli-output.js";
+import { ElixirMergeQueue } from "./elixir-merge-queue.js";
+import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { WorktreeManager } from "../../lib/worktree-manager.js";
+import { getForemanHomePath } from "../../lib/foreman-paths.js";
+import { getRunReportsDir } from "../../lib/report-paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,7 +35,8 @@ async function createElixirResetClient(): Promise<ElixirServerClient> {
 
 async function killWorkerProcesses(runId: string, dryRun: boolean): Promise<number> {
   const { stdout } = await execFileAsync("ps", ["-axo", "pid=,command="]);
-  const matches = stdout
+  const processList = String(stdout ?? "");
+  const matches = processList
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.includes(runId) && /agent-worker|foreman run task/.test(line))
@@ -60,9 +69,77 @@ function runStatusOf(run: Record<string, unknown>): string {
   return typeof run.status === "string" ? run.status : "unknown";
 }
 
-async function activeRunForTask(client: ElixirServerClient, projectId: string, taskId: string): Promise<Record<string, unknown> | null> {
-  const runs = (await client.listRuns({ projectId })).filter((run) => run.task_id === taskId);
-  return runs.find((run) => ["in_progress", "running", "pending", "conflict", "failed"].includes(runStatusOf(run))) ?? runs[0] ?? null;
+const resetActiveRunStatuses: Record<string, true> = {
+  in_progress: true,
+  running: true,
+  pending: true,
+  conflict: true,
+};
+
+async function failActiveRunsForReset(
+  client: ElixirServerClient,
+  projectId: string,
+  taskId: string,
+  runIds: string[],
+  reason: string,
+  dryRun: boolean,
+): Promise<void> {
+  for (const runId of [...new Set(runIds)]) {
+    if (dryRun) {
+      console.log(`  would mark active run ${chalk.dim(runId)} failed`);
+      continue;
+    }
+
+    const now = new Date().toISOString();
+    const response = await client.sendCommand({
+      command_id: `reset-fail-run-${runId}-${Date.now()}`,
+      command_type: "run.fail",
+      payload: {
+        project_id: projectId,
+        task_id: taskId,
+        run_id: runId,
+        reason,
+        failure_reason: reason,
+        completed_at: now,
+        updated_at: now,
+      },
+      metadata: { source: "foreman-reset", reason },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    console.log(`  marked active run ${chalk.dim(runId)} failed`);
+  }
+}
+
+export async function cleanupTaskRunArtifacts(
+  projectId: string,
+  taskId: string,
+  runIds: string[],
+  dryRun: boolean,
+): Promise<number> {
+  const uniqueRunIds = [...new Set(runIds.filter(Boolean))];
+  let removed = 0;
+
+  for (const runId of uniqueRunIds) {
+    const paths = [
+      join(homedir(), ".foreman", "logs", `${runId}.log`),
+      join(homedir(), ".foreman", "logs", `${runId}.err`),
+      join(homedir(), ".foreman", "logs", `${runId}.out`),
+      getRunReportsDir(projectId, taskId, runId),
+      getForemanHomePath("reports", "runs", runId, taskId),
+    ];
+
+    for (const path of paths) {
+      if (!existsSync(path)) continue;
+      removed++;
+      if (dryRun) {
+        console.log(`  would remove run artifact ${chalk.dim(path)}`);
+      } else {
+        await rm(path, { recursive: true, force: true });
+      }
+    }
+  }
+
+  return removed;
 }
 
 export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise<number> {
@@ -82,9 +159,12 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
     return 1;
   }
 
-  const run = await activeRunForTask(client, registered.id, taskId);
+  const runs = (await client.listRuns({ projectId: registered.id })).filter((candidate) => candidate.task_id === taskId);
+  const run = runs.find((candidate) => ["in_progress", "running", "pending", "conflict", "failed"].includes(runStatusOf(candidate))) ?? runs[0] ?? null;
   const runId = run ? runIdOf(run) : null;
+  const runIds = runs.map(runIdOf).filter((id): id is string => Boolean(id));
   const reason = opts.reason ?? "reset by operator";
+  const branchName = taskId.startsWith("foreman/") ? taskId : `foreman/${taskId}`;
 
   console.log(chalk.bold(`${dryRun ? "Would reset" : "Resetting"} ${chalk.cyan(taskId)}`));
   console.log(`  project: ${registered.name}`);
@@ -92,32 +172,83 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
   if (runId) console.log(`  active run: ${chalk.dim(runId)} status=${runStatusOf(run!)}`);
   else console.log(`  active run: ${chalk.dim("(none)")}`);
 
-  if (runId) {
-    const stopped = await killWorkerProcesses(runId, dryRun);
-    if (stopped === 0) console.log(chalk.dim("  no worker process found"));
-
-    const code = await abandonAction(taskId, {
-      project: opts.project,
-      projectPath: opts.projectPath,
-      reason,
-      dryRun,
-      keepTask: true,
-      keepWorktree: opts.keepWorktree,
-    });
-    if (code !== 0) return code;
+  const activeRunIds = runs
+    .filter((candidate) => resetActiveRunStatuses[runStatusOf(candidate)])
+    .map(runIdOf)
+    .filter((id): id is string => Boolean(id));
+  if (activeRunIds.length === 0) {
+    console.log(chalk.dim("  no active worker process found"));
   }
+  for (const activeRunId of activeRunIds) {
+    const stopped = await killWorkerProcesses(activeRunId, dryRun);
+    if (stopped === 0) console.log(chalk.dim(`  no worker process found for ${activeRunId}`));
+  }
+
+  const vcs = await VcsBackendFactory.create({ backend: "auto" }, registered.path);
+  const defaultWorktreePath = new WorktreeManager().getWorktreePath(registered.id, taskId);
+  const worktreePaths = [
+    defaultWorktreePath,
+    ...runs
+      .map((candidate) => candidate.worktree_path)
+      .filter((path): path is string => typeof path === "string" && path.length > 0),
+  ];
+  for (const worktreePath of [...new Set(worktreePaths)]) {
+    if (opts.keepWorktree) continue;
+    if (dryRun) {
+      console.log(`  would remove worktree ${chalk.dim(worktreePath)}`);
+    } else {
+      await vcs.removeWorkspace(registered.path, worktreePath);
+      console.log(`  removed worktree ${chalk.dim(worktreePath)}`);
+    }
+  }
+  const mergeQueue = new ElixirMergeQueue(registered.id);
+  const mergeQueueEntries = await Promise.resolve(mergeQueue.list());
+  const queueMatches = mergeQueueEntries.filter((entry) =>
+    entry.task_id === taskId || entry.branch_name === branchName || runIds.includes(entry.run_id),
+  );
+  if (dryRun) {
+    console.log(`  would remove ${queueMatches.length} merge queue entr${queueMatches.length === 1 ? "y" : "ies"}`);
+  } else {
+    for (const entry of queueMatches) {
+      await Promise.resolve(mergeQueue.remove(entry.id));
+    }
+    console.log(`  removed ${queueMatches.length} merge queue entr${queueMatches.length === 1 ? "y" : "ies"}`);
+  }
+
+  if (dryRun) {
+    console.log(`  would delete branch ${chalk.dim(branchName)} (force)`);
+    console.log(`  would delete origin branch ${chalk.dim(branchName)}`);
+  } else {
+    await vcs.deleteBranch(registered.path, branchName, { force: true }).catch(() => ({ deleted: false, wasFullyMerged: false }));
+    await vcs.deleteRemoteBranch(registered.path, branchName).catch(() => undefined);
+    console.log(`  deleted local/origin branch ${chalk.dim(branchName)} if present`);
+  }
+
+  const artifactCount = await cleanupTaskRunArtifacts(registered.id, taskId, runIds, dryRun);
+  console.log(`  ${dryRun ? "would remove" : "removed"} ${artifactCount} prior run artifact${artifactCount === 1 ? "" : "s"}`);
+
+  await failActiveRunsForReset(client, registered.id, taskId, activeRunIds, reason, dryRun);
 
   if (dryRun) {
     console.log(chalk.dim(`  would set task ${taskId} to ready`));
     console.log(chalk.dim("  would request scheduler dispatch"));
-    if (!runId) console.log(chalk.yellow("Dry run complete — no changes were made."));
+    console.log(chalk.yellow("Dry run complete — no changes were made."));
     return 0;
   }
 
   const response = await client.sendCommand({
     command_id: `reset-task-${taskId}-${Date.now()}`,
     command_type: "task.update",
-    payload: { project_id: registered.id, task_id: taskId, status: "ready" },
+    payload: {
+      project_id: registered.id,
+      task_id: taskId,
+      status: "ready",
+      run_id: null,
+      phase_id: null,
+      branch: null,
+      failure_reason: null,
+      failure_output: null,
+    },
     metadata: { source: "foreman-reset", reason },
   });
   if (!response.ok) throw new Error(response.error.message);
@@ -130,11 +261,11 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
 }
 
 export const resetCommand = new Command("reset")
-  .description("Reset an active task by stopping its worker, abandoning the current run, and re-dispatching")
+  .description("Reset a task to ready, remove its worker/worktree/branches, clean run logs, and re-dispatch")
   .argument("<task-id>", "Task ID to reset")
   .option("--reason <text>", "Reason recorded in run history")
   .option("--dry-run", "Preview changes without applying them")
-  .option("--keep-worktree", "Do not remove the current run worktree")
+  .option("--keep-worktree", "Do not remove the task worktree")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (taskId: string, opts: ResetOpts) => {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { installBundledPrompts } from "../../lib/prompt-loader.js";
+import { executePipeline } from "../pipeline-executor.js";
 
 const successResult = {
   success: true,
@@ -11,6 +12,73 @@ const successResult = {
   tokensIn: 100,
   tokensOut: 50,
 };
+
+const DOCUMENTATION_REPORT_DIR = "docs/reports/foreman-task-contract";
+const EXPECTED_DOCUMENTATION_ARTIFACT = `${DOCUMENTATION_REPORT_DIR}/DOCUMENTATION_REPORT.md`;
+
+function makeDocumentationPromptContractPipeline(tmpDir: string, promptTemplate: string) {
+  writeFileSync(join(tmpDir, "prompts", "default", "documentation.md"), promptTemplate);
+
+  const markStuck = vi.fn().mockResolvedValue(undefined);
+  const runPhase = vi.fn().mockResolvedValue(successResult);
+
+  return {
+    markStuck,
+    runPhase,
+    context: {
+      config: {
+        runId: "run-doc-prompt-contract",
+        projectId: "proj-doc-prompt-contract",
+        taskId: "task-doc-prompt-contract",
+        taskTitle: "Documentation prompt contract",
+        taskDescription: "Verify prompt artifact contract enforcement",
+        model: "anthropic/claude-sonnet-4-6",
+        worktreePath: tmpDir,
+        env: {},
+      },
+      workflowConfig: {
+        name: "default",
+        phases: [
+          {
+            name: "documentation",
+            prompt: "documentation.md",
+            artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md",
+            mail: { onStart: false, onComplete: false },
+          },
+          {
+            name: "qa",
+            prompt: "qa.md",
+            artifact: "{task.projectReportsDir}/QA_REPORT.md",
+            mail: { onStart: false, onComplete: false },
+          },
+        ],
+      },
+      store: {
+        updateRunProgress: vi.fn(),
+        logEvent: vi.fn(),
+      },
+      logFile: join(tmpDir, "pipeline.log"),
+      notifyClient: null,
+      agentMailClient: null,
+      runPhase,
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      sendMail: vi.fn(),
+      sendMailText: vi.fn(),
+      reserveFiles: vi.fn(),
+      releaseFiles: vi.fn(),
+      markStuck,
+      log: vi.fn(),
+      promptOpts: { projectRoot: tmpDir, workflow: "default" },
+      taskMeta: {
+        id: "task-doc-prompt-contract",
+        title: "Documentation prompt contract",
+        description: "Verify prompt artifact contract enforcement",
+        priority: 2,
+        projectReportsDir: DOCUMENTATION_REPORT_DIR,
+      },
+    },
+  };
+}
 
 describe("executePipeline command phase contract enforcement", () => {
   let tmpDir: string;
@@ -28,7 +96,6 @@ describe("executePipeline command phase contract enforcement", () => {
   });
 
   it("fails immediately when a command phase succeeds without its required artifact", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
     const markStuck = vi.fn().mockResolvedValue(undefined);
     const runPhase = vi.fn().mockResolvedValue({
       ...successResult,
@@ -78,7 +145,6 @@ describe("executePipeline command phase contract enforcement", () => {
   });
 
   it("emits durable terminal failure events before marking a failed phase stuck", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
     const calls: string[] = [];
     const logEvent = vi.fn().mockImplementation(async (eventType: string) => {
       calls.push(eventType);
@@ -156,7 +222,6 @@ describe("executePipeline command phase contract enforcement", () => {
   });
 
   it("emits terminal failure events when a failed phase is finalized through onPipelineComplete", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
     const calls: string[] = [];
     const logEvent = vi.fn().mockImplementation(async (eventType: string) => {
       calls.push(eventType);
@@ -235,7 +300,6 @@ describe("executePipeline command phase contract enforcement", () => {
   });
 
   it("fails immediately when a command phase attempts git commit outside finalize", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
     const markStuck = vi.fn().mockResolvedValue(undefined);
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       if (phaseName === "fix") {
@@ -288,5 +352,68 @@ describe("executePipeline command phase contract enforcement", () => {
     expect(markStuck).toHaveBeenCalledTimes(1);
     expect(markStuck.mock.calls[0]?.[7]).toContain("Command phase contract violated");
     expect(markStuck.mock.calls[0]?.[7]).toContain("Blocked git commit during non-finalize phase");
+  });
+
+  it("runs the phase when the prompt names the configured report-dir artifact path", async () => {
+    const { markStuck, runPhase, context } = makeDocumentationPromptContractPipeline(
+      tmpDir,
+      [
+        "# Documentation",
+        "Update the docs for the completed task.",
+        "Write the report to `{{reportDir}}/DOCUMENTATION_REPORT.md`.",
+      ].join("\n"),
+    );
+    runPhase.mockImplementation(async (phaseName: string) => {
+      if (phaseName === "documentation") {
+        mkdirSync(join(tmpDir, DOCUMENTATION_REPORT_DIR), { recursive: true });
+        writeFileSync(join(tmpDir, EXPECTED_DOCUMENTATION_ARTIFACT), "# Documentation Report\n");
+      }
+      return successResult;
+    });
+
+    await executePipeline(context as never);
+
+    expect(runPhase).toHaveBeenCalled();
+    expect(runPhase.mock.calls[0]?.[0]).toBe("documentation");
+    expect(runPhase.mock.calls[0]?.[1]).toContain(EXPECTED_DOCUMENTATION_ARTIFACT);
+    expect(markStuck).not.toHaveBeenCalled();
+  });
+
+  it("fails before runPhase when a prompt points a report-dir artifact at the worktree root", async () => {
+    const { markStuck, runPhase, context } = makeDocumentationPromptContractPipeline(
+      tmpDir,
+      [
+        "# Documentation",
+        "Update the docs for the completed task.",
+        "Write the report to `DOCUMENTATION_REPORT.md` in the worktree root.",
+        "Do not create or use a reports subdirectory for the report.",
+      ].join("\n"),
+    );
+
+    await executePipeline(context as never);
+
+    expect(runPhase).not.toHaveBeenCalled();
+    expect(markStuck).toHaveBeenCalledTimes(1);
+    expect(markStuck.mock.calls[0]?.[6]).toBe("documentation");
+    expect(markStuck.mock.calls[0]?.[7]).toContain(EXPECTED_DOCUMENTATION_ARTIFACT);
+  });
+
+  it("fails before runPhase when a prompt omits the configured report-dir artifact path", async () => {
+    const { markStuck, runPhase, context } = makeDocumentationPromptContractPipeline(
+      tmpDir,
+      [
+        "# Documentation",
+        "Update the docs for the completed task.",
+        "Summarize the documentation changes for Foreman.",
+        "Send phase-complete mail when finished.",
+      ].join("\n"),
+    );
+
+    await executePipeline(context as never);
+
+    expect(runPhase).not.toHaveBeenCalled();
+    expect(markStuck).toHaveBeenCalledTimes(1);
+    expect(markStuck.mock.calls[0]?.[6]).toBe("documentation");
+    expect(markStuck.mock.calls[0]?.[7]).toContain(EXPECTED_DOCUMENTATION_ARTIFACT);
   });
 });

@@ -85,6 +85,7 @@ export interface DispatcherOverrides {
   hasActiveOrPendingRun?: (taskId: string) => Promise<boolean>;
   getActiveAgentCount?: () => Promise<number>;
   externalProjectId?: string;
+  defaultBranch?: string;
   getRunsByStatus?: (status: RunStatus, projectId: string) => Promise<Run[]>;
   getRunsForTask?: (taskId: string, projectId: string) => Promise<Run[]>;
   getRun?: (runId: string) => Promise<Run | null>;
@@ -309,6 +310,8 @@ export class Dispatcher {
     notifyUrl?: string;
     /** Override target branch for merges (when working on a feature branch instead of default). */
     targetBranch?: string;
+    /** Project-configured default branch used when no task/interactive target overrides it. */
+    defaultBranch?: string;
     /** P1: Stagger delay in milliseconds between dispatches to prevent thundering herd. */
     staggerMs?: number;
     /**
@@ -527,7 +530,8 @@ export class Dispatcher {
     let branchBackend: VcsBackend | undefined;
     try {
       branchBackend = await VcsBackendFactory.create({ backend: "auto" }, this.projectPath);
-      defaultBranch = normalizeBranchLabel(await branchBackend.detectDefaultBranch(this.projectPath));
+      defaultBranch = normalizeBranchLabel(opts?.defaultBranch ?? this.overrides?.defaultBranch)
+        ?? normalizeBranchLabel(await branchBackend.detectDefaultBranch(this.projectPath));
       if (opts?.assumeDefaultBranch) {
         // Daemon background dispatch: ignore the developer's checked-out branch
         // and treat the project as being on its default branch. This suppresses
@@ -865,11 +869,12 @@ export class Dispatcher {
 
         // 2. Create worktree at ~/.foreman/worktrees/<projectId>/<taskId> via WorktreeManager (TRD-037)
         const worktreeManager = new WorktreeManager();
+        const worktreeBaseBranch = baseBranch ?? opts?.targetBranch ?? defaultBranch;
         const worktreeInfo = await worktreeManager.createWorktree({
           projectId,
           taskId: task.id,
           repoPath: this.projectPath,
-          baseBranch: baseBranch ?? defaultBranch,
+          baseBranch: worktreeBaseBranch,
         });
         const worktreePath = worktreeInfo.path;
         const branchName = worktreeInfo.branchName;
@@ -912,7 +917,7 @@ export class Dispatcher {
           model,
           worktreePath,
           branchName,
-          { baseBranch: baseBranch ?? null, mergeStrategy: workflowMergeStrategy },
+          { baseBranch: baseBranch ?? opts?.targetBranch ?? null, mergeStrategy: workflowMergeStrategy },
         );
 
         // 5. Log dispatch event

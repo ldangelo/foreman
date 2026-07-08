@@ -8,10 +8,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
+import type { DispatcherOverrides } from "../dispatcher.js";
 import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import type { ForemanStore, Run } from "../../lib/store.js";
 import type { VcsBackend } from "../../lib/vcs/index.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
+import { loadWorkflowConfig } from "../../lib/workflow-loader.js";
+import type { WorkflowConfig } from "../../lib/workflow-loader.js";
+import { WorktreeManager } from "../../lib/worktree-manager.js";
 
 // ── Module Mocks ─────────────────────────────────────────────────────────────
 
@@ -94,6 +98,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 // ── Test Helpers ─────────────────────────────────────────────────────────────
+interface DispatcherOverridesWithDefaultBranch extends DispatcherOverrides {
+  defaultBranch: string;
+}
+
+interface SpawnAgentHost {
+  spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }>;
+}
+
 
 function makeGitBackend(): VcsBackend {
   return {
@@ -687,6 +699,35 @@ describe("Dispatcher — uses WorktreeManager.createWorktree() for workspace cre
       repoPath: "/tmp/project",
       baseBranch: "main",
     });
+  });
+
+  it("uses a registered defaultBranch override as the worktree base when assuming the default branch", async () => {
+    const workflowConfig: WorkflowConfig = {
+      name: "default",
+      phases: [],
+      vcs: { backend: "git" },
+    };
+    vi.mocked(loadWorkflowConfig).mockReturnValue(workflowConfig);
+    const backend = makeGitBackend();
+    vi.mocked(backend.detectDefaultBranch).mockResolvedValue("main");
+    vi.mocked(VcsBackendFactory.create).mockResolvedValue(backend);
+
+    const store = makeStore();
+    const tasks = makeTasks();
+    const overrides: DispatcherOverridesWithDefaultBranch = { defaultBranch: "release/2026" };
+    const dispatcher = new Dispatcher(tasks, store, "/tmp/project", null, overrides);
+    const dispatcherWithPrivate = dispatcher as unknown as SpawnAgentHost;
+    vi.spyOn(dispatcherWithPrivate, "spawnAgent").mockResolvedValue({ sessionKey: "test-key" });
+    const createWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "createWorktree");
+
+    await dispatcher.dispatch({ dryRun: false, assumeDefaultBranch: true });
+
+    expect(createWorktreeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "proj-001",
+      taskId: "test-task",
+      repoPath: "/tmp/project",
+      baseBranch: "release/2026",
+    }));
   });
 });
 

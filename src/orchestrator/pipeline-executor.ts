@@ -317,6 +317,33 @@ function readReport(worktreePath: string, filename: string): string | null {
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
+export function promptArtifactContractError(input: {
+  phaseName: string;
+  prompt: string;
+  artifact: string;
+  projectReportsDir: string;
+}): string | null {
+  const reportsDir = input.projectReportsDir.replace(/\/+$/, "");
+  if (!reportsDir || !(input.artifact === reportsDir || input.artifact.startsWith(`${reportsDir}/`))) {
+    return null;
+  }
+
+  const artifactFile = basename(input.artifact);
+  const expectedArtifact = `${reportsDir}/${artifactFile}`;
+  const mentionsExpectedArtifact = input.prompt.includes(expectedArtifact);
+  const writesToWorktreeRoot = new RegExp(
+    `Write\\s+\`?${artifactFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\`?\\s+(?:at|in)\\s+the\\s+worktree\\s+root`,
+    "i",
+  ).test(input.prompt);
+
+  if (!writesToWorktreeRoot && mentionsExpectedArtifact) {
+    return null;
+  }
+
+  return `Stale ${input.phaseName} prompt: workflow expects artifact at ${expectedArtifact}, but the rendered prompt ${writesToWorktreeRoot ? "instructs the agent to write it in the worktree root" : "does not instruct the agent to write there"}. Run 'foreman doctor --fix' or refresh ~/.foreman/prompts.`;
+}
+
+
 function trimReportValue(value: string | undefined, max = 2_000): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -1363,6 +1390,7 @@ async function runPhaseSequence(
       ...ctx.taskMeta,
       projectReportsDir: ctx.taskMeta?.projectReportsDir || getRunReportsDir(projectId, taskId, runId),
     };
+    const projectReportsDir = phaseMeta.projectReportsDir ?? getRunReportsDir(projectId, taskId, runId);
 
     if (phase.retryOnly && !retryOnlyActivations.has(phaseName)) {
       ctx.log(`[${phaseName.toUpperCase()}] Skipping — retryOnly phase not activated by retryWith`);
@@ -1491,6 +1519,7 @@ async function runPhaseSequence(
     // TRD-004/TRD-005: Build prompt only for prompt:-based phases.
     // Bash, command, and builtin phases handle their own execution without buildPhasePrompt.
     let prompt = "";
+    let promptArtifactError: string | null = null;
     if (!phase.bash && !phase.builtin) {
       prompt = phase.command
         ? interpolateTaskPlaceholders(phase.command, phaseMeta)
@@ -1505,13 +1534,21 @@ async function runPhaseSequence(
           requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
           feedbackContext,
           worktreePath,
-          reportDir: phaseMeta.projectReportsDir,
+          reportDir: projectReportsDir,
           baseBranch: config.targetBranch,
           ...vcsPromptVars,
         }, {
           ...ctx.promptOpts,
           promptName: phase.prompt ? basename(phase.prompt, ".md") : undefined,
         });
+      if (interpolatedArtifact) {
+        promptArtifactError = promptArtifactContractError({
+          phaseName,
+          prompt,
+          artifact: interpolatedArtifact,
+          projectReportsDir,
+        });
+      }
     }
 
     const roleConfigFallback = (ROLE_CONFIGS as Record<string, { model: string } | undefined>)[phaseName];
@@ -1549,6 +1586,32 @@ async function runPhaseSequence(
       workflowName: workflowConfig.name,
       workflowPath: workflowConfig.sourcePath,
     });
+
+    if (promptArtifactError) {
+      const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
+      ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${promptArtifactError}`);
+      await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${promptArtifactError}\n`);
+      phaseRecords.push({
+        name: phaseName,
+        phaseType,
+        skipped: false,
+        success: false,
+        costUsd: 0,
+        turns: 0,
+        error: promptArtifactError,
+        artifactExpected: interpolatedArtifact,
+        artifactPresent,
+      });
+      if (phase.files?.reserve) {
+        ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
+      }
+      ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+        taskId, phase: phaseName, error: promptArtifactError, retryable: false,
+      });
+      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${promptArtifactError}`, { retryable: false });
+      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, promptArtifactError, config.projectPath, notifyClient);
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: promptArtifactError };
+    }
 
     // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
     // This prevents empty branch pollution when Explorer keeps failing

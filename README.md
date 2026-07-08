@@ -377,7 +377,7 @@ foreman mcp --transport http --host 127.0.0.1 --port 4777
 foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
 ```
 
-Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox messages, lifecycle events, and debug timelines through the Elixir backend only. MCP project listing matches `foreman project list --json` shape and default archived-project filtering. In Pi, the project extension also adds slash commands such as `/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick`. See [`docs/mcp-server.md`](docs/mcp-server.md).
+Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, task reset, run summaries plus per-run inspection, inbox messages, lifecycle events, and debug timelines. Most MCP reads/writes go through the Elixir backend; `foreman.tasks.reset` intentionally runs the local CLI reset flow so it can clean local worktrees, branches, and log/report artifacts. MCP project listing matches `foreman project list --json` shape and default archived-project filtering. MCP run listing returns only run id, date, and status; use `foreman.runs.inspect` when a client needs one run's full payload. In Pi, the project extension also adds slash commands such as `/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick`. See [`docs/mcp-server.md`](docs/mcp-server.md).
 
 ### `foreman watch`
 Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
@@ -513,13 +513,15 @@ foreman sentinel status                  # Show sentinel status
 Reset task work and rerun it.
 
 ```bash
-foreman reset task-abc                  # Stop worker, abandon current run, set ready, dispatch
+foreman reset task-abc                  # Stop active workers, fail old active runs, clean stale artifacts, set ready, dispatch
 foreman reset task-abc --reason "stale worker"
-foreman reset task-abc --dry-run        # Preview
-foreman reset task-abc --keep-worktree  # Preserve current worktree
+foreman reset task-abc --dry-run        # Preview worker/worktree/branch/log cleanup and run terminalization
+foreman reset task-abc --keep-worktree  # Preserve task worktree while resetting state
 ```
 
-Use this for stale active workers, reopening closed/completed tasks, or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed and keeps the task while marking the abandoned run failed. Merged tasks remain terminal.
+Use this for stale active workers, reopening closed/completed tasks, or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed, keeps the task, marks prior active runs failed with the reset reason, clears stale run linkage, removes prior run logs/reports and local/origin `foreman/<task>` branches, then returns the task to `ready`. Merged tasks remain terminal.
+
+Scheduler-launched task worktrees use the registered project default branch when configured, then fall back to VCS default-branch detection.
 
 ### `foreman retry`
 Retry a task in place, optionally dispatching it again immediately.

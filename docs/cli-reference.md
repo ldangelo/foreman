@@ -66,6 +66,8 @@ Dispatch ready tasks to AI agents by sending a scheduler tick to the Elixir orch
 
 Default workflows include a `documentation` phase before finalization. The bundled bug workflow starts with a Graphify-backed Explorer phase for semantic discovery before implementation. The documentation phase updates required operator/developer docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and this User Guide) when task behavior changes, or writes `DOCUMENTATION_REPORT.md` explaining why no doc update was needed. Workflow PR/merge behavior is controlled by explicit `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` YAML tags are invalid.
 
+Scheduler-launched worktrees start from the registered project `defaultBranch`/`--default-branch` when configured, then fall back to VCS default-branch detection.
+
 ```bash
 foreman run                       # Dispatch all ready tasks through the Elixir scheduler
 foreman run --project my-project   # Dispatch against a registered project without cd
@@ -280,7 +282,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates Pi SDK, DB integrity, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed workflow YAML is compared to bundled defaults; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
+Health checks for Foreman installation. Validates Pi SDK, DB integrity, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed prompt files and workflow YAML are compared to bundled runtime contracts; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
 
 ```bash
 foreman doctor                    # Run all health checks
@@ -291,7 +293,7 @@ foreman doctor --json             # Machine-readable output
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Auto-fix safe issues: install missing prompts/workflows, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
+| `--fix` | Auto-fix safe issues: install missing/stale prompts and workflows, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 
@@ -318,7 +320,7 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Reset Elixir-backed task work. The command stops the active worker process when present, abandons the current run while keeping the task, removes the run worktree unless `--keep-worktree` is set, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
+Reset Elixir-backed task work. The command stops active worker processes when present, marks prior active runs failed with the reset reason, removes stale task worktrees unless `--keep-worktree` is set, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
 
 ```bash
 foreman reset foreman-abc12
@@ -330,8 +332,8 @@ foreman reset foreman-abc12 --keep-worktree
 | Option | Description |
 |--------|-------------|
 | `--reason <text>` | Reason recorded in run history |
-| `--dry-run` | Preview stop/abandon/reset/dispatch steps |
-| `--keep-worktree` | Do not remove the current run worktree |
+| `--dry-run` | Preview worker/worktree/branch/log cleanup, active-run terminalization, and reset/dispatch steps |
+| `--keep-worktree` | Do not remove the task worktree |
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
 
 ### `foreman retry`
@@ -451,7 +453,7 @@ foreman mcp --transport http --server-url http://foreman.internal:4766
 | `--mcp-auth-token <token>` | unset | Require bearer token for HTTP MCP requests |
 | `--no-auto-start` | — | Do not auto-start the local Elixir server |
 
-Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, runs, inbox, lifecycle events, and debug timelines. `foreman.projects.list` returns the same normalized project fields as `foreman project list --json` and hides archived projects unless a status filter is provided. MCP reads/writes through the Elixir backend only. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, task reset, run summaries plus per-run inspection, inbox, lifecycle events, and debug timelines. Most MCP reads/writes go through the Elixir backend; `foreman.tasks.reset` intentionally runs the local CLI reset flow so it can clean local worktrees, branches, and log/report artifacts. `foreman.projects.list` returns the same normalized project fields as `foreman project list --json` and hides archived projects unless a status filter is provided. `foreman.runs.list` returns only run id, date, and status; `foreman.runs.inspect` returns one run's full payload by run id. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
 
 ---
 

@@ -4,9 +4,9 @@ Foreman ships an MCP server so agents and remote operator clients can inspect an
 
 ## Goals
 
-- Provide typed tools for health, scheduler, tasks, runs, inbox, lifecycle events, and debug timelines.
+- Provide typed tools for health, scheduler, tasks, task reset, runs, inbox, lifecycle events, and debug timelines.
 - Support both local agent sessions and future remote Foreman deployments.
-- Keep the implementation thin: TypeScript MCP adapter over the Elixir HTTP API/projections only.
+- Keep the implementation thin: TypeScript MCP adapter over Elixir HTTP API/projections for normal reads/mutations, with local CLI delegation only where host-local cleanup is required.
 - Route mutations through Foreman's command boundary instead of direct database writes.
 
 ## Transports
@@ -33,7 +33,7 @@ The HTTP transport accepts JSON-RPC MCP requests via `POST /mcp` and exposes `GE
 
 ## Output Size
 
-MCP tool responses are compacted before they are returned to clients so large debug/event payloads do not immediately overflow agent context windows. Long strings are truncated, large arrays/objects include `_mcp_truncated` markers, and IDs/status fields remain in-place when they are within the retained payload.
+MCP tool responses are compacted before they are returned to clients so large debug/event payloads do not immediately overflow agent context windows. Long strings are truncated, large arrays/objects include `_mcp_truncated` markers, and IDs/status fields remain in-place when they are within the retained payload. Run listing is intentionally summary-only (`run_id`, `date`, `status`); use `foreman.runs.inspect` to request one run's full payload.
 
 ## Tool Set
 
@@ -48,7 +48,9 @@ MCP tool responses are compacted before they are returned to clients so large de
 | `foreman.tasks.get` | One task from the Elixir projection. |
 | `foreman.tasks.update` | Mutate task through Elixir command boundary. |
 | `foreman.tasks.approve` | Approve an open task through Elixir command boundary. |
-| `foreman.runs.list` | Recent project runs. |
+| `foreman.tasks.reset` | Run the local CLI reset flow for a task: stop stale workers, fail old active runs, clean worktree/branch/log/report artifacts, mark ready, and tick the scheduler. |
+| `foreman.runs.list` | Recent project runs as lightweight `run_id`/`date`/`status` summaries. |
+| `foreman.runs.inspect` | Full payload for one run id. |
 | `foreman.inbox.list` | Agent messages by run or project. |
 | `foreman.events.list` | Lifecycle events by run or project. |
 | `foreman.debug.timeline` | Elixir debug timeline for one run. |
@@ -71,12 +73,13 @@ MCP client
   └─ HTTP:  POST /mcp
         ↓
 Foreman MCP adapter (TypeScript)
-  └─ Elixir HTTP API: health, scheduler, projects, tasks, runs, inbox, lifecycle events, command boundary, debug timelines
+  ├─ Elixir HTTP API: health, scheduler, projects, tasks, runs, inbox, lifecycle events, command boundary, debug timelines
+  └─ Local CLI reset flow: host-local worker/worktree/branch/log/report cleanup and active-run terminalization for foreman.tasks.reset
         ↓
-Foreman Elixir backend
+Foreman Elixir backend + local Foreman workspace artifacts
 ```
 
-The adapter keeps all reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly.
+The adapter keeps normal reads and writes behind the Elixir HTTP API/command boundary. MCP does not read Postgres directly. `foreman.tasks.reset` is the deliberate exception because reset must clean host-local worker, git, log, and report artifacts while terminalizing old active runs before re-dispatch.
 
 ## Pi Slash Commands
 

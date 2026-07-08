@@ -115,6 +115,30 @@ describe("prompt loader", () => {
     expect(stale).toContain("default/developer.md");
   });
 
+  it("flags stale global documentation prompts that write the report at the worktree root", () => {
+    const foremanHome = makeForemanHome();
+    writeFileSync(
+      join(foremanHome, "prompts", "default", "documentation.md"),
+      "# Documentation Agent\nWrite DOCUMENTATION_REPORT.md in the worktree root after updating docs.",
+      "utf8",
+    );
+
+    const stale = findStalePrompts("/ignored/project");
+    expect(stale).toContain("default/documentation.md");
+  });
+
+  it("does not flag current global documentation prompts that use the report directory artifact", () => {
+    const foremanHome = makeForemanHome();
+    writeFileSync(
+      join(foremanHome, "prompts", "default", "documentation.md"),
+      "# Documentation Agent\nWrite the phase artifact exactly at `{{reportDir}}/DOCUMENTATION_REPORT.md`.\nDo not write `DOCUMENTATION_REPORT.md` at the worktree root.",
+      "utf8",
+    );
+
+    const stale = findStalePrompts("/ignored/project");
+    expect(stale).not.toContain("default/documentation.md");
+  });
+
   it("does not flag prompts that preserve explorer-plan markers", () => {
     const foremanHome = makeForemanHome();
     writeFileSync(

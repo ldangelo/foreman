@@ -1,8 +1,9 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { ElixirServerClient, type ElixirProject } from "../lib/elixir-server-client.js";
+import { ElixirServerClient, type ElixirProject, type ElixirRun } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
+import { resetAction } from "../cli/commands/reset.js";
 
 export type McpTransport = "stdio" | "http";
 
@@ -26,6 +27,7 @@ type ToolSpec = {
   inputSchema: Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<unknown>;
   futureUseCases?: string[];
+  compact?: boolean;
 };
 
 type McpProjectSummary = {
@@ -33,6 +35,12 @@ type McpProjectSummary = {
   name: string;
   path: string;
   status: string;
+};
+
+type McpRunSummary = {
+  run_id: string;
+  date: string | null;
+  status: string | null;
 };
 
 export type ForemanMcpOptions = {
@@ -103,6 +111,33 @@ function normalizeMcpProject(project: ElixirProject): McpProjectSummary {
     path,
     status: project.status ?? "active",
   };
+}
+
+function summarizeMcpRun(run: ElixirRun): McpRunSummary {
+  return {
+    run_id: String(run.run_id ?? run.id ?? ""),
+    date: runDate(run),
+    status: typeof run.status === "string" ? run.status : null,
+  };
+}
+
+function runDate(run: ElixirRun): string | null {
+  for (const key of ["updated_at", "created_at", "started_at", "completed_at"]) {
+    const value = run[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+
+  const toolEvents = run.tool_events;
+  if (Array.isArray(toolEvents)) {
+    for (const index of [0, toolEvents.length - 1]) {
+      const event = toolEvents[index];
+      if (event && typeof event === "object" && "observed_at" in event && typeof event.observed_at === "string" && event.observed_at.length > 0) {
+        return event.observed_at;
+      }
+    }
+  }
+
+  return null;
 }
 
 function truncateString(value: string, maxChars: number): string {
@@ -210,7 +245,8 @@ export class ForemanMcpServer {
     const args = objectParam(params, "arguments", {});
     const tool = this.tools.find((candidate) => candidate.name === name);
     if (!tool) throw new Error(`Unknown Foreman MCP tool: ${name}`);
-    const data = compactMcpPayload(await tool.handler(args));
+    const rawData = await tool.handler(args);
+    const data = tool.compact === false ? rawData : compactMcpPayload(rawData);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
       structuredContent: data,
@@ -363,8 +399,37 @@ export class ForemanMcpServer {
         }),
       },
       {
+        name: "foreman.tasks.reset",
+        description: "Reset a task through the local Foreman reset flow: stop stale workers, clean worktree/branch/log artifacts, mark ready, and tick the scheduler.",
+        inputSchema: {
+          type: "object",
+          required: ["task_id"],
+          properties: {
+            task_id: { type: "string" },
+            project_id: { type: "string", description: "Registered project id; used when project is omitted." },
+            project: { type: "string", description: "Registered project name/id/path." },
+            project_path: { type: "string", description: "Absolute project path for advanced/scripted use." },
+            reason: { type: "string" },
+            dry_run: { type: "boolean", default: false },
+            keep_worktree: { type: "boolean", default: false },
+          },
+          additionalProperties: false,
+        },
+        futureUseCases: ["remote stale-worker recovery", "operator-approved reruns", "agent-driven recovery runbooks"],
+        handler: async (args) => {
+          const code = await resetAction(stringParam(args, "task_id"), {
+            project: optionalString(args.project) ?? optionalString(args.project_id),
+            projectPath: optionalString(args.project_path),
+            reason: optionalString(args.reason),
+            dryRun: args.dry_run === true,
+            keepWorktree: args.keep_worktree === true,
+          });
+          return { ok: code === 0, exit_code: code };
+        },
+      },
+      {
         name: "foreman.runs.list",
-        description: "List recent runs from the Elixir run projection.",
+        description: "List recent runs from the Elixir run projection as lightweight summaries.",
         inputSchema: {
           type: "object",
           properties: { project_id: { type: "string" }, project: { type: "string" }, status: { type: "array", items: { type: "string" } }, limit: { type: "number", default: 20 } },
@@ -374,10 +439,28 @@ export class ForemanMcpServer {
         handler: async (args) => {
           const projectId = await this.resolveProjectId(args).catch(() => undefined);
           const statuses = arrayOfStrings(args.status);
-          return (await this.client.listRuns())
-            .filter((run) => !projectId || run.project_id === projectId)
+          return (await this.client.listRuns({ projectId }))
             .filter((run) => !statuses?.length || (typeof run.status === "string" && statuses.includes(run.status)))
-            .slice(0, numberParam(args, "limit", 20));
+            .slice(0, numberParam(args, "limit", 20))
+            .map(summarizeMcpRun);
+        },
+      },
+      {
+        name: "foreman.runs.inspect",
+        description: "Return the full Elixir run payload for one run id.",
+        inputSchema: {
+          type: "object",
+          required: ["run_id"],
+          properties: { run_id: { type: "string" } },
+          additionalProperties: false,
+        },
+        futureUseCases: ["focused run debugging", "support bundle generation", "payload inspection without list bloat"],
+        compact: false,
+        handler: async (args) => {
+          const runId = stringParam(args, "run_id");
+          const run = (await this.client.listRuns()).find((candidate) => candidate.run_id === runId || candidate.id === runId);
+          if (!run) throw new Error(`Run not found: ${runId}`);
+          return run;
         },
       },
       {
