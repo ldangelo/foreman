@@ -8,11 +8,22 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createArtifactWriteTool, createDiffReadTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, type ForemanToolContext } from "../pi-sdk-tools.js";
 import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 
+
+const ghResponses = vi.hoisted<unknown[]>(() => []);
+const execFileMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    execFile: execFileMock,
+  };
+});
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 function makeMailClient(sendFn?: () => Promise<void>): NullAgentMailClient {
@@ -24,7 +35,31 @@ function makeMailClient(sendFn?: () => Promise<void>): NullAgentMailClient {
 
 const tmpDirs: string[] = [];
 
+beforeEach(() => {
+  ghResponses.length = 0;
+  execFileMock.mockImplementation((file, args, options, callback) => {
+    const done = typeof options === "function" ? options : callback;
+    if (typeof done !== "function") throw new Error("execFile callback missing");
+    if (file === "gh") {
+      const response = ghResponses.shift();
+      if (response === undefined) {
+        done(new Error("unexpected gh call"), { stdout: "", stderr: "" });
+        return;
+      }
+      done(null, { stdout: JSON.stringify(response), stderr: "" });
+      return;
+    }
+    if (file === "/bin/sh" && Array.isArray(args) && args[1] === "printf ok") {
+      done(null, { stdout: "ok", stderr: "" });
+      return;
+    }
+    done(new Error(`unexpected execFile call: ${String(file)}`), { stdout: "", stderr: "" });
+  });
+});
+
 afterEach(() => {
+  execFileMock.mockReset();
+  ghResponses.length = 0;
   for (const dir of tmpDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -139,10 +174,10 @@ describe("Foreman workflow tools", () => {
     const tool = createSafeCommandRunTool(context);
 
     const blocked = await tool.execute("call-1", { command: "lsof -ti:4766 | xargs kill -9" }, undefined, undefined, {} as never);
-    expect((blocked.content[0] as { text: string }).text).toContain("Blocked destructive");
+    expect(blocked.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Blocked destructive") }));
 
     const allowed = await tool.execute("call-2", { command: "printf ok" }, undefined, undefined, {} as never);
-    expect((allowed.content[0] as { text: string }).text).toContain("ok");
+    expect(allowed.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("ok") }));
   });
 });
 
@@ -260,20 +295,29 @@ describe("VCS and PR review tools", () => {
   });
 
   describe("createPrReviewFindingTool", () => {
-    it("returns structured PR review findings or error details", async () => {
+    it("returns structured PR review findings", async () => {
+      ghResponses.push(
+        {
+          url: "https://github.com/owner/repo/pull/42",
+          headRefOid: "abc123",
+          statusCheckRollup: [{ name: "Test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://ci.test/failure" }],
+        },
+        [{ user: { login: "coderabbitai[bot]" }, body: "🟠 Major\n\nFix this", path: "src/file.ts", line: 12, html_url: "https://review.test/comment" }],
+        [],
+      );
       const context = makeContext();
       const vcs = makeMockVcsBackend();
       const tool = createPrReviewFindingTool(vcs, context);
 
-      // The tool calls collectPrReviewContext internally, which uses gh CLI.
-      // Mock the gh command result by intercepting execFile.
       const result = await tool.execute("call-1", { prNumber: 42 }, undefined, undefined, {} as never);
-      // Since we can't easily mock the gh CLI in this test, check the structure is correct.
-      // The actual gh calls will fail in test environment, returning error details.
-      const first = result.content[0] as { type: string; text: string };
-      // Either success (if gh works) or error message
-      expect(typeof first.text).toBe("string");
-      expect(result.details).toBeDefined();
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("blockingFindings") }));
+      expect(result.details).toEqual(expect.objectContaining({
+        prNumber: 42,
+        prUrl: "https://github.com/owner/repo/pull/42",
+        headSha: "abc123",
+        blockingFindings: [expect.objectContaining({ severity: "medium", source: "review-comment", path: "src/file.ts", line: 12 })],
+        failedChecks: [expect.objectContaining({ name: "Test", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci.test/failure" })],
+      }));
     });
 
     it("passes custom projectPath when provided", async () => {
@@ -289,26 +333,35 @@ describe("VCS and PR review tools", () => {
   });
 
   describe("createMergeGateStatusTool", () => {
-    it("returns merge gate status with ready boolean", async () => {
+    it("returns ready merge gate status when checks and review gates pass", async () => {
+      ghResponses.push(
+        {
+          url: "https://github.com/owner/repo/pull/42",
+          headRefOid: "abc123",
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+          statusCheckRollup: [{ name: "Test", status: "COMPLETED", conclusion: "SUCCESS" }],
+        },
+        [],
+        [],
+        [{ user: { login: "coderabbitai[bot]" }, state: "COMMENTED" }],
+      );
       const context = makeContext();
       const vcs = makeMockVcsBackend();
       const tool = createMergeGateStatusTool(vcs, context);
 
       const result = await tool.execute("call-1", { prNumber: 42 }, undefined, undefined, {} as never);
-      const first = result.content[0] as { type: string; text: string };
-      // Since gh CLI won't work in test, expect error or partial result
-      expect(typeof first.text).toBe("string");
-      expect(result.details).toBeDefined();
-    });
-
-    it("includes ready boolean in response", async () => {
-      const context = makeContext();
-      const vcs = makeMockVcsBackend();
-      const tool = createMergeGateStatusTool(vcs, context);
-
-      const result = await tool.execute("call-1", { prNumber: 42 }, undefined, undefined, {} as never);
-      // The details should include ready boolean (or error structure)
-      expect(result.details).toHaveProperty("prNumber");
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining('"ready": true') }));
+      expect(result.details).toEqual(expect.objectContaining({
+        ready: true,
+        checksTerminal: true,
+        pendingChecks: [],
+        failedChecks: [],
+        codeRabbitSeen: true,
+        codeRabbitComplete: true,
+        blockingFindings: [],
+        mergeConflict: false,
+      }));
     });
   });
 });
