@@ -19,15 +19,19 @@ import { runPhaseSession } from "./phase-runner.js";
 import type { StreamEvent } from "./pi-sdk-runner.js";
 import {
   createArtifactWriteTool,
+  createDiffReadTool,
   createGetRunStatusTool,
+  createGitStatusTool,
   createMailReadTool,
   createMailSendTool,
   createPhaseHandoffTool,
+  createPrReviewFindingTool,
   createProgressUpdateTool,
   createSafeCommandRunTool,
   createSendMailTool,
   createTaskBlockTool,
   createValidationResultTool,
+  createMergeGateStatusTool,
   type ForemanToolContext,
 } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
@@ -842,6 +846,19 @@ async function runPhase(
   customTools.push(createProgressUpdateTool(agentMailClient ?? null, foremanToolContext));
   if (role !== "explorer") {
     customTools.push(createSafeCommandRunTool(foremanToolContext));
+  }
+
+  // VCS and PR review tools — created with worktree-scoped VcsBackend for path safety.
+  try {
+    const projectPath = config.projectPath ?? inferProjectPathFromWorkspacePath(config.worktreePath);
+    const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+    customTools.push(createDiffReadTool(vcsBackend, foremanToolContext));
+    customTools.push(createGitStatusTool(vcsBackend, foremanToolContext));
+    customTools.push(createPrReviewFindingTool(vcsBackend, foremanToolContext));
+    customTools.push(createMergeGateStatusTool(vcsBackend, foremanToolContext));
+  } catch {
+    // Non-fatal: VCS/PR tools unavailable (e.g., no git repo, network issues).
+    // Agents fall back to shell commands for these operations.
   }
 
   let policySequence = 0;
