@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+const GH_JSON_TIMEOUT_MS = 30_000;
+
 export type BlockingSeverity = "critical" | "high" | "medium";
 
 export interface CodeRabbitFinding {
@@ -188,16 +190,13 @@ export function parseBlockingSeverity(text: string): BlockingSeverity | undefine
   return undefined;
 }
 
-function isAddressedCodeRabbitComment(body: string): boolean {
-  return /(?:✅\s*)?addressed\s+in\s+commit\b/i.test(body);
-}
 
 export function parseCodeRabbitFindings(comments: GhComment[], source: CodeRabbitFinding["source"]): CodeRabbitFinding[] {
   const findings: CodeRabbitFinding[] = [];
   for (const comment of comments) {
     if (!isCodeRabbitAuthor(comment.user?.login)) continue;
     const body = comment.body ?? "";
-    if (isAddressedCodeRabbitComment(body)) continue;
+    if (/(?:✅\s*)?addressed\s+in\s+commits?\b/i.test(body)) continue;
     const severity = parseBlockingSeverity(body);
     if (!severity) continue;
     findings.push({
@@ -231,6 +230,7 @@ async function ghJson<T>(projectPath: string, args: string[]): Promise<T> {
   const { stdout } = await execFileAsync("gh", args, {
     cwd: projectPath,
     maxBuffer: 10 * 1024 * 1024,
+    timeout: GH_JSON_TIMEOUT_MS,
   });
   return JSON.parse(stdout) as T;
 }

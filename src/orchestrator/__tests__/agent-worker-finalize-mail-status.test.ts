@@ -66,17 +66,17 @@ describe("agent-worker finalize mail status handling", () => {
 
   it("threads registered project context into Refinery during finalize PR creation", () => {
     // After refactoring, the fallback logic is in deriveFallbackRefineryOptions helper
-    // so we check that it's called with the right parameters and the result is passed to Refinery
+    // so we check that it's called with the right parameters and merged into Refinery options.
     expect(source).toContain('deriveFallbackRefineryOptions(');
     expect(source).toContain('registeredProjectId,');
     expect(source).toContain('registeredReadStore,');
     expect(source).toContain('pipelineProjectPath,');
     expect(source).toContain('config.projectId,');
     expect(source).toContain('log,');
-    // The derived options are passed to Refinery
-    expect(source).toContain('const refinery = new Refinery(');
-    expect(source).toContain('runtimeTaskClient,');
-    expect(source).toContain('registeredRefineryOptions,');
+    expect(source).toContain('const refineryOptions = {');
+    expect(source).toContain('...(registeredRefineryOptions ?? {}),');
+    expect(source).toContain('recordPrLifecycle: async (event: {');
+    expect(source).toContain('refineryOptions,');
   });
 
   it("keeps finalize mail, queue, and terminal status side effects unchanged", () => {

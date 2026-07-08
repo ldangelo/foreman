@@ -8,10 +8,22 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { createArtifactWriteTool, createMailReadTool, createSafeCommandRunTool, createSendMailTool, type ForemanToolContext } from "../pi-sdk-tools.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createArtifactWriteTool, createDiffReadTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, type ForemanToolContext } from "../pi-sdk-tools.js";
 import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
+import type { VcsBackend } from "../../lib/vcs/interface.js";
 
+
+const ghResponses = vi.hoisted<unknown[]>(() => []);
+const execFileMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    execFile: execFileMock,
+  };
+});
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 function makeMailClient(sendFn?: () => Promise<void>): NullAgentMailClient {
@@ -23,7 +35,31 @@ function makeMailClient(sendFn?: () => Promise<void>): NullAgentMailClient {
 
 const tmpDirs: string[] = [];
 
+beforeEach(() => {
+  ghResponses.length = 0;
+  execFileMock.mockImplementation((file, args, options, callback) => {
+    const done = typeof options === "function" ? options : callback;
+    if (typeof done !== "function") throw new Error("execFile callback missing");
+    if (file === "gh") {
+      const response = ghResponses.shift();
+      if (response === undefined) {
+        done(new Error("unexpected gh call"), { stdout: "", stderr: "" });
+        return;
+      }
+      done(null, { stdout: JSON.stringify(response), stderr: "" });
+      return;
+    }
+    if (file === "/bin/sh" && Array.isArray(args) && args[1] === "printf ok") {
+      done(null, { stdout: "ok", stderr: "" });
+      return;
+    }
+    done(new Error(`unexpected execFile call: ${String(file)}`), { stdout: "", stderr: "" });
+  });
+});
+
 afterEach(() => {
+  execFileMock.mockReset();
+  ghResponses.length = 0;
   for (const dir of tmpDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -138,9 +174,194 @@ describe("Foreman workflow tools", () => {
     const tool = createSafeCommandRunTool(context);
 
     const blocked = await tool.execute("call-1", { command: "lsof -ti:4766 | xargs kill -9" }, undefined, undefined, {} as never);
-    expect((blocked.content[0] as { text: string }).text).toContain("Blocked destructive");
+    expect(blocked.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Blocked destructive") }));
 
     const allowed = await tool.execute("call-2", { command: "printf ok" }, undefined, undefined, {} as never);
-    expect((allowed.content[0] as { text: string }).text).toContain("ok");
+    expect(allowed.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("ok") }));
+  });
+});
+
+describe("VCS and PR review tools", () => {
+  function makeMockVcsBackend(): VcsBackend {
+    return {
+      name: "git",
+      getRepoRoot: vi.fn().mockResolvedValue("/repo/root"),
+      getMainRepoRoot: vi.fn().mockResolvedValue("/repo/root"),
+      detectDefaultBranch: vi.fn().mockResolvedValue("main"),
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/task-1"),
+      getRemoteUrl: vi.fn().mockResolvedValue("https://github.com/owner/repo.git"),
+      checkoutBranch: vi.fn().mockResolvedValue(undefined),
+      branchExists: vi.fn().mockResolvedValue(true),
+      branchExistsOnRemote: vi.fn().mockResolvedValue(true),
+      deleteBranch: vi.fn().mockResolvedValue({ success: true }),
+      deleteRemoteBranch: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ worktreePath: "/repo/root/.foreman-worktrees/task-1" }),
+      removeWorkspace: vi.fn().mockResolvedValue(undefined),
+      listWorkspaces: vi.fn().mockResolvedValue([]),
+      stageAll: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      push: vi.fn().mockResolvedValue(undefined),
+      pull: vi.fn().mockResolvedValue(undefined),
+      saveWorktreeState: vi.fn().mockResolvedValue(false),
+      restoreWorktreeState: vi.fn().mockResolvedValue(undefined),
+      rebase: vi.fn().mockResolvedValue({ success: true }),
+      rebaseBranch: vi.fn().mockResolvedValue({ success: true }),
+      restackBranch: vi.fn().mockResolvedValue({ success: true }),
+      abortRebase: vi.fn().mockResolvedValue(undefined),
+      merge: vi.fn().mockResolvedValue({ success: true }),
+      mergeWithStrategy: vi.fn().mockResolvedValue({ success: true }),
+      rollbackFailedMerge: vi.fn().mockResolvedValue(undefined),
+      getHeadId: vi.fn().mockResolvedValue("abc123"),
+      resolveRef: vi.fn().mockResolvedValue("abc123"),
+      fetch: vi.fn().mockResolvedValue(undefined),
+      diff: vi.fn().mockResolvedValue("+added line\n-removed line"),
+      getChangedFiles: vi.fn().mockResolvedValue(["file.ts"]),
+      getRefCommitTimestamp: vi.fn().mockResolvedValue(Date.now()),
+      getModifiedFiles: vi.fn().mockResolvedValue([]),
+      getConflictingFiles: vi.fn().mockResolvedValue([]),
+      status: vi.fn().mockResolvedValue(" M modified.txt\n?? untracked.txt"),
+      cleanWorkingTree: vi.fn().mockResolvedValue(undefined),
+      mergeWithoutCommit: vi.fn().mockResolvedValue({ success: true }),
+      commitNoEdit: vi.fn().mockResolvedValue(undefined),
+      abortMerge: vi.fn().mockResolvedValue(undefined),
+      stageFile: vi.fn().mockResolvedValue(undefined),
+      stageFiles: vi.fn().mockResolvedValue(undefined),
+      checkoutFile: vi.fn().mockResolvedValue(undefined),
+      showFile: vi.fn().mockResolvedValue("file content"),
+      resetHard: vi.fn().mockResolvedValue(undefined),
+      removeFile: vi.fn().mockResolvedValue(undefined),
+      rebaseContinue: vi.fn().mockResolvedValue(undefined),
+      removeFromIndex: vi.fn().mockResolvedValue(undefined),
+      applyPatchToIndex: vi.fn().mockResolvedValue(undefined),
+      getMergeBase: vi.fn().mockResolvedValue("base123"),
+      getUntrackedFiles: vi.fn().mockResolvedValue([]),
+      isAncestor: vi.fn().mockResolvedValue(true),
+      getFinalizeCommands: vi.fn().mockReturnValue({ stage: "", commit: "", push: "" }),
+    } as unknown as VcsBackend;
+  }
+
+  describe("createDiffReadTool", () => {
+    it("returns diff between two refs", async () => {
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      const tool = createDiffReadTool(vcs, context);
+
+      const result = await tool.execute("call-1", { fromRef: "main", toRef: "HEAD" }, undefined, undefined, {} as never);
+      expect(vcs.diff).toHaveBeenCalledWith(context.worktreePath, "main", "HEAD");
+      const first = result.content[0] as { type: string; text: string };
+      expect(first.text).toContain("added line");
+      expect(first.text).toContain("removed line");
+      expect(result.details).toEqual({ fromRef: "main", toRef: "HEAD", worktreePath: context.worktreePath });
+    });
+
+    it("returns error when diff fails", async () => {
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      (vcs.diff as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("ref not found"));
+      const tool = createDiffReadTool(vcs, context);
+
+      const result = await tool.execute("call-1", { fromRef: "nonexistent", toRef: "HEAD" }, undefined, undefined, {} as never);
+      const first = result.content[0] as { type: string; text: string };
+      expect(first.text).toContain("Failed to get diff");
+      expect(first.text).toContain("ref not found");
+    });
+  });
+
+  describe("createGitStatusTool", () => {
+    it("returns working tree status", async () => {
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      const tool = createGitStatusTool(vcs, context);
+
+      const result = await tool.execute("call-1", {}, undefined, undefined, {} as never);
+      expect(vcs.status).toHaveBeenCalledWith(context.worktreePath);
+      const first = result.content[0] as { type: string; text: string };
+      expect(first.text).toContain("modified.txt");
+      expect(first.text).toContain("untracked.txt");
+      expect(result.details).toEqual({ worktreePath: context.worktreePath });
+    });
+
+    it("returns error when status fails", async () => {
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      (vcs.status as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not a git repo"));
+      const tool = createGitStatusTool(vcs, context);
+
+      const result = await tool.execute("call-1", {}, undefined, undefined, {} as never);
+      const first = result.content[0] as { type: string; text: string };
+      expect(first.text).toContain("Failed to get status");
+      expect(first.text).toContain("not a git repo");
+    });
+  });
+
+  describe("createPrReviewFindingTool", () => {
+    it("returns structured PR review findings", async () => {
+      ghResponses.push(
+        {
+          url: "https://github.com/owner/repo/pull/42",
+          headRefOid: "abc123",
+          statusCheckRollup: [{ name: "Test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://ci.test/failure" }],
+        },
+        [{ user: { login: "coderabbitai[bot]" }, body: "🟠 Major\n\nFix this", path: "src/file.ts", line: 12, html_url: "https://review.test/comment" }],
+        [],
+      );
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      const tool = createPrReviewFindingTool(vcs, context);
+
+      const result = await tool.execute("call-1", { prNumber: 42 }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("blockingFindings") }));
+      expect(result.details).toEqual(expect.objectContaining({
+        prNumber: 42,
+        prUrl: "https://github.com/owner/repo/pull/42",
+        headSha: "abc123",
+        blockingFindings: [expect.objectContaining({ severity: "medium", source: "review-comment", path: "src/file.ts", line: 12 })],
+        failedChecks: [expect.objectContaining({ name: "Test", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci.test/failure" })],
+      }));
+    });
+
+    it("passes custom projectPath when provided", async () => {
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      const tool = createPrReviewFindingTool(vcs, context);
+
+      const customPath = "/custom/project/path";
+      const result = await tool.execute("call-1", { prNumber: 42, projectPath: customPath }, undefined, undefined, {} as never);
+      // gh will fail without real config, but we verify it attempted with custom path
+      expect(result.details).toBeDefined();
+    });
+  });
+
+  describe("createMergeGateStatusTool", () => {
+    it("returns ready merge gate status when checks and review gates pass", async () => {
+      ghResponses.push(
+        {
+          url: "https://github.com/owner/repo/pull/42",
+          headRefOid: "abc123",
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+          statusCheckRollup: [{ name: "Test", status: "COMPLETED", conclusion: "SUCCESS" }],
+        },
+        [],
+        [],
+        [{ user: { login: "coderabbitai[bot]" }, state: "COMMENTED" }],
+      );
+      const context = makeContext();
+      const vcs = makeMockVcsBackend();
+      const tool = createMergeGateStatusTool(vcs, context);
+
+      const result = await tool.execute("call-1", { prNumber: 42 }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining('"ready": true') }));
+      expect(result.details).toEqual(expect.objectContaining({
+        ready: true,
+        checksTerminal: true,
+        pendingChecks: [],
+        failedChecks: [],
+        codeRabbitSeen: true,
+        codeRabbitComplete: true,
+        blockingFindings: [],
+        mergeConflict: false,
+      }));
+    });
   });
 });

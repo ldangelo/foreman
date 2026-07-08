@@ -19,6 +19,23 @@ describe("pr-review-context", () => {
     expect(findings[0]).toMatchObject({ path: "src/a.ts", line: 12, source: "review-comment" });
   });
 
+  it("ignores CodeRabbit findings that were addressed in later commits", () => {
+    const majorBody = "_⚠️ Potential issue_ | _🟠 Major_ | _⚡ Quick win_\n\nUse the stable project path when collecting PR status.";
+    const criticalBody = "Critical: merge gate reads stale review comments after the final CodeRabbit approval.";
+
+    const findings = parseCodeRabbitFindings([
+      { user: { login: "coderabbitai[bot]" }, body: `${majorBody}\n\n✅ Addressed in commits 7b2f3a1, 8c4d5e6`, path: "src/addressed-major.ts", line: 14 },
+      { user: { login: "coderabbitai[bot]" }, body: `${criticalBody}\n\n✅ Addressed in commits 7b2f3a1`, path: "src/addressed-critical.ts", line: 19 },
+      { user: { login: "coderabbitai[bot]" }, body: majorBody, path: "src/unaddressed-major.ts", line: 24, html_url: "https://example/major" },
+      { user: { login: "coderabbitai[bot]" }, body: criticalBody, path: "src/unaddressed-critical.ts", line: 29, html_url: "https://example/critical" },
+    ], "review-comment");
+
+    expect(findings).toEqual([
+      expect.objectContaining({ severity: "medium", path: "src/unaddressed-major.ts", line: 24, url: "https://example/major" }),
+      expect.objectContaining({ severity: "critical", path: "src/unaddressed-critical.ts", line: 29, url: "https://example/critical" }),
+    ]);
+  });
+
   it("extracts failed checks from status rollup", () => {
     const failed = parseFailedChecks([
       { name: "unit", status: "COMPLETED", conclusion: "SUCCESS" },

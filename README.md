@@ -271,11 +271,15 @@ await session.prompt(phasePrompt);
 
 ### Custom tools
 
-The `send_mail` tool is registered as a custom `ToolDefinition` on every agent session:
+The following tools may be registered as custom `ToolDefinition` for an agent session, depending on phase role and backend availability:
 
 | Tool | Description |
 |------|-------------|
 | `send_mail` | Send messages to other agents or foreman. Used for error reporting. |
+| `diff_read` | Get a unified diff between two refs (branches, commits, or tags) via VCS backend. |
+| `git_status` | Get the working tree status (equivalent to `git status --porcelain`) via VCS backend. |
+| `pr_review_finding` | Collect CodeRabbit blocking findings and failed checks for a pull request. |
+| `merge_gate_status` | Check PR merge readiness including checks, CodeRabbit completion, and conflicts. |
 
 Standard Pi tools are also available per phase (configured in [workflow YAML](docs/workflow-yaml-reference.md)):
 - `read`, `write`, `edit` — file operations
