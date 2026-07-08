@@ -27,6 +27,9 @@ defmodule ForemanServer.Aggregates.Run do
       "RunUpdated" ->
         state |> Map.merge(payload) |> Map.put(:exists?, true)
 
+      type when type in ["PrUpdated", "PrReady", "PrRetargeted", "PrReset"] ->
+        state |> Map.merge(payload) |> Map.put(:exists?, true)
+
       "RunCompleted" ->
         state |> Map.merge(payload) |> Map.put(:status, "completed") |> Map.put(:terminal?, true)
 
@@ -131,6 +134,30 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+
+  def handle_command(state, %{type: type, payload: payload})
+      when type in ["run.pr.update", "run.pr.ready", "run.pr.retarget", "run.pr.reset"] do
+    event_type =
+      %{
+        "run.pr.update" => "PrUpdated",
+        "run.pr.ready" => "PrReady",
+        "run.pr.retarget" => "PrRetargeted",
+        "run.pr.reset" => "PrReset"
+      }[type]
+
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, type),
+         :ok <- require_pr_payload(type, payload) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: event_type,
+         payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
   def handle_command(_state, _command), do: :unhandled
 
   defp put_phase(state, payload, status) do
@@ -158,6 +185,40 @@ defmodule ForemanServer.Aggregates.Run do
   defp drop_lifecycle_fields(payload) do
     Map.drop(payload, [:status, "status", :terminal?, "terminal?", :completed_at, "completed_at", :failed_at, "failed_at", :blocked_at, "blocked_at"])
   end
+
+  defp require_pr_payload(type, payload) do
+    required =
+      [:project_id, :task_id, :pr_url, :branch_name]
+      |> Kernel.++(
+        case type do
+          "run.pr.update" -> [:head_sha, :base_branch, :phase]
+          "run.pr.ready" -> [:head_sha, :base_branch]
+          "run.pr.retarget" -> [:old_base_branch, :new_base_branch, :head_sha]
+          "run.pr.reset" -> [:action, :reason]
+        end
+      )
+
+    with :ok <- require_required_binaries(payload, required),
+         :ok <- validate_pr_reset_action(type, Aggregate.get(payload, :action)) do
+      :ok
+    end
+  end
+
+  defp require_required_binaries(_payload, []), do: :ok
+
+  defp require_required_binaries(payload, [key | rest]) do
+    with {:ok, _value} <- Aggregate.required_binary(Aggregate.get(payload, key), key) do
+      require_required_binaries(payload, rest)
+    end
+  end
+
+  defp validate_pr_reset_action("run.pr.reset", "closed"), do: :ok
+  defp validate_pr_reset_action("run.pr.reset", action), do: {:error, {:invalid_pr_reset_action, action}}
+  defp validate_pr_reset_action(_type, _action), do: :ok
+
+  defp allow_pr_lifecycle_on_terminal_runs(_state, type)
+       when type in ["run.pr.update", "run.pr.ready", "run.pr.retarget", "run.pr.reset"],
+       do: :ok
 
   defp require_absent(%{exists?: true}, run_id), do: {:error, {:already_exists, :run, run_id}}
   defp require_absent(_state, _run_id), do: :ok

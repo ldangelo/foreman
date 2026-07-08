@@ -199,6 +199,8 @@ export interface WorkflowPhaseConfig {
    * rather than an SDK agent call. Currently only "finalize" uses this.
    */
   builtin?: boolean;
+  /** When true, successful dirty phases checkpoint work to a draft PR. */
+  checkpointPr?: boolean;
   /**
    * Bash command string executed via `/bin/sh -c` in the worktree directory.
    * Supports multi-arg commands, shell operators (`&&`, `||`, `|`), and redirects.
@@ -513,6 +515,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["retryAfterCooldown"] === "boolean") phase.retryAfterCooldown = p["retryAfterCooldown"];
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
+    if (p["checkpointPr"] === true) phase.checkpointPr = true;
     if (typeof p["bash"] === "string") phase.bash = p["bash"];
     if (typeof p["command"] === "string") phase.command = p["command"];
 

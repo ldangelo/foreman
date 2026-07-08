@@ -407,6 +407,66 @@ defmodule ForemanServer.ProjectionStore do
     update_run(projection, run_id, fn run -> Map.merge(run, payload) end)
   end
 
+  defp apply_domain_event(
+         projection,
+         %{type: "PrUpdated", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.merge(payload)
+      |> Map.put(:pr_url, Map.get(payload, :pr_url))
+      |> Map.put(:pr_state, Map.get(payload, :pr_state, Map.get(run, :pr_state, "draft")))
+      |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
+      |> Map.put(:commit_sha, Map.get(payload, :head_sha))
+      |> Map.put(:base_branch, Map.get(payload, :base_branch))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PrReady", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.merge(payload)
+      |> Map.put(:pr_url, Map.get(payload, :pr_url))
+      |> Map.put(:pr_state, "open")
+      |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
+      |> Map.put(:commit_sha, Map.get(payload, :head_sha))
+      |> Map.put(:base_branch, Map.get(payload, :base_branch))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PrRetargeted", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.merge(payload)
+      |> Map.put(:pr_url, Map.get(payload, :pr_url))
+      |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
+      |> Map.put(:commit_sha, Map.get(payload, :head_sha))
+      |> Map.put(:base_branch, Map.get(payload, :new_base_branch))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PrReset", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.merge(payload)
+      |> Map.put(:pr_url, Map.get(payload, :pr_url, Map.get(run, :pr_url)))
+      |> Map.put(:pr_state, "closed")
+    end)
+  end
+
   defp apply_domain_event(projection, %{type: "RunDeleted", payload: %{run_id: run_id}}, _mode) do
     update_in(projection, [:runs], &Map.delete(&1 || %{}, run_id))
   end

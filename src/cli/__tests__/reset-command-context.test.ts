@@ -23,6 +23,8 @@ interface ResetRunFixture {
   agent_type: string;
   session_key: string | null;
   progress: null;
+  pr_url?: string;
+  pr_state?: string;
 }
 
 const {
@@ -32,6 +34,7 @@ const {
   mockSendCommand,
   mockSchedulerTick,
   mockExecFile,
+  mockExecFileAsync,
   mockRunStore,
   mockLocalStore,
   mockMergeQueueList,
@@ -48,6 +51,7 @@ const {
   const mockSendCommand = vi.fn();
   const mockSchedulerTick = vi.fn();
   const mockHomedir = vi.fn();
+  const mockExecFileAsync = vi.fn(async () => ({ stdout: "", stderr: "" }));
   const mockExecFile = vi.fn((...args: unknown[]) => {
     const maybeCallback = args[args.length - 1];
     if (typeof maybeCallback === "function") {
@@ -57,7 +61,7 @@ const {
   });
   const promisifyCustom = Symbol.for("nodejs.util.promisify.custom");
   Object.assign(mockExecFile, {
-    [promisifyCustom]: vi.fn(async () => ({ stdout: "", stderr: "" })),
+    [promisifyCustom]: mockExecFileAsync,
   });
   const mockRunStore = {
     close: vi.fn(),
@@ -86,6 +90,7 @@ const {
     mockSendCommand,
     mockSchedulerTick,
     mockExecFile,
+    mockExecFileAsync,
     mockRunStore,
     mockLocalStore,
     mockMergeQueueList,
@@ -337,6 +342,35 @@ describe("resetAction", () => {
     }
   });
 
+  it("dry-run reports active draft PR retirement without closing GitHub or deleting branches", async () => {
+    runs = [
+      {
+        ...makeRun("run-active", "running"),
+        pr_url: "https://github.com/org/repo/pull/123",
+        pr_state: "draft",
+      },
+      makeRun("run-completed", "completed"),
+    ];
+    mockListRuns.mockResolvedValue(runs);
+    createRunArtifacts(foremanHome, runs);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const code = await resetAction("task-1", { dryRun: true, reason: "RCA retry" });
+
+      expect(code).toBe(0);
+      expect(mockDeleteBranch).not.toHaveBeenCalled();
+      expect(mockDeleteRemoteBranch).not.toHaveBeenCalled();
+      expect((mockExecFileAsync.mock.calls as unknown[][]).some((call) => call[0] === "gh")).toBe(false);
+      expect(mockSendCommand).not.toHaveBeenCalled();
+      const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(output).toContain("would close PR https://github.com/org/repo/pull/123 as superseded by reset");
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("applies reset by failing the active run before clearing artifacts and marking the task ready", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -368,6 +402,64 @@ describe("resetAction", () => {
       expect(runFailCommand.index).toBeLessThan(readyCommand.index);
       expect(readyCommand.payload.run_id).toBeNull();
       expect(mockSchedulerTick).toHaveBeenCalledOnce();
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("closes an active open PR before deleting the remote branch during reset", async () => {
+    runs = [
+      {
+        ...makeRun("run-active", "running"),
+        pr_url: "https://github.com/org/repo/pull/124",
+        pr_state: "open",
+      },
+      makeRun("run-completed", "completed"),
+    ];
+    mockListRuns.mockResolvedValue(runs);
+    createRunArtifacts(foremanHome, runs);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const code = await resetAction("task-1", { reason: "RCA retry" });
+
+      expect(code).toBe(0);
+      const execCalls = mockExecFileAsync.mock.calls as unknown[][];
+      const ghCloseCallIndex = execCalls.findIndex((call) => call[0] === "gh");
+      expect(ghCloseCallIndex).toBeGreaterThanOrEqual(0);
+      const ghCloseCall = execCalls[ghCloseCallIndex];
+      expect(ghCloseCall).toEqual([
+        "gh",
+        [
+          "pr",
+          "close",
+          "https://github.com/org/repo/pull/124",
+          "--comment",
+          "Closed by foreman reset: RCA retry. A fresh run will create a new PR.",
+        ],
+        { cwd: projectPath },
+      ]);
+      expect(mockDeleteRemoteBranch).toHaveBeenCalledWith(projectPath, "foreman/task-1");
+      const ghCloseOrder = mockExecFileAsync.mock.invocationCallOrder[ghCloseCallIndex];
+      const deleteRemoteOrder = mockDeleteRemoteBranch.mock.invocationCallOrder[0];
+      expect(ghCloseOrder).toBeDefined();
+      expect(deleteRemoteOrder).toBeDefined();
+      expect(ghCloseOrder!).toBeLessThan(deleteRemoteOrder!);
+
+      const prResetCommand = findSendCommandMatch(
+        (command, payload) =>
+          command.command_type === "run.pr.reset" &&
+          payload.run_id === "run-active" &&
+          payload.project_id === "proj-1" &&
+          payload.task_id === "task-1",
+      );
+      expect(prResetCommand?.payload).toEqual(expect.objectContaining({
+        action: "closed",
+        reason: "RCA retry",
+        pr_url: "https://github.com/org/repo/pull/124",
+        branch_name: "foreman/task-1",
+      }));
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

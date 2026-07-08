@@ -291,6 +291,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 | `mail` | object | — | Mail hook configuration (see below) |
 | `files` | object | — | File reservation configuration (see below) |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
+| `checkpointPr` | boolean | `false` | After a successful dirty phase, commit and push the worktree, then create or update a draft PR when the workflow also has a `create-pr` phase |
 
 ### Documentation Phase
 
@@ -306,7 +307,7 @@ Prompt phases with artifacts under `{task.projectReportsDir}` must instruct the 
 
 ### Finalize Phase
 
-Bundled workflows use a deterministic builtin `finalize` phase. It runs dependency install/typecheck, stages/restores workspace-safe files, commits, rebases when the target changed after QA, conditionally reruns tests, pushes `foreman/<task-id>`, and writes `FINALIZE_VALIDATION.md` plus `FINALIZE_REPORT.md`. Keep `artifact`, `verdict`, `retryWith`, and `retryOnFail` on the phase so validation failures still loop back through remediation.
+Bundled workflows use a deterministic builtin `finalize` phase. It runs dependency install/typecheck, stages/restores workspace-safe files, commits, rebases when the target changed after QA, conditionally reruns tests, pushes `foreman/<task-id>`, and writes `FINALIZE_VALIDATION.md` plus `FINALIZE_REPORT.md`. Earlier mutating phases may already have pushed draft PR checkpoints via `checkpointPr`; finalize remains the authoritative final commit before the explicit PR phases. Keep `artifact`, `verdict`, `retryWith`, and `retryOnFail` on the phase so validation failures still loop back through remediation.
 
 ```yaml
   - name: finalize
@@ -339,10 +340,11 @@ Bundled merge-capable workflows express PR and merge behavior as phases, not top
     artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
 ```
 
-- `create-pr` creates or reuses the GitHub PR.
+- `checkpointPr: true` on mutating prompt/command phases checkpoints committed work to the task branch and ensures a draft PR exists as soon as that phase produces changes. Bundled merge-capable workflows set it on developer/fix/remediation/documentation phases, not on read-only, QA/review, `finalize`, `create-pr`, `pr-wait`, or `merge`.
+- `create-pr` refreshes or reuses the same PR, marks an existing draft ready, and writes `PR_METADATA.json`.
 - `pr-wait` waits for required checks/review readiness and can route failures.
 - `merge` performs the final PR readiness gate and queues refinery merge processing.
-- Omit `merge` for workflows that should not merge. Omit `create-pr`/`pr-wait` for workflows that should not create or wait on PRs.
+- Omit `merge` for workflows that should not merge. Omit `create-pr`/`pr-wait` for workflows that should not create or wait on PRs; `checkpointPr` has no effect without `create-pr`.
 
 ### Models
 

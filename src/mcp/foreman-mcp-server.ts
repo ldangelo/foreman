@@ -400,7 +400,7 @@ export class ForemanMcpServer {
       },
       {
         name: "foreman.tasks.reset",
-        description: "Reset a task through the local Foreman reset flow: stop stale workers, clean worktree/branch/log artifacts, mark ready, and tick the scheduler.",
+        description: "Reset a task through the local Foreman reset flow: stop stale workers, close any open/draft PR for the task, clean worktree/branch/log artifacts, mark ready, and tick the scheduler.",
         inputSchema: {
           type: "object",
           required: ["task_id"],

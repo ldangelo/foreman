@@ -74,6 +74,7 @@ phases:
       onComplete: true
 
   - name: cicd-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -92,6 +93,7 @@ phases:
       leaseSecs: 600
 
   - name: cr-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -110,6 +112,7 @@ phases:
       leaseSecs: 600
 
   - name: merge-resolver
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -131,6 +134,7 @@ phases:
   # Implement skill writes an IMPLEMENT_REPORT.md to the current working directory.
   # Move it to the runtime report directory so it is not committed with the worktree.
   - name: implement
+    checkpointPr: true
     command: "mkdir -p \"{task.projectReportsDir}\" && /skill:ensemble-implement-trd && mv IMPLEMENT_REPORT.md \"{task.projectReportsDir}/IMPLEMENT_REPORT.md\" 2>/dev/null || true"
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -149,6 +153,7 @@ phases:
 
   # ── Phase 4: Developer (fix issues from finalize / qa) ──────────────────
   - name: developer
+    checkpointPr: true
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -166,6 +171,7 @@ phases:
 
   # ── Phase 5: QA ──────────────────────────────────────────────────────────
   - name: documentation
+    checkpointPr: true
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]

@@ -167,6 +167,98 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert snapshot.runs["active"].worker_status["worker-1"] == "running"
   end
 
+  test "run PR lifecycle events project current PR metadata" do
+    append!("run:run-pr", "RunStarted", %{
+      run_id: "run-pr",
+      task_id: "task-pr",
+      base_branch: "foreman/parent"
+    })
+
+    append!("run:run-pr", "PrUpdated", %{
+      run_id: "run-pr",
+      project_id: "project-1",
+      task_id: "task-pr",
+      pr_url: "https://github.com/acme/foreman/pull/42",
+      branch_name: "foreman/task-pr",
+      head_sha: "sha-update",
+      base_branch: "foreman/parent",
+      phase: "developer"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-pr"]
+    assert run.pr_url == "https://github.com/acme/foreman/pull/42"
+    assert run.pr_state == "draft"
+    assert run.pr_head_sha == "sha-update"
+    assert run.commit_sha == "sha-update"
+    assert run.base_branch == "foreman/parent"
+
+    append!("run:run-pr", "PrReady", %{
+      run_id: "run-pr",
+      project_id: "project-1",
+      task_id: "task-pr",
+      pr_url: "https://github.com/acme/foreman/pull/42",
+      branch_name: "foreman/task-pr",
+      head_sha: "sha-ready",
+      base_branch: "foreman/parent"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-pr"]
+    assert run.pr_state == "open"
+    assert run.pr_head_sha == "sha-ready"
+    assert run.commit_sha == "sha-ready"
+    assert run.base_branch == "foreman/parent"
+
+    append!("run:run-pr", "PrRetargeted", %{
+      run_id: "run-pr",
+      project_id: "project-1",
+      task_id: "task-pr",
+      pr_url: "https://github.com/acme/foreman/pull/42",
+      branch_name: "foreman/task-pr",
+      old_base_branch: "foreman/parent",
+      new_base_branch: "main",
+      head_sha: "sha-retarget"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-pr"]
+    assert run.pr_url == "https://github.com/acme/foreman/pull/42"
+    assert run.pr_state == "open"
+    assert run.pr_head_sha == "sha-retarget"
+    assert run.commit_sha == "sha-retarget"
+    assert run.base_branch == "main"
+
+    append!("run:run-pr", "PrRetargeted", %{
+      run_id: "run-pr",
+      project_id: "project-1",
+      task_id: "task-pr",
+      pr_url: "https://github.com/acme/foreman/pull/42",
+      branch_name: "foreman/task-pr",
+      old_base_branch: "main",
+      head_sha: "sha-default-target"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-pr"]
+    assert run.pr_head_sha == "sha-default-target"
+    assert run.commit_sha == "sha-default-target"
+    assert run.base_branch == nil
+
+    append!("run:run-pr", "PrReset", %{
+      run_id: "run-pr",
+      project_id: "project-1",
+      task_id: "task-pr",
+      pr_url: "https://github.com/acme/foreman/pull/42",
+      branch_name: "foreman/task-pr",
+      action: "closed",
+      reason: "reset superseded the PR"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-pr"]
+    assert run.pr_url == "https://github.com/acme/foreman/pull/42"
+    assert run.pr_state == "closed"
+    assert run.pr_head_sha == "sha-default-target"
+    assert run.commit_sha == "sha-default-target"
+    assert run.base_branch == nil
+  end
+
   test "projection rebuild drops corrupted state and replays from events" do
     append!("task:task-1", "TaskCreated", %{
       task_id: "task-1",

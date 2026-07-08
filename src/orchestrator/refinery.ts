@@ -21,6 +21,26 @@ import { runWorkspaceHook } from "../lib/setup.js";
 import type { Run, EventType } from "../lib/store.js";
 import { writeElixirOrchestrationEvent } from "./elixir-event-bridge.js";
 
+
+type PrLifecycleCommandType = "run.pr.update" | "run.pr.ready" | "run.pr.retarget" | "run.pr.reset";
+type PrLifecycleLocalEventType = "pr-updated" | "pr-ready" | "pr-retargeted" | "pr-reset";
+type ExistingPrState = {
+  state?: string;
+  headRefName?: string;
+  headRefOid?: string;
+  url?: string;
+  isDraft?: boolean;
+  baseRefName?: string;
+};
+
+type PrLifecycleRecorder = (args: {
+  run: Run;
+  commandType: PrLifecycleCommandType;
+  localEventType: PrLifecycleLocalEventType;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}) => Awaitable<void>;
+
 const execFileAsync = promisify(execFile);
 
 const TERMINAL_TASK_STATUS_BY_REFINERY_RUN_STATUS: Partial<Record<Run["status"], "failed" | "stuck" | "conflict" | "merged">> = {
@@ -43,6 +63,7 @@ export interface RefineryRunLookup {
 export interface RefineryOptions {
   runLookup?: RefineryRunLookup;
   registeredProjectId?: string;
+  recordPrLifecycle?: PrLifecycleRecorder;
 }
 
 export type RefineryStoreCompat = RefineryRunLookup & {
@@ -156,6 +177,7 @@ export class Refinery {
   private vcsBackend: VcsBackend;
   private readonly runLookup: RefineryRunLookup;
   private readonly registeredProjectId?: string;
+  private readonly recordPrLifecycle?: PrLifecycleRecorder;
 
   constructor(
     private store: RefineryStoreCompat,
@@ -170,6 +192,7 @@ export class Refinery {
     this.conflictResolver = new ConflictResolver(projectPath, DEFAULT_MERGE_CONFIG, this.vcsBackend);
     this.runLookup = opts.runLookup ?? store;
     this.registeredProjectId = opts.registeredProjectId;
+    this.recordPrLifecycle = opts.recordPrLifecycle;
   }
 
   private async lookupRun(runId: string): Promise<Run | null> {
@@ -194,7 +217,7 @@ export class Refinery {
       : Promise.resolve(this.runLookup.getRunsByBaseBranch(baseBranch, projectId));
   }
 
-  private async persistRunUpdate(run: Run, updates: Partial<Pick<Run, "status" | "completed_at" | "base_branch" | "pr_url" | "pr_state" | "pr_head_sha">>): Promise<void> {
+  private async persistRunUpdate(run: Run, updates: Partial<Pick<Run, "status" | "completed_at" | "base_branch" | "commit_sha" | "pr_url" | "pr_state" | "pr_head_sha">>): Promise<void> {
     const nextStatus = updates.status;
     const shouldPreserveTerminalSuccess = (currentStatus: Run["status"] | undefined): boolean =>
       currentStatus !== undefined
@@ -225,6 +248,20 @@ export class Refinery {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[Refinery] Event write failed (non-fatal): ${msg}`);
     }
+  }
+
+  private async persistPrLifecycle(
+    run: Run,
+    commandType: PrLifecycleCommandType,
+    localEventType: PrLifecycleLocalEventType,
+    payload: Record<string, unknown>,
+    metadata?: Record<string, unknown>,
+  ): Promise<void> {
+    if (this.recordPrLifecycle) {
+      await this.recordPrLifecycle({ run, commandType, localEventType, payload, metadata });
+      return;
+    }
+    await this.persistRunEvent(run, localEventType, payload);
   }
 
   /**
@@ -402,16 +439,18 @@ export class Refinery {
     }
   }
 
-  private async getExistingPrState(branchName: string): Promise<{ state: string; headRefName?: string; headRefOid?: string; url?: string } | null> {
+  private async getExistingPrState(branchName: string): Promise<ExistingPrState | null> {
     try {
-      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,headRefOid,url", "--jq", "."], this.projectPath);
-      const parsed = JSON.parse(prRaw) as { state?: string; headRefName?: string; headRefOid?: string; url?: string };
+      const prRaw = await gh(["pr", "view", branchName, "--json", "state,headRefName,headRefOid,url,isDraft,baseRefName", "--jq", "."], this.projectPath);
+      const parsed = JSON.parse(prRaw) as ExistingPrState;
       if (!parsed.state) return null;
       return {
         state: parsed.state,
         headRefName: parsed.headRefName,
         headRefOid: parsed.headRefOid,
         url: parsed.url,
+        isDraft: parsed.isDraft,
+        baseRefName: parsed.baseRefName,
       };
     } catch {
       return null;
@@ -419,7 +458,7 @@ export class Refinery {
   }
 
 
-  private async finalizeSuccessfulMerge(run: import("../lib/store.js").Run, branchName: string, targetBranch: string): Promise<void> {
+  private async finalizeSuccessfulMerge(run: Run, branchName: string, targetBranch: string): Promise<void> {
     if (run.worktree_path) {
       try {
         await archiveWorktreeReports(this.projectPath, run.worktree_path, run.task_id);
@@ -471,6 +510,8 @@ export class Refinery {
     updateRunStatus?: boolean;
     bodyNote?: string;
     existingOk?: boolean;
+    alreadyPushed?: boolean;
+    phase?: string;
   }): Promise<CreatedPr> {
     const run = await this.lookupRun(opts.runId);
     if (!run) throw new Error(`Run ${opts.runId} not found`);
@@ -478,45 +519,86 @@ export class Refinery {
     const baseBranch = opts.baseBranch ?? await this.vcsBackend.detectDefaultBranch(this.projectPath);
     const branchName = `foreman/${run.task_id}`;
 
-    if (!this.isTestRuntime()) {
+    if (!opts.alreadyPushed && !this.isTestRuntime()) {
       await this.vcsBackend.push(this.projectPath, branchName);
     }
 
     if (opts.existingOk !== false && !this.isTestRuntime()) {
       const existingPr = await this.getExistingPrState(branchName);
       if (existingPr?.headRefName === branchName && existingPr.url) {
-        // AC-2: Never reuse PRs for older heads — verify HEAD SHA matches.
-        // Only treat PR as stale when we know the GitHub-tracked SHA (headRefOid
-        // is non-null) AND the current branch HEAD differs. When headRefOid is
-        // null/undefined (GitHub API didn't track it), fall back to
-        // branch-name-based reuse (the PR is still valid for this branch).
         const currentBranchHead = await this.vcsBackend
           .resolveRef(this.projectPath, branchName)
           .catch(() => null);
+        const headSha = currentBranchHead ?? existingPr.headRefOid ?? run.pr_head_sha ?? run.commit_sha ?? "";
+
         if (existingPr.state === "OPEN") {
-          // Open PRs track their branch head. Reuse them even when the branch SHA
-          // changed after a PR-review retry; creating another PR for the same
-          // head branch would fail with "a pull request ... already exists".
-          await this.persistRunEvent(
-            run,
-            "pr-created",
-            {
-              taskId: run.task_id,
-              branchName,
-              baseBranch,
-              prUrl: existingPr.url,
-              existing: true,
-              reopened: false,
-              headChanged: existingPr.headRefOid != null && currentBranchHead != null && currentBranchHead !== existingPr.headRefOid,
-              draft: opts.draft ?? false,
-            },
-          );
-          const prState: Run["pr_state"] = opts.draft ?? false ? "draft" : "open";
+          const headChanged = existingPr.headRefOid != null && currentBranchHead != null && currentBranchHead !== existingPr.headRefOid;
+
+          if (headChanged) {
+            await this.persistPrLifecycle(run, "run.pr.update", "pr-updated", {
+              run_id: run.id,
+              project_id: run.project_id,
+              task_id: run.task_id,
+              pr_url: existingPr.url,
+              branch_name: branchName,
+              head_sha: currentBranchHead,
+              base_branch: baseBranch,
+              phase: opts.phase ?? "create-pr",
+              previous_head_sha: existingPr.headRefOid,
+            });
+          } else {
+            await this.persistRunEvent(
+              run,
+              "pr-created",
+              {
+                taskId: run.task_id,
+                branchName,
+                baseBranch,
+                prUrl: existingPr.url,
+                existing: true,
+                reopened: false,
+                headChanged: false,
+                draft: existingPr.isDraft ?? opts.draft ?? false,
+              },
+            );
+          }
+
+          if (existingPr.baseRefName && existingPr.baseRefName !== baseBranch) {
+            await gh(["pr", "edit", existingPr.url, "--base", baseBranch], this.projectPath);
+            await this.persistPrLifecycle(run, "run.pr.retarget", "pr-retargeted", {
+              run_id: run.id,
+              project_id: run.project_id,
+              task_id: run.task_id,
+              pr_url: existingPr.url,
+              branch_name: branchName,
+              old_base_branch: existingPr.baseRefName,
+              new_base_branch: baseBranch,
+              head_sha: headSha,
+            });
+          }
+
+          let prState: Run["pr_state"] = existingPr.isDraft ? "draft" : "open";
+          if (opts.draft === false && existingPr.isDraft === true) {
+            await gh(["pr", "ready", existingPr.url], this.projectPath);
+            prState = "open";
+            await this.persistPrLifecycle(run, "run.pr.ready", "pr-ready", {
+              run_id: run.id,
+              project_id: run.project_id,
+              task_id: run.task_id,
+              pr_url: existingPr.url,
+              branch_name: branchName,
+              head_sha: headSha,
+              base_branch: baseBranch,
+            });
+          }
+
           await this.persistRunUpdate(run, {
             status: opts.updateRunStatus ? "pr-created" : run.status,
             pr_url: existingPr.url,
             pr_state: prState,
-            pr_head_sha: currentBranchHead ?? existingPr.headRefOid ?? null,
+            pr_head_sha: headSha || null,
+            commit_sha: headSha || null,
+            base_branch: baseBranch,
           });
           return { runId: run.id, taskId: run.task_id, branchName, prUrl: existingPr.url };
         }
@@ -526,8 +608,6 @@ export class Refinery {
           currentBranchHead != null &&
           currentBranchHead !== existingPr.headRefOid
         ) {
-          // Non-open PRs with a different SHA are stale; create fresh PR below.
-          // Log this mismatch so it's visible in run events.
           await this.persistRunEvent(run, "pr-stale", {
             taskId: run.task_id,
             branchName,
@@ -536,7 +616,6 @@ export class Refinery {
             currentHead: currentBranchHead,
           });
         } else {
-          // HEAD SHA unchanged — safe to reuse the existing closed PR by reopening it.
           let reopenedExistingPr = false;
           if (existingPr.state === "CLOSED") {
             try {
@@ -548,7 +627,7 @@ export class Refinery {
               }
             }
           }
-          if (existingPr.state === "OPEN" || reopenedExistingPr) {
+          if (reopenedExistingPr) {
             await this.persistRunEvent(
               run,
               "pr-created",
@@ -558,17 +637,18 @@ export class Refinery {
                 baseBranch,
                 prUrl: existingPr.url,
                 existing: true,
-                reopened: reopenedExistingPr,
+                reopened: true,
                 draft: opts.draft ?? false,
               },
             );
-            // Update PR metadata on the run record (AC-1, AC-6).
             const prState: Run["pr_state"] = opts.draft ?? false ? "draft" : "open";
             await this.persistRunUpdate(run, {
               status: opts.updateRunStatus ? "pr-created" : run.status,
               pr_url: existingPr.url,
               pr_state: prState,
-              pr_head_sha: currentBranchHead ?? null,
+              pr_head_sha: headSha || null,
+              commit_sha: headSha || null,
+              base_branch: baseBranch,
             });
             return { runId: run.id, taskId: run.task_id, branchName, prUrl: existingPr.url };
           }
@@ -609,31 +689,30 @@ export class Refinery {
           "--title", prTitle,
           "--body", body,
         ];
-        if (opts.draft) ghArgs.push("--draft");
+        if (opts.draft === true) ghArgs.push("--draft");
         return ghArgs;
       })(), this.projectPath);
 
     await this.persistRunEvent(
       run,
       "pr-created",
-      { taskId: run.task_id, branchName, baseBranch, prUrl, draft: opts.draft ?? false, existing: false },
+      { taskId: run.task_id, branchName, baseBranch, prUrl, draft: opts.draft === true, existing: false },
     );
     if (opts.updateRunStatus) {
       await this.persistRunUpdate(run, { status: "pr-created" });
     }
-    // Update PR metadata on the run record (AC-1, AC-6).
-    // Capture the current branch HEAD as pr_head_sha so we can detect SHA changes.
     const currentHead = await this.vcsBackend
       .resolveRef(this.projectPath, branchName)
       .catch(() => null);
-    const prState: import("../lib/store.js").Run["pr_state"] = opts.draft ?? false ? "draft" : "open";
+    const prState: Run["pr_state"] = opts.draft === true ? "draft" : "open";
     await this.persistRunUpdate(run, {
       pr_url: prUrl,
       pr_state: prState,
       pr_head_sha: currentHead ?? null,
+      commit_sha: currentHead ?? null,
+      base_branch: baseBranch,
     });
 
-    // Link PR back to GitHub issue (TRD-032)
     await this.#linkPrToGithubIssue(run.id, prUrl);
 
     return { runId: run.id, taskId: run.task_id, branchName, prUrl };
@@ -786,7 +865,7 @@ export class Refinery {
 
       for (const stackedRun of stackedRuns) {
         // Only rebase active (non-terminal) runs
-        const activeStatuses: import("../lib/store.js").Run["status"][] = ["pending", "running", "completed"];
+        const activeStatuses: Run["status"][] = ["pending", "running", "completed"];
         if (!activeStatuses.includes(stackedRun.status)) continue;
 
         const stackedBranch = `foreman/${stackedRun.task_id}`;
@@ -807,9 +886,30 @@ export class Refinery {
                 : "restack failed",
             );
           }
+          await this.vcsBackend.push(this.projectPath, stackedBranch, { forceWithLease: true, allowNew: true });
+          const headSha = await this.vcsBackend.resolveRef(this.projectPath, stackedBranch).catch(() => null);
           console.error(`[Refinery] Rebased stacked branch ${stackedBranch} onto ${targetBranch} (was on ${mergedBranch})`);
-          // Clear the stacked base branch after the restack.
-          await this.persistRunUpdate(stackedRun, { base_branch: null });
+          await this.persistRunUpdate(stackedRun, {
+            base_branch: null,
+            ...(headSha ? { commit_sha: headSha, pr_head_sha: headSha } : {}),
+          });
+          const existingPr = this.isTestRuntime() ? null : await this.getExistingPrState(stackedBranch);
+          if (existingPr?.state === "OPEN" && existingPr.url && existingPr.baseRefName && existingPr.baseRefName !== targetBranch) {
+            const retargetHeadSha = headSha ?? existingPr.headRefOid ?? stackedRun.pr_head_sha ?? stackedRun.commit_sha;
+            if (retargetHeadSha) {
+              await gh(["pr", "edit", existingPr.url, "--base", targetBranch], this.projectPath);
+              await this.persistPrLifecycle(stackedRun, "run.pr.retarget", "pr-retargeted", {
+                run_id: stackedRun.id,
+                project_id: stackedRun.project_id,
+                task_id: stackedRun.task_id,
+                pr_url: existingPr.url,
+                branch_name: stackedBranch,
+                old_base_branch: existingPr.baseRefName,
+                new_base_branch: targetBranch,
+                head_sha: retargetHeadSha,
+              });
+            }
+          }
         } catch (rebaseErr: unknown) {
           const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
           console.warn(`[Refinery] Warning: failed to rebase stacked branch ${stackedBranch} onto ${targetBranch}: ${msg.slice(0, 300)}`);
@@ -829,11 +929,11 @@ export class Refinery {
    * Returns the CreatedPr info, or null if PR creation fails.
    */
   private async createPrForConflict(
-    run: import("../lib/store.js").Run,
+    run: Run,
     branchName: string,
     baseBranch: string,
     conflictNote: string,
-  ): Promise<import("./types.js").CreatedPr | null> {
+  ): Promise<CreatedPr | null> {
     try {
       // Push branch to origin (force-push since rebase may have rewritten history)
       await this.vcsBackend.push(this.projectPath, branchName, { force: true });
@@ -896,10 +996,10 @@ export class Refinery {
    * Without a taskId filter we only return "completed" runs to avoid accidentally
    * re-attempting bulk merges of runs that failed for unrelated reasons.
    */
-  async getCompletedRuns(projectId?: string, taskId?: string): Promise<import("../lib/store.js").Run[]> {
+  async getCompletedRuns(projectId?: string, taskId?: string): Promise<Run[]> {
     if (taskId) {
       // For targeted retries, look in completed AND terminal failure states.
-      const retryStatuses: import("../lib/store.js").Run["status"][] = [
+      const retryStatuses: Run["status"][] = [
         "completed",
         "test-failed",
         "conflict",
@@ -919,7 +1019,7 @@ export class Refinery {
    * Order runs by task dependency graph so that dependencies merge before dependents.
    * Falls back to insertion order if dependency info is unavailable.
    */
-  async orderByDependencies(runs: import("../lib/store.js").Run[]): Promise<import("../lib/store.js").Run[]> {
+  async orderByDependencies(runs: Run[]): Promise<Run[]> {
     if (runs.length <= 1) return runs;
 
     try {
@@ -959,7 +1059,7 @@ export class Refinery {
         if (deg === 0) queue.push(id);
       }
 
-      const sorted: import("../lib/store.js").Run[] = [];
+      const sorted: Run[] = [];
       while (queue.length > 0) {
         const id = queue.shift()!;
         const run = runMap.get(id);
@@ -1003,7 +1103,7 @@ export class Refinery {
      * instead of querying for completed runs. This eliminates the race condition
      * where finalize marks a run completed but the query hasn't yet seen the update.
      */
-    overrideRun?: import("../lib/store.js").Run;
+    overrideRun?: Run;
     /**
      * Optional run ID to fetch the run directly by ID.
      * When provided, the run is fetched using store.getRun(runId) which doesn't
@@ -1022,7 +1122,7 @@ export class Refinery {
     // 1. If runId is provided, fetch the run by ID directly (no status filter) - most reliable
     // 2. Else if overrideRun is provided, use it directly
     // 3. Else fall back to querying for completed runs
-    let rawRuns: import("../lib/store.js").Run[];
+    let rawRuns: Run[];
     if (opts?.runId) {
       // Fetch by ID directly - bypasses status check entirely.
       // This is the most reliable path for immediate merge calls because
@@ -1055,7 +1155,7 @@ export class Refinery {
     // Kept separate from testFailures so auto-merge reports reason "unexpected-error"
     // rather than "test-failure" and uses the correct retry path (Fix 3).
     const unexpectedErrors: FailedRun[] = [];
-    const prsCreated: import("./types.js").CreatedPr[] = [];
+    const prsCreated: CreatedPr[] = [];
 
     try {
       for (const run of completedRuns) {

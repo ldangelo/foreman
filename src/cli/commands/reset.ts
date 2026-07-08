@@ -76,6 +76,75 @@ const resetActiveRunStatuses: Record<string, true> = {
   conflict: true,
 };
 
+
+function prTimestampOf(run: Record<string, unknown>): number {
+  for (const key of ["updated_at", "completed_at", "started_at", "created_at"]) {
+    const value = run[key];
+    if (typeof value !== "string") continue;
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+async function retireResetPr(args: {
+  runs: Record<string, unknown>[];
+  branchName: string;
+  reason: string;
+  dryRun: boolean;
+  projectPath: string;
+  client?: ElixirServerClient;
+  projectId?: string;
+  taskId?: string;
+}): Promise<{ retired: boolean; prUrl?: string }> {
+  const run = [...args.runs]
+    .filter((candidate) =>
+      typeof candidate.pr_url === "string" &&
+      (candidate.pr_state === "open" || candidate.pr_state === "draft"),
+    )
+    .sort((a, b) => prTimestampOf(b) - prTimestampOf(a))[0];
+  if (!run) return { retired: false };
+
+  const prUrl = String(run.pr_url);
+  if (args.dryRun) {
+    console.log(`  would close PR ${chalk.dim(prUrl)} as superseded by reset`);
+    return { retired: true, prUrl };
+  }
+
+  await execFileAsync("gh", [
+    "pr",
+    "close",
+    prUrl,
+    "--comment",
+    `Closed by foreman reset: ${args.reason}. A fresh run will create a new PR.`,
+  ], { cwd: args.projectPath });
+  console.log(`  closed PR ${chalk.dim(prUrl)} as superseded by reset`);
+
+  const runId = runIdOf(run);
+  if (args.client && args.projectId && args.taskId && runId) {
+    const headSha = typeof run.pr_head_sha === "string" ? run.pr_head_sha : undefined;
+    const baseBranch = typeof run.base_branch === "string" ? run.base_branch : undefined;
+    const response = await args.client.sendCommand({
+      command_id: `reset-close-pr-${runId}-${Date.now()}`,
+      command_type: "run.pr.reset",
+      payload: {
+        project_id: args.projectId,
+        task_id: args.taskId,
+        run_id: runId,
+        pr_url: prUrl,
+        branch_name: args.branchName,
+        action: "closed",
+        reason: args.reason,
+        ...(headSha ? { head_sha: headSha } : {}),
+        ...(baseBranch ? { base_branch: baseBranch } : {}),
+      },
+      metadata: { source: "foreman-reset", reason: args.reason },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+  }
+
+  return { retired: true, prUrl };
+}
 async function failActiveRunsForReset(
   client: ElixirServerClient,
   projectId: string,
@@ -214,6 +283,17 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
     }
     console.log(`  removed ${queueMatches.length} merge queue entr${queueMatches.length === 1 ? "y" : "ies"}`);
   }
+  await retireResetPr({
+    runs,
+    branchName,
+    reason,
+    dryRun,
+    projectPath: registered.path,
+    client,
+    projectId: registered.id,
+    taskId,
+  });
+
 
   if (dryRun) {
     console.log(`  would delete branch ${chalk.dim(branchName)} (force)`);

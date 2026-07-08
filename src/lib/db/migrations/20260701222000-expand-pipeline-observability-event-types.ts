@@ -27,6 +27,10 @@ const FOREMAN_EVENT_TYPES = [
   "test-fail",
   "pr-created",
   "pr-stale",
+  "pr-updated",
+  "pr-ready",
+  "pr-retargeted",
+  "pr-reset",
   "merge-queue-enqueue",
   "merge-queue-dequeue",
   "merge-queue-resolve",
@@ -84,6 +88,10 @@ export async function down(pgm: MigrationBuilder): Promise<void> {
         "run-failed",
         "task-updated",
         "cooldown",
+        "pr-updated",
+        "pr-ready",
+        "pr-retargeted",
+        "pr-reset",
       ].includes(type)),
     ])})
   )`);

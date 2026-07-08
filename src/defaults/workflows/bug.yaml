@@ -43,6 +43,7 @@ phases:
   # explicit and isolated from other workflows. Nested delegation tools are
   # intentionally omitted; exploration is the prior explicit phase.
   - name: fix
+    checkpointPr: true
     prompt: fix-issue.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
@@ -61,6 +62,7 @@ phases:
   # sequential execution; activated only when a later phase fails and uses
   # retryWith: developer.
   - name: developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -79,6 +81,7 @@ phases:
       leaseSecs: 600
 
   - name: cicd-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -97,6 +100,7 @@ phases:
       leaseSecs: 600
 
   - name: cr-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -115,6 +119,7 @@ phases:
       leaseSecs: 600
 
   - name: merge-resolver
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -134,6 +139,7 @@ phases:
 
   # ── Phase 3: documentation ──────────────────────────────────────────────
   - name: documentation
+    checkpointPr: true
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]

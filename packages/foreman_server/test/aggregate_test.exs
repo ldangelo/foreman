@@ -160,6 +160,86 @@ defmodule ForemanServer.AggregateTest do
     assert complete_spec.event_type == "PhaseCompleted"
   end
 
+  test "run PR lifecycle commands validate payloads and emit PR events" do
+    cases = [
+      {
+        "run.pr.update",
+        "PrUpdated",
+        "run-pr-update",
+        pr_payload(%{head_sha: "sha-update", base_branch: "main", phase: "developer"}),
+        [:run_id, :project_id, :task_id, :pr_url, :branch_name, :head_sha, :base_branch, :phase]
+      },
+      {
+        "run.pr.ready",
+        "PrReady",
+        "run-pr-ready",
+        pr_payload(%{head_sha: "sha-ready", base_branch: "main"}),
+        [:run_id, :project_id, :task_id, :pr_url, :branch_name, :head_sha, :base_branch]
+      },
+      {
+        "run.pr.retarget",
+        "PrRetargeted",
+        "run-pr-retarget",
+        pr_payload(%{
+          head_sha: "sha-retarget",
+          old_base_branch: "foreman/parent",
+          new_base_branch: "main"
+        }),
+        [
+          :run_id,
+          :project_id,
+          :task_id,
+          :pr_url,
+          :branch_name,
+          :old_base_branch,
+          :new_base_branch,
+          :head_sha
+        ]
+      },
+      {
+        "run.pr.reset",
+        "PrReset",
+        "run-pr-reset",
+        pr_payload(%{action: "closed", reason: "reset superseded the PR"}),
+        [:run_id, :project_id, :task_id, :pr_url, :branch_name, :action, :reason]
+      }
+    ]
+
+    Enum.each(cases, fn {command_type, event_type, run_id, payload, required_fields} ->
+      started_run!(run_id)
+
+      assert {:ok, %{event_type: ^event_type, stream_id: stream_id, payload: event_payload}} =
+               AggregateRouter.route(command_type, Map.put(payload, :run_id, run_id))
+
+      assert stream_id == "run:#{run_id}"
+      assert event_payload.run_id == run_id
+      assert event_payload.project_id == "project-1"
+      assert event_payload.task_id == "task-1"
+      assert event_payload.pr_url == "https://github.com/acme/foreman/pull/42"
+      assert event_payload.branch_name == "foreman/task-1"
+
+      Enum.each(required_fields, fn missing_field ->
+        assert {:error, {:missing_or_invalid, ^missing_field}} =
+                 AggregateRouter.route(
+                   command_type,
+                   payload
+                   |> Map.put(:run_id, run_id)
+                   |> Map.delete(missing_field)
+                 )
+      end)
+    end)
+
+    started_run!("run-pr-reset-invalid-action")
+
+    assert {:error, {:invalid_pr_reset_action, "kept"}} =
+             AggregateRouter.route(
+               "run.pr.reset",
+               pr_payload(%{action: "kept", reason: "reset tried to preserve the PR"})
+               |> Map.put(:run_id, "run-pr-reset-invalid-action")
+             )
+  end
+
+
   test "inbox aggregate validates duplicate messages and delivery targets" do
     assert {:ok, spec} =
              AggregateRouter.route("inbox.send", %{
@@ -252,5 +332,24 @@ defmodule ForemanServer.AggregateTest do
     assert Aggregate.fold(InboxThread, [
              %{type: "InboxMessageAppended", payload: %{run_id: "r", message_id: "m"}}
            ]).messages["m"].message_id == "m"
+  end
+
+  defp started_run!(run_id) do
+    assert {:ok, spec} =
+             AggregateRouter.route("run.start", %{run_id: run_id, task_id: "task-#{run_id}"})
+
+    assert {:ok, _event} = EventStore.append(spec)
+  end
+
+  defp pr_payload(extra) do
+    Map.merge(
+      %{
+        project_id: "project-1",
+        task_id: "task-1",
+        pr_url: "https://github.com/acme/foreman/pull/42",
+        branch_name: "foreman/task-1"
+      },
+      extra
+    )
   end
 end

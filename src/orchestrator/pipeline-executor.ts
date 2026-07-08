@@ -236,7 +236,9 @@ export interface PipelineContext {
   /** The runPhase function from agent-worker.ts */
   runPhase: RunPhaseFn;
   /** Execute a TypeScript builtin phase such as create-pr. */
-  runBuiltinPhase?: (phase: import("../lib/workflow-loader.js").WorkflowPhaseConfig, progress?: RunProgress) => Promise<PhaseResult>;
+  runBuiltinPhase?: (phase: WorkflowPhaseConfig, progress?: RunProgress) => Promise<PhaseResult>;
+  /** Optional post-success hook for dirty worktree checkpointing. */
+  onWorktreeUpdatedAfterPhase?: (phase: WorkflowPhaseConfig, progress: RunProgress) => Promise<void> | void;
   /** Register an agent identity for mail */
   registerAgent: (client: AnyMailClient | null, roleHint: string) => Promise<void>;
   /** Send structured mail */
@@ -1327,7 +1329,7 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
  */
 async function runPhaseSequence(
   ctx: PipelineContext,
-  phases: import("../lib/workflow-loader.js").WorkflowPhaseConfig[],
+  phases: WorkflowPhaseConfig[],
   initialProgress: RunProgress,
   /** When true (epic task mode), exhausted retries return failure instead of continuing. */
   failOnRetriesExhausted: boolean = false,
@@ -1375,6 +1377,16 @@ async function runPhaseSequence(
     metadata?: Record<string, unknown>,
   ): Promise<void> => {
     await ctx.onTaskPhaseNote?.(config.nativeTaskId ?? null, phaseName, kind, body, metadata);
+  };
+
+  const notifyWorktreeUpdated = async (phase: WorkflowPhaseConfig): Promise<void> => {
+    if (phase.checkpointPr !== true) return;
+    if (!ctx.onWorktreeUpdatedAfterPhase) return;
+    try {
+      await ctx.onWorktreeUpdatedAfterPhase(phase, progress);
+    } catch (err: unknown) {
+      ctx.log(`[PR] post-phase checkpoint callback failed after ${phase.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // Build a phase index for retryWith lookups
@@ -1819,6 +1831,7 @@ async function runPhaseSequence(
         artifactPresent,
       });
       await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
+      await notifyWorktreeUpdated(phase);
       if (result.stopPipelineSuccess) {
         ctx.log(`[${phaseName.toUpperCase()}] Completed and requested successful pipeline stop`);
         return { success: true, phaseRecords, retryCounts, qaVerdictForLog, progress };
@@ -1974,6 +1987,7 @@ async function runPhaseSequence(
           }
         }
       }
+      await notifyWorktreeUpdated(phase);
       i++;
       continue;
     }
@@ -2279,6 +2293,7 @@ async function runPhaseSequence(
                   ctx.sendMailText(agentMailClient, targetAgent, subject, artifactContent);
                 }
               }
+              await notifyWorktreeUpdated(phase);
               i++;
               continue;
             }
@@ -2555,6 +2570,7 @@ async function runPhaseSequence(
       }
     }
 
+    await notifyWorktreeUpdated(phase);
     i++;
   }
 

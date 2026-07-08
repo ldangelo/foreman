@@ -68,6 +68,7 @@ import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 import { foremanBackendMode } from "../lib/backend-mode.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 const execFileAsync = promisify(execFile);
 
@@ -753,6 +754,7 @@ interface PhaseResult {
   traceMarkdownFile?: string;
   traceWarnings?: string[];
   commandHonored?: boolean;
+  stopPipelineSuccess?: boolean;
 }
 
 /**
@@ -1010,7 +1012,7 @@ function readReport(worktreePath: string, filename: string): string | null {
  */
 async function runTroubleshooterPhase(
   config: WorkerConfig,
-  workflowConfig: import("../lib/workflow-loader.js").WorkflowConfig,
+  workflowConfig: WorkflowConfig,
   store: WorkerStoreCompat,
   logFile: string,
   notifyClient: NotificationClient,
@@ -1040,7 +1042,7 @@ async function runTroubleshooterPhase(
   const roleConfig = ROLE_CONFIGS.troubleshooter;
   const resolvedModel = onFailure.models?.["default"] ?? roleConfig.model;
 
-  const customTools: import("@mariozechner/pi-coding-agent").ToolDefinition[] = [];
+  const customTools: ToolDefinition[] = [];
   if (agentMailClient) {
     customTools.push(createSendMailTool(agentMailClient, `troubleshooter-${taskId}`));
   }
@@ -1199,6 +1201,94 @@ async function hasChangesAgainstBase(vcsBackend: VcsBackend | undefined, repoPat
   return changedFiles.length > 0;
 }
 
+async function resolvePrBaseBranch(args: {
+  store: WorkerStoreCompat;
+  runId: string;
+  targetBranch?: string;
+  vcsBackend?: VcsBackend;
+  projectPath: string;
+}): Promise<string> {
+  const runBase = args.store.getRun(args.runId)?.base_branch;
+  if (typeof runBase === "string" && runBase.trim()) return runBase.trim();
+  if (args.targetBranch?.trim()) return args.targetBranch.trim();
+  return await args.vcsBackend?.detectDefaultBranch(args.projectPath).catch(() => "main") ?? "main";
+}
+
+async function createOptionalPrLifecycleClient(): Promise<ElixirServerClient | null> {
+  if (!process.env.FOREMAN_SERVER_URL && !process.env.FOREMAN_SERVER_AUTH_TOKEN && !process.env.FOREMAN_WORKER_EVENT_TOKEN) {
+    return null;
+  }
+  try {
+    if (process.env.FOREMAN_SERVER_URL) {
+      return new ElixirServerClient(process.env.FOREMAN_SERVER_URL, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    }
+    const status = await new ElixirServerManager().ensureRunning();
+    return new ElixirServerClient(status.url, process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  } catch {
+    return null;
+  }
+}
+
+async function recordRunPrLifecycle(args: {
+  store: WorkerStoreCompat;
+  serverClient?: ElixirServerClient | null;
+  projectId: string;
+  runId: string;
+  commandType: "run.pr.update" | "run.pr.ready" | "run.pr.retarget" | "run.pr.reset";
+  localEventType: "pr-updated" | "pr-ready" | "pr-retargeted" | "pr-reset";
+  payload: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  log: (msg: string) => void;
+}): Promise<void> {
+  const headSha = typeof args.payload.head_sha === "string" ? args.payload.head_sha : undefined;
+  const prUrl = typeof args.payload.pr_url === "string" ? args.payload.pr_url : undefined;
+  const baseBranch = typeof args.payload.base_branch === "string"
+    ? args.payload.base_branch
+    : typeof args.payload.new_base_branch === "string"
+      ? args.payload.new_base_branch
+      : undefined;
+  const prState = args.localEventType === "pr-ready"
+    ? "open"
+    : args.localEventType === "pr-reset"
+      ? "closed"
+      : args.localEventType === "pr-updated"
+        ? "draft"
+        : undefined;
+
+  const updates: Record<string, unknown> = {};
+  if (headSha) {
+    updates.commit_sha = headSha;
+    updates.pr_head_sha = headSha;
+  }
+  if (prUrl) updates.pr_url = prUrl;
+  if (prState) updates.pr_state = prState;
+  if (baseBranch !== undefined) updates.base_branch = baseBranch;
+  if (Object.keys(updates).length > 0) {
+    await Promise.resolve(args.store.updateRun?.(args.runId, updates)).catch((err: unknown) => {
+      args.log(`[PR] local run metadata update failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  await Promise.resolve(args.store.logEvent?.(args.projectId, args.localEventType, args.payload, args.runId)).catch((err: unknown) => {
+    args.log(`[PR] local lifecycle event failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  });
+
+  if (!args.serverClient) return;
+  const response = await args.serverClient.sendCommand({
+    command_id: `${args.commandType.replace(/\./g, "-")}-${args.runId}-${Date.now()}`,
+    command_type: args.commandType,
+    payload: {
+      ...args.payload,
+      project_id: args.projectId,
+      run_id: args.runId,
+    },
+    metadata: args.metadata,
+  });
+  if (!response.ok) {
+    args.log(`[PR] lifecycle command ${args.commandType} failed (non-fatal): ${response.error.message}`);
+  }
+}
+
 async function runCreatePrBuiltinPhase(args: {
   config: WorkerConfig;
   store: WorkerStoreCompat;
@@ -1209,7 +1299,7 @@ async function runCreatePrBuiltinPhase(args: {
   vcsBackend?: VcsBackend;
   log: (msg: string) => void;
   agentMailClient: AnyMailClient | null;
-}): Promise<import("./pipeline-executor.js").PhaseResult> {
+}): Promise<PhaseResult> {
   const { config, store, runtimeTaskClient, pipelineProjectPath, registeredProjectId, registeredReadStore, vcsBackend, log, agentMailClient } = args;
 
   // Fallback logic mirrors runPipeline: if registeredReadStore is missing but a database
@@ -1223,17 +1313,41 @@ async function runCreatePrBuiltinPhase(args: {
     log,
   );
 
+  const prLifecycleClient = await createOptionalPrLifecycleClient();
+  const refineryOptions = {
+    ...(registeredRefineryOptions ?? {}),
+    recordPrLifecycle: async (event: {
+      commandType: "run.pr.update" | "run.pr.ready" | "run.pr.retarget" | "run.pr.reset";
+      localEventType: "pr-updated" | "pr-ready" | "pr-retargeted" | "pr-reset";
+      payload: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+    }) => recordRunPrLifecycle({
+      store,
+      serverClient: prLifecycleClient,
+      projectId: registeredProjectId ?? config.projectId,
+      runId: config.runId,
+      commandType: event.commandType,
+      localEventType: event.localEventType,
+      payload: event.payload,
+      metadata: { source: "agent-worker", phase: "create-pr", ...event.metadata },
+      log,
+    }),
+  };
+
   const refinery = new Refinery(
     store,
     runtimeTaskClient,
     pipelineProjectPath,
     vcsBackend,
-    registeredRefineryOptions,
+    refineryOptions,
   );
-  const baseBranch = config.targetBranch ?? await vcsBackend?.detectDefaultBranch(pipelineProjectPath).catch(() => "main") ?? "main";
+  const baseBranch = await resolvePrBaseBranch({ store, runId: config.runId, targetBranch: config.targetBranch, vcsBackend, projectPath: pipelineProjectPath });
   const branchName = `foreman/${config.taskId}`;
   const branchHasChanges = await hasChangesAgainstBase(vcsBackend, pipelineProjectPath, baseBranch, branchName).catch(() => true);
-  if (!branchHasChanges) {
+  const priorPrUrl = typeof store.getRun(config.runId)?.pr_url === "string" ? store.getRun(config.runId)?.pr_url : undefined;
+  const priorMetadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
+  const hasPriorPrMetadata = existsSync(priorMetadataPath);
+  if (!branchHasChanges && !priorPrUrl && !hasPriorPrMetadata) {
     const metadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
     await mkdir(dirname(metadataPath), { recursive: true });
     await writeFile(metadataPath, JSON.stringify({
@@ -1259,7 +1373,10 @@ async function runCreatePrBuiltinPhase(args: {
     runId: config.runId,
     baseBranch,
     updateRunStatus: false,
-    bodyNote: "Published by create-pr workflow phase.",
+    bodyNote: priorPrUrl || hasPriorPrMetadata ? "Finalized by create-pr workflow phase." : "Published by create-pr workflow phase.",
+    draft: false,
+    existingOk: true,
+    phase: "create-pr",
   });
   const prNumber = parsePrNumber(pr.prUrl);
   const headSha = vcsBackend ? await vcsBackend.getHeadId(config.worktreePath).catch(() => undefined) : undefined;
@@ -1271,6 +1388,8 @@ async function runCreatePrBuiltinPhase(args: {
     branchName: pr.branchName,
     headSha,
     baseBranch,
+    draft: false,
+    updatedAt: new Date().toISOString(),
   }, null, 2) + "\n", "utf8");
   log(`[CREATE-PR] PR ready: ${pr.prUrl}`);
   sendMail(agentMailClient, "foreman", "pr-created", {
@@ -1293,6 +1412,168 @@ function positiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+async function checkpointWorktreeAndEnsureDraftPrAfterPhase(args: {
+  config: WorkerConfig;
+  phase: WorkflowPhaseConfig;
+  progress: RunProgress;
+  workflowConfig: WorkflowConfig;
+  store: WorkerStoreCompat;
+  runtimeTaskClient: ITaskClient;
+  pipelineProjectPath: string;
+  registeredProjectId?: string;
+  registeredReadStore?: RegisteredReadStore;
+  vcsBackend?: VcsBackend;
+  log: (msg: string) => void;
+  agentMailClient: AnyMailClient | null;
+}): Promise<void> {
+  const {
+    config,
+    phase,
+    workflowConfig,
+    store,
+    runtimeTaskClient,
+    pipelineProjectPath,
+    registeredProjectId,
+    registeredReadStore,
+    vcsBackend,
+    log,
+    agentMailClient,
+  } = args;
+  try {
+    if (phase.checkpointPr !== true) return;
+    if (!workflowConfig.phases.some((candidate) => candidate.name === "create-pr")) return;
+    if (!vcsBackend) return;
+    if (config.env.FOREMAN_RUNTIME_MODE === "test" || process.env.FOREMAN_RUNTIME_MODE === "test") return;
+
+    const baseBranch = await resolvePrBaseBranch({
+      store,
+      runId: config.runId,
+      targetBranch: config.targetBranch,
+      vcsBackend,
+      projectPath: pipelineProjectPath,
+    });
+    const commands = vcsBackend.getFinalizeCommands({
+      taskId: config.taskId,
+      taskTitle: config.taskTitle,
+      baseBranch,
+      worktreePath: config.worktreePath,
+      githubIssueNumber: config.githubIssueNumber,
+    });
+    await runShellForFinalize(commands.restoreTrackedStateCommand || "true", config.worktreePath, PIPELINE_TIMEOUTS.gitOperationMs);
+
+    const status = await vcsBackend.status(config.worktreePath);
+    if (!status.trim()) return;
+
+    const branchName = `foreman/${config.taskId}`;
+    await vcsBackend.stageAll(config.worktreePath);
+    await vcsBackend.commit(config.worktreePath, `chore: checkpoint ${config.taskId} after ${phase.name}\n\n${config.taskTitle}`);
+    const headSha = await vcsBackend.getHeadId(config.worktreePath);
+    await Promise.resolve(store.updateRun?.(config.runId, { commit_sha: headSha }));
+
+    try {
+      await vcsBackend.push(config.worktreePath, branchName, { allowNew: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/non-fast-forward|fetch first|Updates were rejected|behind its remote/i.test(message)) throw err;
+      log(`[PR] checkpoint push rejected as non-fast-forward; retrying with force-with-lease for ${branchName}`);
+      await vcsBackend.push(config.worktreePath, branchName, { allowNew: true, forceWithLease: true });
+    }
+
+    const registeredRefineryOptions = deriveFallbackRefineryOptions(
+      registeredProjectId,
+      registeredReadStore,
+      pipelineProjectPath,
+      config.projectId,
+      log,
+    );
+    const prLifecycleClient = await createOptionalPrLifecycleClient();
+    const refinery = new Refinery(
+      store,
+      runtimeTaskClient,
+      pipelineProjectPath,
+      vcsBackend,
+      {
+        ...(registeredRefineryOptions ?? {}),
+        recordPrLifecycle: async (event: {
+          commandType: "run.pr.update" | "run.pr.ready" | "run.pr.retarget" | "run.pr.reset";
+          localEventType: "pr-updated" | "pr-ready" | "pr-retargeted" | "pr-reset";
+          payload: Record<string, unknown>;
+          metadata?: Record<string, unknown>;
+        }) => recordRunPrLifecycle({
+          store,
+          serverClient: prLifecycleClient,
+          projectId: registeredProjectId ?? config.projectId,
+          runId: config.runId,
+          commandType: event.commandType,
+          localEventType: event.localEventType,
+          payload: event.payload,
+          metadata: { source: "agent-worker", phase: phase.name, ...event.metadata },
+          log,
+        }),
+      },
+    );
+
+    const pr = await refinery.ensurePullRequestForRun({
+      runId: config.runId,
+      baseBranch,
+      draft: true,
+      updateRunStatus: false,
+      existingOk: true,
+      alreadyPushed: true,
+      bodyNote: `Draft PR checkpoint after ${phase.name} phase.`,
+      phase: phase.name,
+    });
+    const prNumber = parsePrNumber(pr.prUrl);
+    const metadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
+    await mkdir(dirname(metadataPath), { recursive: true });
+    await writeFile(metadataPath, JSON.stringify({
+      prUrl: pr.prUrl,
+      prNumber,
+      branchName: pr.branchName,
+      headSha,
+      baseBranch,
+      draft: true,
+      checkpointPhase: phase.name,
+      updatedAt: new Date().toISOString(),
+    }, null, 2) + "\n", "utf8");
+
+    await recordRunPrLifecycle({
+      store,
+      serverClient: prLifecycleClient,
+      projectId: registeredProjectId ?? config.projectId,
+      runId: config.runId,
+      commandType: "run.pr.update",
+      localEventType: "pr-updated",
+      payload: {
+        run_id: config.runId,
+        project_id: registeredProjectId ?? config.projectId,
+        task_id: config.taskId,
+        pr_url: pr.prUrl,
+        branch_name: branchName,
+        head_sha: headSha,
+        base_branch: baseBranch,
+        phase: phase.name,
+      },
+      metadata: { source: "agent-worker", phase: phase.name, checkpoint: true },
+      log,
+    });
+
+    sendMail(agentMailClient, "foreman", "pr-updated", {
+      taskId: config.taskId,
+      runId: config.runId,
+      phase: phase.name,
+      prUrl: pr.prUrl,
+      branchName,
+      headSha,
+      baseBranch,
+    });
+    log(`[PR] checkpoint draft ready after ${phase.name}: ${pr.prUrl}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`[PR] checkpoint skipped after ${phase.name}: ${message}`);
+  }
+}
+
 const PR_WAIT_POLL_MS = positiveIntEnv("FOREMAN_PR_WAIT_POLL_MS", 60_000);
 const PR_READY_STABILITY_MS = positiveIntEnv("FOREMAN_PR_READY_STABILITY_MS", 60_000);
 const MERGE_GATE_POLL_MS = positiveIntEnv("FOREMAN_MERGE_GATE_POLL_MS", 30_000);
@@ -1313,7 +1594,7 @@ async function runPrWaitBuiltinPhase(args: {
   phase: WorkflowPhaseConfig;
   pipelineProjectPath: string;
   log: (msg: string) => void;
-}): Promise<import("./pipeline-executor.js").PhaseResult> {
+}): Promise<PhaseResult> {
   const prNumber = readPrNumberFromMetadata(args.config.worktreePath, workerReportDir(args.config));
 
   const timeoutMs = (args.phase.timeoutSecs ?? 600) * 1000;
@@ -1373,7 +1654,7 @@ async function runPreparePrReviewBuiltinPhase(args: {
   config: WorkerConfig;
   pipelineProjectPath: string;
   log: (msg: string) => void;
-}): Promise<import("./pipeline-executor.js").PhaseResult> {
+}): Promise<PhaseResult> {
   const prNumber = readPrNumberFromMetadata(args.config.worktreePath, workerReportDir(args.config));
   const context = await collectPrReviewContext(args.pipelineProjectPath, prNumber);
   await writePrReviewFindings(args.config.worktreePath, context, workerReportDir(args.config));
@@ -1386,7 +1667,7 @@ async function runCliReviewBuiltinPhase(args: {
   pipelineProjectPath: string;
   vcsBackend?: VcsBackend;
   log: (msg: string) => void;
-}): Promise<import("./pipeline-executor.js").PhaseResult> {
+}): Promise<PhaseResult> {
   const baseBranch = args.config.targetBranch
     || await args.vcsBackend?.detectDefaultBranch(args.pipelineProjectPath).catch(() => "main")
     || "main";
@@ -1484,7 +1765,7 @@ async function writeFinalizeReport(args: {
 async function runDeterministicTestBuiltinPhase(args: {
   config: WorkerConfig;
   phase: WorkflowPhaseConfig;
-}): Promise<import("./pipeline-executor.js").PhaseResult | null> {
+}): Promise<PhaseResult | null> {
   if (args.config.env.FOREMAN_RUNTIME_MODE !== "test" && process.env.FOREMAN_RUNTIME_MODE !== "test") {
     return null;
   }
@@ -1509,7 +1790,7 @@ async function runFinalizeBuiltinPhase(args: {
   vcsBackend?: VcsBackend;
   log: (msg: string) => void;
   progress?: RunProgress;
-}): Promise<import("./pipeline-executor.js").PhaseResult> {
+}): Promise<PhaseResult> {
   const { config, pipelineProjectPath, log } = args;
   const vcsBackend = args.vcsBackend ?? await VcsBackendFactory.create({ backend: "auto" }, config.worktreePath);
   const baseBranch = config.targetBranch || await vcsBackend.detectDefaultBranch(pipelineProjectPath).catch(() => "main");
@@ -1691,7 +1972,7 @@ async function runMergeBuiltinPhase(args: {
   vcsBackend?: VcsBackend;
   log: (msg: string) => void;
   agentMailClient: AnyMailClient | null;
-}): Promise<import("./pipeline-executor.js").PhaseResult> {
+}): Promise<PhaseResult> {
   const { config, pipelineProjectPath, vcsBackend, log, agentMailClient } = args;
   const prNumber = (() => {
     try { return readPrNumberFromMetadata(config.worktreePath, workerReportDir(config)); } catch { return undefined; }
@@ -2028,6 +2309,22 @@ async function runPipeline(
           const msg = err instanceof Error ? err.message : String(err);
           log(`[task-note] event append failed (non-fatal): ${msg}`);
         }
+      },
+      async onWorktreeUpdatedAfterPhase(phase, progress) {
+        await checkpointWorktreeAndEnsureDraftPrAfterPhase({
+          config,
+          phase,
+          progress,
+          workflowConfig,
+          store,
+          runtimeTaskClient,
+          pipelineProjectPath,
+          registeredProjectId,
+          registeredReadStore,
+          vcsBackend,
+          log,
+          agentMailClient,
+        });
       },
       epicTasks: config.epicTasks,
       runPhase,

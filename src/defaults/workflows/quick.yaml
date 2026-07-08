@@ -22,6 +22,7 @@ setupCache:
 
 phases:
   - name: developer
+    checkpointPr: true
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -38,6 +39,7 @@ phases:
       leaseSecs: 600
 
   - name: cicd-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -56,6 +58,7 @@ phases:
       leaseSecs: 600
 
   - name: cr-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -74,6 +77,7 @@ phases:
       leaseSecs: 600
 
   - name: merge-resolver
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -92,6 +96,7 @@ phases:
       leaseSecs: 600
 
   - name: documentation
+    checkpointPr: true
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]

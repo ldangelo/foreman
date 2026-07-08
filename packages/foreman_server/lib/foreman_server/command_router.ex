@@ -279,6 +279,21 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event(command_type, payload)
+       when command_type in ["run.pr.update", "run.pr.ready", "run.pr.retarget", "run.pr.reset"] do
+    event_type =
+      %{
+        "run.pr.update" => "PrUpdated",
+        "run.pr.ready" => "PrReady",
+        "run.pr.retarget" => "PrRetargeted",
+        "run.pr.reset" => "PrReset"
+      }[command_type]
+
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
+      {:ok, event_type, Map.put(payload, :run_id, run_id), "run:#{run_id}"}
+    end
+  end
+
   defp domain_event("run.delete", payload) do
     with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
       {:ok, "RunDeleted", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
@@ -530,6 +545,13 @@ defmodule ForemanServer.CommandRouter do
       :args,
       :allowed,
       :action,
+      :base_branch,
+      :branch_name,
+      :head_sha,
+      :old_base_branch,
+      :new_base_branch,
+      :phase,
+      :pr_url,
       :reason,
       :message,
       :workflows,

@@ -79,6 +79,24 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases[1].cooldownSeconds).toBeUndefined();
   });
 
+  it("parses checkpointPr only from the literal boolean true", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "developer", prompt: "developer.md", checkpointPr: true },
+        { name: "qa", prompt: "qa.md", checkpointPr: false },
+        { name: "reviewer", prompt: "reviewer.md", checkpointPr: "true" },
+        { name: "finalize", builtin: true },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+
+    expect(config.phases.find((phase) => phase.name === "developer")?.checkpointPr).toBe(true);
+    expect(config.phases.find((phase) => phase.name === "qa")?.checkpointPr).toBeUndefined();
+    expect(config.phases.find((phase) => phase.name === "reviewer")?.checkpointPr).toBeUndefined();
+    expect(config.phases.find((phase) => phase.name === "finalize")?.checkpointPr).toBeUndefined();
+  });
+
   it("treats retryAfterCooldown as optional (defaults to undefined when not set)", () => {
     const raw = {
       name: "default",
@@ -437,6 +455,46 @@ phases:
       expect(phaseNames, workflowName).not.toContain("pr-review");
       expect(phaseNames, workflowName).toContain("merge");
       expect(config.phases.find((phase) => phase.name === "merge")?.builtin, workflowName).toBe(true);
+    }
+  });
+
+  it("bundled merge-capable workflows checkpoint exactly their mutating implementation phases", () => {
+    const expectedCheckpointPhases: Record<string, string[]> = {
+      default: ["developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
+      feature: ["developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
+      quick: ["developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
+      bug: ["fix", "developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
+      task: ["fix", "repair", "documentation", "cicd-developer", "cr-developer", "merge-resolver"],
+      chore: ["fix", "documentation"],
+      docs: ["develop", "documentation", "repair"],
+      epic: ["implement", "developer", "documentation", "cicd-developer", "cr-developer", "merge-resolver"],
+    };
+    const forbiddenCheckpointPhases = new Set([
+      "explorer",
+      "explore",
+      "qa",
+      "reviewer",
+      "cli-review",
+      "finalize",
+      "create-pr",
+      "pr-wait",
+      "merge",
+    ]);
+
+    for (const [workflowName, expectedPhases] of Object.entries(expectedCheckpointPhases)) {
+      const config = loadWorkflowConfig(workflowName, tmpDir);
+      const flagged = config.phases
+        .filter((phase) => phase.checkpointPr === true)
+        .map((phase) => phase.name)
+        .sort();
+
+      expect(flagged, workflowName).toEqual([...expectedPhases].sort());
+      for (const phaseName of forbiddenCheckpointPhases) {
+        const matchingPhases = config.phases.filter((phase) => phase.name === phaseName);
+        for (const phase of matchingPhases) {
+          expect(phase.checkpointPr, `${workflowName}.${phaseName}`).toBeUndefined();
+        }
+      }
     }
   });
 

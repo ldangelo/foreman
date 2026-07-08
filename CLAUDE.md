@@ -22,7 +22,7 @@ foreman status         # Show tasks + active agents
 foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
-foreman reset <task>   # Fail stale active runs, clean worktree/branch artifacts, and re-dispatch
+foreman reset <task>   # Close open/draft PRs, fail stale active runs, clean worktree/branch artifacts, and re-dispatch
 foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy
@@ -102,6 +102,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - No hardcoded phase names in the executor — new phases need only YAML + prompt file
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
 - Retry loops: verdict failures route to focused repair phases when configured (`repair.md` in bundled `task`/`docs` workflows) so agents fix only reported QA/review/finalize assertions; specialized retry targets still handle CI, CodeRabbit, and merge-conflict failures.
+- Mutating phases with `checkpointPr: true` commit/push successful dirty work and maintain a draft PR before the final `create-pr` gate marks it ready.
 - `send_mail` registered as a native Pi SDK tool — agents call it directly, no bash commands
 
 **Default pipeline phases:**
@@ -170,7 +171,7 @@ vcs:
 
 ## Workflow YAML Configuration
 
-Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow. PR/merge behavior is phase-driven: use explicit `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` workflow tags are invalid. The bundled bug Explorer phase indexes/updates Graphify and uses Graphify semantic queries before exact-file reads; Grep is reserved for later exact verification phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before `foreman run`; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults.
+Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow. PR/merge behavior is phase-driven: mutating phases may set `checkpointPr: true` to create/update a draft PR early, while final gating stays in explicit `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` workflow tags are invalid. The bundled bug Explorer phase indexes/updates Graphify and uses Graphify semantic queries before exact-file reads; Grep is reserved for later exact verification phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before `foreman run`; `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults.
 
 ```yaml
 # Example: src/defaults/workflows/default.yaml

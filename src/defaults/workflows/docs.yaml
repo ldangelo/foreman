@@ -15,6 +15,7 @@ phases:
   # ── Phase 1: develop ────────────────────────────────────────────────────
   # The agent writes or updates documentation based on the task title/description.
   - name: develop
+    checkpointPr: true
     prompt: developer.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -33,6 +34,7 @@ phases:
 
   # ── Phase 2: cli-review ──────────────────────────────────────────────────
   - name: documentation
+    checkpointPr: true
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -47,6 +49,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: repair
+    checkpointPr: true
     prompt: repair.md
     retryOnly: true
     tools:

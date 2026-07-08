@@ -28,27 +28,4 @@ describe("agent-worker.ts — create-pr Elixir run lookup", () => {
     expect(helperBlock).not.toContain("DATABASE_URL");
   });
 
-  it("runCreatePrBuiltinPhase passes Elixir refinery options to Refinery", () => {
-    const idx = source.indexOf("async function runCreatePrBuiltinPhase");
-    expect(idx).toBeGreaterThan(-1);
-    const block = source.slice(idx, idx + 3000);
-
-    expect(block).toContain("deriveFallbackRefineryOptions(");
-    expect(block).toContain("registeredRefineryOptions,");
-    expect(block).not.toContain("registeredProjectId && registeredReadStore ?");
-  });
-
-  it("helper is called by the finalize/create-pr refinery setup", () => {
-    const callPattern = "deriveFallbackRefineryOptions(";
-    let callCount = 0;
-    let searchFrom = 0;
-    while (true) {
-      const callIdx = source.indexOf(callPattern, searchFrom);
-      if (callIdx === -1) break;
-      const prefix = source.slice(Math.max(0, callIdx - 15), callIdx);
-      if (!prefix.includes("function")) callCount++;
-      searchFrom = callIdx + 1;
-    }
-    expect(callCount).toBe(1);
-  });
 });

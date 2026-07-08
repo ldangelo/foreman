@@ -476,4 +476,91 @@ describe("executePipeline command phase contract enforcement", () => {
     expect(markStuck.mock.calls[0]?.[6]).toBe("documentation");
     expect(markStuck.mock.calls[0]?.[7]).toContain(EXPECTED_DOCUMENTATION_ARTIFACT);
   });
+
+  it("calls the post-phase worktree callback only after successful checkpoint phases", async () => {
+    const observedOrder: string[] = [];
+    const markStuck = vi.fn().mockResolvedValue(undefined);
+    const onWorktreeUpdatedAfterPhase = vi.fn().mockImplementation(async (phase: { name: string }) => {
+      observedOrder.push(`checkpoint:${phase.name}`);
+    });
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      if (phaseName === "documentation") {
+        return {
+          ...successResult,
+          success: false,
+          error: "documentation failed",
+        };
+      }
+      return successResult;
+    });
+    const logEvent = vi.fn().mockImplementation(async (_projectId: string, eventType: string, data: { phase?: string }) => {
+      if (eventType === "complete" && data.phase) {
+        observedOrder.push(`event:${data.phase}`);
+      }
+    });
+
+    await executePipeline({
+      config: {
+        runId: "run-checkpoint-callback",
+        projectId: "proj-checkpoint-callback",
+        taskId: "task-checkpoint-callback",
+        taskTitle: "Checkpoint callback contract",
+        model: "anthropic/claude-sonnet-4-6",
+        worktreePath: tmpDir,
+        env: {},
+      },
+      workflowConfig: {
+        name: "checkpoint-contract",
+        phases: [
+          {
+            name: "developer",
+            command: "/ensemble:implement checkpoint",
+            checkpointPr: true,
+            mail: { onStart: false, onComplete: false },
+          },
+          {
+            name: "qa",
+            command: "/ensemble:test checkpoint",
+            checkpointPr: false,
+            mail: { onStart: false, onComplete: false },
+          },
+          {
+            name: "documentation",
+            command: "/ensemble:document checkpoint",
+            checkpointPr: true,
+            mail: { onStart: false, onComplete: false },
+          },
+        ],
+      },
+      store: {
+        updateRunProgress: vi.fn(),
+        logEvent,
+      },
+      logFile: join(tmpDir, "pipeline.log"),
+      notifyClient: null,
+      agentMailClient: null,
+      runPhase,
+      registerAgent: vi.fn().mockResolvedValue(undefined),
+      sendMail: vi.fn(),
+      sendMailText: vi.fn(),
+      reserveFiles: vi.fn(),
+      releaseFiles: vi.fn(),
+      markStuck,
+      log: vi.fn(),
+      onWorktreeUpdatedAfterPhase,
+      promptOpts: { projectRoot: tmpDir, workflow: "default" },
+    } as never);
+
+    expect(onWorktreeUpdatedAfterPhase).toHaveBeenCalledTimes(1);
+    expect(onWorktreeUpdatedAfterPhase).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "developer", checkpointPr: true }),
+      expect.any(Object),
+    );
+    expect(markStuck).toHaveBeenCalledTimes(1);
+    expect(observedOrder).toEqual([
+      "event:developer",
+      "checkpoint:developer",
+      "event:qa",
+    ]);
+  });
 });

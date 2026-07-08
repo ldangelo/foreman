@@ -513,13 +513,13 @@ foreman sentinel status                  # Show sentinel status
 Reset task work and rerun it.
 
 ```bash
-foreman reset task-abc                  # Stop active workers, fail old active runs, clean stale artifacts, set ready, dispatch
+foreman reset task-abc                  # Stop active workers, close open/draft PRs, fail old active runs, clean stale artifacts, set ready, dispatch
 foreman reset task-abc --reason "stale worker"
-foreman reset task-abc --dry-run        # Preview worker/worktree/branch/log cleanup and run terminalization
+foreman reset task-abc --dry-run        # Preview PR closure, worker/worktree/branch/log cleanup, and run terminalization
 foreman reset task-abc --keep-worktree  # Preserve task worktree while resetting state
 ```
 
-Use this for stale active workers, reopening closed/completed tasks, or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed, keeps the task, marks prior active runs failed with the reset reason, clears stale run linkage, removes prior run logs/reports and local/origin `foreman/<task>` branches, then returns the task to `ready`. Merged tasks remain terminal.
+Use this for stale active workers, reopening closed/completed tasks, or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed, keeps the task, closes any open/draft PR recorded for the task before deleting its remote branch, marks prior active runs failed with the reset reason, clears stale run linkage, removes prior run logs/reports and local/origin `foreman/<task>` branches, then returns the task to `ready`. Merged tasks remain terminal.
 
 Scheduler-launched task worktrees use the registered project default branch when configured, then fall back to VCS default-branch detection.
 

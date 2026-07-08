@@ -21,6 +21,7 @@ phases:
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
   # explicit and isolated from other workflows.
   - name: fix
+    checkpointPr: true
     prompt: fix-issue.md
     tools:
       allowed: [Agent, Bash, Edit, Glob, Grep, Read, TaskOutput, TaskStop, TodoWrite, WebFetch, WebSearch, Write]
@@ -37,6 +38,7 @@ phases:
   # ── Phase 2: test (bash phase — TRD-004) ────────────────────────────────
   # Runs the project's unit test suite to validate the chore quickly.
   - name: documentation
+    checkpointPr: true
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]

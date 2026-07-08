@@ -21,6 +21,7 @@ phases:
   # Uses the workflow-scoped fix-issue prompt so the artifact contract is
   # explicit and isolated from other workflows.
   - name: fix
+    checkpointPr: true
     prompt: fix-issue.md
     tools:
       allowed:
@@ -52,6 +53,7 @@ phases:
   # sequential execution; activated only when a later phase fails and uses
   # retryWith: repair.
   - name: repair
+    checkpointPr: true
     retryOnly: true
     prompt: repair.md
     tools:
@@ -69,6 +71,7 @@ phases:
       leaseSecs: 600
 
   - name: documentation
+    checkpointPr: true
     prompt: documentation.md
     tools:
       allowed: [Bash, Edit, Glob, Grep, Read, Write]
@@ -123,6 +126,7 @@ phases:
       forwardArtifactTo: foreman
 
   - name: cicd-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -142,6 +146,7 @@ phases:
       leaseSecs: 600
 
   - name: cr-developer
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:
@@ -161,6 +166,7 @@ phases:
       leaseSecs: 600
 
   - name: merge-resolver
+    checkpointPr: true
     retryOnly: true
     prompt: developer.md
     tools:

@@ -320,7 +320,7 @@ Elixir backend roles: the **Node CLI** parses commands/renders projections, the 
 
 ### `foreman reset`
 
-Reset Elixir-backed task work. The command stops active worker processes when present, marks prior active runs failed with the reset reason, removes stale task worktrees unless `--keep-worktree` is set, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
+Reset Elixir-backed task work. The command stops active worker processes when present, marks prior active runs failed with the reset reason, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
 
 ```bash
 foreman reset foreman-abc12
@@ -332,7 +332,7 @@ foreman reset foreman-abc12 --keep-worktree
 | Option | Description |
 |--------|-------------|
 | `--reason <text>` | Reason recorded in run history |
-| `--dry-run` | Preview worker/worktree/branch/log cleanup, active-run terminalization, and reset/dispatch steps |
+| `--dry-run` | Preview worker/worktree/branch/log cleanup, open/draft PR closure, active-run terminalization, and reset/dispatch steps |
 | `--keep-worktree` | Do not remove the task worktree |
 | `--project <name-or-path>` | Target a registered project name or absolute project path |
 

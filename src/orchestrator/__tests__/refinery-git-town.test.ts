@@ -91,7 +91,7 @@ function createTestRefinery() {
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock wiring
   const refinery = new Refinery(store as any, tasks as any, "/tmp/project", vcsBackend as any);
-  return { store, tasks, refinery };
+  return { store, tasks, refinery, vcsBackend };
 }
 
 function mockExecFileForPR(prUrl = "https://github.com/org/repo/pull/42") {
@@ -474,13 +474,208 @@ describe("MQ-T058d: PR creation strategy decision", () => {
         expect(createCall).toBeUndefined();
         expect(store.logEvent).toHaveBeenCalledWith(
           "proj-1",
-          "pr-created",
-          expect.objectContaining({ existing: true, headChanged: true, prUrl: "https://github.com/org/repo/pull/90" }),
+          "pr-updated",
+          expect.objectContaining({
+            pr_url: "https://github.com/org/repo/pull/90",
+            branch_name: "foreman/task-open-pr-retry",
+            head_sha: "abc123",
+            previous_head_sha: "oldsha",
+            phase: "create-pr",
+          }),
           "run-90",
         );
         expect(store.updateRun).toHaveBeenCalledWith(
           "run-90",
           expect.objectContaining({ pr_url: "https://github.com/org/repo/pull/90", pr_head_sha: "abc123" }),
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("marks an existing draft PR ready when final create-pr refreshes it", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-91", task_id: "task-draft-ready" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        const execFileMock = execFile as unknown as {
+          mock: { calls: unknown[][] };
+          mockImplementation: (implementation: (
+            cmd: string,
+            args: string[],
+            opts: unknown,
+            callback: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+          ) => void) => void;
+        };
+        execFileMock.mockImplementation((cmd, args, _opts, callback) => {
+          if (cmd === "git") {
+            callback(null, { stdout: "", stderr: "" });
+            return;
+          }
+          if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+            callback(null, {
+              stdout: JSON.stringify({
+                state: "OPEN",
+                headRefName: "foreman/task-draft-ready",
+                headRefOid: "abc123",
+                url: "https://github.com/org/repo/pull/91",
+                isDraft: true,
+                baseRefName: "main",
+              }),
+              stderr: "",
+            });
+            return;
+          }
+          if (cmd === "gh" && args[0] === "pr" && args[1] === "ready") {
+            callback(null, { stdout: "", stderr: "" });
+            return;
+          }
+          callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+        });
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-91", baseBranch: "main", draft: false });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/91");
+        const readyCall = execFileMock.mock.calls.find(
+          (call) => call[0] === "gh" && Array.isArray(call[1]) && call[1][0] === "pr" && call[1][1] === "ready",
+        );
+        expect(readyCall?.[1]).toEqual(["pr", "ready", "https://github.com/org/repo/pull/91"]);
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-ready",
+          expect.objectContaining({
+            pr_url: "https://github.com/org/repo/pull/91",
+            branch_name: "foreman/task-draft-ready",
+            head_sha: "abc123",
+            base_branch: "main",
+          }),
+          "run-91",
+        );
+        expect(store.updateRun).toHaveBeenCalledWith(
+          "run-91",
+          expect.objectContaining({ pr_state: "open", pr_url: "https://github.com/org/repo/pull/91" }),
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("retargets an existing open PR when its base branch differs", async () => {
+      const { store, refinery } = createTestRefinery();
+      const run = makeRun({ id: "run-92", task_id: "task-retarget" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        const execFileMock = execFile as unknown as {
+          mock: { calls: unknown[][] };
+          mockImplementation: (implementation: (
+            cmd: string,
+            args: string[],
+            opts: unknown,
+            callback: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+          ) => void) => void;
+        };
+        execFileMock.mockImplementation((cmd, args, _opts, callback) => {
+          if (cmd === "git") {
+            callback(null, { stdout: "", stderr: "" });
+            return;
+          }
+          if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+            callback(null, {
+              stdout: JSON.stringify({
+                state: "OPEN",
+                headRefName: "foreman/task-retarget",
+                headRefOid: "abc123",
+                url: "https://github.com/org/repo/pull/92",
+                isDraft: false,
+                baseRefName: "release",
+              }),
+              stderr: "",
+            });
+            return;
+          }
+          if (cmd === "gh" && args[0] === "pr" && args[1] === "edit") {
+            callback(null, { stdout: "", stderr: "" });
+            return;
+          }
+          callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+        });
+
+        const result = await refinery.ensurePullRequestForRun({ runId: "run-92", baseBranch: "main" });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/92");
+        const editCall = execFileMock.mock.calls.find(
+          (call) => call[0] === "gh" && Array.isArray(call[1]) && call[1][0] === "pr" && call[1][1] === "edit",
+        );
+        expect(editCall?.[1]).toEqual(["pr", "edit", "https://github.com/org/repo/pull/92", "--base", "main"]);
+        expect(store.logEvent).toHaveBeenCalledWith(
+          "proj-1",
+          "pr-retargeted",
+          expect.objectContaining({
+            pr_url: "https://github.com/org/repo/pull/92",
+            branch_name: "foreman/task-retarget",
+            old_base_branch: "release",
+            new_base_branch: "main",
+            head_sha: "abc123",
+          }),
+          "run-92",
+        );
+        expect(store.updateRun).toHaveBeenCalledWith(
+          "run-92",
+          expect.objectContaining({ base_branch: "main", pr_head_sha: "abc123" }),
+        );
+      } finally {
+        process.env.FOREMAN_RUNTIME_MODE = previousMode;
+      }
+    });
+
+    it("does not push again when the caller already pushed the branch", async () => {
+      const { store, refinery, vcsBackend } = createTestRefinery();
+      const run = makeRun({ id: "run-93", task_id: "task-already-pushed" });
+      store.getRun.mockReturnValue(run);
+      const previousMode = process.env.FOREMAN_RUNTIME_MODE;
+      process.env.FOREMAN_RUNTIME_MODE = "normal";
+
+      try {
+        const execFileMock = execFile as unknown as {
+          mock: { calls: unknown[][] };
+          mockImplementation: (implementation: (
+            cmd: string,
+            args: string[],
+            opts: unknown,
+            callback: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+          ) => void) => void;
+        };
+        execFileMock.mockImplementation((cmd, args, _opts, callback) => {
+          if (cmd === "git") {
+            callback(null, { stdout: "abc123 checkpoint commit\n", stderr: "" });
+            return;
+          }
+          if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+            callback(null, { stdout: "https://github.com/org/repo/pull/93", stderr: "" });
+            return;
+          }
+          callback(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), { stdout: "", stderr: "" });
+        });
+
+        const result = await refinery.ensurePullRequestForRun({
+          runId: "run-93",
+          baseBranch: "main",
+          draft: true,
+          existingOk: false,
+          alreadyPushed: true,
+        });
+
+        expect(result.prUrl).toBe("https://github.com/org/repo/pull/93");
+        expect(vcsBackend.push).not.toHaveBeenCalled();
+        expect(store.updateRun).toHaveBeenCalledWith(
+          "run-93",
+          expect.objectContaining({ pr_state: "draft", pr_url: "https://github.com/org/repo/pull/93" }),
         );
       } finally {
         process.env.FOREMAN_RUNTIME_MODE = previousMode;

@@ -78,7 +78,11 @@ describe("ForemanMcpServer", () => {
       "foreman.debug.timeline",
     ]));
     expect(tools.find((tool) => tool.name === "foreman.scheduler.status")?.description).toContain("Future use cases");
-    expect(tools.find((tool) => tool.name === "foreman.tasks.reset")).toMatchObject({
+    const resetTool = tools.find((tool) => tool.name === "foreman.tasks.reset");
+    expect(resetTool?.description).toMatch(/\b(PR|pull request)\b/i);
+    expect(resetTool?.description).toMatch(/retir|clos|supersed/i);
+    expect(resetTool?.description).toMatch(/branch/i);
+    expect(resetTool).toMatchObject({
       inputSchema: {
         required: ["task_id"],
         properties: {

@@ -41,7 +41,7 @@ foreman task list
 
 ### Workflows
 
-A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: use `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` tags are rejected.
+A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: mutating phases can opt into draft PR checkpoints with `checkpointPr: true`, and final PR gates remain explicit `create-pr`, `pr-wait`, and `merge` phases. Top-level `merge:` and `pr:` tags are rejected.
 
 Important phase reports:
 
@@ -225,7 +225,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 ### 9. Review and Merge
 
-Merge-capable workflows create PRs, wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
+Merge-capable workflows checkpoint draft PRs after successful mutating phases, then wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The final `create-pr` phase refreshes the existing draft and marks it ready instead of creating a second PR. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
 
 ```bash
 foreman merge
@@ -258,7 +258,7 @@ The board also monitors agent inbox updates. When a new inbox message arrives fo
 
 Use retry and doctor cleanup surgically.
 
-- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops active workers when present, marks prior active runs failed with the reset reason, removes stale task worktrees, local/origin `foreman/<task>` branches, and prior run logs/reports, clears run linkage, resets the task to ready, and dispatches it again. Merged tasks remain terminal.
+- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops active workers when present, closes any open/draft PR recorded for the task before deleting the remote branch, marks prior active runs failed with the reset reason, removes stale task worktrees, local/origin `foreman/<task>` branches, and prior run logs/reports, clears run linkage, resets the task to ready, and dispatches it again. Merged tasks remain terminal.
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
 - Use `foreman doctor --dry-run` to preview cleanup of zombie/stale runs and merged/orphaned worktrees.
@@ -290,7 +290,7 @@ If no docs need updating, `DOCUMENTATION_REPORT.md` must explain why.
 ## Safety Rules
 
 - Keep the controller workspace clean before rerunning important tasks.
-- Commit or patch-export important local changes before reset/cleanup.
+- Commit or patch-export important local changes before reset/cleanup; pushed draft PR checkpoints are safe to keep while local worktrees are removed, but reset closes the old PR before deleting its remote branch.
 - Prefer targeted retries over bulk retries.
 - Inspect reports before changing task state.
 - Do not manually mutate active worktrees unless you intend to take ownership of that run.
