@@ -93,6 +93,7 @@ describe("prompt loader", () => {
     expect(REQUIRED_PHASES.smoke).toContain("documentation");
     expect(getBundledPromptPath("default", "documentation")).toContain(join("default", "documentation.md"));
     expect(getBundledPromptContent("default", "documentation")).toContain("DOCUMENTATION_REPORT.md");
+    expect(getBundledPromptContent("default", "documentation")).toContain("Do not write `DOCUMENTATION_REPORT.md` at the worktree root");
   });
 
   it("fix-issue prompts invoke ensemble and preserve the developer artifact contract", () => {

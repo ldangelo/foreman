@@ -1943,6 +1943,11 @@ async function runPhaseSequence(
     let phaseSucceeded = result.success && !commandPhaseContractError;
     let phaseError = commandPhaseContractError ?? result.error;
 
+    if (phaseName === "documentation" && result.success && interpolatedArtifact && artifactPresent === false) {
+      phaseSucceeded = false;
+      phaseError = `Expected documentation artifact missing: ${interpolatedArtifact}`;
+    }
+
     const explicitAgentError = await phaseAgentError(agentMailClient, phaseName, taskId, phaseRunStartedAt);
     if (explicitAgentError) {
       phaseSucceeded = false;

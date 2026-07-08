@@ -278,7 +278,7 @@ defmodule ForemanServer.Overwatch do
 
   defp steering_instructions(_phase, "documentation", _outcome),
     do:
-      "Use the developer report to update only necessary operator-facing docs. Do not run tests."
+      "Use the source report and current diff to verify documentation coverage. For documentation-focused tasks with existing doc edits, report instead of broadening scope unless acceptance criteria are clearly missing. Do not run tests."
 
   defp steering_instructions(_phase, _target, _outcome),
     do:

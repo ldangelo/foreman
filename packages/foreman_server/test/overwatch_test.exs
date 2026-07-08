@@ -126,6 +126,42 @@ defmodule ForemanServer.OverwatchTest do
     assert body["summary"]["qaHandoff"] =~ "Verify task create"
   end
 
+  test "steers documentation without inviting scope-broadening churn" do
+    EventStore.append(%{
+      stream_id: "run:run-1",
+      event_type: "PhaseReportProduced",
+      payload: %{
+        run_id: "run-1",
+        task_id: "task-1",
+        phase_id: "repair",
+        outcome: "completed",
+        next_phase: "documentation",
+        artifacts: [%{name: "FIX_REPORT.md", content_type: "text/markdown"}],
+        summary: %{fix: "Updated docs requested by the task."}
+      },
+      metadata: %{correlation_id: "test"}
+    })
+
+    Process.sleep(50)
+
+    inbox = ProjectionStore.snapshot().inbox_messages |> Map.values()
+
+    steering =
+      Enum.find(
+        inbox,
+        &(&1.from == "overwatch" and &1.to == "documentation" and
+            &1.subject =~ "repair → documentation")
+      )
+
+    assert steering
+    assert steering.phase_id == "documentation"
+
+    body = Jason.decode!(steering.body)
+    assert body["targetPhase"] == "documentation"
+    assert body["instructions"] =~ "report instead of broadening scope"
+    refute body["instructions"] =~ "update only necessary operator-facing docs"
+  end
+
   test "uses QA failure report event to steer retry target" do
     EventStore.append(%{
       stream_id: "run:run-1",

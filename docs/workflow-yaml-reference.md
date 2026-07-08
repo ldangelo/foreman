@@ -294,7 +294,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 
 ### Documentation Phase
 
-Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed.
+Bundled workflows include a prompt-driven `documentation` phase before `finalize`. The shared prompt lives at `src/defaults/prompts/default/documentation.md` and is installed as `~/.foreman/prompts/default/documentation.md`. It requires agents to check whether the task changed behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations, then update the affected docs (`CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/cli-reference.md`) or write `{task.projectReportsDir}/DOCUMENTATION_REPORT.md` explaining why no doc change was needed. For documentation-focused tasks where earlier phases already changed docs, this phase should verify the existing doc diff and report instead of broadening scope or adding churn unless the diff clearly misses the task acceptance criteria.
 
 ```yaml
   - name: documentation

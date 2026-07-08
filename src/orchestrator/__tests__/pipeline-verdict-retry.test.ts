@@ -90,7 +90,7 @@ describe("verdict-triggered retry", () => {
     // Create stub prompt files so prompt-loader doesn't throw
     const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue", "repair"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue", "repair", "documentation"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
     writeFileSync(
@@ -480,6 +480,24 @@ describe("verdict-triggered retry", () => {
     // Pipeline completes successfully even without developer artifact
     expect(runPhase).toHaveBeenCalledTimes(2);
     expect(args.markStuck).not.toHaveBeenCalled();
+  });
+
+  it("documentation phase fails when its configured report artifact is missing", async () => {
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    const phases = [
+      { name: "documentation", artifact: "reports/DOCUMENTATION_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md" },
+    ];
+    const runPhase = vi.fn().mockResolvedValue(successResult());
+    const args = makeBasePipelineArgs(tmpDir, phases, runPhase, log, { autoArtifacts: false }) as any;
+
+    await executePipeline(args);
+
+    expect(args.markStuck).toHaveBeenCalledTimes(1);
+    expect(args.markStuck.mock.calls[0]?.[6]).toBe("documentation");
+    expect(args.markStuck.mock.calls[0]?.[7]).toContain("Expected documentation artifact missing: reports/DOCUMENTATION_REPORT.md");
+    expect(runPhase).toHaveBeenCalledTimes(1);
   });
 
   it("reviewer and qa retry counters are independent (separate retryOnFail budgets)", async () => {
