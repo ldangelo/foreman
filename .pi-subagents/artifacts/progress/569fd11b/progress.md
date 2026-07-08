@@ -1,19 +1,18 @@
 # Progress
 
 ## Status
-Complete
+Completed
 
 ## Tasks
-- Read context.md and plan.md.
-- Read chunk 02 file list.
-- Read all listed prompt/workflow/skill/template files.
-- Extracted graph fragment to graphify-out/.graphify_chunk_02.json.
-- Validated JSON syntax and edge/hyperedge node references.
+- Read context and plan files.
+- Read chunk file list from `graphify-out/.graphify_chunk_01_files.txt`.
+- Read all 22 listed prompt files.
+- Extracted graph fragment and wrote JSON to `graphify-out/.graphify_chunk_01.json`.
+- Validated output JSON with `jq empty`.
 
 ## Files Changed
-- graphify-out/.graphify_chunk_02.json
-- .pi-subagents/artifacts/progress/569fd11b/progress.md
+- `graphify-out/.graphify_chunk_01.json`
+- `.pi-subagents/artifacts/progress/569fd11b/progress.md`
 
 ## Notes
-- No source code changes.
-- No tests added.
+- No source files modified.
