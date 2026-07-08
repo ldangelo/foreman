@@ -25,6 +25,8 @@ import {
   formatCompactInboxSummary,
   formatInboxMessageLine,
   formatMessageTable,
+  renderMessageTable,
+  renderMessageTableRows,
 } from "../commands/inbox.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -64,6 +66,16 @@ describe("formatMessageTable", () => {
     expect(row.tool).toBe("read");
     expect(row.args).toContain("Tool read denied");
     expect(formatInboxMessageLine(msg)).toContain("Mail denied read — overwatch → explorer");
+  });
+
+  it("normalizes phase worker ids in phase and receiver columns", () => {
+    const row = formatMessageTable(makeMockMessage({
+      sender_agent_type: "cli-review-foreman-eeb44",
+      recipient_agent_type: "repair-foreman-eeb44",
+      body: "Overwatch noticed no new phase activity.",
+    }));
+    expect(row.sender).toBe("cli-review");
+    expect(row.receiver).toBe("repair");
   });
 });
 
@@ -136,7 +148,32 @@ describe("extractBodyFields", () => {
     expect(result.args).toBe("cd /tmp && ls");
   });
 
-  it("falls back to message field when argsPreview absent", () => {
+  it("shows bash command field instead of raw JSON when argsPreview absent", () => {
+    const result = extractBodyFields(
+      JSON.stringify({ kind: "update", tool: "bash", command: "cd /tmp && npm test" }),
+    );
+    expect(result.kind).toBe("update");
+    expect(result.tool).toBe("bash");
+    expect(result.args).toBe("cd /tmp && npm test");
+  });
+
+  it("extracts command from JSON-encoded argsPreview", () => {
+    const result = extractBodyFields(
+      JSON.stringify({ kind: "update", tool: "bash", argsPreview: JSON.stringify({ command: "git status --short" }) }),
+    );
+    expect(result.kind).toBe("update");
+    expect(result.tool).toBe("bash");
+    expect(result.args).toBe("git status --short");
+  });
+
+  it("extracts command from nested args and keeps rows single-line", () => {
+    const result = extractBodyFields(
+      JSON.stringify({ kind: "update", tool: "bash", args: { command: "echo one\necho two" } }),
+    );
+    expect(result.args).toBe("echo one echo two");
+  });
+
+  it("falls back to message field when argsPreview and command are absent", () => {
     const result = extractBodyFields(
       JSON.stringify({ kind: "info", tool: null, message: "hello world" }),
     );
@@ -245,7 +282,7 @@ describe("TableFormatter.formatHeader", () => {
     const header = tf.formatHeader();
     expect(header).toContain("DATETIME");
     expect(header).toContain("TASK");
-    expect(header).toContain("SENDER");
+    expect(header).toContain("PHASE");
     expect(header).toContain("RECEIVER");
     expect(header).toContain("KIND");
     expect(header).toContain("TOOL");
@@ -263,14 +300,14 @@ describe("TableFormatter.formatRow", () => {
       sender_agent_type: "explorer",
       recipient_agent_type: "developer",
       created_at: "2024-01-01T12:00:00.000Z",
-      body: JSON.stringify({ kind: "update", tool: "bash", argsPreview: "cd /tmp" }),
+      body: JSON.stringify({ phase: "fix", kind: "update", tool: "bash", argsPreview: "cd /tmp" }),
     });
 
     const row = tf.formatRow(msg);
 
     expect(row.columns.datetime).toMatch(/^2024-01-01 \d{2}:00:00$/);
     expect(row.columns.ticket).toBe("run-abc123");
-    expect(row.columns.sender).toBe("explorer");
+    expect(row.columns.sender).toBe("fix");
     expect(row.columns.receiver).toBe("developer");
     expect(row.columns.kind).toBe("update");
     expect(row.columns.tool).toBe("bash");
@@ -402,7 +439,7 @@ describe("TableFormatter.formatTable", () => {
 
     expect(table).toContain("DATETIME");
     expect(table).toContain("TASK");
-    expect(table).toContain("SENDER");
+    expect(table).toContain("PHASE");
     expect(table).toContain("RECEIVER");
     expect(table).toContain("KIND");
     expect(table).toContain("TOOL");
@@ -495,5 +532,23 @@ describe("TableFormatter.formatTable", () => {
     const table = tf.formatTable([msg]);
 
     expect(table).toContain("…");
+  });
+});
+
+describe("renderMessageTableRows", () => {
+  it("renders live watch rows without repeating table headers", () => {
+    const row = formatMessageTable(makeMockMessage({
+      body: JSON.stringify({ kind: "update", tool: "bash", argsPreview: "npm test" }),
+    }));
+
+    const fullTable = renderMessageTable([row]);
+    const rowOnly = renderMessageTableRows([row]);
+
+    expect(fullTable).toContain("DATE");
+    expect(fullTable).toContain("PHASE");
+    expect(rowOnly).not.toContain("DATE");
+    expect(rowOnly).not.toContain("PHASE");
+    expect(rowOnly).toContain("developer");
+    expect(rowOnly).toContain("npm test");
   });
 });

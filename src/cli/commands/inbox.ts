@@ -799,6 +799,9 @@ interface ParsedMessageBody {
   tool?: string;
   args?: string;
   argsPreview?: string;
+  command?: string;
+  path?: string;
+  instructions?: string;
   traceFile?: string;
   commandHonored?: boolean;
   verdict?: string;
@@ -824,6 +827,9 @@ export function parseMessageBody(body: string): ParsedMessageBody {
       kind: typeof parsed["kind"] === "string" ? parsed["kind"] : undefined,
       tool: typeof parsed["tool"] === "string" ? parsed["tool"] : undefined,
       argsPreview: typeof parsed["argsPreview"] === "string" ? parsed["argsPreview"] : undefined,
+      command: typeof parsed["command"] === "string" ? parsed["command"] : undefined,
+      path: typeof parsed["path"] === "string" ? parsed["path"] : undefined,
+      instructions: typeof parsed["instructions"] === "string" ? parsed["instructions"] : undefined,
       traceFile: typeof parsed["traceFile"] === "string" ? parsed["traceFile"] : undefined,
       commandHonored: typeof parsed["commandHonored"] === "boolean" ? parsed["commandHonored"] : undefined,
       verdict: typeof parsed["verdict"] === "string" ? parsed["verdict"] : undefined,
@@ -832,6 +838,48 @@ export function parseMessageBody(body: string): ParsedMessageBody {
   } catch {
     return {};
   }
+}
+
+function displayArgsPayload(value: string): string {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const args = parsed["args"];
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      const nested = args as Record<string, unknown>;
+      const command = nested["command"];
+      if (typeof command === "string") return command;
+      const path = nested["path"];
+      if (typeof path === "string") return path;
+    }
+    const command = parsed["command"];
+    if (typeof command === "string") return command;
+    const path = parsed["path"];
+    if (typeof path === "string") return path;
+    const instructions = parsed["instructions"];
+    if (typeof instructions === "string") return instructions;
+    const message = parsed["message"];
+    if (typeof message === "string") return message;
+    const body = parsed["body"];
+    if (typeof body === "string") return body;
+  } catch {
+    // Not a JSON payload; show as-is.
+  }
+  return value;
+}
+
+function singleLine(value: string): string {
+  return value.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+function messageArgsPreview(parsed: ParsedMessageBody, fallbackRaw?: string): string | undefined {
+  const candidate = parsed.argsPreview
+    ?? parsed.command
+    ?? parsed.path
+    ?? parsed.instructions
+    ?? parsed.message
+    ?? parsed.body
+    ?? fallbackRaw;
+  return candidate ? singleLine(displayArgsPayload(candidate)) : undefined;
 }
 
 /**
@@ -855,22 +903,23 @@ export function truncate(str: string, maxLen: number): string {
 // ── Table formatting ───────────────────────────────────────────────────────────
 
 const DEFAULT_ARGS_WIDTH = 40;
+const FORMAT_ARGS_MAX = 1000;
 
 /**
  * Format a message as a table row.
  * @param msg The message to format
  * @param argsMaxLen Maximum length for the args column (default: 40)
  */
-export function formatMessageTable(msg: Message, argsMaxLen = DEFAULT_ARGS_WIDTH): TableRow {
+export function formatMessageTable(msg: Message, argsMaxLen = FORMAT_ARGS_MAX): TableRow {
   const parsed = parseMessageBody(msg.body);
   const bodyPreview = msg.body ? msg.body.replace(/\n/g, " ") : undefined;
   const plainToolMatch = bodyPreview?.match(/^Tool\s+(\S+)\s+(denied|approved|requested|finished|error)\b/i);
-  const argsPreview = parsed.argsPreview ?? parsed.message ?? parsed.body ?? bodyPreview;
+  const argsPreview = messageArgsPreview(parsed, bodyPreview);
   return {
     date: formatTimestamp(msg.created_at),
     ticket: messageTask(msg),
-    sender: msg.sender_agent_type,
-    receiver: msg.recipient_agent_type,
+    sender: messagePhase(msg) ?? displayAgent(msg.sender_agent_type),
+    receiver: displayAgent(msg.recipient_agent_type),
     kind: parsed.kind ?? plainToolMatch?.[2]?.toLowerCase(),
     tool: parsed.tool ?? plainToolMatch?.[1]?.toLowerCase(),
     args: argsPreview ? truncate(argsPreview, argsMaxLen) : undefined,
@@ -905,6 +954,16 @@ const COL_WIDTHS = {
 } as const;
 const ARGS_DEFAULT = 40;
 
+function terminalArgsWidth(): number {
+  const columns = process.stdout.columns ?? 140;
+  const fixedWidth = COL_WIDTHS.date + COL_WIDTHS.ticket + COL_WIDTHS.sender + COL_WIDTHS.receiver + COL_WIDTHS.kind + COL_WIDTHS.tool + 18;
+  return Math.max(ARGS_DEFAULT, columns - fixedWidth);
+}
+
+function fullArgsWidth(rows: TableRow[]): number {
+  return Math.max(terminalArgsWidth(), ...rows.map((row) => row.args?.length ?? 0));
+}
+
 interface ColumnSizes {
   date: number;
   ticket: number;
@@ -920,10 +979,8 @@ interface ColumnSizes {
  * @param rows TableRow[] to render
  * @param argsWidth override for the args column width (default 40)
  */
-export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): string {
-  if (rows.length === 0) return "";
-
-  const sizes: ColumnSizes = {
+function messageTableSizes(rows: TableRow[], argsWidth = ARGS_DEFAULT): ColumnSizes {
+  return {
     date: COL_WIDTHS.date,
     ticket: Math.max(...rows.map((r) => r.ticket.length), COL_WIDTHS.ticket),
     sender: Math.max(...rows.map((r) => r.sender.length), COL_WIDTHS.sender),
@@ -932,27 +989,13 @@ export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): 
     tool: Math.max(...rows.map((r) => r.tool?.length ?? 4), COL_WIDTHS.tool),
     args: argsWidth,
   };
+}
 
-  const totalWidth =
-    sizes.date + sizes.ticket + sizes.sender + sizes.receiver +
-    sizes.kind + sizes.tool + sizes.args + 8;
-
-  const hr = "─".repeat(totalWidth);
-
-  const header = [
-    pad("DATE", sizes.date),
-    pad("TASK", sizes.ticket),
-    pad("SENDER", sizes.sender),
-    pad("RECEIVER", sizes.receiver),
-    pad("KIND", sizes.kind),
-    pad("TOOL", sizes.tool),
-    pad("ARGS", sizes.args),
-  ].join(" │ ");
-
+function renderMessageTableDataRows(rows: TableRow[], sizes: ColumnSizes): string {
   const padCell = (val: string | undefined, width: number): string =>
     pad(val ?? "-", width);
 
-  const tableLines = rows.map((row) =>
+  return rows.map((row) =>
     [
       pad(row.date, sizes.date),
       pad(row.ticket, sizes.ticket),
@@ -962,9 +1005,39 @@ export function renderMessageTable(rows: TableRow[], argsWidth = ARGS_DEFAULT): 
       padCell(row.tool, sizes.tool),
       padCell(row.args, sizes.args),
     ].join(" │ ")
-  );
+  ).join("\n");
+}
 
-  return [hr, header, hr, ...tableLines, hr].join("\n");
+export function renderMessageTableRows(rows: TableRow[], argsWidth = terminalArgsWidth()): string {
+  if (rows.length === 0) return "";
+  return renderMessageTableDataRows(rows, messageTableSizes(rows, argsWidth));
+}
+
+export function renderFullMessageTableRows(rows: TableRow[]): string {
+  return renderMessageTableRows(rows, fullArgsWidth(rows));
+}
+
+export function renderMessageTable(rows: TableRow[], argsWidth = terminalArgsWidth()): string {
+  if (rows.length === 0) return "";
+
+  const sizes = messageTableSizes(rows, argsWidth);
+  const totalWidth =
+    sizes.date + sizes.ticket + sizes.sender + sizes.receiver +
+    sizes.kind + sizes.tool + sizes.args + 8;
+
+  const hr = "─".repeat(totalWidth);
+
+  const header = [
+    pad("DATE", sizes.date),
+    pad("TASK", sizes.ticket),
+    pad("PHASE", sizes.sender),
+    pad("RECEIVER", sizes.receiver),
+    pad("KIND", sizes.kind),
+    pad("TOOL", sizes.tool),
+    pad("ARGS", sizes.args),
+  ].join(" │ ");
+
+  return [hr, header, hr, renderMessageTableDataRows(rows, sizes), hr].join("\n");
 }
 
 function pad(val: string, width: number): string {
@@ -977,7 +1050,7 @@ function pad(val: string, width: number): string {
 /**
  * Extract structured fields from a JSON message body for the newer table view.
  * Returns nulls for missing fields and falls back through
- * argsPreview → message → body for ARGS.
+ * argsPreview → command → path → instructions → message → body for ARGS.
  */
 export function extractBodyFields(body: string): {
   kind: string | null;
@@ -989,7 +1062,7 @@ export function extractBodyFields(body: string): {
   return {
     kind: parsed.kind ?? plainToolMatch?.[2]?.toLowerCase() ?? null,
     tool: parsed.tool ?? plainToolMatch?.[1]?.toLowerCase() ?? null,
-    args: parsed.argsPreview ?? parsed.message ?? parsed.body ?? (body ? body : null),
+    args: messageArgsPreview(parsed, body) ?? null,
   };
 }
 
@@ -1010,7 +1083,7 @@ interface FormattedRow {
 
 /**
  * Formats inbox messages as a space-aligned table with columns:
- * DATETIME | TASK | SENDER | RECEIVER | KIND | TOOL | ARGS
+ * DATETIME | TASK | PHASE | RECEIVER | KIND | TOOL | ARGS
  */
 export class TableFormatter {
   private readonly terminalWidth: number;
@@ -1040,8 +1113,8 @@ export class TableFormatter {
       columns: {
         datetime: this.formatDatetime(msg.created_at),
         ticket: this.middleCutTicket(messageTask(msg)),
-        sender: msg.sender_agent_type,
-        receiver: msg.recipient_agent_type,
+        sender: messagePhase(msg) ?? displayAgent(msg.sender_agent_type),
+        receiver: displayAgent(msg.recipient_agent_type),
         kind: kind ?? dash,
         tool: tool ?? dash,
         args: truncate(args ?? dash, argsMax),
@@ -1094,7 +1167,7 @@ export class TableFormatter {
   }
 
   formatHeader(): string {
-    return "DATETIME          TASK        SENDER     RECEIVER   KIND       TOOL       ARGS";
+    return "DATETIME          TASK        PHASE      RECEIVER   KIND       TOOL       ARGS";
   }
 
   private formatSeparator(widths: ReturnType<typeof this.calcWidths>): string {
@@ -1179,13 +1252,26 @@ export function adaptDaemonMessage(row: DaemonMailMessage): Message {
   };
 }
 
-function phaseFromSender(sender: string): string | undefined {
-  const match = sender.match(/^(explorer|developer|qa|reviewer|finalize|refinery)(?:-|$)/);
-  return match?.[1];
+function phaseFromAgentId(agent: string): string | undefined {
+  const known = agent.match(/^(explorer|developer|documentation|repair|qa|reviewer|cli-review|finalize|refinery)(?:-|$)/);
+  if (known) return known[1];
+
+  // Phase worker IDs are commonly `<phase>-<taskId>`, e.g.
+  // `cli-review-foreman-eeb44` or `repair-foreman-eeb44`.
+  const taskSuffixed = agent.match(/^(.+)-foreman-[a-z0-9]+$/i);
+  if (taskSuffixed && taskSuffixed[1] !== "overwatch") return taskSuffixed[1];
+
+  return undefined;
 }
 
 function messagePhase(msg: Message): string | undefined {
-  return parseMessageBody(msg.body).phase ?? phaseFromSender(msg.sender_agent_type);
+  const parsed = parseMessageBody(msg.body).phase;
+  if (parsed) return parsed;
+  return phaseFromAgentId(msg.sender_agent_type) ?? phaseFromAgentId(msg.recipient_agent_type);
+}
+
+function displayAgent(agent: string): string {
+  return phaseFromAgentId(agent) ?? agent;
 }
 
 function messageTask(msg: Message): string {
@@ -1196,7 +1282,8 @@ function messageTask(msg: Message): string {
 function messageActivity(msg: Message): string {
   const parsed = parseMessageBody(msg.body);
   const parts: string[] = [];
-  if (parsed.phase ?? phaseFromSender(msg.sender_agent_type)) parts.push(`phase=${parsed.phase ?? phaseFromSender(msg.sender_agent_type)}`);
+  const phase = messagePhase(msg);
+  if (phase) parts.push(`phase=${phase}`);
   if (parsed.kind) parts.push(`kind=${parsed.kind}`);
   if (parsed.status) parts.push(`status=${parsed.status}`);
   if (parsed.verdict) parts.push(`verdict=${parsed.verdict}`);
@@ -1209,7 +1296,7 @@ function messageActivity(msg: Message): string {
 
 function messageArgs(msg: Message): string | null {
   const parsed = parseMessageBody(msg.body);
-  return parsed.argsPreview ?? parsed.body ?? parsed.message ?? null;
+  return messageArgsPreview(parsed) ?? null;
 }
 
 function renderRunProgressSummary(messages: Message[], runs: Run[]): string {
@@ -1909,8 +1996,7 @@ export const inboxCommand = new Command("inbox")
                 console.log("");
               } else {
                 const rows = [formatMessageTable(msg)];
-                console.log(renderMessageTable(rows));
-                console.log("");
+                console.log(renderFullMessageTableRows(rows));
               }
             }
           })().catch(() => undefined);
@@ -2123,8 +2209,7 @@ export const inboxCommand = new Command("inbox")
               console.log("");
             } else {
               const rows = [formatMessageTable(msg)];
-              console.log(renderMessageTable(rows));
-              console.log("");
+              console.log(renderFullMessageTableRows(rows));
             }
             if (options.ack) {
               if (postgres) {

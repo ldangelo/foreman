@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "ensemble": {
+      "path": "/Users/ldangelo/Development/Fortium/ensemble",
+      "description": "Use for Fortium Ensemble implementation details and documentation."
+    }
+  },
+  "plugin": ["file:///Users/ldangelo/Development/Fortium/ensemble/packages/opencode"],
+  "mcp": {
+    "foreman": {
+      "type": "local",
+      "command": [
+        "node",
+        "/Users/ldangelo/Development/Fortium/foreman/dist/cli/index.js",
+        "mcp",
+        "--transport",
+        "stdio"
+      ],
+      "enabled": true
+    },
+    "headroom": {
+      "type": "local",
+      "command": ["headroom", "mcp", "serve"],
+      "enabled": true
+    }
+  }
+}

@@ -308,6 +308,7 @@ describe("formatMessageTable", () => {
       recipient_agent_type: "foreman",
       subject: "agent-error",
       body: JSON.stringify({
+        phase: "repair",
         kind: "agent-error",
         tool: "send_mail",
         argsPreview: "--run-id abc123 --to foreman",
@@ -321,7 +322,7 @@ describe("formatMessageTable", () => {
     const row = formatMessageTable(msg);
     expect(row.date).toBe(localTs(createdAt));
     expect(row.ticket).toBe("foreman-c3845");
-    expect(row.sender).toBe("developer");
+    expect(row.sender).toBe("repair");
     expect(row.receiver).toBe("foreman");
     expect(row.kind).toBe("agent-error");
     expect(row.tool).toBe("send_mail");
@@ -486,7 +487,7 @@ describe("renderMessageTable", () => {
     const output = renderMessageTable(rows);
     expect(output).toContain("DATE");
     expect(output).toContain("foreman-c3845");
-    expect(output).toContain("SENDER");
+    expect(output).toContain("PHASE");
     expect(output).toContain("RECEIVER");
     expect(output).toContain("KIND");
     expect(output).toContain("TOOL");
