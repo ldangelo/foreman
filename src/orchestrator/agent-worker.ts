@@ -19,12 +19,16 @@ import { runPhaseSession } from "./phase-runner.js";
 import type { StreamEvent } from "./pi-sdk-runner.js";
 import {
   createArtifactWriteTool,
+  createDiffReadTool,
   createGetRunStatusTool,
+  createGitStatusTool,
   createGraphifyExplainTool,
   createGraphifyQueryTool,
   createMailReadTool,
   createMailSendTool,
+  createMergeGateStatusTool,
   createPhaseHandoffTool,
+  createPrReviewFindingTool,
   createProgressUpdateTool,
   createSafeCommandRunTool,
   createSendMailTool,
@@ -832,6 +836,21 @@ async function runPhase(
   customTools.push(createProgressUpdateTool(agentMailClient ?? null, foremanToolContext));
   if (role !== "explorer") {
     customTools.push(createSafeCommandRunTool(foremanToolContext));
+  }
+  // Add VCS and PR review tools (available in non-test runtime)
+  if (config.env.FOREMAN_RUNTIME_MODE !== "test") {
+    try {
+      const vcsBackend = VcsBackendFactory.createSync({ backend: "auto" }, config.worktreePath);
+      const projectPath = inferProjectPathFromWorkspacePath(config.worktreePath);
+      customTools.push(createDiffReadTool(vcsBackend, foremanToolContext));
+      customTools.push(createGitStatusTool(vcsBackend, foremanToolContext));
+      customTools.push(createPrReviewFindingTool(projectPath, foremanToolContext));
+      customTools.push(createMergeGateStatusTool(projectPath, foremanToolContext));
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`[VCS/PR] tools skipped: ${reason.slice(0, 200)}`);
+      await appendFile(logFile, `[VCS/PR] tools skipped: ${reason}\n`);
+    }
   }
 
   let policySequence = 0;

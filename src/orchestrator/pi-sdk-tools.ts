@@ -14,6 +14,14 @@ import { promisify } from "node:util";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import { runGraphifyExplain, runGraphifyQuery } from "./graphify-index.js";
+import type { VcsBackend } from "../lib/vcs/interface.js";
+import {
+  collectPrReviewContext,
+  collectPrWaitSnapshot,
+  summarizePrWaitStatus,
+  writePrReviewFindings,
+  type PrWaitSnapshot,
+} from "./pr-review-context.js";
 
 // Narrow interface for run status queries (getRun + getRunProgress)
 export type RunStatusReader = Pick<ForemanStore, "getRun" | "getRunProgress">;
@@ -467,6 +475,178 @@ export function createGetRunStatusTool(store: RunStatusReader): ToolDefinition {
           content: [{ type: "text" as const, text: `Failed to get run status: ${msg}` }],
           details: undefined,
         };
+      }
+    },
+  } as ToolDefinition;
+}
+
+// ── VCS tools ──────────────────────────────────────────────────────────
+
+const DiffReadParams = Type.Object({
+  from: Type.String({ description: "Starting ref (branch, tag, SHA, or 'HEAD~N' for history)" }),
+  to: Type.String({ description: "Ending ref (defaults to working tree if omitted)" }),
+});
+
+/**
+ * Create a DiffRead ToolDefinition that returns a unified diff between two refs.
+ *
+ * Uses the VCS backend (git or jujutsu) to produce the diff, providing a
+ * structured alternative to raw shell git commands.
+ */
+export function createDiffReadTool(vcsBackend: VcsBackend, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "diff_read",
+    label: "Diff Read",
+    description: "Get a unified diff between two VCS refs. Use instead of raw 'git diff' commands when you need structured, observable output.",
+    promptSnippet: "Read diff output from the VCS",
+    promptGuidelines: ["Use diff_read for inspecting changes between refs.", "Provide meaningful from/to refs for focused diffs."],
+    parameters: DiffReadParams,
+    async execute(_toolCallId: string, params: Static<typeof DiffReadParams>) {
+      try {
+        const diff = await vcsBackend.diff(context.worktreePath, params.from, params.to);
+        await appendToolLog(context, `diff_read from=${params.from} to=${params.to}`);
+        return { content: [{ type: "text" as const, text: truncate(diff || "(empty diff)") }], details: { from: params.from, to: params.to } };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `diff_read failed from=${params.from} to=${params.to} error=${msg}`);
+        return { content: [{ type: "text" as const, text: `Diff failed: ${msg}` }], details: { error: msg } };
+      }
+    },
+  } as ToolDefinition;
+}
+
+const GitStatusParams = Type.Object({
+  /** If true, show only file names without status indicators (default: false) */
+  short: Type.Optional(Type.Boolean({ description: "Show only file names without status indicators" })),
+});
+
+/**
+ * Create a GitStatus ToolDefinition that returns the working tree status.
+ *
+ * Uses the VCS backend to get the status, providing a structured alternative
+ * to raw shell git status commands.
+ */
+export function createGitStatusTool(vcsBackend: VcsBackend, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "git_status",
+    label: "Git Status",
+    description: "Get the current VCS working tree status. Returns staged, modified, and untracked files. Use instead of raw 'git status' commands.",
+    promptSnippet: "Check VCS working tree status",
+    promptGuidelines: ["Use git_status to check for uncommitted changes.", "Helpful before running safe_command_run to verify state."],
+    parameters: GitStatusParams,
+    async execute(_toolCallId: string, params: Static<typeof GitStatusParams>) {
+      try {
+        let status = await vcsBackend.status(context.worktreePath);
+        if (params.short) {
+          // Filter to just file names from porcelain output (XY filename)
+          status = status
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => line.replace(/^[A-Z? ] /, "").trim())
+            .join("\n");
+        }
+        await appendToolLog(context, `git_status short=${Boolean(params.short)}`);
+        return { content: [{ type: "text" as const, text: status || "(clean working tree)" }], details: { short: Boolean(params.short) } };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `git_status failed error=${msg}`);
+        return { content: [{ type: "text" as const, text: `Git status failed: ${msg}` }], details: { error: msg } };
+      }
+    },
+  } as ToolDefinition;
+}
+
+// ── PR review tools ─────────────────────────────────────────────────────
+
+const PrReviewFindingParams = Type.Object({
+  prNumber: Type.Number({ description: "GitHub pull request number" }),
+});
+
+/**
+ * Create a PrReviewFinding ToolDefinition that collects CodeRabbit review findings.
+ *
+ * Gathers blocking CodeRabbit comments and failed checks from the PR, then
+ * writes findings to a report artifact for observability.
+ */
+export function createPrReviewFindingTool(projectPath: string, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "pr_review_finding",
+    label: "PR Review Finding",
+    description: "Collect CodeRabbit review findings and failed checks for a GitHub pull request. Writes findings to a report artifact.",
+    promptSnippet: "Collect PR review findings from CodeRabbit",
+    promptGuidelines: ["Use pr_review_finding to check for blocking CodeRabbit comments.", "Useful during QA phase before finalizing PRs."],
+    parameters: PrReviewFindingParams,
+    async execute(_toolCallId: string, params: Static<typeof PrReviewFindingParams>) {
+      try {
+        await ensureReportDir(context);
+        const prContext = await collectPrReviewContext(projectPath, params.prNumber);
+        await writePrReviewFindings(context.worktreePath, prContext, context.reportDir);
+        await appendToolLog(context, `pr_review_finding pr=${params.prNumber} findings=${prContext.blockingFindings.length}`);
+        const summary = {
+          prNumber: prContext.prNumber,
+          prUrl: prContext.prUrl,
+          headSha: prContext.headSha,
+          blockingFindings: prContext.blockingFindings.length,
+          failedChecks: prContext.failedChecks.length,
+        };
+        return {
+          content: [{ type: "text" as const, text: `PR review findings collected for #${params.prNumber}: ${prContext.blockingFindings.length} blocking findings, ${prContext.failedChecks.length} failed checks` }],
+          details: summary,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `pr_review_finding failed pr=${params.prNumber} error=${msg}`);
+        return { content: [{ type: "text" as const, text: `PR review finding failed: ${msg}` }], details: { error: msg } };
+      }
+    },
+  } as ToolDefinition;
+}
+
+const MergeGateStatusParams = Type.Object({
+  prNumber: Type.Number({ description: "GitHub pull request number" }),
+});
+
+/**
+ * Create a MergeGateStatus ToolDefinition that evaluates PR merge readiness.
+ *
+ * Checks CI status, CodeRabbit review completion, and merge conflict state
+ * to determine if a PR is ready to merge.
+ */
+export function createMergeGateStatusTool(projectPath: string, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "merge_gate_status",
+    label: "Merge Gate Status",
+    description: "Evaluate GitHub PR merge readiness by checking CI status, CodeRabbit review completion, and merge conflict state.",
+    promptSnippet: "Check PR merge gate status",
+    promptGuidelines: ["Use merge_gate_status to verify PR is ready to merge.", "Check this before finalizing or triggering merge."],
+    parameters: MergeGateStatusParams,
+    async execute(_toolCallId: string, params: Static<typeof MergeGateStatusParams>) {
+      try {
+        const snapshot: PrWaitSnapshot = await collectPrWaitSnapshot(projectPath, params.prNumber);
+        const status = summarizePrWaitStatus(snapshot);
+        await appendToolLog(context, `merge_gate_status pr=${params.prNumber} ready=${status.checksTerminal && status.failedChecks.length === 0 && status.codeRabbitComplete && status.blockingFindings.length === 0 && !status.mergeConflict}`);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Merge gate for #${params.prNumber}: ${status.mergeConflict ? "CONFLICT" : "OK"}, ${status.pendingChecks.length} pending checks, ${status.failedChecks.length} failed checks, CodeRabbit ${status.codeRabbitComplete ? "complete" : "incomplete"}, ${status.blockingFindings.length} blocking findings`,
+          }],
+          details: {
+            prNumber: snapshot.prNumber,
+            prUrl: snapshot.prUrl,
+            checksTerminal: status.checksTerminal,
+            pendingChecks: status.pendingChecks,
+            failedChecks: status.failedChecks,
+            codeRabbitComplete: status.codeRabbitComplete,
+            blockingFindings: status.blockingFindings.length,
+            mergeConflict: status.mergeConflict,
+            mergeConflictReason: status.mergeConflictReason,
+            ready: status.checksTerminal && status.failedChecks.length === 0 && status.codeRabbitComplete && status.blockingFindings.length === 0 && !status.mergeConflict,
+          },
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `merge_gate_status failed pr=${params.prNumber} error=${msg}`);
+        return { content: [{ type: "text" as const, text: `Merge gate status failed: ${msg}` }], details: { error: msg } };
       }
     },
   } as ToolDefinition;
