@@ -314,8 +314,20 @@ export interface PipelineContext {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function readReport(worktreePath: string, filename: string): string | null {
-  const p = resolveArtifactPath(worktreePath, filename);
+function resolvePhaseArtifact(worktreePath: string, artifact: string, projectReportsDir?: string): { path: string; present: boolean } {
+  const primaryPath = resolveArtifactPath(worktreePath, artifact);
+  if (existsSync(primaryPath)) return { path: primaryPath, present: true };
+
+  if (projectReportsDir) {
+    const reportPath = resolveArtifactPath(worktreePath, join(projectReportsDir, basename(artifact)));
+    if (reportPath !== primaryPath && existsSync(reportPath)) return { path: reportPath, present: true };
+  }
+
+  return { path: primaryPath, present: false };
+}
+
+function readReport(worktreePath: string, filename: string, projectReportsDir?: string): string | null {
+  const p = resolvePhaseArtifact(worktreePath, filename, projectReportsDir).path;
   try { return readFileSync(p, "utf-8"); } catch { return null; }
 }
 
@@ -394,10 +406,11 @@ async function emitPhaseReportEvent(
   nextPhase?: string,
   retryTarget?: string,
 ): Promise<void> {
+  const projectReportsDir = ctx.taskMeta?.projectReportsDir || getRunReportsDir(ctx.config.projectId, ctx.config.taskId, ctx.config.runId);
   if (!ctx.observabilityWriter?.logEvent || !artifact) return;
-  const report = readReport(ctx.config.worktreePath, artifact);
+  const report = readReport(ctx.config.worktreePath, artifact, projectReportsDir);
   if (!report) return;
-  const artifactPath = resolveArtifactPath(ctx.config.worktreePath, artifact);
+  const artifactPath = resolvePhaseArtifact(ctx.config.worktreePath, artifact, projectReportsDir).path;
   const summary = {
     verdict: extractVerdict(report),
     rootCause: extractMarkdownSection(report, "Root Cause"),
@@ -1623,7 +1636,7 @@ async function runPhaseSequence(
     });
 
     if (promptArtifactError) {
-      const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
+      const artifactPresent = interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined;
       ctx.log(`[${phaseName.toUpperCase()}] FAIL — ${promptArtifactError}`);
       await appendFile(logFile, `\n[PIPELINE] ${phaseName} FAIL: ${promptArtifactError}\n`);
       phaseRecords.push({
@@ -1691,7 +1704,8 @@ async function runPhaseSequence(
       }
 
       const result = await ctx.runBuiltinPhase(phase, progress);
-      const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
+      const artifactProbe = interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir) : undefined;
+      const artifactPresent = artifactProbe?.present;
       const phaseSucceeded = result.success && (!interpolatedArtifact || artifactPresent === true);
       const phaseError = result.error ?? (phaseSucceeded ? undefined : `Expected artifact missing: ${interpolatedArtifact}`);
 
@@ -1763,9 +1777,9 @@ async function runPhaseSequence(
 
         const retryTarget = retryTargetForFailure(phase, errorMsg);
         if (retryTarget) {
-          const maxRetries = phase.retryOnFail ?? 0;
           const currentRetries = retryCounts[phaseName] ?? 0;
-          const artifactContent = interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null;
+          const maxRetries = phase.retryOnFail ?? 0;
+          const artifactContent = interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact, projectReportsDir) : null;
           const feedback = artifactContent ?? result.outputText ?? errorMsg;
 
           if (currentRetries < maxRetries) {
@@ -1785,10 +1799,8 @@ async function runPhaseSequence(
               retryTarget,
               attempt: currentRetries + 1,
               maxRetries,
-              reason: errorMsg,
-              artifact: interpolatedArtifact,
-              artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
-              artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+              artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
+              artifact_present: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
             }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
@@ -1820,9 +1832,7 @@ async function runPhaseSequence(
       await writeNormalPhaseEvent(store, config.projectId, runId, "complete", {
         taskId,
         phase: phaseName,
-        costUsd: 0,
-        artifact: interpolatedArtifact,
-        artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+        artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
         artifact_present: artifactPresent,
       }, observabilityWriter);
       await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
@@ -1870,8 +1880,7 @@ async function runPhaseSequence(
         turns: 0,
         error: result.error,
         commandsRun: [resolvedBashCommand],
-        artifactExpected: interpolatedArtifact,
-        artifactPresent: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+        artifactPresent: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
       });
       progress.costUsd += 0;
       await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
@@ -1894,7 +1903,7 @@ async function runPhaseSequence(
         if (retryTarget) {
           const maxRetries = phase.retryOnFail ?? 0;
           const currentRetries = retryCounts[phaseName] ?? 0;
-          const feedback = (interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact) : null)
+          const feedback = (interpolatedArtifact ? readReport(worktreePath, interpolatedArtifact, projectReportsDir) : null)
             ?? result.outputText
             ?? errorMsg;
 
@@ -1917,8 +1926,8 @@ async function runPhaseSequence(
               maxRetries,
               reason: errorMsg,
               artifact: interpolatedArtifact,
-              artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
-              artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+              artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
+              artifact_present: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
             }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
@@ -1964,18 +1973,18 @@ async function runPhaseSequence(
           phase: phaseName,
           costUsd: result.costUsd,
           artifact: interpolatedArtifact,
-          artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
-          artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+          artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
+          artifact_present: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
         }, observabilityWriter);
         await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
           costUsd: result.costUsd,
           turns: result.turns,
-          artifactPresent: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+          artifactPresent: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
         });
         await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
 
-        if (phase.mail?.forwardArtifactTo && phase.artifact) {
-          const artifactContent = readReport(worktreePath, phase.artifact);
+        if (phase.mail?.forwardArtifactTo && interpolatedArtifact) {
+          const artifactContent = readReport(worktreePath, interpolatedArtifact, projectReportsDir);
           if (artifactContent) {
             const targetAgent = phase.mail.forwardArtifactTo === "foreman"
               ? "foreman"
@@ -2011,8 +2020,8 @@ async function runPhaseSequence(
     if (phase.files?.reserve) {
       ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
     }
-
-    const artifactPresent = interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined;
+    const artifactProbe = interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir) : undefined;
+    const artifactPresent = artifactProbe?.present;
     activityPhase.artifactPresent = artifactPresent;
     activityPhase.traceFile = result.traceFile;
     activityPhase.traceMarkdownFile = result.traceMarkdownFile;
@@ -2074,7 +2083,7 @@ async function runPhaseSequence(
     }
 
     if (!phaseSucceeded && phase.verdict && !commandPhaseContractError && interpolatedArtifact && artifactPresent) {
-      const verdictReport = readReport(worktreePath, interpolatedArtifact);
+      const verdictReport = readReport(worktreePath, interpolatedArtifact, projectReportsDir);
       const artifactVerdict = verdictReport ? parseVerdict(verdictReport) : "unknown";
       const interruptedAfterReport = /terminated|aborted|exceeded maxTurns/i.test(phaseError ?? "");
       if (interruptedAfterReport && artifactVerdict !== "unknown") {
@@ -2282,7 +2291,7 @@ async function runPhaseSequence(
                   phase.artifact,
                   ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
                 );
-                const artifactContent = readReport(worktreePath, interpolatedArtifact);
+                const artifactContent = readReport(worktreePath, interpolatedArtifact, projectReportsDir);
                 if (artifactContent) {
                   const targetAgent = phase.mail.forwardArtifactTo === "foreman"
                     ? "foreman"
@@ -2384,7 +2393,7 @@ async function runPhaseSequence(
         phase.artifact,
         ctx.taskMeta ?? { id: '', title: '', description: '', type: '', priority: 2 },
       );
-      const report = readReport(worktreePath, interpolatedArtifact);
+      const report = readReport(worktreePath, interpolatedArtifact, projectReportsDir);
       let verdict = report ? parseVerdict(report) : "unknown";
 
       if (phaseName === "qa" && report && !qaReportHasTestEvidence(report)) {
@@ -2508,8 +2517,8 @@ async function runPhaseSequence(
             maxRetries,
             reason: feedbackContext ?? `${phaseName} verdict failed`,
             artifact: interpolatedArtifact,
-            artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
-            artifact_present: interpolatedArtifact ? existsSync(resolveArtifactPath(worktreePath, interpolatedArtifact)) : undefined,
+            artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
+            artifact_present: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
           }, observabilityWriter);
 
           const targetIdx = phaseIndex.get(retryTarget);
@@ -2547,7 +2556,7 @@ async function runPhaseSequence(
       phase: phaseName,
       costUsd: result.costUsd,
       artifact: interpolatedArtifact,
-      artifact_path: interpolatedArtifact ? resolveArtifactPath(worktreePath, interpolatedArtifact) : undefined,
+      artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
       artifact_present: artifactPresent,
     }, observabilityWriter);
     await writeTaskPhaseNote(phaseName, "progress", `${phaseName} completed.`, {
@@ -2557,8 +2566,8 @@ async function runPhaseSequence(
     });
     await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
 
-    if (phase.mail?.forwardArtifactTo && phase.artifact) {
-      const artifactContent = readReport(worktreePath, phase.artifact);
+    if (phase.mail?.forwardArtifactTo && interpolatedArtifact) {
+      const artifactContent = readReport(worktreePath, interpolatedArtifact, projectReportsDir);
       if (artifactContent) {
         const targetAgent = phase.mail.forwardArtifactTo === "foreman"
           ? "foreman"

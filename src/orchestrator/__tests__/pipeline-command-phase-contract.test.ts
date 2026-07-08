@@ -404,6 +404,54 @@ describe("executePipeline command phase contract enforcement", () => {
     expect(markStuck).not.toHaveBeenCalled();
   });
 
+  it("recognizes documentation artifacts written under an absolute projectReportsDir", async () => {
+    const absoluteReportsDir = join(
+      tmpDir,
+      ".foreman",
+      "reports",
+      "proj-doc-prompt-contract",
+      "task-doc-prompt-contract",
+      "run-doc-prompt-contract",
+    );
+    const documentationReportPath = join(absoluteReportsDir, "DOCUMENTATION_REPORT.md");
+    const qaReportPath = join(absoluteReportsDir, "QA_REPORT.md");
+    const { markStuck, runPhase, context } = makeDocumentationPromptContractPipeline(
+      tmpDir,
+      [
+        "# Documentation",
+        "Update the docs for the completed task.",
+        "Write the phase artifact exactly at `{{reportDir}}/DOCUMENTATION_REPORT.md`.",
+      ].join("\n"),
+    );
+    context.taskMeta.projectReportsDir = absoluteReportsDir;
+    runPhase.mockImplementation(async (phaseName: string) => {
+      if (phaseName === "documentation") {
+        mkdirSync(absoluteReportsDir, { recursive: true });
+        writeFileSync(documentationReportPath, "# Documentation Report\n");
+      }
+      if (phaseName === "qa") {
+        mkdirSync(absoluteReportsDir, { recursive: true });
+        writeFileSync(qaReportPath, "# QA Report\n");
+      }
+      return successResult;
+    });
+
+    await executePipeline(context as never);
+
+    const documentationCompleteEvent = context.store.logEvent.mock.calls.find(
+      ([, eventType, data]) => eventType === "complete" && data.phase === "documentation",
+    );
+    expect(runPhase.mock.calls.map(([phaseName]) => phaseName)).toEqual(["documentation", "qa"]);
+    expect(runPhase.mock.calls[0]?.[1]).toContain(documentationReportPath);
+    expect(documentationCompleteEvent?.[2]).toMatchObject({
+      artifact: documentationReportPath,
+      artifact_path: documentationReportPath,
+      artifact_present: true,
+      phase: "documentation",
+    });
+    expect(markStuck).not.toHaveBeenCalled();
+  });
+
   it("explains whether a stale prompt omits the configured artifact or has a positive root instruction", () => {
     const expectedArtifact = `${DOCUMENTATION_REPORT_DIR}/DOCUMENTATION_REPORT.md`;
 
