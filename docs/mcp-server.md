@@ -43,7 +43,7 @@ MCP tool responses are compacted before they are returned to clients so large de
 | `foreman.health` | Combined MCP/Elixir readiness. |
 | `foreman.scheduler.status` | Scheduler state, capacity, active runs, stale active runs. |
 | `foreman.scheduler.tick` | One manual scheduler tick for smoke checks/controlled dispatch. |
-| `foreman.projects.list` | Registered project inventory. |
+| `foreman.projects.list` | Registered project inventory in the same normalized shape as `foreman project list --json`; archived projects are hidden unless `status` is provided. |
 | `foreman.tasks.list` | Project task list from the Elixir projection. |
 | `foreman.tasks.get` | One task from the Elixir projection. |
 | `foreman.tasks.update` | Mutate task through Elixir command boundary. |

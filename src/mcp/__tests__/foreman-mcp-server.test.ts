@@ -1,5 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ForemanMcpServer, compactMcpPayload } from "../foreman-mcp-server.js";
+
+const originalFetch = globalThis.fetch;
+const fetchMock = vi.fn();
+
+function mockJsonResponse(body: unknown): void {
+  fetchMock.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => body,
+  } as Response);
+}
+
+afterEach(() => {
+  fetchMock.mockReset();
+  globalThis.fetch = originalFetch;
+});
 
 describe("ForemanMcpServer", () => {
   it("exposes MCP tool metadata for current and future Foreman use cases", async () => {
@@ -50,6 +66,47 @@ describe("ForemanMcpServer", () => {
     });
 
     expect(response?.error?.message).toContain("Unknown Foreman MCP tool");
+  });
+
+  it("normalizes project list output to match the CLI list shape", async () => {
+    globalThis.fetch = fetchMock;
+    mockJsonResponse({
+      ok: true,
+      projects: [
+        {
+          project_id: "project-1",
+          config: { name: "Foreman" },
+          path: "/repo/foreman",
+          default_branch: "dev",
+          health: { ok: true },
+        },
+        {
+          id: "archived-1",
+          name: "Archived",
+          path: "/repo/archived",
+          status: "archived",
+        },
+      ],
+    });
+    const server = new ForemanMcpServer({ autoStart: false, serverUrl: "http://server.test" });
+
+    const response = await server.handle({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "foreman.projects.list", arguments: { search: "fore" } },
+    });
+
+    expect(response?.result).toMatchObject({
+      structuredContent: [
+        {
+          id: "project-1",
+          name: "Foreman",
+          path: "/repo/foreman",
+          status: "active",
+        },
+      ],
+    });
   });
 
   it("compacts large MCP payloads before returning them", () => {

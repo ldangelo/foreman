@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { ElixirServerClient } from "../lib/elixir-server-client.js";
+import { basename, resolve } from "node:path";
+import { ElixirServerClient, type ElixirProject } from "../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../lib/elixir-server-manager.js";
 
 export type McpTransport = "stdio" | "http";
@@ -25,6 +26,13 @@ type ToolSpec = {
   inputSchema: Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<unknown>;
   futureUseCases?: string[];
+};
+
+type McpProjectSummary = {
+  id: string;
+  name: string;
+  path: string;
+  status: string;
 };
 
 export type ForemanMcpOptions = {
@@ -84,6 +92,17 @@ export function compactMcpPayload(value: unknown, options: McpCompactOptions = {
   };
 
   return compact(value, 0);
+}
+
+function normalizeMcpProject(project: ElixirProject): McpProjectSummary {
+  const path = resolve(project.path);
+  const configuredName = typeof project.config?.name === "string" ? project.config.name : undefined;
+  return {
+    id: project.project_id ?? project.id ?? basename(path),
+    name: project.name ?? configuredName ?? basename(path),
+    path,
+    status: project.status ?? "active",
+  };
 }
 
 function truncateString(value: string, maxChars: number): string {
@@ -258,8 +277,9 @@ export class ForemanMcpServer {
           const status = optionalString(args.status);
           const search = optionalString(args.search)?.toLowerCase();
           return (await this.client.listProjects())
-            .filter((project) => !status || project.status === status)
-            .filter((project) => !search || [project.project_id, project.id, project.name, project.path].some((value) => value?.toLowerCase().includes(search)));
+            .map(normalizeMcpProject)
+            .filter((project) => status ? project.status === status : project.status !== "archived")
+            .filter((project) => !search || project.name.toLowerCase().includes(search));
         },
       },
       {
