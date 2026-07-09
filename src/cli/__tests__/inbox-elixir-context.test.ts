@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 const {
   mockResolveRepoRootProjectPath,
@@ -836,6 +836,60 @@ describe("inbox Elixir context", () => {
     expect(rendered).not.toContain("✉ Mail");
     expect(rendered).not.toContain("! Mail");
   });
+  it("renders run detail messages and logs when lifecycle events cannot be fetched", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockResolveRepoRootProjectPath.mockResolvedValue(projectDir);
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "registered-project", path: projectDir },
+    ]);
+    mockListRuns.mockResolvedValue([
+      {
+        id: "run-event-fallback",
+        run_id: "run-event-fallback",
+        project_id: "proj-1",
+        task_id: "task-event-fallback",
+        status: "running",
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    mockListInbox.mockResolvedValue([
+      {
+        message_id: "msg-event-fallback",
+        run_id: "run-event-fallback",
+        sender_agent_type: "developer",
+        recipient_agent_type: "foreman",
+        subject: "tool-call",
+        body: {
+          taskId: "task-event-fallback",
+          phase: "developer",
+          kind: "tool",
+          tool: "bash",
+          message: "vitest run src/cli/__tests__/inbox-elixir-context.test.ts",
+        },
+        unread: true,
+        created_at: "2026-01-01T00:02:00.000Z",
+      },
+    ]);
+    mockListEvents.mockRejectedValue(new Error("event store unavailable"));
+
+    await inboxCommand.parseAsync(["run", "run-event-fallback", "--logs", "--project-path", projectDir], { from: "user" });
+
+    expect(mockListEvents).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-event-fallback", limit: 1000 });
+    expect(process.exit).not.toHaveBeenCalled();
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    const expectedLogDir = join(homedir(), ".foreman", "logs");
+    expect(rendered).toContain("FOREMAN INBOX › task-event-fallback");
+    expect(rendered).toContain("Run:      run-event-fallback");
+    expect(rendered).toContain("State:    running");
+    expect(rendered).toContain("Recent Messages");
+    expect(rendered).toContain("vitest run src/cli/__tests__/inbox-elixir-context.test.ts");
+    expect(rendered).toContain("Logs");
+    expect(rendered).toContain(`No log files found for run run-event-fallback under ${expectedLogDir}.`);
+  });
+
 
   it("exposes follow and optional detail section flags in task and run help", () => {
     for (const commandName of ["task", "run"]) {
@@ -876,8 +930,14 @@ describe("inbox Elixir context", () => {
 
     expect(process.exit).not.toHaveBeenCalled();
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    const expectedLogDir = join(homedir(), ".foreman", "logs");
     expect(rendered).toContain("Logs");
-    expect(rendered).toContain("No logs found");
+    expect(rendered).toContain(`No log files found for run run-without-artifacts under ${expectedLogDir}.`);
+    expect(rendered).toContain("Expected: run-without-artifacts.log, run-without-artifacts.err, run-without-artifacts.out");
+    expect(rendered).not.toContain("raw: missing (");
+    expect(rendered).not.toContain("err: missing (");
+    expect(rendered).not.toContain("out: missing (");
+    expect(rendered).not.toMatch(/^No logs found\.?$/m);
     expect(rendered).toContain("Reports");
     expect(rendered).toContain("No reports found");
     expect(rendered).toContain("Files");

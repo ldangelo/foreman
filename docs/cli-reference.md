@@ -681,7 +681,7 @@ foreman inbox --ack               # Mark shown messages as read
 | `--interactive` | TTY auto | Open the interactive task navigator explicitly |
 | `--non-interactive` | — | Force scriptable output on a TTY |
 | `--scope <scope>` | `attention` | Task navigator/summary scope: `active`, `attention`, `all`, or `terminal` |
-| `--logs` | — | Task/run drilldown: show log file paths, sizes, and recent error lines |
+| `--logs` | — | Task/run drilldown: show log file paths, sizes, recent error lines, or a concise missing-log explanation |
 | `--reports` | — | Task/run drilldown: show report artifact directory and files |
 | `--files` | — | Task/run drilldown: show worktree path and changed files |
 

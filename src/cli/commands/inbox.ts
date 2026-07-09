@@ -1666,13 +1666,21 @@ function renderLogSection(summary: InboxTaskSummary, tailCount = 6): string {
   const rawPath = foremanHomePath("logs", `${summary.runId}.log`);
   const errPath = foremanHomePath("logs", `${summary.runId}.err`);
   const outPath = foremanHomePath("logs", `${summary.runId}.out`);
-  const lines = [
-    chalk.bold("Logs"),
-    fileStatLine("raw", rawPath),
-    fileStatLine("err", errPath),
-    fileStatLine("out", outPath),
-    existsSync(rawPath) || existsSync(errPath) || existsSync(outPath) ? "" : "No logs found.",
+  const logDir = foremanHomePath("logs");
+  const files = [
+    { label: "raw", path: rawPath, name: `${summary.runId}.log` },
+    { label: "err", path: errPath, name: `${summary.runId}.err` },
+    { label: "out", path: outPath, name: `${summary.runId}.out` },
   ];
+  const existing = files.filter((file) => existsSync(file.path));
+  const lines = [chalk.bold("Logs")];
+  if (existing.length === 0) {
+    lines.push(`No log files found for run ${summary.runId} under ${logDir}.`);
+    lines.push(`Expected: ${files.map((file) => file.name).join(", ")}`);
+    lines.push("Logs may have been removed by reset, purge, or workspace cleanup.");
+    return lines.join("\n");
+  }
+  lines.push(...files.map((file) => fileStatLine(file.label, file.path)));
   const errTail = readTail(errPath, tailCount);
   if (errTail.length > 0) {
     lines.push("", chalk.bold("Recent error log lines"));
@@ -1866,7 +1874,12 @@ async function loadTaskDetailSummary(
     unread: options.unread,
     limit: Math.max(options.limit, 500),
   });
-  const events = await fetchEventsForSources(sources, { runId, limit: options.eventsLimit });
+  let events: PipelineEvent[] = [];
+  try {
+    events = await fetchEventsForSources(sources, { runId, limit: options.eventsLimit });
+  } catch {
+    events = [];
+  }
   const boundedMessages = selectRecentMessages(messages, options.limit);
   const boundedEvents = [...events]
     .sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt))
