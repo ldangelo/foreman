@@ -14,6 +14,9 @@ npm run test:coverage:transition  # Elixir-transition coverage gate
 npm run dev            # tsx watch mode
 npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
+devbox run dev:up    # start shared Postgres + Hindsight dev containers
+devbox run db:up     # start only shared pgvector Postgres
+# Local Postgres listens on 127.0.0.1:55432 by default (FOREMAN_POSTGRES_PORT overrides)
 
 # CLI (after build or via tsx)
 foreman init           # Initialize project and register it with the Elixir backend
@@ -114,6 +117,8 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
 
 After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
+
+The Elixir server also runs PR reconciliation: recorded GitHub PR URLs are checked periodically, GitHub `MERGED` records `run.pr.merge`, and the associated task is updated to `merged`. GitHub closed-without-merge only closes the run PR state.
 
 ## VCS Backend Abstraction (PRD-2026-004)
 
@@ -218,6 +223,7 @@ phases:
 - **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
 - **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
+- **PR merge state is source-of-truth reconciled**: the Elixir PR monitor treats GitHub `MERGED` as authoritative for recorded PR URLs and updates the run/task to `merged`; `CLOSED` without merge never marks the task merged.
 
 ## Debugging & Recovery
 

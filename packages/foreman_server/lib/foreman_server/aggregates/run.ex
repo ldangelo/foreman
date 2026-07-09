@@ -27,7 +27,7 @@ defmodule ForemanServer.Aggregates.Run do
       "RunUpdated" ->
         state |> Map.merge(payload) |> Map.put(:exists?, true)
 
-      type when type in ["PrUpdated", "PrReady", "PrRetargeted", "PrReset"] ->
+      type when type in ["PrUpdated", "PrReady", "PrRetargeted", "PrReset", "PrMerged"] ->
         state |> Map.merge(payload) |> Map.put(:exists?, true)
 
       "RunCompleted" ->
@@ -134,15 +134,21 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
-
   def handle_command(state, %{type: type, payload: payload})
-      when type in ["run.pr.update", "run.pr.ready", "run.pr.retarget", "run.pr.reset"] do
+      when type in [
+             "run.pr.update",
+             "run.pr.ready",
+             "run.pr.retarget",
+             "run.pr.reset",
+             "run.pr.merge"
+           ] do
     event_type =
       %{
         "run.pr.update" => "PrUpdated",
         "run.pr.ready" => "PrReady",
         "run.pr.retarget" => "PrRetargeted",
-        "run.pr.reset" => "PrReset"
+        "run.pr.reset" => "PrReset",
+        "run.pr.merge" => "PrMerged"
       }[type]
 
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
@@ -183,7 +189,18 @@ defmodule ForemanServer.Aggregates.Run do
   end
 
   defp drop_lifecycle_fields(payload) do
-    Map.drop(payload, [:status, "status", :terminal?, "terminal?", :completed_at, "completed_at", :failed_at, "failed_at", :blocked_at, "blocked_at"])
+    Map.drop(payload, [
+      :status,
+      "status",
+      :terminal?,
+      "terminal?",
+      :completed_at,
+      "completed_at",
+      :failed_at,
+      "failed_at",
+      :blocked_at,
+      "blocked_at"
+    ])
   end
 
   defp require_pr_payload(type, payload) do
@@ -195,6 +212,7 @@ defmodule ForemanServer.Aggregates.Run do
           "run.pr.ready" -> [:head_sha, :base_branch]
           "run.pr.retarget" -> [:old_base_branch, :new_base_branch, :head_sha]
           "run.pr.reset" -> [:action, :reason]
+          "run.pr.merge" -> []
         end
       )
 
@@ -213,11 +231,20 @@ defmodule ForemanServer.Aggregates.Run do
   end
 
   defp validate_pr_reset_action("run.pr.reset", "closed"), do: :ok
-  defp validate_pr_reset_action("run.pr.reset", action), do: {:error, {:invalid_pr_reset_action, action}}
+
+  defp validate_pr_reset_action("run.pr.reset", action),
+    do: {:error, {:invalid_pr_reset_action, action}}
+
   defp validate_pr_reset_action(_type, _action), do: :ok
 
   defp allow_pr_lifecycle_on_terminal_runs(_state, type)
-       when type in ["run.pr.update", "run.pr.ready", "run.pr.retarget", "run.pr.reset"],
+       when type in [
+              "run.pr.update",
+              "run.pr.ready",
+              "run.pr.retarget",
+              "run.pr.reset",
+              "run.pr.merge"
+            ],
        do: :ok
 
   defp require_absent(%{exists?: true}, run_id), do: {:error, {:already_exists, :run, run_id}}

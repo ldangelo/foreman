@@ -19,6 +19,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations through Elixir-backed projections
 - **Native task storage** — Elixir-backed tasks/events/projections
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
+- **PR reconciliation** — the Elixir server periodically checks recorded GitHub PRs and marks Foreman runs/tasks merged when GitHub reports `MERGED`
 - **Documentation gate** — workflows include a documentation phase that checks `CLAUDE.md`, `AGENTS.md`, `README.md`, and the Foreman User Guide before finalization
 - **Progress tracking** — every task, agent, and phase tracked through Elixir events/projections; structured phase-report events let Elixir Overwatch send next-phase Agent Mail steering, and Overwatch records tool policy decisions/nudges when workers drift
 
@@ -132,21 +133,26 @@ curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | 
 
 ## Development with Devbox + Docker
 
-Foreman does not currently ship a checked-in containerized dev environment by default, but this repository now includes:
+Foreman includes a checked-in local development environment:
 
-- `devbox.json` — reproducible local shell with Node 20, git, and helper scripts
-- `compose.yaml` — legacy local database container for migration/debug work
+- `devbox.json` — reproducible local shell with Node 20, PostgreSQL client tools, git, jq, and helper scripts
+- `compose.yaml` — shared local Postgres + Hindsight stack
+- `.envrc` — direnv hook that loads Devbox and starts the local containers when you enter the repository
+
+The shared Postgres service uses `pgvector/pgvector:pg16`, exposes Foreman's database on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides it), and also creates a separate `hindsight` database with the `vector` extension enabled. Hindsight connects to that same Postgres container over Docker's internal network.
 
 ### Prerequisites
 
 - [Devbox](https://www.jetify.com/devbox/)
+- [direnv](https://direnv.net/) with `direnv allow` run once for this repository
 - A Docker runtime on your machine (Docker Desktop, Colima, or OrbStack)
 
 ### Quickstart
 
 ```bash
-devbox shell
+direnv allow
 devbox run install
+devbox run db:migrate
 foreman server start
 ```
 
@@ -156,8 +162,13 @@ foreman server start
 foreman server start        # start Elixir backend
 foreman server status       # check backend health
 foreman run --dry-run       # verify CLI ↔ backend connectivity
+devbox run dev:up          # start Postgres + Hindsight now
+devbox run db:up           # start only shared Postgres
+devbox run hindsight:logs   # tail Hindsight logs
 devbox run test             # run the full test suite
 ```
+
+Hindsight exposes its API at <http://localhost:8888> and control plane at <http://localhost:9999>. The compose default uses `HINDSIGHT_API_LLM_PROVIDER=none` so the service can start without stealing a general-purpose API key; set `HINDSIGHT_API_LLM_PROVIDER`, `HINDSIGHT_API_LLM_API_KEY`, `HINDSIGHT_API_LLM_BASE_URL`, and `HINDSIGHT_API_LLM_MODEL` in `.env` / `$HOME/.envrc` before startup for useful memory extraction through an OpenAI-compatible endpoint.
 
 The CLI no longer opens a direct database pool. Project/task/run state goes through the Elixir backend.
 
@@ -466,6 +477,8 @@ foreman server stop          # Stop local Elixir server
 ```
 
 The Elixir server scheduler automatically ticks every 5 seconds, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. Project/task/run/phase/inbox/worker/scheduler/VCS/recovery/integration command families are aggregate-validated before new events are appended. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. `foreman server status` shows the active `MIX_ENV`, event store, projection store, and project config store so wrong-runtime state is visible. With `FOREMAN_SERVER_EVENT_STORE_ADAPTER=postgres` and `DATABASE_URL`, Foreman writes events to `foreman_events` and persists read models in `foreman_project_projections`, `foreman_task_projections`, `foreman_run_projections`, and `foreman_inbox_message_projections`; term mode keeps projections in memory from the term event log. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
+
+The server also runs a PR monitor. When a run has a recorded GitHub PR URL, the monitor checks GitHub from the registered project path and reconciles PR state into Foreman events. A GitHub `MERGED` state records `run.pr.merge` metadata and updates the associated task to `merged`; a closed-but-unmerged PR only closes the run PR state.
 
 Security controls for the Elixir server:
 - Worker startup scopes environment to `FOREMAN_PROJECT_ID`, `FOREMAN_RUN_ID`, allowed base variables, and explicit project/run secret maps. Forbidden host secrets such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped before worker launch metadata is recorded.

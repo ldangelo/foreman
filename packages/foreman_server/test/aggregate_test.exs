@@ -202,6 +202,16 @@ defmodule ForemanServer.AggregateTest do
         "run-pr-reset",
         pr_payload(%{action: "closed", reason: "reset superseded the PR"}),
         [:run_id, :project_id, :task_id, :pr_url, :branch_name, :action, :reason]
+      },
+      {
+        "run.pr.merge",
+        "PrMerged",
+        "run-pr-merge",
+        pr_payload(%{
+          merged_at: "2026-07-09T12:34:56Z",
+          merge_commit_sha: "merge-sha"
+        }),
+        [:run_id, :project_id, :task_id, :pr_url, :branch_name]
       }
     ]
 
@@ -217,6 +227,7 @@ defmodule ForemanServer.AggregateTest do
       assert event_payload.task_id == "task-1"
       assert event_payload.pr_url == "https://github.com/acme/foreman/pull/42"
       assert event_payload.branch_name == "foreman/task-1"
+      assert Map.take(event_payload, Map.keys(payload)) == payload
 
       Enum.each(required_fields, fn missing_field ->
         assert {:error, {:missing_or_invalid, ^missing_field}} =
@@ -229,6 +240,17 @@ defmodule ForemanServer.AggregateTest do
       end)
     end)
 
+    started_run!("run-pr-merge-without-optional-metadata")
+
+    assert {:ok, %{event_type: "PrMerged", payload: merge_payload}} =
+             AggregateRouter.route(
+               "run.pr.merge",
+               pr_payload(%{}) |> Map.put(:run_id, "run-pr-merge-without-optional-metadata")
+             )
+
+    assert merge_payload.run_id == "run-pr-merge-without-optional-metadata"
+    assert merge_payload.project_id == "project-1"
+
     started_run!("run-pr-reset-invalid-action")
 
     assert {:error, {:invalid_pr_reset_action, "kept"}} =
@@ -238,7 +260,6 @@ defmodule ForemanServer.AggregateTest do
                |> Map.put(:run_id, "run-pr-reset-invalid-action")
              )
   end
-
 
   test "inbox aggregate validates duplicate messages and delivery targets" do
     assert {:ok, spec} =

@@ -12,6 +12,10 @@ foreman --help              # Show all commands
 foreman <command> --help    # Show command-specific help
 ```
 
+### Local Development Services
+
+This repository's Devbox/direnv setup starts Docker Compose services before you run Foreman locally. `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. Foreman CLI commands continue to use `DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/foreman` by default; Hindsight uses a separate `hindsight` database in the same container.
+
 ### Domain Groups and Deprecated Aliases
 
 `foreman --help` groups commands by domain:
@@ -320,6 +324,9 @@ foreman server stop               # Stop server started by Foreman
 
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns aggregate-validated commands/events/projections/recovery/security/overwatch and all database access, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases, stream worker events, emit authoritative terminal run/task events, stream Pi SDK tool calls/assistant messages as ordered worker events, expose typed Foreman tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`), and ask Elixir overwatch to approve/deny tool calls before execution. Node workers and CLI clients do not connect directly to the database; they use Elixir HTTP commands/projections and do not drain DB-backed merge queues from inside the worker. Raw log files are compatibility/debug projections of the worker event stream. The launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; that fallback may parse the final worker output to avoid stale phase attribution, but authoritative worker terminal events remain preferred. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
+The Elixir server also includes a PR monitor. For runs with recorded GitHub PR URLs, it periodically runs GitHub PR inspection from the registered project path, records merged PR metadata on the run, and updates the associated task to `merged` when GitHub reports `MERGED`. A GitHub closed-but-unmerged PR updates only run PR state; it does not mark the task merged.
+
+
 ### `foreman reset`
 
 Reset Elixir-backed task work. The command stops active worker processes when present, marks prior active runs failed with the reset reason, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
@@ -389,7 +396,7 @@ Removed after Elixir cutover. Use Elixir-backed run/recovery controls instead.
 
 ### `foreman merge`
 
-Merge completed agent work into the target branch via the refinery. Merge-capable workflows enqueue work from an explicit `merge` phase; workflows without that phase are not merge-queued by workflow execution. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`.
+Merge completed agent work into the target branch via the refinery. Merge-capable workflows enqueue work from an explicit `merge` phase; workflows without that phase are not merge-queued by workflow execution. For PR-gated workflows, merge rechecks PR readiness and waits if GitHub surfaces a late pending check after `pr-wait`. The Elixir server also reconciles recorded GitHub PRs after creation, so a PR merged outside `foreman merge` is observed and the associated Foreman task becomes `merged`.
 
 ```bash
 foreman merge                     # Process merge queue
