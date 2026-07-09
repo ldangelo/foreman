@@ -1,4 +1,4 @@
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { createElement, useEffect, useMemo, useState, type ReactElement } from "react";
 import { resetAction } from "../commands/reset.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
@@ -198,6 +198,10 @@ export function SuperTuiApp({ summaries: initialSummaries, projectLabel, limit, 
       ? `refresh=live${lastRefreshAt ? ` · refreshed ${lastRefreshAt.toLocaleTimeString()}` : ""}`
       : "refresh=static";
 
+  const { stdout } = useStdout();
+  const terminalRows = stdout.isTTY && Number.isFinite(stdout.rows) ? Math.max(12, stdout.rows) : undefined;
+  const bodyRows = terminalRows === undefined ? undefined : Math.max(6, terminalRows - 6);
+
   useEffect(() => {
     setState((current) => reduceSuperTuiState(current, { type: "refresh", summaries: initialSummaries }));
   }, [initialSummaries]);
@@ -350,11 +354,13 @@ export function SuperTuiApp({ summaries: initialSummaries, projectLabel, limit, 
   });
 
   if (state.summaries.length === 0 || visibleSummaries.length === 0) {
-    return h(Box, { flexDirection: "column" },
+    return h(Box, { flexDirection: "column", height: terminalRows },
       h(HeaderBar, { projectLabel, state, selected, visibleCount: visibleSummaries.length, refreshStatus }),
-      h(Pane, { title: "Cockpit", minHeight: 7 },
-        h(Text, { bold: true }, state.summaries.length === 0 ? "No active or attention tasks found." : "No tasks match the current search/filter."),
-        h(Text, null, state.summaries.length === 0 ? "Try `foreman inbox --scope all` to include terminal runs, or start a Foreman task to populate this cockpit." : "Press / to change search, 3 for all tasks, or toggle filters."),
+      h(Box, { flexDirection: "column", flexGrow: 1, height: bodyRows },
+        h(Pane, { title: "Cockpit", minHeight: 7 },
+          h(Text, { bold: true }, state.summaries.length === 0 ? "No active or attention tasks found." : "No tasks match the current search/filter."),
+          h(Text, null, state.summaries.length === 0 ? "Try `foreman inbox --scope all` to include terminal runs, or start a Foreman task to populate this cockpit." : "Press / to change search, 3 for all tasks, or toggle filters."),
+        ),
       ),
       h(FooterBar, { state }),
     );
@@ -362,15 +368,15 @@ export function SuperTuiApp({ summaries: initialSummaries, projectLabel, limit, 
 
   const mainPane = mainPaneForView({ state, summaries: visibleSummaries, selected, compact, limit, eventsLimit, actions, confirmingAction, actionBusy });
 
-  return h(Box, { flexDirection: "column" },
+  return h(Box, { flexDirection: "column", height: terminalRows },
     h(HeaderBar, { projectLabel, state, selected, visibleCount: visibleSummaries.length, refreshStatus }),
     compact
-      ? h(Box, { flexDirection: "column" },
+      ? h(Box, { flexDirection: "column", flexGrow: 1, height: bodyRows },
         h(TaskListPane, { summaries: visibleSummaries, selectedIndex: visibleSelectedIndex, compact }),
         mainPane,
         h(DetailPane, { summary: selected, tab: state.tab, limit, eventsLimit, renderTaskDetail, compact }),
       )
-      : h(Box, { flexDirection: "row" },
+      : h(Box, { flexDirection: "row", flexGrow: 1, height: bodyRows },
         h(TaskListPane, { summaries: visibleSummaries, selectedIndex: visibleSelectedIndex, compact }),
         h(Box, { flexDirection: "column", flexGrow: 1 },
           mainPane,

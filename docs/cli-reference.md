@@ -186,7 +186,7 @@ foreman logs bd-abc1 --raw         # Print raw JSON log only
 
 ### `foreman watch`
 
-Canonical live operator cockpit. The TTY view combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
+Canonical live operator cockpit. The TTY view fills the terminal viewport and combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
 
 ```bash
 foreman watch                     # Unified live cockpit

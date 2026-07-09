@@ -30,8 +30,9 @@ function summary(overrides: Partial<InboxTaskSummary> = {}): InboxTaskSummary {
 }
 
 type TestAppProps = Partial<Pick<SuperTuiAppProps, "resetTask" | "loadSummaries">>;
+type TerminalOptions = { columns?: number; rows?: number };
 
-async function renderSuperTuiTerminal(props: TestAppProps = {}): Promise<InkTerminalHarness> {
+async function renderSuperTuiTerminal(props: TestAppProps = {}, terminal: TerminalOptions = {}): Promise<InkTerminalHarness> {
   return renderInkTerminal(createElement(SuperTuiApp, {
     summaries: [summary()],
     projectLabel: "Fortium Foreman",
@@ -41,7 +42,12 @@ async function renderSuperTuiTerminal(props: TestAppProps = {}): Promise<InkTerm
     initialRunId: "run-retry",
     refreshIntervalMs: 60_000,
     ...props,
-  }), { columns: 160, rows: 40 });
+  }), { columns: terminal.columns ?? 160, rows: terminal.rows ?? 40 });
+}
+
+function renderedTerminalLines(output: string): string[] {
+  const withoutFinalNewline = output.endsWith("\n") ? output.slice(0, -1) : output;
+  return withoutFinalNewline.length === 0 ? [] : withoutFinalNewline.split("\n");
 }
 
 async function cueResetConfirmation(harness: InkTerminalHarness): Promise<string> {
@@ -58,6 +64,21 @@ async function cueResetConfirmation(harness: InkTerminalHarness): Promise<string
 }
 
 describe("super TUI Ink terminal input", () => {
+  it("reserves the full Ink stdout height on tall terminals", async () => {
+    const rows = 32;
+    const harness = await renderSuperTuiTerminal({}, { columns: 160, rows });
+
+    try {
+      const lines = renderedTerminalLines(harness.plainOutput());
+
+      expect(lines).toHaveLength(rows);
+      expect(lines.join("\n")).toContain("FOREMAN WATCH");
+      expect(lines.join("\n")).toContain("q/Esc quit");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it.each(["a", ":"] as const)("opens the action palette from real Ink input %s", async (opener) => {
     const harness = await renderSuperTuiTerminal();
 
