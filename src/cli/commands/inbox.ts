@@ -17,8 +17,9 @@ import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { Box, Text, render as renderInk, useApp, useInput } from "ink";
-import { createElement, useState, type ReactElement } from "react";
+import { render as renderInk } from "ink";
+import { createElement } from "react";
+import { InboxDashboard } from "../inbox/tui.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -1629,7 +1630,7 @@ export function renderInboxTaskSummaryTable(summaries: InboxTaskSummary[]): stri
   return [chalk.bold("FOREMAN INBOX"), separator, header, separator, ...body, separator].join("\n");
 }
 
-type InboxDetailTab = "summary" | "messages" | "events" | "logs" | "reports" | "files";
+export type InboxDetailTab = "summary" | "messages" | "events" | "logs" | "reports" | "files";
 
 interface InboxTaskDetailOptions {
   agent?: string;
@@ -1760,7 +1761,7 @@ function renderFilesSection(summary: InboxTaskSummary): string {
   return lines.join("\n");
 }
 
-function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): string {
+export function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): string {
   const lines = [
     chalk.bold(`FOREMAN INBOX › ${summary.taskId}`),
     `Run:      ${summary.runId}`,
@@ -1786,58 +1787,6 @@ function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolea
   return lines.join("\n");
 }
 
-function InboxNavigator({ summaries, projectLabel, limit, eventsLimit }: { summaries: InboxTaskSummary[]; projectLabel: string; limit: number; eventsLimit: number }): ReactElement {
-  const { exit } = useApp();
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const [tab, setTab] = useState<InboxDetailTab>("summary");
-  const selected = summaries[selectedIndex];
-
-  useInput((input, key) => {
-    if (input === "q" || key.escape) exit();
-    if (key.upArrow || input === "k") setSelectedIndex((index) => Math.max(0, index - 1));
-    if (key.downArrow || input === "j") setSelectedIndex((index) => Math.min(summaries.length - 1, index + 1));
-    if (input === "m") setTab("messages");
-    if (input === "e") setTab("events");
-    if (input === "s") setTab("summary");
-    if (input === "l") setTab("logs");
-    if (input === "r") setTab("reports");
-    if (input === "f") setTab("files");
-    if (key.return) setTab(tab === "summary" ? "messages" : "summary");
-  });
-
-  if (summaries.length === 0) {
-    return createElement(Box, { flexDirection: "column" },
-      createElement(Text, { bold: true }, `FOREMAN INBOX project=${projectLabel}`),
-      createElement(Text, null, "No active or attention tasks found."),
-      createElement(Text, { dimColor: true }, "q quit"),
-    );
-  }
-
-  const detailLines = selected
-    ? renderTaskDetail(selected, {
-      messages: tab === "messages",
-      events: tab === "events",
-      logs: tab === "logs",
-      reports: tab === "reports",
-      files: tab === "files",
-      limit,
-      eventsLimit,
-    }).split("\n")
-    : [];
-  return createElement(Box, { flexDirection: "column" },
-    createElement(Text, { bold: true }, `FOREMAN INBOX project=${projectLabel} [↑/↓ select] [Enter drill] [s/m/e/l/r/f tabs] [q quit]`),
-    createElement(Box, { flexDirection: "column", marginTop: 1 },
-      ...summaries.map((summary, index) => createElement(Text, {
-        key: summary.runId,
-        color: index === selectedIndex ? "cyan" : undefined,
-        inverse: index === selectedIndex,
-      }, `${index === selectedIndex ? "›" : " "} ${summary.taskId} ${summary.runStatus} ${summary.phase} ${relativeTime(summary.lastActivityAt)} ${summary.statusText}`)),
-    ),
-    createElement(Box, { flexDirection: "column", marginTop: 1 },
-      ...detailLines.slice(0, 28).map((line, index) => createElement(Text, { key: `${tab}-${index}` }, line)),
-    ),
-  );
-}
 
 async function renderInteractiveInbox(sources: InboxSources, projectLabel: string, options: { agent?: string; unread?: boolean; limit: number; eventsLimit: number; scope: InboxScope }): Promise<void> {
   const summaries = await loadInboxOverview(sources, {
@@ -1847,7 +1796,7 @@ async function renderInteractiveInbox(sources: InboxSources, projectLabel: strin
     limit: options.limit,
     eventsLimit: options.eventsLimit,
   });
-  const app = renderInk(createElement(InboxNavigator, { summaries, projectLabel, limit: options.limit, eventsLimit: options.eventsLimit }));
+  const app = renderInk(createElement(InboxDashboard, { summaries, projectLabel, limit: options.limit, eventsLimit: options.eventsLimit, renderTaskDetail }));
   await app.waitUntilExit();
 }
 

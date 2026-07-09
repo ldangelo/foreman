@@ -234,7 +234,7 @@ defmodule ForemanServer.Http.Router do
         |> Enum.filter(fn event ->
           is_nil(project_id) or Map.get(event, :project_id) == project_id
         end)
-        |> Enum.sort_by(&Map.get(&1, :occurred_at), {:desc, DateTime})
+        |> Enum.sort_by(&event_timestamp_sort_value(Map.get(&1, :occurred_at)), :desc)
         |> Enum.take(limit)
 
       send_json(conn, 200, %{ok: true, events: events})
@@ -544,6 +544,29 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp normalize_command(_), do: {:error, :invalid_command}
+
+  defp event_timestamp_sort_value(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
+
+  defp event_timestamp_sort_value(%NaiveDateTime{} = value) do
+    value
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_unix(:microsecond)
+  end
+
+  defp event_timestamp_sort_value(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} ->
+        DateTime.to_unix(datetime, :microsecond)
+
+      {:error, _reason} ->
+        case NaiveDateTime.from_iso8601(value) do
+          {:ok, naive} -> event_timestamp_sort_value(naive)
+          {:error, _reason} -> 0
+        end
+    end
+  end
+
+  defp event_timestamp_sort_value(_value), do: 0
 
   defp send_json(conn, status, payload) do
     conn

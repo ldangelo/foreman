@@ -383,6 +383,66 @@ defmodule ForemanServer.Http.RouterTest do
     assert message["body"] == ~s({"message":"please inspect"})
   end
 
+  test "events endpoint sorts naive timestamps from postgres-compatible rows" do
+    append_event("ProjectRegistered", "project:proj-events-http", %{
+      project_id: "proj-events-http",
+      path: "/tmp/proj-events-http"
+    })
+
+    append_event("TaskCreated", "task:task-events-http", %{
+      task_id: "task-events-http",
+      project_id: "proj-events-http",
+      title: "Events HTTP"
+    })
+
+    assert {:ok, _} =
+             ForemanServer.EventStore.append(%{
+               stream_id: "run:run-events-http",
+               event_type: "RunStarted",
+               payload: %{
+                 run_id: "run-events-http",
+                 task_id: "task-events-http",
+                 phase_order: ["developer"]
+               },
+               occurred_at: ~N[2026-01-01 00:00:00],
+               metadata: %{
+                 correlation_id: "run-events-http",
+                 idempotency_key: "run-events-http-started"
+               }
+             })
+
+    assert {:ok, _} =
+             ForemanServer.EventStore.append(%{
+               stream_id: "worker:run-events-http:worker-events-http",
+               event_type: "WorkerStdout",
+               payload: %{
+                 run_id: "run-events-http",
+                 task_id: "task-events-http",
+                 phase_id: "developer",
+                 worker_id: "worker-events-http",
+                 output: "events stdout",
+                 sequence: 1
+               },
+               occurred_at: ~N[2026-01-01 00:01:00],
+               metadata: %{
+                 correlation_id: "run-events-http",
+                 idempotency_key: "run-events-http-stdout"
+               }
+             })
+
+    conn =
+      :get
+      |> conn("/api/v1/events?run_id=run-events-http&limit=5")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert body["ok"] == true
+    assert Enum.map(body["events"], & &1["event_type"]) == ["WorkerStdout", "RunStarted"]
+    assert Enum.all?(body["events"], &(&1["project_id"] == "proj-events-http"))
+  end
+
   test "invalid JSON command returns validation error" do
     conn =
       :post
