@@ -441,7 +441,10 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
-         %{type: "PrMerged", payload: %{run_id: run_id} = payload},
+         %{
+           type: "PrMerged",
+           payload: %{run_id: run_id, task_id: _task_id, pr_url: _pr_url} = payload
+         },
          _mode
        ) do
     update_run(projection, run_id, fn run ->
