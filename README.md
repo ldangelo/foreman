@@ -249,8 +249,9 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 ### Viewing messages
 
 ```bash
-foreman inbox                     # Latest run's messages
-foreman inbox --task task-abc      # Messages for a specific task
+foreman inbox                     # TTY task navigator; non-TTY summary
+foreman inbox task task-abc       # Messages/events for a specific task
+foreman inbox --task task-abc      # Legacy task selector
 foreman inbox --all --watch       # Live stream across all runs
 foreman debug <task-id>            # AI analysis including full mail timeline + trace artifacts
 ```
@@ -377,7 +378,7 @@ Each agent gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox --task <id>` also shows the selected run's lifecycle/terminal events through the Elixir backend. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
+Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox` opens an active/attention task navigator on a TTY, `foreman inbox task <id>` drills into one task's messages/events, and the legacy `foreman inbox --task <id>` selector remains supported. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
 
 ```bash
 foreman status
@@ -506,15 +507,19 @@ foreman doctor --fix                    # Auto-fix safe cleanup: retryable/zombi
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` for a columnar lifecycle table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`) with phase completions, retries, verdicts, overwatch nudges, worktree creation, dispatch, and merge/refinery lifecycle events. Add `--grouped` with `--events` for the workflow → phase → message/tool-call grouping. Use `--compact` for an operator summary of run/task status, phases, tool counts, denials, and notable failures.
+View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. On a TTY with no selector, `foreman inbox` opens an interactive active/attention task navigator; use `--non-interactive` for scriptable output. Non-interactive all-run output is task-first so active `in_progress` runs remain visible even without recent mail. Message contents appear in the default table preview; use `--full` for complete bodies. Add `--events` for a columnar lifecycle table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`) with phase completions, retries, verdicts, overwatch nudges, worktree creation, dispatch, and merge/refinery lifecycle events. Add `--grouped` with `--events` for the workflow → phase → message/tool-call grouping. Use `--compact` for an operator summary of run/task status, phases, tool counts, denials, and notable failures.
 
 ```bash
-foreman inbox                            # Latest run's messages
-foreman inbox --task task-abc           # Messages/events for a specific task
-foreman inbox --all                     # All runs
-foreman inbox --compact                 # Compact run/task status, phase/tool counts, denials
-foreman inbox --events --grouped        # Group lifecycle events by workflow/phase
-foreman inbox --all --watch             # Live stream across all runs
+foreman inbox                            # TTY task navigator; non-TTY active/attention summary
+foreman inbox --non-interactive          # Force scriptable output on a TTY
+foreman inbox task task-abc              # Task mail/events; add --logs --reports --files for artifacts
+foreman inbox run <run-id>               # Run mail/events; add --follow for live refresh
+foreman inbox --task task-abc            # Legacy task selector
+foreman inbox --all                      # Task-first all-run summary
+foreman inbox --compact                  # Compact run/task status, phase/tool counts, denials
+foreman inbox --events --grouped         # Group lifecycle events by workflow/phase
+foreman inbox task task-abc --logs --reports --files
+foreman inbox --all --watch              # Live stream across all runs
 foreman inbox send --from qa --to developer --subject fix-needed  # Send a message (--run-id or FOREMAN_RUN_ID)
 ```
 

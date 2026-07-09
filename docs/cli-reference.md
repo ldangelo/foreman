@@ -516,6 +516,106 @@ foreman pr --base-branch dev      # PR against dev instead of main
 
 ---
 
+## GitHub Issues Integration
+
+### `foreman issue`
+
+GitHub Issues integration commands for viewing, listing, importing, and syncing issues.
+
+```bash
+foreman issue list                # List GitHub issues
+foreman issue view bd-123        # View a specific issue
+foreman issue import bd-123       # Import an issue as a Foreman task
+foreman issue labels              # List repository labels
+foreman issue milestones          # List repository milestones
+foreman issue configure           # Configure GitHub sync
+foreman issue status              # Show sync status
+foreman issue link bd-123 --pr 456  # Link PR to issue
+```
+
+**`issue view` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<issue>` | — | Issue number or URL |
+| `--project <name>` | current directory | Registered project name |
+| `--json` | — | Output as JSON |
+
+**`issue list` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--state <state>` | open | Issue state: open, closed, all |
+| `--labels <labels>` | — | Filter by labels (comma-separated) |
+| `--milestone <milestone>` | — | Filter by milestone |
+| `--limit <n>` | 50 | Maximum issues to show |
+| `--json` | — | Output as JSON |
+
+**`issue configure` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--auto-import` | — | Automatically import new issues |
+| `--sync-labels` | — | Sync labels from GitHub |
+
+**`issue import` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<issue>` | — | Issue number, URL, or path to local repo |
+| `--project <name>` | current directory | Registered project name |
+| `--type <type>` | — | Task type: task, bug, feature |
+| `--priority <priority>` | — | Task priority: critical, high, medium, low |
+| `--dry-run` | — | Preview without creating task |
+| `--json` | — | Output as JSON |
+
+**`issue labels` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--json` | — | Output as JSON |
+
+**`issue milestones` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--state <state>` | active | Milestone state: open, closed, all |
+| `--json` | — | Output as JSON |
+
+**`issue webhook` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--enable` | — | Enable webhook |
+| `--disable` | — | Disable webhook |
+| `--url <url>` | — | Webhook URL |
+| `--events <events>` | — | Webhook events (comma-separated) |
+| `--json` | — | Output as JSON |
+
+**`issue status` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project <name>` | current directory | Registered project name |
+| `--json` | — | Output as JSON |
+
+**`issue link` options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<issue>` | — | Issue number or URL |
+| `--pr <number>` | — | PR number to link |
+| `--unlink` | — | Unlink instead of linking |
+| `--project <name>` | current directory | Registered project name |
+| `--json` | — | Output as JSON |
+
+---
+
 ## MCP Server
 
 ### `foreman mcp`
@@ -546,16 +646,21 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, structured phase-report steering, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events as a columnar table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`). Add `--grouped` to use the workflow → phase → message/tool-call grouping. Use `--compact` for a single operator summary of task/run status, phases, tool counts, denials, and notable failure/overwatch lines without raw mail/event spam. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project; after the initial table, live event rows append without repeating the table header.
+View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. When run on a TTY with no explicit selector, `foreman inbox` opens an interactive task navigator focused on active/attention runs; use `--non-interactive` for scriptable output. Non-interactive all-run output is task-first: active `in_progress` runs remain visible even when they have no recent mail, and historical inbox rows cannot hide live work. Use `foreman inbox task <task-id>` or `foreman inbox run <run-id>` to drill into one task/run with recent messages and lifecycle events. Message contents appear in the table preview by default; use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, structured phase-report steering, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events as a columnar table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`). Add `--grouped` to use the workflow → phase → message/tool-call grouping. Use `--compact` for a single operator summary of task/run status, phases, tool counts, denials, and notable failure/overwatch lines without raw mail/event spam. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project; after the initial table, live event rows append without repeating the table header.
 
 ```bash
-foreman inbox                     # Show latest run's messages
-foreman inbox --task bd-abc1      # Messages for a specific task by ID
+foreman inbox                     # TTY: interactive active/attention task navigator
+foreman inbox --non-interactive   # Scriptable active/attention summary
+foreman inbox task bd-abc1        # Drill into a task; add --logs --reports --files for artifacts
+foreman inbox run <run-id>        # Drill into a run; supports --follow for live refresh
+foreman inbox --task bd-abc1      # Legacy task selector; still supported
+foreman inbox --all               # Task-first all-run summary
 foreman inbox --all --watch       # Live stream ALL messages across all runs
 foreman inbox --watch             # Live stream latest run's messages
 foreman inbox --unread            # Show only unread messages
 foreman inbox --limit 100         # Show more messages
 foreman inbox --compact           # Summarize task/run, phases, tools, denials, notable events
+foreman inbox task bd-abc1 --logs --reports --files
 foreman inbox --ack               # Mark shown messages as read
 ```
 
@@ -563,8 +668,8 @@ foreman inbox --ack               # Mark shown messages as read
 |--------|---------|-------------|
 | `--agent <name>` | all | Filter to specific agent/role |
 | `--run <id>` | latest | Filter to specific run ID |
-| `--task <id>` | — | Resolve run by task ID |
-| `--all` | — | Show/watch messages across all runs |
+| `--task <id>` | — | Legacy selector: resolve run by task ID |
+| `--all` | — | Show/watch task-first output across all runs |
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
 | `--limit <n>` | `50` | Maximum messages to show |
@@ -573,6 +678,12 @@ foreman inbox --ack               # Mark shown messages as read
 | `--events` | — | Show a columnar pipeline event table |
 | `--grouped` | — | Group pipeline events by workflow/phase instead of using the event table |
 | `--events-limit <n>` | `50` | Maximum lifecycle events to show |
+| `--interactive` | TTY auto | Open the interactive task navigator explicitly |
+| `--non-interactive` | — | Force scriptable output on a TTY |
+| `--scope <scope>` | `attention` | Task navigator/summary scope: `active`, `attention`, `all`, or `terminal` |
+| `--logs` | — | Task/run drilldown: show log file paths, sizes, and recent error lines |
+| `--reports` | — | Task/run drilldown: show report artifact directory and files |
+| `--files` | — | Task/run drilldown: show worktree path and changed files |
 
 ### `foreman inbox send`
 

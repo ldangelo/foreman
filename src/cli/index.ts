@@ -87,7 +87,7 @@ function exitSilentlyOnEpipe(error: NodeJS.ErrnoException): void {
 process.stdout.on("error", exitSilentlyOnEpipe);
 process.stderr.on("error", exitSilentlyOnEpipe);
 
-export const program = new Command();
+export const program = new Command().enablePositionalOptions();
 
 program
   .name("foreman")

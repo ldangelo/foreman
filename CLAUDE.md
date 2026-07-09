@@ -39,8 +39,9 @@ foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
-foreman inbox          # Agent mail + selected-run lifecycle events
-foreman inbox --task X --events  # Grouped workflow→phase→message/tool timeline
+foreman inbox          # TTY active/attention navigator; non-TTY summary
+foreman inbox task X   # Drill into one task's mail/events
+foreman inbox --task X --events  # Legacy task selector with lifecycle table
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
 foreman mcp --transport stdio # MCP tools via Elixir backend plus local reset cleanup; use --transport http for remote clients
@@ -261,7 +262,8 @@ foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live stream all mail across all runs
-foreman inbox --task X       # Mail/events for a specific task
+foreman inbox task X --logs --reports --files  # Mail/events plus artifacts
+foreman inbox --task X                         # Legacy selector for a specific task
 
 # Worktree cleanup
 foreman worktree list   # See all active worktrees

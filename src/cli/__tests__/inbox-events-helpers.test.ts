@@ -231,6 +231,30 @@ describe("inbox event helpers", () => {
     ]);
   });
 
+  it("normalizes mixed live event timestamps before ordering newest first", async () => {
+    const dateTimeLike = { toISO: () => "2026-01-01T00:02:00.000Z" };
+    const daemon = {
+      backend: "elixir",
+      projectId: "proj-1",
+      client: {
+        listEvents: vi.fn().mockResolvedValue([
+          { event_id: "evt-datetime", run_id: "run-1", event_type: "PhaseStarted", payload: { task_id: "task-1" }, occurred_at: dateTimeLike },
+          { event_id: "evt-created-at", run_id: "run-1", event_type: "PhaseCompleted", payload: { task_id: "task-1" }, created_at: "2026-01-01T00:03:00.000Z" },
+          { event_id: "evt-string", run_id: "run-1", event_type: "RunStarted", payload: { task_id: "task-1" }, occurred_at: "2026-01-01T00:01:00.000Z" },
+        ]),
+      },
+    } as unknown as Parameters<typeof fetchDaemonEvents>[0]; // Test double implements the Elixir event method this helper consumes.
+
+    const events = await fetchDaemonEvents(daemon, { all: true, limit: 10 });
+
+    expect(events.map((event) => event.id)).toEqual(["evt-created-at", "evt-datetime", "evt-string"]);
+    expect(events.map((event) => event.createdAt)).toEqual([
+      "2026-01-01T00:03:00.000Z",
+      "2026-01-01T00:02:00.000Z",
+      "2026-01-01T00:01:00.000Z",
+    ]);
+  });
+
   it("fetchDaemonEvents supports Elixir all/run filtering and node all/run filtering", async () => {
     const elixirDaemon = {
       backend: "elixir",
