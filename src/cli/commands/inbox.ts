@@ -1789,14 +1789,15 @@ export function renderTaskDetail(summary: InboxTaskSummary, options: { messages:
 
 
 async function renderInteractiveInbox(sources: InboxSources, projectLabel: string, options: { agent?: string; unread?: boolean; limit: number; eventsLimit: number; scope: InboxScope }): Promise<void> {
-  const summaries = await loadInboxOverview(sources, {
+  const loadSummaries = (): Promise<InboxTaskSummary[]> => loadInboxOverview(sources, {
     scope: options.scope,
     agent: options.agent,
     unread: options.unread,
     limit: options.limit,
     eventsLimit: options.eventsLimit,
   });
-  const app = renderInk(createElement(InboxDashboard, { summaries, projectLabel, limit: options.limit, eventsLimit: options.eventsLimit, renderTaskDetail }));
+  const summaries = await loadSummaries();
+  const app = renderInk(createElement(InboxDashboard, { summaries, projectLabel, limit: options.limit, eventsLimit: options.eventsLimit, renderTaskDetail, loadSummaries }));
   await app.waitUntilExit();
 }
 

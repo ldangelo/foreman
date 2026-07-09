@@ -6,7 +6,7 @@ import type { Message } from "../../lib/store.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
 import { renderInboxTaskSummaryTable } from "../commands/inbox.js";
 import { buildInboxTimeline } from "../inbox/timeline.js";
-import { InboxDashboard } from "../inbox/tui.js";
+import { InboxDashboard, buildInboxDashboardActions, selectedIndexForRun } from "../inbox/tui.js";
 
 function message(overrides: Partial<Message> = {}): Message {
   return {
@@ -53,6 +53,15 @@ function summary(overrides: Partial<InboxTaskSummary> = {}): InboxTaskSummary {
     events: [event() as never],
     ...overrides,
   };
+}
+
+function contractText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(contractText).join("\n");
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).map(contractText).join(" ");
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
 }
 
 describe("inbox TUI timeline contracts", () => {
@@ -128,6 +137,42 @@ describe("inbox TUI render contracts", () => {
     expect(output).toContain("q/Esc quit");
     expect(output).toContain("j/k select");
     expect(output).toContain("s/m/e/l/r/f tabs");
+    expect(output).toMatch(/\brefresh\b/i);
+    expect(output).toMatch(/\bactions?\b/i);
+  });
+
+  it("builds a safe action palette for the selected task and run", () => {
+    const actions = buildInboxDashboardActions(summary({
+      taskId: "bd-action",
+      runId: "run-action",
+      runStatus: "failed",
+      phase: "reviewer",
+      statusText: "needs human review",
+    }), "Fortium Foreman");
+    const text = contractText(actions);
+
+    expect(text).toMatch(/\blogs?\b/i);
+    expect(text).toMatch(/\bdrill\s*down\b|\bdetail\b/i);
+    expect(text).toMatch(/\btask status\b|\btask show\b/i);
+    expect(text).toContain("bd-action");
+    expect(text).toContain("run-action");
+    expect(text).toContain("foreman inbox task bd-action");
+    expect(text).toContain("foreman logs bd-action");
+    expect(text).toMatch(/foreman inbox run run-action\b[\s\S]*--logs/);
+    expect(text).toContain("foreman task show bd-action");
+    expect(text).not.toMatch(/\b(?:delete|kill|purge|reset|rm|retry|stop)\b/i);
+  });
+
+  it("resolves the selected run index across refreshed summaries", () => {
+    const refreshed = [
+      summary({ taskId: "bd-first", runId: "run-first" }),
+      summary({ taskId: "bd-stable", runId: "run-stable" }),
+      summary({ taskId: "bd-last", runId: "run-last" }),
+    ];
+
+    expect(selectedIndexForRun(refreshed, "run-stable")).toBe(1);
+    expect(selectedIndexForRun(refreshed, "run-missing")).toBe(0);
+    expect(selectedIndexForRun([], "run-stable")).toBe(-1);
   });
 
   it("keeps non-interactive summary tables scriptable instead of rendering TUI chrome", () => {

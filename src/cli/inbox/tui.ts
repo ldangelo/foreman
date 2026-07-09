@@ -1,5 +1,5 @@
 import { Box, Text, useApp, useInput } from "ink";
-import { createElement, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { createElement, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import type { InboxTaskSummary } from "../commands/inbox.js";
 import { buildInboxTimeline, type InboxTimelineItem } from "./timeline.js";
 
@@ -15,12 +15,22 @@ interface RenderTaskDetailOptions {
   eventsLimit: number;
 }
 
+export interface InboxDashboardAction {
+  id: string;
+  label: string;
+  shortcut: string;
+  description: string;
+  command: string;
+}
+
 export interface InboxDashboardProps {
   summaries: InboxTaskSummary[];
   projectLabel: string;
   limit: number;
   eventsLimit: number;
   renderTaskDetail?: (summary: InboxTaskSummary, options: RenderTaskDetailOptions) => string;
+  loadSummaries?: () => Promise<InboxTaskSummary[]>;
+  refreshIntervalMs?: number;
 }
 
 interface PaneProps {
@@ -101,6 +111,53 @@ function compactId(value: string | null, length = 8): string {
   return value.length <= length ? value : value.slice(0, length);
 }
 
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9._/-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function selectedIndexForRun(summaries: InboxTaskSummary[], selectedRunId: string | null): number {
+  if (summaries.length === 0) return -1;
+  if (!selectedRunId) return 0;
+  const index = summaries.findIndex((summary) => summary.runId === selectedRunId);
+  return index >= 0 ? index : 0;
+}
+
+export function buildInboxDashboardActions(summary: InboxTaskSummary, projectLabel: string): InboxDashboardAction[] {
+  const taskId = shellArg(summary.taskId);
+  const runId = shellArg(summary.runId);
+  const project = shellArg(projectLabel);
+  return [
+    {
+      id: "drilldown",
+      label: "Open drilldown",
+      shortcut: "d",
+      description: "Show task mail, lifecycle events, logs, reports, and files.",
+      command: `foreman inbox task ${taskId} --project ${project} --logs --reports --files`,
+    },
+    {
+      id: "logs",
+      label: "Tail logs",
+      shortcut: "l",
+      description: "Follow the selected task logs outside the cockpit.",
+      command: `foreman logs ${taskId} --project ${project} --follow`,
+    },
+    {
+      id: "task",
+      label: "Show task",
+      shortcut: "t",
+      description: "Print the selected task record and current run summary.",
+      command: `foreman task show ${taskId} --project ${project}`,
+    },
+    {
+      id: "run",
+      label: "Open run detail",
+      shortcut: "r",
+      description: "Open the selected run drilldown directly.",
+      command: `foreman inbox run ${runId} --project ${project} --logs --reports --files`,
+    },
+  ];
+}
+
 function statusColor(summary: InboxTaskSummary): string {
   if (summary.verdict === "pass") return "green";
   if (summary.verdict === "fail" || summary.attention) return "red";
@@ -137,7 +194,7 @@ function Pane({ title, children, minHeight, flexGrow = 1, width }: PaneProps): R
   );
 }
 
-function HeaderBar({ projectLabel, summaries, selected, tab }: { projectLabel: string; summaries: InboxTaskSummary[]; selected: InboxTaskSummary | undefined; tab: InboxDashboardTab }): ReactElement {
+function HeaderBar({ projectLabel, summaries, selected, tab, refreshStatus }: { projectLabel: string; summaries: InboxTaskSummary[]; selected: InboxTaskSummary | undefined; tab: InboxDashboardTab; refreshStatus: string }): ReactElement {
   const attentionCount = summaries.filter((summary) => summary.attention).length;
   const activeCount = summaries.filter((summary) => ["pending", "running", "in_progress", "cooldown"].includes(summary.runStatus)).length;
   const selectedLabel = selected ? `${selected.taskId} / ${compactId(selected.runId, 10)}` : "none";
@@ -145,33 +202,39 @@ function HeaderBar({ projectLabel, summaries, selected, tab }: { projectLabel: s
   return h(Box, { borderStyle: "single", borderColor: "cyan", paddingX: 1 },
     h(Text, null,
       h(Text, { bold: true }, "FOREMAN INBOX"),
-      `  project=${projectLabel}  tasks=${summaries.length} active=${activeCount} attention=${attentionCount}  selected=${selectedLabel}  mode=${TAB_LABELS[tab]}`,
+      `  project=${projectLabel}  tasks=${summaries.length} active=${activeCount} attention=${attentionCount}  selected=${selectedLabel}  mode=${TAB_LABELS[tab]}  ${refreshStatus}`,
     ),
   );
 }
 
-function FooterBar({ tab }: { tab: InboxDashboardTab }): ReactElement {
+function FooterBar({ tab, paletteOpen, actionNotice }: { tab: InboxDashboardTab; paletteOpen: boolean; actionNotice: string | null }): ReactElement {
+  const paletteHint = paletteOpen ? "Esc close palette · Enter show command" : "a/: actions";
+  const notice = actionNotice ? ` · ${actionNotice}` : "";
   return h(Box, { borderStyle: "single", borderColor: "gray", paddingX: 1 },
-    h(Text, { dimColor: true }, `j/k select · ↑/↓ select · Enter toggle · ${TAB_HINTS[tab]} · s/m/e/l/r/f tabs · q/Esc quit`),
+    h(Text, { dimColor: true }, `j/k select · ↑/↓ select · Enter toggle · ${TAB_HINTS[tab]} · s/m/e/l/r/f tabs · ${paletteHint} · q/Esc quit${notice}`),
   );
 }
+
 
 function EmptyState({ projectLabel }: { projectLabel: string }): ReactElement {
   return h(Box, { flexDirection: "column" },
-    h(HeaderBar, { projectLabel, summaries: [], selected: undefined, tab: "summary" }),
+    h(HeaderBar, { projectLabel, summaries: [], selected: undefined, tab: "summary", refreshStatus: "static" }),
     h(Pane, { title: "Inbox", minHeight: 7 },
       h(Text, { bold: true }, "No active or attention tasks found."),
       h(Text, null, "Try `foreman inbox --scope all` to include terminal runs, or start a Foreman task to populate this cockpit."),
-      h(Text, { dimColor: true }, "Shortcuts: j/k select · s/m/e/l/r/f tabs · q/Esc quit"),
+      h(Text, { dimColor: true }, "Shortcuts: j/k select · s/m/e/l/r/f tabs · a/: actions · q/Esc quit"),
     ),
-    h(FooterBar, { tab: "summary" }),
+    h(FooterBar, { tab: "summary", paletteOpen: false, actionNotice: null }),
   );
 }
 
 function TaskListPane({ summaries, selectedIndex, compact }: { summaries: InboxTaskSummary[]; selectedIndex: number; compact: boolean }): ReactElement {
-  const visible = summaries.slice(0, compact ? 8 : 18);
+  const visibleCount = compact ? 8 : 18;
+  const start = Math.max(0, Math.min(Math.max(0, selectedIndex - Math.floor(visibleCount / 2)), Math.max(0, summaries.length - visibleCount)));
+  const visible = summaries.slice(start, start + visibleCount);
   return h(Pane, { title: "Tasks", width: compact ? undefined : 42, flexGrow: compact ? 1 : 0 },
-    ...visible.map((summary, index) => {
+    ...visible.map((summary, offset) => {
+      const index = start + offset;
       const selected = index === selectedIndex;
       const marker = selected ? "›" : " ";
       const status = compact ? compactId(summary.runStatus, 9) : summary.runStatus;
@@ -183,8 +246,9 @@ function TaskListPane({ summaries, selectedIndex, compact }: { summaries: InboxT
         bold: selected,
       }, `${marker} ${truncate(summary.taskId, titleWidth)} ${status} ${truncate(summary.phase, 10)} ${relativeTime(summary.lastActivityAt)}`);
     }),
-    summaries.length > visible.length
-      ? h(Text, { dimColor: true }, `  … ${summaries.length - visible.length} more`)
+    start > 0 ? h(Text, { dimColor: true }, `  … ${start} earlier`) : h(Text, { dimColor: true }, " "),
+    start + visible.length < summaries.length
+      ? h(Text, { dimColor: true }, `  … ${summaries.length - start - visible.length} more`)
       : h(Text, { dimColor: true }, " "),
   );
 }
@@ -222,6 +286,23 @@ function TextOutputPane({ title, output, compact }: { title: string; output: str
   );
 }
 
+function ActionPalette({ actions, selectedActionIndex, actionNotice }: { actions: InboxDashboardAction[]; selectedActionIndex: number; actionNotice: string | null }): ReactElement {
+  return h(Pane, { title: "Actions", minHeight: 8 },
+    h(Text, { bold: true }, "Command palette"),
+    h(Text, { dimColor: true }, "Enter shows the command to run manually. Destructive actions are not executed from this cockpit."),
+    ...actions.map((action, index) => {
+      const selected = index === selectedActionIndex;
+      return h(Text, {
+        key: action.id,
+        color: selected ? "black" : "white",
+        backgroundColor: selected ? "cyan" : undefined,
+        bold: selected,
+      }, `${selected ? "›" : " "} ${action.shortcut} ${action.label}: ${action.description}`);
+    }),
+    actionNotice ? h(Text, { color: "yellow" }, actionNotice) : h(Text, { dimColor: true }, " "),
+  );
+}
+
 function DetailPane({ summary, tab }: { summary: InboxTaskSummary; tab: InboxDashboardTab }): ReactElement {
   const rows = [
     `Run: ${summary.runId}`,
@@ -242,17 +323,94 @@ function DetailPane({ summary, tab }: { summary: InboxTaskSummary; tab: InboxDas
   );
 }
 
-export function InboxDashboard({ summaries, projectLabel, limit, eventsLimit, renderTaskDetail }: InboxDashboardProps): ReactElement {
+export function InboxDashboard({ summaries: initialSummaries, projectLabel, limit, eventsLimit, renderTaskDetail, loadSummaries, refreshIntervalMs = 2000 }: InboxDashboardProps): ReactElement {
   const { exit } = useApp();
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [summaries, setSummaries] = useState(initialSummaries);
+  const [selectedRunId, setSelectedRunId] = useState(initialSummaries[0]?.runId ?? null);
   const [tab, setTab] = useState<InboxDashboardTab>("summary");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [selectedActionIndex, setSelectedActionIndex] = useState(0);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const compact = (process.stdout.columns || 100) < 90;
-  const selected = summaries[selectedIndex];
+  const selectedIndex = selectedIndexForRun(summaries, selectedRunId);
+  const selected = selectedIndex >= 0 ? summaries[selectedIndex] : undefined;
+  const actions = selected ? buildInboxDashboardActions(selected, projectLabel) : [];
+  const refreshStatus = refreshError
+    ? `refresh error: ${truncate(refreshError, 48)}`
+    : loadSummaries
+      ? `refresh=live${lastRefreshAt ? ` · refreshed ${lastRefreshAt.toLocaleTimeString()}` : ""}`
+      : "refresh=static";
+
+  useEffect(() => {
+    setSummaries(initialSummaries);
+    setSelectedRunId((current) => current && initialSummaries.some((summary) => summary.runId === current) ? current : initialSummaries[0]?.runId ?? null);
+  }, [initialSummaries]);
+
+  useEffect(() => {
+    if (!loadSummaries) return undefined;
+    let active = true;
+    let inFlight = false;
+    const refresh = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const next = await loadSummaries();
+        if (!active) return;
+        setSummaries(next);
+        setSelectedRunId((current) => current && next.some((summary) => summary.runId === current) ? current : next[0]?.runId ?? null);
+        setLastRefreshAt(new Date());
+        setRefreshError(null);
+      } catch (err: unknown) {
+        if (active) setRefreshError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight = false;
+      }
+    };
+    const interval = setInterval(() => { void refresh(); }, refreshIntervalMs);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [loadSummaries, refreshIntervalMs]);
 
   useInput((input, key) => {
+    if (paletteOpen) {
+      if (key.escape) {
+        setPaletteOpen(false);
+        return;
+      }
+      if (key.upArrow || input === "k") {
+        setSelectedActionIndex((index) => Math.max(0, index - 1));
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        setSelectedActionIndex((index) => Math.min(Math.max(0, actions.length - 1), index + 1));
+        return;
+      }
+      if (key.return) {
+        const action = actions[selectedActionIndex];
+        if (action) setActionNotice(`Run manually: ${action.command}`);
+        return;
+      }
+    }
+
     if (input === "q" || key.escape) exit();
-    if (key.upArrow || input === "k") setSelectedIndex((index) => Math.max(0, index - 1));
-    if (key.downArrow || input === "j") setSelectedIndex((index) => Math.min(Math.max(0, summaries.length - 1), index + 1));
+    if (input === "a" || input === ":") {
+      setPaletteOpen(true);
+      setSelectedActionIndex(0);
+      setActionNotice(null);
+      return;
+    }
+    if (key.upArrow || input === "k") {
+      const nextIndex = Math.max(0, selectedIndex - 1);
+      setSelectedRunId(summaries[nextIndex]?.runId ?? null);
+    }
+    if (key.downArrow || input === "j") {
+      const nextIndex = Math.min(Math.max(0, summaries.length - 1), selectedIndex + 1);
+      setSelectedRunId(summaries[nextIndex]?.runId ?? null);
+    }
     if (input === "s") setTab("summary");
     if (input === "m") setTab("messages");
     if (input === "e") setTab("events");
@@ -279,24 +437,31 @@ export function InboxDashboard({ summaries, projectLabel, limit, eventsLimit, re
       eventsLimit,
     });
   }, [eventsLimit, limit, renderTaskDetail, selected, tab]);
+  const mainPane = selected
+    ? paletteOpen
+      ? h(ActionPalette, { actions, selectedActionIndex, actionNotice })
+      : detailOutput
+        ? h(TextOutputPane, { title: TAB_LABELS[tab], output: detailOutput, compact })
+        : h(TimelinePane, { items: timelineItems, tab, compact })
+    : h(Text, null, "No task selected.");
 
   if (summaries.length === 0) return h(EmptyState, { projectLabel });
 
   return h(Box, { flexDirection: "column" },
-    h(HeaderBar, { projectLabel, summaries, selected, tab }),
+    h(HeaderBar, { projectLabel, summaries, selected, tab, refreshStatus }),
     compact
       ? h(Box, { flexDirection: "column" },
         h(TaskListPane, { summaries, selectedIndex, compact }),
-        selected ? (detailOutput ? h(TextOutputPane, { title: TAB_LABELS[tab], output: detailOutput, compact }) : h(TimelinePane, { items: timelineItems, tab, compact })) : h(Text, null, "No task selected."),
+        mainPane,
       )
       : h(Box, { flexDirection: "row" },
         h(TaskListPane, { summaries, selectedIndex, compact }),
         h(Box, { flexDirection: "column", flexGrow: 1 },
-          selected ? (detailOutput ? h(TextOutputPane, { title: TAB_LABELS[tab], output: detailOutput, compact }) : h(TimelinePane, { items: timelineItems, tab, compact })) : h(Text, null, "No task selected."),
+          mainPane,
           selected ? h(DetailPane, { summary: selected, tab }) : h(Text, null, ""),
         ),
       ),
     compact && selected ? h(DetailPane, { summary: selected, tab }) : h(Text, { dimColor: true }, ""),
-    h(FooterBar, { tab }),
+    h(FooterBar, { tab, paletteOpen, actionNotice }),
   );
 }
