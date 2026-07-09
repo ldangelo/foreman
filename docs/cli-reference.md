@@ -60,6 +60,31 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 | `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
+### `foreman project`
+
+Manage Elixir-registered projects.
+
+```bash
+foreman project list              # List all registered projects
+foreman project add owner/repo     # Add a project from GitHub
+foreman project register .         # Register an existing local repository
+foreman project remove <id>       # Archive a project
+foreman project edit <id>         # Edit project settings
+```
+
+| Option | Description |
+|--------|-------------|
+| `-h, --help` | Display help for command |
+
+**Subcommands:**
+| Command | Description |
+|---------|-------------|
+| `add <github-url>` | Add a project from GitHub URL |
+| `register [path]` | Register an existing local repository |
+| `list` | List all registered projects |
+| `remove <id>` | Archive a project |
+| `edit <id>` | Edit project settings |
+
 ---
 
 ## Dispatching Work
@@ -83,15 +108,22 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--max-agents <n>` | `5` | Removed operator override; Elixir scheduler owns capacity |
-| `--model <model>` | — | Removed operator override; workflow/provider config owns worker models |
-| `--dry-run` | — | Check Elixir server availability without sending a scheduler tick |
-| `--no-watch` | — | Exit immediately after dispatching |
-| `--yes` | — | Answer yes to supported run confirmation prompts |
-| `--resume` / `--resume-failed` | — | Removed; use `foreman retry` |
-| `--no-pipeline` / `--workflow <name>` | — | Removed dispatch-shaping options; workflow selection is scheduler-owned by workflow YAML `task_type` routing and labels |
-| `--no-auto-dispatch` / `--telemetry` | — | Removed legacy dispatcher options |
-| `--project <name-or-path>` | — | Target a registered project name or absolute project path |
+| `--max-agents <n>` | `5` | Maximum concurrent agents |
+| `--model <model>` | — | Force a specific model (overrides `FOREMAN_DEFAULT_MODEL`) |
+| `--dry-run` | — | Show what would be dispatched without doing it |
+| `--no-watch` | — | Exit immediately after dispatching (don't monitor agents) |
+| `--telemetry` | — | Enable OpenTelemetry tracing on spawned agents (requires `OTEL_*` env vars) |
+| `--resume` | — | Resume stuck/rate-limited runs from a previous dispatch |
+| `--resume-failed` | — | Also resume failed runs (not just stuck/rate-limited) |
+| `--no-pipeline` | — | Skip the explorer/qa/reviewer pipeline — run as single worker agent |
+| `--workflow <name>` | — | Run all dispatched tasks with this workflow (overrides `workflow:<name>` labels and task-type mapping) |
+| `--task <id>` | — | Dispatch only this specific task by ID (must be ready) |
+| `--no-auto-dispatch` | — | Disable automatic dispatch when an agent completes and capacity is available |
+| `--stagger <duration>` | — | Stagger delay between dispatches to prevent thundering herd (e.g. `30s`, `1m`) |
+| `--project <name>` | — | Registered project name (default: current directory) |
+| `--project-path <absolute-path>` | — | Absolute project path (advanced/script usage) |
+| `--runtime-mode <mode>` | — | Runtime mode: `normal`\|`test` (test uses deterministic phase-runner seams) |
+| `--yes` | — | Answer yes to run confirmation prompts (for non-interactive dispatch) |
 
 > **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
 
@@ -155,6 +187,26 @@ Active Agents
   read     ██████████ 18
   Files      3
 ```
+
+### `foreman logs`
+
+Show run logs and debugging summary.
+
+```bash
+foreman logs bd-abc1              # Show summary for a task
+foreman logs bd-abc1 --tail 200    # Show more raw log lines
+foreman logs bd-abc1 --follow      # Follow logs in real-time
+foreman logs bd-abc1 --raw         # Print raw JSON log only
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--run <runId>` | — | Run ID (overrides positional ID) |
+| `--project <name>` | — | Registered project name (default: current directory) |
+| `--project-path <absolute-path>` | — | Absolute project path (advanced/script usage) |
+| `--tail <lines>` | `80` | Raw log lines to show |
+| `--follow` | — | Follow the raw JSON log after printing the summary |
+| `--raw` | — | Print only the raw JSON log tail |
 
 ### `foreman watch`
 
@@ -285,6 +337,30 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 - Pipeline reports (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, etc.)
 - Agent worker logs (`~/.foreman/logs/<runId>.log`)
 - Task info from `native task store show`
+
+### `foreman recover`
+
+Autonomous recovery agent for pipeline failures.
+
+```bash
+foreman recover bd-abc1 --reason test-failed   # Recover from test failure
+foreman recover bd-abc1 --raw                   # Show collected context without AI
+foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--reason <reason>` | — | Failure reason: `test-failed` \| `stuck` \| `stale-blocked` \| `finalize-conflict` |
+| `--run-id <id>` | latest | Specific run ID |
+| `--output <text>` | — | Pre-captured test output to include in context |
+| `--model <model>` | — | Model to use for recovery |
+| `--raw` | — | Print collected context without invoking AI |
+| `--prepare-clean-replay` | — | Create a fresh clean-replay workspace |
+| `--apply-clean-replay` | — | Copy intended changed files into clean replay workspace |
+| `--validate-clean-replay` | — | Run typecheck and build in clean replay workspace |
+| `--commit-clean-replay` | — | Stage and commit the clean replay workspace |
+| `--push-clean-replay` | — | Push the validated clean replay branch |
+| `--execute-clean-replay` | — | Run full clean replay: apply, validate, commit, and push |
 
 ### `foreman doctor`
 
@@ -713,5 +789,42 @@ foreman purge runs --dry-run      # Preview
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Preview without making changes |
+
+---
+
+## GitHub Issues Integration
+
+### `foreman issue`
+
+GitHub Issues integration commands.
+
+```bash
+foreman issue view owner/repo#123      # View a specific issue
+foreman issue list owner/repo          # List open issues
+foreman issue configure owner/repo    # Configure a repository for sync
+foreman issue import owner/repo#123   # Import issue as Foreman task
+foreman issue labels owner/repo       # List repository labels
+foreman issue milestones owner/repo   # List repository milestones
+foreman issue webhook owner/repo      # Manage GitHub webhooks
+foreman issue status owner/repo       # Show sync status
+foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
+```
+
+| Option | Description |
+|--------|-------------|
+| `-h, --help` | Display help for command |
+
+**Subcommands:**
+| Command | Description |
+|---------|-------------|
+| `view` | View a GitHub issue |
+| `list` | List GitHub issues for a repository |
+| `configure` | Configure a GitHub repository for sync |
+| `import` | Import GitHub issue(s) as Foreman tasks |
+| `labels` | List labels for a GitHub repository |
+| `milestones` | List milestones for a GitHub repository |
+| `webhook` | Manage GitHub webhooks for a repository |
+| `status` | Show sync status for a GitHub repository |
+| `link` | Link a GitHub pull request to an issue (or unlink) |
 
 > **Removed commands:** `foreman monitor` has been removed. `foreman mail send` has been removed — use `foreman inbox send`.
