@@ -277,13 +277,13 @@ Bundled workflows use a deterministic builtin finalize step: Foreman commits, co
 
 ```bash
 foreman status
-foreman board
 foreman watch
+foreman board
 foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman board` for kanban-style task triage. Use `foreman inbox` on a TTY for an interactive active/attention cockpit with a task list, selected-run timeline, detail pane, and `s/m/e/l/r/f` tabs for summary, messages, events, logs, reports, and files; it refreshes live while keeping the selected run pinned, and `a` or `:` opens a command palette with safe manual commands for drilldown, logs, task status, and run detail. Add `--non-interactive` for scriptable output. Scriptable summaries include a `LAST` timestamp and sort active/attention rows by newest activity before rows with no timestamp. Use `foreman inbox task <id>` / `foreman inbox run <run-id>` to drill into event-projected agent messages plus current lifecycle/terminal events; each drilldown `Recent Messages` section uses the same date/task/phase/receiver/kind/tool/args table as the top-level inbox, including the legacy `foreman inbox --task <id> --events` selector. Add `--logs --reports --files` when you need log paths, report artifacts, and worktree file changes for one task/run. The legacy `foreman inbox --task <id>` selector still works. Add `--events` to see a columnar lifecycle table with phase completions, retries, verdicts, and overwatch nudges, add `--grouped` for workflow → phase → message/tool-call grouping, or `--compact` for a concise run/task, phase, tool, denial, and notable-event summary. In watch mode, live event rows append without repeating the table header. Use `foreman status` or `foreman watch` when you need execution health and active run state. Use `foreman mcp --transport stdio` for local agent integrations, or `foreman mcp --transport http` when Foreman runs remotely from CLI/client sessions.
+Use `foreman watch` as the canonical live cockpit. From the same TTY session you can move through the task/run selector, inbox timeline, status/workflow flow chart, board context, and detail tabs for logs, reports, and files. `foreman inbox`, `foreman status --live`, and TTY `foreman board` open the same cockpit with different initial views; non-TTY output, `foreman inbox --non-interactive`, `foreman status --json`, `foreman status --watch`, `foreman watch --no-watch`, and filtered/all board paths remain scriptable. The status view shows ordered phase nodes, retry arrows, current failure/error text, artifacts, and active phase activity. Use `/` for search, `1/2/3` for active/attention/all scopes, `!`/`p`/`d` for failed/PR/dirty-worktree filters, and `a` or `:` for the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text.
 
 ### 8. Triage Failures
 
@@ -318,25 +318,24 @@ foreman pr
 
 ## Operating the Board
 
-`foreman board` is the primary interactive task board.
+`foreman board` on a TTY opens the unified cockpit in board view. Use it when you want board context beside inbox and status details. For legacy/scriptable board rendering, use non-TTY output, `--all`, or `--filter`.
 
-Common keys:
+The legacy board interaction model still applies when Foreman uses the non-cockpit board path (`--filter`, `--all`, or non-TTY): `h/l` columns, status cycling, `R` ready, close/edit keys, and task creation remain there.
+
+Common cockpit keys:
 
 | Key | Action |
 |-----|--------|
-| `h` / `l` | Move between columns |
-| `j` / `k` | Move within a column |
-| `Enter` | Show task details |
-| `r` | Refresh board from store |
-| `R` | Mark selected task ready |
-| `s` / `S` | Cycle status forward/backward |
-| `c` / `C` | Close task |
-| `e` / `E` | Edit task in editor |
-| `n` | Create task |
-| `?` | Help |
-| `q` | Quit |
-
-The board also monitors agent inbox updates. When a new inbox message arrives for a run, the board reloads only the task tied to that run and moves that card if its status changed; it does not refresh the entire board. `open` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention so they are visible for triage. Current phase appears on active cards/details when available, independent of the status column. Press `r` for a full manual refresh. The header shows an animated `refreshing…` indicator while full reload is in progress, then a `refreshed <time>` marker when the latest event-driven or manual update finishes. For exact options and keybindings, see [CLI Reference](./cli-reference.md#foreman-board).
+| `j` / `k` | Move within the task/run selector |
+| `i` | Inbox timeline view |
+| `s` | Status/workflow view |
+| `b` | Board context view |
+| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs |
+| `/` | Search tasks, runs, messages, events, and report paths |
+| `1` / `2` / `3` | Active, attention, all scopes |
+| `!` / `p` / `d` | Failed, has PR, dirty worktree filters |
+| `a` / `:` | Action palette; reset asks for `y` confirmation and executes `foreman reset`; other entries print copy/manual commands |
+| `q` / `Esc` | Quit |
 
 ## Retry and Cleanup Guidance
 

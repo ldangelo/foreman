@@ -379,9 +379,10 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
-         %{type: "RunStarted", payload: %{run_id: run_id} = payload},
+         %{type: "RunStarted", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do
+    now = occurred_at || DateTime.utc_now()
     run =
       %{
         run_id: run_id,
@@ -391,7 +392,10 @@ defmodule ForemanServer.ProjectionStore do
         current_phase: Map.get(payload, :current_phase),
         phase_status: %{},
         worker_status: %{},
-        retry_history: []
+        retry_history: [],
+        created_at: now,
+        started_at: now,
+        updated_at: now
       }
       |> Map.merge(payload)
       |> Map.put_new(:status, "in_progress")
@@ -401,10 +405,15 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
-         %{type: "RunUpdated", payload: %{run_id: run_id} = payload},
+         %{type: "RunUpdated", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do
-    update_run(projection, run_id, fn run -> Map.merge(run, payload) end)
+    now = occurred_at || DateTime.utc_now()
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.merge(payload)
+      |> Map.put(:updated_at, now)
+    end)
   end
 
   defp apply_domain_event(
@@ -502,21 +511,28 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
-         %{type: "RunCompleted", payload: %{run_id: run_id} = payload},
+         %{type: "RunCompleted", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do
+    now = occurred_at || DateTime.utc_now()
     projection
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "completed")
-    |> update_run(run_id, &Map.put(&1, :current_phase, nil))
+    |> update_run(run_id, fn run ->
+      run
+      |> Map.put(:current_phase, nil)
+      |> Map.put(:updated_at, now)
+      |> Map.put(:completed_at, now)
+    end)
     |> maybe_update_task_from_run_terminal(payload, "completed")
   end
 
   defp apply_domain_event(
          projection,
-         %{type: "RunFailed", payload: %{run_id: run_id} = payload},
+         %{type: "RunFailed", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do
+    now = occurred_at || DateTime.utc_now()
     projection
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "failed")
@@ -527,12 +543,23 @@ defmodule ForemanServer.ProjectionStore do
         :retry_history,
         Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
       )
+      |> Map.put(:updated_at, now)
+      |> Map.put(:failed_at, now)
     end)
     |> maybe_update_task_from_run_terminal(payload, "failed")
   end
 
-  defp apply_domain_event(projection, %{type: "RunBlocked", payload: %{run_id: run_id}}, _mode) do
-    update_run_status(projection, run_id, "blocked")
+  defp apply_domain_event(
+         projection,
+         %{type: "RunBlocked", payload: %{run_id: run_id}, occurred_at: occurred_at},
+         _mode
+       ) do
+    now = occurred_at || DateTime.utc_now()
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.put(:status, "blocked")
+      |> Map.put(:updated_at, now)
+    end)
   end
 
   defp apply_domain_event(
@@ -1147,14 +1174,14 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp normalize_event(%ForemanServer.Event{} = event) do
-    %{type: event.event_type, payload: event.payload}
+    %{type: event.event_type, payload: event.payload, occurred_at: event.occurred_at}
   end
 
-  defp normalize_event(%{event_type: event_type, payload: payload}) do
-    %{type: event_type, payload: payload}
+  defp normalize_event(%{event_type: event_type, payload: payload} = event) do
+    %{type: event_type, payload: payload, occurred_at: Map.get(event, :occurred_at)}
   end
 
-  defp normalize_event(%{type: type, payload: payload}) do
-    %{type: type, payload: payload}
+  defp normalize_event(%{type: type, payload: payload} = event) do
+    %{type: type, payload: payload, occurred_at: Map.get(event, :occurred_at)}
   end
 end

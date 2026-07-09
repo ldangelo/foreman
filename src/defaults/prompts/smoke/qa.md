@@ -2,7 +2,7 @@
 
 This is a smoke/integration test run. Your only job is to write a minimal passthrough report.
 
-**1. Write `QA_REPORT.md`** in the current directory with exactly this content:
+**1. Write `{{reportDir}}/QA_REPORT.md`** with exactly this content (create the directory first if needed):
 
 ```
 # QA Report

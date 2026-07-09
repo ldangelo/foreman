@@ -41,6 +41,7 @@ import {
 } from "../../lib/task-store.js";
 type TaskNoteRow = { id: string; task_id: string; body: string; author: string; created_at: string; phase: string | null; kind: string };
 import { listRegisteredProjects, resolveProjectPathFromOptions, requireProjectOrAllInMultiMode } from "./project-task-support.js";
+import { runInboxSuperTuiForProject } from "./inbox.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,20 @@ export const BOARD_STATUSES = [
   "closed",
 ] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
+
+export type BoardCommandRoute = "cockpit" | "legacy-board";
+
+export interface BoardCommandRouteOptions {
+  all?: boolean;
+  filter?: string;
+}
+
+export function resolveBoardCommandRoute(options: BoardCommandRouteOptions, stdoutIsTTY: boolean | undefined): BoardCommandRoute {
+  if (options.all === true || options.filter != null || stdoutIsTTY !== true) {
+    return "legacy-board";
+  }
+  return "cockpit";
+}
 
 export function normalizeStatusForBoard(status: string): BoardStatus | null {
   const normalized = status.replace(/-/g, "_");
@@ -2216,12 +2231,12 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
 // ── Command ────────────────────────────────────────────────────────────────────
 
 export const boardCommand = new Command("board")
-  .description("Terminal UI kanban board for managing Foreman tasks")
+  .description("Unified cockpit board view for managing Foreman tasks")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
-  .option("--all", "Show board across all registered projects")
-  .option("--limit <n>", "Maximum tasks per column to display (default: auto-fit terminal height)")
-  .option("--filter <status>", "Filter by status (e.g., backlog, ready, in_progress)")
+  .option("--all", "Use legacy/scriptable board output across all registered projects")
+  .option("--limit <n>", "Maximum tasks per column / cockpit fetch limit (default: auto-fit terminal height)")
+  .option("--filter <status>", "Use legacy/scriptable board output filtered by status")
   .action(async (opts: { project?: string; projectPath?: string; all?: boolean; limit?: string; filter?: string }) => {
     // Require --project or --all in multi-project mode
     if (!opts.all) {
@@ -2253,6 +2268,17 @@ export const boardCommand = new Command("board")
       ? undefined
       : Math.max(1, parsedLimit);
     const filter = opts.filter;
+
+    if (resolveBoardCommandRoute(opts, process.stdout.isTTY) === "cockpit") {
+      await runInboxSuperTuiForProject(projectPath, projectName, {
+        projectSelector: opts.project,
+        limit: limit ?? 50,
+        eventsLimit: 50,
+        scope: "attention",
+        initialView: "board",
+      });
+      return;
+    }
 
     try {
       runBoard({ projectPath, projectName, limit, filter });

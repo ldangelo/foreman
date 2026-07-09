@@ -143,50 +143,26 @@ This command remains registered only so operator invocations receive an explicit
 
 ### `foreman status`
 
-Show project status: task counts, active agents, cost breakdown, and tool usage.
+Show project status: task counts, active agents, cost breakdown, and tool usage. `--live` opens the unified cockpit directly to the status/workflow view; `--watch` remains the compact refreshing status output; `--json` remains machine-readable.
 
 ```bash
 foreman status                    # Snapshot of current state
 foreman status --project my-project # Status for a registered project without cd
 foreman status -w                 # Live refresh every 10 seconds
 foreman status -w 5               # Live refresh every 5 seconds
-foreman status --live             # Full dashboard TUI
+foreman status --live             # Unified cockpit opened to status/workflow
 foreman status --json             # Machine-readable output
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-w, --watch [seconds]` | `10` | Auto-refresh interval |
-| `--live` | — | Enable full dashboard TUI (Ink-based) |
+| `-w, --watch [seconds]` | `10` | Compact auto-refresh interval |
+| `--live` | — | Open the unified cockpit in status/workflow view |
 | `--json` | — | Output as JSON |
 | `--project <name-or-path>` | — | Show status for a registered project name or absolute project path |
 | `--all` | — | Aggregate status across all registered projects |
 
-**Example output:**
-
-```
-Project Status
-
-Tasks
-  Total:       65
-  Ready:       3
-  In Progress: 2
-  Completed:   50
-  Blocked:     4
-
-Active Agents
-▼ ● bd-abc1 RUNNING 3m 27s (attempt 2, prev: failed)
-  Model      anthropic/sonnet-4-6
-  Cost       $1.56
-    explorer   $0.31 (anthropic/haiku-4-5)
-    developer  $1.25 (anthropic/sonnet-4-6)
-  Turns      18
-  Phase      qa
-  Tools      70 (last: bash)
-  bash     ███████████████ 27
-  read     ██████████ 18
-  Files      3
-```
+The cockpit status view renders ordered phase nodes, retry arrows, current failure/error text, artifacts, last activity, and active phase summary. Use `m/e/l/r/f` to inspect messages, events, logs, reports, and files for the selected task/run.
 
 ### `foreman logs`
 
@@ -210,26 +186,27 @@ foreman logs bd-abc1 --raw         # Print raw JSON log only
 
 ### `foreman watch`
 
-Single-pane unified live dashboard: agents, board summary, inbox, and pipeline events. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
+Canonical live operator cockpit. The TTY view combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` is a deprecated alias for this command (it prints a deprecation notice). For a compact refreshing status view, use `foreman status --watch`.
 
 ```bash
-foreman watch                     # Live unified dashboard
+foreman watch                     # Unified live cockpit
 foreman watch --no-watch          # One-shot snapshot, no polling
 foreman watch --refresh 5000      # Refresh every 5 seconds
-foreman watch --no-events         # Hide the pipeline events panel
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--refresh <ms>` | `5000` | Refresh interval in milliseconds (min: 1000) |
-| `--inbox-limit <n>` | `5` | Max inbox messages shown |
-| `--inbox-poll <ms>` | `2000` | Inbox-only poll interval in milliseconds |
-| `--events-limit <n>` | `5` | Max pipeline events shown |
-| `--no-watch` | — | One-shot snapshot, no polling |
-| `--no-board` | — | Hide board summary panel |
-| `--no-inbox` | — | Hide inbox panel |
-| `--no-events` | — | Hide pipeline events panel |
-| `--project <id>` | — | Filter to a specific project ID |
+| `--refresh <ms>` | `5000` | Cockpit refresh interval; also applies to `--no-watch` setup defaults |
+| `--inbox-limit <n>` | `5` | One-shot snapshot inbox message limit |
+| `--inbox-poll <ms>` | `2000` | Ignored by the cockpit; retained for compatibility with prior watch loops |
+| `--events-limit <n>` | `5` | One-shot snapshot pipeline event limit |
+| `--no-board` | — | Only meaningful with `--no-watch`: hide board summary panel |
+| `--no-inbox` | — | Only meaningful with `--no-watch`: hide inbox panel |
+| `--no-events` | — | Only meaningful with `--no-watch`: hide pipeline events panel |
+| `--no-watch` | — | Print one deterministic snapshot and exit |
+| `--project <id>` | — | Filter to a specific project |
+
+Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; all other entries print copy/manual command text only.
 
 ### `foreman sentinel`
 
@@ -294,23 +271,22 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
-Open the terminal kanban board for native tasks. Press `y` to copy the selected task ID. `open`/`backlog` tasks render in Backlog, terminal `closed`/`merged` tasks render in Closed, and unknown statuses render in Needs Attention instead of being hidden as closed. Task cards keep lifecycle status separate from workflow phase: columns use status, while active cards/details show the current phase when available. The board monitors agent inbox messages and updates only the task cards tied to changed runs, so phase/status movement appears without a whole-board reload. Press `r` for a full manual refresh; the header shows a `refreshing…` spinner during full reload and `refreshed <time>` after task data updates.
+On a TTY, open the unified cockpit in board view. The board pane groups selected active/attention rows by lifecycle status, keeps workflow phase separate, and lets operators jump to inbox/status details without starting a second terminal loop. Non-TTY output, `--all`, and `--filter` keep the legacy/scriptable board path.
 
 ```bash
-foreman board
+foreman board                     # TTY: unified cockpit opened to board view
 foreman board --project my-project
 foreman board --limit 10
+foreman board --filter ready      # Legacy/scriptable filtered board path
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--project <name>` | Registered project name |
 | `--project-path <absolute-path>` | Absolute project path for scripts/advanced usage |
-| `--all` | Render boards for all registered projects |
-| `--limit <n>` | Maximum tasks per column |
-| `--filter <status>` | Filter by status |
-
----
+| `--all` | Render legacy/scriptable boards for all registered projects |
+| `--limit <n>` | Maximum tasks per column / cockpit fetch limit |
+| `--filter <status>` | Use the legacy/scriptable filtered board path |
 
 ## Debugging & Recovery
 
@@ -646,13 +622,14 @@ Initial tools include one-call smoke status, health, scheduler status/tick, proj
 
 ### `foreman inbox`
 
-View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. When run on a TTY with no explicit selector, `foreman inbox` opens an interactive cockpit focused on active/attention runs: task list, selected-run timeline, status details, and `s/m/e/l/r/f` tabs for summary, messages, events, logs, reports, and files. The cockpit refreshes live while keeping the selected run pinned when new rows arrive; `a` or `:` opens a command palette with safe manual commands for drilldown, logs, task status, and run detail. Use `--non-interactive` for scriptable output. Non-interactive all-run output is task-first: active `in_progress` runs remain visible even when they have no recent mail, and summaries include a `LAST` date/time column ordered by most recent activity before rows with no timestamp. Use `foreman inbox task <task-id>` or `foreman inbox run <run-id>` to drill into one task/run with recent messages and lifecycle events; drilldown `Recent Messages` use the same date/task/phase/receiver/kind/tool/args table preview as the top-level inbox, including the legacy `foreman inbox --task <id> --events` selector. Use `--full` for complete pretty-printed payloads. A selected run shows its current lifecycle status and recent lifecycle events by default so terminal failures/completions are visible even when no agent message was written. `--events` includes phase starts/completions, structured phase-report steering, retries, verdicts, skips, overwatch nudges, worktree creation, dispatch, and merge/refinery events as a columnar table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`). Add `--grouped` to use the workflow → phase → message/tool-call grouping. Use `--compact` for a single operator summary of task/run status, phases, tool counts, denials, and notable failure/overwatch lines without raw mail/event spam. Tool calls and assistant message events are persisted for debug/log projections; inbox keeps them compact or filtered so operator narrative remains readable. `foreman inbox --all --watch --events` streams new lifecycle events and run status changes across the project; after the initial table, live event rows append without repeating the table header.
+View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. When run on a TTY with no explicit selector, `foreman inbox` opens the unified cockpit focused on the inbox view: task list, selected-run timeline, status/board jump keys, details, and `m/e/l/r/f` tabs for messages, events, logs, reports, and files. The cockpit refreshes live while keeping the selected run pinned; `/`, `1/2/3`, `!`, `p`, and `d` search/filter rows; `a` or `:` opens the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. Use `--non-interactive` for scriptable output. Task/run drilldowns stay scriptable by default and enter the cockpit only with `--interactive`.
 
 ```bash
-foreman inbox                     # TTY: live active/attention cockpit with timeline tabs and a/: actions
+foreman inbox                     # TTY: unified cockpit opened to inbox view; non-TTY summary
 foreman inbox --non-interactive   # Scriptable active/attention summary
-foreman inbox task bd-abc1        # Drill into a task; add --logs --reports --files for artifacts
-foreman inbox run <run-id>        # Drill into a run; supports --follow for live refresh
+foreman inbox task bd-abc1        # Scriptable task drilldown; add --logs --reports --files
+foreman inbox task bd-abc1 --interactive # Cockpit with this task selected
+foreman inbox run <run-id> --interactive # Cockpit with this run selected
 foreman inbox --task bd-abc1      # Legacy task selector; still supported
 foreman inbox --all               # Task-first all-run summary
 foreman inbox --all --watch       # Live stream ALL messages across all runs
@@ -667,23 +644,18 @@ foreman inbox --ack               # Mark shown messages as read
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--agent <name>` | all | Filter to specific agent/role |
-| `--run <id>` | latest | Filter to specific run ID |
+| `--run <id>` | latest | Filter to a specific run ID |
 | `--task <id>` | — | Legacy selector: resolve run by task ID |
 | `--all` | — | Show/watch task-first output across all runs |
 | `--watch` | — | Poll every 2 seconds for new messages |
 | `--unread` | — | Show only unread messages |
-| `--limit <n>` | `50` | Maximum messages to show |
-| `--ack` | — | Mark shown messages as read where supported |
-| `--full` | — | Show full message bodies instead of table previews |
-| `--events` | — | Show a columnar pipeline event table |
-| `--grouped` | — | Group pipeline events by workflow/phase instead of using the event table |
-| `--events-limit <n>` | `50` | Maximum lifecycle events to show |
-| `--interactive` | TTY auto | Open the interactive task navigator explicitly |
-| `--non-interactive` | — | Force scriptable output on a TTY |
-| `--scope <scope>` | `attention` | Task navigator/summary scope: `active`, `attention`, `all`, or `terminal` |
-| `--logs` | — | Task/run drilldown: show log file paths, sizes, recent error lines, or a concise missing-log explanation |
-| `--reports` | — | Task/run drilldown: show report artifact directory and files |
-| `--files` | — | Task/run drilldown: show worktree path and changed files |
+| `--limit <n>` | `50` | Maximum messages/summary rows |
+| `--events-limit <n>` | `50` | Maximum lifecycle events |
+| `--interactive` | — | For task/run subcommands, open the cockpit with the selected id |
+| `--non-interactive` | — | Force scriptable output even when stdout is a TTY |
+| `--scope <scope>` | attention | Task summary scope: active, attention, all, terminal |
+| `--messages` / `--events` | — | Task/run drilldown sections |
+| `--logs` / `--reports` / `--files` | — | Task/run drilldown artifact sections |
 
 ### `foreman inbox send`
 

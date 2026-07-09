@@ -1690,10 +1690,15 @@ export class Doctor {
         const allAged = [...agedActionableFailed, ...agedHistoricalFailed, ...agedStuck];
         let deleted = 0;
         let completed = 0;
+        const cleanupErrors: { runId: string; error: string }[] = [];
         for (const run of allAged) {
           if (typeof runStore.deleteRun === "function") {
-            const ok = await Promise.resolve(runStore.deleteRun(run.id));
-            if (ok) deleted++;
+            try {
+              const ok = await Promise.resolve(runStore.deleteRun(run.id));
+              if (ok) deleted++;
+            } catch (err) {
+              cleanupErrors.push({ runId: run.id, error: String(err) });
+            }
           } else {
             await Promise.resolve(runStore.updateRun(run.id, { status: "completed", completed_at: new Date().toISOString() }));
             completed++;
@@ -1701,9 +1706,10 @@ export class Doctor {
         }
         results.push({
           name: `failed/stuck runs (aged, cleaned up)`,
-          status: "fixed",
-          message: `Cleaned up ${agedTotal} aged failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s)`,
+          status: cleanupErrors.length > 0 ? "warn" : "fixed",
+          message: `Cleaned up ${agedTotal} aged failed/stuck run(s) older than ${PIPELINE_TIMEOUTS.failedRunRetentionDays} day(s)${cleanupErrors.length > 0 ? `; ${cleanupErrors.length} cleanup failure(s)` : ""}`,
           fixApplied: deleted > 0 ? `Deleted ${deleted} stale run record(s)` : `Marked ${completed} aged run(s) as completed`,
+          details: cleanupErrors.length > 0 ? cleanupErrors.slice(0, 5).map((e) => `${e.runId}: ${e.error}`).join("; ") : undefined,
         });
       } else {
         results.push({

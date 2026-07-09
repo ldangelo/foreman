@@ -90,6 +90,7 @@ class MockVcsBackend implements VcsBackend {
   async getModifiedFiles(_p: string): Promise<string[]> { return []; }
   async getConflictingFiles(_p: string): Promise<string[]> { return []; }
   async status(_p: string): Promise<string> { return ''; }
+  statusSync(_p: string): string { return ''; }
   async cleanWorkingTree(_p: string): Promise<void> {}
   async mergeWithoutCommit(_p: string, _s: string, _t: string): Promise<MergeResult> {
     return { success: true };

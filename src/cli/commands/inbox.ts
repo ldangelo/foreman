@@ -12,14 +12,13 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { render as renderInk } from "ink";
-import { createElement } from "react";
-import { InboxDashboard } from "../inbox/tui.js";
+import { runSuperTui } from "../super-tui/render.js";
+import type { SuperTuiDataAdapter } from "../super-tui/data.js";
+import type { SuperTuiView } from "../super-tui/model.js";
 import { ForemanStore } from "../../lib/store.js";
 import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
@@ -1378,7 +1377,7 @@ function renderRecentActivity(messages: Message[]): string {
   return lines.join("\n");
 }
 
-type InboxScope = "active" | "attention" | "all" | "terminal";
+export type InboxScope = "active" | "attention" | "all" | "terminal";
 type ActivitySource = "event" | "message" | "run" | "none";
 
 export interface InboxTaskSummary {
@@ -1745,7 +1744,8 @@ function renderFilesSection(summary: InboxTaskSummary): string {
     return lines.join("\n");
   }
   try {
-    const output = execFileSync("git", ["-C", summary.worktreePath, "status", "--short"], { encoding: "utf8", timeout: 2000 });
+    const backend = VcsBackendFactory.createSync({ backend: "auto" }, summary.worktreePath);
+    const output = backend.statusSync(summary.worktreePath);
     const changed = output.split("\n").filter((line) => line.trim().length > 0);
     if (changed.length === 0) {
       lines.push("Worktree clean.");
@@ -1788,7 +1788,7 @@ export function renderTaskDetail(summary: InboxTaskSummary, options: { messages:
 }
 
 
-async function renderInteractiveInbox(sources: InboxSources, projectLabel: string, options: { agent?: string; unread?: boolean; limit: number; eventsLimit: number; scope: InboxScope }): Promise<void> {
+async function renderInteractiveInbox(sources: InboxSources, projectLabel: string, options: { agent?: string; unread?: boolean; limit: number; eventsLimit: number; scope: InboxScope; initialView?: SuperTuiView; initialTaskId?: string | null; initialRunId?: string | null; refreshIntervalMs?: number }): Promise<void> {
   const loadSummaries = (): Promise<InboxTaskSummary[]> => loadInboxOverview(sources, {
     scope: options.scope,
     agent: options.agent,
@@ -1797,8 +1797,41 @@ async function renderInteractiveInbox(sources: InboxSources, projectLabel: strin
     eventsLimit: options.eventsLimit,
   });
   const summaries = await loadSummaries();
-  const app = renderInk(createElement(InboxDashboard, { summaries, projectLabel, limit: options.limit, eventsLimit: options.eventsLimit, renderTaskDetail, loadSummaries }));
-  await app.waitUntilExit();
+  const adapter: SuperTuiDataAdapter = {
+    projectLabel,
+    initialSummaries: summaries,
+    loadSummaries,
+    scope: options.scope === "terminal" ? "all" : options.scope,
+  };
+  await runSuperTui({
+    adapter,
+    initialView: options.initialView ?? "inbox",
+    initialTaskId: options.initialTaskId,
+    initialRunId: options.initialRunId,
+    limit: options.limit,
+    eventsLimit: options.eventsLimit,
+    renderTaskDetail,
+    refreshIntervalMs: options.refreshIntervalMs,
+  });
+}
+
+export async function runInboxSuperTuiForProject(projectPath: string, projectLabel: string, options: { projectSelector?: string; agent?: string; unread?: boolean; limit: number; eventsLimit: number; scope?: InboxScope; initialView?: SuperTuiView; initialTaskId?: string | null; initialRunId?: string | null; refreshIntervalMs?: number }): Promise<void> {
+  const sources = await resolveInboxSources(projectPath, options.projectSelector);
+  try {
+    await renderInteractiveInbox(sources, projectLabel, {
+      agent: options.agent,
+      unread: options.unread,
+      limit: options.limit,
+      eventsLimit: options.eventsLimit,
+      scope: options.scope ?? "attention",
+      initialView: options.initialView,
+      initialTaskId: options.initialTaskId,
+      initialRunId: options.initialRunId,
+      refreshIntervalMs: options.refreshIntervalMs,
+    });
+  } finally {
+    sources.store?.close();
+  }
 }
 
 async function resolveDetailRunId(sources: InboxSources, selector: { task?: string; run?: string }): Promise<string | null> {
@@ -2035,8 +2068,8 @@ export async function resolveDaemonRunId(
 
 export function selectRecentMessages(messages: Message[], limit: number): Message[] {
   return [...messages]
-    .sort((a, b) => timestampMs(b.created_at) - timestampMs(a.created_at))
-    .slice(0, limit);
+    .sort((a, b) => timestampMs(a.created_at) - timestampMs(b.created_at))
+    .slice(Math.max(0, messages.length - limit));
 }
 
 export async function fetchDaemonMessages(
@@ -2390,7 +2423,7 @@ const inboxSendCommand = new Command("send")
 
 // Exported for unit testing
 
-type InboxDetailCommandOptions = {
+export type InboxDetailCommandOptions = {
   agent?: string;
   unread?: boolean;
   limit?: string;
@@ -2404,7 +2437,43 @@ type InboxDetailCommandOptions = {
   follow?: boolean;
   eventsLimit?: string;
   "events-limit"?: string;
+  interactive?: boolean;
 };
+
+export type InboxDetailRoute = "cockpit" | "detail";
+
+export function resolveInboxDetailRoute(options: Pick<InboxDetailCommandOptions, "interactive">): InboxDetailRoute {
+  return options.interactive === true ? "cockpit" : "detail";
+}
+
+export type InboxOverviewRoute = "cockpit" | "scriptable";
+
+export interface InboxOverviewRouteOptions {
+  run?: string;
+  task?: string;
+  all?: boolean;
+  watch?: boolean;
+  events?: boolean;
+  compact?: boolean;
+  full?: boolean;
+  ack?: boolean;
+  agent?: string;
+  unread?: boolean;
+  interactive?: boolean;
+  nonInteractive?: boolean;
+}
+
+export function resolveInboxOverviewRoute(options: InboxOverviewRouteOptions, stdoutIsTTY: boolean | undefined): InboxOverviewRoute {
+  const hasExplicitMode = Boolean(
+    options.run || options.task || options.all || options.watch || options.events
+    || options.compact || options.full || options.ack || options.agent || options.unread,
+  );
+  const isImplicitTtyOverview =
+    stdoutIsTTY === true && options.nonInteractive !== true && !hasExplicitMode;
+  return options.interactive === true || isImplicitTtyOverview
+    ? "cockpit"
+    : "scriptable";
+}
 
 async function resolveSourcesForCommand(options: { project?: string; projectPath?: string }): Promise<{ sources: InboxSources; projectPath: string }> {
   let projectPath: string;
@@ -2424,8 +2493,19 @@ function parsePositiveIntOption(value: string | undefined, fallback: number): nu
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+async function resolveInboxProjectPath(options: { project?: string; projectPath?: string }): Promise<string> {
+  try {
+    return await resolveRepoRootProjectPath({
+      project: options.project,
+      projectPath: options.projectPath,
+    });
+  } catch {
+    return process.cwd();
+  }
+}
+
 const inboxTaskCommand = new Command("task")
-  .description("Show task inbox detail with recent messages and events")
+  .description("Show scriptable task inbox detail; add --interactive for the cockpit")
   .argument("<task-id>", "Task ID")
   .option("--agent <name>", "Filter messages to a specific recipient agent")
   .option("--unread", "Show only unread messages")
@@ -2439,7 +2519,22 @@ const inboxTaskCommand = new Command("task")
   .option("--follow", "Refresh task inbox detail every 2 seconds")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--interactive", "Open the unified cockpit with this task selected")
   .action(async (taskId: string, options: InboxDetailCommandOptions) => {
+    if (resolveInboxDetailRoute(options) === "cockpit") {
+      const projectPath = await resolveInboxProjectPath(options);
+      await runInboxSuperTuiForProject(projectPath, options.project ?? projectPath, {
+        projectSelector: options.project,
+        agent: options.agent,
+        unread: options.unread,
+        limit: parsePositiveIntOption(options.limit, 50),
+        eventsLimit: parsePositiveIntOption(options.eventsLimit ?? options["events-limit"], 50),
+        scope: "all",
+        initialView: "inbox",
+        initialTaskId: taskId,
+      });
+      return;
+    }
     const { sources } = await resolveSourcesForCommand(options);
     await renderInboxTaskOrRunDetail(sources, { task: taskId }, {
       agent: options.agent,
@@ -2456,7 +2551,7 @@ const inboxTaskCommand = new Command("task")
   });
 
 const inboxRunCommand = new Command("run")
-  .description("Show run inbox detail with recent messages and events")
+  .description("Show scriptable run inbox detail; add --interactive for the cockpit")
   .argument("<run-id>", "Run ID")
   .option("--agent <name>", "Filter messages to a specific recipient agent")
   .option("--unread", "Show only unread messages")
@@ -2470,7 +2565,22 @@ const inboxRunCommand = new Command("run")
   .option("--follow", "Refresh run inbox detail every 2 seconds")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .option("--interactive", "Open the unified cockpit with this run selected")
   .action(async (runId: string, options: InboxDetailCommandOptions) => {
+    if (resolveInboxDetailRoute(options) === "cockpit") {
+      const projectPath = await resolveInboxProjectPath(options);
+      await runInboxSuperTuiForProject(projectPath, options.project ?? projectPath, {
+        projectSelector: options.project,
+        agent: options.agent,
+        unread: options.unread,
+        limit: parsePositiveIntOption(options.limit, 50),
+        eventsLimit: parsePositiveIntOption(options.eventsLimit ?? options["events-limit"], 50),
+        scope: "all",
+        initialView: "inbox",
+        initialRunId: runId,
+      });
+      return;
+    }
     const { sources } = await resolveSourcesForCommand(options);
     await renderInboxTaskOrRunDetail(sources, { run: runId }, {
       agent: options.agent,
@@ -2488,7 +2598,7 @@ const inboxRunCommand = new Command("run")
 export { formatMessage };
 
 export const inboxCommand = new Command("inbox").enablePositionalOptions()
-  .description("View the Postgres message inbox for agents in a pipeline run")
+  .description("View Agent Mail; TTY opens the unified cockpit inbox view")
   .addCommand(inboxSendCommand)
   .addCommand(inboxTaskCommand)
   .addCommand(inboxRunCommand)
@@ -2507,7 +2617,7 @@ export const inboxCommand = new Command("inbox").enablePositionalOptions()
   .option("--compact", "Show compact task/run summary instead of raw event/mail spam")
   .option("--grouped", "Group pipeline events by workflow/phase instead of the default event table")
   .option("--events-limit <n>", "Max pipeline events to show", "50")
-  .option("--interactive", "Open the interactive task inbox navigator")
+  .option("--interactive", "Open the unified cockpit with the selected task/run/inbox view")
   .option("--non-interactive", "Force scriptable output even when stdout is a TTY")
   .option("--scope <scope>", "Task summary scope: active, attention, all, terminal", "attention")
   .action(async (options: {
@@ -2558,8 +2668,7 @@ export const inboxCommand = new Command("inbox").enablePositionalOptions()
 
     const sources = await resolveInboxSources(projectPath, options.project);
     const { daemon, postgres, store } = sources;
-    const hasExplicitMode = Boolean(options.run || options.task || options.all || options.watch || options.events || options.compact || options.full || options.ack || options.agent || options.unread);
-    if ((options.interactive || (process.stdout.isTTY && !options.nonInteractive && !hasExplicitMode))) {
+    if (resolveInboxOverviewRoute(options, process.stdout.isTTY) === "cockpit") {
       await renderInteractiveInbox(sources, options.project ?? projectPath, {
         agent: options.agent,
         unread: options.unread,

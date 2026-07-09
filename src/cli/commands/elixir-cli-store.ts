@@ -26,7 +26,7 @@ function adaptRun(run: ElixirRun): Run {
     status: (run.status as Run["status"]) ?? "running",
     started_at: (run.started_at as string | null | undefined) ?? null,
     completed_at: (run.completed_at as string | null | undefined) ?? null,
-    created_at: (run.created_at as string | undefined) ?? (run.started_at as string | undefined) ?? new Date(0).toISOString(),
+    created_at: (run.created_at as string | undefined) ?? (run.started_at as string | undefined) ?? new Date(Date.now() - 86400000).toISOString(),
     progress: (run.progress as string | null | undefined) ?? null,
     agent_type: (run.agent_type as string | null | undefined) ?? null,
     session_key: (run.session_key as string | null | undefined) ?? null,

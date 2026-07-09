@@ -160,6 +160,48 @@ defmodule ForemanServer.AggregateTest do
     assert complete_spec.event_type == "PhaseCompleted"
   end
 
+  test "run aggregate allows delete on terminal runs but rejects already-deleted" do
+    # Start a run
+    assert {:ok, %{event: %{event_type: "RunStarted"}}} =
+             CommandRouter.handle(%{
+               command_id: "run-terminal-delete-1",
+               command_type: "run.start",
+               payload: %{run_id: "run-terminal-delete", task_id: "task-terminal"}
+             })
+
+    # Fail the run
+    assert {:ok, %{event: %{event_type: "RunFailed"}}} =
+             CommandRouter.handle(%{
+               command_id: "run-terminal-delete-2",
+               command_type: "run.fail",
+               payload: %{run_id: "run-terminal-delete"}
+             })
+
+    # Delete of failed run should succeed (cleanup/tombstoning)
+    assert {:ok, %{event: %{event_type: "RunDeleted"}}} =
+             CommandRouter.handle(%{
+               command_id: "run-terminal-delete-3",
+               command_type: "run.delete",
+               payload: %{run_id: "run-terminal-delete"}
+             })
+
+    # Second delete should fail (already deleted)
+    assert {:error, {:run_terminal, "deleted"}} =
+             CommandRouter.handle(%{
+               command_id: "run-terminal-delete-4",
+               command_type: "run.delete",
+               payload: %{run_id: "run-terminal-delete"}
+             })
+
+    # Update on deleted run should still fail
+    assert {:error, {:run_terminal, "deleted"}} =
+             CommandRouter.handle(%{
+               command_id: "run-terminal-delete-5",
+               command_type: "run.update",
+               payload: %{run_id: "run-terminal-delete"}
+             })
+  end
+
   test "run PR lifecycle commands validate payloads and emit PR events" do
     cases = [
       {

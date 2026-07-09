@@ -378,21 +378,22 @@ Each agent gets:
 - Phase-specific tool restrictions (via Pi extension or SDK `disallowedTools`)
 
 ### `foreman status`
-Show current task and agent status, or aggregate across projects from the dashboard/status surfaces. `foreman inbox` opens an active/attention task navigator on a TTY, `foreman inbox task <id>` drills into one task's messages/events, and the legacy `foreman inbox --task <id>` selector remains supported. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
+Show current task and agent status, or aggregate across projects from the status surfaces. `foreman status --live` opens the unified Foreman cockpit in the status/workflow view: selected task/run, ordered phase nodes, retry arrows, current failure/error, artifacts, and logs/reports/files detail tabs. Plain `foreman status`, `foreman status --watch`, and `foreman status --json` remain scriptable/status-specific output. Use `foreman inbox --all --watch --events` to stream new lifecycle events and run status changes across the project.
 
 ```bash
 foreman status
 foreman status --project my-project      # Inspect a registered project without cd
-foreman status --watch                   # Live-updating display
-foreman status --live                    # Full dashboard TUI with event stream
+foreman status --watch                   # Compact live-updating display
+foreman status --live                    # Unified cockpit opened to status/workflow
 ```
 
 ### `foreman board`
-Terminal UI kanban board for managing Foreman tasks. Five lifecycle status columns with vim-style navigation; workflow phase is shown separately on active cards/details when available. Press `y` to copy the selected task ID. `open`/`backlog` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation.
+On a TTY, `foreman board` opens the unified cockpit in board view so operators can jump from a task to inbox/status/board without leaving the session. The board pane keeps lifecycle status separate from workflow phase and highlights the selected task's board context. Scriptable and legacy board paths remain available for non-TTY output, `--all`, and filtered board usage.
 
 ```bash
-foreman board                             # Launch interactive kanban board
-foreman board --project my-project        # Board for a specific project
+foreman board                             # TTY: unified cockpit opened to board view
+foreman board --project my-project        # Board view for a specific project
+foreman board --filter ready              # Legacy/scriptable filtered board path
 ```
 
 ### `foreman mcp`
@@ -407,10 +408,10 @@ foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_
 Tools cover one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, task reset, run summaries plus per-run inspection, inbox messages, lifecycle events, and debug timelines. Most MCP reads/writes go through the Elixir backend; `foreman.tasks.reset` intentionally runs the local CLI reset flow so it can clean local worktrees, branches, and log/report artifacts. MCP project listing matches `foreman project list --json` shape and default archived-project filtering. MCP run listing returns only run id, date, and status; use `foreman.runs.inspect` when a client needs one run's full payload. In Pi, the project extension also adds slash commands such as `/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, and `/foreman-tick`. See [`docs/mcp-server.md`](docs/mcp-server.md).
 
 ### `foreman watch`
-Single-pane live dashboard: agents, board summary, inbox, and pipeline events. (`foreman dashboard` is a deprecated alias.)
+Canonical live operator cockpit. The TTY view combines active/attention task selection, inbox timeline, status/workflow flow chart, board context, detail tabs, search/filter controls, and an action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. `foreman dashboard` is a deprecated alias. `foreman watch --no-watch` keeps the one-shot scriptable snapshot.
 
 ```bash
-foreman watch                             # Live unified dashboard
+foreman watch                             # Unified live cockpit
 foreman watch --no-watch                  # One-shot snapshot, no polling
 foreman watch --project <id>              # Filter to a specific project
 foreman status --watch                    # Compact refreshing status view
@@ -507,13 +508,14 @@ foreman doctor --fix                    # Auto-fix safe cleanup: retryable/zombi
 ```
 
 ### `foreman inbox`
-View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. On a TTY with no selector, `foreman inbox` opens an interactive active/attention cockpit with a task list, selected-run timeline, detail pane, and `s/m/e/l/r/f` tabs for summary, messages, events, logs, reports, and files; it refreshes live while keeping the selected run pinned, and `a` or `:` opens a command palette with safe manual commands for drilldown, logs, task status, and run detail. Use `--non-interactive` for scriptable output. Non-interactive all-run output is task-first so active `in_progress` runs remain visible even without recent mail, and summaries show a `LAST` date/time column sorted by most recent activity first. Task/run drilldowns, including the legacy `--task <id> --events` path, render `Recent Messages` with the same date/task/phase/receiver/kind/tool/args table preview as the top-level inbox; use `--full` for complete bodies where supported. Add `--events` for a columnar lifecycle table (`TIME`, `TASK`, `PHASE`, `TURNS`, `EVENT`, `MESSAGE`) with phase completions, retries, verdicts, overwatch nudges, worktree creation, dispatch, and merge/refinery lifecycle events. Add `--grouped` with `--events` for the workflow → phase → message/tool-call grouping. Use `--compact` for an operator summary of run/task status, phases, tool counts, denials, and notable failures.
+View inter-agent messages from pipeline runs through the Elixir event-backed inbox projection. On a TTY with no selector, `foreman inbox` opens the unified cockpit focused on the inbox view: task list, selected-run timeline, detail pane, status/board jump keys, and `m/e/l/r/f` tabs for messages, events, logs, reports, and files. It refreshes live while keeping the selected run pinned; `/`, `1/2/3`, `!`, `p`, and `d` search/filter rows; `a` or `:` opens the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. Use `--non-interactive` for scriptable output. Task/run drilldowns stay scriptable by default and enter the cockpit only with `--interactive`.
 
 ```bash
-foreman inbox                            # Live TTY cockpit with a/: actions; non-TTY summary
+foreman inbox                            # TTY: unified cockpit opened to inbox view; non-TTY summary
 foreman inbox --non-interactive          # Force scriptable output on a TTY
-foreman inbox task task-abc              # Task mail/events; add --logs --reports --files for artifacts
-foreman inbox run <run-id>               # Run mail/events; add --follow for live refresh
+foreman inbox task task-abc              # Scriptable task mail/events; add --logs --reports --files
+foreman inbox task task-abc --interactive # Cockpit with this task selected
+foreman inbox run <run-id> --interactive # Cockpit with this run selected
 foreman inbox --task task-abc            # Legacy task selector
 foreman inbox --all                      # Task-first all-run summary
 foreman inbox --compact                  # Compact run/task status, phase/tool counts, denials

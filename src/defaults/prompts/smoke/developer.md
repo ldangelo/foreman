@@ -2,7 +2,7 @@
 
 This is a smoke/integration test run. Your only job is to write two files.
 
-**1. Write `DEVELOPER_REPORT.md`** in the current directory with exactly this content:
+**1. Write `{{reportDir}}/DEVELOPER_REPORT.md`** with exactly this content (create the directory first if needed):
 
 ```
 # Developer Report

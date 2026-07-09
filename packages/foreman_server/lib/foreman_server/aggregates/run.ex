@@ -103,7 +103,7 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(state, %{type: "run.delete", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
-         :ok <- reject_terminal_mutation(state) do
+         :ok <- allow_delete_on_terminal(state) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
@@ -258,4 +258,11 @@ defmodule ForemanServer.Aggregates.Run do
       do: {:error, {:run_terminal, status}},
       else: :ok
   end
+
+  # Allow delete for terminal runs that are not already deleted.
+  # Delete is cleanup/tombstoning, not a normal lifecycle mutation.
+  defp allow_delete_on_terminal(%{status: status}) when status == "deleted",
+    do: {:error, {:run_terminal, status}}
+
+  defp allow_delete_on_terminal(_state), do: :ok
 end

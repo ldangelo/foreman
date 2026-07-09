@@ -25,7 +25,7 @@ If you hit an unrecoverable error, invoke:
    - Identify nearby tests/verification owners, but do not design a full test plan
    - Note the smallest implementation path and any hard blockers
    - Avoid broad architecture mapping unless the task explicitly requires it
-5. Write **EXPLORER_REPORT.md** with a concise handoff using `Write`; stop as soon as the developer can edit without re-discovery.
+5. Write **{{reportDir}}/EXPLORER_REPORT.md** with a concise handoff using `Write`; create the directory first if needed. Stop as soon as the developer can edit without re-discovery.
 6. Write **SESSION_LOG.md** using `Write` documenting your session (see CLAUDE.md Session Logging section).
 
 ## EXPLORER_REPORT.md Format
@@ -52,7 +52,7 @@ If you hit an unrecoverable error, invoke:
 
 ## Rules
 - **DO NOT modify any source code files** — you are read-only
-- **DO NOT create new source files** — only write EXPLORER_REPORT.md and SESSION_LOG.md
+- **DO NOT create new source files** — only write `{{reportDir}}/EXPLORER_REPORT.md` and SESSION_LOG.md
 - Focus on handoff, not completeness
 - Be specific — reference actual file paths and line numbers
 - Keep the report under ~80 lines unless the task is genuinely cross-cutting

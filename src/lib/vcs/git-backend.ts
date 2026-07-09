@@ -7,7 +7,7 @@
  * @module src/lib/vcs/git-backend
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -757,6 +757,20 @@ export class GitBackend implements VcsBackend {
    */
   async status(workspacePath: string): Promise<string> {
     return this.git(["status", "--porcelain"], workspacePath);
+  }
+
+  statusSync(workspacePath: string): string {
+    return execFileSync("git", ["status", "--porcelain"], {
+      cwd: workspacePath,
+      encoding: "utf8",
+      timeout: 2_000,
+      env: {
+        ...process.env,
+        GIT_EDITOR: "true",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: "true",
+      },
+    }).trim();
   }
 
   /**

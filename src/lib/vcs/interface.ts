@@ -269,6 +269,12 @@ export interface VcsBackend {
   status(workspacePath: string): Promise<string>;
 
   /**
+   * Get the working tree status synchronously for render-only call sites that
+   * cannot await backend operations.
+   */
+  statusSync(workspacePath: string): string;
+
+  /**
    * Discard all unstaged changes and remove untracked files.
    */
   cleanWorkingTree(workspacePath: string): Promise<void>;

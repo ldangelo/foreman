@@ -21,8 +21,8 @@ devbox run db:up     # start only shared pgvector Postgres
 # CLI (after build or via tsx)
 foreman init           # Initialize project and register it with the Elixir backend
 foreman run            # Tick Elixir scheduler for ready-task dispatch
-foreman status         # Show tasks + active agents
-foreman watch          # Live dashboard TUI ('dashboard' is a deprecated alias)
+foreman status         # Show tasks + active agents; --live opens cockpit status/workflow
+foreman watch          # Canonical live cockpit TUI; action palette reset asks y then runs reset ('dashboard' is deprecated)
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
 foreman reset <task>   # Close open/draft PRs, fail stale active runs, clean worktree/branch artifacts, and re-dispatch
@@ -39,8 +39,8 @@ foreman attach         # Attach to a running agent session
 foreman worktree       # Git worktree management
 foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
 foreman purge runs     # Remove stale failed run records
-foreman inbox          # TTY active/attention navigator; non-TTY summary
-foreman inbox task X   # Drill into one task's mail/events
+foreman inbox          # TTY cockpit inbox view; non-TTY summary
+foreman inbox task X   # Scriptable task mail/events; add --interactive for cockpit selection
 foreman inbox --task X --events  # Legacy task selector with lifecycle table
 foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
 foreman inbox --all --watch  # Live stream all mail across runs
@@ -262,8 +262,8 @@ foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
 foreman inbox --all --watch  # Live task-first mail/events with LAST timestamps across runs
-foreman inbox task X --logs --reports --files  # Mail/events plus artifacts
-foreman inbox --task X                         # Legacy selector for a specific task
+foreman inbox task X --logs --reports --files  # Scriptable mail/events plus artifacts
+foreman inbox task X --interactive             # Unified cockpit with task selected
 
 # Worktree cleanup
 foreman worktree list   # See all active worktrees

@@ -15,7 +15,7 @@ import type { TaskBackend } from "../../lib/feature-flags.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
 import { listRegisteredProjects } from "./project-task-support.js";
-import { fetchDaemonDashboardState, pollDashboard, renderDashboard } from "../dashboard-state.js";
+import { runInboxSuperTuiForProject } from "./inbox.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
 
@@ -68,6 +68,15 @@ export async function getLastPiActivity(runId: string): Promise<string | null> {
  */
 export function getStatusBackend(): TaskBackend {
   return 'native';
+}
+
+export interface StatusCommandRouteOptions {
+  json?: boolean;
+  live?: boolean;
+}
+
+export function shouldRouteStatusToSuperTui(options: StatusCommandRouteOptions): boolean {
+  return options.live === true && options.json !== true;
 }
 
 /**
@@ -442,9 +451,9 @@ export function sleepOrDetach(ms: number, detach: { wait: () => Promise<void> })
 }
 
 export const statusCommand = new Command("status")
-  .description("Show project status from the native Postgres task store")
-  .option("-w, --watch [seconds]", "Refresh every N seconds (default: 10)")
-  .option("--live", "Enable full dashboard TUI with event stream (implies --watch; see also 'foreman watch')")
+  .description("Show project status; --live opens the unified cockpit status/workflow view")
+  .option("-w, --watch [seconds]", "Refresh compact status every N seconds (default: 10)")
+  .option("--live", "Open unified cockpit in status/workflow view (ignored when --json is set)")
   .option("--json", "Output status as JSON")
   .option("--all", "Show status across all registered projects")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -591,53 +600,17 @@ export const statusCommand = new Command("status")
       return;
     }
 
-    if (opts.live) {
-      // ── Full dashboard TUI mode (--live) ─────────────────────────────────
-      // Combines native task store task counts with the dashboard's multi-project display,
-      // event timeline, and recently-completed agents.
+    if (shouldRouteStatusToSuperTui(opts)) {
       const interval = typeof opts.watch === "string" ? parseInt(opts.watch, 10) : 3;
       const seconds = Number.isFinite(interval) && interval > 0 ? interval : 3;
-
-      const detach = createStatusDetachController("  Detached — agents continue in background. Check status: foreman status");
-      process.stdout.write("\x1b[?25l"); // hide cursor
-
-      try {
-        while (!detach.isDetached()) {
-          let counts: StatusCounts = { total: 0, ready: 0, inProgress: 0, completed: 0, blocked: 0 };
-          try {
-            counts = await fetchStatusCounts(projectPath);
-          } catch (err) {
-            if (foremanBackendMode() === "elixir") throw err;
-            /* native task store not available — show zero counts */
-          }
-
-          const daemonDashboard = await fetchDaemonDashboardState(projectPath);
-          const dashState = daemonDashboard ?? (() => {
-            const store = ForemanStore.forDashboard(projectPath);
-            try {
-              return pollDashboard(store, undefined, 8);
-            } finally {
-              store.close();
-            }
-          })();
-
-          const taskLine = renderLiveStatusHeader(counts);
-          const dashDisplay = renderDashboard(dashState);
-
-          // Prepend the task-count line to the dashboard display.
-          // Insert it after the first line (the "Foreman Dashboard" header).
-          const dashLines = dashDisplay.split("\n");
-          // Insert task counts as second line (index 1), shifting the rule down.
-          dashLines.splice(1, 0, taskLine);
-          const combined = dashLines.join("\n");
-
-          process.stdout.write("\x1B[2J\x1B[H" + combined + "\n");
-          await sleepOrDetach(seconds * 1000, detach);
-        }
-      } finally {
-        process.stdout.write("\x1b[?25h");
-        detach.cleanup();
-      }
+      await runInboxSuperTuiForProject(projectPath, opts.project ?? projectPath, {
+        projectSelector: opts.project,
+        limit: 50,
+        eventsLimit: 50,
+        scope: "attention",
+        initialView: "status",
+        refreshIntervalMs: seconds * 1000,
+      });
       return;
     }
 

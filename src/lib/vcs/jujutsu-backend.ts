@@ -15,7 +15,7 @@
  * @module src/lib/vcs/jujutsu-backend
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -910,6 +910,19 @@ export class JujutsuBackend implements VcsBackend {
    */
   async status(workspacePath: string): Promise<string> {
     return this.jj(["status"], workspacePath);
+  }
+
+  statusSync(workspacePath: string): string {
+    const home = process.env.HOME ?? "/home/nobody";
+    return execFileSync("jj", ["status"], {
+      cwd: workspacePath,
+      encoding: "utf8",
+      timeout: 2_000,
+      env: {
+        ...process.env,
+        PATH: `${home}/.local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`,
+      },
+    }).trim();
   }
 
   /**

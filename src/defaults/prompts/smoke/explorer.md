@@ -2,7 +2,7 @@
 
 This is a smoke/integration test run. Your only job is to write a minimal passthrough report.
 
-**1. Write `EXPLORER_REPORT.md`** in the current directory with exactly this content:
+**1. Write `{{reportDir}}/EXPLORER_REPORT.md`** with exactly this content (create the directory first if needed):
 
 ```
 # Explorer Report

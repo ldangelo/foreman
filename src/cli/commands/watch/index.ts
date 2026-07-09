@@ -44,6 +44,7 @@ import {
 import { renderWatch } from "./render.js";
 import { approveTask, retryTask } from "./actions.js";
 import { printDeprecationNotice } from "../cli-output.js";
+import { runInboxSuperTuiForProject } from "../inbox.js";
 
 /**
  * `foreman dashboard` is a deprecated alias of `foreman watch`. When the
@@ -64,15 +65,15 @@ export function maybePrintDashboardAliasNotice(argv: readonly string[] = process
 
 export const watchCommand = new Command("watch")
   .alias("dashboard")
-  .description("Single-pane unified dashboard: agents, board, inbox, and pipeline events")
-  .option("--refresh <ms>", "Refresh interval in milliseconds (default: 5000; min: 1000)", "")
-  .option("--inbox-limit <n>", "Max inbox messages shown (default: 5)", "")
-  .option("--inbox-poll <ms>", "Inbox-only poll interval in ms (default: 2000)", "")
-  .option("--events-limit <n>", "Max pipeline events shown (default: 5)", "")
+  .description("Unified live cockpit: task selector, inbox, status workflow, board context, and details")
+  .option("--refresh <ms>", "Cockpit refresh interval in milliseconds (default: 5000; min: 1000)", "")
+  .option("--inbox-limit <n>", "One-shot --no-watch inbox message limit (default: 5)", "")
+  .option("--inbox-poll <ms>", "Ignored by the cockpit; retained for compatibility with prior watch loops", "")
+  .option("--events-limit <n>", "One-shot --no-watch pipeline event limit (default: 5)", "")
   .option("--no-watch", "One-shot snapshot, no polling")
-  .option("--no-board", "Hide board summary panel")
-  .option("--no-inbox", "Hide inbox panel")
-  .option("--no-events", "Hide pipeline events panel")
+  .option("--no-board", "Only meaningful with --no-watch: hide board summary panel")
+  .option("--no-inbox", "Only meaningful with --no-watch: hide inbox panel")
+  .option("--no-events", "Only meaningful with --no-watch: hide pipeline events panel")
   .option("--project <id>", "Filter to specific project ID")
   .action(async (opts: {
     refresh: string;
@@ -129,6 +130,18 @@ export const watchCommand = new Command("watch")
       noEvents,
       projectId,
     };
+
+    if (!noWatch) {
+      await runInboxSuperTuiForProject(projectPath, opts.project ?? projectPath, {
+        projectSelector: opts.project,
+        limit: inboxLimit,
+        eventsLimit,
+        scope: "attention",
+        initialView: "overview",
+        refreshIntervalMs: refreshMs,
+      });
+      return;
+    }
 
     // Postgres-backed store is only still needed for inbox fallback.
     const store = noInbox ? null : ForemanStore.forProject(projectPath);
@@ -277,147 +290,6 @@ export const watchCommand = new Command("watch")
           return;
       }
 
-      // ── Live mode ─────────────────────────────────────────────────────
-      // Determine which panels are visible
-      const visiblePanels = {
-        agents: true,
-        board: !noBoard,
-        inbox: !noInbox,
-      };
-
-      // Initial poll
-      {
-        const pollStart = Date.now();
-        const result = await pollWatchData(projectPath, projectId);
-        state.lastPollMs = pollStart;
-        state.dashboard = result.dashboard;
-        state.agents = result.agents;
-        state.board = result.board;
-        state.taskCounts = result.taskCounts;
-      }
-
-      // Initial inbox poll
-      if (!noInbox) {
-        const runIds = state.agents.map(e => e.run.id);
-          const inboxResult = await pollInboxData(store!, null, inboxLimit, runIds, projectPath, projectId);
-        state.inbox = {
-          messages: inboxResult.messages,
-          totalCount: inboxResult.totalCount,
-          newestTimestamp: inboxResult.messages[0]?.message.created_at ?? null,
-          oldestTimestamp: inboxResult.messages[inboxResult.messages.length - 1]?.message.created_at ?? null,
-        };
-        state.inboxLastSeenId = inboxResult.newestId;
-      }
-
-      // Initial events poll
-      if (!noEvents) {
-        const runIds = state.agents.map(e => e.run.id);
-        const eventsResult = await pollPipelineEvents(store!, null, eventsLimit, runIds, projectPath, projectId);
-        state.events = {
-          events: eventsResult.events,
-          totalCount: eventsResult.totalCount,
-          newestTimestamp: eventsResult.events[0]?.createdAt ?? null,
-          oldestTimestamp: eventsResult.events[eventsResult.events.length - 1]?.createdAt ?? null,
-        };
-        state.eventsLastSeenId = eventsResult.newestId;
-      }
-
-      // Main poll loop
-      while (!detached) {
-        // Handle SIGWINCH
-        if (winchOccurred) {
-          winchOccurred = false;
-        }
-
-        // Render current state
-        const display = renderWatch(state);
-        process.stdout.write("\x1B[2J\x1B[H" + display + "\n");
-
-        // Determine sleep timeout:
-        // inbox sleeps shorter, main poll sleeps longer
-        // We use a single sleep with the inbox interval; on wake, check
-        // whether it's a full poll or just an inbox poll.
-        await new Promise<void>((resolve) => {
-          sleepResolve = resolve;
-          setTimeout(resolve, refreshMs);
-        });
-        sleepResolve = null;
-
-        if (detached) break;
-
-        // Full data poll
-        const pollStart = Date.now();
-          const result = await pollWatchData(projectPath, projectId);
-        state.lastPollMs = pollStart;
-        state.dashboard = result.dashboard;
-        state.agents = result.agents;
-        state.board = result.board;
-        state.taskCounts = result.taskCounts;
-
-        // Clear error after a successful poll
-        state.errorMessage = null;
-
-        // Inbox-only fast poll
-        if (!noInbox) {
-          const runIds = result.agents.map(e => e.run.id);
-          const inboxResult = await pollInboxData(store!, state.inboxLastSeenId, inboxLimit, runIds, projectPath, projectId);
-
-          if (inboxResult.messages.length > 0) {
-            // Prepend new messages (they come in reverse chronological order)
-            const existingMessages = state.inbox?.messages ?? [];
-            // Mark all incoming as "new" if they're new since lastSeenId
-            const newEntries = inboxResult.messages.map((entry, i) => ({
-              ...entry,
-              isNew: state.inboxLastSeenId !== null && entry.message.id !== state.inboxLastSeenId,
-            }));
-
-            // Merge: new entries at top, capped at inboxLimit total
-            const merged = [...newEntries, ...existingMessages].slice(0, inboxLimit);
-
-            state.inbox = {
-              messages: merged,
-              totalCount: inboxResult.totalCount,
-              newestTimestamp: newEntries[0]?.message.created_at ?? state.inbox?.newestTimestamp ?? null,
-              oldestTimestamp: merged[merged.length - 1]?.message.created_at ?? null,
-            };
-          }
-
-          // Update last seen
-          if (inboxResult.newestId) {
-            state.inboxLastSeenId = inboxResult.newestId;
-          }
-        }
-
-        // Events fast poll
-        if (!noEvents) {
-          const runIds = result.agents.map(e => e.run.id);
-          const eventsResult = await pollPipelineEvents(store!, state.eventsLastSeenId, eventsLimit, runIds, projectPath, projectId);
-
-          if (eventsResult.events.length > 0) {
-            // Prepend new events (they come in reverse chronological order)
-            const existingEvents = state.events?.events ?? [];
-            const newEntries = eventsResult.events.map((entry) => ({
-              ...entry,
-              isNew: state.eventsLastSeenId !== null && entry.id !== state.eventsLastSeenId,
-            }));
-
-            // Merge: new entries at top, capped at eventsLimit total
-            const merged = [...newEntries, ...existingEvents].slice(0, eventsLimit);
-
-            state.events = {
-              events: merged,
-              totalCount: eventsResult.totalCount,
-              newestTimestamp: newEntries[0]?.createdAt ?? state.events?.newestTimestamp ?? null,
-              oldestTimestamp: merged[merged.length - 1]?.createdAt ?? null,
-            };
-          }
-
-          // Update last seen
-          if (eventsResult.newestId) {
-            state.eventsLastSeenId = eventsResult.newestId;
-          }
-        }
-      }
     } finally {
       process.stdout.write("\x1b[?25h"); // restore cursor
       process.removeListener("SIGINT", onSigint);

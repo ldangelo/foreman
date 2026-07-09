@@ -13,7 +13,7 @@ Run `pwd` and confirm you are in `{{worktreePath}}`. If not, run `cd {{worktreeP
 ```
 If git reports "nothing to commit", that is fine — continue anyway (do not send an error).
 
-**2. Write `FINALIZE_VALIDATION.md`** in the current directory with exactly this content:
+**2. Write `{{reportDir}}/FINALIZE_VALIDATION.md`** with exactly this content (create the directory first if needed):
 
 ```
 # Finalize Validation
