@@ -350,6 +350,8 @@ Bundled merge-capable workflows express PR and merge behavior as phases, not top
 
 The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The task's priority determines which model is used.
 
+**Bundled workflow models:** Foreman's bundled workflows (`default`, `feature`, `bug`, `quick`, `smoke`) use `MiniMax` and `MiniMax-highspeed` models. The shorthands below are available for custom workflows.
+
 **Model shorthands:**
 
 | Shorthand | Full Model ID |
@@ -357,6 +359,8 @@ The `models` map supports priority-based model selection. Keys are `"default"` (
 | `haiku` | `anthropic/claude-haiku-4-5` |
 | `sonnet` | `anthropic/claude-sonnet-4-6` |
 | `opus` | `anthropic/claude-opus-4-6` |
+| `MiniMax` | `MiniMax` |
+| `MiniMax-highspeed` | `MiniMax-highspeed` |
 
 Full model IDs are also accepted for any provider:
 

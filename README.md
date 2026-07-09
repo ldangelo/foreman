@@ -275,7 +275,7 @@ Foreman uses the [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) to r
 ```typescript
 const { session } = await createAgentSession({
   cwd: worktreePath,
-  model: getModel("anthropic", "claude-sonnet-4-6"),
+  model: getModel("minimax", "MiniMax"),
   tools: [createReadTool(cwd), createBashTool(cwd), ...],
   customTools: [createSendMailTool(mailClient, agentRole)],
   sessionManager: SessionManager.inMemory(),
@@ -306,11 +306,19 @@ Models are configured per-phase in the workflow YAML with priority-based overrid
 
 | Phase | Default Model | P0 Override | Max Turns |
 |---|---|---|---|
-| Explorer | haiku | sonnet | 30 |
-| Developer | sonnet | opus | 80 |
-| QA | sonnet | opus | 30 |
-| Reviewer | sonnet | opus | 20 |
-| Finalize | haiku | — | 20 |
+| Explorer | MiniMax | MiniMax-highspeed | 500 |
+| Developer | MiniMax | MiniMax-highspeed | 500 |
+| cicd-developer | MiniMax | MiniMax | 500 |
+| cr-developer | MiniMax | MiniMax | 500 |
+| merge-resolver | MiniMax | MiniMax | 500 |
+| documentation | MiniMax | MiniMax-highspeed | 500 |
+| QA | MiniMax | MiniMax-highspeed | 500 |
+| Reviewer | MiniMax | MiniMax-highspeed | 500 |
+| cli-review | builtin | — | — |
+| finalize | builtin | — | — |
+| create-pr | builtin | — | — |
+| pr-wait | builtin | — | — |
+| merge | builtin | — | — |
 
 ### Per-phase trace artifacts
 
@@ -582,12 +590,12 @@ foreman pr
 ```
 
 ### `foreman debug`
-AI-powered execution analysis using Opus to investigate pipeline runs.
+AI-powered execution analysis to investigate pipeline runs.
 
 ```bash
-foreman debug task-abc                  # Full Opus analysis of a run
+foreman debug task-abc                  # Full AI analysis of a run
 foreman debug task-abc --raw            # Raw artifacts without AI analysis
-foreman debug task-abc --model sonnet   # Cheaper model for analysis
+foreman debug task-abc --model MiniMax  # Use specific model for analysis
 ```
 
 ### `foreman attach`
@@ -792,13 +800,17 @@ phases:
   - name: developer
     prompt: developer.md
     models:
-      default: sonnet
-      P0: opus
-    maxTurns: 50
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
   - name: qa
     prompt: qa.md
     verdict: true
     retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
     retryOnFail: 2
 ```
 
