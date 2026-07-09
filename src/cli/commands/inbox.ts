@@ -1056,6 +1056,10 @@ export function renderMessageTable(rows: TableRow[], argsWidth = terminalArgsWid
   return [hr, header, hr, renderMessageTableDataRows(rows, sizes), hr].join("\n");
 }
 
+function renderInboxMessagesTable(messages: Message[]): string {
+  return renderMessageTable(messages.map((message) => formatMessageTable(message)));
+}
+
 function pad(val: string, width: number): string {
   if (val.length > width) return val.slice(0, width - 1) + "…";
   return val.padEnd(width, " ");
@@ -1766,7 +1770,7 @@ function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolea
   if (options.messages) {
     lines.push("", chalk.bold("Recent Messages"));
     const messages = summary.messages.slice(0, options.limit);
-    lines.push(messages.length > 0 ? renderMessageTable(messages.map((message) => formatMessageTable(message))) : "No messages found.");
+    lines.push(messages.length > 0 ? renderInboxMessagesTable(messages) : "No messages found.");
   }
   if (options.logs) lines.push("", renderLogSection(summary));
   if (options.reports) lines.push("", renderReportsSection(summary));
@@ -2856,9 +2860,7 @@ export const inboxCommand = new Command("inbox").enablePositionalOptions()
             console.log(`${"─".repeat(70)}\n${messages.length} message(s) shown.`);
           } else if (showEvents) {
             console.log(chalk.bold(`\nInbox Messages — run: `) + `${runId}${taskLabel}${options.agent ? `  agent: ${options.agent}` : ""}`);
-            console.log("─".repeat(70));
-            for (const msg of messages) console.log(formatInboxMessageLine(msg));
-            console.log("─".repeat(70));
+            console.log(renderInboxMessagesTable(messages));
             console.log(`${messages.length} message(s) shown.`);
           } else {
             const rows = messages.map((msg) => formatMessageTable(msg));

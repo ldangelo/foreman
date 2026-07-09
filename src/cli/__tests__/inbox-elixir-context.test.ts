@@ -291,8 +291,13 @@ describe("inbox Elixir context", () => {
     expect(mockListInbox).toHaveBeenCalledWith({ projectId: "proj-1", runId: "run-1", unread: undefined, limit: 50 });
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("Inbox — run: run-1");
+    for (const header of ["DATE", "TASK", "PHASE", "RECEIVER", "KIND", "TOOL", "ARGS"]) {
+      expect(rendered).toContain(header);
+    }
     expect(rendered).toContain("task-1");
     expect(rendered).toContain("bash");
+    expect(rendered).not.toContain("✉ Mail");
+    expect(rendered).not.toContain("! Mail");
   });
 
   it("renders Elixir pipeline events in one-shot mode", async () => {
@@ -669,7 +674,7 @@ describe("inbox Elixir context", () => {
         sender_agent_type: "developer",
         recipient_agent_type: "qa",
         subject: "phase-status",
-        body: { taskId: "task-42", phase: "qa", kind: "progress", status: "running", message: "qa is reviewing" },
+        body: { taskId: "task-42", phase: "qa", kind: "progress", tool: "vitest", status: "running", message: "qa is reviewing" },
         unread: true,
         created_at: "2026-01-01T00:02:00.000Z",
       },
@@ -693,6 +698,13 @@ describe("inbox Elixir context", () => {
     expect(rendered).toContain("run-task-42");
     expect(rendered).toContain("task-42");
     expect(rendered).toContain("qa is reviewing");
+    for (const header of ["DATE", "TASK", "PHASE", "RECEIVER", "KIND", "TOOL", "ARGS"]) {
+      expect(rendered).toContain(header);
+    }
+    expect(rendered).toContain("progress");
+    expect(rendered).toContain("vitest");
+    expect(rendered).not.toContain("✉ Mail");
+    expect(rendered).not.toContain("! Mail");
     expect(rendered).toContain("Pipeline Events — run: ");
     expect(rendered).not.toContain("Pipeline Events — all runs");
   });
@@ -767,9 +779,62 @@ describe("inbox Elixir context", () => {
     expect(rendered).toContain("KIND");
     expect(rendered).toContain("TOOL");
     expect(rendered).not.toContain("✉ Mail");
+    expect(rendered).toContain("ARGS");
+    expect(rendered).not.toContain("! Mail");
     expect(rendered).not.toContain("stale message hidden");
     expect(rendered).toContain("latest-phase");
     expect(rendered).not.toContain("stale-phase");
+  });
+
+  it("renders run drilldown messages with the shared inbox table", async () => {
+    const tmpBase = makeTempDir();
+    const projectDir = join(tmpBase, "registered-project");
+    mkdirSync(join(projectDir, ".foreman"), { recursive: true });
+
+    mockResolveRepoRootProjectPath.mockResolvedValue(projectDir);
+    mockListRegisteredProjects.mockResolvedValue([
+      { id: "proj-1", name: "registered-project", path: projectDir },
+    ]);
+    mockListRuns.mockResolvedValue([
+      {
+        id: "run-detail",
+        run_id: "run-detail",
+        project_id: "proj-1",
+        task_id: "task-run-detail",
+        status: "running",
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    mockListInbox.mockResolvedValue([
+      {
+        message_id: "msg-run-detail",
+        run_id: "run-detail",
+        sender_agent_type: "developer",
+        recipient_agent_type: "foreman",
+        subject: "tool-call",
+        body: { taskId: "task-run-detail", phase: "developer", kind: "tool", tool: "bash", message: "npm test -- --run" },
+        unread: true,
+        created_at: "2026-01-01T00:02:00.000Z",
+      },
+    ]);
+    mockListEvents.mockResolvedValue([]);
+
+    await inboxCommand.parseAsync(["run", "run-detail", "--project-path", projectDir], { from: "user" });
+
+    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("FOREMAN INBOX › task-run-detail");
+    expect(rendered).toContain("Run:      run-detail");
+    expect(rendered).toContain("Recent Messages");
+    for (const header of ["DATE", "TASK", "PHASE", "RECEIVER", "KIND", "TOOL", "ARGS"]) {
+      expect(rendered).toContain(header);
+    }
+    expect(rendered).toContain("developer");
+    expect(rendered).toContain("foreman");
+    expect(rendered).toContain("tool");
+    expect(rendered).toContain("bash");
+    expect(rendered).toContain("npm test -- --run");
+    expect(rendered).not.toContain("✉ Mail");
+    expect(rendered).not.toContain("! Mail");
   });
 
   it("exposes follow and optional detail section flags in task and run help", () => {
