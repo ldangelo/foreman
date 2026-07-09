@@ -261,7 +261,7 @@ foreman purge logs     # Remove old log files (retention policy)
 foreman purge runs     # Remove stale failed run records
 
 # Mail inspection
-foreman inbox --all --watch  # Live stream all mail across all runs
+foreman inbox --all --watch  # Live task-first mail/events with LAST timestamps across runs
 foreman inbox task X --logs --reports --files  # Mail/events plus artifacts
 foreman inbox --task X                         # Legacy selector for a specific task
 

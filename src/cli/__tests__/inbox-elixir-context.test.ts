@@ -566,7 +566,7 @@ describe("inbox Elixir context", () => {
     expect(rendered).toContain("in_progress");
   });
 
-  it("renders a scriptable all-scope summary with task, phase, run, activity, and status text", async () => {
+  it("renders a scriptable all-scope summary with task, phase, run, date/time, activity, and status text", async () => {
     const tmpBase = makeTempDir();
     const projectDir = join(tmpBase, "registered-project");
     mkdirSync(join(projectDir, ".foreman"), { recursive: true });
@@ -583,6 +583,14 @@ describe("inbox Elixir context", () => {
         task_id: "task-summary",
         status: "running",
         created_at: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "run-newer-123456",
+        run_id: "run-newer-123456",
+        project_id: "proj-1",
+        task_id: "task-newer",
+        status: "running",
+        created_at: "2026-01-01T00:04:00",
       },
     ]);
     mockListInbox.mockResolvedValue([
@@ -603,6 +611,22 @@ describe("inbox Elixir context", () => {
         unread: true,
         created_at: "2026-01-01T00:02:00.000Z",
       },
+      {
+        message_id: "msg-newer",
+        run_id: "run-newer-123456",
+        sender_agent_type: "developer",
+        recipient_agent_type: "qa",
+        subject: "status",
+        body: {
+          taskId: "task-newer",
+          phase: "reviewer",
+          kind: "progress",
+          status: "newer-run",
+          message: "newer run first",
+        },
+        unread: true,
+        created_at: "2026-01-01T00:05:00",
+      },
     ]);
 
     await inboxCommand.parseAsync(["--all", "--project-path", projectDir], { from: "user" });
@@ -617,6 +641,12 @@ describe("inbox Elixir context", () => {
     expect(rendered).toContain("status=needs-review");
     expect(rendered).toContain("waiting on qa");
     expect(rendered).toContain("args: vitest run src/cli/__tests__/inbox-elixir-context.test.ts");
+    expect(rendered).toContain("LAST");
+    expect(rendered).toContain("2026-01-01 00:05:00");
+    const table = rendered.slice(rendered.indexOf("FOREMAN INBOX"));
+    expect(table.indexOf("task-newer")).toBeGreaterThanOrEqual(0);
+    expect(table.indexOf("task-summary")).toBeGreaterThanOrEqual(0);
+    expect(table.indexOf("task-newer")).toBeLessThan(table.indexOf("task-summary"));
   });
 
   it("keeps legacy --task with --events on the task drilldown path", async () => {

@@ -1576,13 +1576,7 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
     if (scopeIncludesSummary(scope, summary)) summaries.push(summary);
   }
 
-  return summaries.sort((a, b) => {
-    const activeDelta = Number(isActiveRunStatus(b.runStatus)) - Number(isActiveRunStatus(a.runStatus));
-    if (activeDelta !== 0) return activeDelta;
-    const attentionDelta = Number(b.attention) - Number(a.attention);
-    if (attentionDelta !== 0) return attentionDelta;
-    return timestampMs(b.lastActivityAt) - timestampMs(a.lastActivityAt);
-  });
+  return summaries.sort((a, b) => timestampMs(b.lastActivityAt) - timestampMs(a.lastActivityAt));
 }
 
 export function renderInboxTaskSummaryTable(summaries: InboxTaskSummary[]): string {
@@ -1592,7 +1586,8 @@ export function renderInboxTaskSummaryTable(summaries: InboxTaskSummary[]): stri
     state: summary.runStatus,
     phase: summary.phase,
     run: summary.runId.slice(0, 10),
-    activity: relativeTime(summary.lastActivityAt),
+    last: summary.lastActivityAt ? formatTimestamp(summary.lastActivityAt) : "—",
+    age: relativeTime(summary.lastActivityAt),
     verdict: summary.verdict,
     status: summary.statusText,
   }));
@@ -1601,16 +1596,18 @@ export function renderInboxTaskSummaryTable(summaries: InboxTaskSummary[]): stri
     state: Math.max(10, ...rows.map((row) => row.state.length)),
     phase: Math.max(10, ...rows.map((row) => row.phase.length)),
     run: 10,
-    activity: Math.max(8, ...rows.map((row) => row.activity.length)),
+    last: 19,
+    age: Math.max(8, ...rows.map((row) => row.age.length)),
     verdict: Math.max(7, ...rows.map((row) => row.verdict.length)),
-    status: Math.max(20, Math.min(80, getTerminalWidth() - 74)),
+    status: Math.max(20, Math.min(80, getTerminalWidth() - 96)),
   };
   const header = [
     pad("TASK", widths.task),
     pad("STATE", widths.state),
     pad("PHASE", widths.phase),
     pad("RUN", widths.run),
-    pad("ACTIVITY", widths.activity),
+    pad("LAST", widths.last),
+    pad("AGE", widths.age),
     pad("VERDICT", widths.verdict),
     pad("STATUS", widths.status),
   ].join(" │ ");
@@ -1619,7 +1616,8 @@ export function renderInboxTaskSummaryTable(summaries: InboxTaskSummary[]): stri
     pad(row.state, widths.state),
     pad(row.phase, widths.phase),
     pad(row.run, widths.run),
-    pad(row.activity, widths.activity),
+    pad(row.last, widths.last),
+    pad(row.age, widths.age),
     pad(row.verdict, widths.verdict),
     pad(truncate(row.status, widths.status), widths.status),
   ].join(" │ "));
