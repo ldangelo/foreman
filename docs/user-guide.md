@@ -2,6 +2,67 @@
 
 This guide explains how to use Foreman day to day. For exact flags and command syntax, see the [CLI Reference](./cli-reference.md).
 
+## Overview
+
+Foreman is a multi-agent coding orchestrator that manages AI engineering work through isolated git worktrees with a PostgreSQL-backed event store and scheduler.
+
+### Architecture
+
+Foreman has three runtime layers:
+
+| Layer | Technology | Role |
+|-------|------------|------|
+| Node CLI | TypeScript/Node | Operator commands, VCS/worktree operations, Pi SDK worker bridge |
+| Elixir Server | Elixir/OTP | Event store, task scheduler, projections, overwatch, PR reconciliation |
+| Node/Pi Workers | TypeScript + Pi SDK | Agent execution, phase prompts, tool calls |
+
+**Event sourcing:** The Elixir backend uses domain events as the source of truth. Projections and read models (status displays, log summaries) are derived views updated after events are observed.
+
+**Worker bridge:** Worker/Pi SDK tool calls and assistant messages emit ordered worker events before being mirrored into raw logs. Phase reports emit structured report events so Elixir Overwatch can send compact next-phase Agent Mail steering without depending on report filenames.
+
+### Core Workflows
+
+1. **Task Lifecycle:** Task created → enters ready queue → dispatched to worktree → pipeline phases run → finalized → PR created/merged
+2. **Dispatch Flow:** `foreman run` sends scheduler tick to Elixir → ready tasks claimed by capacity → workers launched in git worktrees
+3. **Pipeline Phases:** Explorer → Developer → cicd-developer/cr-developer/merge-resolver (on failure) → QA → Reviewer → Documentation → Finalize → create-pr → pr-wait → merge
+4. **Retry Pattern:** Phase failures match `retryWithByReason` patterns to route to specialized recovery agents
+
+### Skills and Prompts
+
+Foreman uses bundled Pi skills for specialized tasks:
+
+| Skill | Purpose |
+|-------|---------|
+| `foreman-workflow-pipeline` | Workflow YAML, phase behavior, PR gates |
+| `foreman-elixir-backend` | Event store, scheduler, projections |
+| `foreman-vcs-backend` | Git/worktree operations |
+| `foreman-doc-gate` | Documentation requirements |
+| `foreman-pipeline-diagnosis` | Stuck run debugging |
+| `foreman-safe-recovery` | Run/worktree cleanup decisions |
+
+Phase prompts live in `src/defaults/prompts/` and are installed to runtime paths by `foreman init --force`.
+
+### MCP/Foreman Tool Integration
+
+Foreman exposes MCP tools for integrated task management:
+
+**Read tools:** `foreman.projects.list`, `foreman.tasks.list`, `foreman.tasks.show`, `foreman.runs.summary`, `foreman.inbox.read`, `foreman.lifecycle.events`
+
+**Write tools:** `foreman.tasks.create`, `foreman.tasks.reset`, `foreman.tasks.approve`, `foreman.tasks.block`, `foreman.inbox.send`
+
+Pi slash commands available in agent sessions: `/task`, `/reset`, `/approve`, `/block`
+
+### Backend Boundaries
+
+| Capability | Owner |
+|------------|-------|
+| Task CRUD, status | Elixir backend (source of truth) |
+| Dispatch, capacity, scheduling | Elixir scheduler |
+| Git worktree, branches | Node CLI |
+| Agent prompts, tool execution | Pi SDK / Node worker |
+| Phase reports, logs | Worker → Elixir events |
+| PR creation, merge | Node CLI + Elixir reconciliation |
+
 ## What Foreman Does
 
 Foreman runs AI engineering work through a managed pipeline:

@@ -111,11 +111,21 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 
 **Default pipeline phases:**
 
-1. **Explorer** (Haiku) — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Developer** (Sonnet) — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
-3. **QA** (Sonnet) — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
-4. **Reviewer** (Sonnet) — code review → REVIEW.md (verdict: PASS/FAIL)
-5. **Finalize** (Haiku) — rebase, validate, commit, push → FINALIZE_VALIDATION.md (+ FINALIZE_REPORT.md)
+1. **Explorer** — concise read-only developer handoff → EXPLORER_REPORT.md
+2. **Developer** — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
+3. **cicd-developer** — retry-only target for CI/CD check failures
+4. **cr-developer** — retry-only target for CodeRabbit findings
+5. **merge-resolver** — retry-only target for merge conflicts
+6. **documentation** — update required operator/developer docs or explain why no docs changed → DOCUMENTATION_REPORT.md
+7. **QA** — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
+8. **Reviewer** — code review → REVIEW.md (verdict: PASS/FAIL)
+9. **cli-review** — CodeRabbit CLI review (builtin) → CR_CLI_REPORT.md
+10. **Finalize** (builtin) — rebase, validate, commit, push → FINALIZE_VALIDATION.md
+11. **create-pr** (builtin) — create or update draft PR → PR_METADATA.json
+12. **pr-wait** (builtin) — wait for PR checks/review → PR_WAIT_REPORT.md
+13. **merge** (builtin) — merge to target branch → MERGE_REPORT.md
+
+Retry phases (cicd-developer, cr-developer, merge-resolver) are activated only when a later phase fails with a matching `retryWithByReason` pattern (e.g., `ci_failed:`, `coderabbit_`, `merge_conflict:`). The `onFailure` handler runs the troubleshooter prompt for unrecoverable errors.
 
 After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
 
@@ -199,12 +209,16 @@ phases:
   - name: qa
     prompt: qa.md
     models:
-      default: sonnet
-      P0: opus
+      default: MiniMax
+      P0: MiniMax-highspeed
     artifact: "{task.projectReportsDir}/QA_REPORT.md"
     verdict: true            # parse PASS/FAIL from artifact
     retryWith: developer     # on FAIL, loop back to developer
     retryOnFail: 2           # max retry count
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
     mail:
       onFail: developer      # send feedback to developer on FAIL
 ```
