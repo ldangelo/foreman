@@ -280,13 +280,20 @@ defmodule ForemanServer.CommandRouter do
   end
 
   defp domain_event(command_type, payload)
-       when command_type in ["run.pr.update", "run.pr.ready", "run.pr.retarget", "run.pr.reset"] do
+       when command_type in [
+              "run.pr.update",
+              "run.pr.ready",
+              "run.pr.retarget",
+              "run.pr.reset",
+              "run.pr.merge"
+            ] do
     event_type =
       %{
         "run.pr.update" => "PrUpdated",
         "run.pr.ready" => "PrReady",
         "run.pr.retarget" => "PrRetargeted",
-        "run.pr.reset" => "PrReset"
+        "run.pr.reset" => "PrReset",
+        "run.pr.merge" => "PrMerged"
       }[command_type]
 
     with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do

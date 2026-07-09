@@ -1,14 +1,15 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: foreman-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "${FOREMAN_POSTGRES_PORT:-55432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-foreman}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      HINDSIGHT_DB_NAME: ${HINDSIGHT_DB_NAME:-hindsight}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-foreman}"]
       interval: 5s
@@ -16,6 +17,27 @@ services:
       retries: 10
     volumes:
       - foreman-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-latest}
+    container_name: foreman-hindsight
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    environment:
+      HINDSIGHT_API_DATABASE_URL: ${HINDSIGHT_API_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${HINDSIGHT_DB_NAME:-hindsight}}
+      HINDSIGHT_API_MIGRATION_DATABASE_URL: ${HINDSIGHT_API_MIGRATION_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${HINDSIGHT_DB_NAME:-hindsight}}
+      HINDSIGHT_API_VECTOR_EXTENSION: ${HINDSIGHT_API_VECTOR_EXTENSION:-pgvector}
+      HINDSIGHT_API_WORKER_ID: ${HINDSIGHT_API_WORKER_ID:-foreman-hindsight-dev}
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_API_LLM_PROVIDER:-none}
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-}
+      HINDSIGHT_API_LLM_BASE_URL: ${HINDSIGHT_API_LLM_BASE_URL:-}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_API_LLM_MODEL:-}
 
 volumes:
   foreman-postgres-data:

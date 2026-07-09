@@ -5,7 +5,7 @@ defmodule ForemanServer.ProjectionStore do
 
   alias ForemanServer.ProjectionStore.Postgres
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked"])
+  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
   @task_statuses MapSet.new([
                    "backlog",
                    "ready",
@@ -436,6 +436,21 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
       |> Map.put(:commit_sha, Map.get(payload, :head_sha))
       |> Map.put(:base_branch, Map.get(payload, :base_branch))
+    end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "PrMerged", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.merge(payload)
+      |> Map.put(:pr_url, Map.get(payload, :pr_url, Map.get(run, :pr_url)))
+      |> Map.put(:pr_state, "merged")
+      |> Map.put(:status, "merged")
+      |> Map.put(:completed_at, Map.get(payload, :merged_at, Map.get(payload, :completed_at)))
     end)
   end
 

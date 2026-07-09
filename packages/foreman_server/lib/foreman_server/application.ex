@@ -7,6 +7,7 @@ defmodule ForemanServer.Application do
     EventStore,
     Overwatch,
     ProjectionStore,
+    PrMonitor,
     ProjectRegistry,
     Repo,
     RuntimeSafety,
@@ -28,7 +29,8 @@ defmodule ForemanServer.Application do
           {DynamicSupervisor,
            strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
           {ProjectRegistry, []},
-          {Scheduler, []}
+          {Scheduler, []},
+          {PrMonitor, []}
         ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]

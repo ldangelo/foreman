@@ -5,6 +5,8 @@ Every fix or feature must consider documentation before finalization. Update `CL
 
 Runtime prompt/workflow safety: after editing bundled source workflows or prompts, run `foreman init --force`. Dispatch paths (`foreman run`, `foreman run --watch`, and direct worker startup) fail fast when installed runtime prompts/workflows are stale.
 
+Local development uses the checked-in Devbox/direnv Docker Compose stack: `devbox run dev:up` starts shared pgvector Postgres plus Hindsight, and Foreman's default local `DATABASE_URL` targets `127.0.0.1:55432`.
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**

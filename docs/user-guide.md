@@ -14,6 +14,20 @@ Foreman runs AI engineering work through a managed pipeline:
 
 Use Foreman when you want multiple AI agents working safely on one repository without sharing a dirty working tree.
 
+## Local Development Environment
+
+In this repository, `direnv allow` loads Devbox and starts the checked-in Docker Compose stack when you enter the directory. The stack runs one shared pgvector-enabled Postgres container for Foreman and Hindsight: Foreman uses `DATABASE_URL` on `127.0.0.1:55432/foreman` by default, while Hindsight uses the separate `hindsight` database inside the same container.
+
+Useful commands:
+
+```bash
+devbox run dev:up          # start shared Postgres + Hindsight
+devbox run db:up           # start only Postgres
+devbox run hindsight:logs  # tail Hindsight logs
+```
+
+Set `FOREMAN_DIRENV_AUTO_COMPOSE=0` before entering the repository to opt out of automatic container startup. Hindsight serves its API at <http://localhost:8888> and control plane at <http://localhost:9999>.
+
 ## Core Concepts
 
 ### Projects
@@ -226,6 +240,9 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 ### 9. Review and Merge
 
 Merge-capable workflows checkpoint draft PRs after successful mutating phases, then wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The final `create-pr` phase refreshes the existing draft and marks it ready instead of creating a second PR. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
+
+The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman closes only the run PR state and leaves the task unchanged for operator triage.
+
 
 ```bash
 foreman merge

@@ -226,6 +226,29 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert run.commit_sha == "sha-retarget"
     assert run.base_branch == "main"
 
+    merged_at = "2026-07-09T12:34:56Z"
+
+    append!("run:run-pr", "PrMerged", %{
+      run_id: "run-pr",
+      project_id: "project-1",
+      task_id: "task-pr",
+      pr_url: "https://github.com/acme/foreman/pull/42",
+      branch_name: "foreman/task-pr",
+      merged_at: merged_at,
+      merge_commit_sha: "merge-sha"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-pr"]
+    assert run.pr_url == "https://github.com/acme/foreman/pull/42"
+    assert run.pr_state == "merged"
+    assert run.status == "merged"
+    assert run.completed_at == merged_at
+    assert run.merge_commit_sha == "merge-sha"
+    assert run.pr_head_sha == "sha-retarget"
+    assert run.commit_sha == "sha-retarget"
+    assert run.base_branch == "main"
+    assert run.branch_name == "foreman/task-pr"
+
     append!("run:run-pr", "PrRetargeted", %{
       run_id: "run-pr",
       project_id: "project-1",
