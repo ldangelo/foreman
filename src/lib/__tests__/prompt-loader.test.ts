@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findStalePrompts, getBundledPromptContent, getBundledPromptPath, loadPrompt, REQUIRED_PHASES, expandCommandPlaceholders, CommandExpansionError } from "../prompt-loader.js";
+import { findStalePrompts, getBundledPromptContent, getBundledPromptPath, loadPrompt, REQUIRED_PHASES, REQUIRED_SKILLS, expandCommandPlaceholders, CommandExpansionError } from "../prompt-loader.js";
 
 describe("prompt loader", () => {
   const tempDirs: string[] = [];
@@ -80,6 +80,19 @@ describe("prompt loader", () => {
     expect(REQUIRED_PHASES.task).toContain("fix-issue");
     expect(REQUIRED_PHASES.bug).toContain("fix-issue");
     expect(REQUIRED_PHASES.chore).toContain("fix-issue");
+  });
+
+  it("requires all bundled Foreman guidance skills", () => {
+    expect(REQUIRED_SKILLS).toEqual([
+      "send-mail",
+      "foreman-elixir-backend",
+      "foreman-workflow-pipeline",
+      "foreman-worker-pi-sdk",
+      "foreman-pipeline-diagnosis",
+      "foreman-safe-recovery",
+      "foreman-vcs-backend",
+      "foreman-doc-gate",
+    ]);
   });
 
   it("bundles workflow-specific fix-issue prompts", () => {

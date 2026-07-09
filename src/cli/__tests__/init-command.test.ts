@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -92,8 +92,17 @@ vi.mock("ora", () => ({
 
 import { initCommand } from "../commands/init.js";
 
+type InitCommandTestHarness = {
+  _actionHandler: (args: unknown[]) => Promise<void>;
+  setOptionValue: (key: string, value: unknown) => unknown;
+};
+
 async function invokeInit(opts: Record<string, unknown> = {}): Promise<void> {
-  await (initCommand as unknown as { _actionHandler: (args: unknown[]) => Promise<void> })._actionHandler([opts]);
+  const command = initCommand as unknown as InitCommandTestHarness;
+  command.setOptionValue("name", opts.name);
+  command.setOptionValue("force", opts.force);
+  command.setOptionValue("wizard", opts.wizard);
+  await command._actionHandler([]);
 }
 
 describe("init command", () => {
@@ -141,17 +150,71 @@ describe("init command", () => {
   });
 
   it("initializes a new project without the wizard and does not open a database pool", async () => {
-    const projectDir = makeTempProject("fresh");
-    process.chdir(projectDir);
+    const tempProjectDir = makeTempProject("fresh");
+    process.chdir(tempProjectDir);
+    const projectDir = process.cwd();
     mockRegistryAdd.mockResolvedValue({ id: "proj-1", name: "fresh", path: projectDir, status: "active" });
 
     await invokeInit({});
 
     expect(mockExecFileSync).not.toHaveBeenCalled();
-    expect(mockInstallBundledPrompts).toHaveBeenCalled();
+    expect(mockInstallBundledPrompts).toHaveBeenCalledWith(projectDir, false);
+    expect(mockInstallBundledWorkflows).toHaveBeenCalledWith(projectDir, false);
+    expect(mockQuestion).not.toHaveBeenCalled();
     expect(mockPostgresStoreForProject).not.toHaveBeenCalled();
-    const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Foreman initialized successfully!");
+  });
+
+  it("reinstalls bundled assets with force without opening the wizard", async () => {
+    const tempProjectDir = makeTempProject("force");
+    process.chdir(tempProjectDir);
+    const projectDir = process.cwd();
+
+    await invokeInit({ force: true });
+
+    expect(mockInstallBundledPrompts).toHaveBeenCalledWith(projectDir, true);
+    expect(mockInstallBundledWorkflows).toHaveBeenCalledWith(projectDir, true);
+    expect(mockQuestion).not.toHaveBeenCalled();
+  });
+
+  it("continues force init when Elixir reports the project already exists", async () => {
+    const tempProjectDir = makeTempProject("elixirexisting");
+    process.chdir(tempProjectDir);
+    const projectDir = process.cwd();
+    mockForemanBackendMode.mockReturnValue("elixir");
+    mockRegisterProjectInElixir.mockRejectedValue(new Error('{:already_exists, :project, "proj-existing"}'));
+
+    await expect(invokeInit({ force: true })).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockInstallBundledPrompts).toHaveBeenCalledWith(projectDir, true);
+    expect(mockInstallBundledWorkflows).toHaveBeenCalledWith(projectDir, true);
+  });
+
+  it("runs the wizard when explicitly requested and writes the prompted config", async () => {
+    const projectDir = makeTempProject("wizard");
+    process.chdir(projectDir);
+    mockQuestion
+      .mockResolvedValueOnce("git")
+      .mockResolvedValueOnce("smoke")
+      .mockResolvedValueOnce("github")
+      .mockResolvedValueOnce("https://api.github.test")
+      .mockResolvedValueOnce("ghp_secret")
+      .mockResolvedValueOnce("fortium")
+      .mockResolvedValueOnce("foreman")
+      .mockResolvedValueOnce("foreman,ready");
+
+    await invokeInit({ wizard: true });
+
+    expect(mockQuestion).toHaveBeenCalled();
+    const config = readFileSync(join(projectDir, ".foreman", "config.yaml"), "utf8");
+    expect(config).toContain("  backend: git");
+    expect(config).toContain("  default: smoke");
+    expect(config).toContain("  backend: github");
+    expect(config).toContain("    apiUrl: https://api.github.test");
+    expect(config).toContain("      - owner: fortium");
+    expect(config).toContain("        repo: foreman");
+    expect(config).toContain("          - foreman");
+    expect(config).toContain("          - ready");
   });
 
   it("skips legacy registry/store setup for existing projects", async () => {

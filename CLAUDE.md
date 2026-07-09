@@ -98,6 +98,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - `src/lib/postgres-mail-client.ts` — legacy-named Agent Mail shim; no direct database access
 - `src/lib/workflow-loader.ts` — YAML workflow config parser
 - `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
+- `src/defaults/skills/` — bundled Foreman Pi guidance skills; required names live in `src/lib/prompt-loader.ts`, sandbox exposure lives in `src/orchestrator/pi-sdk-runner.ts`, and changes require `npm run build` plus `foreman init --force` before dispatch validation
 
 **Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
 

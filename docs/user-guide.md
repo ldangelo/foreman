@@ -72,6 +72,12 @@ Important phase reports:
 
 Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses `Grep`, `Glob`, and targeted `Read` discovery, and omits nested delegation tools from fix/remediation phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman run`, `foreman run --watch`, and worker startup check for stale installed prompts/workflows and abort before scheduling agents when drift is detected. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
+### Bundled Foreman Skills
+
+`foreman init` installs bundled Pi skills from `src/defaults/skills` to `~/.pi/agent/skills/`. Foreman worker sessions load the required skill set even when user Pi skills are sandboxed.
+
+Guidance skills include `foreman-elixir-backend` for server/event/projection work, `foreman-workflow-pipeline` for workflow YAML and phase artifacts, `foreman-worker-pi-sdk` for worker/Pi SDK boundaries, `foreman-pipeline-diagnosis` for stuck or missing-artifact triage, `foreman-safe-recovery` for retry/reset/cleanup decisions, `foreman-vcs-backend` for Git/Jujutsu abstraction work, and `foreman-doc-gate` for documentation decisions. See [Skill Integration](skill-integration.md) for impact and packaging details.
+
 ### Worktrees
 
 Each dispatched task runs in its own git worktree. This isolates agent edits from your main checkout and from other agents. Avoid manually editing active worktrees unless you are intentionally intervening.

@@ -16,6 +16,7 @@ You already have AI coding agents. What you don't have is a way to run several o
 - **Git isolation** — each agent gets its own worktree (zero conflicts during development)
 - **Pipeline phases** — Explorer → Developer ↔ QA → Reviewer → Finalize
 - **Pi SDK runtime** — agents run in-process via `@mariozechner/pi-coding-agent` SDK (`createAgentSession`)
+- **Bundled Foreman skills** — repo-specific Pi guidance for Elixir backend, workflow pipeline, worker/Pi SDK, diagnosis, safe recovery, VCS backend, and documentation gate work; installed by `foreman init`
 - **Built-in messaging** — Agent Mail with phase lifecycle notifications and file reservations through Elixir-backed projections
 - **Native task storage** — Elixir-backed tasks/events/projections
 - **Auto-merge** — completed branches rebase onto target and merge automatically via the refinery
@@ -218,6 +219,8 @@ Foreman includes a built-in messaging system for inter-agent communication and p
 ### How agents send messages
 
 Agents use the native **`send_mail`** tool, registered as a Pi SDK ToolDefinition. This is a structured tool call — agents don't run bash commands or invoke skills to send messages.
+
+Guidance skills are separate from native tools; they help agents choose correct Foreman conventions but do not replace structured tools.
 
 ```
 Tool: send_mail

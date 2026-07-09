@@ -45,19 +45,19 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
+Initialize Foreman in a project. Creates `.foreman/`, installs default workflow configs/prompts, installs bundled Pi skills to `~/.pi/agent/skills/`, and registers the project with the Elixir backend. The CLI does not run Postgres migrations or open a database connection.
 
 ```bash
 foreman init                      # Initialize with auto-detected name
 foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Reinstall prompt and workflow files after source edits
+foreman init --force              # Reinstall prompt, workflow, and bundled skill files after source edits
 foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
-| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. |
+| `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
 
 ---
@@ -288,7 +288,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 
 ### `foreman doctor`
 
-Health checks for Foreman installation. Validates Pi SDK, DB integrity, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed prompt files and workflow YAML are compared to bundled runtime contracts; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
+Health checks for Foreman installation. Validates Pi SDK, DB integrity, required bundled Pi skills, prompt files, workflow configs, duplicate workflow YAML `task_type` declarations, stale run records, zombie runs, and stale/orphaned worktrees. Installed prompt files and workflow YAML are compared to bundled runtime contracts; stale copies are reported so `foreman doctor --fix` or `foreman init --force` can reinstall them.
 
 ```bash
 foreman doctor                    # Run all health checks
@@ -299,7 +299,7 @@ foreman doctor --json             # Machine-readable output
 
 | Option | Description |
 |--------|-------------|
-| `--fix` | Auto-fix safe issues: install missing/stale prompts and workflows, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
+| `--fix` | Auto-fix safe issues: install missing/stale prompts and workflows, reinstall missing required bundled Pi skills, migrate stores, mark zombie runs failed, reset retryable failed/stuck runs, delete stale aged run records when supported, and remove stale/orphaned worktrees that are safe to clean. |
 | `--dry-run` | Preview what --fix would do |
 | `--json` | Output as JSON |
 

@@ -241,7 +241,16 @@ async function runInitWizard(projectDir: string): Promise<InitWizardAnswers> {
 
 export async function maybeRegisterInitializedProjectInElixir(projectDir: string, projectName: string): Promise<void> {
   if (foremanBackendMode() !== "elixir") return;
-  await registerProjectInElixir(projectDir, { name: projectName, status: "active" });
+  try {
+    await registerProjectInElixir(projectDir, { name: projectName, status: "active" });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("{:already_exists, :project,")) {
+      console.log(chalk.dim("Project already registered in Elixir; continuing."));
+      return;
+    }
+    throw err;
+  }
 }
 
 export function formatInitDatabaseError(err: unknown, _projectDir: string): string {
@@ -255,13 +264,13 @@ function installPrompts(projectDir: string, force: boolean): { installed: string
 export const initCommand = new Command("init")
   .description("Initialize foreman in a project")
   .option("-n, --name <name>", "Project name (defaults to directory name)")
-  .option("--force", "Overwrite existing prompt files when reinstalling")
+  .option("--force", "Overwrite existing prompt, workflow, and bundled Pi skill files when reinstalling")
   .option("--wizard", "Run an interactive setup wizard and write .foreman/config.yaml")
   .action(async (opts) => {
     const projectDir = resolve(".");
     const projectName = opts.name ?? basename(projectDir);
     const force = (opts.force as boolean | undefined) ?? false;
-    const wizard = (opts.wizard as boolean | undefined) ?? true;
+    const wizard = (opts.wizard as boolean | undefined) ?? false;
 
     console.log(
       chalk.bold(`Initializing foreman project: ${chalk.cyan(projectName)}`),

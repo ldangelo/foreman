@@ -89,7 +89,16 @@ const BUNDLED_SKILLS_DIR = join(
 const PI_SKILLS_DIR = join(homedir(), ".pi", "agent", "skills");
 
 /** Required Pi skill names bundled with foreman. */
-export const REQUIRED_SKILLS: ReadonlyArray<string> = ["send-mail"];
+export const REQUIRED_SKILLS: ReadonlyArray<string> = [
+  "send-mail",
+  "foreman-elixir-backend",
+  "foreman-workflow-pipeline",
+  "foreman-worker-pi-sdk",
+  "foreman-pipeline-diagnosis",
+  "foreman-safe-recovery",
+  "foreman-vcs-backend",
+  "foreman-doc-gate",
+];
 
 // ── Template rendering ────────────────────────────────────────────────────────
 

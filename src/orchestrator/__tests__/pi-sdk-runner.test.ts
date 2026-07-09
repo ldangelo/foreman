@@ -68,7 +68,7 @@ describe("getPiSdkEventError", () => {
 });
 
 describe("getSandboxedPiResourcePaths", () => {
-  it("allows only Ensemble resources plus Foreman send-mail skill", () => {
+  it("allows Ensemble resources plus required Foreman bundled skills", () => {
     const ensemblePiRoot = mkdtempSync(join(tmpdir(), "foreman-ensemble-pi-"));
     tmpDirs.push(ensemblePiRoot);
     mkdirSync(join(ensemblePiRoot, "extensions"));
@@ -79,7 +79,18 @@ describe("getSandboxedPiResourcePaths", () => {
 
     expect(resources.extensionPaths).toEqual([join(ensemblePiRoot, "extensions")]);
     expect(resources.skillPaths).toContain(join(ensemblePiRoot, "skills"));
-    expect(resources.skillPaths.some((path) => path.endsWith("send-mail/SKILL.md"))).toBe(true);
+    for (const requiredSkillSuffix of [
+      "send-mail/SKILL.md",
+      "foreman-elixir-backend/SKILL.md",
+      "foreman-workflow-pipeline/SKILL.md",
+      "foreman-worker-pi-sdk/SKILL.md",
+      "foreman-pipeline-diagnosis/SKILL.md",
+      "foreman-safe-recovery/SKILL.md",
+      "foreman-vcs-backend/SKILL.md",
+      "foreman-doc-gate/SKILL.md",
+    ]) {
+      expect(resources.skillPaths.some((path) => path.endsWith(requiredSkillSuffix))).toBe(true);
+    }
     expect(resources.promptTemplatePaths).toEqual([join(ensemblePiRoot, "prompts")]);
   });
 });

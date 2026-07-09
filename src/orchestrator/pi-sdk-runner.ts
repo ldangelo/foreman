@@ -44,6 +44,7 @@ import {
 } from "./pi-observability-extension.js";
 import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability-types.js";
 import { writePhaseTrace } from "./pi-observability-writer.js";
+import { REQUIRED_SKILLS } from "../lib/prompt-loader.js";
 import { z } from "zod";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
@@ -306,12 +307,20 @@ function resolveEnsemblePiRoot(env: NodeJS.ProcessEnv = process.env): string | u
   ].filter(Boolean));
 }
 
-function resolveForemanSendMailSkillPath(): string | undefined {
+function resolveForemanSkillPath(skillName: string): string | undefined {
   const foremanRoot = getForemanRoot();
   return firstExistingPath([
-    join(foremanRoot, "src", "defaults", "skills", "send-mail", "SKILL.md"),
-    join(foremanRoot, "dist", "defaults", "skills", "send-mail", "SKILL.md"),
+    join(foremanRoot, "src", "defaults", "skills", skillName, "SKILL.md"),
+    join(foremanRoot, "dist", "defaults", "skills", skillName, "SKILL.md"),
   ]);
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
+function resolveForemanSkillPaths(): string[] {
+  return REQUIRED_SKILLS.map((skillName) => resolveForemanSkillPath(skillName)).filter(isDefined);
 }
 
 export function getSandboxedPiResourcePaths(env: NodeJS.ProcessEnv = process.env): SandboxedPiResourcePaths {
@@ -326,10 +335,7 @@ export function getSandboxedPiResourcePaths(env: NodeJS.ProcessEnv = process.env
     promptTemplatePaths.push(join(ensemblePiRoot, "prompts"));
   }
 
-  const sendMailSkillPath = resolveForemanSendMailSkillPath();
-  if (sendMailSkillPath) {
-    skillPaths.push(sendMailSkillPath);
-  }
+  skillPaths.push(...resolveForemanSkillPaths());
 
   return { extensionPaths, skillPaths, promptTemplatePaths };
 }

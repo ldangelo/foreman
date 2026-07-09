@@ -16,6 +16,8 @@ foreman debug <task-id>           # AI-powered deep-dive on a specific task
 foreman debug <task-id> --raw     # Raw artifacts without AI analysis
 ```
 
+For skill-guided triage, agents/operators can invoke `foreman-pipeline-diagnosis` for stuck or missing-artifact investigation and `foreman-safe-recovery` before destructive cleanup or reset decisions.
+
 > **Note:** `<task-id>` is the primary identifier. `--task` is accepted as a
 > backward-compatible alias throughout the CLI.
 
@@ -103,6 +105,8 @@ foreman inbox --task <task-id>    # Check for error mail and lifecycle events
    foreman debug <task-id>            # Inspect failure context
    foreman retry <task-id> --dispatch # Retry through Elixir-backed recovery
    ```
+
+The `foreman-pipeline-diagnosis` and `foreman-safe-recovery` skills include decision trees for stuck agents, missing artifacts, and retry/reset choices; see [Skill Integration](skill-integration.md).
 
 ### Agent crashes immediately on startup
 
