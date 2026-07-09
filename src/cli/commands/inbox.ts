@@ -1766,7 +1766,7 @@ function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolea
   if (options.messages) {
     lines.push("", chalk.bold("Recent Messages"));
     const messages = summary.messages.slice(0, options.limit);
-    lines.push(messages.length > 0 ? messages.map(formatInboxMessageLine).join("\n") : "No messages found.");
+    lines.push(messages.length > 0 ? renderMessageTable(messages.map((message) => formatMessageTable(message))) : "No messages found.");
   }
   if (options.logs) lines.push("", renderLogSection(summary));
   if (options.reports) lines.push("", renderReportsSection(summary));

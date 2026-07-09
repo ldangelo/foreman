@@ -733,7 +733,7 @@ describe("inbox Elixir context", () => {
         sender_agent_type: "qa",
         recipient_agent_type: "foreman",
         subject: "latest-message",
-        body: { taskId: "task-limit", phase: "qa", message: "latest message visible" },
+        body: { taskId: "task-limit", phase: "qa", kind: "progress", tool: "bash", message: "latest message visible" },
         unread: true,
         created_at: "2026-01-01T00:03:00.000Z",
       },
@@ -759,6 +759,14 @@ describe("inbox Elixir context", () => {
 
     const rendered = vi.mocked(console.log).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("latest message visible");
+    expect(rendered).toContain("Recent Messages");
+    expect(rendered).toContain("DATE");
+    expect(rendered).toContain("TASK");
+    expect(rendered).toContain("PHASE");
+    expect(rendered).toContain("RECEIVER");
+    expect(rendered).toContain("KIND");
+    expect(rendered).toContain("TOOL");
+    expect(rendered).not.toContain("✉ Mail");
     expect(rendered).not.toContain("stale message hidden");
     expect(rendered).toContain("latest-phase");
     expect(rendered).not.toContain("stale-phase");
