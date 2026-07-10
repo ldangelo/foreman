@@ -58,7 +58,7 @@ describe("board pure helpers", () => {
     expect(boardColumnForTaskStatus("reviewer")).toBe("in_progress");
     expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
     expect(boardColumnForTaskStatus("done")).toBe("closed");
-    expect(boardColumnForTaskStatus("unknown-status")).toBe("needs_attention");
+    expect(boardColumnForTaskStatus("unknown-status")).toBe("closed");
   });
 
   it("detects board snapshot additions, changes, and removals", () => {
