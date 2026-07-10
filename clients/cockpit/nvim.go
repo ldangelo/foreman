@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // EditorConfig mirrors the `.foreman/config.yaml` editor block from the spec.

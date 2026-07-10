@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/glamour"
 )
 
@@ -221,25 +221,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.taskList.Searching() {
-		if m.taskList.HandleSearchKey(msg.String(), msg.Runes) {
+		if m.taskList.HandleSearchKey(msg.String(), []rune(msg.Text)) {
 			m.buildItems()
 		}
 		return m, nil
 	}
 
 	if m.viewFocused {
-		switch msg.Type {
-		case tea.KeyCtrlD:
+		switch msg.String() {
+		case "ctrl+d":
 			return m, m.moveRow(max(1, m.viewerBodyWindowHeight()/2))
-		case tea.KeyCtrlU:
+		case "ctrl+u":
 			return m, m.moveRow(-max(1, m.viewerBodyWindowHeight()/2))
 		}
 	}
@@ -503,17 +503,19 @@ func (m model) rightPaneWidth() int {
 }
 
 func (m model) mouseOverRightPane(msg tea.MouseMsg) bool {
-	return msg.X > m.leftPaneWidth()
+	mouse := msg.Mouse()
+	return mouse.X > m.leftPaneWidth()
 }
 
 func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
-	ev := tea.MouseEvent(msg)
-	if !ev.IsWheel() {
+	ev, ok := msg.(tea.MouseWheelMsg)
+	if !ok {
 		return m, nil
 	}
 
+	mouse := ev.Mouse()
 	delta := mouseWheelStep
-	if ev.Button == tea.MouseButtonWheelUp {
+	if mouse.Button == tea.MouseWheelUp {
 		delta = -mouseWheelStep
 	}
 

@@ -1,9 +1,12 @@
 # Foreman cockpit — Bubble Tea POC
 
 A proof-of-concept of the single-pane Foreman cockpit, built with
-[Bubble Tea](https://github.com/charmbracelet/bubbletea) +
-[Lip Gloss](https://github.com/charmbracelet/lipgloss) +
+[Bubble Tea v2](https://github.com/charmbracelet/bubbletea) +
+[Lip Gloss v2](https://github.com/charmbracelet/lipgloss) +
 [Glamour](https://github.com/charmbracelet/glamour).
+
+The nested Go module targets the Bubble Tea v2 `tea.View` API: alt-screen and
+mouse mode are requested from `View()` rather than program options.
 
 It demonstrates the redesign in `docs/design/cockpit-ui-spec.md` and the
 architecture direction in `docs/adr/0001-go-clients-elixir-core-runtime.md`:

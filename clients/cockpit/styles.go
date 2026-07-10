@@ -1,6 +1,10 @@
 package main
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 //go:generate go run theme/gen.go
 
@@ -39,7 +43,7 @@ var (
 )
 
 // glyph returns the status glyph and its color for a phase/run state.
-func glyph(state string) (string, lipgloss.Color) {
+func glyph(state string) (string, color.Color) {
 	switch state {
 	case "done":
 		return "✓", cGreen
@@ -55,7 +59,7 @@ func glyph(state string) (string, lipgloss.Color) {
 }
 
 // statusColor maps a run status to a color.
-func statusColor(status string) lipgloss.Color {
+func statusColor(status string) color.Color {
 	switch status {
 	case "running", "in_progress", "pending":
 		return cGreen

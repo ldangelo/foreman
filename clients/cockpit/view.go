@@ -2,26 +2,28 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"regexp"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func clip(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	if utf8.RuneCountInString(s) <= w {
+	if ansi.StringWidth(s) <= w {
 		return s
 	}
-	r := []rune(s)
 	if w == 1 {
 		return "…"
 	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }
 
 func padRow(left, right string, w int) string {
@@ -32,7 +34,15 @@ func padRow(left, right string, w int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
+	content := m.renderFrame()
+	v := tea.NewView(content)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m model) renderFrame() string {
 	if m.width == 0 || m.height == 0 {
 		return "starting cockpit…"
 	}
@@ -49,7 +59,7 @@ func (m model) View() string {
 
 	rightRaw := fitBlock(m.renderRight(rightW), bodyH)
 	leftRaw := fitBlock(m.renderLeft(leftW, bodyH), bodyH)
-	left := leftPaneStyle.Width(leftW).Height(bodyH).MaxWidth(leftW + 1).Render(leftRaw)
+	left := leftPaneStyle.Width(leftW).Height(bodyH).MaxHeight(bodyH).MaxWidth(leftW + 1).Render(leftRaw)
 	right := lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).MaxWidth(rightW).Render(rightRaw)
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
@@ -163,7 +173,7 @@ func (m model) renderKeyBar(w int) string {
 func (m model) renderLeft(w, h int) string {
 	var lines []string
 	selectedLine := 0
-	gcolor := map[string]lipgloss.Color{taskGroupRunning: cGreen, taskGroupReady: cYellow, taskGroupRecent: cDim}
+	gcolor := map[string]color.Color{taskGroupRunning: cGreen, taskGroupReady: cYellow, taskGroupRecent: cDim}
 	count := m.taskList.Counts(m.runs, m.tasks)
 
 	for _, g := range taskListGroups {
@@ -244,7 +254,7 @@ func padLines(lines []string, h int) []string {
 func (m model) renderRow(i int, it Item, w int) string {
 	selected := i == m.taskList.SelectedIndex()
 	var state, left, right string
-	var rightColor lipgloss.Color
+	var rightColor color.Color
 	idColor := cText
 	if it.IsTask {
 		state = it.Task.Status
@@ -686,7 +696,7 @@ func (m model) renderAction(w int) string {
 			clip(dimStyle.Render("→ "+mode), w),
 			clip(cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
 		}
-		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
+		return lipgloss.NewStyle().Background(cActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 	}
 	lines := []string{
 		dimStyle.Render(strings.Repeat("┄", w)),
@@ -694,7 +704,7 @@ func (m model) renderAction(w int) string {
 		clip(dimStyle.Render("$ ")+cyanStyle.Render(cmd), w),
 		clip(dimStyle.Render("→ "+mode), w),
 	}
-	return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Background(cActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 }
 
 // wrap splits text into width-bounded lines (returns colored-ready plain lines).

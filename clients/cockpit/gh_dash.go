@@ -3,7 +3,7 @@ package main
 import (
 	"os/exec"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 type ghDashDoneMsg struct{ err error }

@@ -4,8 +4,24 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
+
+func keyPress(text string) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Text: text, Code: []rune(text)[0]})
+}
+
+func specialKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: code})
+}
+
+func ctrlKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: code, Mod: tea.ModCtrl})
+}
+
+func mouseWheel(x, y int, button tea.MouseButton) tea.MouseWheelMsg {
+	return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: button})
+}
 
 func TestViewerCentersSelectedRowWhenPossible(t *testing.T) {
 	var viewer Viewer
@@ -22,6 +38,33 @@ func TestViewerCentersSelectedRowWhenPossible(t *testing.T) {
 	}
 	if viewer.Offset() != 7 {
 		t.Fatalf("expected selected row centered with offset 7, got %d", viewer.Offset())
+	}
+}
+
+func TestViewRequestsAltScreenAndMouseMode(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 100
+	m.height = 12
+
+	view := m.View()
+	if !view.AltScreen {
+		t.Fatalf("expected cockpit view to request alt screen")
+	}
+	if view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("expected cell-motion mouse mode, got %v", view.MouseMode)
+	}
+	if !strings.Contains(view.Content, "foreman") {
+		t.Fatalf("expected rendered cockpit content, got %q", view.Content)
+	}
+}
+
+func TestClipPreservesANSIBoundaries(t *testing.T) {
+	text := cyanStyle.Render("approve → POST /api/v1/commands task.approve")
+
+	clipped := clip(text, 18)
+	out := stripANSI(clipped)
+	if !strings.Contains(out, "approve") || !strings.HasSuffix(out, "…") || len([]rune(out)) > 18 {
+		t.Fatalf("expected visible clipped text with intact ellipsis, got %q", out)
 	}
 }
 
@@ -57,7 +100,7 @@ func TestReadyTaskViewShowsApproveEditAndCreateActions(t *testing.T) {
 	m.tasks = []Task{{TaskID: "task-ready", Title: "Ready task", Status: "backlog", ProjectID: "proj-live"}}
 	m.buildItems()
 
-	out := stripANSI(m.View())
+	out := stripANSI(m.renderFrame())
 	if !strings.Contains(out, "task actions task-ready") {
 		t.Fatalf("expected task action panel, got:\n%s", out)
 	}
@@ -149,7 +192,7 @@ func TestReadyTaskDetailShowsFullTaskFields(t *testing.T) {
 
 func TestNewTaskKeyLaunchesCreateCommand(t *testing.T) {
 	m := newModel(NewMockClient())
-	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	_, cmd := m.handleKey(keyPress("n"))
 	if cmd == nil {
 		t.Fatal("expected n to launch task create command")
 	}
@@ -169,7 +212,7 @@ func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 	m.tab = 1
 	m.buildItems()
 
-	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.handleKey(specialKey(tea.KeyEnter))
 	if cmd != nil {
 		t.Fatalf("enter should focus the view, not open a command")
 	}
@@ -179,42 +222,42 @@ func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 	}
 
 	bottomRow := m.viewer.Cursor()
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	updated, _ = m.handleKey(keyPress("k"))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
 		t.Fatalf("expected focused k to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
 	}
 
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = m.handleKey(specialKey(tea.KeyUp))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-4 {
 		t.Fatalf("expected focused up to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-4)
 	}
 
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = m.handleKey(specialKey(tea.KeyDown))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
 		t.Fatalf("expected focused down to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
 	}
 
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD})
+	updated, _ = m.handleKey(ctrlKey('d'))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() <= bottomRow-2 {
 		t.Fatalf("expected focused ctrl+d to page viewer down only, got sel=%d row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor())
 	}
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlU})
+	updated, _ = m.handleKey(ctrlKey('u'))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() >= bottomRow-2 {
 		t.Fatalf("expected focused ctrl+u to page viewer up only, got sel=%d row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor())
 	}
 
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ = m.handleKey(specialKey(tea.KeyEsc))
 	m = updated.(model)
 	if m.viewFocused {
 		t.Fatalf("expected escape to return focus to the task list")
 	}
 
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated, _ = m.handleKey(keyPress("j"))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 1 || m.viewer.Cursor() != 0 {
 		t.Fatalf("expected unfocused j to move task selection, got sel=%d row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor())
@@ -234,14 +277,14 @@ func TestTabToMessagesFocusesViewerForImmediateScrolling(t *testing.T) {
 	}
 	m.buildItems()
 
-	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ := m.handleKey(specialKey(tea.KeyTab))
 	m = updated.(model)
 	if m.tab != 1 || !m.viewFocused {
 		t.Fatalf("expected tab to messages to focus the viewer, got tab=%d focused=%v", m.tab, m.viewFocused)
 	}
 
 	bottomRow := m.viewer.Cursor()
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	updated, _ = m.handleKey(keyPress("k"))
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
 		t.Fatalf("expected k after tabbing to messages to scroll messages, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
@@ -264,13 +307,7 @@ func TestMouseWheelOverMessagesScrollsViewerNotTasks(t *testing.T) {
 	m.scrollToBottom()
 
 	startRow := m.viewer.Cursor()
-	updated, _ := m.Update(tea.MouseMsg{
-		X:      m.leftPaneWidth() + 5,
-		Y:      5,
-		Type:   tea.MouseWheelUp,
-		Button: tea.MouseButtonWheelUp,
-		Action: tea.MouseActionPress,
-	})
+	updated, _ := m.Update(mouseWheel(m.leftPaneWidth()+5, 5, tea.MouseWheelUp))
 	m = updated.(model)
 	if !m.viewFocused {
 		t.Fatalf("expected mouse wheel over messages to focus the viewer")
@@ -299,13 +336,7 @@ func TestMouseWheelOverTaskListMovesTasksNotViewer(t *testing.T) {
 	m.buildItems()
 	m.scrollToBottom()
 
-	updated, _ := m.Update(tea.MouseMsg{
-		X:      5,
-		Y:      5,
-		Type:   tea.MouseWheelDown,
-		Button: tea.MouseButtonWheelDown,
-		Action: tea.MouseActionPress,
-	})
+	updated, _ := m.Update(mouseWheel(5, 5, tea.MouseWheelDown))
 	m = updated.(model)
 	if m.viewFocused {
 		t.Fatalf("expected mouse wheel over task list to keep task-list focus")
@@ -329,7 +360,7 @@ func TestFocusedViewerScrollChangesRenderedBody(t *testing.T) {
 
 	before := stripANSI(m.renderRight(m.rightPaneWidth()))
 	for range 5 {
-		updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		updated, _ := m.handleKey(keyPress("j"))
 		m = updated.(model)
 	}
 	after := stripANSI(m.renderRight(m.rightPaneWidth()))
@@ -344,10 +375,10 @@ func TestFocusedViewerScrollChangesRenderedBody(t *testing.T) {
 
 func TestCtrlCDoesNotQuit(t *testing.T) {
 	m := newModel(NewMockClient())
-	if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil {
+	if _, cmd := m.handleKey(ctrlKey('c')); cmd != nil {
 		t.Fatalf("ctrl+c should not quit; q is the only quit key")
 	}
-	if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}); cmd == nil {
+	if _, cmd := m.handleKey(keyPress("q")); cmd == nil {
 		t.Fatalf("expected q to quit")
 	}
 }
@@ -419,7 +450,7 @@ func TestSelectedMessageHeaderStaysVisibleInTinyViewport(t *testing.T) {
 
 	m.resetViewerCursor()
 	for range 2 {
-		updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		updated, _ = m.handleKey(keyPress("j"))
 		m = updated.(model)
 		if m.viewer.Offset() != m.viewer.Cursor() {
 			t.Fatalf("expected tiny viewport to show selected header while moving down, got cursor=%d offset=%d", m.viewer.Cursor(), m.viewer.Offset())
@@ -479,9 +510,9 @@ func TestDataUpdatePreservesMovedViewerCursor(t *testing.T) {
 				t.Fatalf("test setup expected initial cursor at bottom, got row=%d", m.viewer.Cursor())
 			}
 
-			updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+			updated, _ = m.handleKey(specialKey(tea.KeyEnter))
 			m = updated.(model)
-			updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+			updated, _ = m.handleKey(keyPress("k"))
 			m = updated.(model)
 			movedRow, movedOffset := m.viewer.Cursor(), m.viewer.Offset()
 
@@ -509,9 +540,9 @@ func TestMessageRefreshPreservesCursorWhenNewMessagesPrepend(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.handleKey(specialKey(tea.KeyEnter))
 	m = updated.(model)
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	updated, _ = m.handleKey(keyPress("k"))
 	m = updated.(model)
 
 	selectedKey := m.viewerCursorKey()
@@ -609,7 +640,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 		t.Fatalf("test setup could not select first report")
 	}
 	m.viewFocused = true
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated, _ = m.handleKey(keyPress("j"))
 	m = updated.(model)
 	if got := resolveTarget(m); !got.ok || got.label != "review.md" || got.path != "/tmp/work/docs/reports/task-1/review.md" {
 		t.Fatalf("expected report target to follow cursor, got %#v", got)
@@ -620,7 +651,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	if !m.selectViewerLineByKey("file:src/a.go") {
 		t.Fatalf("test setup could not select first file")
 	}
-	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated, _ = m.handleKey(keyPress("j"))
 	m = updated.(model)
 	if got := resolveTarget(m); !got.ok || got.label != "src/b.go" || got.path != "/tmp/work/src/b.go" || !got.conflict {
 		t.Fatalf("expected file target to follow cursor, got %#v", got)
@@ -648,7 +679,7 @@ func TestPRTabRendersProjectedStatusAndAction(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	out := stripANSI(m.View())
+	out := stripANSI(m.renderFrame())
 	if !strings.Contains(out, "pr 1") || !strings.Contains(out, "https://github.com/acme/repo/pull/42") || !strings.Contains(out, "open PR in browser") || !strings.Contains(out, "gh enhance") {
 		t.Fatalf("expected PR tab status, browser action, and gh enhance hint, got:\n%s", out)
 	}
@@ -677,7 +708,7 @@ func TestPRTabEnterOpensPRWithoutExtraFocusStep(t *testing.T) {
 	if m.viewFocused {
 		t.Fatal("test setup expected PR tab not focused")
 	}
-	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.handleKey(specialKey(tea.KeyEnter))
 	if cmd == nil {
 		t.Fatal("expected enter on PR tab to attempt opening the PR")
 	}
@@ -703,7 +734,7 @@ func TestUppercaseCLaunchesGhEnhanceForSelectedRun(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	_, cmd := m.handleKey(keyPress("C"))
 	if cmd == nil {
 		t.Fatal("expected C to launch gh enhance")
 	}
@@ -724,7 +755,7 @@ func TestUppercaseCReportsMissingEnhanceExtension(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	_, cmd := m.handleKey(keyPress("C"))
 	if cmd == nil {
 		t.Fatal("expected C to return a failure command")
 	}
@@ -740,7 +771,7 @@ func TestUppercaseCReportsMissingEnhanceExtension(t *testing.T) {
 
 func TestQuestionMarkShowsKeymapHelp(t *testing.T) {
 	m := newModel(NewMockClient())
-	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	updated, _ := m.handleKey(keyPress("?"))
 	m = updated.(model)
 	if !strings.Contains(m.notice, "ctrl+d/u") || !strings.Contains(m.notice, "G gh dash") || !strings.Contains(m.notice, "C gh enhance") {
 		t.Fatalf("expected keymap help notice, got %q", m.notice)
@@ -762,7 +793,7 @@ func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
 	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(m.config.Integrations))
 	m.diffPreviews[key] = DiffPreview{RunID: "run-1", Path: "src/a.go", Lines: []string{"diff --git a/src/a.go b/src/a.go", "+added"}}
 	delete(m.diffLoading, key)
-	out := stripANSI(m.View())
+	out := stripANSI(m.renderFrame())
 	if !strings.Contains(out, "diff --git a/src/a.go b/src/a.go") || !strings.Contains(out, "+added") {
 		t.Fatalf("expected selected file diff preview, got:\n%s", out)
 	}
@@ -789,7 +820,7 @@ func (c *mutableClient) Files(string) []FileChange { return c.files }
 
 func assertViewHeight(t *testing.T, m model) {
 	t.Helper()
-	out := stripANSI(m.View())
+	out := stripANSI(m.renderFrame())
 	lines := strings.Split(out, "\n")
 	if len(lines) > m.height {
 		t.Fatalf("rendered %d lines for terminal height %d\n%s", len(lines), m.height, out)

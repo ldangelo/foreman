@@ -4,8 +4,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestLoadConfigParsesOmpIntegration(t *testing.T) {
@@ -94,7 +92,7 @@ func TestPKeyAttachesOmpToSelectedRun(t *testing.T) {
 	m.tasks = nil
 	m.buildItems()
 
-	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	_, cmd := m.handleKey(keyPress("p"))
 	if cmd == nil {
 		t.Fatal("expected p to launch omp command")
 	}

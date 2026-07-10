@@ -195,6 +195,9 @@ default avoids nesting a TUI inside a TUI.
   `enhance.env`, `diffnav/config.yml`, and `delta.gitconfig`. Handoffs pass
   packaged env for `diffnav` (`DIFFNAV_CONFIG_DIR`) and `gh enhance`
   (`ENHANCE_THEME`) where supported.
+- The Go cockpit targets Bubble Tea v2. `View()` returns `tea.View`, with
+  alt-screen and cell-motion mouse mode declared on the view rather than passed
+  as `NewProgram` options.
 
 Reports are markdown and render with Glamour in the drill-down preview before
 the operator chooses to open them in nvim.

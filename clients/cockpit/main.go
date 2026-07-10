@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Foreman cockpit — Bubble Tea POC.
@@ -38,7 +38,7 @@ func main() {
 	if cfgErr != nil {
 		m.notice = "config: " + cfgErr.Error()
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "cockpit error:", err)
 		os.Exit(1)
