@@ -14,9 +14,10 @@ type Config struct {
 }
 
 type Integrations struct {
-	Diffnav DiffnavConfig `yaml:"diffnav"`
-	Delta   DeltaConfig   `yaml:"delta"`
-	GhDash  GhDashConfig  `yaml:"ghDash"`
+	Diffnav   DiffnavConfig   `yaml:"diffnav"`
+	Delta     DeltaConfig     `yaml:"delta"`
+	GhDash    GhDashConfig    `yaml:"ghDash"`
+	GhEnhance GhEnhanceConfig `yaml:"ghEnhance"`
 }
 
 type DiffnavConfig struct {
@@ -34,6 +35,11 @@ type GhDashConfig struct {
 	Args   []string `yaml:"args"`
 }
 
+type GhEnhanceConfig struct {
+	Enable string   `yaml:"enable"`
+	Args   []string `yaml:"args"`
+}
+
 type PRConfig struct {
 	Provider string `yaml:"provider"`
 }
@@ -42,9 +48,10 @@ func defaultConfig() Config {
 	return Config{
 		Editor: defaultEditorConfig(),
 		Integrations: Integrations{
-			Diffnav: DiffnavConfig{Enable: "auto", Base: "origin/dev"},
-			Delta:   DeltaConfig{Enable: "auto"},
-			GhDash:  GhDashConfig{Enable: "auto"},
+			Diffnav:   DiffnavConfig{Enable: "auto", Base: "origin/dev"},
+			Delta:     DeltaConfig{Enable: "auto"},
+			GhDash:    GhDashConfig{Enable: "auto"},
+			GhEnhance: GhEnhanceConfig{Enable: "auto"},
 		},
 		PR: PRConfig{Provider: "github"},
 	}
@@ -84,6 +91,7 @@ func (c *Config) normalize() {
 	}
 	c.Integrations.Delta.Enable = normalizeEnable(c.Integrations.Delta.Enable)
 	c.Integrations.GhDash.Enable = normalizeEnable(c.Integrations.GhDash.Enable)
+	c.Integrations.GhEnhance.Enable = normalizeEnable(c.Integrations.GhEnhance.Enable)
 	if c.PR.Provider == "" {
 		c.PR.Provider = defaults.PR.Provider
 	}
@@ -109,5 +117,8 @@ func applyConfigEnv(c *Config) {
 	}
 	if v := os.Getenv("COCKPIT_GHDASH"); v != "" {
 		c.Integrations.GhDash.Enable = normalizeEnable(v)
+	}
+	if v := os.Getenv("COCKPIT_GHENHANCE"); v != "" {
+		c.Integrations.GhEnhance.Enable = normalizeEnable(v)
 	}
 }

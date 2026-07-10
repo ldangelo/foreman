@@ -12,6 +12,8 @@ type fakeTools map[string]bool
 
 func (f fakeTools) Available(name string) bool { return f[name] }
 
+func (f fakeTools) ExtensionAvailable(name string) bool { return f["ext:"+name] }
+
 func TestIntegrationEnabledModes(t *testing.T) {
 	tools := fakeTools{"present": true, "missing": false}
 	if !integrationEnabled("auto", "present", tools) {
@@ -31,9 +33,20 @@ func TestIntegrationEnabledModes(t *testing.T) {
 	}
 }
 
+func TestParseGhExtensions(t *testing.T) {
+	available := parseGhExtensions("dlvhdr/gh-dash\tv4.7.0\nsome/gh-enhance\tv1.2.3\n")
+	if !available["dash"] {
+		t.Fatal("expected gh-dash extension to register as dash")
+	}
+	if !available["enhance"] {
+		t.Fatal("expected gh-enhance extension to register as enhance")
+	}
+}
+
 func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 	t.Setenv("EDITOR", "nvim")
 	t.Setenv("COCKPIT_DIFFNAV", "off")
+	t.Setenv("COCKPIT_GHENHANCE", "off")
 	cfg, err := loadConfig(t.TempDir() + "/missing.yaml")
 	if err != nil {
 		t.Fatalf("missing config should use defaults: %v", err)
@@ -44,6 +57,9 @@ func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 	if cfg.Integrations.Diffnav.Enable != "off" {
 		t.Fatalf("expected env override to disable diffnav, got %q", cfg.Integrations.Diffnav.Enable)
 	}
+	if cfg.Integrations.GhEnhance.Enable != "off" {
+		t.Fatalf("expected env override to disable gh enhance, got %q", cfg.Integrations.GhEnhance.Enable)
+	}
 	if cfg.PR.Provider != "github" {
 		t.Fatalf("expected default PR provider github, got %q", cfg.PR.Provider)
 	}
@@ -51,7 +67,7 @@ func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 
 func TestLoadConfigParsesIntegrations(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
-	if err := os.WriteFile(path, []byte("integrations:\n  diffnav:\n    enable: on\n    base: main\n    watch: true\n  ghDash:\n    args: [--repo, Fortium/foreman]\npr:\n  provider: foreman\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("integrations:\n  diffnav:\n    enable: on\n    base: main\n    watch: true\n  ghDash:\n    args: [--repo, Fortium/foreman]\n  ghEnhance:\n    enable: on\n    args: [--branch, foreman/task]\npr:\n  provider: foreman\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := loadConfig(path)
@@ -63,6 +79,12 @@ func TestLoadConfigParsesIntegrations(t *testing.T) {
 	}
 	if got := strings.Join(cfg.Integrations.GhDash.Args, " "); got != "--repo Fortium/foreman" {
 		t.Fatalf("unexpected gh dash args %q", got)
+	}
+	if cfg.Integrations.GhEnhance.Enable != "on" {
+		t.Fatalf("unexpected gh enhance enable %q", cfg.Integrations.GhEnhance.Enable)
+	}
+	if got := strings.Join(cfg.Integrations.GhEnhance.Args, " "); got != "--branch foreman/task" {
+		t.Fatalf("unexpected gh enhance args %q", got)
 	}
 	if cfg.PR.Provider != "foreman" {
 		t.Fatalf("unexpected PR provider %q", cfg.PR.Provider)
@@ -92,12 +114,36 @@ func TestDiffnavCommandValidationAndShape(t *testing.T) {
 func TestGhDashCommandUsesConfiguredArgs(t *testing.T) {
 	cfg := defaultConfig().Integrations
 	cfg.GhDash.Args = []string{"--repo", "Fortium/foreman"}
-	cmd, err := ghDashCommand(cfg, fakeTools{"gh": true})
+	cmd, err := ghDashCommand(cfg, fakeTools{"gh": true, "ext:dash": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(cmd.Args, " ") != "gh dash --repo Fortium/foreman" {
 		t.Fatalf("unexpected gh dash args: %v", cmd.Args)
+	}
+	if _, err := ghDashCommand(cfg, fakeTools{"gh": true}); err == nil || !strings.Contains(err.Error(), "gh dash not found") {
+		t.Fatalf("expected missing gh dash extension error, got %v", err)
+	}
+}
+
+func TestGhEnhanceCommandUsesSelectedRunWorktree(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	cfg.GhEnhance.Args = []string{"--repo", "Fortium/foreman"}
+	cmd, err := ghEnhanceCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{"gh": true, "ext:enhance": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cmd.Args, " ") != "gh enhance --repo Fortium/foreman" {
+		t.Fatalf("unexpected gh enhance args: %v", cmd.Args)
+	}
+	if cmd.Dir != "/tmp/wt" {
+		t.Fatalf("expected command dir to be selected worktree, got %q", cmd.Dir)
+	}
+	if _, err := ghEnhanceCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{"gh": true}); err == nil || !strings.Contains(err.Error(), "gh enhance not found") {
+		t.Fatalf("expected missing gh enhance extension error, got %v", err)
+	}
+	if _, err := ghEnhanceCommand(Run{RunID: "run-1"}, cfg, fakeTools{"gh": true, "ext:enhance": true}); err == nil || !strings.Contains(err.Error(), "no worktree") {
+		t.Fatalf("expected empty worktree error, got %v", err)
 	}
 }
 

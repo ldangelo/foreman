@@ -549,8 +549,8 @@ func TestPRTabRendersProjectedStatusAndAction(t *testing.T) {
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
 	out := stripANSI(m.View())
-	if !strings.Contains(out, "pr 1") || !strings.Contains(out, "https://github.com/acme/repo/pull/42") || !strings.Contains(out, "open PR in browser") {
-		t.Fatalf("expected PR tab status and browser action, got:\n%s", out)
+	if !strings.Contains(out, "pr 1") || !strings.Contains(out, "https://github.com/acme/repo/pull/42") || !strings.Contains(out, "open PR in browser") || !strings.Contains(out, "gh enhance") {
+		t.Fatalf("expected PR tab status, browser action, and gh enhance hint, got:\n%s", out)
 	}
 }
 
@@ -584,6 +584,57 @@ func TestPRTabEnterOpensPRWithoutExtraFocusStep(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(prOpenDoneMsg); !ok {
 		t.Fatalf("expected prOpenDoneMsg, got %T", msg)
+	}
+}
+
+func TestUppercaseCLaunchesGhEnhanceForSelectedRun(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{
+			Group:    "RUNNING",
+			TaskID:   "task-1",
+			RunID:    "run-1",
+			Status:   "running",
+			Phase:    "pr-wait",
+			Worktree: "/tmp/work",
+		}},
+	}
+	m := newModel(client)
+	m.tools = fakeTools{"gh": true, "ext:enhance": true}
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	if cmd == nil {
+		t.Fatal("expected C to launch gh enhance")
+	}
+}
+
+func TestUppercaseCReportsMissingEnhanceExtension(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{
+			Group:    "RUNNING",
+			TaskID:   "task-1",
+			RunID:    "run-1",
+			Status:   "running",
+			Worktree: "/tmp/work",
+		}},
+	}
+	m := newModel(client)
+	m.tools = fakeTools{"gh": true}
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	if cmd == nil {
+		t.Fatal("expected C to return a failure command")
+	}
+	msg := cmd()
+	done, ok := msg.(ghEnhanceDoneMsg)
+	if !ok {
+		t.Fatalf("expected ghEnhanceDoneMsg, got %T", msg)
+	}
+	if done.err == nil || !strings.Contains(done.err.Error(), "gh enhance not found") {
+		t.Fatalf("expected missing extension error, got %v", done.err)
 	}
 }
 

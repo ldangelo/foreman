@@ -43,9 +43,10 @@ Requires Go 1.23+.
 
 Optional integrations are discovered at runtime and fail closed with a notice:
 `diffnav` for full-run file review, `delta` for inline selected-file previews,
-`gh` plus the `gh dash` extension for repo-wide triage, and a platform browser
-opener (`open` on macOS or `xdg-open` on Linux) for PR links. `diffnav` looks best
-with a Nerd Font because its file tree uses icon glyphs.
+`gh` plus the `gh dash` extension for repo-wide triage, `gh` plus the
+`gh enhance` extension for GitHub Actions triage, and a platform browser opener
+(`open` on macOS or `xdg-open` on Linux) for PR links. `diffnav` looks best with
+a Nerd Font because its file tree uses icon glyphs.
 
 ```bash
 cd clients/cockpit
@@ -84,8 +85,8 @@ o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               a    approve READY task
 e         edit READY task JSON in nvim        g/G  project/global scope / gh dash
-/         search                              space collapse/expand group
-r         retry        R  reset               q    quit
+C         inspect CI in gh enhance            r/R  retry / reset
+/         search                              space collapse/expand group     q quit
 ```
 
 Opening a drill-down view with `enter`, `tab`, or `1`–`7` selects its newest
@@ -100,7 +101,8 @@ preview is kept in the viewport with the header when there is room for both.
 ## Integrations
 
 Controlled by `.foreman/config.yaml` (all optional) and `COCKPIT_DIFFNAV`,
-`COCKPIT_DELTA`, and `COCKPIT_GHDASH` env overrides (`auto` / `on` / `off`):
+`COCKPIT_DELTA`, `COCKPIT_GHDASH`, and `COCKPIT_GHENHANCE` env overrides
+(`auto` / `on` / `off`):
 
 ```yaml
 editor:
@@ -114,6 +116,9 @@ integrations:
   delta:
     enable: auto
   ghDash:
+    enable: auto
+    args: []
+  ghEnhance:
     enable: auto
     args: []
 pr:

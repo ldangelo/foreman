@@ -179,6 +179,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ghEnhanceDoneMsg:
+		if msg.err != nil {
+			m.notice = "gh enhance: " + msg.err.Error()
+		} else {
+			m.notice = "closed gh enhance"
+		}
+		return m, nil
+
 	case diffPreviewMsg:
 		if m.diffPreviews == nil {
 			m.diffPreviews = map[string]DiffPreview{}
@@ -303,6 +311,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "G":
 		return m, openGhDash(m.config.Integrations, m.tools)
+	case "C":
+		if run, ok := m.selectedRun(); ok {
+			return m, openGhEnhance(run, m.config.Integrations, m.tools)
+		}
+		m.notice = "gh enhance: no run selected"
 	case "r":
 		if run, ok := m.selectedRun(); ok {
 			m.notice = "retry queued → POST /api/v1/commands (run " + run.RunID + ")"

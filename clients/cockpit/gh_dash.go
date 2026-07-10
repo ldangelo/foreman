@@ -15,6 +15,9 @@ func ghDashCommand(cfg Integrations, tools ToolResolver) (*exec.Cmd, error) {
 	if !tools.Available("gh") {
 		return nil, errToolMissing("gh", "GitHub CLI")
 	}
+	if !tools.ExtensionAvailable("dash") {
+		return nil, errToolMissing("gh dash", "dlvhdr/gh-dash")
+	}
 	args := append([]string{"dash"}, cfg.GhDash.Args...)
 	return exec.Command("gh", args...), nil
 }

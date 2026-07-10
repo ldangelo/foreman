@@ -625,7 +625,7 @@ func (m model) renderAction(w int) string {
 		lines := []string{
 			dimStyle.Render(strings.Repeat("┄", w)),
 			clip(greenStyle.Render("▸ PR actions ")+whiteStyle.Render(m.pr.URL), w),
-			clip(cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash"), w),
+			clip(cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}

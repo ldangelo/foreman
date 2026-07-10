@@ -174,6 +174,9 @@ default avoids nesting a TUI inside a TUI.
 - The files tab also renders an inline preview for the selected file. It uses
   `git diff <base>...HEAD -- <path> | delta` when `delta` is enabled and
   available, and falls back to plain `git diff` output otherwise.
+- `C` opens `gh enhance` as a full-screen handoff for the selected run worktree
+  when the GitHub CLI and extension are available; use it from the `pr` tab to
+  inspect failing/pending Actions checks and rerun jobs.
 
 Reports are markdown and render with Glamour in the drill-down preview before
 the operator chooses to open them in nvim.
@@ -203,14 +206,17 @@ integrations:
   ghDash:
     enable: auto         # auto | on | off
     args: []
+  ghEnhance:
+    enable: auto         # auto | on | off
+    args: []
 pr:
   provider: github
 ```
 
 `mode: auto` = remote when a session is found, else inline (the recommended
 default). `mode: remote` never suspends; `mode: inline` always suspends.
-`COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, and `COCKPIT_GHDASH` override the respective
-integration `enable` value.
+`COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, `COCKPIT_GHDASH`, and
+`COCKPIT_GHENHANCE` override the respective integration `enable` value.
 
 ## Non-goals for the POC
 

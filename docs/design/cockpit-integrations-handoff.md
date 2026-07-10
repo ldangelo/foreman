@@ -25,12 +25,13 @@ external Charm TUIs and one native view:
 
 Implemented in the Go cockpit module:
 
-- Config loading for optional `diffnav`, `delta`, `gh dash`, and PR integration settings.
-- Runtime tool availability checks with graceful notices for missing/disabled tools.
+- Config loading for optional `diffnav`, `delta`, `gh dash`, `gh enhance`, and PR integration settings.
+- Runtime tool and `gh` extension availability checks with graceful notices for missing/disabled tools.
 - `D` full-run `diffnav` handoff from the `files` tab.
 - Inline selected-file diff previews using `delta` when available, plain `git diff` otherwise.
 - Global `G` `gh dash` handoff.
-- Native `pr` tab backed by Foreman-projected run PR fields, with `o`/`enter` opening the PR URL.
+- Global `C` `gh enhance` handoff from the selected run worktree.
+- Native `pr` tab backed by Foreman-projected run PR fields, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
 
 Verification used for the implementation: `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`.
 
@@ -86,15 +87,14 @@ returns the selected run's `PRStatus`; no dedicated PR endpoint is required yet.
 External binaries (all optional at runtime): `diffnav`, `delta`, `gh`, and the
 `gh dash` and `gh enhance` extensions (`gh extension install dlvhdr/gh-dash` /
 `dlvhdr/gh-enhance`). diffnav needs a Nerd Font for icons; the `gh` extensions
-need `gh` auth. Add one helper for extension presence, e.g.
-`ghExtensionAvailable("dash"|"enhance")` (shell `gh extension list` once and
-cache), distinct from `toolAvailable` for plain binaries.
+need `gh` auth. `ToolResolver.ExtensionAvailable("dash"|"enhance")` shells
+`gh extension list` once and caches the parsed result, distinct from
+`ToolResolver.Available` for plain binaries.
 
-Add a small `tools.go` with `func toolAvailable(name string) bool` backed by
-`exec.LookPath`, cached once at startup. Every integration must degrade
-gracefully: if the tool is missing, do nothing destructive and set `m.notice`
-to a clear message (e.g. `diffnav not found — install dlvhdr/diffnav`). Never
-crash, never block.
+`tools.go` keeps path and extension availability checks cached. Every integration
+degrades gracefully: if the tool is missing, do nothing destructive and set
+`m.notice` to a clear message (e.g. `diffnav not found — install dlvhdr/diffnav`).
+Never crash, never block.
 
 ## 5. Configuration surface
 
@@ -190,10 +190,9 @@ Intent: a global key opens the full GitHub dashboard.
   `{{.RepoPath}}` / `{{.PrNumber}}` context. No cockpit code needed; just a
   config recipe.
 
-### E. gh-enhance GitHub Actions handoff (tier 1) — NEW, not yet implemented
+### E. gh-enhance GitHub Actions handoff (tier 1) — implemented
 
-> Workstreams A–D are already implemented (see Implementation status). This is
-> the remaining follow-up.
+Implemented in this pass after Workstreams A–D:
 
 Intent: from a run (especially when its PR checks are red), open `gh enhance` to
 watch/inspect the GitHub Actions job logs and rerun failed or flaky jobs (`Ctrl+R`
@@ -201,21 +200,19 @@ inside enhance) — deep CI work that Foreman's `cicd-developer` phase complemen
 but does not replace.
 
 - Keymap: global `C` (CI). Most useful on the `pr` tab, but allow it on any run.
-- Builder: `ghEnhanceCommand(run Run, cfg Integrations) (*exec.Cmd, error)` →
+- Builder: `ghEnhanceCommand(run Run, cfg Integrations, tools ToolResolver) (*exec.Cmd, error)` →
   `exec.Command("gh", append([]string{"enhance"}, cfg.GhEnhance.Args...)...)`,
   with `cmd.Dir = expandHome(run.Worktree)` so `gh` resolves the right repo.
-  Check `gh enhance --help` for a branch/workflow/PR filter flag; if one exists,
-  pass the selected run's `BranchName` so it opens focused on the relevant Actions
-  runs, otherwise launch unfiltered and rely on enhance's in-app filter. Launch
-  via `tea.ExecProcess`; set a notice on return (mirror `ghDashCommand`).
+  The first implementation launches unfiltered from the selected worktree rather
+  than guessing unsupported branch/workflow flags.
+- Launch via `tea.ExecProcess`; set a notice on return (mirrors `ghDashCommand`).
 - Degrade with a notice if `gh` or the `gh enhance` extension is missing
-  (`ghExtensionAvailable("enhance")`), or if the run has no branch/PR.
-- Acceptance: `C` suspends the cockpit, opens `gh enhance` (focused on the run's
-  branch when the CLI supports it), and returns cleanly; missing prerequisites
-  show a notice and do nothing else.
+  (`ExtensionAvailable("enhance")`), disabled, or if the run has no worktree.
+- Acceptance: `C` suspends the cockpit, opens `gh enhance`, and returns cleanly;
+  missing prerequisites show a notice and do nothing else.
 - UI pairing: the `pr` tab's checks summary answers *whether* CI is red; `C` →
-  enhance is how you inspect *why* and rerun. Hint `C` in the `pr` action bar
-  when the checks summary shows failures.
+  enhance is how you inspect *why* and rerun. The `pr` action bar hints `C`
+  whenever a PR URL is present.
 
 ### D. Native PR drill-down tab (tier 2)
 
