@@ -92,7 +92,7 @@ components:
 
 | Component | Owns |
 |-----------|------|
-| `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows, selected item, collapsed groups, search/filter state, scope, and keep-selection-visible behavior |
+| `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows mapped into a `robinovitch61/viewport` left pane, selected item, sticky selected-group header, collapsed groups, search/filter state, and scope |
 | `Viewer` | keyed drill-down rows mapped into `robinovitch61/viewport` items, selected line identity, bottom-follow behavior, and packed unselectable child rows (message bodies / diff previews) |
 | Tab adapters | conversion of summary/messages/events/logs/reports/files/pr data into stable keyed viewer lines and nvim targets where applicable |
 

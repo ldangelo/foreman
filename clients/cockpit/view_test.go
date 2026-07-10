@@ -178,6 +178,47 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestTaskListViewportShowsStickySelectedGroupHeader(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = manyRuns(20)
+	m.tasks = nil
+	m.buildItems()
+	for range 10 {
+		m.taskList.Move(1)
+	}
+
+	out := stripANSI(m.renderLeft(40, 5))
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 || !strings.Contains(lines[0], "RUNNING") {
+		t.Fatalf("expected selected group header to stay visible, got:\n%s", out)
+	}
+	selected, ok := m.taskList.SelectedItem()
+	if !ok || !strings.Contains(out, selected.Run.Title) {
+		t.Fatalf("expected selected run to stay visible, got:\n%s", out)
+	}
+}
+
+func TestTaskListViewportUpdatesStickyHeaderAcrossGroups(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa"}}
+	for i := range 8 {
+		m.tasks = append(m.tasks, Task{TaskID: "ready-" + itoa(i), Title: "Ready " + itoa(i), Status: "backlog"})
+	}
+	m.buildItems()
+	for range 5 {
+		m.taskList.Move(1)
+	}
+
+	out := stripANSI(m.renderLeft(40, 5))
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 || !strings.Contains(lines[0], "READY") {
+		t.Fatalf("expected sticky header to follow selected ready group, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Ready 4") {
+		t.Fatalf("expected selected ready task to stay visible, got:\n%s", out)
+	}
+}
+
 func TestTaskRowPriorityBadgeUsesPriorityOnly(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.tasks = []Task{{TaskID: "task-p0", Title: "Fix production", TaskType: "bug", Priority: "P0", Status: "failed"}}

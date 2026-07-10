@@ -171,19 +171,27 @@ func (m model) renderKeyBar(w int) string {
 }
 
 func (m model) renderLeft(w, h int) string {
-	var lines []string
+	var rows []string
 	selectedLine := 0
+	activeGroup := taskGroupRunning
+	if it, ok := m.taskList.SelectedItem(); ok {
+		activeGroup = it.Group
+	}
 	gcolor := map[string]color.Color{taskGroupRunning: cGreen, taskGroupReady: cYellow, taskGroupRecent: cDim}
 	count := m.taskList.Counts(m.runs, m.tasks)
-
-	for _, g := range taskListGroups {
+	headerFor := func(g string) string {
 		caret := "▾"
 		if m.taskList.Collapsed(g) {
 			caret = "▸"
 		}
-		header := lipgloss.NewStyle().Foreground(gcolor[g]).Bold(true).
+		return lipgloss.NewStyle().Foreground(gcolor[g]).Bold(true).
 			Render(clip(caret+" "+g+" ("+itoa(count[g])+")", w))
-		lines = append(lines, header)
+	}
+
+	for _, g := range taskListGroups {
+		if g != activeGroup {
+			rows = append(rows, headerFor(g))
+		}
 		if m.taskList.Collapsed(g) {
 			continue
 		}
@@ -192,12 +200,13 @@ func (m model) renderLeft(w, h int) string {
 				continue
 			}
 			if i == m.taskList.SelectedIndex() {
-				selectedLine = len(lines)
+				selectedLine = len(rows)
 			}
-			lines = append(lines, m.renderRow(i, it, w))
+			rows = append(rows, m.renderRow(i, it, w))
 		}
 	}
-	return strings.Join(windowLines(lines, selectedLine, h), "\n")
+	m.taskList.SetViewportRows(headerFor(activeGroup), rows, selectedLine, w, h)
+	return m.taskList.View()
 }
 
 func windowLines(lines []string, selected, h int) []string {

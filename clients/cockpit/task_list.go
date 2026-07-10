@@ -1,6 +1,12 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	vpkg "github.com/robinovitch61/viewport/viewport"
+	"github.com/robinovitch61/viewport/viewport/item"
+)
 
 const (
 	taskGroupRunning = "RUNNING"
@@ -28,6 +34,7 @@ type TaskList struct {
 	scope     string // current | global
 	search    string
 	searching bool
+	viewport  *vpkg.Model[taskListObject]
 }
 
 func NewTaskList() TaskList {
@@ -35,6 +42,65 @@ func NewTaskList() TaskList {
 		collapsed: map[string]bool{},
 		scope:     "current",
 	}
+}
+
+type taskListObject struct {
+	text string
+}
+
+func (o taskListObject) GetItem() item.Item {
+	return item.NewItem(o.text)
+}
+
+func (l *TaskList) SetViewportRows(header string, rows []string, selectedRow, width, height int) {
+	if height < 1 {
+		height = 1
+	}
+	if width < 1 {
+		width = 1
+	}
+	l.ensureViewport(width, height)
+	l.viewport.SetWidth(width)
+	l.viewport.SetHeight(height)
+	l.viewport.SetWrapText(false)
+	l.viewport.SetHeader([]string{header})
+
+	objects := make([]taskListObject, len(rows))
+	for i, row := range rows {
+		objects[i] = taskListObject{text: row}
+	}
+	l.viewport.SetObjects(objects)
+	if len(objects) == 0 {
+		return
+	}
+	selectedRow = max(0, min(selectedRow, len(objects)-1))
+	l.viewport.SetSelectedItemIdx(selectedRow)
+	l.viewport.EnsureItemInView(selectedRow, 0, width, max(0, height/2), 0)
+}
+
+func (l TaskList) View() string {
+	if l.viewport == nil {
+		return ""
+	}
+	return l.viewport.View()
+}
+
+func (l *TaskList) ensureViewport(width, height int) {
+	if l.viewport != nil {
+		return
+	}
+	styles := vpkg.DefaultStyles()
+	styles.SelectedItemStyle = lipgloss.NewStyle().Background(cSelBg)
+	l.viewport = vpkg.New[taskListObject](
+		width,
+		height,
+		vpkg.WithWrapText[taskListObject](false),
+		vpkg.WithSelectionEnabled[taskListObject](true),
+		vpkg.WithFooterEnabled[taskListObject](false),
+		vpkg.WithProgressBarEnabled[taskListObject](false),
+		vpkg.WithSelectionStyleOverridesItemStyle[taskListObject](false),
+		vpkg.WithStyles[taskListObject](styles),
+	)
 }
 
 func (l *TaskList) SetData(runs []Run, tasks []Task) {

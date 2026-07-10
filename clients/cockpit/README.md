@@ -199,8 +199,8 @@ The root Bubble Tea model orchestrates client refresh, layout, focus, active tab
 notices, and actions. Component state lives in small cockpit-owned types:
 
 - `task_list.go` owns grouped `RUNNING` / `READY` / `RECENT` rows, selection,
-  collapsed groups, search/filter state, scope, and keeping the selected row
-  visible.
+  collapsed groups, search/filter state, scope, and a viewport-backed left pane
+  with a sticky selected-group header.
 - `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` and
   `filterableviewport` items, preserving selected-row identity across refreshes.
   Immediately following unselectable rows (message bodies, diff previews) are
