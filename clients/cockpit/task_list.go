@@ -3,7 +3,10 @@ package main
 import (
 	"strings"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	fvpkg "github.com/robinovitch61/viewport/filterableviewport"
 	vpkg "github.com/robinovitch61/viewport/viewport"
 	"github.com/robinovitch61/viewport/viewport/item"
 )
@@ -13,6 +16,38 @@ const (
 	taskGroupReady   = "READY"
 	taskGroupRecent  = "RECENT"
 )
+
+const taskListFilterModeName fvpkg.FilterModeName = "task"
+
+func taskListFilterMode() fvpkg.FilterMode {
+	return fvpkg.FilterMode{
+		Name:  taskListFilterModeName,
+		Key:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
+		Label: "[task]",
+		GetMatchFunc: func(filterText string) (fvpkg.MatchFunc, error) {
+			query := strings.ToLower(filterText)
+			return func(content string) []item.ByteRange {
+				if query == "" {
+					return nil
+				}
+				lower := strings.ToLower(content)
+				var ranges []item.ByteRange
+				start := 0
+				for {
+					idx := strings.Index(lower[start:], query)
+					if idx == -1 {
+						break
+					}
+					from := start + idx
+					to := from + len(query)
+					ranges = append(ranges, item.ByteRange{Start: from, End: to})
+					start = to
+				}
+				return ranges
+			}, nil
+		},
+	}
+}
 
 var taskListGroups = []string{taskGroupRunning, taskGroupReady, taskGroupRecent}
 
@@ -35,6 +70,7 @@ type TaskList struct {
 	search    string
 	searching bool
 	viewport  *vpkg.Model[taskListObject]
+	filter    *fvpkg.Model[taskListObject]
 }
 
 func NewTaskList() TaskList {
@@ -60,29 +96,29 @@ func (l *TaskList) SetViewportRows(header string, rows []string, selectedRow, wi
 		width = 1
 	}
 	l.ensureViewport(width, height)
-	l.viewport.SetWidth(width)
-	l.viewport.SetHeight(height)
-	l.viewport.SetWrapText(false)
-	l.viewport.SetHeader([]string{header})
+	l.filter.SetWidth(width)
+	l.filter.SetHeight(height)
+	l.filter.SetWrapText(false)
+	l.filter.SetHeader([]string{header})
 
 	objects := make([]taskListObject, len(rows))
 	for i, row := range rows {
 		objects[i] = taskListObject{text: row}
 	}
-	l.viewport.SetObjects(objects)
+	l.filter.SetObjects(objects)
 	if len(objects) == 0 {
 		return
 	}
 	selectedRow = max(0, min(selectedRow, len(objects)-1))
-	l.viewport.SetSelectedItemIdx(selectedRow)
+	l.filter.SetSelectedItemIdx(selectedRow)
 	l.viewport.EnsureItemInView(selectedRow, 0, width, max(0, height/2), 0)
 }
 
 func (l TaskList) View() string {
-	if l.viewport == nil {
+	if l.filter == nil {
 		return ""
 	}
-	return l.viewport.View()
+	return l.filter.View()
 }
 
 func (l *TaskList) ensureViewport(width, height int) {
@@ -101,6 +137,16 @@ func (l *TaskList) ensureViewport(width, height int) {
 		vpkg.WithSelectionStyleOverridesItemStyle[taskListObject](false),
 		vpkg.WithStyles[taskListObject](styles),
 	)
+	l.filter = fvpkg.New[taskListObject](
+		l.viewport,
+		fvpkg.WithCanToggleMatchingItemsOnly[taskListObject](false),
+		fvpkg.WithFilterModes[taskListObject]([]fvpkg.FilterMode{taskListFilterMode()}),
+		fvpkg.WithFilterLinePosition[taskListObject](fvpkg.FilterLineBottom),
+		fvpkg.WithItemDescriptor[taskListObject]("tasks"),
+	)
+	if l.search != "" {
+		l.filter.SetFilter(l.search, taskListFilterModeName)
+	}
 }
 
 func (l *TaskList) SetData(runs []Run, tasks []Task) {
@@ -179,32 +225,31 @@ func (l *TaskList) ToggleScope() string {
 	return l.scope
 }
 
-func (l *TaskList) StartSearch() { l.searching = true }
+func (l *TaskList) StartSearch(msg tea.KeyPressMsg) tea.Cmd {
+	l.ensureViewport(1, 1)
+	var cmd tea.Cmd
+	l.filter, cmd = l.filter.Update(msg)
+	l.syncSearchFromFilter()
+	return cmd
+}
 
-func (l *TaskList) HandleSearchKey(key string, runes []rune) bool {
-	switch key {
-	case "enter":
+func (l *TaskList) HandleSearchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
+	beforeSearch := l.search
+	beforeSearching := l.searching
+	l.ensureViewport(1, 1)
+	var cmd tea.Cmd
+	l.filter, cmd = l.filter.Update(msg)
+	l.syncSearchFromFilter()
+	return l.search != beforeSearch || l.searching != beforeSearching, cmd
+}
+
+func (l *TaskList) syncSearchFromFilter() {
+	if l.filter == nil {
 		l.searching = false
-		return false
-	case "esc":
-		l.searching = false
-		if l.search == "" {
-			return false
-		}
-		l.search = ""
-		return true
-	case "backspace":
-		if l.search != "" {
-			l.search = l.search[:len(l.search)-1]
-			return true
-		}
-	default:
-		if len(runes) == 1 {
-			l.search += string(runes)
-			return true
-		}
+		return
 	}
-	return false
+	l.search = l.filter.GetFilterText()
+	l.searching = l.filter.FilterFocused()
 }
 
 func (l TaskList) Items() []Item      { return l.items }

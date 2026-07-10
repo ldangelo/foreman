@@ -219,6 +219,46 @@ func TestTaskListViewportUpdatesStickyHeaderAcrossGroups(t *testing.T) {
 	}
 }
 
+func TestTaskListSearchUsesViewportFilterLineAndSubstringMatching(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa", Title: "Fix API"}}
+	m.tasks = []Task{{TaskID: "ready-special", Title: "Ship Search", Status: "backlog"}}
+	m.buildItems()
+	_ = m.renderLeft(40, 8)
+
+	updated, _ := m.handleKey(keyPress("/"))
+	m = updated.(model)
+	for _, ch := range "READY-SPECIAL" {
+		updated, _ = m.handleKey(keyPress(string(ch)))
+		m = updated.(model)
+	}
+
+	if !m.taskList.Searching() || m.taskList.Search() != "READY-SPECIAL" {
+		t.Fatalf("expected task-list filter input to hold query, searching=%v query=%q", m.taskList.Searching(), m.taskList.Search())
+	}
+	if len(m.taskList.Items()) != 1 || !m.taskList.Items()[0].IsTask {
+		t.Fatalf("expected case-insensitive hidden-id substring search to keep only the ready task, got %#v", m.taskList.Items())
+	}
+	out := stripANSI(m.renderLeft(40, 8))
+	if !strings.Contains(out, "[task]") || !strings.Contains(out, "READY-SPECIAL") {
+		t.Fatalf("expected viewport filter line to render task query, got:\n%s", out)
+	}
+
+	updated, _ = m.handleKey(specialKey(tea.KeyEnter))
+	m = updated.(model)
+	if m.taskList.Searching() || m.taskList.Search() != "READY-SPECIAL" {
+		t.Fatalf("expected enter to apply task-list search, searching=%v query=%q", m.taskList.Searching(), m.taskList.Search())
+	}
+
+	updated, _ = m.handleKey(specialKey(tea.KeyEsc))
+	m = updated.(model)
+	if m.taskList.Search() != "" || len(m.taskList.Items()) != 2 {
+		t.Fatalf("expected escape to clear applied task-list search, query=%q items=%d", m.taskList.Search(), len(m.taskList.Items()))
+	}
+}
+
 func TestTaskRowPriorityBadgeUsesPriorityOnly(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.tasks = []Task{{TaskID: "task-p0", Title: "Fix production", TaskType: "bug", Priority: "P0", Status: "failed"}}

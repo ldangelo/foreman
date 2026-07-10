@@ -34,10 +34,12 @@ authoritative state.
 - Right column: color-coded run header, an animated phase rail, and a
   drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
 - `/` searches the focused drill-down pane when the right side is focused; the
-  task-list search remains on `/` while the left side is focused. Drill-down
-  search uses `filterableviewport` exact matching, `enter` applies, `esc`
-  clears, `n` / `N` jump between matches, and `o` toggles matches-only view while
-  a filter is active.
+  task-list search remains on `/` while the left side is focused. Task-list
+  search uses a `filterableviewport` input with case-insensitive substring
+  filtering over task/run ids and row text. Drill-down search uses
+  `filterableviewport` exact matching, `enter` applies, `esc` clears, `n` / `N`
+  jump between matches, and `o` toggles matches-only view while a filter is
+  active.
 - The focused logs pane pans long unwrapped rows with `left` / `right`. Logs
   render line numbers. Any drill-down pane can save currently visible viewer
   rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).
@@ -199,8 +201,8 @@ The root Bubble Tea model orchestrates client refresh, layout, focus, active tab
 notices, and actions. Component state lives in small cockpit-owned types:
 
 - `task_list.go` owns grouped `RUNNING` / `READY` / `RECENT` rows, selection,
-  collapsed groups, search/filter state, scope, and a viewport-backed left pane
-  with a sticky selected-group header.
+  collapsed groups, scope, and a `filterableviewport`-backed left pane with a
+  sticky selected-group header and case-insensitive substring search.
 - `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` and
   `filterableviewport` items, preserving selected-row identity across refreshes.
   Immediately following unselectable rows (message bodies, diff previews) are

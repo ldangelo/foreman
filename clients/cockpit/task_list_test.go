@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 func TestTaskListBuildsRunningReadyRecentAndExcludesActiveReady(t *testing.T) {
 	list := NewTaskList()
@@ -82,8 +86,8 @@ func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 	list.SetData(nil, []Task{{TaskID: "alpha", Summary: "first"}, {TaskID: "beta", Summary: "second"}})
 	list.Move(1)
 
-	list.StartSearch()
-	if changed := list.HandleSearchKey("a", []rune{'a'}); !changed {
+	list.StartSearch(keyPress("/"))
+	if changed, _ := list.HandleSearchKey(keyPress("a")); !changed {
 		t.Fatalf("expected search input to change filter")
 	}
 	list.SetData(nil, []Task{{TaskID: "alpha", Summary: "first"}, {TaskID: "beta", Summary: "second"}})
@@ -96,7 +100,7 @@ func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 		t.Fatalf("expected beta selection preserved while visible, got %d", list.SelectedIndex())
 	}
 
-	if changed := list.HandleSearchKey("l", []rune{'l'}); !changed {
+	if changed, _ := list.HandleSearchKey(keyPress("l")); !changed {
 		t.Fatalf("expected second search input to change filter")
 	}
 	list.SetData(nil, []Task{{TaskID: "alpha", Summary: "first"}, {TaskID: "beta", Summary: "second"}})
@@ -108,7 +112,7 @@ func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 		t.Fatalf("expected selection clamped to visible filtered row, got %d", list.SelectedIndex())
 	}
 
-	if changed := list.HandleSearchKey("esc", nil); !changed {
+	if changed, _ := list.HandleSearchKey(specialKey(tea.KeyEsc)); !changed {
 		t.Fatalf("expected escape to clear active search")
 	}
 	list.SetData(nil, []Task{{TaskID: "alpha", Summary: "first"}, {TaskID: "beta", Summary: "second"}})

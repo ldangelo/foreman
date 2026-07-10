@@ -92,7 +92,7 @@ components:
 
 | Component | Owns |
 |-----------|------|
-| `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows mapped into a `robinovitch61/viewport` left pane, selected item, sticky selected-group header, collapsed groups, search/filter state, and scope |
+| `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows mapped into a `filterableviewport` left pane, selected item, sticky selected-group header, collapsed groups, case-insensitive substring search, and scope |
 | `Viewer` | keyed drill-down rows mapped into `robinovitch61/viewport` items, selected line identity, bottom-follow behavior, and packed unselectable child rows (message bodies / diff previews) |
 | Tab adapters | conversion of summary/messages/events/logs/reports/files/pr data into stable keyed viewer lines and nvim targets where applicable |
 
@@ -129,6 +129,15 @@ Global:
 | `C` | open `gh enhance` for the selected run when enabled and available |
 | `?` | show the compact cockpit keymap help notice |
 | `q` | quit |
+
+
+Focused task-list search:
+
+| Key | Action |
+|-----|--------|
+| `/` | open the task-list filter input while the task list is focused |
+| `enter` | apply the task-list filter |
+| `esc` | clear the active/applied task-list filter |
 
 Focused drill-down search:
 

@@ -1,6 +1,6 @@
 # Handoff — Migrate the cockpit to Bubble Tea v2 and adopt `robinovitch61/viewport`
 
-Status: WS1–WS4 complete; WS5a task-list viewport rendering complete; WS5b filterable task-list search is next · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: WS1–WS5 complete; WS6 bespoke windowing cleanup is next · Date: 2026-07-10 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Subject: [`github.com/robinovitch61/viewport`](https://github.com/robinovitch61/viewport)
 Related: `clients/cockpit/viewer.go`, `view.go` (`windowLines`/`scrollWindowLines`/`fitBlock`), `task_list.go`, `model.go`, `styles.go`, `theme/gen.go`
@@ -154,15 +154,15 @@ messages; no key collision with task-list search.
 Acceptance: a long unwrapped log line pans instead of truncating; line numbers
 render for logs; save-to-file writes the visible content.
 
-## 8. Workstream 5 — Task list → `viewport` (partially complete)
+## 8. Workstream 5 — Task list → `viewport` (complete)
 
 WS5a moved `TaskList` rendering/windowing onto `viewport`: selectable task/run
 rows are viewport items, the selected group header is sticky at the top, and
 left-pane scrolling is driven by viewport selection instead of `windowLines`.
 
-Remaining WS5b: replace the bespoke task-list search/filtering with
-`filterableviewport` without changing substring search semantics or group
-collapse behavior.
+WS5b routed task-list search input through `filterableviewport` while preserving
+case-insensitive substring filtering over task/run ids and row text, selection
+clamping, and group collapse behavior.
 
 ## 9. Workstream 6 — Delete bespoke windowing + docs
 
@@ -200,7 +200,7 @@ collapse behavior.
 2. WS2 — drill-down `Viewer` → `viewport` (+ selection, follow, packed child rows) (complete).
 3. WS3 — `filterableviewport` in-view search (complete).
 4. WS4 — horizontal pan / wrap / line numbers / save-to-file (complete).
-5. WS5a — task-list viewport rendering + sticky selected-group header (complete); WS5b filterable task-list search (next).
+5. WS5 — task-list viewport rendering, sticky selected-group header, and filterable task-list search (complete).
 6. WS6 — delete bespoke windowing + docs sweep.
 
 Sources: [robinovitch61/viewport](https://github.com/robinovitch61/viewport),

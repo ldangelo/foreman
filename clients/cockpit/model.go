@@ -242,11 +242,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.taskList.Searching() {
-		if m.taskList.HandleSearchKey(msg.String(), []rune(msg.Text)) {
+	if m.taskList.Searching() || (m.taskList.Search() != "" && msg.String() == "esc") {
+		changed, cmd := m.taskList.HandleSearchKey(msg)
+		if changed {
 			m.buildItems()
 		}
-		return m, nil
+		return m, cmd
 	}
 
 	if m.viewFocused && m.viewerTab() {
@@ -312,7 +313,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.selectTab(int(msg.String()[0] - '1'))
 	case "/":
 		m.viewFocused = false
-		m.taskList.StartSearch()
+		return m, m.taskList.StartSearch(msg)
 	case "g":
 		m.notice = "scope: " + m.taskList.ToggleScope()
 		m.buildItems()
