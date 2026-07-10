@@ -18,6 +18,7 @@ type Integrations struct {
 	Delta     DeltaConfig     `yaml:"delta"`
 	GhDash    GhDashConfig    `yaml:"ghDash"`
 	GhEnhance GhEnhanceConfig `yaml:"ghEnhance"`
+	Omp       OmpConfig       `yaml:"omp"`
 }
 
 type DiffnavConfig struct {
@@ -40,6 +41,20 @@ type GhEnhanceConfig struct {
 	Args   []string `yaml:"args"`
 }
 
+type OmpConfig struct {
+	Enable    string     `yaml:"enable"`
+	Cmd       string     `yaml:"cmd"`
+	Mode      string     `yaml:"mode"`
+	Tmux      TmuxConfig `yaml:"tmux"`
+	KeepShell bool       `yaml:"keepShell"`
+	Session   string     `yaml:"session"`
+	Args      []string   `yaml:"args"`
+}
+
+type TmuxConfig struct {
+	Split string `yaml:"split"`
+}
+
 type PRConfig struct {
 	Provider string `yaml:"provider"`
 }
@@ -52,6 +67,7 @@ func defaultConfig() Config {
 			Delta:     DeltaConfig{Enable: "auto"},
 			GhDash:    GhDashConfig{Enable: "auto"},
 			GhEnhance: GhEnhanceConfig{Enable: "auto"},
+			Omp:       OmpConfig{Enable: "auto", Cmd: "omp", Mode: "auto", Tmux: TmuxConfig{Split: "horizontal"}, KeepShell: true, Session: "per-task"},
 		},
 		PR: PRConfig{Provider: "github"},
 	}
@@ -92,6 +108,19 @@ func (c *Config) normalize() {
 	c.Integrations.Delta.Enable = normalizeEnable(c.Integrations.Delta.Enable)
 	c.Integrations.GhDash.Enable = normalizeEnable(c.Integrations.GhDash.Enable)
 	c.Integrations.GhEnhance.Enable = normalizeEnable(c.Integrations.GhEnhance.Enable)
+	c.Integrations.Omp.Enable = normalizeEnable(c.Integrations.Omp.Enable)
+	if c.Integrations.Omp.Cmd == "" {
+		c.Integrations.Omp.Cmd = defaults.Integrations.Omp.Cmd
+	}
+	c.Integrations.Omp.Mode = normalizeOmpMode(c.Integrations.Omp.Mode)
+	if c.Integrations.Omp.Tmux.Split == "" {
+		c.Integrations.Omp.Tmux.Split = defaults.Integrations.Omp.Tmux.Split
+	}
+	c.Integrations.Omp.Tmux.Split = normalizeTmuxSplit(c.Integrations.Omp.Tmux.Split)
+	if c.Integrations.Omp.Session == "" {
+		c.Integrations.Omp.Session = defaults.Integrations.Omp.Session
+	}
+	c.Integrations.Omp.Session = normalizeOmpSession(c.Integrations.Omp.Session)
 	if c.PR.Provider == "" {
 		c.PR.Provider = defaults.PR.Provider
 	}
@@ -108,6 +137,39 @@ func normalizeEnable(v string) string {
 	}
 }
 
+func normalizeOmpMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "auto", "tmux", "inline", "window":
+		return strings.ToLower(strings.TrimSpace(v))
+	case "":
+		return "auto"
+	default:
+		return "auto"
+	}
+}
+
+func normalizeTmuxSplit(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "horizontal", "vertical", "window":
+		return strings.ToLower(strings.TrimSpace(v))
+	case "":
+		return "horizontal"
+	default:
+		return "horizontal"
+	}
+}
+
+func normalizeOmpSession(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "per-task", "none":
+		return strings.ToLower(strings.TrimSpace(v))
+	case "":
+		return "per-task"
+	default:
+		return "per-task"
+	}
+}
+
 func applyConfigEnv(c *Config) {
 	if v := os.Getenv("COCKPIT_DIFFNAV"); v != "" {
 		c.Integrations.Diffnav.Enable = normalizeEnable(v)
@@ -120,5 +182,11 @@ func applyConfigEnv(c *Config) {
 	}
 	if v := os.Getenv("COCKPIT_GHENHANCE"); v != "" {
 		c.Integrations.GhEnhance.Enable = normalizeEnable(v)
+	}
+	if v := os.Getenv("COCKPIT_OMP"); v != "" {
+		c.Integrations.Omp.Enable = normalizeEnable(v)
+	}
+	if v := os.Getenv("COCKPIT_OMP_MODE"); v != "" {
+		c.Integrations.Omp.Mode = normalizeOmpMode(v)
 	}
 }

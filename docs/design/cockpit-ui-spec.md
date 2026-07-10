@@ -119,6 +119,8 @@ Global:
 | `/` | search; `esc` clears |
 | `g` | toggle current-project vs global scope |
 | `n` | create a new task by opening a JSON draft in nvim and posting `task.create` |
+| `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
+| `P` | attach plain `omp` to the selected run worktree without a brief |
 | `r` | retry selected run/phase (`POST /commands`) |
 | `R` | reset selected task (confirmed) |
 | `G` | open `gh dash` when enabled and available |
@@ -183,6 +185,11 @@ default avoids nesting a TUI inside a TUI.
 - `C` opens `gh enhance` as a full-screen handoff for the selected run worktree
   when the GitHub CLI and extension are available; use it from the `pr` tab to
   inspect failing/pending Actions checks and rerun jobs.
+- `p` attaches `omp` to the selected run worktree for live human triage. In
+  `auto` mode it opens a tmux pane when `$TMUX` is present; otherwise it suspends
+  the cockpit and runs inline. The triage path writes a non-secret brief with run
+  status, failure signals, PR state, and conflicted files; `P` opens plain `omp`.
+  Active running workers are refused to avoid concurrent mutations.
 - The cockpit uses generated theme artifacts from `clients/cockpit/theme/`:
   `tokens.yaml` drives Lip Gloss constants, Glamour JSON, `gh-dash.yml`,
   `enhance.env`, `diffnav/config.yml`, and `delta.gitconfig`. Handoffs pass
@@ -220,18 +227,27 @@ integrations:
   ghEnhance:
     enable: auto         # auto | on | off
     args: []
+  omp:
+    enable: auto         # auto | on | off
+    cmd: omp
+    mode: auto           # auto | tmux | inline | window
+    tmux:
+      split: horizontal  # horizontal | vertical | window
+    keepShell: true
+    session: per-task
+    args: []
 pr:
   provider: github
 ```
 
 `mode: auto` = remote when a session is found, else inline (the recommended
 default). `mode: remote` never suspends; `mode: inline` always suspends.
-`COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, `COCKPIT_GHDASH`, and
-`COCKPIT_GHENHANCE` override the respective integration `enable` value.
+`COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`,
+`COCKPIT_OMP`, and `COCKPIT_OMP_MODE` override the respective integration values.
 
 ## Non-goals for the POC
 
-- No write/command execution beyond attach + retry/reset stubs.
+- No write/command execution beyond READY task mutations, PR opens, and tool handoffs; retry/reset remain stubs.
 - No auth token refresh flows; read the token from the environment.
 - No pagination controls beyond the RECENT cap.
 

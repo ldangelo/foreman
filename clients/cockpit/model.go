@@ -190,6 +190,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "closed gh enhance"
 		}
 		return m, nil
+	case ompDoneMsg:
+		if msg.err != nil {
+			m.notice = "omp: " + msg.err.Error()
+		} else if msg.mode == "tmux" {
+			m.notice = "opened omp in tmux pane"
+		} else {
+			m.notice = "closed omp"
+		}
+		return m, nil
 
 	case diffPreviewMsg:
 		if m.diffPreviews == nil {
@@ -333,6 +342,16 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, openGhEnhance(run, m.config.Integrations, m.tools)
 		}
 		m.notice = "gh enhance: no run selected"
+	case "p":
+		if run, ok := m.selectedRun(); ok {
+			return m, attachOmp(m, run, false)
+		}
+		m.notice = "omp: no run selected"
+	case "P":
+		if run, ok := m.selectedRun(); ok {
+			return m, attachOmp(m, run, true)
+		}
+		m.notice = "omp: no run selected"
 	case "r":
 		if run, ok := m.selectedRun(); ok {
 			m.notice = "retry queued → POST /api/v1/commands (run " + run.RunID + ")"

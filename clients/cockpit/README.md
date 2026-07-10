@@ -47,11 +47,12 @@ Requires Go 1.23+.
 Optional integrations are discovered at runtime and fail closed with a notice:
 `diffnav` for full-run file review, `delta` for inline selected-file previews,
 `gh` plus the `gh dash` extension for repo-wide triage, `gh` plus the
-`gh enhance` extension for GitHub Actions triage, and a platform browser opener
-(`open` on macOS or `xdg-open` on Linux) for PR links. Cockpit ships generated
-theme fragments under `theme/` and passes the packaged `diffnav`/`gh enhance`
-theme environment when launching those tools. `diffnav` looks best with a Nerd
-Font because its file tree uses icon glyphs.
+`gh enhance` extension for GitHub Actions triage, `omp` for live worktree triage
+in a tmux pane or inline handoff, and a platform browser opener (`open` on macOS
+or `xdg-open` on Linux) for PR links. Cockpit ships generated theme fragments
+under `theme/` and passes the packaged `diffnav`/`gh enhance` theme environment
+when launching those tools. `diffnav` looks best with a Nerd Font because its file
+tree uses icon glyphs.
 
 ```bash
 cd clients/cockpit
@@ -91,8 +92,9 @@ o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n    create task JSON in nvim
 a         approve READY task                  e    edit READY task JSON in nvim
-C         inspect CI in gh enhance            r/R  retry / reset
-/         search                              space collapse/expand group     ? help     q quit
+C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
+r/R       retry / reset                       /    search
+space     collapse/expand group              ? help     q quit
 ```
 
 Opening a drill-down view with `enter`, `tab`, or `1`–`7` selects its newest
@@ -107,8 +109,8 @@ preview is kept in the viewport with the header when there is room for both.
 ## Integrations
 
 Controlled by `.foreman/config.yaml` (all optional) and `COCKPIT_DIFFNAV`,
-`COCKPIT_DELTA`, `COCKPIT_GHDASH`, and `COCKPIT_GHENHANCE` env overrides
-(`auto` / `on` / `off`):
+`COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`, `COCKPIT_OMP`, and
+`COCKPIT_OMP_MODE` env overrides (`auto` / `on` / `off` where applicable):
 
 ```yaml
 editor:
@@ -127,15 +129,27 @@ integrations:
   ghEnhance:
     enable: auto
     args: []
+  omp:
+    enable: auto
+    cmd: omp
+    mode: auto        # auto | tmux | inline | window
+    tmux:
+      split: horizontal
+    keepShell: true
+    session: per-task
+    args: []
 pr:
   provider: github
 ```
 
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
-command output: `diffnav`, `gh dash`, and `gh enhance` run through
-`tea.ExecProcess`, and inline file previews read a completed
-`git diff | delta`/plain `git diff` command. Generated theme fragments live in
-`theme/`: `tokens.yaml` drives cockpit color constants, `gh-dash.yml`,
+command output. `diffnav`, `gh dash`, `gh enhance`, and inline `omp` run through
+`tea.ExecProcess`; `omp` prefers a non-suspending tmux pane when `$TMUX` is set.
+`p` writes a non-secret triage brief for the selected failed/stuck run and starts
+`omp`; `P` opens plain `omp` without a brief. Active running workers are refused
+to avoid two agents mutating the same worktree. Inline file previews read a
+completed `git diff | delta`/plain `git diff` command. Generated theme fragments
+live in `theme/`: `tokens.yaml` drives cockpit color constants, `gh-dash.yml`,
 `enhance.env`, `diffnav/config.yml`, `delta.gitconfig`, and `glamour.json`.
 There is not yet a global theme installer; handoffs use packaged env where the
 tool supports it.
@@ -148,9 +162,10 @@ or `$EDITOR` (falling back to `nvim`).
 
 ## Status / caveats
 
-- POC quality: READY task approval/edit/create and PR browser opens are live
-  actions. `r` / `R` / attach still show the command they *would* send
-  (`POST /api/v1/commands`, `GET /runs/:id/attach`) rather than executing.
+- POC quality: READY task approval/edit/create, PR browser opens, and `omp`
+  handoffs are live actions. `r` / `R` / attach still show the command they
+  *would* send (`POST /api/v1/commands`, `GET /runs/:id/attach`) rather than
+  executing.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
   (`inbox`, `logs.entries`, `report`) and surfaces HTTP/JSON failures in the
   cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for a
