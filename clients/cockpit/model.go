@@ -235,6 +235,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.viewFocused && m.viewerTab() {
+		if m.viewer.Searching() || msg.String() == "/" ||
+			(m.viewer.FilterActive() && (msg.String() == "n" || msg.String() == "N" || msg.String() == "esc")) {
+			return m, m.viewer.HandleKey(msg)
+		}
+	}
+
 	if m.viewFocused {
 		switch msg.String() {
 		case "ctrl+d":
@@ -246,7 +253,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "?":
-		m.notice = "keys: n new task · enter focus · esc task list · ctrl+d/u page · 1-7 tabs · o open · D diffnav · G gh dash · C gh enhance"
+		m.notice = "keys: n new task · enter focus · esc task list/clear search · ctrl+d/u page · / search · n/N match · o open · G gh dash · C gh enhance"
 	case "q":
 		return m, tea.Quit
 	case "esc":

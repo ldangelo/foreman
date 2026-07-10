@@ -1,10 +1,14 @@
 package main
 
 import (
+	"strings"
+
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	fvpkg "github.com/robinovitch61/viewport/filterableviewport"
 	vpkg "github.com/robinovitch61/viewport/viewport"
 	"github.com/robinovitch61/viewport/viewport/item"
-	"strings"
 )
 
 // ViewerLine is one rendered row in a drill-down viewer. Key is the stable
@@ -44,11 +48,13 @@ type Viewer struct {
 	lines          []ViewerLine
 	objects        []viewerObject
 	viewport       *vpkg.Model[viewerObject]
+	filter         *fvpkg.Model[viewerObject]
 	cursor         int
 	offset         int
 	selectedObject int
 	selectedKey    string
 	followBottom   bool
+	searchActive   bool
 	width          int
 	height         int
 }
@@ -60,10 +66,11 @@ func (v *Viewer) SetBounds(width, height int) {
 	v.width = width
 	v.height = viewerHeight(height)
 	v.ensureViewport()
-	if v.viewport != nil {
-		v.viewport.SetWidth(v.width)
-		v.viewport.SetHeight(v.viewportHeight())
-		v.viewport.SetObjects(v.objects)
+	if v.filter != nil {
+		v.filter.SetWidth(v.width)
+		v.filter.SetHeight(v.viewportHeight())
+		v.viewport.SetWrapText(v.height > 1)
+		v.setObjects(v.objects)
 		v.syncViewportSelection()
 	}
 }
@@ -71,6 +78,8 @@ func (v *Viewer) SetBounds(width, height int) {
 func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height int) {
 	v.height = viewerHeight(height)
 	v.ensureViewport()
+	v.viewport.SetWrapText(v.height > 1)
+	oldObjectCount := len(v.objects)
 	v.lines = lines
 	v.objects = buildViewerObjects(lines, v.height)
 	if len(v.objects) == 0 {
@@ -79,7 +88,7 @@ func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height
 		v.selectedObject = 0
 		v.selectedKey = ""
 		v.followBottom = false
-		v.viewport.SetObjects(nil)
+		v.setObjects(nil)
 		return
 	}
 
@@ -101,12 +110,18 @@ func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height
 		}
 	}
 
+	if len(v.objects) < oldObjectCount {
+		v.viewport = nil
+		v.filter = nil
+		v.ensureViewport()
+		v.viewport.SetWrapText(v.height > 1)
+	}
 	v.selectedObject = max(0, min(next, len(v.objects)-1))
 	v.cursor = v.objects[v.selectedObject].lineIndex
 	v.followBottom = v.selectedObject == len(v.objects)-1
 	v.updateSelectedKey()
-	v.viewport.SetBottomSticky(v.followBottom)
-	v.viewport.SetObjects(v.objects)
+	v.filter.SetBottomSticky(false)
+	v.setObjects(v.objects)
 	v.syncViewportSelection()
 	v.updateOffset()
 }
@@ -133,7 +148,7 @@ func (v *Viewer) Move(delta, height int) {
 	v.cursor = v.objects[v.selectedObject].lineIndex
 	v.followBottom = v.selectedObject == len(v.objects)-1
 	v.updateSelectedKey()
-	v.viewport.SetBottomSticky(v.followBottom)
+	v.filter.SetBottomSticky(false)
 	v.syncViewportSelection()
 	v.updateOffset()
 }
@@ -154,7 +169,14 @@ func (v Viewer) View() string {
 	if v.viewport == nil {
 		return ""
 	}
-	lines := strings.Split(v.viewport.View(), "\n")
+	var rendered string
+	if v.searchActive || v.Searching() {
+		rendered = v.filter.View()
+	} else {
+		v.viewport.SetPreFooterLine("")
+		rendered = v.viewport.View()
+	}
+	lines := strings.Split(rendered, "\n")
 	if len(lines) > v.height {
 		lines = lines[:v.height]
 	}
@@ -197,10 +219,39 @@ func (v *Viewer) SelectKey(key string, height int) bool {
 	v.cursor = v.objects[idx].lineIndex
 	v.followBottom = idx == len(v.objects)-1
 	v.updateSelectedKey()
-	v.viewport.SetBottomSticky(v.followBottom)
+	v.filter.SetBottomSticky(false)
 	v.syncViewportSelection()
 	v.updateOffset()
 	return true
+}
+
+func (v *Viewer) HandleKey(msg tea.KeyPressMsg) tea.Cmd {
+	v.ensureViewport()
+	if v.filter == nil {
+		return nil
+	}
+	startingSearch := msg.String() == "/"
+	wasSearching := v.Searching()
+	var cmd tea.Cmd
+	v.filter, cmd = v.filter.Update(msg)
+	switch {
+	case msg.String() == "esc":
+		v.searchActive = false
+	case startingSearch:
+		v.searchActive = true
+	case wasSearching && msg.String() == "enter":
+		v.searchActive = v.filter.GetFilterText() != ""
+	}
+	v.syncFromFilterSelection()
+	return cmd
+}
+
+func (v Viewer) Searching() bool {
+	return v.filter != nil && v.filter.FilterFocused()
+}
+
+func (v Viewer) FilterActive() bool {
+	return v.searchActive
 }
 
 func (v *Viewer) ensureViewport() {
@@ -225,18 +276,53 @@ func (v *Viewer) ensureViewport() {
 		vpkg.WithSelectionStyleOverridesItemStyle[viewerObject](false),
 		vpkg.WithStyles[viewerObject](styles),
 	)
-	v.viewport.SetSelectionComparator(func(a, b viewerObject) bool {
+	v.filter = fvpkg.New[viewerObject](
+		v.viewport,
+		fvpkg.WithCanToggleMatchingItemsOnly[viewerObject](false),
+		fvpkg.WithFilterModes[viewerObject]([]fvpkg.FilterMode{
+			fvpkg.ExactFilterMode(key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search"))),
+		}),
+		fvpkg.WithItemDescriptor[viewerObject]("rows"),
+	)
+	v.filter.SetSelectionComparator(func(a, b viewerObject) bool {
 		return a.key == b.key
 	})
+
 }
 
 func (v *Viewer) syncViewportSelection() {
-	if v.viewport == nil || len(v.objects) == 0 {
+	if v.filter == nil || len(v.objects) == 0 {
 		return
 	}
-	v.viewport.SetSelectedItemIdx(v.selectedObject)
+	v.filter.SetSelectedItemIdx(v.selectedObject)
+	v.viewport.EnsureItemInView(v.selectedObject, 0, 1, 0, 0)
 }
 
+func (v *Viewer) setObjects(objects []viewerObject) {
+	v.filter.SetObjects(objects)
+	if !v.searchActive && !v.Searching() {
+		v.viewport.SetPreFooterLine("")
+		v.viewport.SetObjects(objects)
+	}
+}
+
+func (v *Viewer) syncFromFilterSelection() {
+	if v.filter == nil || len(v.objects) == 0 {
+		return
+	}
+	selected := v.filter.GetSelectedItem()
+	if selected == nil {
+		return
+	}
+	if idx, ok := v.objectIndexByKey(selected.key); ok {
+		v.selectedObject = idx
+		v.cursor = v.objects[idx].lineIndex
+		v.followBottom = idx == len(v.objects)-1
+		v.updateSelectedKey()
+		v.viewport.EnsureItemInView(v.selectedObject, 0, 1, 0, 0)
+		v.updateOffset()
+	}
+}
 func (v *Viewer) updateOffset() {
 	if v.viewport == nil || len(v.objects) == 0 {
 		v.offset = 0
@@ -272,7 +358,7 @@ func (v *Viewer) updateSelectedKey() {
 
 func buildViewerObjects(lines []ViewerLine, height int) []viewerObject {
 	objects := make([]viewerObject, 0, len(lines))
-	packUnselectable := height > 1
+	packUnselectable := height > 2
 	for i, line := range lines {
 		if line.Unselectable && len(objects) > 0 {
 			if packUnselectable {

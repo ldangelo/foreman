@@ -116,7 +116,7 @@ Global:
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
 | `1`–`7` | jump directly to a tab and focus it |
 | `space` | collapse/expand the focused group |
-| `/` | search; `esc` clears |
+| `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
 | `g` | toggle current-project vs global scope |
 | `n` | create a new task by opening a JSON draft in nvim and posting `task.create` |
 | `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
@@ -127,6 +127,15 @@ Global:
 | `C` | open `gh enhance` for the selected run when enabled and available |
 | `?` | show the compact cockpit keymap help notice |
 | `q` | quit |
+
+Focused drill-down search:
+
+| Key | Action |
+|-----|--------|
+| `/` | open exact-match filter input for the focused messages/events/logs/reports/files pane |
+| `enter` | apply the filter and keep match navigation active |
+| `esc` | clear the active drill-down filter before leaving view focus |
+| `n` / `N` | jump to the next / previous match while a drill-down filter is active |
 
 Entering a view selects its newest rendered line. Live updates preserve a moved viewer cursor by rendered line identity when possible instead of snapping back to the bottom.
 

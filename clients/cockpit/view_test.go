@@ -412,6 +412,65 @@ func TestFocusedViewerScrollChangesRenderedBody(t *testing.T) {
 	}
 }
 
+func TestFocusedViewerSlashStartsDrilldownSearch(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+		logs: []string{"alpha", "needle target", "omega"},
+	}
+	m := newModel(client)
+	m.width = 100
+	m.height = 12
+	m.tab = 3
+	m.viewFocused = true
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	updated, _ = m.handleKey(keyPress("/"))
+	m = updated.(model)
+
+	if m.taskList.Searching() {
+		t.Fatalf("expected focused slash to search the drilldown viewer, not the task list")
+	}
+	if !m.viewer.Searching() {
+		t.Fatalf("expected viewer filter input to be focused")
+	}
+
+	for _, ch := range "needle" {
+		updated, _ = m.handleKey(keyPress(string(ch)))
+		m = updated.(model)
+	}
+	updated, _ = m.handleKey(specialKey(tea.KeyEnter))
+	m = updated.(model)
+
+	selected, ok := m.viewer.SelectedLine()
+	if !ok || stripANSI(selected.Text) != "  needle target" {
+		t.Fatalf("expected search to select matching log row, got %#v ok=%v", selected, ok)
+	}
+}
+
+func TestViewerSearchSurvivesRefreshByKey(t *testing.T) {
+	var viewer Viewer
+	viewer.SetBounds(40, 4)
+	lines := []ViewerLine{
+		{Key: "a", Text: "alpha"},
+		{Key: "b", Text: "needle target"},
+		{Key: "c", Text: "omega"},
+	}
+	viewer.SetLines(lines, viewerReset, 4)
+	viewer.HandleKey(keyPress("/"))
+	for _, ch := range "needle" {
+		viewer.HandleKey(keyPress(string(ch)))
+	}
+	viewer.HandleKey(specialKey(tea.KeyEnter))
+
+	lines[1].Text = "needle target updated"
+	viewer.SetLines(lines, viewerPreserve, 4)
+	selected, ok := viewer.SelectedLine()
+	if !ok || selected.Key != "b" || selected.Text != "needle target updated" {
+		t.Fatalf("expected filtered viewer selection to survive refresh by key, got %#v ok=%v", selected, ok)
+	}
+}
+
 func TestCtrlCDoesNotQuit(t *testing.T) {
 	m := newModel(NewMockClient())
 	if _, cmd := m.handleKey(ctrlKey('c')); cmd != nil {
@@ -434,8 +493,9 @@ func TestDataUpdateScrollsViewerToBottom(t *testing.T) {
 	if want := m.rowCount() - 2; want <= 0 || m.viewer.Cursor() != want {
 		t.Fatalf("expected messages viewer cursor at bottom message header, got row=%d want=%d", m.viewer.Cursor(), want)
 	}
-	if h := m.viewerBodyWindowHeight(); m.viewer.Offset() > m.viewer.Cursor() || m.viewer.Cursor() >= m.viewer.Offset()+h {
-		t.Fatalf("expected bottom message header visible, got cursor=%d offset=%d height=%d", m.viewer.Cursor(), m.viewer.Offset(), h)
+	selected, ok := m.viewer.SelectedLine()
+	if !ok || !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(selected.Text)) {
+		t.Fatalf("expected bottom message header visible, got cursor=%d offset=%d selected=%#v", m.viewer.Cursor(), m.viewer.Offset(), selected)
 	}
 }
 
@@ -487,12 +547,14 @@ func TestSelectedMessageHeaderStaysVisibleInTinyViewport(t *testing.T) {
 		t.Fatalf("test setup expected a one-line viewport, got %d", h)
 	}
 
+	m.viewFocused = true
 	m.resetViewerCursor()
 	for range 2 {
 		updated, _ = m.handleKey(keyPress("j"))
 		m = updated.(model)
-		if m.viewer.Offset() != m.viewer.Cursor() {
-			t.Fatalf("expected tiny viewport to show selected header while moving down, got cursor=%d offset=%d", m.viewer.Cursor(), m.viewer.Offset())
+		selected, ok := m.viewer.SelectedLine()
+		if !ok || !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(selected.Text)) {
+			t.Fatalf("expected tiny viewport to show selected header while moving down, got cursor=%d offset=%d selected=%#v", m.viewer.Cursor(), m.viewer.Offset(), selected)
 		}
 	}
 }
@@ -651,8 +713,9 @@ func TestViewerRefreshClampsWhenContentShrinks(t *testing.T) {
 	updated, _ = m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
 
-	if m.viewer.Cursor() != 0 || m.viewer.Offset() != 0 {
-		t.Fatalf("expected shrink to clamp to remaining message header, got row=%d offset=%d", m.viewer.Cursor(), m.viewer.Offset())
+	selected, ok := m.viewer.SelectedLine()
+	if m.viewer.Cursor() != 0 || !ok || !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(selected.Text)) {
+		t.Fatalf("expected shrink to clamp to visible remaining message header, got row=%d offset=%d selected=%#v", m.viewer.Cursor(), m.viewer.Offset(), selected)
 	}
 }
 

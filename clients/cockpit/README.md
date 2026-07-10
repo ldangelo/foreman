@@ -33,6 +33,10 @@ authoritative state.
   `task.create`.
 - Right column: color-coded run header, an animated phase rail, and a
   drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
+- `/` searches the focused drill-down pane when the right side is focused; the
+  task-list search remains on `/` while the left side is focused. Drill-down
+  search uses `filterableviewport` exact matching, `enter` applies, `esc`
+  clears, and `n` / `N` jump between matches while a filter is active.
 - Panes are height-bounded to the current terminal; the left list keeps the
   selected row visible and expands up to 40 columns without starving the right pane.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
@@ -189,11 +193,12 @@ notices, and actions. Component state lives in small cockpit-owned types:
 - `task_list.go` owns grouped `RUNNING` / `READY` / `RECENT` rows, selection,
   collapsed groups, search/filter state, scope, and keeping the selected row
   visible.
-- `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` items,
-  preserving selected-row identity across refreshes. Immediately following
-  unselectable rows (message bodies, diff previews) are packed with their parent
-  selectable row so navigation lands only on actionable/header rows while the
-  viewport component handles rendering, scrolling, and bottom-follow behavior.
+- `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` and
+  `filterableviewport` items, preserving selected-row identity across refreshes.
+  Immediately following unselectable rows (message bodies, diff previews) are
+  packed with their parent selectable row when the viewport is tall enough, so
+  navigation lands only on actionable/header rows while the viewport component
+  handles rendering, scrolling, match highlighting, and bottom-follow behavior.
 
 ## Layout
 
