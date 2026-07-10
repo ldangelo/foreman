@@ -12,7 +12,7 @@ import (
 //
 // Standalone by default (mock data). To point it at a running Elixir server:
 //
-//	FOREMAN_SERVER_URL=http://127.0.0.1:4000 \
+//	FOREMAN_SERVER_URL=http://127.0.0.1:4766 \
 //	FOREMAN_SERVER_AUTH_TOKEN=... \
 //	go run .
 //

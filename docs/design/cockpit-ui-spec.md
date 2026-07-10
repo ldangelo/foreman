@@ -92,7 +92,7 @@ components:
 |-----------|------|
 | `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows, selected item, collapsed groups, search/filter state, scope, and keep-selection-visible behavior |
 | `Viewer` | rendered drill-down lines, cursor, viewport offset, selected line identity, bottom-follow behavior, and cursor clamping across refreshes |
-| Tab adapters | conversion of summary/messages/events/logs/reports/files data into stable keyed viewer lines and nvim targets where applicable |
+| Tab adapters | conversion of summary/messages/events/logs/reports/files/pr data into stable keyed viewer lines and nvim targets where applicable |
 
 All data is fetched from the Elixir core; the cockpit never infers state the
 core has not asserted. A periodic tick (default 2s) refreshes projections and
