@@ -388,7 +388,7 @@ foreman status --live                    # Full dashboard TUI with event stream
 ```
 
 ### `foreman board`
-Terminal UI kanban board for managing Foreman tasks. Five lifecycle status columns with vim-style navigation; workflow phase is shown separately on active cards/details when available. Press `y` to copy the selected task ID. `open`/`backlog` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown statuses appear in Needs Attention. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation.
+Terminal UI kanban board for managing Foreman tasks. Five lifecycle status columns with vim-style navigation; workflow phase is shown separately on active cards/details when available. Press `y` to copy the selected task ID. `open`/`backlog` tasks appear in Backlog, `closed`/`merged` tasks appear in Closed, and unknown/unmapped statuses render in the Closed (terminal) column. The board monitors agent inbox messages and updates only task cards tied to changed runs; press `r` for a full manual reload with a `refreshing…` spinner and `refreshed <time>` confirmation. Use `--filter <status>` to filter by status (supports aliases: `completed`/`closed`, `in-progress`/`in_progress`, `needs-attention`/`needs_attention`).
 
 ```bash
 foreman board                             # Launch interactive kanban board
