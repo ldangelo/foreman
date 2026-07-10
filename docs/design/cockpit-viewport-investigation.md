@@ -1,9 +1,9 @@
 # Handoff — Migrate the cockpit to Bubble Tea v2 and adopt `robinovitch61/viewport`
 
-Status: WS1–WS5 complete; WS6 bespoke windowing cleanup is next · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: WS1–WS6 complete · Date: 2026-07-10 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Subject: [`github.com/robinovitch61/viewport`](https://github.com/robinovitch61/viewport)
-Related: `clients/cockpit/viewer.go`, `view.go` (`windowLines`/`scrollWindowLines`/`fitBlock`), `task_list.go`, `model.go`, `styles.go`, `theme/gen.go`
+Related: `clients/cockpit/viewer.go`, `view.go`, `task_list.go`, `model.go`, `styles.go`, `theme/gen.go`
 
 ## 1. Objective & decision
 
@@ -16,7 +16,9 @@ Replace the cockpit's three hand-rolled viewport implementations (`Viewer`, the
 The library targets **Bubble Tea v2 + Go 1.26**; the cockpit nested module now
 targets Go 1.26 and Bubble Tea v2. WS1 landed the whole-app v2 migration, WS2
 adopted the core `viewport` package for the drill-down `Viewer`, WS3 added
-`filterableviewport` search, and WS4 added pan/log-number/export extras.
+`filterableviewport` search, WS4 added pan/log-number/export extras, WS5 moved
+the task list onto `viewport`/`filterableviewport`, and WS6 removed the
+remaining bespoke windowing helpers.
 
 ## 2. Target versions
 
@@ -36,9 +38,9 @@ that class of bug and adds features.
 
 | Cockpit today (bespoke) | Library capability |
 |---|---|
-| `Viewer` cursor/offset/bottom-follow/clamp (`viewer.go`) | core viewport |
-| `windowLines`/`scrollWindowLines`/`fitBlock` (`view.go`) | core viewport windowing |
-| `TaskList` windowing + keep-selected-visible | selection + sticky header |
+| Drill-down cursor/offset/bottom-follow/clamp | core viewport |
+| Summary/body clipping in `view.go` | Lip Gloss pane bounds and viewport-backed drill-downs |
+| Task-list windowing + keep-selected-visible | selection + sticky header |
 | messages "keep header visible / by-whole-message" special-case | sticky header + selection |
 | long log lines hard-clipped with `…` | **horizontal pan** or wrap toggle |
 | no in-view search in logs/events/messages | **`filterableviewport`** search + next/prev + matches-only |
@@ -164,13 +166,12 @@ WS5b routed task-list search input through `filterableviewport` while preserving
 case-insensitive substring filtering over task/run ids and row text, selection
 clamping, and group collapse behavior.
 
-## 9. Workstream 6 — Delete bespoke windowing + docs
+## 9. Workstream 6 — Delete bespoke windowing + docs (complete)
 
-- Remove `windowLines`, `scrollWindowLines`, `fitBlock`, and the hand-rolled
-  `Viewer` once fully replaced.
-- Docs sweep: README "Architecture"/"Keys", `docs/design/cockpit-ui-spec.md`
-  (component table → viewport, new search/pan keys), and note the v2/Go 1.26
-  requirement in the run instructions.
+Removed `windowLines`, `scrollWindowLines`, `fitBlock`, the unused max-scroll
+helper, and the final docs references that treated WS6 as pending. Remaining
+window sizing is pane layout only; drill-down scrolling/panning/searching lives
+in `Viewer`, and task-list scrolling/searching lives in `TaskList`.
 
 ## 10. Risks & mitigations
 
@@ -201,7 +202,7 @@ clamping, and group collapse behavior.
 3. WS3 — `filterableviewport` in-view search (complete).
 4. WS4 — horizontal pan / wrap / line numbers / save-to-file (complete).
 5. WS5 — task-list viewport rendering, sticky selected-group header, and filterable task-list search (complete).
-6. WS6 — delete bespoke windowing + docs sweep.
+6. WS6 — delete bespoke windowing + docs sweep (complete).
 
 Sources: [robinovitch61/viewport](https://github.com/robinovitch61/viewport),
 [library go.mod](https://raw.githubusercontent.com/robinovitch61/viewport/main/go.mod),

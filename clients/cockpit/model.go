@@ -479,10 +479,6 @@ func (m *model) selectViewerLineByKey(key string) bool {
 	return m.viewer.SelectKey(key, m.viewerBodyWindowHeight())
 }
 
-func (m model) maxViewerScroll() int {
-	return m.viewer.MaxScroll(m.viewerBodyWindowHeight())
-}
-
 func (m *model) rowCount() int {
 	if !m.viewerTab() {
 		return 0

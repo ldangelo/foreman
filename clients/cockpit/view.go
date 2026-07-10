@@ -57,8 +57,8 @@ func (m model) renderFrame() string {
 		bodyH = 4
 	}
 
-	rightRaw := fitBlock(m.renderRight(rightW), bodyH)
-	leftRaw := fitBlock(m.renderLeft(leftW, bodyH), bodyH)
+	rightRaw := m.renderRight(rightW)
+	leftRaw := m.renderLeft(leftW, bodyH)
 	left := leftPaneStyle.Width(leftW).Height(bodyH).MaxHeight(bodyH).MaxWidth(leftW + 1).Render(leftRaw)
 	right := lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).MaxWidth(rightW).Render(rightRaw)
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
@@ -209,57 +209,6 @@ func (m model) renderLeft(w, h int) string {
 	return m.taskList.View()
 }
 
-func windowLines(lines []string, selected, h int) []string {
-	if h <= 0 {
-		return nil
-	}
-	if len(lines) <= h {
-		return padLines(lines, h)
-	}
-	start := selected - h/2
-	if start < 0 {
-		start = 0
-	}
-	if start+h > len(lines) {
-		start = len(lines) - h
-	}
-	return lines[start : start+h]
-}
-
-func scrollWindowLines(lines []string, offset, h int) []string {
-	if h <= 0 {
-		return nil
-	}
-	if len(lines) <= h {
-		return padLines(lines, h)
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	if offset+h > len(lines) {
-		offset = len(lines) - h
-	}
-	return lines[offset : offset+h]
-}
-
-func fitBlock(s string, h int) string {
-	return strings.Join(padLines(strings.Split(s, "\n"), h), "\n")
-}
-
-func padLines(lines []string, h int) []string {
-	if h <= 0 {
-		return nil
-	}
-	out := append([]string(nil), lines...)
-	if len(out) > h {
-		out = out[:h]
-	}
-	for len(out) < h {
-		out = append(out, "")
-	}
-	return out
-}
-
 func (m model) renderRow(i int, it Item, w int) string {
 	selected := i == m.taskList.SelectedIndex()
 	var state, left, right string
@@ -380,7 +329,7 @@ func (m model) renderRight(w int) string {
 		viewer.SetLines(m.renderViewerLines(run, it, isRun, w), policy, bodyWindowH)
 		s = append(s, strings.Split(viewer.View(), "\n")...)
 	} else {
-		s = append(s, windowLines(body, 0, bodyWindowH)...)
+		s = append(s, body...)
 	}
 	s = append(s, action...)
 	return strings.Join(s, "\n")
