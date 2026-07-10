@@ -191,7 +191,8 @@ describe("BoardRendering", () => {
       expect(boardColumnForTaskStatus("developer")).toBe("in_progress");
       expect(boardColumnForTaskStatus("review")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("done")).toBe("closed");
-      expect(boardColumnForTaskStatus("weird-status")).toBe("needs_attention");
+      // Unknown/unmapped statuses go to closed (not needs_attention, which is for actionable items)
+      expect(boardColumnForTaskStatus("weird-status")).toBe("closed");
     });
   });
 
@@ -547,7 +548,8 @@ describe("BoardRendering", () => {
       expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("closed")).toBe("closed");
-      expect(boardColumnForTaskStatus("unknown")).toBe("needs_attention");
+      // Unknown/unmapped statuses go to closed (not needs_attention, which is for actionable items)
+      expect(boardColumnForTaskStatus("unknown")).toBe("closed");
     });
   });
 

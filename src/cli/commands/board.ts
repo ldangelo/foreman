@@ -73,7 +73,9 @@ export function boardColumnForTaskStatus(status: string): BoardStatus {
   if (["merged", "completed", "done"].includes(normalized)) {
     return "closed";
   }
-  return normalizeStatusForBoard(status) ?? "needs_attention";
+  // Unknown/unmapped statuses go to closed column (not needs_attention,
+  // which is for actionable items requiring review)
+  return normalizeStatusForBoard(status) ?? "closed";
 }
 
 function boardStatusToStoreStatus(status: BoardStatus): string {
@@ -102,6 +104,29 @@ export function normalizeStatusForStore(status: string): string {
   }
   // If not a valid board status, return as-is and let the API reject it
   return status;
+}
+
+/**
+ * Apply a status filter to the task map, keeping only tasks in matching columns.
+ * Handles status aliases: completed/closed/done/merged → closed,
+ * in_progress/in-progress → in_progress, needs_attention/needs-attention → needs_attention.
+ */
+export function applyStatusFilter(
+  taskMap: Map<BoardStatus, BoardTask[]>,
+  filterStatus: string,
+): Map<BoardStatus, BoardTask[]> {
+  const normalizedFilter = filterStatus.replace(/-/g, "_");
+  const targetColumn = boardColumnForTaskStatus(normalizedFilter);
+
+  const filtered = new Map<BoardStatus, BoardTask[]>();
+  for (const status of BOARD_STATUSES) {
+    if (status === targetColumn) {
+      filtered.set(status, taskMap.get(status) ?? []);
+    } else {
+      filtered.set(status, []);
+    }
+  }
+  return filtered;
 }
 
 const STATUS_LABELS: Record<BoardStatus, string> = {
@@ -316,7 +341,7 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
   const context = await resolveBoardContext(projectPath);
   const rows = context.backend === "elixir"
     ? (await context.client.listTasks())
-        .filter((task) => !task.project_id || task.project_id === context.projectId)
+        .filter((task) => task.project_id === context.projectId)
         .map(boardTaskFromElixir)
     : (await context.client.tasks.list({ projectId: context.projectId, limit: 1000 }) as TaskRow[])
         .map(boardTaskFromRow);
@@ -1114,6 +1139,35 @@ export function renderTaskDetail(
   return renderToString(renderTaskDetailView(task, width, notesStatus, notesError, terminalHeight), { columns: width });
 }
 
+/**
+ * Render a static board snapshot for --all mode (non-interactive).
+ * Shows all columns with their tasks, suitable for scriptable output.
+ */
+export function renderBoardSnapshot(
+  tasks: Map<BoardStatus, BoardTask[]>,
+  projectName: string,
+  terminalWidth: number,
+  userVisibleLimit?: number,
+): string {
+  const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
+  const nav: NavigationState = { colIndex: 0, rowIndex: 0 };
+  const state: RenderState = {
+    tasks,
+    nav,
+    totalTasks,
+    errorMessage: null,
+    flashTaskId: null,
+    showHelp: false,
+    showDetail: false,
+    detailTask: null,
+    detailNotesStatus: "idle",
+    detailNotesError: null,
+    sortMode: "updated",
+    refreshStatus: "idle",
+  };
+  return renderBoardFrame(state, projectName, terminalWidth, getTerminalHeight(), userVisibleLimit);
+}
+
 // ── Editor integration ───────────────────────────────────────────────────────
 
 /** Resolve the $EDITOR environment variable with fallbacks. */
@@ -1890,11 +1944,15 @@ async function readLine(prompt: string): Promise<string> {
  * Run the interactive kanban board TUI loop.
  */
 export async function runBoard(opts: BoardOptions): Promise<void> {
-  const { projectPath, projectName, limit } = opts;
+  const { projectPath, projectName, limit, filter } = opts;
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
     tasks = await loadBoardTasks(projectPath);
+    // Apply status filter if provided
+    if (filter) {
+      tasks = applyStatusFilter(tasks, filter);
+    }
   } catch (err) {
     console.error(chalk.red(`Failed to load tasks: ${err instanceof Error ? err.message : String(err)}`));
     return;
@@ -2234,11 +2292,24 @@ export const boardCommand = new Command("board")
         console.log(chalk.yellow("No registered projects found. Run 'foreman project add' to register projects."));
         return;
       }
+      // --all mode renders static snapshots sequentially to avoid TTY loop interleaving
+      const terminalWidth = getTerminalWidth();
+      const parsedLimit = opts.limit == null ? undefined : parseInt(opts.limit, 10);
+      const limit = parsedLimit == null || Number.isNaN(parsedLimit)
+        ? undefined
+        : Math.max(1, parsedLimit);
       for (const project of projects) {
         const projectPath = project.path ?? await resolveProjectPathFromOptions({ project: project.name });
         console.log(chalk.bold(`\n=== ${project.name} ===`));
         try {
-          runBoard({ projectPath, projectName: project.name, limit: opts.limit ? parseInt(opts.limit, 10) : undefined, filter: opts.filter });
+          const tasks = await loadBoardTasks(projectPath);
+          // Apply filter if provided
+          if (opts.filter) {
+            const filteredTasks = applyStatusFilter(tasks, opts.filter);
+            console.log(renderBoardSnapshot(filteredTasks, project.name, terminalWidth, limit));
+          } else {
+            console.log(renderBoardSnapshot(tasks, project.name, terminalWidth, limit));
+          }
         } catch (err) {
           console.error(chalk.red(`Board error for ${project.name}: ${err instanceof Error ? err.message : String(err)}`));
         }
