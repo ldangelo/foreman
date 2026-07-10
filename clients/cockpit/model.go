@@ -265,7 +265,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, openInNvim(m.editor, t, false)
 		}
 	case "enter":
-		if tabNames[m.tab] == "pr" && m.viewFocused {
+		if tabNames[m.tab] == "pr" {
 			return m, m.openSelectedPR()
 		}
 		if m.viewerTab() {

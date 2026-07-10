@@ -554,6 +554,39 @@ func TestPRTabRendersProjectedStatusAndAction(t *testing.T) {
 	}
 }
 
+func TestPRTabEnterOpensPRWithoutExtraFocusStep(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{
+			Group:   "RUNNING",
+			TaskID:  "task-1",
+			RunID:   "run-1",
+			Status:  "running",
+			Phase:   "pr-wait",
+			PRURL:   "https://github.com/acme/repo/pull/42",
+			PRState: "open",
+		}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 6
+	m.tools = fakeTools{}
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	if m.viewFocused {
+		t.Fatal("test setup expected PR tab not focused")
+	}
+	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected enter on PR tab to attempt opening the PR")
+	}
+	msg := cmd()
+	if _, ok := msg.(prOpenDoneMsg); !ok {
+		t.Fatalf("expected prOpenDoneMsg, got %T", msg)
+	}
+}
+
 func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
 	client := &mutableClient{
 		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
