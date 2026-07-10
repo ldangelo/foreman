@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,6 +66,10 @@ type prOpenDoneMsg struct {
 type taskCopyDoneMsg struct {
 	taskID string
 	err    error
+}
+type viewerSavedMsg struct {
+	path string
+	err  error
 }
 
 func newModel(c Client) model {
@@ -221,6 +227,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case viewerSavedMsg:
+		if msg.err != nil {
+			m.notice = "save viewer: " + msg.err.Error()
+		} else {
+			m.notice = "saved viewer to " + msg.path
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -237,7 +251,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if m.viewFocused && m.viewerTab() {
 		if m.viewer.Searching() || msg.String() == "/" ||
-			(m.viewer.FilterActive() && (msg.String() == "n" || msg.String() == "N" || msg.String() == "esc")) {
+			(m.viewer.FilterActive() && (msg.String() == "n" || msg.String() == "N" || msg.String() == "o" || msg.String() == "esc")) {
 			return m, m.viewer.HandleKey(msg)
 		}
 	}
@@ -248,12 +262,22 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.moveRow(max(1, m.viewerBodyWindowHeight()/2))
 		case "ctrl+u":
 			return m, m.moveRow(-max(1, m.viewerBodyWindowHeight()/2))
+		case "left":
+			m.viewer.Pan(-max(1, m.rightPaneWidth()/4))
+			return m, nil
+		case "right":
+			m.viewer.Pan(max(1, m.rightPaneWidth()/4))
+			return m, nil
+		case "s":
+			if m.viewerTab() {
+				return m, m.saveVisibleViewer()
+			}
 		}
 	}
 
 	switch msg.String() {
 	case "?":
-		m.notice = "keys: n new task · enter focus · esc task list/clear search · ctrl+d/u page · / search · n/N match · o open · G gh dash · C gh enhance"
+		m.notice = "keys: n new task · enter focus · esc task list/clear search · ctrl+d/u page · / search · n/N match · ←/→ pan · s save · o open · G gh dash · C gh enhance"
 	case "q":
 		return m, tea.Quit
 	case "esc":
@@ -371,6 +395,29 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) saveVisibleViewer() tea.Cmd {
+	content := strings.TrimRight(stripANSI(m.viewer.View()), "\n") + "\n"
+	runID := "task"
+	if run, ok := m.selectedRun(); ok && run.RunID != "" {
+		runID = run.RunID
+	}
+	name := runID + "-" + tabNames[m.tab] + "-" + time.Now().Format("20060102-150405") + ".txt"
+	return saveViewerContent(m.config.Cockpit.ExportDir, name, content)
+}
+
+func saveViewerContent(dir, name, content string) tea.Cmd {
+	return func() tea.Msg {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return viewerSavedMsg{err: err}
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			return viewerSavedMsg{path: path, err: err}
+		}
+		return viewerSavedMsg{path: path}
+	}
+}
+
 func (m *model) moveSel(delta int) tea.Cmd {
 	if !m.taskList.Move(delta) {
 		return nil
@@ -450,6 +497,7 @@ func (m model) viewerBodyLines() []string {
 func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 	w := m.rightPaneWidth()
 	h := m.viewerBodyWindowHeight()
+	m.viewer.SetWrapText(tabNames[m.tab] != "logs")
 	m.viewer.SetBounds(w, h)
 	if !m.viewerTab() {
 		m.viewer.SetLines(nil, viewerReset, h)

@@ -36,7 +36,11 @@ authoritative state.
 - `/` searches the focused drill-down pane when the right side is focused; the
   task-list search remains on `/` while the left side is focused. Drill-down
   search uses `filterableviewport` exact matching, `enter` applies, `esc`
-  clears, and `n` / `N` jump between matches while a filter is active.
+  clears, `n` / `N` jump between matches, and `o` toggles matches-only view while
+  a filter is active.
+- The focused logs pane pans long unwrapped rows with `left` / `right`. Logs
+  render line numbers. Any drill-down pane can save currently visible viewer
+  rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).
 - Panes are height-bounded to the current terminal; the left list keeps the
   selected row visible and expands up to 40 columns without starving the right pane.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
@@ -101,7 +105,8 @@ d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n    create task JSON in nvim
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
-r/R       retry / reset                       /    search
+r/R       retry / reset                       /    search     n/N match
+←/→       pan focused logs                    s    save visible viewer rows
 space     collapse/expand group              ? help     q quit
 ```
 
@@ -117,8 +122,9 @@ preview is kept in the viewport with the header when there is room for both.
 ## Integrations
 
 Controlled by `.foreman/config.yaml` (all optional) and `COCKPIT_DIFFNAV`,
-`COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`, `COCKPIT_OMP`, and
-`COCKPIT_OMP_MODE` env overrides (`auto` / `on` / `off` where applicable):
+`COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`, `COCKPIT_OMP`,
+`COCKPIT_OMP_MODE`, and `COCKPIT_EXPORT_DIR` env overrides (`auto` / `on` /
+`off` where applicable):
 
 ```yaml
 editor:
@@ -148,6 +154,8 @@ integrations:
     args: []
 pr:
   provider: github
+cockpit:
+  exportDir: ~/.foreman/cockpit-exports
 ```
 
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
@@ -198,7 +206,8 @@ notices, and actions. Component state lives in small cockpit-owned types:
   Immediately following unselectable rows (message bodies, diff previews) are
   packed with their parent selectable row when the viewport is tall enough, so
   navigation lands only on actionable/header rows while the viewport component
-  handles rendering, scrolling, match highlighting, and bottom-follow behavior.
+  handles rendering, scrolling, horizontal panning, match highlighting, and
+  bottom-follow behavior.
 
 ## Layout
 

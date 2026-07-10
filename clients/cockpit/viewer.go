@@ -57,6 +57,17 @@ type Viewer struct {
 	searchActive   bool
 	width          int
 	height         int
+	xOffset        int
+	wrapText       bool
+	wrapTextSet    bool
+}
+
+func (v *Viewer) SetWrapText(wrap bool) {
+	v.wrapText = wrap
+	v.wrapTextSet = true
+	if v.viewport != nil {
+		v.viewport.SetWrapText(wrap)
+	}
 }
 
 func (v *Viewer) SetBounds(width, height int) {
@@ -69,16 +80,17 @@ func (v *Viewer) SetBounds(width, height int) {
 	if v.filter != nil {
 		v.filter.SetWidth(v.width)
 		v.filter.SetHeight(v.viewportHeight())
-		v.viewport.SetWrapText(v.height > 1)
+		v.viewport.SetWrapText(v.wrapText)
 		v.setObjects(v.objects)
 		v.syncViewportSelection()
+		v.applyXOffset()
 	}
 }
 
 func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height int) {
 	v.height = viewerHeight(height)
 	v.ensureViewport()
-	v.viewport.SetWrapText(v.height > 1)
+	v.viewport.SetWrapText(v.wrapText)
 	oldObjectCount := len(v.objects)
 	v.lines = lines
 	v.objects = buildViewerObjects(lines, v.height)
@@ -114,7 +126,7 @@ func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height
 		v.viewport = nil
 		v.filter = nil
 		v.ensureViewport()
-		v.viewport.SetWrapText(v.height > 1)
+		v.viewport.SetWrapText(v.wrapText)
 	}
 	v.selectedObject = max(0, min(next, len(v.objects)-1))
 	v.cursor = v.objects[v.selectedObject].lineIndex
@@ -123,6 +135,7 @@ func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height
 	v.filter.SetBottomSticky(false)
 	v.setObjects(v.objects)
 	v.syncViewportSelection()
+	v.applyXOffset()
 	v.updateOffset()
 }
 
@@ -208,6 +221,30 @@ func (v Viewer) MaxScroll(height int) int {
 	return max(0, len(v.lines)-viewerHeight(height))
 }
 
+func (v Viewer) XOffset() int {
+	if v.viewport == nil {
+		return v.xOffset
+	}
+	return v.viewport.GetXOffsetWidth()
+}
+
+func (v *Viewer) Pan(delta int) {
+	v.ensureViewport()
+	if v.viewport == nil {
+		return
+	}
+	v.viewport.SetXOffset(v.viewport.GetXOffsetWidth() + delta)
+	v.xOffset = v.viewport.GetXOffsetWidth()
+}
+
+func (v *Viewer) applyXOffset() {
+	if v.viewport == nil {
+		return
+	}
+	v.viewport.SetXOffset(v.xOffset)
+	v.xOffset = v.viewport.GetXOffsetWidth()
+}
+
 func (v *Viewer) SelectKey(key string, height int) bool {
 	idx, ok := v.objectIndexByKey(key)
 	if !ok {
@@ -255,6 +292,9 @@ func (v Viewer) FilterActive() bool {
 }
 
 func (v *Viewer) ensureViewport() {
+	if !v.wrapTextSet {
+		v.wrapText = true
+	}
 	if v.width < 1 {
 		v.width = 80
 	}
@@ -269,7 +309,7 @@ func (v *Viewer) ensureViewport() {
 	v.viewport = vpkg.New[viewerObject](
 		v.width,
 		v.viewportHeight(),
-		vpkg.WithWrapText[viewerObject](true),
+		vpkg.WithWrapText[viewerObject](v.wrapText),
 		vpkg.WithSelectionEnabled[viewerObject](true),
 		vpkg.WithFooterEnabled[viewerObject](false),
 		vpkg.WithProgressBarEnabled[viewerObject](false),
@@ -278,7 +318,7 @@ func (v *Viewer) ensureViewport() {
 	)
 	v.filter = fvpkg.New[viewerObject](
 		v.viewport,
-		fvpkg.WithCanToggleMatchingItemsOnly[viewerObject](false),
+		fvpkg.WithCanToggleMatchingItemsOnly[viewerObject](true),
 		fvpkg.WithFilterModes[viewerObject]([]fvpkg.FilterMode{
 			fvpkg.ExactFilterMode(key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search"))),
 		}),

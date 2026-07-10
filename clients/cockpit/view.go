@@ -534,7 +534,8 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 		t := target{label: "run log", path: "~/.foreman/logs/" + run.RunID + ".log", ok: true}
 		add("log:target:"+run.RunID, greenStyle.Render("⧉ ")+cyanStyle.Render("~/.foreman/logs/"+run.RunID+".log"), t)
 		for i, ln := range m.logs {
-			add("log:"+itoa(i)+":"+ln, clip("  "+textStyle.Render(ln), w), t)
+			prefix := dimStyle.Render(fmt.Sprintf("%4d │ ", i+1))
+			add("log:"+itoa(i)+":"+ln, prefix+textStyle.Render(ln), t)
 		}
 	case "reports":
 		if len(m.reports) == 0 {
@@ -596,7 +597,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":empty", Text: dimStyle.Render("No diff for selected file."), Unselectable: true})
 				}
 				for i, ln := range preview.Lines {
-					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":" + itoa(i), Text: clip(ln, w), Unselectable: true})
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":" + itoa(i), Text: ln, Unselectable: true})
 				}
 			} else {
 				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":pending", Text: dimStyle.Render("diff preview pending…"), Unselectable: true})

@@ -113,6 +113,8 @@ Global:
 | message rows | select whole messages by header; show `messages <current>/<total>` in both the tab and run header; keep the selected message body preview visible with the header when space allows |
 | mouse wheel | scroll the pane under the pointer: task list on the left, active drill-down view on the right |
 | `ctrl+d` / `ctrl+u` | half-page down/up in the focused drill-down view |
+| `←` / `→` | pan long unwrapped rows in the focused logs view |
+| `s` | save the currently visible focused drill-down rows to `cockpit.exportDir` |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
 | `1`–`7` | jump directly to a tab and focus it |
 | `space` | collapse/expand the focused group |
@@ -136,6 +138,7 @@ Focused drill-down search:
 | `enter` | apply the filter and keep match navigation active |
 | `esc` | clear the active drill-down filter before leaving view focus |
 | `n` / `N` | jump to the next / previous match while a drill-down filter is active |
+| `o` | toggle matches-only rows while a drill-down filter is active |
 
 Entering a view selects its newest rendered line. Live updates preserve a moved viewer cursor by rendered line identity when possible instead of snapping back to the bottom.
 
@@ -253,12 +256,15 @@ integrations:
     args: []
 pr:
   provider: github
+cockpit:
+  exportDir: ~/.foreman/cockpit-exports
 ```
 
 `mode: auto` = remote when a session is found, else inline (the recommended
 default). `mode: remote` never suspends; `mode: inline` always suspends.
 `COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`,
-`COCKPIT_OMP`, and `COCKPIT_OMP_MODE` override the respective integration values.
+`COCKPIT_OMP`, `COCKPIT_OMP_MODE`, and `COCKPIT_EXPORT_DIR` override the
+respective integration and cockpit export values.
 
 ## Non-goals for the POC
 

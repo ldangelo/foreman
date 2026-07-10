@@ -2,15 +2,17 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Editor       EditorConfig `yaml:"editor"`
-	Integrations Integrations `yaml:"integrations"`
-	PR           PRConfig     `yaml:"pr"`
+	Editor       EditorConfig  `yaml:"editor"`
+	Integrations Integrations  `yaml:"integrations"`
+	PR           PRConfig      `yaml:"pr"`
+	Cockpit      CockpitConfig `yaml:"cockpit"`
 }
 
 type Integrations struct {
@@ -59,6 +61,10 @@ type PRConfig struct {
 	Provider string `yaml:"provider"`
 }
 
+type CockpitConfig struct {
+	ExportDir string `yaml:"exportDir"`
+}
+
 func defaultConfig() Config {
 	return Config{
 		Editor: defaultEditorConfig(),
@@ -69,7 +75,8 @@ func defaultConfig() Config {
 			GhEnhance: GhEnhanceConfig{Enable: "auto"},
 			Omp:       OmpConfig{Enable: "auto", Cmd: "omp", Mode: "auto", Tmux: TmuxConfig{Split: "horizontal"}, KeepShell: true, Session: "per-task"},
 		},
-		PR: PRConfig{Provider: "github"},
+		PR:      PRConfig{Provider: "github"},
+		Cockpit: CockpitConfig{ExportDir: defaultCockpitExportDir()},
 	}
 }
 
@@ -124,6 +131,18 @@ func (c *Config) normalize() {
 	if c.PR.Provider == "" {
 		c.PR.Provider = defaults.PR.Provider
 	}
+	if c.Cockpit.ExportDir == "" {
+		c.Cockpit.ExportDir = defaults.Cockpit.ExportDir
+	}
+	c.Cockpit.ExportDir = expandHome(c.Cockpit.ExportDir)
+}
+
+func defaultCockpitExportDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ".foreman/cockpit-exports"
+	}
+	return filepath.Join(home, ".foreman", "cockpit-exports")
 }
 
 func normalizeEnable(v string) string {
@@ -188,5 +207,8 @@ func applyConfigEnv(c *Config) {
 	}
 	if v := os.Getenv("COCKPIT_OMP_MODE"); v != "" {
 		c.Integrations.Omp.Mode = normalizeOmpMode(v)
+	}
+	if v := os.Getenv("COCKPIT_EXPORT_DIR"); v != "" {
+		c.Cockpit.ExportDir = expandHome(v)
 	}
 }

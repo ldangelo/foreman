@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -443,7 +444,7 @@ func TestFocusedViewerSlashStartsDrilldownSearch(t *testing.T) {
 	m = updated.(model)
 
 	selected, ok := m.viewer.SelectedLine()
-	if !ok || stripANSI(selected.Text) != "  needle target" {
+	if !ok || !strings.Contains(stripANSI(selected.Text), "needle target") {
 		t.Fatalf("expected search to select matching log row, got %#v ok=%v", selected, ok)
 	}
 }
@@ -468,6 +469,28 @@ func TestViewerSearchSurvivesRefreshByKey(t *testing.T) {
 	selected, ok := viewer.SelectedLine()
 	if !ok || selected.Key != "b" || selected.Text != "needle target updated" {
 		t.Fatalf("expected filtered viewer selection to survive refresh by key, got %#v ok=%v", selected, ok)
+	}
+}
+
+func TestViewerSearchCanToggleMatchesOnly(t *testing.T) {
+	var viewer Viewer
+	viewer.SetBounds(40, 4)
+	lines := []ViewerLine{
+		{Key: "a", Text: "alpha"},
+		{Key: "b", Text: "needle target"},
+		{Key: "c", Text: "omega"},
+	}
+	viewer.SetLines(lines, viewerReset, 4)
+	viewer.HandleKey(keyPress("/"))
+	for _, ch := range "needle" {
+		viewer.HandleKey(keyPress(string(ch)))
+	}
+	viewer.HandleKey(specialKey(tea.KeyEnter))
+	viewer.HandleKey(keyPress("o"))
+
+	rendered := stripANSI(viewer.View())
+	if strings.Contains(rendered, "alpha") || strings.Contains(rendered, "omega") || !strings.Contains(rendered, "needle target") {
+		t.Fatalf("expected matches-only search view, got:\n%s", rendered)
 	}
 }
 
@@ -898,6 +921,73 @@ func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
 	out := stripANSI(m.renderFrame())
 	if !strings.Contains(out, "diff --git a/src/a.go b/src/a.go") || !strings.Contains(out, "+added") {
 		t.Fatalf("expected selected file diff preview, got:\n%s", out)
+	}
+}
+
+func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
+	long := strings.Repeat("x", 80) + " TAIL"
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+		logs: []string{"short", long},
+	}
+	m := newModel(client)
+	m.width = 80
+	m.height = 12
+	m.tab = 3
+	m.viewFocused = true
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	before := stripANSI(m.renderRight(m.rightPaneWidth()))
+	if !strings.Contains(before, "   2 │ ") {
+		t.Fatalf("expected log rows to render line numbers, got:\n%s", before)
+	}
+	if strings.Contains(before, "TAIL") {
+		t.Fatalf("test setup expected long log tail to start out of view, got:\n%s", before)
+	}
+
+	for range 5 {
+		updated, _ = m.handleKey(specialKey(tea.KeyRight))
+		m = updated.(model)
+	}
+	after := stripANSI(m.renderRight(m.rightPaneWidth()))
+	if !strings.Contains(after, "TAIL") || m.viewer.XOffset() == 0 {
+		t.Fatalf("expected right arrow to pan long log lines into view, offset=%d:\n%s", m.viewer.XOffset(), after)
+	}
+}
+
+func TestFocusedViewerSavesVisibleContent(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+		logs: []string{"alpha", "beta"},
+	}
+	cfg := defaultConfig()
+	cfg.Cockpit.ExportDir = t.TempDir()
+	m := newModelWithConfig(client, cfg, defaultTools)
+	m.width = 100
+	m.height = 12
+	m.tab = 3
+	m.viewFocused = true
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	updated, cmd := m.handleKey(keyPress("s"))
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatalf("expected save command")
+	}
+	msg := cmd()
+	saved, ok := msg.(viewerSavedMsg)
+	if !ok || saved.err != nil {
+		t.Fatalf("expected successful viewerSavedMsg, got %#v ok=%v", msg, ok)
+	}
+	data, err := os.ReadFile(saved.path)
+	if err != nil {
+		t.Fatalf("expected saved viewer file, got %v", err)
+	}
+	out := string(data)
+	if strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+		t.Fatalf("expected saved visible viewer content only, got:\n%s", out)
 	}
 }
 
