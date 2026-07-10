@@ -2,24 +2,25 @@ package main
 
 import "github.com/charmbracelet/lipgloss"
 
-// Self-contained dark terminal palette (matches the design mockup).
+//go:generate go run theme/gen.go
+
 var (
-	cGreen  = lipgloss.Color("#7ee787")
-	cYellow = lipgloss.Color("#e5c07b")
-	cRed    = lipgloss.Color("#ff7b72")
-	cCyan   = lipgloss.Color("#56b6c2")
-	cPurple = lipgloss.Color("#b392f0")
-	cText   = lipgloss.Color("#c8ccd4")
-	cDim    = lipgloss.Color("#6b7280")
+	cGreen  = lipgloss.Color(themeTokenSuccess)
+	cYellow = lipgloss.Color(themeTokenWarning)
+	cRed    = lipgloss.Color(themeTokenDanger)
+	cCyan   = lipgloss.Color(themeTokenAccent)
+	cPurple = lipgloss.Color(themeTokenAccent2)
+	cText   = lipgloss.Color(themeTokenTextPrimary)
+	cDim    = lipgloss.Color(themeTokenTextFaint)
 	cWhite  = lipgloss.Color("#ffffff")
 
-	cSelBg    = lipgloss.Color("#1f2a44")
-	cActBg    = lipgloss.Color("#13303a")
-	cFailBg   = lipgloss.Color("#3a1414")
-	cActionBg = lipgloss.Color("#0f1a12")
-	cPanel    = lipgloss.Color("#2b2f3a")
-	cBar      = lipgloss.Color("#0c0e13")
-	cHeadBg   = lipgloss.Color("#161922")
+	cSelBg    = lipgloss.Color(themeTokenBgSelected)
+	cActBg    = lipgloss.Color(themeTokenBgEmphasis)
+	cFailBg   = lipgloss.Color(themeTokenBgFailure)
+	cActionBg = lipgloss.Color(themeTokenBgAction)
+	cPanel    = lipgloss.Color(themeTokenBorderPrimary)
+	cBar      = lipgloss.Color(themeTokenBgBar)
+	cHeadBg   = lipgloss.Color(themeTokenBgHeader)
 )
 
 var (

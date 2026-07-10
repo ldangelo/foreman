@@ -1,0 +1,58 @@
+{
+  "code": {
+    "background_color": "#1c1f27",
+    "color": "#c8ccd4"
+  },
+  "code_block": {
+    "color": "#c8ccd4",
+    "theme": "tokyonight_night"
+  },
+  "document": {
+    "color": "#c8ccd4"
+  },
+  "emph": {
+    "color": "#8b93a1"
+  },
+  "enumeration": {
+    "color": "#8b93a1"
+  },
+  "h1": {
+    "bold": true,
+    "color": "#56b6c2"
+  },
+  "h2": {
+    "bold": true,
+    "color": "#56b6c2"
+  },
+  "h3": {
+    "bold": true,
+    "color": "#b392f0"
+  },
+  "heading": {
+    "bold": true,
+    "color": "#56b6c2"
+  },
+  "hr": {
+    "color": "#2b2f3a"
+  },
+  "item": {
+    "color": "#c8ccd4"
+  },
+  "link": {
+    "color": "#b392f0",
+    "underline": true
+  },
+  "link_text": {
+    "color": "#b392f0"
+  },
+  "paragraph": {
+    "color": "#c8ccd4"
+  },
+  "strong": {
+    "bold": true,
+    "color": "#c8ccd4"
+  },
+  "text": {
+    "color": "#c8ccd4"
+  }
+}

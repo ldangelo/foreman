@@ -27,6 +27,7 @@ func ghEnhanceCommand(run Run, cfg Integrations, tools ToolResolver) (*exec.Cmd,
 	args := append([]string{"enhance"}, cfg.GhEnhance.Args...)
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = expandHome(worktree)
+	appendCmdEnv(cmd, "ENHANCE_THEME="+themeTokenGhEnhanceTheme)
 	return cmd, nil
 }
 

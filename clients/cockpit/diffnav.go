@@ -30,7 +30,9 @@ func diffnavCommand(run Run, cfg Integrations, tools ToolResolver) (*exec.Cmd, e
 	if cfg.Diffnav.Watch {
 		pipeline = fmt.Sprintf("git -C %s diff %s...HEAD | diffnav --watch", shellQuote(expandHome(wt)), shellQuote(base))
 	}
-	return exec.Command("bash", "-lc", pipeline), nil
+	cmd := exec.Command("bash", "-lc", pipeline)
+	appendCmdEnv(cmd, "DIFFNAV_CONFIG_DIR="+cockpitThemePath("diffnav"))
+	return cmd, nil
 }
 
 func openInDiffnav(run Run, cfg Integrations, tools ToolResolver) tea.Cmd {

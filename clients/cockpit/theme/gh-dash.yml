@@ -1,0 +1,19 @@
+theme:
+  colors:
+    text:
+      primary: "#c8ccd4"
+      secondary: "#8b93a1"
+      inverted: "#12141a"
+      faint: "#6b7280"
+      warning: "#ff7b72"
+      success: "#7ee787"
+    background:
+      selected: "#1f2a44"
+    border:
+      primary: "#2b2f3a"
+      secondary: "#3a3f4b"
+      faint: "#1c1f27"
+keybindings:
+  universal:
+    - key: q
+      builtin: quit

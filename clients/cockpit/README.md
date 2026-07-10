@@ -45,8 +45,10 @@ Optional integrations are discovered at runtime and fail closed with a notice:
 `diffnav` for full-run file review, `delta` for inline selected-file previews,
 `gh` plus the `gh dash` extension for repo-wide triage, `gh` plus the
 `gh enhance` extension for GitHub Actions triage, and a platform browser opener
-(`open` on macOS or `xdg-open` on Linux) for PR links. `diffnav` looks best with
-a Nerd Font because its file tree uses icon glyphs.
+(`open` on macOS or `xdg-open` on Linux) for PR links. Cockpit ships generated
+theme fragments under `theme/` and passes the packaged `diffnav`/`gh enhance`
+theme environment when launching those tools. `diffnav` looks best with a Nerd
+Font because its file tree uses icon glyphs.
 
 ```bash
 cd clients/cockpit
@@ -79,6 +81,7 @@ FOREMAN_SERVER_URL=http://127.0.0.1:4766 COCKPIT_DUMP=1 ./foreman-cockpit
 enter     enter/focus the selected drill-down view
 esc       leave the drill-down view and return focus to the task list
 ↑↓ / j/k  move the highlighted line in focused messages/events/logs/reports/files/pr
+ctrl+d/u  half-page down/up in the focused drill-down view
 mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls that view
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–7 jump to a tab and focus it
 o/enter   open selected row in nvim; on pr, open PR in browser
@@ -86,7 +89,7 @@ d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               a    approve READY task
 e         edit READY task JSON in nvim        g/G  project/global scope / gh dash
 C         inspect CI in gh enhance            r/R  retry / reset
-/         search                              space collapse/expand group     q quit
+/         search                              space collapse/expand group     ? help     q quit
 ```
 
 Opening a drill-down view with `enter`, `tab`, or `1`–`7` selects its newest
@@ -126,8 +129,13 @@ pr:
 ```
 
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
-command output: `diffnav` and `gh dash` run through `tea.ExecProcess`, and inline
-file previews read a completed `git diff | delta`/plain `git diff` command.
+command output: `diffnav`, `gh dash`, and `gh enhance` run through
+`tea.ExecProcess`, and inline file previews read a completed
+`git diff | delta`/plain `git diff` command. Generated theme fragments live in
+`theme/`: `tokens.yaml` drives cockpit color constants, `gh-dash.yml`,
+`enhance.env`, `diffnav/config.yml`, `delta.gitconfig`, and `glamour.json`.
+There is not yet a global theme installer; handoffs use packaged env where the
+tool supports it.
 
 ## nvim open modes
 

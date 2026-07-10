@@ -103,6 +103,9 @@ func TestDiffnavCommandValidationAndShape(t *testing.T) {
 	if !strings.Contains(cmd.Args[2], "git -C '") || !strings.Contains(cmd.Args[2], "origin/dev") || !strings.Contains(cmd.Args[2], "| diffnav") {
 		t.Fatalf("unexpected diffnav pipeline %q", cmd.Args[2])
 	}
+	if !hasEnv(cmd.Env, "DIFFNAV_CONFIG_DIR=") {
+		t.Fatalf("expected diffnav command to inherit theme config dir, env=%v", cmd.Env)
+	}
 	if _, err := diffnavCommand(Run{RunID: "run-1"}, cfg, fakeTools{"diffnav": true}); err == nil || !strings.Contains(err.Error(), "no worktree") {
 		t.Fatalf("expected empty worktree error, got %v", err)
 	}
@@ -139,6 +142,9 @@ func TestGhEnhanceCommandUsesSelectedRunWorktree(t *testing.T) {
 	if cmd.Dir != "/tmp/wt" {
 		t.Fatalf("expected command dir to be selected worktree, got %q", cmd.Dir)
 	}
+	if !hasEnv(cmd.Env, "ENHANCE_THEME=tokyonight") {
+		t.Fatalf("expected gh enhance theme env, got %v", cmd.Env)
+	}
 	if _, err := ghEnhanceCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{"gh": true}); err == nil || !strings.Contains(err.Error(), "gh enhance not found") {
 		t.Fatalf("expected missing gh enhance extension error, got %v", err)
 	}
@@ -159,6 +165,14 @@ func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 	if !strings.Contains(cmd.Args[2], "git -C '/tmp/wt' diff 'origin/dev'...HEAD -- 'src/a file.go'") {
 		t.Fatalf("unexpected git diff command %q", cmd.Args[2])
 	}
+}
+func hasEnv(env []string, prefix string) bool {
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPRStatusMapsFromRunProjection(t *testing.T) {

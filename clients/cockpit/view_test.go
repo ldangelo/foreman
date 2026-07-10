@@ -108,6 +108,17 @@ func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 		t.Fatalf("expected focused down to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
 	}
 
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = updated.(model)
+	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() <= bottomRow-2 {
+		t.Fatalf("expected focused ctrl+d to page viewer down only, got sel=%d row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor())
+	}
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = updated.(model)
+	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() >= bottomRow-2 {
+		t.Fatalf("expected focused ctrl+u to page viewer up only, got sel=%d row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor())
+	}
+
 	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(model)
 	if m.viewFocused {
@@ -635,6 +646,15 @@ func TestUppercaseCReportsMissingEnhanceExtension(t *testing.T) {
 	}
 	if done.err == nil || !strings.Contains(done.err.Error(), "gh enhance not found") {
 		t.Fatalf("expected missing extension error, got %v", done.err)
+	}
+}
+
+func TestQuestionMarkShowsKeymapHelp(t *testing.T) {
+	m := newModel(NewMockClient())
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(model)
+	if !strings.Contains(m.notice, "ctrl+d/u") || !strings.Contains(m.notice, "G gh dash") || !strings.Contains(m.notice, "C gh enhance") {
+		t.Fatalf("expected keymap help notice, got %q", m.notice)
 	}
 }
 

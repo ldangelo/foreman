@@ -41,7 +41,7 @@ One screen. No view switching. Three regions plus chrome.
 │   TASK-329  failed  ✗     │─────────────────────────────────────────────────  │
 │                           │  ▸ open DEVELOPER_REPORT.md in nvim (action bar)   │  action bar
 ├───────────────────────────┴───────────────────────────────────────────────────┤
-│ ↑↓/j/k tasks  enter view  esc tasks  o open  d diff  r retry  R reset  q quit │  keybar
+│ ↑↓/j/k tasks  enter view  ctrl+d/u page  D diffnav  G gh dash  C enhance  ? help │  keybar
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -110,6 +110,7 @@ Global:
 | `↑`/`↓`, `j`/`k` | move the highlighted line in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
 | message rows | select whole messages by header; show `messages <current>/<total>` in both the tab and run header; keep the selected message body preview visible with the header when space allows |
 | mouse wheel | scroll the pane under the pointer: task list on the left, active drill-down view on the right |
+| `ctrl+d` / `ctrl+u` | half-page down/up in the focused drill-down view |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
 | `1`–`7` | jump directly to a tab and focus it |
 | `space` | collapse/expand the focused group |
@@ -118,6 +119,8 @@ Global:
 | `r` | retry selected run/phase (`POST /commands`) |
 | `R` | reset selected task (confirmed) |
 | `G` | open `gh dash` when enabled and available |
+| `C` | open `gh enhance` for the selected run when enabled and available |
+| `?` | show the compact cockpit keymap help notice |
 | `q` | quit |
 
 Entering a view selects its newest rendered line. Live updates preserve a moved viewer cursor by rendered line identity when possible instead of snapping back to the bottom.
@@ -177,6 +180,11 @@ default avoids nesting a TUI inside a TUI.
 - `C` opens `gh enhance` as a full-screen handoff for the selected run worktree
   when the GitHub CLI and extension are available; use it from the `pr` tab to
   inspect failing/pending Actions checks and rerun jobs.
+- The cockpit uses generated theme artifacts from `clients/cockpit/theme/`:
+  `tokens.yaml` drives Lip Gloss constants, Glamour JSON, `gh-dash.yml`,
+  `enhance.env`, `diffnav/config.yml`, and `delta.gitconfig`. Handoffs pass
+  packaged env for `diffnav` (`DIFFNAV_CONFIG_DIR`) and `gh enhance`
+  (`ENHANCE_THEME`) where supported.
 
 Reports are markdown and render with Glamour in the drill-down preview before
 the operator chooses to open them in nvim.

@@ -71,7 +71,7 @@ func newModel(c Client) model {
 }
 
 func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
-	r, _ := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(56))
+	r := newGlamourRenderer()
 	return model{
 		client:       c,
 		config:       cfg,
@@ -222,7 +222,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.viewFocused {
+		switch msg.Type {
+		case tea.KeyCtrlD:
+			return m, m.moveRow(max(1, m.viewerBodyWindowHeight()/2))
+		case tea.KeyCtrlU:
+			return m, m.moveRow(-max(1, m.viewerBodyWindowHeight()/2))
+		}
+	}
+
 	switch msg.String() {
+	case "?":
+		m.notice = "keys: enter focus · esc task list · ctrl+d/u page · 1-7 tabs · o open · D diffnav · G gh dash · C gh enhance"
 	case "q":
 		return m, tea.Quit
 	case "esc":

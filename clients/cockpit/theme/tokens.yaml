@@ -1,0 +1,36 @@
+# Foreman unified terminal theme — all values #RRGGBB truecolor unless noted.
+text:
+  primary: "#c8ccd4"
+  secondary: "#8b93a1"
+  faint: "#6b7280"
+  inverted: "#12141a"
+accent: "#56b6c2"
+accent2: "#b392f0"
+success: "#7ee787"
+warning: "#e5c07b"
+danger: "#ff7b72"
+border:
+  primary: "#2b2f3a"
+  secondary: "#3a3f4b"
+  faint: "#1c1f27"
+bg:
+  canvas: "transparent"
+  selected: "#1f2a44"
+  emphasis: "#13303a"
+  failure: "#3a1414"
+  action: "#0f1a12"
+  bar: "#0c0e13"
+  header: "#161922"
+diff:
+  add: "#7ee787"
+  remove: "#ff7b72"
+  addBg: "#12261a"
+  addEmphasisBg: "#1d3f28"
+  removeBg: "#2a1315"
+  removeEmphasisBg: "#4a1b1b"
+  syntaxTheme: "tokyonight_night"
+tools:
+  ghEnhanceTheme: "tokyonight"
+font:
+  family: "CommitMono Nerd Font"
+  icons: "nerd-fonts-status"

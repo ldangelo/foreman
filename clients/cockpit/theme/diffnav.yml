@@ -1,0 +1,6 @@
+ui:
+  sideBySide: true
+  icons: nerd-fonts-status
+  colorFileNames: true
+  showDiffStats: true
+  hideHeader: false

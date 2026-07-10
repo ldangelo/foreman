@@ -1,0 +1,13 @@
+[delta]
+    syntax-theme = tokyonight_night
+    side-by-side = true
+    line-numbers = true
+    navigate = true
+    minus-style                = syntax "#2a1315"
+    minus-emph-style           = syntax "#4a1b1b"
+    plus-style                 = syntax "#12261a"
+    plus-emph-style            = syntax "#1d3f28"
+    file-style                 = "#56b6c2" bold
+    hunk-header-style          = "#8b93a1"
+    line-numbers-minus-style   = "#ff7b72"
+    line-numbers-plus-style    = "#7ee787"

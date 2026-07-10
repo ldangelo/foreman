@@ -142,9 +142,9 @@ func (m model) renderNotice(w int) string {
 }
 
 func (m model) renderKeyBar(w int) string {
-	hints := "↑↓/j/k scroll focused view · esc task list · ⇥ tab · o open · y copy id · a approve · e edit · d diff · r retry · R reset · / search · g scope · q quit"
+	hints := "↑↓/j/k scroll · ctrl+d/u page · esc task list · ⇥ tab · o open · D diffnav · G gh dash · C gh enhance · ? help · q quit"
 	if !m.viewFocused {
-		hints = "↑↓/j/k task · enter view · ⇥ tab · o open · y copy id · a approve · e edit · d diff · r retry · R reset · / search · g scope · q quit"
+		hints = "↑↓/j/k task · enter view · ⇥ tab · o open · D diffnav · G gh dash · C gh enhance · / search · ? help · q quit"
 	}
 	return keyBarStyle.Width(w).Render(clip(" "+hints, w))
 }
