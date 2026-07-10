@@ -50,9 +50,10 @@ One screen. No view switching. Three regions plus chrome.
 A single scrollable list, always grouped in this fixed order:
 
 - **RUNNING** — runs with status `pending | running | in_progress | cooldown`.
-  Each row shows a state glyph, task id, and current phase. (Q1)
+  Each row shows a state glyph, task title when available (task id fallback), and
+  current phase. (Q1)
 - **READY** — current-project tasks that are not terminal/running. Each row
-  shows a state glyph, task title, priority, and type; selecting one shows the
+  shows a state glyph, priority, task title, and type; selecting one shows the
   id, status, workflow, dependencies, project, and description, plus approve,
   edit, and create actions. (Q2)
 - **RECENT** — terminal runs (`completed | merged | pr-created | failed | reset`),

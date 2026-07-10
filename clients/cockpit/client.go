@@ -36,6 +36,8 @@ type Run struct {
 	Status     string
 	Phase      string
 	Priority   string
+	Title      string
+	TaskType   string
 	Verdict    string
 	Worktree   string
 	Branch     string
@@ -211,6 +213,7 @@ func (*mockClient) Runs() []Run {
 	return []Run{
 		{
 			Group: "RUNNING", TaskID: "foreman-a1b2c", RunID: "a1b2c3d4", Status: "running",
+			Title: "Implement auth middleware", TaskType: "feature",
 			Phase: "developer", Priority: "P1", Verdict: "unknown", Elapsed: "4m 12s",
 			Worktree: "~/.foreman/worktrees/foreman-a1b2c", Branch: "foreman-a1b2c",
 			Last:     "12s ago · progress_update",
@@ -219,6 +222,7 @@ func (*mockClient) Runs() []Run {
 		},
 		{
 			Group: "RUNNING", TaskID: "foreman-9f8e7", RunID: "9f8e7d6c", Status: "running",
+			Title: "Verify VCS backend", TaskType: "test",
 			Phase: "qa", Priority: "P0", Verdict: "retrying", Elapsed: "9m 47s",
 			Worktree: "~/.foreman/worktrees/foreman-9f8e7", Branch: "foreman-9f8e7",
 			Last:     "31s ago · phase.start",
@@ -227,6 +231,7 @@ func (*mockClient) Runs() []Run {
 		},
 		{
 			Group: "RUNNING", TaskID: "foreman-5a4b3", RunID: "5a4b3c2d", Status: "cooldown",
+			Title: "Address CodeRabbit findings", TaskType: "bug",
 			Phase: "cr-developer", Priority: "P2", Verdict: "retrying", Elapsed: "1m 06s",
 			Worktree: "~/.foreman/worktrees/foreman-5a4b3", Branch: "foreman-5a4b3",
 			Last: "6s ago · retry.scheduled", Attention: "retrying: coderabbit_findings (2)",
@@ -235,6 +240,7 @@ func (*mockClient) Runs() []Run {
 		},
 		{
 			Group: "RECENT", TaskID: "foreman-77aa1", RunID: "77aa11bb", Status: "merged",
+			Title: "Merge refinery PR", TaskType: "task",
 			Phase: "merge", Priority: "P1", Verdict: "pass", Elapsed: "—",
 			Worktree: "(cleaned)", Branch: "foreman-77aa1 (deleted)",
 			Last:     "38m ago · run.pr.merge",
@@ -243,6 +249,7 @@ func (*mockClient) Runs() []Run {
 		},
 		{
 			Group: "RECENT", TaskID: "foreman-33cc4", RunID: "33cc44dd", Status: "failed",
+			Title: "Resolve finalize conflict", TaskType: "bug",
 			Phase: "finalize", Priority: "P2", Verdict: "fail", Elapsed: "—",
 			Worktree: "~/.foreman/worktrees/foreman-33cc4", Branch: "foreman-33cc4",
 			Last: "1h 12m ago · run.failed", Attention: "failed: merge_conflict at finalize",
@@ -678,6 +685,7 @@ func (c *httpClient) Runs() []Run {
 		run := Run{
 			Group: group, TaskID: taskID, RunID: str(r, "run_id", "id"),
 			Status: status, Phase: phase, Priority: str(r, "priority"),
+			Title: str(r, "title", "task_title"), TaskType: str(r, "type", "task_type"),
 			Verdict: str(r, "verdict"), Worktree: str(r, "worktree"), Branch: str(r, "branch", "branch_name"),
 			ProjectID: str(r, "project_id"), Last: str(r, "updated_at"),
 			Summary: str(r, "status_text", "summary"), Pipeline: pipe(active, failIdx),
@@ -687,6 +695,8 @@ func (c *httpClient) Runs() []Run {
 		}
 		if hasTask {
 			run.Priority = task.Priority
+			run.Title = task.Title
+			run.TaskType = task.TaskType
 			if run.Summary == "" {
 				run.Summary = task.Title
 			}

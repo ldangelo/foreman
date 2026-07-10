@@ -21,15 +21,16 @@ authoritative state.
   state are active (`in-progress` and `in_progress` are treated the same);
   stale in-progress run projections for closed/failed tasks are shown as
   recent, not running.
-- Task rows show the task title plus priority/type; the selected task detail
-  shows id, status, workflow, dependencies, project, and description. READY task
+- Run rows show the task title when available, falling back to the task id; task
+  rows show priority, title, and type. The selected task detail shows id, status,
+  workflow, dependencies, project, and description. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
   edit task JSON via `task.update`, and `n` to create a new task JSON draft via
   `task.create`.
 - Right column: color-coded run header, an animated phase rail, and a
   drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
 - Panes are height-bounded to the current terminal; the left list keeps the
-  selected row visible instead of overflowing the screen.
+  selected row visible and expands up to 40 columns without starving the right pane.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
   session when `$NVIM` is set, otherwise suspend-and-launch inline. `files`
   offers a selected-file nvim diff (`d`), an inline selected-file preview backed

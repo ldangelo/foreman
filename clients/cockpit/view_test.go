@@ -72,11 +72,59 @@ func TestReadyTaskRowShowsTitlePriorityAndType(t *testing.T) {
 	m.buildItems()
 
 	out := stripANSI(m.renderLeft(36, 8))
-	if !strings.Contains(out, "Create cockpit task") || !strings.Contains(out, "P1 feature") {
+	if !strings.Contains(out, "Create cockpit task") || !strings.Contains(out, "P1") || !strings.Contains(out, "feature") {
 		t.Fatalf("expected task title, priority, and type in left list, got:\n%s", out)
 	}
 	if strings.Contains(out, "task-ready") {
 		t.Fatalf("expected task id to move out of the list row, got:\n%s", out)
+	}
+}
+
+func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-run", Title: "Fix failing CI", RunID: "run-1", Status: "running", Phase: "qa"}}
+	m.tasks = nil
+	m.buildItems()
+
+	out := stripANSI(m.renderLeft(40, 6))
+	if !strings.Contains(out, "Fix failing CI") || !strings.Contains(out, "qa") {
+		t.Fatalf("expected run title and phase in row, got:\n%s", out)
+	}
+	if strings.Contains(out, "task-run") {
+		t.Fatalf("expected task id to be hidden when run title is available, got:\n%s", out)
+	}
+}
+
+func TestTaskRowPriorityBadgeUsesPriorityOnly(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.tasks = []Task{{TaskID: "task-p0", Title: "Fix production", TaskType: "bug", Priority: "P0", Status: "failed"}}
+	m.buildItems()
+
+	out := stripANSI(m.renderLeft(40, 6))
+	if !strings.Contains(out, "P0") || !strings.Contains(out, "Fix production") || !strings.Contains(out, "bug") {
+		t.Fatalf("expected separate priority badge, title, and type, got:\n%s", out)
+	}
+	if strings.Contains(out, "P0 bug") {
+		t.Fatalf("expected priority and type to be separated by the title, got:\n%s", out)
+	}
+}
+
+func TestLeftPaneWidthKeepsRightPaneUsable(t *testing.T) {
+	for _, tc := range []struct {
+		total int
+		want  int
+	}{
+		{total: 120, want: 40},
+		{total: 92, want: 40},
+		{total: 80, want: 35},
+		{total: 70, want: 32},
+	} {
+		if got := leftPaneWidth(tc.total); got != tc.want {
+			t.Fatalf("leftPaneWidth(%d) = %d, want %d", tc.total, got, tc.want)
+		}
+		if right := tc.total - leftPaneWidth(tc.total) - 1; tc.total >= 77 && right < 44 {
+			t.Fatalf("leftPaneWidth(%d) leaves right pane width %d", tc.total, right)
+		}
 	}
 }
 

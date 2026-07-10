@@ -131,7 +131,7 @@ func TestHTTPClientTreatsHyphenatedInProgressTaskAsRunning(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/tasks":
-			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"active-task","title":"Active task","status":"in-progress","project_id":"proj-live"},{"task_id":"ready-task","title":"Ready task","status":"backlog","project_id":"proj-live"}]}`))
+			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"active-task","title":"Active task","task_type":"feature","status":"in-progress","project_id":"proj-live"},{"task_id":"ready-task","title":"Ready task","status":"backlog","project_id":"proj-live"}]}`))
 		case "/api/v1/runs":
 			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"active-run","task_id":"active-task","status":"in_progress","current_phase":"developer","updated_at":"2026-07-10T00:00:00Z"}]}`))
 		default:
@@ -144,6 +144,9 @@ func TestHTTPClientTreatsHyphenatedInProgressTaskAsRunning(t *testing.T) {
 	runs := client.Runs()
 	if len(runs) != 1 || runs[0].RunID != "active-run" || runs[0].Group != "RUNNING" {
 		t.Fatalf("expected hyphenated in-progress task with active run to be RUNNING, got %#v", runs)
+	}
+	if runs[0].Title != "Active task" || runs[0].TaskType != "feature" {
+		t.Fatalf("expected run title/type from task projection, got title=%q type=%q", runs[0].Title, runs[0].TaskType)
 	}
 	tasks := client.Dispatchable()
 	if len(tasks) != 1 || tasks[0].TaskID != "ready-task" {

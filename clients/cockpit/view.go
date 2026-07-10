@@ -37,10 +37,7 @@ func (m model) View() string {
 		return "starting cockpit…"
 	}
 	total := m.width
-	leftW := 36
-	if total < 92 {
-		leftW = 30
-	}
+	leftW := leftPaneWidth(total)
 	rightW := total - leftW - 1
 	if rightW < 20 {
 		rightW = 20
@@ -66,6 +63,20 @@ func (m model) View() string {
 		writeDebugDump(m, leftW, rightW, bodyH, rightRaw, out)
 	}
 	return out
+}
+
+func leftPaneWidth(total int) int {
+	leftW := 40
+	if total-leftW-1 < 44 {
+		leftW = total - 45
+	}
+	if leftW < 32 {
+		leftW = 32
+	}
+	if leftW > 40 {
+		leftW = 40
+	}
+	return leftW
 }
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -237,17 +248,21 @@ func (m model) renderRow(i int, it Item, w int) string {
 	idColor := cText
 	if it.IsTask {
 		state = it.Task.Status
-		left = it.Task.Title
+		left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.Title)
 		if left == "" {
-			left = it.Task.Summary
+			left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.Summary)
 		}
 		if left == "" {
-			left = it.Task.TaskID
+			left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.TaskID)
 		}
-		right = strings.TrimSpace(it.Task.Priority + " " + it.Task.TaskType)
+		right = it.Task.TaskType
 		rightColor = cYellow
 	} else {
-		state, left = runState(it.Run), it.Run.TaskID
+		state = runState(it.Run)
+		left = it.Run.Title
+		if left == "" {
+			left = it.Run.TaskID
+		}
 		if it.Run.Group == "RUNNING" {
 			right, rightColor = it.Run.Phase, cCyan
 		} else {
