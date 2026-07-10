@@ -2074,6 +2074,10 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
         updatedTaskIds = update.taskIds;
         if (updatedTaskIds.length > 0) {
           tasks = update.tasks;
+          // Reapply filter if active, so updated tasks don't bypass the filter
+          if (filter) {
+            tasks = applyStatusFilter(tasks, filter);
+          }
         }
       } else {
         const update = await pollBoardInboxTaskUpdates(projectPath, boardInboxLastSeenId, 100, boardInboxCursorTasked);
@@ -2089,6 +2093,10 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
             nextTasks = applyBoardTaskUpdate(nextTasks, task, taskId, sortMode);
           }
           tasks = nextTasks;
+          // Reapply filter if active, so updated tasks don't bypass the filter
+          if (filter) {
+            tasks = applyStatusFilter(tasks, filter);
+          }
           updatedTaskIds = update.taskIds;
         }
       }
@@ -2229,6 +2237,10 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       try {
         tasks = await loadBoardTasks(projectPath);
         tasks = sortBoardColumns(tasks, sortMode);
+        // Reapply filter if one was active, so filtered-out statuses don't reappear
+        if (filter) {
+          tasks = applyStatusFilter(tasks, filter);
+        }
         normalizeNavRowIndex(nav, tasks);
         refreshStatus = "refreshed";
         refreshedAt = new Date().toLocaleTimeString();
