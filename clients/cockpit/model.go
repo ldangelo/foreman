@@ -8,13 +8,13 @@ import (
 	"github.com/charmbracelet/glamour"
 )
 
-var tabNames = []string{"summary", "messages", "events", "logs", "reports", "files"}
-
-const firstOpenableTab = 3 // logs
+var tabNames = []string{"summary", "messages", "events", "logs", "reports", "files", "pr"}
 
 type model struct {
 	client Client
+	config Config
 	editor EditorConfig
+	tools  ToolResolver
 	glam   *glamour.TermRenderer
 
 	runs     []Run
@@ -27,6 +27,10 @@ type model struct {
 	logs    []string
 	reports []Report
 	files   []FileChange
+	pr      PRStatus
+
+	diffPreviews map[string]DiffPreview
+	diffLoading  map[string]bool
 
 	tab         int
 	viewer      Viewer
@@ -54,19 +58,30 @@ type taskActionDoneMsg struct {
 	taskID string
 	err    error
 }
+type prOpenDoneMsg struct {
+	err error
+}
 type taskCopyDoneMsg struct {
 	taskID string
 	err    error
 }
 
 func newModel(c Client) model {
+	return newModelWithConfig(c, defaultConfig(), defaultTools)
+}
+
+func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 	r, _ := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(56))
 	return model{
-		client:   c,
-		editor:   defaultEditorConfig(),
-		glam:     r,
-		taskList: NewTaskList(),
-		tab:      0,
+		client:       c,
+		config:       cfg,
+		editor:       cfg.Editor,
+		tools:        tools,
+		glam:         r,
+		taskList:     NewTaskList(),
+		tab:          0,
+		diffPreviews: map[string]DiffPreview{},
+		diffLoading:  map[string]bool{},
 	}
 }
 
@@ -97,7 +112,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMsg:
-		return m.handleMouse(msg), nil
+		return m.handleMouse(msg)
 	case tickMsg:
 
 		m.anim++
@@ -108,17 +123,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runs, m.tasks = msg.runs, msg.tasks
 		m.buildItems()
 		m.loadDetail()
+		var cmd tea.Cmd
 		if m.viewerTab() {
 			if hadViewerRows {
 				m.refreshViewer(viewerPreserve)
 			} else {
 				m.refreshViewer(viewerBottom)
 			}
+			cmd = m.maybeLoadSelectedDiffPreview()
 		}
 		if len(msg.errors) > 0 {
 			m.notice = formatClientErrors(msg.errors)
 		}
-		return m, nil
+		return m, cmd
 
 	case nvimDoneMsg:
 		if msg.err != nil {
@@ -146,6 +163,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case diffnavDoneMsg:
+		if msg.err != nil {
+			m.notice = "diffnav: " + msg.err.Error()
+		} else {
+			m.notice = "closed diffnav"
+		}
+		return m, nil
+
+	case ghDashDoneMsg:
+		if msg.err != nil {
+			m.notice = "gh dash: " + msg.err.Error()
+		} else {
+			m.notice = "closed gh dash"
+		}
+		return m, nil
+
+	case diffPreviewMsg:
+		if m.diffPreviews == nil {
+			m.diffPreviews = map[string]DiffPreview{}
+		}
+		if m.diffLoading != nil {
+			delete(m.diffLoading, msg.key)
+		}
+		m.diffPreviews[msg.key] = msg.preview
+		if m.viewerTab() {
+			m.refreshViewer(viewerPreserve)
+		}
+		return m, nil
+
+	case prOpenDoneMsg:
+		if msg.err != nil {
+			m.notice = "open PR: " + msg.err.Error()
+		} else {
+			m.notice = "opened PR in browser"
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -169,34 +223,30 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "up":
 		if m.viewFocused {
-			m.moveRow(-1)
-		} else {
-			m.moveSel(-1)
+			return m, m.moveRow(-1)
 		}
+		return m, m.moveSel(-1)
 	case "down":
 		if m.viewFocused {
-			m.moveRow(1)
-		} else {
-			m.moveSel(1)
+			return m, m.moveRow(1)
 		}
+		return m, m.moveSel(1)
 	case "k":
 		if m.viewFocused {
-			m.moveRow(-1)
-		} else {
-			m.moveSel(-1)
+			return m, m.moveRow(-1)
 		}
+		return m, m.moveSel(-1)
 	case "j":
 		if m.viewFocused {
-			m.moveRow(1)
-		} else {
-			m.moveSel(1)
+			return m, m.moveRow(1)
 		}
+		return m, m.moveSel(1)
 	case "tab":
-		m.selectTab((m.tab + 1) % len(tabNames))
+		return m, m.selectTab((m.tab + 1) % len(tabNames))
 	case "shift+tab":
-		m.selectTab((m.tab - 1 + len(tabNames)) % len(tabNames))
-	case "1", "2", "3", "4", "5", "6":
-		m.selectTab(int(msg.String()[0] - '1'))
+		return m, m.selectTab((m.tab - 1 + len(tabNames)) % len(tabNames))
+	case "1", "2", "3", "4", "5", "6", "7":
+		return m, m.selectTab(int(msg.String()[0] - '1'))
 	case "/":
 		m.viewFocused = false
 		m.taskList.StartSearch()
@@ -207,17 +257,23 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.taskList.ToggleSelectedGroup()
 		m.buildItems()
 	case "o":
+		if tabNames[m.tab] == "pr" {
+			return m, m.openSelectedPR()
+		}
 		if m.openableTab() {
 			t := resolveTarget(m)
 			return m, openInNvim(m.editor, t, false)
 		}
 	case "enter":
+		if tabNames[m.tab] == "pr" && m.viewFocused {
+			return m, m.openSelectedPR()
+		}
 		if m.viewerTab() {
 			if !m.viewFocused {
 				m.scrollToBottom()
 			}
 			m.viewFocused = true
-			return m, nil
+			return m, m.maybeLoadSelectedDiffPreview()
 		}
 		if run, ok := m.selectedRun(); ok {
 			m.notice = "attach → GET /api/v1/runs/" + run.RunID + "/attach"
@@ -239,6 +295,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			t := resolveTarget(m)
 			return m, openInNvim(m.editor, t, true)
 		}
+	case "D":
+		if tabNames[m.tab] == "files" {
+			if run, ok := m.selectedRun(); ok {
+				return m, openInDiffnav(run, m.config.Integrations, m.tools)
+			}
+		}
+	case "G":
+		return m, openGhDash(m.config.Integrations, m.tools)
 	case "r":
 		if run, ok := m.selectedRun(); ok {
 			m.notice = "retry queued → POST /api/v1/commands (run " + run.RunID + ")"
@@ -251,23 +315,25 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) moveSel(delta int) {
+func (m *model) moveSel(delta int) tea.Cmd {
 	if !m.taskList.Move(delta) {
-		return
+		return nil
 	}
 	m.resetViewerCursor()
 	m.loadDetail()
 	if m.viewerTab() {
 		m.scrollToBottom()
 	}
+	return m.maybeLoadSelectedDiffPreview()
 }
 
-func (m *model) moveRow(delta int) {
+func (m *model) moveRow(delta int) tea.Cmd {
 	m.refreshViewer(viewerPreserve)
 	m.viewer.Move(delta, m.viewerBodyWindowHeight())
-	if tabNames[m.tab] == "reports" {
+	if tabNames[m.tab] == "reports" || tabNames[m.tab] == "files" {
 		m.refreshViewer(viewerPreserve)
 	}
+	return m.maybeLoadSelectedDiffPreview()
 }
 
 func (m *model) resetViewerCursor() {
@@ -278,10 +344,11 @@ func (m *model) scrollToBottom() {
 	m.refreshViewer(viewerBottom)
 }
 
-func (m *model) selectTab(tab int) {
+func (m *model) selectTab(tab int) tea.Cmd {
 	m.tab = tab
 	m.selectInitialViewerLine()
 	m.viewFocused = m.viewerTab()
+	return m.maybeLoadSelectedDiffPreview()
 }
 
 func (m *model) selectInitialViewerLine() {
@@ -359,7 +426,7 @@ func (m model) viewerBodyWindowHeight() int {
 	}
 
 	actionLines := 0
-	if !isRun || m.openableTab() {
+	if !isRun || m.openableTab() || tabNames[m.tab] == "pr" {
 		if action := m.renderAction(w); action != "" {
 			actionLines = len(strings.Split(action, "\n"))
 		}
@@ -390,10 +457,10 @@ func (m model) mouseOverRightPane(msg tea.MouseMsg) bool {
 	return msg.X > m.leftPaneWidth()
 }
 
-func (m model) handleMouse(msg tea.MouseMsg) model {
+func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 	ev := tea.MouseEvent(msg)
 	if !ev.IsWheel() {
-		return m
+		return m, nil
 	}
 
 	delta := mouseWheelStep
@@ -403,18 +470,41 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 
 	if m.mouseOverRightPane(msg) && m.viewerTab() {
 		m.viewFocused = true
-		m.moveRow(delta)
-		return m
+		return m, m.moveRow(delta)
 	}
 
 	m.viewFocused = false
-	m.moveSel(delta)
-	return m
+	return m, m.moveSel(delta)
 }
 
-func (m model) viewerTab() bool { return m.tab > 0 }
+func tabNameAt(tab int) string {
+	if tab < 0 || tab >= len(tabNames) {
+		return ""
+	}
+	return tabNames[tab]
+}
 
-func (m model) openableTab() bool { return m.tab >= firstOpenableTab }
+func tabOpenable(name string) bool {
+	switch name {
+	case "logs", "reports", "files":
+		return true
+	default:
+		return false
+	}
+}
+
+func tabViewer(name string) bool {
+	switch name {
+	case "messages", "events", "logs", "reports", "files", "pr":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m model) viewerTab() bool { return tabViewer(tabNameAt(m.tab)) }
+
+func (m model) openableTab() bool { return tabOpenable(tabNameAt(m.tab)) }
 
 func (m *model) buildItems() {
 	m.taskList.SetData(m.runs, m.tasks)
@@ -472,6 +562,7 @@ func (m *model) loadDetail() {
 	run, ok := m.selectedRun()
 	if !ok {
 		m.msgs, m.events, m.logs, m.reports, m.files = nil, nil, nil, nil, nil
+		m.pr = PRStatus{}
 		return
 	}
 	m.msgs = m.client.Messages(run.RunID)
@@ -479,6 +570,13 @@ func (m *model) loadDetail() {
 	m.logs = m.client.Logs(run.RunID)
 	m.reports = m.client.Reports(run.RunID)
 	m.files = m.client.Files(run.RunID)
+	m.pr = m.client.PR(run.RunID)
+	if m.pr.URL == "" {
+		base := prStatusFromRun(run)
+		if base.URL != "" {
+			m.pr = base
+		}
+	}
 	if errors := m.client.DrainErrors(); len(errors) > 0 {
 		m.notice = formatClientErrors(errors)
 	}
@@ -491,6 +589,43 @@ func formatClientErrors(errors []string) string {
 }
 func (m model) selectedItem() (Item, bool) {
 	return m.taskList.SelectedItem()
+}
+func (m *model) maybeLoadSelectedDiffPreview() tea.Cmd {
+	if tabNames[m.tab] != "files" {
+		return nil
+	}
+	run, ok := m.selectedRun()
+	if !ok {
+		return nil
+	}
+	idx := m.selectedFileIndex()
+	if idx < 0 || idx >= len(m.files) {
+		return nil
+	}
+	path := m.files[idx].Path
+	base := selectedDiffBase(m.config.Integrations)
+	key := diffPreviewKey(run, path, base)
+	if _, ok := m.diffPreviews[key]; ok {
+		return nil
+	}
+	if m.diffLoading == nil {
+		m.diffLoading = map[string]bool{}
+	}
+	if m.diffLoading[key] {
+		return nil
+	}
+	m.diffLoading[key] = true
+	return loadDiffPreview(run, path, m.config.Integrations, m.tools)
+}
+
+func (m model) openSelectedPR() tea.Cmd {
+	cmd, err := openPRCommand(m.pr, m.tools)
+	if err != nil {
+		return func() tea.Msg { return prOpenDoneMsg{err: err} }
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return prOpenDoneMsg{err: err}
+	})
 }
 
 func (m model) selectedTask() (Task, bool) {

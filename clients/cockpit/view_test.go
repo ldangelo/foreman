@@ -527,6 +527,54 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	}
 }
 
+func TestPRTabRendersProjectedStatusAndAction(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{
+			Group:      "RUNNING",
+			TaskID:     "task-1",
+			RunID:      "run-1",
+			Status:     "running",
+			Phase:      "pr-wait",
+			PRURL:      "https://github.com/acme/repo/pull/42",
+			PRState:    "open",
+			BranchName: "foreman/task-1",
+			BaseBranch: "main",
+		}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 6
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "pr 1") || !strings.Contains(out, "https://github.com/acme/repo/pull/42") || !strings.Contains(out, "open PR in browser") {
+		t.Fatalf("expected PR tab status and browser action, got:\n%s", out)
+	}
+}
+
+func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
+	client := &mutableClient{
+		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
+		files: []FileChange{{Change: "M", Path: "src/a.go", Stat: "+1 -1"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 5
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(m.config.Integrations))
+	m.diffPreviews[key] = DiffPreview{RunID: "run-1", Path: "src/a.go", Lines: []string{"diff --git a/src/a.go b/src/a.go", "+added"}}
+	delete(m.diffLoading, key)
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "diff --git a/src/a.go b/src/a.go") || !strings.Contains(out, "+added") {
+		t.Fatalf("expected selected file diff preview, got:\n%s", out)
+	}
+}
+
 type mutableClient struct {
 	mockClient
 	runs     []Run

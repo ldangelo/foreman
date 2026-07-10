@@ -30,21 +30,26 @@ type Phase struct {
 
 // Run is a projection of an orchestration run (GET /api/v1/runs).
 type Run struct {
-	Group     string // RUNNING | RECENT
-	TaskID    string
-	RunID     string
-	Status    string
-	Phase     string
-	Priority  string
-	Verdict   string
-	Worktree  string
-	Branch    string
-	ProjectID string
-	Elapsed   string
-	Last      string
-	Attention string
-	Summary   string
-	Pipeline  []Phase
+	Group      string // RUNNING | RECENT
+	TaskID     string
+	RunID      string
+	Status     string
+	Phase      string
+	Priority   string
+	Verdict    string
+	Worktree   string
+	Branch     string
+	ProjectID  string
+	Elapsed    string
+	Last       string
+	Attention  string
+	Summary    string
+	Pipeline   []Phase
+	PRURL      string
+	PRState    string
+	PRHeadSHA  string
+	BaseBranch string
+	BranchName string
 }
 
 // Task is a current-project task shown in the READY bucket.
@@ -104,6 +109,7 @@ type Client interface {
 	Reports(runID string) []Report
 	Files(runID string) []FileChange
 	DrainErrors() []string
+	PR(runID string) PRStatus
 	ApproveTask(task Task) error
 	UpdateTask(task Task) error
 }
@@ -136,6 +142,38 @@ func NewMockClient() Client               { return mockClient{} }
 func (mockClient) DrainErrors() []string  { return nil }
 func (mockClient) ApproveTask(Task) error { return nil }
 func (mockClient) UpdateTask(Task) error  { return nil }
+func (mockClient) PR(runID string) PRStatus {
+	switch runID {
+	case "a1b2c3d4":
+		return PRStatus{
+			RunID:          runID,
+			Number:         "42",
+			URL:            "https://github.com/Fortium/foreman/pull/42",
+			State:          "draft",
+			Mergeable:      "unknown",
+			ReviewDecision: "review_required",
+			Checks:         CheckSummary{Passed: 4, Failed: 1, Pending: 2},
+			HeadSHA:        "sha-a1b2c3d4",
+			BaseBranch:     "origin/dev",
+			BranchName:     "foreman-a1b2c",
+		}
+	case "deadbeef":
+		return PRStatus{
+			RunID:          runID,
+			Number:         "43",
+			URL:            "https://github.com/Fortium/foreman/pull/43",
+			State:          "merged",
+			Mergeable:      "mergeable",
+			ReviewDecision: "approved",
+			Checks:         CheckSummary{Passed: 7},
+			HeadSHA:        "sha-deadbeef",
+			BaseBranch:     "origin/dev",
+			BranchName:     "foreman-done",
+		}
+	default:
+		return PRStatus{RunID: runID}
+	}
+}
 
 func (mockClient) Runs() []Run {
 	return []Run{
@@ -595,9 +633,12 @@ func (c *httpClient) Runs() []Run {
 		run := Run{
 			Group: group, TaskID: taskID, RunID: str(r, "run_id", "id"),
 			Status: status, Phase: phase, Priority: str(r, "priority"),
-			Verdict: str(r, "verdict"), Worktree: str(r, "worktree"), Branch: str(r, "branch"),
+			Verdict: str(r, "verdict"), Worktree: str(r, "worktree"), Branch: str(r, "branch", "branch_name"),
 			ProjectID: str(r, "project_id"), Last: str(r, "updated_at"),
 			Summary: str(r, "status_text", "summary"), Pipeline: pipe(active, failIdx),
+			PRURL: str(r, "pr_url", "pull_request_url"), PRState: str(r, "pr_state"),
+			PRHeadSHA: str(r, "pr_head_sha", "head_sha"), BaseBranch: str(r, "base_branch"),
+			BranchName: str(r, "branch_name"),
 		}
 		if hasTask {
 			run.Priority = task.Priority
@@ -621,6 +662,28 @@ func (c *httpClient) Runs() []Run {
 		return out[i].Last > out[j].Last
 	})
 	return out
+}
+
+func (c *httpClient) PR(runID string) PRStatus {
+	m, err := c.get("/api/v1/runs")
+	if err != nil {
+		return PRStatus{RunID: runID, Err: err.Error()}
+	}
+	for _, r := range arr(m, "runs") {
+		if str(r, "run_id", "id") != runID {
+			continue
+		}
+		return prStatusFromRun(Run{
+			RunID:      runID,
+			PRURL:      str(r, "pr_url", "pull_request_url"),
+			PRState:    str(r, "pr_state"),
+			PRHeadSHA:  str(r, "pr_head_sha", "head_sha"),
+			BaseBranch: str(r, "base_branch"),
+			BranchName: str(r, "branch_name"),
+			Branch:     str(r, "branch", "branch_name"),
+		})
+	}
+	return PRStatus{RunID: runID}
 }
 
 func (c *httpClient) Dispatchable() []Task {

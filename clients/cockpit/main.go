@@ -20,6 +20,7 @@ import (
 // $EDITOR; see docs/design/cockpit-ui-spec.md for the config surface.
 func main() {
 	c := clientFromEnv()
+	cfg, cfgErr := loadConfig(".foreman/config.yaml")
 	if dumpRequested(os.Args[1:], os.Getenv("COCKPIT_DUMP")) {
 		if err := dumpClient(c); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -33,7 +34,11 @@ func main() {
 		os.Exit(2)
 	}
 
-	p := tea.NewProgram(newModel(c), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m := newModelWithConfig(c, cfg, defaultTools)
+	if cfgErr != nil {
+		m.notice = "config: " + cfgErr.Error()
+	}
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "cockpit error:", err)
 		os.Exit(1)

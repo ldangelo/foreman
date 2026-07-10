@@ -107,16 +107,17 @@ Global:
 | `↑`/`↓`, `j`/`k` | move task selection while the task list is focused |
 | `enter` | enter/focus the selected drill-down view |
 | `esc` | leave the drill-down view and return focus to the task list; clears search while searching |
-| `↑`/`↓`, `j`/`k` | move the highlighted line in the focused messages/events/logs/reports/files view; the viewport keeps the selection near the middle when possible and clamps at the edges |
+| `↑`/`↓`, `j`/`k` | move the highlighted line in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
 | message rows | select whole messages by header; show `messages <current>/<total>` in both the tab and run header; keep the selected message body preview visible with the header when space allows |
 | mouse wheel | scroll the pane under the pointer: task list on the left, active drill-down view on the right |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
-| `1`–`6` | jump directly to a tab and focus it |
+| `1`–`7` | jump directly to a tab and focus it |
 | `space` | collapse/expand the focused group |
 | `/` | search; `esc` clears |
 | `g` | toggle current-project vs global scope |
 | `r` | retry selected run/phase (`POST /commands`) |
 | `R` | reset selected task (confirmed) |
+| `G` | open `gh dash` when enabled and available |
 | `q` | quit |
 
 Entering a view selects its newest rendered line. Live updates preserve a moved viewer cursor by rendered line identity when possible instead of snapping back to the bottom.
@@ -133,8 +134,9 @@ Openable tabs (`logs`, `reports`, `files`) add:
 
 | Key | Action |
 |-----|--------|
-| `o` | open the selected row in nvim |
-| `d` | open a diff in nvim (files only; conflicts open 3-way) |
+| `o` | open the selected row in nvim; on `pr`, open the PR URL in a browser |
+| `d` | open a selected-file diff in nvim (files only; conflicts open 3-way) |
+| `D` | open the full run diff in `diffnav` from the files tab |
 
 ## nvim integration
 
@@ -160,22 +162,26 @@ default avoids nesting a TUI inside a TUI.
 | logs | `~/.foreman/logs/<run-id>.log` (or the path from `/runs/:id/logs`) |
 | reports | the artifact path from `/runs/:id/report` (e.g. `docs/reports/<task>/DEVELOPER_REPORT.md`) |
 | files | `<worktree>/<relative-path>` from the run's changed-file set |
+| pr | PR URL/state/branch metadata projected on `/api/v1/runs`; `o`/`enter` opens the PR URL |
 
-### Files: diff by default, plain-edit on a second key
+### Files: focused diff preview and handoffs
 
 - `o` opens the file plain (at top of buffer).
-- `d` opens a diff against the run's base branch. Remote mode sends a diff
-  command to the running session; inline mode uses the configured git difftool
-  or `nvim -d`. Conflicted files open a 3-way diff (`Gvdiffsplit!` /
-  merge layout).
+- `d` opens the selected file diff in nvim. Remote mode sends a diff command to
+  the running session; inline mode uses `nvim -d`. Conflicted files open a
+  3-way diff (`Gvdiffsplit!` / merge layout).
+- `D` opens a full-run `git diff <base>...HEAD | diffnav` handoff when enabled.
+- The files tab also renders an inline preview for the selected file. It uses
+  `git diff <base>...HEAD -- <path> | delta` when `delta` is enabled and
+  available, and falls back to plain `git diff` output otherwise.
 
 Reports are markdown and render with Glamour in the drill-down preview before
 the operator chooses to open them in nvim.
 
 ### Configuration
 
-`.foreman/config.yaml` gains an `editor` block (all optional, sensible
-defaults shown):
+`.foreman/config.yaml` may contain cockpit integration blocks (all optional,
+sensible defaults shown):
 
 ```yaml
 editor:
@@ -187,10 +193,24 @@ editor:
   diff:
     files: diff          # diff | edit  (default action for the files tab)
     tool: ""             # git difftool name; empty = nvim -d
+integrations:
+  diffnav:
+    enable: auto         # auto | on | off
+    base: origin/dev
+    watch: false
+  delta:
+    enable: auto         # auto | on | off
+  ghDash:
+    enable: auto         # auto | on | off
+    args: []
+pr:
+  provider: github
 ```
 
 `mode: auto` = remote when a session is found, else inline (the recommended
 default). `mode: remote` never suspends; `mode: inline` always suspends.
+`COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, and `COCKPIT_GHDASH` override the respective
+integration `enable` value.
 
 ## Non-goals for the POC
 

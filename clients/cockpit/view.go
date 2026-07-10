@@ -311,7 +311,7 @@ func (m model) renderRight(w int) string {
 
 	body := m.renderBody(run, it, isRun, w)
 	var action []string
-	if !isRun || m.openableTab() {
+	if !isRun || m.openableTab() || tabNames[m.tab] == "pr" {
 		if ab := m.renderAction(w); ab != "" {
 			action = strings.Split(ab, "\n")
 		}
@@ -391,7 +391,10 @@ func (m model) renderRail(run Run, w int) []string {
 
 func (m model) renderTabs(w int) string {
 	var toks []string
-	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files)}
+	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0}
+	if m.pr.URL != "" {
+		counts[6] = 1
+	}
 	for i, name := range tabNames {
 		label := name
 		if i == 1 && counts[i] > 0 {
@@ -400,10 +403,10 @@ func (m model) renderTabs(w int) string {
 			} else {
 				label += " " + itoa(counts[i])
 			}
-		} else if i > 0 {
+		} else if i > 0 && counts[i] > 0 {
 			label += " " + itoa(counts[i])
 		}
-		if i >= firstOpenableTab {
+		if tabOpenable(name) {
 			label += " ⧉"
 		}
 		if i == m.tab {
@@ -532,8 +535,77 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 			line := padRow(lipgloss.NewStyle().Foreground(cc).Render(f.Change)+" "+textStyle.Render(clip(f.Path, w-14)), stat, w)
 			add("file:"+f.Path, line, t)
 		}
+		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {
+			f := m.files[idx]
+			base := selectedDiffBase(m.config.Integrations)
+			key := diffPreviewKey(run, f.Path, base)
+			add("diff-preview:"+f.Path+":spacer", "", target{})
+			if m.diffLoading[key] {
+				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":loading", Text: dimStyle.Render("loading diff preview…"), Unselectable: true})
+			} else if preview, ok := m.diffPreviews[key]; ok {
+				if preview.Err != "" {
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":error", Text: yellowStyle.Render("diff preview: " + preview.Err), Unselectable: true})
+				}
+				if len(preview.Lines) == 0 && preview.Err == "" {
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":empty", Text: dimStyle.Render("No diff for selected file."), Unselectable: true})
+				}
+				for i, ln := range preview.Lines {
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":" + itoa(i), Text: clip(ln, w), Unselectable: true})
+				}
+			} else {
+				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":pending", Text: dimStyle.Render("diff preview pending…"), Unselectable: true})
+			}
+		}
+	case "pr":
+		return m.renderPRLines(w)
 	}
 	return s
+}
+
+func (m model) renderPRLines(w int) []ViewerLine {
+	pr := m.pr
+	if pr.URL == "" {
+		return []ViewerLine{{Key: "pr:empty", Text: dimStyle.Render("No PR for this run yet.")}}
+	}
+	state := pr.State
+	if state == "" {
+		state = "unknown"
+	}
+	stateColor := cCyan
+	switch strings.ToLower(state) {
+	case "merged":
+		stateColor = cGreen
+	case "closed":
+		stateColor = cRed
+	case "draft":
+		stateColor = cDim
+	}
+	title := "PR"
+	if pr.Number != "" {
+		title += " #" + pr.Number
+	}
+	lines := []ViewerLine{
+		{Key: "pr:title", Text: padRow(cyanStyle.Render(title), lipgloss.NewStyle().Foreground(stateColor).Render(state), w)},
+		{Key: "pr:url", Text: dimStyle.Render("url      ") + textStyle.Render(clip(pr.URL, w-9))},
+	}
+	if pr.BranchName != "" || pr.BaseBranch != "" {
+		lines = append(lines, ViewerLine{Key: "pr:branch", Text: dimStyle.Render("branch   ") + textStyle.Render(clip(pr.BranchName+" → "+pr.BaseBranch, w-9))})
+	}
+	if pr.HeadSHA != "" {
+		lines = append(lines, ViewerLine{Key: "pr:head", Text: dimStyle.Render("head     ") + textStyle.Render(clip(pr.HeadSHA, w-9))})
+	}
+	if pr.Mergeable != "" {
+		lines = append(lines, ViewerLine{Key: "pr:mergeable", Text: dimStyle.Render("merge    ") + textStyle.Render(clip(pr.Mergeable, w-9))})
+	}
+	if pr.ReviewDecision != "" {
+		lines = append(lines, ViewerLine{Key: "pr:review", Text: dimStyle.Render("review   ") + textStyle.Render(clip(pr.ReviewDecision, w-9))})
+	}
+	checks := greenStyle.Render("✓ "+itoa(pr.Checks.Passed)) + dimStyle.Render("  ") + redStyle.Render("✗ "+itoa(pr.Checks.Failed)) + dimStyle.Render("  ") + yellowStyle.Render("● "+itoa(pr.Checks.Pending))
+	lines = append(lines, ViewerLine{Key: "pr:checks", Text: dimStyle.Render("checks   ") + checks})
+	if pr.Err != "" {
+		lines = append(lines, ViewerLine{Key: "pr:error", Text: yellowStyle.Render("PR detail: " + pr.Err)})
+	}
+	return lines
 }
 
 func (m model) renderAction(w int) string {
@@ -546,6 +618,17 @@ func (m model) renderAction(w int) string {
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
+	if tabNames[m.tab] == "pr" {
+		if m.pr.URL == "" {
+			return ""
+		}
+		lines := []string{
+			dimStyle.Render(strings.Repeat("┄", w)),
+			clip(greenStyle.Render("▸ PR actions ")+whiteStyle.Render(m.pr.URL), w),
+			clip(cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash"), w),
+		}
+		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
+	}
 	t := resolveTarget(m)
 	if !t.ok {
 		return ""
@@ -555,6 +638,16 @@ func (m model) renderAction(w int) string {
 	head := greenStyle.Render("▸ open ") + whiteStyle.Render(t.label) + greenStyle.Render(" in nvim")
 	if t.conflict {
 		head += redStyle.Render("  (conflict — 3-way)")
+	}
+	if tabNames[m.tab] == "files" {
+		lines := []string{
+			dimStyle.Render(strings.Repeat("┄", w)),
+			clip(head, w),
+			clip(dimStyle.Render("$ ")+cyanStyle.Render(cmd), w),
+			clip(dimStyle.Render("→ "+mode), w),
+			clip(cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
+		}
+		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
 	lines := []string{
 		dimStyle.Render(strings.Repeat("┄", w)),
