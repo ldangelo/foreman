@@ -51,9 +51,10 @@ A single scrollable list, always grouped in this fixed order:
 
 - **RUNNING** — runs with status `pending | running | in_progress | cooldown`.
   Each row shows a state glyph, task id, and current phase. (Q1)
-- **READY** — dispatchable tasks (`/tasks/dispatchable`). Each row shows task id
-  and priority; selecting one explains why it is ready and when it will
-  dispatch. (Q2)
+- **READY** — current-project tasks that are not terminal/running. Each row
+  shows a state glyph, task title, priority, and type; selecting one shows the
+  id, status, workflow, dependencies, project, and description, plus approve,
+  edit, and create actions. (Q2)
 - **RECENT** — terminal runs (`completed | merged | pr-created | failed | reset`),
   most-recent first, capped (default 15). (Q3 for finished work)
 
@@ -116,6 +117,7 @@ Global:
 | `space` | collapse/expand the focused group |
 | `/` | search; `esc` clears |
 | `g` | toggle current-project vs global scope |
+| `n` | create a new task by opening a JSON draft in nvim and posting `task.create` |
 | `r` | retry selected run/phase (`POST /commands`) |
 | `R` | reset selected task (confirmed) |
 | `G` | open `gh dash` when enabled and available |

@@ -148,11 +148,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case taskActionDoneMsg:
+		label := msg.taskID
+		if label == "" {
+			label = "task"
+		}
 		if msg.err != nil {
-			m.notice = msg.action + " " + msg.taskID + ": " + msg.err.Error()
+			m.notice = msg.action + " " + label + ": " + msg.err.Error()
 			return m, nil
 		}
-		m.notice = msg.taskID + " " + msg.action
+		m.notice = label + " " + msg.action
 		return m, loadData(m.client)
 
 	case taskCopyDoneMsg:
@@ -233,7 +237,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "?":
-		m.notice = "keys: enter focus · esc task list · ctrl+d/u page · 1-7 tabs · o open · D diffnav · G gh dash · C gh enhance"
+		m.notice = "keys: n new task · enter focus · esc task list · ctrl+d/u page · 1-7 tabs · o open · D diffnav · G gh dash · C gh enhance"
 	case "q":
 		return m, tea.Quit
 	case "esc":
@@ -297,6 +301,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if run, ok := m.selectedRun(); ok {
 			m.notice = "attach → GET /api/v1/runs/" + run.RunID + "/attach"
 		}
+	case "n":
+		return m, createTaskInNvim(m.editor, m.client)
 	case "a":
 		if task, ok := m.selectedTask(); ok {
 			return m, approveTask(m.client, task)

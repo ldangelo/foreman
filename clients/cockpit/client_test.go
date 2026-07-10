@@ -201,8 +201,15 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 	if err := client.UpdateTask(task); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if len(commands) != 2 {
-		t.Fatalf("expected two commands, got %#v", commands)
+	created := Task{
+		TaskID: "task-new", ProjectID: "proj-live", Title: "New task",
+		Description: "fresh", TaskType: "feature", Priority: "1", Status: "backlog",
+	}
+	if err := client.CreateTask(created); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("expected three commands, got %#v", commands)
 	}
 	if commands[0]["command_type"] != "task.approve" {
 		t.Fatalf("expected task.approve command, got %#v", commands[0])
@@ -217,6 +224,13 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 	updatePayload := commands[1]["payload"].(map[string]any)
 	if updatePayload["title"] != "Edited task" || updatePayload["description"] != "new" || updatePayload["status"] != "ready" {
 		t.Fatalf("unexpected update payload: %#v", updatePayload)
+	}
+	if commands[2]["command_type"] != "task.create" {
+		t.Fatalf("expected task.create command, got %#v", commands[2])
+	}
+	createPayload := commands[2]["payload"].(map[string]any)
+	if createPayload["task_id"] != "task-new" || createPayload["title"] != "New task" || createPayload["task_type"] != "feature" || createPayload["source"] != "cockpit" {
+		t.Fatalf("unexpected create payload: %#v", createPayload)
 	}
 }
 func TestHTTPClientFallsBackToDebugTimelineWhenEventsEndpointFails(t *testing.T) {

@@ -37,9 +37,9 @@ func (m model) View() string {
 		return "starting cockpit…"
 	}
 	total := m.width
-	leftW := 28
+	leftW := 36
 	if total < 92 {
-		leftW = 22
+		leftW = 30
 	}
 	rightW := total - leftW - 1
 	if rightW < 20 {
@@ -232,36 +232,44 @@ func padLines(lines []string, h int) []string {
 
 func (m model) renderRow(i int, it Item, w int) string {
 	selected := i == m.taskList.SelectedIndex()
-	var state, id, right string
+	var state, left, right string
 	var rightColor lipgloss.Color
+	idColor := cText
 	if it.IsTask {
-		state, id = "pending", it.Task.TaskID
-		right, rightColor = it.Task.Priority, cYellow
+		state = it.Task.Status
+		left = it.Task.Title
+		if left == "" {
+			left = it.Task.Summary
+		}
+		if left == "" {
+			left = it.Task.TaskID
+		}
+		right = strings.TrimSpace(it.Task.Priority + " " + it.Task.TaskType)
+		rightColor = cYellow
 	} else {
-		state, id = runState(it.Run), it.Run.TaskID
+		state, left = runState(it.Run), it.Run.TaskID
 		if it.Run.Group == "RUNNING" {
 			right, rightColor = it.Run.Phase, cCyan
 		} else {
 			right, rightColor = it.Run.Status, statusColor(it.Run.Status)
 		}
+		if it.Run.Status == "failed" {
+			idColor = cRed
+		}
 	}
 	gl, glc := glyph(state)
-	id = clip(id, w-6)
-	phaseMax := w - 3 - utf8.RuneCountInString(id)
+	left = clip(left, w-6)
+	phaseMax := w - 3 - utf8.RuneCountInString(left)
 	if phaseMax < 3 {
 		phaseMax = 3
 	}
 	right = clip(right, phaseMax)
 
-	idColor := cText
-	if it.Run.Status == "failed" {
-		idColor = cRed
-	}
 	if selected {
 		idColor = cWhite
 	}
 	leftStr := lipgloss.NewStyle().Foreground(glc).Render(gl) + " " +
-		lipgloss.NewStyle().Foreground(idColor).Render(id)
+		lipgloss.NewStyle().Foreground(idColor).Render(left)
 	rightStr := lipgloss.NewStyle().Foreground(rightColor).Render(right)
 	line := padRow(leftStr, rightStr, w)
 
@@ -293,7 +301,11 @@ func (m model) renderRight(w int) string {
 			s = append(s, redStyle.Render(clip("⚠ "+run.Attention, w)))
 		}
 	} else {
-		s = append(s, whiteStyle.Render(it.Task.TaskID)+"  "+yellowStyle.Render("ready to dispatch"))
+		title := it.Task.Title
+		if title == "" {
+			title = it.Task.TaskID
+		}
+		s = append(s, padRow(whiteStyle.Render(title), yellowStyle.Render(it.Task.Status), w))
 	}
 	s = append(s, dimStyle.Render(strings.Repeat("─", w)))
 
@@ -450,13 +462,25 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 		return dimStyle.Render(clip(k, 9)) + "  " + textStyle.Render(clip(v, w-11))
 	}
 	if !isRun {
-		for i, ln := range wrap(it.Task.Summary, w) {
-			add("task:summary:"+itoa(i), textStyle.Render(ln), target{})
-		}
-		add("task:spacer", "", target{})
-		add("task:depends", kv("depends", it.Task.Depends), target{})
-		add("task:workflow", kv("workflow", it.Task.Workflow), target{})
+		add("task:id", kv("id", it.Task.TaskID), target{})
+		add("task:title", kv("title", it.Task.Title), target{})
+		add("task:type", kv("type", it.Task.TaskType), target{})
 		add("task:priority", kv("priority", it.Task.Priority), target{})
+		add("task:status", kv("status", it.Task.Status), target{})
+		add("task:workflow", kv("workflow", it.Task.Workflow), target{})
+		add("task:depends", kv("depends", it.Task.Depends), target{})
+		add("task:project", kv("project", it.Task.ProjectID), target{})
+		add("task:spacer", "", target{})
+		desc := it.Task.Description
+		if desc == "" {
+			desc = it.Task.Summary
+		}
+		if desc == "" {
+			desc = "No description."
+		}
+		for i, ln := range wrap(desc, w) {
+			add("task:description:"+itoa(i), textStyle.Render(ln), target{})
+		}
 		return s
 	}
 	switch tabNames[m.tab] {
@@ -613,8 +637,8 @@ func (m model) renderAction(w int) string {
 		lines := []string{
 			dimStyle.Render(strings.Repeat("┄", w)),
 			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID), w),
-			clip(cyanStyle.Render("y")+dimStyle.Render(" copy task id to clipboard"), w),
-			clip(cyanStyle.Render("a")+dimStyle.Render(" approve → POST /api/v1/commands task.approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit JSON in nvim → POST /api/v1/commands task.update"), w),
+			clip(cyanStyle.Render("y")+dimStyle.Render(" copy task id to clipboard")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task JSON in nvim"), w),
+			clip(cyanStyle.Render("a")+dimStyle.Render(" approve → POST /api/v1/commands task.approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit JSON → POST /api/v1/commands task.update"), w),
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}

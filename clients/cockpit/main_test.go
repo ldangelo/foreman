@@ -38,7 +38,7 @@ func TestClientForConfigDefaultsToLocalLiveServer(t *testing.T) {
 
 func TestClientForConfigCanForceMockBackend(t *testing.T) {
 	client := clientForConfig("", "", "mock")
-	if _, ok := client.(mockClient); !ok {
+	if _, ok := client.(*mockClient); !ok {
 		t.Fatalf("expected mock backend, got %T", client)
 	}
 }

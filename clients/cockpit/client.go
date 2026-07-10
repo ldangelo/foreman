@@ -112,6 +112,7 @@ type Client interface {
 	PR(runID string) PRStatus
 	ApproveTask(task Task) error
 	UpdateTask(task Task) error
+	CreateTask(task Task) error
 }
 
 func pipe(activeIdx, failIdx int) []Phase {
@@ -135,14 +136,45 @@ func pipe(activeIdx, failIdx int) []Phase {
 // Mock client — realistic canned data so the POC runs with no server.
 // ---------------------------------------------------------------------------
 
-type mockClient struct{}
+type mockClient struct {
+	mu    sync.Mutex
+	tasks []Task
+}
 
 // NewMockClient returns an in-memory client for standalone demos.
-func NewMockClient() Client               { return mockClient{} }
-func (mockClient) DrainErrors() []string  { return nil }
-func (mockClient) ApproveTask(Task) error { return nil }
-func (mockClient) UpdateTask(Task) error  { return nil }
-func (mockClient) PR(runID string) PRStatus {
+func NewMockClient() Client { return &mockClient{tasks: defaultMockTasks()} }
+
+func (c *mockClient) DrainErrors() []string { return nil }
+func (c *mockClient) ApproveTask(task Task) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.tasks {
+		if c.tasks[i].TaskID == task.TaskID {
+			c.tasks[i].Status = "approved"
+			return nil
+		}
+	}
+	return nil
+}
+func (c *mockClient) UpdateTask(task Task) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.tasks {
+		if c.tasks[i].TaskID == task.TaskID {
+			c.tasks[i] = task
+			return nil
+		}
+	}
+	c.tasks = append(c.tasks, task)
+	return nil
+}
+func (c *mockClient) CreateTask(task Task) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tasks = append(c.tasks, task)
+	return nil
+}
+func (*mockClient) PR(runID string) PRStatus {
 	switch runID {
 	case "a1b2c3d4":
 		return PRStatus{
@@ -175,7 +207,7 @@ func (mockClient) PR(runID string) PRStatus {
 	}
 }
 
-func (mockClient) Runs() []Run {
+func (*mockClient) Runs() []Run {
 	return []Run{
 		{
 			Group: "RUNNING", TaskID: "foreman-a1b2c", RunID: "a1b2c3d4", Status: "running",
@@ -220,22 +252,35 @@ func (mockClient) Runs() []Run {
 	}
 }
 
-func (mockClient) Dispatchable() []Task {
+func (c *mockClient) Dispatchable() []Task {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := append([]Task(nil), c.tasks...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority < out[j].Priority
+		}
+		return out[i].TaskID < out[j].TaskID
+	})
+	return out
+}
+
+func defaultMockTasks() []Task {
 	return []Task{
-		{TaskID: "foreman-c3845", Priority: "P0", Status: "ready", Depends: "blocked-by foreman-77aa1 ✓ merged",
+		{TaskID: "foreman-c3845", Title: "Wire PR status into cockpit", TaskType: "feature", Priority: "P0", Status: "ready", Depends: "blocked-by foreman-77aa1 ✓ merged",
 			Workflow: "default (10 phases)", Summary: "Unblocked — all dependencies merged. Dispatches next tick (opus, P0)."},
-		{TaskID: "foreman-0207c", Priority: "P1", Status: "ready", Depends: "no blockers",
+		{TaskID: "foreman-0207c", Title: "Harden task reset confirmation", TaskType: "task", Priority: "P1", Status: "ready", Depends: "no blockers",
 			Workflow: "default", Summary: "Ready. Awaiting a free worker slot (2/2 in use)."},
-		{TaskID: "foreman-03f40", Priority: "P2", Status: "ready", Depends: "no blockers",
+		{TaskID: "foreman-03f40", Title: "Refresh CLI reference", TaskType: "docs", Priority: "P2", Status: "ready", Depends: "no blockers",
 			Workflow: "docs (repair-enabled)", Summary: "Ready. Low priority — runs after P0/P1 drain."},
-		{TaskID: "foreman-071f9", Priority: "P1", Status: "ready", Depends: "no blockers",
+		{TaskID: "foreman-071f9", Title: "Polish file preview states", TaskType: "task", Priority: "P1", Status: "ready", Depends: "no blockers",
 			Workflow: "default", Summary: "Ready. Queued behind higher-priority work."},
-		{TaskID: "foreman-0ade6", Priority: "P2", Status: "ready", Depends: "no blockers",
+		{TaskID: "foreman-0ade6", Title: "Refine parent epic leftovers", TaskType: "chore", Priority: "P2", Status: "ready", Depends: "no blockers",
 			Workflow: "default", Summary: "Ready. Newly refined from a parent epic."},
 	}
 }
 
-func (mockClient) Messages(runID string) []Message {
+func (*mockClient) Messages(runID string) []Message {
 	switch runID {
 	case "a1b2c3d4":
 		return []Message{
@@ -251,7 +296,7 @@ func (mockClient) Messages(runID string) []Message {
 	return nil
 }
 
-func (mockClient) Events(runID string) []Event {
+func (*mockClient) Events(runID string) []Event {
 	switch runID {
 	case "a1b2c3d4":
 		return []Event{
@@ -269,7 +314,7 @@ func (mockClient) Events(runID string) []Event {
 	return nil
 }
 
-func (mockClient) Logs(runID string) []string {
+func (*mockClient) Logs(runID string) []string {
 	switch runID {
 	case "a1b2c3d4":
 		return []string{
@@ -287,7 +332,7 @@ func (mockClient) Logs(runID string) []string {
 	return []string{"(no log lines)"}
 }
 
-func (mockClient) Reports(runID string) []Report {
+func (*mockClient) Reports(runID string) []Report {
 	switch runID {
 	case "a1b2c3d4":
 		return []Report{
@@ -305,7 +350,7 @@ func (mockClient) Reports(runID string) []Report {
 	return nil
 }
 
-func (mockClient) Files(runID string) []FileChange {
+func (*mockClient) Files(runID string) []FileChange {
 	switch runID {
 	case "a1b2c3d4":
 		return []FileChange{
@@ -731,6 +776,27 @@ func (c *httpClient) UpdateTask(task Task) error {
 		"status":      task.Status,
 	}
 	return c.postCommand("task.update", payload)
+}
+
+func (c *httpClient) CreateTask(task Task) error {
+	projectID := task.ProjectID
+	if projectID == "" {
+		projectID = c.projectID()
+	}
+	if task.TaskID == "" {
+		return fmt.Errorf("task id is required")
+	}
+	return c.postCommand("task.create", map[string]any{
+		"project_id":  projectID,
+		"task_id":     task.TaskID,
+		"title":       task.Title,
+		"description": task.Description,
+		"type":        task.TaskType,
+		"task_type":   task.TaskType,
+		"priority":    task.Priority,
+		"status":      task.Status,
+		"source":      "cockpit",
+	})
 }
 
 func (c *httpClient) Messages(runID string) []Message {

@@ -49,7 +49,7 @@ func TestWideViewDoesNotExceedTerminalHeight(t *testing.T) {
 	assertViewHeight(t, m)
 }
 
-func TestReadyTaskViewShowsApproveAndEditActions(t *testing.T) {
+func TestReadyTaskViewShowsApproveEditAndCreateActions(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
 	m.height = 20
@@ -61,8 +61,49 @@ func TestReadyTaskViewShowsApproveAndEditActions(t *testing.T) {
 	if !strings.Contains(out, "task actions task-ready") {
 		t.Fatalf("expected task action panel, got:\n%s", out)
 	}
-	if !strings.Contains(out, "y copy task id") || !strings.Contains(out, "a approve") || !strings.Contains(out, "e edit") {
-		t.Fatalf("expected copy, approve, and edit action hints, got:\n%s", out)
+	if !strings.Contains(out, "y copy task id") || !strings.Contains(out, "a approve") || !strings.Contains(out, "e edit") || !strings.Contains(out, "n new task") {
+		t.Fatalf("expected copy, approve, edit, and create action hints, got:\n%s", out)
+	}
+}
+
+func TestReadyTaskRowShowsTitlePriorityAndType(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.tasks = []Task{{TaskID: "task-ready", Title: "Create cockpit task", TaskType: "feature", Priority: "P1", Status: "backlog"}}
+	m.buildItems()
+
+	out := stripANSI(m.renderLeft(36, 8))
+	if !strings.Contains(out, "Create cockpit task") || !strings.Contains(out, "P1 feature") {
+		t.Fatalf("expected task title, priority, and type in left list, got:\n%s", out)
+	}
+	if strings.Contains(out, "task-ready") {
+		t.Fatalf("expected task id to move out of the list row, got:\n%s", out)
+	}
+}
+
+func TestReadyTaskDetailShowsFullTaskFields(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = nil
+	m.tasks = []Task{{
+		TaskID: "task-ready", Title: "Create cockpit task", Description: "Full task body",
+		TaskType: "feature", Priority: "P1", Status: "backlog", Depends: "task-a", Workflow: "default", ProjectID: "proj-live",
+	}}
+	m.buildItems()
+
+	out := stripANSI(m.renderRight(80))
+	for _, want := range []string{"Create cockpit task", "id  task-ready", "type  feature", "priority  P1", "status  backlog", "workflow  default", "depends  task-a", "project  proj-live", "Full task body"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in task detail, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestNewTaskKeyLaunchesCreateCommand(t *testing.T) {
+	m := newModel(NewMockClient())
+	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd == nil {
+		t.Fatal("expected n to launch task create command")
 	}
 }
 

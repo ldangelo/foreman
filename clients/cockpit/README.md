@@ -21,9 +21,11 @@ authoritative state.
   state are active (`in-progress` and `in_progress` are treated the same);
   stale in-progress run projections for closed/failed tasks are shown as
   recent, not running.
-- Task rows support `y` to copy the task id. READY task rows also expose two
-  live actions: `a` approves the task via `task.approve`; `e` opens the task
-  JSON in nvim and posts the edited fields via `task.update`.
+- Task rows show the task title plus priority/type; the selected task detail
+  shows id, status, workflow, dependencies, project, and description. READY task
+  rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
+  edit task JSON via `task.update`, and `n` to create a new task JSON draft via
+  `task.create`.
 - Right column: color-coded run header, an animated phase rail, and a
   drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
 - Panes are height-bounded to the current terminal; the left list keeps the
@@ -86,8 +88,8 @@ mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls t
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–7 jump to a tab and focus it
 o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
-y         copy selected task ID               a    approve READY task
-e         edit READY task JSON in nvim        g/G  project/global scope / gh dash
+y         copy selected task ID               n    create task JSON in nvim
+a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            r/R  retry / reset
 /         search                              space collapse/expand group     ? help     q quit
 ```
@@ -145,7 +147,7 @@ or `$EDITOR` (falling back to `nvim`).
 
 ## Status / caveats
 
-- POC quality: only READY task approval/edit and PR browser opens are live
+- POC quality: READY task approval/edit/create and PR browser opens are live
   actions. `r` / `R` / attach still show the command they *would* send
   (`POST /api/v1/commands`, `GET /runs/:id/attach`) rather than executing.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
