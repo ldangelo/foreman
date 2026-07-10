@@ -12,6 +12,25 @@ type fakeTools map[string]bool
 
 func (f fakeTools) Available(name string) bool { return f[name] }
 
+func TestIntegrationEnabledModes(t *testing.T) {
+	tools := fakeTools{"present": true, "missing": false}
+	if !integrationEnabled("auto", "present", tools) {
+		t.Fatal("auto should enable a tool that is available")
+	}
+	if integrationEnabled("auto", "missing", tools) {
+		t.Fatal("auto should disable a tool that is unavailable")
+	}
+	if !integrationEnabled("on", "missing", tools) {
+		t.Fatal("on should request the integration even when the tool is absent")
+	}
+	if integrationEnabled("off", "present", tools) {
+		t.Fatal("off should disable the integration even when the tool is present")
+	}
+	if !integrationEnabled("bad-value", "present", tools) {
+		t.Fatal("invalid values normalize to auto and should use availability")
+	}
+}
+
 func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 	t.Setenv("EDITOR", "nvim")
 	t.Setenv("COCKPIT_DIFFNAV", "off")

@@ -41,6 +41,12 @@ authoritative state.
 
 Requires Go 1.23+.
 
+Optional integrations are discovered at runtime and fail closed with a notice:
+`diffnav` for full-run file review, `delta` for inline selected-file previews,
+`gh` plus the `gh dash` extension for repo-wide triage, and a platform browser
+opener (`open` on macOS or `xdg-open` on Linux) for PR links. `diffnav` looks best
+with a Nerd Font because its file tree uses icon glyphs.
+
 ```bash
 cd clients/cockpit
 go mod tidy                  # resolves deps + writes go.sum (needs network once)
