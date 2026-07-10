@@ -367,12 +367,9 @@ func (m model) renderRight(w int) string {
 		if viewer.Len() == 0 {
 			policy = viewerBottom
 		}
+		viewer.SetBounds(w, bodyWindowH)
 		viewer.SetLines(m.renderViewerLines(run, it, isRun, w), policy, bodyWindowH)
-		body = viewer.TextLines()
-		if cursor := viewer.Cursor(); cursor >= 0 && cursor < len(body) {
-			body[cursor] = lipgloss.NewStyle().Background(cActBg).Width(w).Render(body[cursor])
-		}
-		s = append(s, scrollWindowLines(body, viewer.Offset(), bodyWindowH)...)
+		s = append(s, strings.Split(viewer.View(), "\n")...)
 	} else {
 		s = append(s, windowLines(body, 0, bodyWindowH)...)
 	}

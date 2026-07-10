@@ -3,7 +3,8 @@
 A proof-of-concept of the single-pane Foreman cockpit, built with
 [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) +
 [Lip Gloss v2](https://github.com/charmbracelet/lipgloss) +
-[Glamour](https://github.com/charmbracelet/glamour).
+[Glamour](https://github.com/charmbracelet/glamour) +
+[`robinovitch61/viewport`](https://github.com/robinovitch61/viewport).
 
 The nested Go module targets the Bubble Tea v2 `tea.View` API: alt-screen and
 mouse mode are requested from `View()` rather than program options.
@@ -188,13 +189,11 @@ notices, and actions. Component state lives in small cockpit-owned types:
 - `task_list.go` owns grouped `RUNNING` / `READY` / `RECENT` rows, selection,
   collapsed groups, search/filter state, scope, and keeping the selected row
   visible.
-- `viewer.go` owns drill-down rows, cursor, viewport offset, selected row
-  identity, bottom-follow behavior, and cursor clamping across refreshes.
-- `view.go` adapts summary/messages/events/logs/reports/files/pr into keyed
-  viewer rows and renders the shell with Lip Gloss.
-
-No Bubbles dependency is used in this pass; `go.mod` stays on the existing
-GitHub Bubble Tea/Lip Gloss/Glamour import paths.
+- `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` items,
+  preserving selected-row identity across refreshes. Immediately following
+  unselectable rows (message bodies, diff previews) are packed with their parent
+  selectable row so navigation lands only on actionable/header rows while the
+  viewport component handles rendering, scrolling, and bottom-follow behavior.
 
 ## Layout
 

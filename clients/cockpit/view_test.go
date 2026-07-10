@@ -23,21 +23,60 @@ func mouseWheel(x, y int, button tea.MouseButton) tea.MouseWheelMsg {
 	return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: button})
 }
 
-func TestViewerCentersSelectedRowWhenPossible(t *testing.T) {
+func TestViewerUsesViewportSelectionAndIdentity(t *testing.T) {
 	var viewer Viewer
-	lines := make([]ViewerLine, 30)
+	viewer.SetBounds(20, 4)
+	lines := make([]ViewerLine, 12)
 	for i := range lines {
-		lines[i] = ViewerLine{Key: itoa(i), Text: itoa(i)}
+		lines[i] = ViewerLine{Key: itoa(i), Text: "row " + itoa(i)}
 	}
 
-	viewer.SetLines(lines, viewerReset, 7)
-	viewer.Move(10, 7)
+	viewer.SetLines(lines, viewerReset, 4)
+	viewer.Move(8, 4)
 
-	if viewer.Cursor() != 10 {
-		t.Fatalf("expected selected row 10, got %d", viewer.Cursor())
+	if viewer.Cursor() != 8 {
+		t.Fatalf("expected selected row 8, got %d", viewer.Cursor())
 	}
-	if viewer.Offset() != 7 {
-		t.Fatalf("expected selected row centered with offset 7, got %d", viewer.Offset())
+	if viewer.Offset() <= 0 {
+		t.Fatalf("expected viewport to scroll selected row into view, got offset %d", viewer.Offset())
+	}
+	rendered := stripANSI(viewer.View())
+	if !strings.Contains(rendered, "row 8") || strings.Contains(rendered, "row 0") {
+		t.Fatalf("expected viewport-rendered selected window around row 8, got:\n%s", rendered)
+	}
+
+	lines[8].Text = "row 8 updated"
+	viewer.SetLines(lines, viewerPreserve, 4)
+	selected, ok := viewer.SelectedLine()
+	if !ok || selected.Key != "8" || selected.Text != "row 8 updated" {
+		t.Fatalf("expected selection identity to survive refresh, got %#v ok=%v", selected, ok)
+	}
+}
+
+func TestViewerPacksUnselectableLinesWithSelectedTarget(t *testing.T) {
+	var viewer Viewer
+	viewer.SetBounds(36, 3)
+	open := target{ok: true, label: "file", path: "src/a.go"}
+	lines := []ViewerLine{
+		{Key: "file:src/a.go", Text: "M src/a.go", Target: open, KeepNext: true},
+		{Key: "diff:src/a.go:1", Text: "+added", Unselectable: true},
+		{Key: "file:src/b.go", Text: "M src/b.go", Target: target{ok: true, label: "file", path: "src/b.go"}},
+	}
+
+	viewer.SetLines(lines, viewerReset, 3)
+
+	selected, ok := viewer.SelectedLine()
+	if !ok || selected.Target.path != "src/a.go" {
+		t.Fatalf("expected selected target to stay on selectable file row, got %#v ok=%v", selected, ok)
+	}
+	rendered := stripANSI(viewer.View())
+	if !strings.Contains(rendered, "M src/a.go") || !strings.Contains(rendered, "+added") {
+		t.Fatalf("expected unselectable preview to render with selected file item, got:\n%s", rendered)
+	}
+
+	viewer.Move(1, 3)
+	if viewer.Cursor() != 2 {
+		t.Fatalf("expected movement to skip packed preview and select next file row, got %d", viewer.Cursor())
 	}
 }
 

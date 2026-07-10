@@ -93,7 +93,7 @@ components:
 | Component | Owns |
 |-----------|------|
 | `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows, selected item, collapsed groups, search/filter state, scope, and keep-selection-visible behavior |
-| `Viewer` | rendered drill-down lines, cursor, viewport offset, selected line identity, bottom-follow behavior, and cursor clamping across refreshes |
+| `Viewer` | keyed drill-down rows mapped into `robinovitch61/viewport` items, selected line identity, bottom-follow behavior, and packed unselectable child rows (message bodies / diff previews) |
 | Tab adapters | conversion of summary/messages/events/logs/reports/files/pr data into stable keyed viewer lines and nvim targets where applicable |
 
 All data is fetched from the Elixir core; the cockpit never infers state the
@@ -198,6 +198,9 @@ default avoids nesting a TUI inside a TUI.
 - The Go cockpit targets Bubble Tea v2. `View()` returns `tea.View`, with
   alt-screen and cell-motion mouse mode declared on the view rather than passed
   as `NewProgram` options.
+- Drill-down panes use `robinovitch61/viewport` for body rendering and
+  scrolling. Cursor identity remains keyed by Foreman data, and unselectable
+  child rows are attached to the selected parent row.
 
 Reports are markdown and render with Glamour in the drill-down preview before
 the operator chooses to open them in nvim.

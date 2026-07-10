@@ -441,11 +441,14 @@ func (m model) viewerBodyLines() []string {
 }
 
 func (m *model) refreshViewer(policy viewerRefreshPolicy) {
+	w := m.rightPaneWidth()
+	h := m.viewerBodyWindowHeight()
+	m.viewer.SetBounds(w, h)
 	if !m.viewerTab() {
-		m.viewer.SetLines(nil, viewerReset, m.viewerBodyWindowHeight())
+		m.viewer.SetLines(nil, viewerReset, h)
 		return
 	}
-	m.viewer.SetLines(m.buildViewerLines(m.rightPaneWidth()), policy, m.viewerBodyWindowHeight())
+	m.viewer.SetLines(m.buildViewerLines(w), policy, h)
 }
 
 func (m model) buildViewerLines(w int) []ViewerLine {

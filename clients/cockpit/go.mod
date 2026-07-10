@@ -1,17 +1,20 @@
 module github.com/fortium/foreman/clients/cockpit
 
-go 1.25.0
+go 1.26
 
 require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/robinovitch61/viewport v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
+	charm.land/bubbles/v2 v2.1.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
+	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
