@@ -56,8 +56,9 @@ authoritative state.
   `filterableviewport` exact matching, `enter` applies, `esc` clears, `n` / `N`
   jump between matches, and `o` toggles matches-only view while a filter is
   active.
-- Mouse clicks can switch task-list sections, select visible task/run rows, and
-  switch drill-down tabs; keyboard behavior remains canonical.
+- Mouse clicks can switch task-list sections, select visible task/run rows,
+  switch drill-down tabs, trigger visible action-bar actions, and open PR links;
+  keyboard behavior remains canonical.
 - The focused logs pane pans long unwrapped rows with `left` / `right`. Logs
   render line numbers. Any drill-down pane can save currently visible viewer
   rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).

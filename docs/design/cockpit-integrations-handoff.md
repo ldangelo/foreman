@@ -127,10 +127,10 @@ Load into an `Integrations` struct next to `EditorConfig`. Env overrides for
 tests: `COCKPIT_DIFFNAV=off`, `COCKPIT_DELTA=off`, `COCKPIT_GHDASH=off`,
 `COCKPIT_GHENHANCE=off`.
 
-## 6. Workstreams
+## 6. Closed workstreams
 
-Implement in this order. Each is independently shippable and testable. Follow the
-repo TDD rule (RED → GREEN → refactor): write the failing test first.
+The workstreams below are implemented. Keep the historical acceptance criteria as
+regression contracts, not as pending implementation instructions.
 
 ### A. diffnav review on the `files` tab (tier 1 handoff)
 
@@ -196,7 +196,7 @@ Intent: a global key opens the full GitHub dashboard.
 
 ### E. gh-enhance GitHub Actions handoff (tier 1) — implemented
 
-Implemented in this pass after Workstreams A–D:
+Implemented after Workstreams A–D:
 
 Intent: from a run (especially when its PR checks are red), open `gh enhance` to
 watch/inspect the GitHub Actions job logs and rerun failed or flaky jobs (`Ctrl+R`
@@ -249,7 +249,7 @@ process — the true single-pane win.
   runs without a PR show the empty state; no blocking calls on the render path
   (fetch in `loadDetail`, cache like other detail).
 
-## 7. Keymap additions (update the spec + README to match)
+## 7. Keymap additions
 
 | Key | Context | Action |
 |-----|---------|--------|
@@ -257,28 +257,23 @@ process — the true single-pane win.
 | `G` | global | open `gh dash` (handoff) |
 | `C` | global (esp. `pr` tab) | open `gh enhance` — GitHub Actions (handoff) |
 | `o`/`enter` | `pr` tab | open the PR in the browser |
-| (`1`–`7`) | global | extend tab jump to include `pr` |
+| (`1`–`8`) | global | direct tab jumps include `pr` and `metrics` |
 
 Leave `d` (per-file nvim diff), `o` (open in nvim), `g` (scope), `r`/`R` as-is.
 
-## 8. Testing (required, TDD)
+## 8. Verification completed
 
-Keep all `exec` behind pure builder functions so they are unit-testable without
-running anything:
+The shipped tests keep process handoffs behind pure builder functions and cover:
 
-- `diffnavCommand`, `ghDashCommand`, `ghEnhanceCommand`, `deltaPreviewCommand`,
-  and any `gh pr view` builder return `*exec.Cmd`; assert on `.Path`/`.Args`/
-  `.Dir` in table-driven tests, including the disabled/missing-tool and
+- `diffnavCommand`, `ghDashCommand`, `ghEnhanceCommand`, and
+  `deltaPreviewCommand` command construction, disabled/missing-tool paths, and
   empty-worktree/no-branch branches.
-- `toolAvailable` — test the `enable: on|off|auto` resolution independent of PATH.
-- PR mapping — feed sample `/runs` and `/events` JSON (capture real shapes with
-  `COCKPIT_DUMP=1` against a live server, or copy fixtures) into the parser and
-  assert the resulting `PRStatus`.
-- Mock client — extend `mockClient.PR` and add a couple of file diffs so the UI
-  paths render in `COCKPIT_BACKEND=mock`.
-- Run `go build ./... && go test ./...` in `clients/cockpit`; keep `go vet` clean.
+- `toolAvailable` / integration enablement modes independent of PATH.
+- PR projection mapping from `/api/v1/runs`, including checks and review fields.
+- Mock client file diffs, PR state, and render paths for `COCKPIT_BACKEND=mock`.
+- `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`.
 
-## 9. Docs to update (documentation gate)
+## 9. Documentation updated
 
 - `clients/cockpit/README.md` — new keys (`D`, `G`, `C`), the `pr` tab, dependency
   list (diffnav, delta, gh + gh-dash + gh-enhance, Nerd Font), and the
@@ -303,12 +298,12 @@ running anything:
   notice on return, exactly like `openInNvim`/`editTaskInNvim`. Do not spawn
   detached processes for interactive tools.
 
-## 11. Suggested PR breakdown
+## 11. Closed PR breakdown
 
-1. `tools.go` + `Integrations` config + `toolAvailable` (+ tests).
-2. Workstream A (diffnav handoff) — smallest, highest signal.
-3. Workstream C (gh-dash handoff).
-4. Workstream B (inline delta preview).
-5. Workstream D (native `pr` tab) — largest; may reveal an API gap to flag.
-6. Workstream E (gh-enhance handoff).
-7. Docs sweep (README + spec).
+1. `tools.go` + `Integrations` config + `toolAvailable` (+ tests) — complete.
+2. Workstream A (diffnav handoff) — complete.
+3. Workstream C (gh-dash handoff) — complete.
+4. Workstream B (inline delta preview) — complete.
+5. Workstream D (native `pr` tab) — complete.
+6. Workstream E (gh-enhance handoff) — complete.
+7. Docs sweep (README + spec) — complete.

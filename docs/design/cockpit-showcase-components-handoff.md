@@ -60,8 +60,8 @@ back to v1.
 |-----------|---------|--------------------------------------|------|-----|
 | `bubbles/v2` `key` + `help` | self-documenting keymap | replaces the hand-rolled `?` notice + `renderKeyBar` in `view.go` | 1 | first-party |
 | `bubbles/v2` `textinput`/`textarea` | real text entry | replaces hand-parsed search in `TaskList`; powers add-task fields | 1 | first-party |
-| `lipgloss/v2` `table` + `list` | structured static rendering | task-detail field block, PR-checks summary — replaces `padRow` columns | 1 | first-party |
-| `muesli/reflow` | ANSI/Unicode wrap + truncate | replaces `clip`/`padRow`/`wrap` in `view.go` (correct width math) | 1 | framework-agnostic |
+| `lipgloss/v2` `table` | structured static rendering | task-detail field block and PR-checks summary | 1 | first-party |
+| `muesli/reflow` | ANSI/Unicode wrap + truncate | delegates clipping/wrapping in `view.go` to display-cell-aware helpers | 1 | framework-agnostic |
 | `lrstanley/bubblezone` | mouse click zones | intentionally not adopted; native hit-testing covers tabs/rows/action-bar/PR links | 2 | v1-only at `v1.0.0` |
 | `NimbleMarkets/ntcharts` | sparklines/line/bar/heatmap | intentionally not adopted; native bounded bars cover live metrics from `/api/v1/metrics` | 2 | v1-only at `v0.5.1` |
 | `charmbracelet/huh` | forms | not needed; `bubbles/v2` `textinput`/`textarea` power search and add-task forms | 2 | superseded |
@@ -73,10 +73,10 @@ back to v1.
 Explicitly **not** adopting: `bubbles/viewport` (superseded by
 `robinovitch61/viewport`), `wish`, `filepicker` (nvim/diffnav own files).
 
-## 4. Showcase workstreams (grouped by the experience they deliver)
+## 4. Closed showcase workstreams
 
-Each is independently shippable and lands after the v2 migration reaches parity.
-Follow the repo TDD rule; keep the read-only-client architecture intact.
+All workstreams below are implemented except explicitly parked optional libraries.
+Keep their acceptance clauses as regression contracts.
 
 ### A. Discoverable keymap (`key` + `help`) — Tier 1
 Define `key.Binding`s once; render a `help` bubble (short line in the keybar,
@@ -90,9 +90,9 @@ Replace the bespoke search key handling with a `textinput` for `/` search and th
 `filterableviewport` filter; use `textinput`/`textarea` for add-task fields.
 Acceptance: search + add-task inputs support cursor movement, edit, and paste.
 
-### C. Structured rendering (`lipgloss` table/list + `reflow`) — Tier 1
+### C. Structured rendering (`lipgloss` table + `reflow`) — Tier 1
 Render the full task-detail field block and the PR checks as `lipgloss/table`;
-swap `clip`/`padRow`/`wrap` for `reflow` so width math is ANSI/Unicode-correct.
+delegate wrapping/truncation to `reflow` so width math is ANSI/Unicode-correct.
 Acceptance: task detail and PR checks render as aligned tables; no truncation
 artifacts on wide-glyph content.
 
@@ -175,7 +175,7 @@ user-facing behavior natively when the behavior is small enough.
 ## 9. Closed sequencing
 
 1. (Prereq) v2 migration to parity is complete — see the viewport handoff.
-2. Tier 1 is complete: `key`+`help`, `textinput`, and `lipgloss` table/list +
+2. Tier 1 is complete: `key`+`help`, `textinput`, and `lipgloss` table +
    `reflow` replaced the corresponding hand-rolled paths.
 3. Tier 2: native hit-testing and metrics bars are implemented; revisit
    `bubblezone`/`ntcharts` only after upstream v2-compatible releases exist.
