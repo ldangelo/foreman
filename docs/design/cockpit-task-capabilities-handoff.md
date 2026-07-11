@@ -70,23 +70,18 @@ Intent: rows are legible task rows, not opaque ids.
   `min 32`, and cap so the right pane keeps `>= 44` columns
   (`leftW = clamp(desired, 32, total-45)`), reducing gracefully on small
   terminals. Keep it in one place so both `renderLeft` and the layout math agree.
-- `renderRow` for **task (READY)** rows → columns:
-  `‹glyph› ‹PRI badge› ‹title, truncated to fill› ‹type tag, right-aligned›`
-  - Priority badge: `P0` danger, `P1` warning, `P2`/none faint; fixed 2–3 cols.
-  - Type tag: dim, right-aligned (`task`, `bug`, `docs`, `epic`…); truncate to
-    ~8 cols.
-  - Title: primary text, gets the remaining width via `padRow`.
-  - The task **id** leaves the row and lives in the detail view (WS1).
-- For **run (RUNNING/RECENT)** rows, keep phase/status on the right but also show
-  the **title** instead of the bare id for consistency. Runs are already enriched
-  from the task map in `httpClient` (priority is copied today) — extend that to
-  copy `Title` and `TaskType` onto `Run` (add `Run.Title`, `Run.TaskType`) so run
-  rows can render a title. Fall back to `TaskID` when no title.
-- Update `keepSelectedVisible`/viewport math only if row height changes (it
-  shouldn't — still one line per row).
-- Acceptance: task rows show priority badge + title + type; run rows show title +
-  phase/status; the list is visibly wider; long titles truncate with `…`;
-  narrow terminals still render without wrapping.
+- Implemented row shape for **task (READY)** rows:
+  `‹id› ‹type› ‹priority›` metadata on the first line and the task title on the
+  second line, with project metadata added when global scope is active. This
+  supersedes the earlier sketch that moved the task id out of the row.
+- Implemented row shape for **run (RUNNING/RECENT)** rows: task id, type,
+  priority, phase/status, title, and summary/last signal when available. Runs are
+  enriched from the task map in `httpClient`; missing titles fall back to ids.
+- The list now uses two-line viewport rows, so keep-visible and mouse hit-testing
+  count rendered row height rather than assuming one terminal row per item.
+- Acceptance: task rows show id/type/priority/title plus available project
+  metadata; run rows show title plus phase/status; the list is visibly wider;
+  long titles truncate with `…`; narrow terminals still render without wrapping.
 
 ## 5. Workstream 3 — Create a task from the list
 

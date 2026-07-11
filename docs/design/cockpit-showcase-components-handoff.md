@@ -178,7 +178,9 @@ user-facing behavior natively when the behavior is small enough.
 4. Tier 3: first-party spinner/stopwatch/reduced-motion paths are implemented;
    `harmonica` remains optional polish, and `stickers` remains unnecessary while
    the pane layout stays simple.
-5. Demo: rich mock dataset + `vhs` tape + `docs/demo.gif`.
+5. Demo: rich mock dataset + checked-in `clients/cockpit/demo.tape`; generated
+   `demo.gif` is a local developer artifact when `vhs` is installed, not a
+   committed roadmap dependency.
 6. Docs sweep (README, `cockpit-ui-spec.md`, theme handoff cross-links).
 
 Sources: [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles),
