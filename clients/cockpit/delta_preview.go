@@ -49,7 +49,7 @@ func deltaPreviewCommand(run Run, filePath string, cfg Integrations, tools ToolR
 	gitDiff := fmt.Sprintf("git -C %s diff %s...HEAD -- %s", shellQuote(expandHome(wt)), shellQuote(base), shellQuote(filePath))
 	useDelta := normalizeEnable(cfg.Delta.Enable) != "off" && os.Getenv("NO_COLOR") == "" && tools.Available("delta")
 	if useDelta {
-		return exec.Command("bash", "-lc", gitDiff+" | delta --color-only"), true, nil
+		return exec.Command("bash", "-lc", gitDiff+" | delta --config "+shellQuote(cockpitThemePath("delta.gitconfig"))+" --color-only"), true, nil
 	}
 	return exec.Command("bash", "-lc", gitDiff), false, nil
 }

@@ -208,6 +208,21 @@ func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 		t.Fatalf("unexpected git diff command %q", cmd.Args[2])
 	}
 }
+
+func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	cfg := defaultConfig().Integrations
+	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", cfg, fakeTools{"delta": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usingDelta {
+		t.Fatal("expected delta preview when delta is available")
+	}
+	if !strings.Contains(cmd.Args[2], " | delta --config ") || !strings.Contains(cmd.Args[2], "theme/delta.gitconfig") {
+		t.Fatalf("expected packaged delta config in command %q", cmd.Args[2])
+	}
+}
 func hasEnv(env []string, prefix string) bool {
 	for _, item := range env {
 		if strings.HasPrefix(item, prefix) {

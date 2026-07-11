@@ -1370,6 +1370,29 @@ func TestMouseClickSelectsTaskRow(t *testing.T) {
 	}
 }
 
+func TestMouseClickTaskRowAccountsForScrolledViewport(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 12
+	m.runs = nil
+	m.tasks = nil
+	for i := 0; i < 12; i++ {
+		m.runs = append(m.runs, Run{Group: taskGroupRunning, TaskID: "task-" + itoa(i), RunID: "run-" + itoa(i)})
+	}
+	m.buildItems()
+	m.taskList.selected = 9
+	want := m.taskListTopIndex()
+	if want <= 0 {
+		t.Fatalf("expected viewport to scroll before click, top index=%d", want)
+	}
+
+	updated, _ := m.Update(mouseClick(3, 4))
+	m = updated.(model)
+	if got := m.taskList.SelectedIndex(); got != want {
+		t.Fatalf("expected click on first visible row to select index %d, got %d", want, got)
+	}
+}
+
 func TestMouseClickSelectsRunDetailTab(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120

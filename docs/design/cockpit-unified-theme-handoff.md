@@ -1,6 +1,6 @@
 # Handoff — Make cockpit + gh-dash + gh-enhance + diffnav feel like one app
 
-Status: Partially implemented in `clients/cockpit/` · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with visual-QA caveats · Date: 2026-07-10 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea + config authoring)
 Related: `docs/design/cockpit-ui-spec.md`, `docs/design/cockpit-integrations-handoff.md`
 Target: `clients/cockpit/` + shipped theme configs for the three external TUIs
@@ -27,10 +27,10 @@ importantly — the diff rendering.
 | Tool | Theming surface | Notes |
 |------|-----------------|-------|
 | **cockpit** | `theme/tokens.yaml` → generated `theme_tokens_gen.go`; Glamour JSON for markdown; `delta` for inline diff preview | Implemented as the source of truth for cockpit colors and report rendering. |
-| **gh-dash** | generated `theme/gh-dash.yml` with `theme.colors` (`text.{primary,secondary,inverted,faint,warning,success}`, `background.selected`, `border.{primary,secondary,faint}`), plus keybindings | Generated fragment exists; global install/merge remains future work. |
-| **gh-enhance** | `ENHANCE_THEME` Bubbletint theme id | Implemented as generated `theme/enhance.env` and cockpit handoff env. Full custom schema/config path is not used. |
-| **diffnav** | generated `theme/diffnav/config.yml` → `ui:` (icons, sideBySide, file-tree width, header/footer, colorFileNames…). Diff **body** color is delegated to **delta** | Cockpit sets `$DIFFNAV_CONFIG_DIR` to the packaged dir during handoff. |
-| **delta** | generated `theme/delta.gitconfig` (syntax-theme, plus/minus styles, line-numbers, side-by-side, hunk/file headers) | Shared fragment exists; inline previews still respect tool availability and fall back to plain git diff. |
+| **gh-dash** | generated `theme/gh-dash.yml` with `theme.colors` (`text.{primary,secondary,inverted,faint,warning,success}`, `background.selected`, `border.{primary,secondary,faint}`), plus keybindings | Generated fragment exists and `--install-themes` can write it to the config home with backups. |
+| **gh-enhance** | `ENHANCE_THEME` Bubbletint theme id | Implemented as generated `theme/enhance.env`, cockpit handoff env, and `--install-themes` output. Full custom schema/config path is not used. |
+| **diffnav** | generated `theme/diffnav/config.yml` → `ui:` (icons, sideBySide, file-tree width, header/footer, colorFileNames…). Diff **body** color is delegated to **delta** | Cockpit sets `$DIFFNAV_CONFIG_DIR` to the packaged dir during handoff; `--install-themes` can write the same fragment to the user config home. |
+| **delta** | generated `theme/delta.gitconfig` (syntax-theme, plus/minus styles, line-numbers, side-by-side, hunk/file headers) | Shared fragment exists; inline cockpit previews pass it via `delta --config`, and `--install-themes` writes a fragment for external git config includes. |
 
 Residual truth to accept: gh-dash exposes only `warning` + `success` text
 semantics (no separate `error`/`info` slot), and some chrome (exact border
@@ -196,15 +196,16 @@ difference rather than forcing it.
   `delta.gitconfig`, `glamour.json`, and `theme_tokens_gen.go`.
 - `theme/gen.go` reads `tokens.yaml` and writes all fragments plus the cockpit's
   color constants, so editing one file re-themes the suite.
-- Installer remains future work: `foreman-cockpit --install-themes` (or
-  `theme/install.sh`) should write each fragment to the tool's config path
-  (`~/.config/gh-dash/config.yml`, `~/.config/diffnav/config.yml`, the delta
-  gitconfig include, and any future gh-enhance config path). **Do not clobber**
-  existing user config: merge only the theme block, or back up first and print a
-  diff. Idempotent.
+- `foreman-cockpit --install-themes` writes generated fragments to the config
+  home (`$XDG_CONFIG_HOME` or `~/.config`): `gh-dash/config.yml`,
+  `diffnav/config.yml`, `foreman-cockpit/enhance.env`,
+  `foreman-cockpit/delta.gitconfig`, and `foreman-cockpit/glamour.json`.
+  Existing differing files are backed up with `.bak` before replacement; identical
+  files are left untouched.
 - Cross-launch inheritance is implemented where available: cockpit sets
-  `DIFFNAV_CONFIG_DIR` to the packaged `theme/diffnav` dir and `ENHANCE_THEME`
-  to the generated Bubbletint theme id when launching handoffs.
+  `DIFFNAV_CONFIG_DIR` to the packaged `theme/diffnav` dir, `ENHANCE_THEME`
+  to the generated Bubbletint theme id, and inline selected-file previews call
+  `delta --config theme/delta.gitconfig`.
 
 ## 8. Constraints & residual differences (accept, don't fight)
 
@@ -241,11 +242,14 @@ Done in `clients/cockpit/`:
    constants.
 4. Handoffs pass packaged theme env for `diffnav` and `gh enhance`.
 5. Cockpit keymap covers `?` help and `ctrl+d/u` half-page viewer scrolling.
+6. `foreman-cockpit --install-themes` installs generated fragments with backups.
+7. Inline delta previews pass the packaged `theme/delta.gitconfig` with
+   `delta --config`.
 
-Remaining future work:
+Remaining external/manual work:
 
-1. Global `--install-themes`/merge workflow for user config paths.
-2. Visual screenshot QA across cockpit, dash, enhance, and diffnav.
+1. Visual screenshot QA across cockpit, dash, enhance, and diffnav in an
+   installed truecolor terminal.
 
 ## 11. Non-goals
 

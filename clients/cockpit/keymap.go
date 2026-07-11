@@ -48,7 +48,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 		},
 		{
 			binding("tab/shift+tab", "drill-down tab"),
-			binding("1–7", "jump tab"),
+			binding("1–8", "jump tab"),
 			binding("ctrl+d/u", "page details"),
 			binding("n/N", "next/prev match"),
 			binding("←/→", "pan logs"),

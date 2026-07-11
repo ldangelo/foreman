@@ -21,6 +21,14 @@ import (
 func main() {
 	c := clientFromEnv()
 	cfg, cfgErr := loadConfig(".foreman/config.yaml")
+	if installThemesRequested(os.Args[1:]) {
+		if err := installThemeFragments(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if dumpRequested(os.Args[1:], os.Getenv("COCKPIT_DUMP")) {
 		if err := dumpClient(c); err != nil {
 			fmt.Fprintln(os.Stderr, err)

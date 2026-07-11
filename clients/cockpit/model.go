@@ -805,12 +805,44 @@ func (m model) taskSectionIndexAt(x int) int {
 
 func (m model) taskRowIndexAt(y int) int {
 	// Status bar plus pane border/header lines place the first visible task row at
-	// terminal row 4. Rows are rendered as two-line items.
-	row := (y - 4) / 2
-	if y < 4 || row < 0 || row >= len(m.taskList.Items()) {
+	// terminal row 4. Rows are rendered as two-line items. Prefer the task-list
+	// viewport's top item when available; derive the same centered window from the
+	// selected row otherwise because Bubble Tea View() mutates only a render copy.
+	if y < 4 {
 		return -1
 	}
-	return row
+	row := (y - 4) / 2
+	top := m.taskListTopIndex()
+	idx := top + row
+	if idx < 0 || idx >= len(m.taskList.Items()) {
+		return -1
+	}
+	return idx
+}
+
+func (m model) taskListTopIndex() int {
+	if m.taskList.viewport != nil {
+		top, _ := m.taskList.viewport.GetTopItemIdxAndLineOffset()
+		return top
+	}
+	itemCount := len(m.taskList.Items())
+	if itemCount == 0 {
+		return 0
+	}
+	bodyH := m.height - 3
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	visibleItems := max(1, (bodyH-2)/2)
+	top := m.taskList.SelectedIndex() - visibleItems/2
+	if top < 0 {
+		return 0
+	}
+	maxTop := max(0, itemCount-visibleItems)
+	if top > maxTop {
+		return maxTop
+	}
+	return top
 }
 
 func (m model) rightTabLineY() int {

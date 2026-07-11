@@ -130,7 +130,7 @@ Global:
 | `←` / `→` | pan long unwrapped rows in the focused logs view |
 | `s` | save the currently visible focused drill-down rows to `cockpit.exportDir` |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
-| `1`–`7` | jump directly to a tab and focus it |
+| `1`–`8` | jump directly to a tab and focus it |
 | `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused |
 | `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
 | `g` | toggle current-project vs global scope |
@@ -233,7 +233,9 @@ default avoids nesting a TUI inside a TUI.
   `tokens.yaml` drives Lip Gloss constants, Glamour JSON, `gh-dash.yml`,
   `enhance.env`, `diffnav/config.yml`, and `delta.gitconfig`. Handoffs pass
   packaged env for `diffnav` (`DIFFNAV_CONFIG_DIR`) and `gh enhance`
-  (`ENHANCE_THEME`) where supported.
+  (`ENHANCE_THEME`) where supported; inline delta previews pass
+  `theme/delta.gitconfig` via `delta --config`; `--install-themes` writes
+  generated fragments to the operator config home with `.bak` backups.
 - The Go cockpit targets Bubble Tea v2. `View()` returns `tea.View`, with
   alt-screen and cell-motion mouse mode declared on the view rather than passed
   as `NewProgram` options.

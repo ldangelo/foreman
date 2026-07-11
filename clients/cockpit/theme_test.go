@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -65,5 +67,44 @@ func TestThemeProjectionFragmentsUseTokens(t *testing.T) {
 	}
 	if !strings.Contains(string(delta), themeTokenDiffSyntaxTheme) || !strings.Contains(string(delta), themeTokenDiffAdd) || !strings.Contains(string(delta), themeTokenDiffRemove) {
 		t.Fatalf("delta config does not include diff tokens:\n%s", string(delta))
+	}
+}
+
+func TestInstallThemeFragmentsWritesAndBacksUpConfigs(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	target := filepath.Join(configDir, "gh-dash", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("user: config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := installThemeFragments(&out); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile("theme/gh-dash.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(installed) != string(source) {
+		t.Fatalf("expected gh-dash config to match generated fragment")
+	}
+	backup, err := os.ReadFile(target + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != "user: config\n" {
+		t.Fatalf("expected previous config backup, got %q", string(backup))
+	}
+	if !strings.Contains(out.String(), "delta fragment installed") {
+		t.Fatalf("expected delta include guidance, got %q", out.String())
 	}
 }

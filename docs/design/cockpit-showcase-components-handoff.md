@@ -1,17 +1,17 @@
 # Handoff — A showcase-grade cockpit: adopting the Bubble Tea ecosystem
 
-Status: Partially implemented in `clients/cockpit/` · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with external showcase caveats · Date: 2026-07-10 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Related: `docs/design/cockpit-viewport-investigation.md` (v2 migration), `cockpit-unified-theme-handoff.md`, `cockpit-task-capabilities-handoff.md`, `cockpit-ui-spec.md`
 
-Implementation note (2026-07-11): the cockpit is on Bubble Tea/Bubbles/Lip Gloss
-v2 and now ships generated help, textinput/textarea task creation, reflow/table
-rendering, spinner/stopwatch motion with reduced-motion suppression, visible
-mouse targets for section tabs/task rows/drill-down tabs, and a metrics tab
-backed by `/api/v1/metrics`. Remaining showcase-grade polish is external or
-optional: full `bubblezone` action/PR-link zones, `ntcharts` time-series charts,
-`harmonica` spring transitions, a global theme installer/visual QA matrix, and
-demo/VHS capture.
+Implementation note (2026-07-11): the cockpit ships generated keymap/help,
+`textinput`/`textarea` task creation, table/reflow rendering, spinner/stopwatch
+reduced-motion support, clickable section/task-row/drill-down-tab targets, a
+metrics tab backed by `/api/v1/metrics`, a theme installer, and richer mock data.
+Remaining showcase work is external or intentionally parked: full `bubblezone`
+zero-width action/PR-link zones and `ntcharts` are v1 Bubble Tea ecosystems at
+the verified versions, `harmonica` remains optional polish, and actual VHS/GIF
+capture requires the external `vhs` runtime.
 
 ## 1. North star
 

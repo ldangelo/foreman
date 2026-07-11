@@ -75,15 +75,23 @@ Optional integrations are discovered at runtime and fail closed with a notice:
 `gh enhance` extension for GitHub Actions triage, `omp` for live worktree triage
 in a tmux pane or inline handoff, and a platform browser opener (`open` on macOS
 or `xdg-open` on Linux) for PR links. Cockpit ships generated theme fragments
-under `theme/` and passes the packaged `diffnav`/`gh enhance` theme environment
-when launching those tools. `diffnav` looks best with a Nerd Font because its file
-tree uses icon glyphs.
+under `theme/`, passes the packaged `diffnav`/`gh enhance` theme environment
+when launching those tools, and can install generated fragments with
+`--install-themes`. `diffnav` looks best with the tokenized `CommitMono Nerd Font`
+and `nerd-fonts-status` icon set because its file tree uses icon glyphs.
 
 ```bash
 cd clients/cockpit
 go mod tidy                  # resolves deps + writes go.sum (needs network once)
 go build -o foreman-cockpit .
 ./foreman-cockpit            # or: go run .
+```
+
+Install generated integration theme fragments into the current user config
+locations with:
+
+```bash
+./foreman-cockpit --install-themes
 ```
 
 By default the client reads the local Foreman server at
@@ -189,11 +197,14 @@ command output. `diffnav`, `gh dash`, `gh enhance`, and inline `omp` run through
 signals, conflicted files, targeted report excerpts, and error-like log lines.
 Active-looking runs (`running`, `in_progress`, `pending`) are refused even if a
 projection group is stale, avoiding two agents mutating the same worktree.
-Inline file previews read a completed `git diff | delta`/plain `git diff`
-command. Generated theme fragments live in `theme/`: `tokens.yaml` drives
-cockpit color constants, `gh-dash.yml`, `enhance.env`, `diffnav/config.yml`,
-`delta.gitconfig`, and `glamour.json`. There is not yet a global theme installer;
-handoffs use packaged env where the tool supports it.
+Inline file previews read a completed `git diff | delta --config
+theme/delta.gitconfig`/plain `git diff` command. Generated theme fragments live
+in `theme/`: `tokens.yaml` drives cockpit color constants, `gh-dash.yml`,
+`enhance.env`, `diffnav/config.yml`, `delta.gitconfig`, and `glamour.json`.
+`foreman-cockpit --install-themes` writes those generated fragments to the
+current config home, backing up existing differing files with `.bak`; `delta`
+still requires including the installed fragment from git config for external
+tools outside cockpit-managed previews.
 
 ## nvim open modes
 

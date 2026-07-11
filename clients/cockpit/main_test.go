@@ -25,6 +25,15 @@ func TestDumpRequested(t *testing.T) {
 	}
 }
 
+func TestInstallThemesRequested(t *testing.T) {
+	if !installThemesRequested([]string{"--install-themes"}) {
+		t.Fatal("expected --install-themes to request theme installation")
+	}
+	if installThemesRequested([]string{"--dump"}) {
+		t.Fatal("did not expect --dump to request theme installation")
+	}
+}
+
 func TestClientForConfigDefaultsToLocalLiveServer(t *testing.T) {
 	client := clientForConfig("", "", "")
 	httpClient, ok := client.(*httpClient)
