@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,14 @@ func TestResolveOmpModeHonorsAutoTmuxAndValidation(t *testing.T) {
 	}
 }
 
+func TestResolveOmpModeRefusesActiveStatusEvenWhenGroupStale(t *testing.T) {
+	cfg := defaultConfig().Integrations.Omp
+	_, err := resolveOmpMode(cfg, Run{RunID: "run-stale", Worktree: "/tmp/wt", Status: "in_progress", Group: "RECENT"}, fakeTools{"omp": true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "run is active") {
+		t.Fatalf("expected active status guard independent of group, got %v", err)
+	}
+}
+
 func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	cfg := defaultConfig().Integrations.Omp
 	cfg.Cmd = "omp-dev"
@@ -83,6 +92,55 @@ func TestBuildTriageBriefIncludesFailureContext(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(brief), "token") || strings.Contains(strings.ToLower(brief), "secret") {
 		t.Fatalf("brief should not include secret-like labels:\n%s", brief)
+	}
+}
+
+func TestBuildTriageBriefIncludesReportsLogsAndRedactsSecrets(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.reports = []Report{
+		{Name: "CR_CLI_REPORT.md", Preview: "token=abc123\nReview finding: fix retry handling"},
+		{Name: "FINALIZE_VALIDATION.md", Preview: "Rebase conflict in src/app.ts"},
+	}
+	m.logs = []string{"ok", "ERROR: test failed", "authorization bearer secret"}
+	run := Run{TaskID: "task-1", RunID: "run-1", Phase: "qa", Status: "failed", Attention: "ci_failed", Worktree: "/tmp/wt"}
+
+	brief := buildTriageBrief(m, run)
+	for _, want := range []string{"Report excerpts", "CR_CLI_REPORT.md", "Review finding", "FINALIZE_VALIDATION.md", "Error log excerpt", "ERROR: test failed"} {
+		if !strings.Contains(brief, want) {
+			t.Fatalf("expected %q in brief:\n%s", want, brief)
+		}
+	}
+	if strings.Contains(brief, "token=abc123") || strings.Contains(brief, "authorization bearer secret") {
+		t.Fatalf("expected secret-like lines redacted:\n%s", brief)
+	}
+}
+
+func TestWriteTriageBriefUsesWorktreeOnlyWhenForemanIgnored(t *testing.T) {
+	worktree := t.TempDir()
+	path, err := writeTriageBrief(worktree, "run-1", "brief")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(path, worktree) {
+		t.Fatalf("expected temp path when .foreman is not ignored, got %q", path)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte(".foreman/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err = writeTriageBrief(worktree, "run-2", "brief")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(path, filepath.Join(worktree, ".foreman")) {
+		t.Fatalf("expected ignored .foreman path, got %q", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected triage brief mode 0600, got %v", info.Mode().Perm())
 	}
 }
 

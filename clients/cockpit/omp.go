@@ -52,9 +52,6 @@ func resolveOmpMode(cfg OmpConfig, run Run, tools ToolResolver, env []string) (s
 }
 
 func runHasActiveWorker(run Run) bool {
-	if run.Group != "RUNNING" {
-		return false
-	}
 	switch normalizeStatus(run.Status) {
 	case "running", "in_progress", "pending":
 		return true
@@ -189,6 +186,8 @@ func buildTriageBrief(m model, run Run) string {
 			}
 		}
 	}
+	appendBriefReports(&b, m.reports)
+	appendBriefLogs(&b, m.logs)
 	conflicts := conflictedFiles(m.files)
 	if len(conflicts) > 0 {
 		b.WriteString("\n## Conflicted files\n\n")
@@ -218,6 +217,60 @@ func conflictedFiles(files []FileChange) []string {
 	for _, file := range files {
 		if file.Conflict {
 			out = append(out, file.Path)
+		}
+	}
+	return out
+}
+
+func appendBriefReports(b *strings.Builder, reports []Report) {
+	wrote := false
+	for _, report := range reports {
+		name := strings.TrimSpace(report.Name)
+		upper := strings.ToUpper(name)
+		if name == "" || (!strings.Contains(upper, "CR_CLI_REPORT") && !strings.Contains(upper, "REVIEW") && !strings.Contains(upper, "FINALIZE_VALIDATION")) {
+			continue
+		}
+		if !wrote {
+			b.WriteString("\n## Report excerpts\n\n")
+			wrote = true
+		}
+		fmt.Fprintf(b, "### %s\n\n", name)
+		for _, line := range briefExcerptLines(report.Preview, 8) {
+			fmt.Fprintf(b, "- %s\n", redactBriefLine(line))
+		}
+	}
+}
+
+func appendBriefLogs(b *strings.Builder, logs []string) {
+	var lines []string
+	for _, line := range logs {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "panic") || strings.Contains(lower, "exception") {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+		if len(lines) >= 8 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("\n## Error log excerpt\n\n")
+	for _, line := range lines {
+		fmt.Fprintf(b, "- %s\n", redactBriefLine(line))
+	}
+}
+
+func briefExcerptLines(text string, limit int) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		out = append(out, line)
+		if len(out) >= limit {
+			break
 		}
 	}
 	return out

@@ -185,13 +185,15 @@ The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
 command output. `diffnav`, `gh dash`, `gh enhance`, and inline `omp` run through
 `tea.ExecProcess`; `omp` prefers a non-suspending tmux pane when `$TMUX` is set.
 `p` writes a non-secret triage brief for the selected failed/stuck run and starts
-`omp`; `P` opens plain `omp` without a brief. Active running workers are refused
-to avoid two agents mutating the same worktree. Inline file previews read a
-completed `git diff | delta`/plain `git diff` command. Generated theme fragments
-live in `theme/`: `tokens.yaml` drives cockpit color constants, `gh-dash.yml`,
-`enhance.env`, `diffnav/config.yml`, `delta.gitconfig`, and `glamour.json`.
-There is not yet a global theme installer; handoffs use packaged env where the
-tool supports it.
+`omp`; `P` opens plain `omp` without a brief. The brief includes PR state, recent
+signals, conflicted files, targeted report excerpts, and error-like log lines.
+Active-looking runs (`running`, `in_progress`, `pending`) are refused even if a
+projection group is stale, avoiding two agents mutating the same worktree.
+Inline file previews read a completed `git diff | delta`/plain `git diff`
+command. Generated theme fragments live in `theme/`: `tokens.yaml` drives
+cockpit color constants, `gh-dash.yml`, `enhance.env`, `diffnav/config.yml`,
+`delta.gitconfig`, and `glamour.json`. There is not yet a global theme installer;
+handoffs use packaged env where the tool supports it.
 
 ## nvim open modes
 
