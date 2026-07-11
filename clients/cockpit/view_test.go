@@ -217,6 +217,19 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
+	m := newModel(NewMockClient())
+	run := Run{Phase: "qa", Pipeline: pipe(3, -1)}
+
+	out := stripANSI(strings.Join(m.renderRail(run, 20, paneVisualFor(true, defaultConfig().Cockpit.Focus)), "\n"))
+	if !strings.Contains(out, "4/10 · qa") {
+		t.Fatalf("expected compact phase badge on narrow width, got:\n%s", out)
+	}
+	if strings.Contains(out, "explorer") || strings.Contains(out, "developer") {
+		t.Fatalf("expected compact rail to omit full phase names, got:\n%s", out)
+	}
+}
+
 func TestTaskListViewportShowsSectionTabsAndSelectedRow(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = manyRuns(20)

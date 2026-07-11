@@ -460,6 +460,9 @@ func (m model) renderRight(w int) string {
 }
 
 func (m model) renderRail(run Run, w int, visual paneVisual) []string {
+	if w < 32 && len(run.Pipeline) > 0 {
+		return []string{m.renderCompactRail(run, w, visual)}
+	}
 	var chips []string
 	for i, p := range run.Pipeline {
 		gl, glc := glyph(p.State)
@@ -503,6 +506,35 @@ func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 		lines = append(lines, cur)
 	}
 	return lines
+}
+func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
+	idx := 0
+	phase := strings.TrimSpace(run.Phase)
+	state := ""
+	for i, p := range run.Pipeline {
+		if p.State == "active" || p.State == "retry" || p.State == "fail" || (phase != "" && p.Name == phase) {
+			idx = i
+			phase = firstNonEmptyText(phase, p.Name)
+			state = p.State
+			if p.State == "active" || p.State == "retry" || p.State == "fail" {
+				break
+			}
+		}
+	}
+	if phase == "" && len(run.Pipeline) > 0 {
+		phase = run.Pipeline[idx].Name
+		state = run.Pipeline[idx].State
+	}
+	gl, glc := glyph(state)
+	label := fmt.Sprintf("%s %d/%d · %s", gl, idx+1, len(run.Pipeline), phase)
+	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
+	if state == "active" {
+		st = st.Background(visual.ActiveBg).Foreground(visual.White)
+	}
+	if state == "fail" {
+		st = st.Background(visual.FailBg)
+	}
+	return clip(st.Render(label), w)
 }
 
 func (m model) renderTabs(w int, visual paneVisual) string {

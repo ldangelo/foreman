@@ -37,8 +37,9 @@ authoritative state.
   `textarea` create form that posts `task.create` with `ctrl+s`, and `N` for a
   one-line quick-add task title submitted with `enter`.
 - Right column: color-coded run header, live elapsed clock for selected running
-  runs, an animated phase rail, and a drill-down tab strip (`summary · messages ·
-  events · logs · reports · files · pr · metrics`). The metrics tab reads
+  runs, an animated phase rail that collapses to a compact `4/10 · qa` badge on
+  very narrow panes, and a drill-down tab strip (`summary · messages · events ·
+  logs · reports · files · pr · metrics`). The metrics tab reads
   `/api/v1/metrics` and renders counters, gauges, and phase durations.
   The active pane is called out with a focus label and accent frame; the inactive
   pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or

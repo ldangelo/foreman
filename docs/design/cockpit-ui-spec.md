@@ -72,8 +72,8 @@ The selected row drives the entire right side.
   `retrying: coderabbit_findings (2)`).
 - **Phase rail** — the workflow phases as a horizontal sequence with per-phase
   glyphs: `✓` done, `●` active (breathing/animated), `○` pending, `✗` failed,
-  `↻` retrying. Wraps to multiple rows on narrow terminals. This is the
-  at-a-glance status. (Q3)
+  `↻` retrying. It wraps on normal narrow panes and collapses to a compact
+  `4/10 · qa` badge on very narrow panes. This is the at-a-glance status. (Q3)
 - **Tab strip** — `summary · messages · events · logs · reports · files`. Tabs
   show counts; `logs`, `reports`, and `files` carry an `⧉` marker indicating
   their rows are openable in nvim. (Q4)
@@ -309,8 +309,9 @@ default). `mode: remote` never suspends; `mode: inline` always suspends.
 - No auth token refresh flows; read the token from the environment.
 - No pagination controls beyond the RECENT cap.
 
-## Open questions
+## Resolved questions
 
-- Should RECENT be time-boxed (e.g. last 24h) rather than count-capped?
-- Should the phase rail collapse to a compact `4/10 · qa` badge on very narrow
-  terminals instead of wrapping?
+- RECENT remains projection/count scoped for the POC; auth token refresh and
+  RECENT pagination controls are explicit non-goals.
+- Resolved: the phase rail collapses to a compact `4/10 · qa` badge on very
+  narrow terminals instead of consuming multiple wrapped rows.
