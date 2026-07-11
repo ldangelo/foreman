@@ -17,8 +17,8 @@ The library targets **Bubble Tea v2 + Go 1.26**; the cockpit nested module now
 targets Go 1.26 and Bubble Tea v2. WS1 landed the whole-app v2 migration, WS2
 adopted the core `viewport` package for the drill-down `Viewer`, WS3 added
 `filterableviewport` search, WS4 added pan/log-number/export extras, WS5 moved
-the task list onto `viewport`/`filterableviewport`, and WS6 removed the
-remaining bespoke windowing helpers.
+the task list onto `viewport`/`filterableviewport`, and WS6 removed the last
+bespoke windowing helpers.
 
 ## 2. Target versions
 
@@ -26,9 +26,8 @@ remaining bespoke windowing helpers.
 - `charm.land/bubbletea/v2` (v2.0.2+), `charm.land/bubbles/v2`,
   `charm.land/lipgloss/v2`.
 - `github.com/robinovitch61/viewport` (adds `viewport` + `filterableviewport`).
-- Glamour: keep the current renderer if it builds under the v2 dep set (its
-  output is a plain string fed as viewport item content); otherwise move to a
-  v2-compatible markdown renderer. Verify during Workstream 1.
+- Glamour: the existing renderer builds under the v2 dependency set; its output
+  remains a plain string fed as viewport item content.
 
 ## 3. Why (feature map)
 
@@ -93,9 +92,9 @@ mouse/key coverage, and handoff command coverage.
 - Preserve the openable-tab `Target` resolution (`resolveTarget`) by carrying the
   target on the object (or a parallel map keyed by item identity).
 
-Acceptance: cursor identity preserved across the 2s refresh; bottom-follow for
-live logs; clamp at edges; messages navigable by whole message; nvim/diffnav
-targets still resolve.
+Regression contract: cursor identity is preserved across the 2s refresh;
+bottom-follow works for live logs; clamp-at-edges works; messages are navigable
+by whole message; nvim/diffnav targets still resolve.
 
 ## 6. Workstream 3 — In-view search via `filterableviewport` (complete)
 
@@ -105,8 +104,8 @@ targets still resolve.
   clears, `n`/`N` jump matches, and `o` toggles matches-only view. README/spec
   keybars are updated.
 
-Acceptance: filtering + match navigation + matches-only work in logs/events/
-messages; no key collision with task-list search.
+Regression contract: filtering, match navigation, and matches-only mode work in
+logs/events/messages with no key collision against task-list search.
 
 ## 7. Workstream 4 — Long-line handling & extras (complete)
 
@@ -116,8 +115,8 @@ messages; no key collision with task-list search.
 - `s` writes the currently visible viewer rows to `cockpit.exportDir`
   (`COCKPIT_EXPORT_DIR` override).
 
-Acceptance: a long unwrapped log line pans instead of truncating; line numbers
-render for logs; save-to-file writes the visible content.
+Regression contract: a long unwrapped log line pans instead of truncating; line
+numbers render for logs; save-to-file writes the visible content.
 
 ## 8. Workstream 5 — Task list → `viewport` (complete)
 
@@ -132,9 +131,9 @@ clamping, and group collapse behavior.
 ## 9. Workstream 6 — Delete bespoke windowing + docs (complete)
 
 Removed `windowLines`, `scrollWindowLines`, `fitBlock`, the unused max-scroll
-helper, and the final docs references that treated WS6 as pending. Remaining
-window sizing is pane layout only; drill-down scrolling/panning/searching lives
-in `Viewer`, and task-list scrolling/searching lives in `TaskList`.
+helper, and the final pre-closure docs references. Window sizing is pane layout
+only; drill-down scrolling/panning/searching lives in `Viewer`, and task-list
+scrolling/searching lives in `TaskList`.
 
 ## 10. Resolved risks & mitigations
 

@@ -82,26 +82,27 @@ Keep their acceptance clauses as regression contracts.
 Define `key.Binding`s once; render a `help` bubble (short line in the keybar,
 full overlay on `?`). Removes the drift between the hand-maintained keybar and
 actual bindings, and matches the idiom `viewport`/`gh-dash` already use.
-Acceptance: `?` shows a complete, accurate help view generated from the bindings;
-the keybar auto-summarizes.
+Regression contract: `?` shows a complete, accurate help view generated from
+the bindings; the keybar auto-summarizes.
 
 ### B. First-class input (`textinput` / `textarea`) — Tier 1
 Replace the bespoke search key handling with a `textinput` for `/` search and the
 `filterableviewport` filter; use `textinput`/`textarea` for add-task fields.
-Acceptance: search + add-task inputs support cursor movement, edit, and paste.
+Regression contract: search and add-task inputs support cursor movement, edit,
+and paste.
 
 ### C. Structured rendering (`lipgloss` table + `reflow`) — Tier 1
 Render the full task-detail field block and the PR checks as `lipgloss/table`;
 delegate wrapping/truncation to `reflow` so width math is ANSI/Unicode-correct.
-Acceptance: task detail and PR checks render as aligned tables; no truncation
-artifacts on wide-glyph content.
+Regression contract: task detail and PR checks render as aligned tables; no
+truncation artifacts appear on wide-glyph content.
 
 ### D. Clickable everything (native hit-testing) — Tier 2
 Tabs, task rows, action-bar buttons, and PR actions are routed through
 cockpit-owned mouse coordinate mapping in `handleMouse`. This avoids v1-only
 `bubblezone` markers while preserving keyboard parity and stable width math.
-Acceptance: clicking a tab/row/action/PR does what the key does; wheel scroll
-still works; no zero-width marker dependency is required.
+Regression contract: clicking a tab/row/action/PR does what the key does; wheel
+scroll still works; no zero-width marker dependency is required.
 
 ### E. Fleet metrics (native bounded bars) — Tier 2
 The top-level `metrics` view reads `GET /api/v1/metrics` and renders counters,
@@ -109,8 +110,8 @@ gauges, and phase durations as native bounded bars. Missing metrics produce a
 graceful empty state; HTTP/JSON errors surface in the cockpit notice bar. Richer
 time-series sparklines can wait for a v2-compatible charting library or backend
 series fields.
-Acceptance: a metrics view renders live metric rows on refresh; empty/missing
-data states are graceful; no render-path aggregation blocks the TUI.
+Regression contract: a metrics view renders live metric rows on refresh;
+empty/missing data states are graceful; no render-path aggregation blocks the TUI.
 
 ### F. Motion & polish (`spinner` + `stopwatch`; `harmonica` optional) — Tier 3
 Use first-party Bubble Tea components for meaningful live motion: the phase rail
@@ -119,8 +120,8 @@ active glyph, status bar, diff-preview loading, and metrics loading use
 Keep motion subtle and disable-able (respect a `reducedMotion` config for
 accessibility / low-power terminals). Spring panel/tab transitions via
 `harmonica` remain optional polish and are not required for roadmap completion.
-Acceptance: active/loading states visibly animate on the v2 renderer; motion can
-be turned off; no CPU spin when idle.
+Regression contract: active/loading states visibly animate on the v2 renderer;
+motion can be turned off; no CPU spin when idle.
 
 ### G. (Optional) layout system (`stickers`) — Tier 3
 Only if it clearly simplifies the responsive two-column + bars layout; otherwise

@@ -129,8 +129,8 @@ tests: `COCKPIT_DIFFNAV=off`, `COCKPIT_DELTA=off`, `COCKPIT_GHDASH=off`,
 
 ## 6. Closed workstreams
 
-The workstreams below are implemented. Keep the historical acceptance criteria as
-regression contracts, not as pending implementation instructions.
+The workstreams below are implemented. Keep the historical criteria as
+regression contracts, not as work still to do.
 
 ### A. diffnav review on the `files` tab (tier 1 handoff)
 
@@ -158,9 +158,9 @@ Intent: from a run's `files` tab, open the whole run diff in diffnav.
   instead of launching.
 - When `cfg.Diffnav.Watch` is true, append `--watch` semantics per diffnav docs
   (re-runs the diff and refreshes) for active runs.
-- Acceptance: on the `files` tab of a run with a worktree, `D` suspends the
-  cockpit, shows diffnav with the run's changed files, and returns cleanly on
-  quit; missing diffnav/delta shows a notice and does nothing else.
+- Regression contract: on the `files` tab of a run with a worktree, `D`
+  suspends the cockpit, shows diffnav with the run's changed files, and returns
+  cleanly on quit; missing diffnav/delta shows a notice and does nothing else.
 
 ### B. Inline `delta` diff preview in the `files` tab (tier 2)
 
@@ -176,8 +176,9 @@ process takeover), the way `reports` render markdown through Glamour today.
   delta is absent.
 - Keep it inside the existing `Viewer` line model so scrolling/`fitBlock` still
   work. Do not break the `o`/`d`/`D` actions.
-- Acceptance: moving the cursor onto a changed file shows its colored diff inline;
-  no external process is launched; absent delta falls back to plain diff text.
+- Regression contract: moving the cursor onto a changed file shows its colored
+  diff inline; no external process is launched; absent delta falls back to plain
+  diff text.
 
 ### C. gh-dash repo-wide handoff (tier 1)
 
@@ -187,8 +188,8 @@ Intent: a global key opens the full GitHub dashboard.
   scope — use uppercase). Active regardless of tab.
 - Builder: `ghDashCommand(cfg Integrations) (*exec.Cmd, error)` → `exec.Command("gh",
   append([]string{"dash"}, cfg.GhDash.Args...)...)`. Launch via `tea.ExecProcess`.
-- Acceptance: `G` suspends the cockpit, opens `gh dash`, returns on quit; missing
-  `gh`/`gh dash` shows a notice.
+- Regression contract: `G` suspends the cockpit, opens `gh dash`, returns on
+  quit; missing `gh`/`gh dash` shows a notice.
 - Reverse direction documented: `gh dash` custom PR keybindings can launch
   `foreman-cockpit`, `diffnav`, or `gh enhance` from `{{.RepoPath}}` while using
   `{{.PrNumber}}`, `{{.BaseRefName}}`, and other selected-PR template fields.
@@ -212,8 +213,8 @@ but does not replace.
 - Launch via `tea.ExecProcess`; set a notice on return (mirrors `ghDashCommand`).
 - Degrade with a notice if `gh` or the `gh enhance` extension is missing
   (`ExtensionAvailable("enhance")`), disabled, or if the run has no worktree.
-- Acceptance: `C` suspends the cockpit, opens `gh enhance`, and returns cleanly;
-  missing prerequisites show a notice and do nothing else.
+- Regression contract: `C` suspends the cockpit, opens `gh enhance`, and returns
+  cleanly; missing prerequisites show a notice and do nothing else.
 - UI pairing: the `pr` tab's checks summary answers *whether* CI is red; `C` →
   enhance is how you inspect *why* and rerun. The `pr` action bar hints `C`
   whenever a PR URL is present.
@@ -245,9 +246,9 @@ process — the true single-pane win.
   configured repo-wide `gh dash`; PR-specific reverse handoffs live in operator
   `gh-dash.yml` keybindings, not cockpit runtime code.
 - Empty state: runs without a PR show "No PR for this run yet."
-- Acceptance: selecting a run with a PR shows live-ish PR status on the `pr` tab;
-  runs without a PR show the empty state; no blocking calls on the render path
-  (fetch in `loadDetail`, cache like other detail).
+- Regression contract: selecting a run with a PR shows live-ish PR status on the
+  `pr` tab; runs without a PR show the empty state; no blocking calls run on the
+  render path.
 
 ## 7. Keymap additions
 
