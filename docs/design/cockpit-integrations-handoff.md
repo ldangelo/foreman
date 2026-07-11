@@ -31,8 +31,8 @@ Implemented in the Go cockpit module:
 - Inline selected-file diff previews using `delta` when available, plain `git diff` otherwise.
 - File tab population reads selected-run worktree/base metadata from `/api/v1/runs`,
   prefers `git diff --numstat` and `--name-status` from that worktree, then falls
-  back to `/api/v1/runs/:run_id/debug` timeline payloads when no worktree diff is
-  available.
+  back to `/api/v1/runs/:run_id/debug` timeline `payload` / `file_changes` fields
+  when no worktree diff is available.
 - Global `G` `gh dash` handoff.
 - Global `C` `gh enhance` handoff from the selected run worktree.
 - Native `pr` tab backed by Foreman-projected run PR fields, including optional mergeability, review decision, and check summaries when projected, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
@@ -229,7 +229,8 @@ process — the true single-pane win.
 - Data source, in priority order:
   1. Prefer PR fields on the run projection (`GET /api/v1/runs`): `pr_url`,
      `pr_state`, `pr_head_sha`, branch/base fields, `pr_mergeable`,
-     `pr_review_decision`, and `pr_checks`.
+     `pr_review_decision`, and `pr_checks`. The run projection also carries
+     cockpit row counts and diff totals.
   2. Otherwise derive from `GET /api/v1/events` / `…/runs/:id/debug` (the events
      tab already falls back to debug) by folding `run.pr.*` events.
   3. As a last resort for live check/review detail, shell `gh pr view <url>
@@ -288,10 +289,9 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
 ## 10. Non-goals & risks
 
 - **Out of scope:** pty-embedded live TUIs (tier 3) and brand-new integration
-  endpoints. Worktree/branch/base metadata is exposed on the existing
-  `/api/v1/runs` projection; if richer per-run PR data is not obtainable from the
-  existing API + `gh`, stop and flag it rather than adding server endpoints in
-  this task.
+  endpoints. Worktree/branch/base metadata, PR readiness fields, row counts, and
+  diff totals are exposed on the existing `/api/v1/runs` projection; file-change
+  fallback data is exposed on the existing `/api/v1/runs/:run_id/debug` timeline.
 - **Risks:** base-branch assumption (`origin/dev`) — make it configurable and
   fall back sensibly; diffnav Nerd-Font/`delta` requirements; `gh` auth; and the
   render path must never block on `exec` (fetch in `loadDetail`, cache results).

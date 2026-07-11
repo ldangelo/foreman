@@ -110,14 +110,13 @@ collapsible tree.
 - **Age columns** read `created_at` + `updated_at` from `Run`/`Task` projections
   when supplied; rows degrade to the available timestamp instead of fetching
   more data while rendering.
-- **Messages/events/checks/PR/verdict/diff columns** are populated from fields
-  already present on `GET /api/v1/runs` (`messages_count`, `events_count`,
-  `pr_state`, `pr_checks`, verdict, and added/removed diff totals when
-  projected).
+- **Messages/events/checks/PR/verdict/diff columns** are populated from
+  `GET /api/v1/runs` fields (`messages_count`, `events_count`, `pr_state`,
+  `pr_checks`, verdict, and added/removed diff totals).
 - File metadata prefers the selected run worktree's `git diff --numstat` and
   `--name-status` against the projected base branch, then falls back to
-  `/api/v1/runs/:run_id/debug` timeline payloads when no worktree diff is
-  available.
+  `/api/v1/runs/:run_id/debug` timeline `payload` / `file_changes` fields when
+  no worktree diff is available.
 - The shipped cockpit does not require a dedicated file-metadata endpoint. Such
   an endpoint would be optional API cleanup, not roadmap completion work.
 - Aggregation happens in client mapping, not on the render path.

@@ -243,6 +243,34 @@ defmodule ForemanServer.Http.RouterTest do
       revision: "abc123"
     })
 
+    assert {:ok, _} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-run-worktree-http",
+               run_id: "run-worktree-http",
+               from: "developer",
+               to: "qa",
+               subject: "inspect diff",
+               body: ~s({"message":"please inspect"})
+             })
+
+    append_run_event("ToolCallFinished", %{
+      run_id: "run-worktree-http",
+      output: %{
+        changed: [
+          %{path: "lib/a.ex", additions: 3, deletions: 1},
+          %{path: "test/a_test.exs", additions: 5, deletions: 0}
+        ]
+      }
+    })
+
+    append_event("PrGateObserved", "pr:run-worktree-http", %{
+      pr_id: "pr-run-worktree-http",
+      run_id: "run-worktree-http",
+      checks: %{passed: 2, failed: 1, pending: 3},
+      review: "changes_requested",
+      mergeable: false
+    })
+
     conn =
       :get
       |> conn("/api/v1/runs?project_id=proj-run-worktree-http")
@@ -250,7 +278,9 @@ defmodule ForemanServer.Http.RouterTest do
       |> ForemanServer.Http.Router.call(@opts)
 
     assert conn.status == 200
-    assert %{"ok" => true, "runs" => [run]} = Jason.decode!(conn.resp_body)
+    body = Jason.decode!(conn.resp_body)
+    assert body["ok"] == true
+    assert run = Enum.find(body["runs"], &(&1["run_id"] == "run-worktree-http"))
     assert run["project_id"] == "proj-run-worktree-http"
     assert run["worktree"] == "/tmp/foreman/run-worktree-http"
     assert run["worktree_path"] == "/tmp/foreman/run-worktree-http"
@@ -259,6 +289,15 @@ defmodule ForemanServer.Http.RouterTest do
     assert run["base_ref"] == "main"
     assert run["base_branch"] == "main"
     assert run["revision"] == "abc123"
+    assert run["messages_count"] == 1
+    assert run["events_count"] == 5
+    assert run["diff_added"] == 8
+    assert run["diff_removed"] == 1
+    assert run["pr_checks"] == %{"passed" => 2, "failed" => 1, "pending" => 3}
+    assert run["pr_review_decision"] == "changes_requested"
+    assert run["review_decision"] == "changes_requested"
+    assert run["pr_mergeable"] == false
+    assert run["mergeable"] == false
   end
 
   test "authorized run report and debug endpoints return event-backed summaries" do
@@ -272,7 +311,7 @@ defmodule ForemanServer.Http.RouterTest do
 
     assert report_conn.status == 200
     report = Jason.decode!(report_conn.resp_body)["report"]
-    assert report["summary"]["event_count"] == 2
+    assert report["summary"]["event_count"] == 3
     assert report["artifact_paths"] == ["http-artifact.md"]
 
     debug_conn =
@@ -283,8 +322,26 @@ defmodule ForemanServer.Http.RouterTest do
 
     assert debug_conn.status == 200
     debug = Jason.decode!(debug_conn.resp_body)["debug"]
-    assert debug["summary"]["event_count"] == 2
-    assert Enum.map(debug["timeline"], & &1["type"]) == ["RunStarted", "WorkerStdout"]
+    assert debug["summary"]["event_count"] == 3
+
+    assert Enum.map(debug["timeline"], & &1["type"]) == [
+             "RunStarted",
+             "WorkerStdout",
+             "ToolCallFinished"
+           ]
+
+    stdout = Enum.find(debug["timeline"], &(&1["type"] == "ToolCallFinished"))
+    assert get_in(stdout, ["payload", "output", "text"]) == "file diff"
+
+    assert stdout["file_changes"] == [
+             %{
+               "path" => "lib/debug.ex",
+               "change" => "M",
+               "additions" => 2,
+               "deletions" => 1,
+               "conflict" => false
+             }
+           ]
   end
 
   test "authorized top-level external trigger command creates and dedupes integration task" do
@@ -509,6 +566,14 @@ defmodule ForemanServer.Http.RouterTest do
       output: "http stdout",
       artifact_paths: ["http-artifact.md"],
       sequence: 1
+    })
+
+    append_run_event("ToolCallFinished", %{
+      run_id: "run-http-debug",
+      output: %{
+        text: "file diff",
+        changed: [%{path: "lib/debug.ex", additions: 2, deletions: 1}]
+      }
     })
   end
 

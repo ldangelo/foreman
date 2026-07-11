@@ -292,7 +292,7 @@ foreman board --filter ready      # Legacy/scriptable filtered board path
 
 ### `foreman debug`
 
-AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress) for a task and sends them to an AI model for deep-dive diagnostics.
+AI-powered execution analysis. Gathers all artifacts (logs, mail, reports, run progress, and debug timeline payload/file-change fields) for a task and sends them to an AI model for deep-dive diagnostics.
 
 ```bash
 foreman debug bd-abc1             # Full AI analysis with Opus

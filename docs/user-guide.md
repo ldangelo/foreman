@@ -187,7 +187,7 @@ After cutover, legacy TS delegation is removed and `foreman daemon start|restart
 foreman server stop
 ```
 
-The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. `foreman server status` distinguishes the durable event store, persisted/in-memory projection store, and project config store. With `FOREMAN_SERVER_EVENT_STORE_ADAPTER=postgres` and `DATABASE_URL`, project/task/run/inbox read models persist in Postgres projection tables; term mode keeps projections in memory and rebuilds from the term event log. If server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` before calling doctor/metrics endpoints. Run debug views surface the first inconsistent event transition when a status anomaly appears.
+The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. `foreman server status` distinguishes the durable event store, persisted/in-memory projection store, and project config store. With `FOREMAN_SERVER_EVENT_STORE_ADAPTER=postgres` and `DATABASE_URL`, project/task/run/inbox read models persist in Postgres projection tables; term mode keeps projections in memory and rebuilds from the term event log. If server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` before calling doctor/metrics endpoints. Run debug views surface the first inconsistent event transition when a status anomaly appears and include timeline payload/file-change fields for Cockpit fallback rendering.
 
 Troubleshooting sequence for Elixir-backed state:
 1. Check whether the expected durable event exists (`RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, etc.).

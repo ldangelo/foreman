@@ -145,6 +145,8 @@ defmodule ForemanServer.Http.Router do
     with :ok <- authorize(conn) do
       snapshot = ForemanServer.ProjectionStore.snapshot()
       project_id = conn.query_params["project_id"]
+      event_summaries = run_event_summaries()
+      pr_gates_by_run = pr_gates_by_run(snapshot)
 
       runs =
         snapshot.runs
@@ -156,6 +158,7 @@ defmodule ForemanServer.Http.Router do
             get_in(snapshot, [:tasks, Map.get(run, :task_id), :project_id])
           )
           |> add_worktree_metadata(snapshot)
+          |> add_run_metadata(snapshot, event_summaries, pr_gates_by_run)
         end)
         |> Enum.filter(fn run ->
           is_nil(project_id) or Map.get(run, :project_id) == project_id
@@ -510,6 +513,167 @@ defmodule ForemanServer.Http.Router do
     |> put_present(:base_branch, base)
     |> put_present(:revision, Map.get(worktree, :revision))
   end
+
+  defp add_run_metadata(run, snapshot, event_summaries, pr_gates_by_run) do
+    run_id = Map.get(run, :run_id)
+    summary = Map.get(event_summaries, run_id, %{})
+    pr_gate = Map.get(pr_gates_by_run, run_id, %{})
+
+    run
+    |> put_present(:messages_count, run_message_count(snapshot, run_id))
+    |> put_present(:events_count, Map.get(summary, :events_count))
+    |> put_present(:diff_added, Map.get(summary, :diff_added))
+    |> put_present(:diff_removed, Map.get(summary, :diff_removed))
+    |> put_present(:pr_checks, pr_check_summary(pr_gate))
+    |> put_present(:pr_review_decision, Map.get(pr_gate, :review))
+    |> put_present(:review_decision, Map.get(pr_gate, :review))
+    |> put_present(:pr_mergeable, Map.get(pr_gate, :mergeable))
+    |> put_present(:mergeable, Map.get(pr_gate, :mergeable))
+  end
+
+  defp run_message_count(snapshot, run_id) do
+    snapshot
+    |> get_in([:inbox_by_run, run_id])
+    |> case do
+      messages when is_list(messages) -> length(messages)
+      _ -> nil
+    end
+  end
+
+  defp pr_gates_by_run(snapshot) do
+    snapshot
+    |> Map.get(:pr_gates, %{})
+    |> Map.values()
+    |> Enum.reduce(%{}, fn gate, acc ->
+      case Map.get(gate, :run_id) do
+        run_id when is_binary(run_id) and run_id != "" -> Map.put(acc, run_id, gate)
+        _ -> acc
+      end
+    end)
+  end
+
+  defp pr_check_summary(%{} = pr_gate) do
+    case Map.get(pr_gate, :checks) do
+      checks when is_map(checks) ->
+        %{
+          passed: int_value(Map.get(checks, :passed) || Map.get(checks, "passed")),
+          failed: int_value(Map.get(checks, :failed) || Map.get(checks, "failed")),
+          pending: int_value(Map.get(checks, :pending) || Map.get(checks, "pending"))
+        }
+
+      "passed" ->
+        %{passed: 1, failed: 0, pending: 0}
+
+      "passing" ->
+        %{passed: 1, failed: 0, pending: 0}
+
+      "failed" ->
+        %{passed: 0, failed: 1, pending: 0}
+
+      "failing" ->
+        %{passed: 0, failed: 1, pending: 0}
+
+      "pending" ->
+        %{passed: 0, failed: 0, pending: 1}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp pr_check_summary(_pr_gate), do: nil
+
+  defp int_value(value) when is_integer(value), do: value
+
+  defp int_value(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> 0
+    end
+  end
+
+  defp int_value(_value), do: 0
+
+  defp run_event_summaries do
+    ForemanServer.EventStore.all()
+    |> Enum.reduce(%{}, fn event, acc ->
+      case event_run_id(event) do
+        run_id when is_binary(run_id) and run_id != "" ->
+          update_in(acc, [run_id], fn summary ->
+            summary
+            |> Kernel.||(%{events_count: 0, diff_added: 0, diff_removed: 0})
+            |> Map.update!(:events_count, &(&1 + 1))
+            |> add_diff_totals(event.payload)
+          end)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp event_run_id(%ForemanServer.Event{payload: payload, correlation_id: correlation_id}) do
+    Map.get(payload, :run_id) || correlation_id
+  end
+
+  defp add_diff_totals(summary, payload) do
+    file_changes_from_payload(payload)
+    |> Enum.reduce(summary, fn change, acc ->
+      acc
+      |> Map.update!(:diff_added, &(&1 + int_value(Map.get(change, :additions))))
+      |> Map.update!(:diff_removed, &(&1 + int_value(Map.get(change, :deletions))))
+    end)
+  end
+
+  defp file_changes_from_payload(payload) when is_map(payload) do
+    [
+      nested_payload(payload, [:output, :changed]),
+      nested_payload(payload, [:output, :files_changed]),
+      nested_payload(payload, [:output, :filesChanged]),
+      nested_payload(payload, [:output, :files]),
+      Map.get(payload, :changed),
+      Map.get(payload, :files_changed),
+      Map.get(payload, :filesChanged),
+      Map.get(payload, :files)
+    ]
+    |> Enum.find_value(&normalize_file_changes/1)
+    |> Kernel.||([])
+  end
+
+  defp file_changes_from_payload(_payload), do: []
+
+  defp nested_payload(map, [key | rest]) when is_map(map) do
+    nested_payload(Map.get(map, key), rest)
+  end
+
+  defp nested_payload(value, []), do: value
+  defp nested_payload(_value, _path), do: nil
+
+  defp normalize_file_changes(changes) when is_list(changes) do
+    changes
+    |> Enum.map(&normalize_file_change/1)
+    |> Enum.reject(&is_nil/1)
+    |> then(fn
+      [] -> nil
+      normalized -> normalized
+    end)
+  end
+
+  defp normalize_file_changes(_changes), do: nil
+
+  defp normalize_file_change(%{} = change) do
+    path = Map.get(change, :path) || Map.get(change, "path")
+
+    if is_binary(path) and path != "" do
+      %{
+        path: path,
+        additions: Map.get(change, :additions) || Map.get(change, "additions"),
+        deletions: Map.get(change, :deletions) || Map.get(change, "deletions")
+      }
+    end
+  end
+
+  defp normalize_file_change(_change), do: nil
 
   defp put_present(map, _key, nil), do: map
   defp put_present(map, _key, ""), do: map

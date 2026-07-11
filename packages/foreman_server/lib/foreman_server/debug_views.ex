@@ -164,6 +164,7 @@ defmodule ForemanServer.DebugViews do
 
   defp timeline_entry(%Event{} = event) do
     payload = event.payload
+    file_changes = file_changes_from_payload(payload)
 
     %{
       event_id: event.event_id,
@@ -175,9 +176,106 @@ defmodule ForemanServer.DebugViews do
       artifact_paths: Map.get(payload, :artifact_paths, []) |> sanitize_value(),
       report_paths: Map.get(payload, :report_paths, []) |> sanitize_value(),
       reason: Map.get(payload, :reason, Map.get(payload, :error)) |> sanitize_value(),
+      payload: payload |> debug_payload() |> sanitize_value(),
+      file_changes: file_changes |> sanitize_value(),
       occurred_at: event.occurred_at
     }
+    |> drop_empty(:file_changes)
   end
+
+  defp debug_payload(payload) do
+    payload
+    |> Map.take([
+      :action,
+      :args,
+      :details,
+      :error,
+      :files,
+      :files_changed,
+      :filesChanged,
+      :output,
+      :path,
+      :phase_id,
+      :reason,
+      :status,
+      :tool_name,
+      :worker_id
+    ])
+  end
+
+  defp drop_empty(map, key) do
+    case Map.get(map, key) do
+      nil -> Map.delete(map, key)
+      [] -> Map.delete(map, key)
+      _ -> map
+    end
+  end
+
+  defp file_changes_from_payload(payload) when is_map(payload) do
+    [
+      nested_payload(payload, [:output, :changed]),
+      nested_payload(payload, [:output, :files_changed]),
+      nested_payload(payload, [:output, :filesChanged]),
+      nested_payload(payload, [:output, :files]),
+      Map.get(payload, :changed),
+      Map.get(payload, :files_changed),
+      Map.get(payload, :filesChanged),
+      Map.get(payload, :files),
+      nested_payload(payload, [:details, :changed]),
+      nested_payload(payload, [:details, :files_changed]),
+      nested_payload(payload, [:details, :filesChanged]),
+      nested_payload(payload, [:details, :files])
+    ]
+    |> Enum.find_value(&normalize_file_changes/1)
+    |> Kernel.||([])
+  end
+
+  defp file_changes_from_payload(_payload), do: []
+
+  defp nested_payload(map, [key | rest]) when is_map(map) do
+    nested_payload(Map.get(map, key), rest)
+  end
+
+  defp nested_payload(value, []), do: value
+  defp nested_payload(_value, _path), do: nil
+
+  defp normalize_file_changes(changes) when is_list(changes) do
+    changes
+    |> Enum.map(&normalize_file_change/1)
+    |> Enum.reject(&is_nil/1)
+    |> then(fn
+      [] -> nil
+      normalized -> normalized
+    end)
+  end
+
+  defp normalize_file_changes(_changes), do: nil
+
+  defp normalize_file_change(path) when is_binary(path) and path != "" do
+    %{path: path, change: "M"}
+  end
+
+  defp normalize_file_change(%{} = change) do
+    path =
+      Map.get(change, :path) || Map.get(change, "path") || Map.get(change, :file) ||
+        Map.get(change, "file")
+
+    if is_binary(path) and path != "" do
+      %{
+        path: path,
+        change:
+          Map.get(change, :change) || Map.get(change, "change") || Map.get(change, :status) ||
+            Map.get(change, "status") || "M",
+        additions: Map.get(change, :additions) || Map.get(change, "additions"),
+        deletions: Map.get(change, :deletions) || Map.get(change, "deletions"),
+        conflict: Map.get(change, :conflict) || Map.get(change, "conflict") || false
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+    end
+  end
+
+  defp normalize_file_change(_change), do: nil
 
   defp timeline_anomalies(timeline) do
     {_state, anomalies} =
