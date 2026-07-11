@@ -24,6 +24,36 @@ func mouseWheel(x, y int, button tea.MouseButton) tea.MouseWheelMsg {
 	return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: button})
 }
 
+func linesText(lines []ViewerLine) []string {
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = line.Text
+	}
+	return out
+}
+
+func lineContaining(out, needle string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
+}
+
+func labelColumn(line, label string) int {
+	idx := strings.Index(line, label)
+	if idx < 0 {
+		return -1
+	}
+	for i, r := range line[idx+len(label):] {
+		if r != ' ' {
+			return idx + len(label) + i
+		}
+	}
+	return -1
+}
+
 func TestViewerUsesViewportSelectionAndIdentity(t *testing.T) {
 	var viewer Viewer
 	viewer.SetBounds(20, 4)
@@ -303,10 +333,47 @@ func TestReadyTaskDetailShowsFullTaskFields(t *testing.T) {
 	m.buildItems()
 
 	out := stripANSI(m.renderRight(80))
-	for _, want := range []string{"Create cockpit task", "id  task-ready", "type  feature", "priority  P1", "status  backlog", "workflow  default", "depends  task-a", "project  proj-live", "Full task body"} {
+	for _, want := range []string{"Create cockpit task", "id", "task-ready", "type", "feature", "priority", "P1", "status", "backlog", "workflow", "default", "depends", "task-a", "project", "proj-live", "description", "Full task body"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in task detail, got:\n%s", want, out)
 		}
+	}
+}
+
+func TestReadyTaskDetailRendersFieldsAsAlignedTable(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = nil
+	m.tasks = []Task{{
+		TaskID: "task-ready", Title: "Create cockpit task", Description: "Full task body",
+		TaskType: "feature", Priority: "P1", Status: "backlog", Depends: "task-a", Workflow: "default", ProjectID: "proj-live",
+	}}
+	m.taskList.MoveSection(1)
+	m.buildItems()
+
+	out := stripANSI(m.renderRight(80))
+	desc := lineContaining(out, "description")
+	if !strings.Contains(desc, "Full task body") {
+		t.Fatalf("expected description row to include body, got:\n%s", out)
+	}
+	if labelColumn(desc, "description") != labelColumn(lineContaining(out, "id"), "id") {
+		t.Fatalf("expected task field value columns to align, got:\n%s", out)
+	}
+}
+
+func TestPRChecksRenderAsAlignedRows(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.pr = PRStatus{URL: "https://github.com/acme/repo/pull/42", State: "open", Checks: CheckSummary{Passed: 3, Failed: 1, Pending: 2}}
+
+	out := stripANSI(strings.Join(linesText(m.renderPRLines(80)), "\n"))
+	for _, want := range []string{"passed", "failed", "pending"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected PR checks table row %q, got:\n%s", want, out)
+		}
+	}
+	if labelColumn(lineContaining(out, "passed"), "passed") != labelColumn(lineContaining(out, "failed"), "failed") {
+		t.Fatalf("expected check value columns to align, got:\n%s", out)
 	}
 }
 

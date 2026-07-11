@@ -28,8 +28,8 @@ authoritative state.
   recent, not running.
 - Task/run rows are richer two-line entries: metadata (id, type, priority,
   phase/status) on the first line and the title/summary on the second. The
-  selected task detail shows id, status, workflow, dependencies, project, and
-  description. READY task
+  selected task detail renders id, status, workflow, dependencies, project, and
+  description as an aligned field table. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
   edit task JSON via `task.update`, and `n` to create a new task JSON draft via
   `task.create`.
@@ -54,8 +54,9 @@ authoritative state.
   offers a selected-file nvim diff (`d`), an inline selected-file preview backed
   by `delta` when available, and a full-run `diffnav` handoff (`D`) when enabled.
   Conflicts open a 3-way diff.
-- The `pr` tab shows Foreman-projected PR URL/state/branch metadata and opens the
-  PR in a browser with `o`/`enter` when a PR URL is present.
+- The `pr` tab shows Foreman-projected PR URL/state/branch metadata plus an
+  aligned check summary table, and opens the PR in a browser with `o`/`enter`
+  when a PR URL is present.
 - Reports render as markdown via Glamour in the drill-down.
 
 ## Run it

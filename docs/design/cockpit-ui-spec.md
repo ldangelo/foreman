@@ -54,8 +54,8 @@ The task list is organized as a gh-dash-style section strip with counts:
   title/summary line. (Q1)
 - **Ready** — current-project tasks that are not terminal/running. Each row
   shows a state glyph, id/type/priority/status metadata, and a second
-  title/summary line; selecting one shows the id, status, workflow,
-  dependencies, project, and description, plus approve, edit, and create
+  title/summary line; selecting one shows an aligned field table with id, status,
+  workflow, dependencies, project, and description, plus approve, edit, and create
   actions. (Q2)
 - **Failed** — failed/stuck/conflict/test-failed tasks or runs needing attention.
 - **Recent** — terminal runs (`completed | merged | pr-created | failed | reset`),
@@ -212,6 +212,8 @@ default avoids nesting a TUI inside a TUI.
 - `C` opens `gh enhance` as a full-screen handoff for the selected run worktree
   when the GitHub CLI and extension are available; use it from the `pr` tab to
   inspect failing/pending Actions checks and rerun jobs.
+- The `pr` tab renders PR URL/branch/review metadata and passed/failed/pending
+  checks as aligned field rows so the check summary scans vertically.
 - `p` attaches `omp` to the selected run worktree for live human triage. In
   `auto` mode it opens a tmux pane when `$TMUX` is present; otherwise it suspends
   the cockpit and runs inline. The triage path writes a non-secret brief with run

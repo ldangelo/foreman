@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -99,6 +100,40 @@ func leftPaneWidth(total int) int {
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
+func renderFieldTable(prefix string, rows [][2]string, w int) []ViewerLine {
+	t := table.New().
+		BorderTop(false).
+		BorderBottom(false).
+		BorderLeft(false).
+		BorderRight(false).
+		BorderHeader(false).
+		BorderColumn(false).
+		BorderRow(false).
+		Wrap(true).
+		Width(w).
+		StyleFunc(func(_, col int) lipgloss.Style {
+			if col == 0 {
+				return dimStyle
+			}
+			return textStyle
+		})
+	for _, row := range rows {
+		if row[1] == "" {
+			continue
+		}
+		t.Row(row[0], row[1])
+	}
+	rendered := strings.TrimRight(t.Render(), "\n")
+	if rendered == "" {
+		return nil
+	}
+	lines := strings.Split(rendered, "\n")
+	out := make([]ViewerLine, 0, len(lines))
+	for i, line := range lines {
+		out = append(out, ViewerLine{Key: prefix + ":" + itoa(i), Text: line})
+	}
+	return out
+}
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // writeDebugDump writes model state + the exact rendered frame (ANSI stripped)
@@ -472,16 +507,8 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 	kv := func(k, v string) string {
 		return dimStyle.Render(clip(k, 9)) + "  " + textStyle.Render(clip(v, w-11))
 	}
+
 	if !isRun {
-		add("task:id", kv("id", it.Task.TaskID), target{})
-		add("task:title", kv("title", it.Task.Title), target{})
-		add("task:type", kv("type", it.Task.TaskType), target{})
-		add("task:priority", kv("priority", it.Task.Priority), target{})
-		add("task:status", kv("status", it.Task.Status), target{})
-		add("task:workflow", kv("workflow", it.Task.Workflow), target{})
-		add("task:depends", kv("depends", it.Task.Depends), target{})
-		add("task:project", kv("project", it.Task.ProjectID), target{})
-		add("task:spacer", "", target{})
 		desc := it.Task.Description
 		if desc == "" {
 			desc = it.Task.Summary
@@ -489,9 +516,17 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 		if desc == "" {
 			desc = "No description."
 		}
-		for i, ln := range wrap(desc, w) {
-			add("task:description:"+itoa(i), textStyle.Render(ln), target{})
-		}
+		s = append(s, renderFieldTable("task:fields", [][2]string{
+			{"id", it.Task.TaskID},
+			{"title", it.Task.Title},
+			{"type", it.Task.TaskType},
+			{"priority", it.Task.Priority},
+			{"status", it.Task.Status},
+			{"workflow", it.Task.Workflow},
+			{"depends", it.Task.Depends},
+			{"project", it.Task.ProjectID},
+			{"description", desc},
+		}, w)...)
 		return s
 	}
 	switch tabNames[m.tab] {
@@ -620,25 +655,25 @@ func (m model) renderPRLines(w int) []ViewerLine {
 	if pr.Number != "" {
 		title += " #" + pr.Number
 	}
+	branch := ""
+	if pr.BranchName != "" || pr.BaseBranch != "" {
+		branch = pr.BranchName + " → " + pr.BaseBranch
+	}
+	rows := [][2]string{
+		{"url", pr.URL},
+		{"branch", branch},
+		{"head", pr.HeadSHA},
+		{"merge", pr.Mergeable},
+		{"review", pr.ReviewDecision},
+		{"passed", itoa(pr.Checks.Passed)},
+		{"failed", itoa(pr.Checks.Failed)},
+		{"pending", itoa(pr.Checks.Pending)},
+	}
 	lines := []ViewerLine{
 		{Key: "pr:title", Text: padRow(cyanStyle.Render(title), lipgloss.NewStyle().Foreground(stateColor).Render(state), w)},
-		{Key: "pr:url", Text: dimStyle.Render("url      ") + textStyle.Render(clip(pr.URL, w-9))},
+		{Key: "pr:actions", Text: cyanStyle.Render("o/enter") + dimStyle.Render(" open PR in browser  ") + cyanStyle.Render("C") + dimStyle.Render(" inspect CI in gh enhance")},
 	}
-	if pr.BranchName != "" || pr.BaseBranch != "" {
-		lines = append(lines, ViewerLine{Key: "pr:branch", Text: dimStyle.Render("branch   ") + textStyle.Render(clip(pr.BranchName+" → "+pr.BaseBranch, w-9))})
-	}
-	if pr.HeadSHA != "" {
-		lines = append(lines, ViewerLine{Key: "pr:head", Text: dimStyle.Render("head     ") + textStyle.Render(clip(pr.HeadSHA, w-9))})
-	}
-	if pr.Mergeable != "" {
-		lines = append(lines, ViewerLine{Key: "pr:mergeable", Text: dimStyle.Render("merge    ") + textStyle.Render(clip(pr.Mergeable, w-9))})
-	}
-	if pr.ReviewDecision != "" {
-		lines = append(lines, ViewerLine{Key: "pr:review", Text: dimStyle.Render("review   ") + textStyle.Render(clip(pr.ReviewDecision, w-9))})
-	}
-	lines = append(lines, ViewerLine{Key: "pr:actions", Text: cyanStyle.Render("o/enter") + dimStyle.Render(" open PR in browser  ") + cyanStyle.Render("C") + dimStyle.Render(" inspect CI in gh enhance")})
-	checks := greenStyle.Render("✓ "+itoa(pr.Checks.Passed)) + dimStyle.Render("  ") + redStyle.Render("✗ "+itoa(pr.Checks.Failed)) + dimStyle.Render("  ") + yellowStyle.Render("● "+itoa(pr.Checks.Pending))
-	lines = append(lines, ViewerLine{Key: "pr:checks", Text: dimStyle.Render("checks   ") + checks})
+	lines = append(lines, renderFieldTable("pr:fields", rows, w)...)
 	if pr.Err != "" {
 		lines = append(lines, ViewerLine{Key: "pr:error", Text: yellowStyle.Render("PR detail: " + pr.Err)})
 	}
