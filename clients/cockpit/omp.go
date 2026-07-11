@@ -123,15 +123,16 @@ func ompShellLine(run Run, brief string, cfg OmpConfig) string {
 			parts = append(parts, "--continue")
 		}
 	}
-	line := "exec " + strings.Join(parts, " ")
+	line := strings.Join(parts, " ")
+	execLine := "exec " + line
 	if sessionDir != "" {
-		line = "mkdir -p " + shellQuote(sessionDir) + "; " + line
+		execLine = "mkdir -p " + shellQuote(sessionDir) + "; " + execLine
 	}
 	if brief == "" {
-		return line
+		return execLine
 	}
 	message := "Foreman triage brief: " + brief + " — read it first, then work in this tree."
-	return "printf %s\\n\\n " + shellQuote(message) + "; exec " + line
+	return "printf %s\\n\\n " + shellQuote(message) + "; " + execLine
 }
 
 func quoteArgs(args []string) []string {

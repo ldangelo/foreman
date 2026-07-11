@@ -29,8 +29,9 @@ authoritative state.
   stale in-progress run projections for closed/failed tasks are shown as
   recent, not running.
 - Task/run rows are richer two-line entries: metadata (id, type, priority,
-  phase/status) on the first line and the title/summary on the second. The
-  selected task detail is scrollable and renders id, status, workflow,
+  phase/status, and available counts/checks/PR/diff/age columns) on the first
+  line and the title/summary on the second.
+  The selected task detail is scrollable and renders id, status, workflow,
   dependencies, project, and description as an aligned field table. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
   edit task JSON via `task.update`, `n` to open an in-pane `textinput` /
@@ -41,9 +42,9 @@ authoritative state.
   very narrow panes, and a drill-down tab strip (`summary · messages · events ·
   logs · reports · files · pr · metrics`). The metrics tab reads
   `/api/v1/metrics` and renders counters, gauges, and phase durations.
-  The active pane is called out with a focus label and accent frame; the inactive
-  pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or
-  `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
+  The active pane is called out with a focus label, accent frame, and a non-color
+  `▶` task-list marker; the inactive pane can be dimmed via `cockpit.focus`. Set
+  `cockpit.reducedMotion` (or `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
 - `/` searches the focused drill-down pane when the right side is focused; the
   task-list search remains on `/` while the left side is focused. Task-list
   search uses a `filterableviewport` input with case-insensitive substring

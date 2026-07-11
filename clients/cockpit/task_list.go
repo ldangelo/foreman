@@ -79,8 +79,6 @@ func taskListFilterMode() fvpkg.FilterMode {
 	}
 }
 
-var taskListGroups = []string{taskGroupRunning, taskGroupReady, taskGroupRecent}
-
 // Item is one selectable row in the left column.
 type Item struct {
 	Group  string
@@ -242,8 +240,6 @@ func (l *TaskList) Move(delta int) bool {
 	return l.selected != before
 }
 
-func (l *TaskList) ToggleSelectedGroup() {}
-
 func (l *TaskList) MoveSection(delta int) string {
 	before := l.section
 	sections := l.Sections()
@@ -312,10 +308,9 @@ func (l TaskList) SelectedItem() (Item, bool) {
 	}
 	return l.items[l.selected], true
 }
-func (l TaskList) Collapsed(group string) bool { return false }
-func (l TaskList) Scope() string               { return l.scope }
-func (l TaskList) Search() string              { return l.search }
-func (l TaskList) Searching() bool             { return l.searching }
+func (l TaskList) Scope() string   { return l.scope }
+func (l TaskList) Search() string  { return l.search }
+func (l TaskList) Searching() bool { return l.searching }
 
 func (l TaskList) Counts(runs []Run, tasks []Task) map[string]int {
 	count := map[string]int{}
@@ -420,14 +415,8 @@ func parseTaskFilter(query string) []taskFilterToken {
 			parts := strings.SplitN(raw, ":", 2)
 			field, value = parts[0], parts[1]
 		}
-		if value == "" || value == "true" {
-			value = field
-			field = "text"
-		}
-		if value == "false" {
-			negated = !negated
-			value = field
-			field = "text"
+		if value == "" {
+			continue
 		}
 		tokens = append(tokens, taskFilterToken{field: field, value: value, negated: negated})
 	}
@@ -455,10 +444,28 @@ func matchesTaskToken(it Item, field, value string) bool {
 		default:
 			return strings.Contains(fieldValue(it, "status"), value)
 		}
+	case "text":
+		return strings.Contains(taskSearchText(it), value)
 	case "status", "priority", "type", "project", "phase", "verdict", "id", "task", "run", "title":
 		return strings.Contains(fieldValue(it, field), value)
+	case "attention":
+		hasAttention := false
+		if it.IsTask {
+			hasAttention = isFailedState(it.Task.Status)
+		} else {
+			attention := strings.TrimSpace(it.Run.Attention)
+			hasAttention = attention != "" && attention != "-"
+		}
+		switch value {
+		case "true", "yes", "1":
+			return hasAttention
+		case "false", "no", "0":
+			return !hasAttention
+		default:
+			return strings.Contains(fieldValue(it, field), value)
+		}
 	default:
-		return strings.Contains(taskSearchText(it), value)
+		return true
 	}
 }
 
@@ -468,7 +475,7 @@ func fieldValue(it Item, field string) string {
 		case "status":
 			return strings.ToLower(it.Task.Status)
 		case "priority":
-			return strings.ToLower(it.Task.Priority)
+			return strings.ToLower(normalizePriorityLabel(it.Task.Priority))
 		case "type":
 			return strings.ToLower(it.Task.TaskType)
 		case "project":
@@ -485,7 +492,7 @@ func fieldValue(it Item, field string) string {
 	case "status":
 		return strings.ToLower(it.Run.Status)
 	case "priority":
-		return strings.ToLower(it.Run.Priority)
+		return strings.ToLower(normalizePriorityLabel(it.Run.Priority))
 	case "type":
 		return strings.ToLower(it.Run.TaskType)
 	case "project":

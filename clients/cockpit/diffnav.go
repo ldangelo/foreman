@@ -18,6 +18,9 @@ func diffnavCommand(run Run, cfg Integrations, tools ToolResolver) (*exec.Cmd, e
 	if !tools.Available("diffnav") {
 		return nil, errToolMissing("diffnav", "dlvhdr/diffnav")
 	}
+	if !tools.Available("delta") {
+		return nil, errToolMissing("delta", "dandavison/delta")
+	}
 	wt := strings.TrimSpace(run.Worktree)
 	if wt == "" || wt == "(cleaned)" {
 		return nil, errors.New("no worktree available for diffnav")

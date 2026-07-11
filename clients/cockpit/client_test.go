@@ -17,7 +17,7 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 		case "/api/v1/tasks":
 			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"task-live","title":"Live task","priority":"P1","status":"in_progress","project_id":"proj-live"},{"task_id":"task-ready","title":"Ready task","priority":"P2","status":"ready","workflow":"default","project_id":"proj-live"}]}`))
 		case "/api/v1/runs":
-			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-live","task_id":"task-live","status":"running","current_phase":"developer","priority":"P1","updated_at":"2026-07-10T00:00:00Z","status_text":"working"}]}`))
+			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-live","task_id":"task-live","status":"running","current_phase":"developer","priority":"P1","created_at":"2026-07-09T00:00:00Z","updated_at":"2026-07-10T00:00:00Z","status_text":"working","messages_count":2,"events_count":4,"pr_state":"open","pr_checks":{"passed":3,"failed":1},"additions":12,"deletions":5}]}`))
 		case "/api/v1/inbox":
 			if r.URL.Query().Get("run_id") != "run-live" {
 				t.Fatalf("expected inbox run_id filter, got %q", r.URL.RawQuery)
@@ -43,6 +43,9 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	runs := client.Runs()
 	if len(runs) != 1 || runs[0].RunID != "run-live" || runs[0].Phase != "developer" {
 		t.Fatalf("unexpected runs: %#v", runs)
+	}
+	if runs[0].Messages != 2 || runs[0].Events != 4 || runs[0].PRState != "open" || runs[0].Checks.Passed != 3 || runs[0].Checks.Failed != 1 || runs[0].DiffAdded != 12 || runs[0].DiffRemoved != 5 || runs[0].Created == "" || runs[0].Last == "" {
+		t.Fatalf("expected run metadata columns to map from projection, got %#v", runs[0])
 	}
 
 	tasks := client.Dispatchable()

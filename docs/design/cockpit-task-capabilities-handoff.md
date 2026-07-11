@@ -88,15 +88,11 @@ Intent: rows are legible task rows, not opaque ids.
 Intent: press a key in the task list to add a new task.
 
 - Client: add `CreateTask(task Task) error` to the `Client` interface.
-  - `httpClient`: implement via `postCommand("task.create", payload)`, payload
-    mirroring `UpdateTask` (title, description, `type`+`task_type`, priority,
-    `project_id`, status=`open`/`backlog`). **Verify the exact command_type and
-    required fields** against the Elixir side — check
-    `packages/foreman_server/lib/foreman_server/command_router.ex` /
-    `aggregate_router.ex` for the task-create command name (CLI uses
-    `native task store create --title --type --priority`; the command bus name
-    may be `task.create` or similar). If it differs, use the real name and note
-    it.
+  - `httpClient`: implemented via `postCommand("task.create", payload)`, payload
+    mirroring `UpdateTask` (title, description, `type`+`task_type`, normalized
+    priority, `project_id`, status=`open`/`backlog`). The Elixir command bus
+    route is `task.create` (`packages/foreman_server/lib/foreman_server/command_router.ex`
+    and `aggregate_router.ex`).
   - `mockClient`: `CreateTask` appends to an in-memory slice so `COCKPIT_BACKEND=mock`
     shows the new row after refresh.
 - Interaction: bind `n` (new) to an in-pane `textinput` / `textarea` form

@@ -35,6 +35,7 @@ func prStatusFromRun(run Run) PRStatus {
 		URL:        run.PRURL,
 		State:      run.PRState,
 		HeadSHA:    run.PRHeadSHA,
+		Checks:     run.Checks,
 		BaseBranch: run.BaseBranch,
 		BranchName: firstNonEmpty(run.BranchName, run.Branch),
 	}

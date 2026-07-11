@@ -68,6 +68,9 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	if inline.Dir != "/tmp/wt" || !strings.HasSuffix(inline.Path, "bash") || len(inline.Args) != 3 || !strings.Contains(inline.Args[2], "omp-dev") || !strings.Contains(inline.Args[2], "triage-run-1.md") || !strings.Contains(inline.Args[2], "--model") {
 		t.Fatalf("unexpected inline command: dir=%q path=%q args=%v", inline.Dir, inline.Path, inline.Args)
 	}
+	if strings.Contains(inline.Args[2], "exec exec") {
+		t.Fatalf("expected inline command to exec omp exactly once, got %q", inline.Args[2])
+	}
 
 	tmux, err := ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
 	if err != nil {
@@ -101,9 +104,12 @@ func TestOmpPerTaskSessionUsesStableStateDirAndContinuesExistingSession(t *testi
 	if err := os.WriteFile(filepath.Join(sessionDir, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	next := ompShellLine(run, "", cfg)
+	next := ompShellLine(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
 	if !strings.Contains(next, "--continue") {
-		t.Fatalf("expected existing per-task session to continue, got %q", next)
+		t.Fatalf("expected existing per-task session to continue with briefing, got %q", next)
+	}
+	if strings.Contains(next, "exec exec") || strings.Contains(next, "exec mkdir") {
+		t.Fatalf("expected briefing command to create session then exec omp, got %q", next)
 	}
 }
 

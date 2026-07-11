@@ -59,8 +59,9 @@ Three layers, in priority order. Layer 1 is the minimum; 2 and 3 add polish.
   `cockpit.focus.style: both | border | dim` so users can dial it back.
 
 Keep contrast accessible: dimming lowers emphasis, it must not make the inactive
-pane unreadable. Never rely on color alone — the border + tab emphasis carry the
-signal for low-color terminals.
+pane unreadable. Never rely on color alone — the border, tab emphasis, focus
+label, and `▶ filter …` task-list marker carry the signal for low-color
+terminals.
 
 ## 4. Implementation notes (where it plugs in)
 
@@ -113,7 +114,7 @@ Implementation notes:
 - `cockpit.focus.style = border` disables the content dim but keeps the frame;
   `dim` keeps dim without the accent frame; `both` (default) does both.
 - Inactive pane stays readable; signal survives with color disabled
-  (`NO_COLOR`) via the frame/tab treatment.
+  (`NO_COLOR`) via the frame/tab treatment plus the task-list `▶` marker.
 - `go build/test/vet ./...` clean.
 
 ## 7. Testing

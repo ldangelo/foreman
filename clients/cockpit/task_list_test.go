@@ -152,6 +152,27 @@ func TestTaskListCustomSectionsUseFieldFilters(t *testing.T) {
 	}
 }
 
+func TestTaskListFiltersAttentionAndIgnoresUnknownFields(t *testing.T) {
+	list := NewTaskListWithSections([]TaskSection{
+		{Name: "Attention", Filter: "attention:true unknown:ignored"},
+		{Name: "No Attention", Filter: "attention:false"},
+	})
+	runs := []Run{
+		{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", Attention: "ci_failed"},
+		{Group: taskGroupRunning, TaskID: "task-b", RunID: "run-b"},
+	}
+
+	list.SetData(runs, nil)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-a" {
+		t.Fatalf("expected attention:true to match only attention run and ignore unknown field, got %#v", items)
+	}
+	list.MoveSection(1)
+	list.SetData(runs, nil)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-b" {
+		t.Fatalf("expected attention:false to match only run without attention, got %#v", items)
+	}
+}
+
 func TestTaskListCurrentScopeFiltersToProjectID(t *testing.T) {
 	list := NewTaskList()
 	list.SetProjectID("proj-a")

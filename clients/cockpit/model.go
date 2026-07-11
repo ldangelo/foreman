@@ -500,9 +500,6 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.notice = "scope: " + m.taskList.ToggleScope()
 		m.buildItems()
-	case " ", "space":
-		m.taskList.ToggleSelectedGroup()
-		m.buildItems()
 	case "o":
 		if tabNames[m.tab] == "pr" {
 			return m, m.openSelectedPR()

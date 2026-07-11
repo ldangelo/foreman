@@ -26,7 +26,7 @@ external Charm TUIs and one native view:
 Implemented in the Go cockpit module:
 
 - Config loading for optional `diffnav`, `delta`, `gh dash`, `gh enhance`, and PR integration settings.
-- Runtime tool and `gh` extension availability checks with graceful notices for missing/disabled tools.
+- Runtime tool and `gh` extension availability checks with graceful notices for missing/disabled tools; the full-run `diffnav` handoff preflights both `diffnav` and `delta` to match the configured review stack and avoid suspending into a broken external diff path.
 - `D` full-run `diffnav` handoff from the `files` tab.
 - Inline selected-file diff previews using `delta` when available, plain `git diff` otherwise.
 - Best-effort file tab population from `/api/v1/runs/:run_id/debug` timeline

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -207,13 +208,15 @@ func TestReadyTaskRowShowsTitlePriorityAndType(t *testing.T) {
 
 func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 	m := newModel(NewMockClient())
-	m.runs = []Run{{Group: "RUNNING", TaskID: "task-run", Title: "Fix failing CI", RunID: "run-1", Status: "running", Phase: "qa"}}
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-run", Title: "Fix failing CI", RunID: "run-1", Status: "running", Phase: "qa", PRState: "open", Verdict: "retrying", Last: time.Now().Add(-2 * time.Hour).Format(time.RFC3339), Messages: 2, Events: 4, Checks: CheckSummary{Passed: 3, Failed: 1}, DiffAdded: 12, DiffRemoved: 5}}
 	m.tasks = nil
 	m.buildItems()
 
-	out := stripANSI(m.renderLeft(40, 6))
-	if !strings.Contains(out, "task-run") || !strings.Contains(out, "Fix failing CI") || !strings.Contains(out, "qa") {
-		t.Fatalf("expected rich run row with task id, title, and phase, got:\n%s", out)
+	out := stripANSI(m.renderLeft(90, 6))
+	for _, want := range []string{"task-run", "Fix failing CI", "qa", "✉2", "◇4", "✓3", "✗1", "pr:open", "+12 -5", "retrying", "u2h"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected rich run row metadata %q, got:\n%s", want, out)
+		}
 	}
 }
 
@@ -324,6 +327,37 @@ func TestTaskRowPriorityBadgeUsesPriorityOnly(t *testing.T) {
 	}
 	if strings.Contains(out, "P0 bug") {
 		t.Fatalf("expected priority and type to stay separately delimited, got:\n%s", out)
+	}
+}
+
+func TestTaskListFocusMarkerSurvivesNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-run", RunID: "run-1", Status: "running"}}
+	m.tasks = nil
+	m.buildItems()
+
+	leftFocused := stripANSI(m.renderLeft(40, 6))
+	if !strings.Contains(leftFocused, "▶ filter state:running") {
+		t.Fatalf("expected non-color focus marker while task list focused, got:\n%s", leftFocused)
+	}
+	m.viewFocused = true
+	rightFocused := stripANSI(m.renderLeft(40, 6))
+	if strings.Contains(rightFocused, "▶ filter state:running") {
+		t.Fatalf("expected task list marker to clear when detail pane focused, got:\n%s", rightFocused)
+	}
+}
+
+func TestSpaceDoesNotMutateSectionList(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-run", RunID: "run-1", Status: "running"}}
+	m.tasks = nil
+	m.buildItems()
+
+	updated, _ := m.handleKey(keyPress(" "))
+	m = updated.(model)
+	if m.taskList.ActiveSection().Name != taskSectionRunning || m.taskList.SelectedIndex() != 0 {
+		t.Fatalf("space should be retired for task-list grouping, got section=%s selected=%d", m.taskList.ActiveSection().Name, m.taskList.SelectedIndex())
 	}
 }
 
@@ -471,7 +505,7 @@ func TestQuickAddTaskSubmitsTitleOnEnter(t *testing.T) {
 	if m.taskForm != nil {
 		t.Fatal("expected quick-add form to close after submit")
 	}
-	if len(client.created) != 1 || client.created[0].Title != "Quick cockpit task" || client.created[0].TaskType != "task" || client.created[0].Priority != "2" {
+	if len(client.created) != 1 || client.created[0].Title != "Quick cockpit task" || client.created[0].TaskType != "task" || client.created[0].Priority != "P2" {
 		t.Fatalf("unexpected quick-add task: %#v", client.created)
 	}
 }

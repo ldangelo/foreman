@@ -7,11 +7,12 @@ Reference: gh-dash PR list (screenshot provided) — section tabs, filter line, 
 
 Implementation note (2026-07-11): the cockpit ships section tabs with live
 counts, a filter/query line, configurable sections under `cockpit.taskList`,
-field-token filtering, current/global scope filtering over supplied project ids,
-two-line rich task/run rows with project metadata in global scope, dash-like
-wider list sizing on wide terminals, mouse selection for section tabs and
-visible rows, and focused tests in `task_list_test.go`, `view_test.go`, and
-`integrations_test.go`.
+field-token filtering including `attention:true`/`false` and ignored unknown
+field tokens, current/global scope filtering over supplied project ids, two-line
+rich task/run rows with project metadata in global scope and available
+right-side metadata columns, dash-like wider list sizing on wide terminals,
+mouse selection for section tabs and visible rows, and focused tests in
+`task_list_test.go`, `view_test.go`, and `integrations_test.go`.
 
 ## 1. Objective
 
@@ -138,16 +139,19 @@ Follow the repo TDD rule. Each is shippable on its own.
 Retire `space` (collapse group) for the list. Update `?` help, the keybar, and
 `cockpit-ui-spec.md` to show section nav and the two-strip model.
 
-## 7. Data the columns need (verify; flag gaps)
+## 7. Data the columns need
 
-- **Age columns** need `created_at` + `updated_at` on `Run`/`Task`. `Run.Last`
-  (updated) exists; confirm a created timestamp is available from
-  `GET /api/v1/runs` / `/tasks`, else show one age.
-- **Diff `±`** needs aggregate added/removed lines per run. `httpClient.Files`
-  now derives best-effort changed paths from `/api/v1/runs/:run_id/debug`
-  timeline payloads when present; a dedicated file/diff-stat endpoint remains a
-  backend follow-up for exact live columns.
-- **Checks / verdict** reuse the `pr` tab data and run verdict.
+- **Age columns** read `created_at` + `updated_at` from `Run`/`Task` projections
+  when supplied; rows degrade to the available timestamp instead of fetching
+  more data while rendering.
+- **Messages/events/checks/PR/verdict/diff columns** are populated from fields
+  already present on `GET /api/v1/runs` (`messages_count`, `events_count`,
+  `pr_state`, `pr_checks`, verdict, and added/removed diff totals when
+  projected).
+- **Diff `±`** still needs aggregate added/removed lines from the backend for
+  exact live columns. `httpClient.Files` also derives best-effort changed paths
+  from `/api/v1/runs/:run_id/debug` timeline payloads when present; a dedicated
+  file/diff-stat endpoint remains a backend follow-up for exact file metadata.
 - Do the aggregation in the client mapping, not on the render path.
 
 ## 8. Relationship to the task-capabilities handoff

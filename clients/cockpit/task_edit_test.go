@@ -14,8 +14,15 @@ func TestTaskFromCreateDraftBuildsTaskPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("taskFromCreateDraft: %v", err)
 	}
-	if task.TaskID != "task-new" || task.Title != "Create cockpit task" || task.Description != "body" || task.TaskType != "feature" || task.Priority != "1" || task.Status != "backlog" || task.Summary != "Create cockpit task" {
+	if task.TaskID != "task-new" || task.Title != "Create cockpit task" || task.Description != "body" || task.TaskType != "feature" || task.Priority != "P1" || task.Status != "backlog" || task.Summary != "Create cockpit task" {
 		t.Fatalf("unexpected task payload: %#v", task)
+	}
+}
+
+func TestDraftFromNewTaskDefaultsToP2(t *testing.T) {
+	draft := draftFromNewTask()
+	if draft.Priority != "P2" {
+		t.Fatalf("expected new task draft priority P2, got %q", draft.Priority)
 	}
 }
 

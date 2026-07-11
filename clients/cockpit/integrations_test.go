@@ -33,6 +33,15 @@ func TestIntegrationEnabledModes(t *testing.T) {
 	}
 }
 
+func TestDiffnavRequiresDeltaForPipeline(t *testing.T) {
+	run := Run{RunID: "run-1", Worktree: "/tmp/wt"}
+	cfg := defaultConfig().Integrations
+	_, err := diffnavCommand(run, cfg, fakeTools{"diffnav": true})
+	if err == nil || !strings.Contains(err.Error(), "delta") {
+		t.Fatalf("expected missing delta notice before diffnav pipeline, got %v", err)
+	}
+}
+
 func TestParseGhExtensions(t *testing.T) {
 	available := parseGhExtensions("dlvhdr/gh-dash\tv4.7.0\nsome/gh-enhance\tv1.2.3\n")
 	if !available["dash"] {
@@ -135,7 +144,7 @@ func TestLoadConfigParsesIntegrations(t *testing.T) {
 
 func TestDiffnavCommandValidationAndShape(t *testing.T) {
 	cfg := defaultConfig().Integrations
-	cmd, err := diffnavCommand(Run{RunID: "run-1", Worktree: "~/wt with space"}, cfg, fakeTools{"diffnav": true})
+	cmd, err := diffnavCommand(Run{RunID: "run-1", Worktree: "~/wt with space"}, cfg, fakeTools{"diffnav": true, "delta": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +157,7 @@ func TestDiffnavCommandValidationAndShape(t *testing.T) {
 	if !hasEnv(cmd.Env, "DIFFNAV_CONFIG_DIR=") {
 		t.Fatalf("expected diffnav command to inherit theme config dir, env=%v", cmd.Env)
 	}
-	if _, err := diffnavCommand(Run{RunID: "run-1"}, cfg, fakeTools{"diffnav": true}); err == nil || !strings.Contains(err.Error(), "no worktree") {
+	if _, err := diffnavCommand(Run{RunID: "run-1"}, cfg, fakeTools{"diffnav": true, "delta": true}); err == nil || !strings.Contains(err.Error(), "no worktree") {
 		t.Fatalf("expected empty worktree error, got %v", err)
 	}
 	if _, err := diffnavCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{}); err == nil || !strings.Contains(err.Error(), "diffnav not found") {

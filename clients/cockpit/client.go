@@ -30,28 +30,34 @@ type Phase struct {
 
 // Run is a projection of an orchestration run (GET /api/v1/runs).
 type Run struct {
-	Group      string // RUNNING | RECENT
-	TaskID     string
-	RunID      string
-	Status     string
-	Phase      string
-	Priority   string
-	Title      string
-	TaskType   string
-	Verdict    string
-	Worktree   string
-	Branch     string
-	ProjectID  string
-	Elapsed    string
-	Last       string
-	Attention  string
-	Summary    string
-	Pipeline   []Phase
-	PRURL      string
-	PRState    string
-	PRHeadSHA  string
-	BaseBranch string
-	BranchName string
+	Group       string // RUNNING | RECENT
+	TaskID      string
+	RunID       string
+	Status      string
+	Phase       string
+	Priority    string
+	Title       string
+	TaskType    string
+	Verdict     string
+	Worktree    string
+	Branch      string
+	ProjectID   string
+	Elapsed     string
+	Last        string
+	Created     string
+	Messages    int
+	Events      int
+	Checks      CheckSummary
+	DiffAdded   int
+	DiffRemoved int
+	Attention   string
+	Summary     string
+	Pipeline    []Phase
+	PRURL       string
+	PRState     string
+	PRHeadSHA   string
+	BaseBranch  string
+	BranchName  string
 }
 
 // Task is a current-project task shown in the READY bucket.
@@ -66,6 +72,8 @@ type Task struct {
 	Workflow    string
 	Summary     string
 	ProjectID   string
+	Created     string
+	Updated     string
 }
 
 // Message is an Agent Mail message.
@@ -680,6 +688,8 @@ func taskFromMap(t map[string]any) Task {
 		Workflow:    str(t, "workflow"),
 		Summary:     str(t, "title"),
 		ProjectID:   str(t, "project_id"),
+		Created:     str(t, "created_at"),
+		Updated:     str(t, "updated_at"),
 	}
 }
 
@@ -754,11 +764,16 @@ func (c *httpClient) Runs() []Run {
 			Status: status, Phase: phase, Priority: str(r, "priority"),
 			Title: str(r, "title", "task_title"), TaskType: str(r, "type", "task_type"),
 			Verdict: str(r, "verdict"), Worktree: str(r, "worktree"), Branch: str(r, "branch", "branch_name"),
-			ProjectID: str(r, "project_id"), Last: str(r, "updated_at"),
+			ProjectID: str(r, "project_id"), Created: str(r, "created_at"), Last: str(r, "updated_at", "last"),
 			Summary: str(r, "status_text", "summary"), Pipeline: pipe(active, failIdx),
 			PRURL: str(r, "pr_url", "pull_request_url"), PRState: str(r, "pr_state"),
 			PRHeadSHA: str(r, "pr_head_sha", "head_sha"), BaseBranch: str(r, "base_branch"),
-			BranchName: str(r, "branch_name"),
+			BranchName:  str(r, "branch_name"),
+			Messages:    firstPositiveInt(intValue(r["messages_count"]), intValue(r["message_count"]), intValue(r["messages"])),
+			Events:      firstPositiveInt(intValue(r["events_count"]), intValue(r["event_count"]), intValue(r["events"])),
+			Checks:      prStatusFromProjection(str(r, "run_id", "id"), r).Checks,
+			DiffAdded:   firstPositiveInt(intValue(r["diff_added"]), intValue(r["additions"]), intValue(r["added"])),
+			DiffRemoved: firstPositiveInt(intValue(r["diff_removed"]), intValue(r["deletions"]), intValue(r["removed"])),
 		}
 		if hasTask {
 			run.Priority = task.Priority

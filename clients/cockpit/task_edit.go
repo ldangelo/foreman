@@ -26,7 +26,7 @@ func draftFromTask(task Task) taskDraft {
 		Title:       task.Title,
 		Description: task.Description,
 		Type:        task.TaskType,
-		Priority:    task.Priority,
+		Priority:    normalizePriorityLabel(task.Priority),
 		Status:      task.Status,
 	}
 }
@@ -44,7 +44,7 @@ func taskFromDraft(task Task, draft taskDraft) (Task, error) {
 	task.Title = draft.Title
 	task.Description = draft.Description
 	task.TaskType = draft.Type
-	task.Priority = draft.Priority
+	task.Priority = normalizePriorityLabel(draft.Priority)
 	task.Status = draft.Status
 	return task, nil
 }
@@ -61,7 +61,7 @@ func draftFromNewTask() taskDraft {
 	return taskDraft{
 		ID:       newTaskID(),
 		Type:     "task",
-		Priority: "2",
+		Priority: "P2",
 		Status:   "backlog",
 	}
 }
@@ -76,9 +76,7 @@ func taskFromCreateDraft(draft taskDraft) (Task, error) {
 	if draft.Type == "" {
 		draft.Type = "task"
 	}
-	if draft.Priority == "" {
-		draft.Priority = "2"
-	}
+	draft.Priority = normalizePriorityLabel(draft.Priority)
 	if draft.Status == "" {
 		draft.Status = "backlog"
 	}

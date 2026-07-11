@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -260,9 +261,10 @@ func (m model) renderLeft(w, h int) string {
 	}
 
 	section := m.taskList.ActiveSection()
+	focus := focusMarker(!m.viewFocused)
 	headers := []string{
 		m.renderTaskSectionTabs(w, visual),
-		lipgloss.NewStyle().Foreground(visual.Dim).Render(clip("filter "+section.Filter+taskQuerySuffix(m.taskList.Search()), w)),
+		lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(focus+" filter "+section.Filter+taskQuerySuffix(m.taskList.Search()), w)),
 	}
 	m.taskList.SetViewportRows(headers, rows, selectedLine, w, h)
 	return m.taskList.View()
@@ -273,6 +275,13 @@ func taskQuerySuffix(search string) string {
 		return ""
 	}
 	return " · " + search
+}
+
+func focusMarker(focused bool) string {
+	if focused {
+		return "▶"
+	}
+	return " "
 }
 
 func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
@@ -303,12 +312,9 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 		line1Left += lipgloss.NewStyle().Foreground(visual.Dim).Render(" · " + typ)
 	}
 	if pri != "" {
-		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + pri)
+		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + normalizePriorityLabel(pri))
 	}
-	rightW := 18
-	if it.IsTask {
-		rightW = 8
-	}
+	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
 	line1 := padRow(clip(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
 	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip("  "+title, w))
 	row := line1 + "\n" + line2
@@ -322,19 +328,115 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 func taskRowFields(it Item) (state, title, id, typ, pri, right string) {
 	if it.IsTask {
 		title = firstNonEmptyText(it.Task.Title, it.Task.Summary, it.Task.TaskID)
-		return it.Task.Status, title, it.Task.TaskID, it.Task.TaskType, it.Task.Priority, it.Task.Status
+		right = taskRightMetadata(it.Task)
+		return it.Task.Status, title, it.Task.TaskID, it.Task.TaskType, it.Task.Priority, right
 	}
 	title = firstNonEmptyText(it.Run.Title, it.Run.Summary, it.Run.TaskID)
 	typ = it.Run.TaskType
 	pri = it.Run.Priority
-	right = it.Run.Status
-	if it.Run.Group == taskGroupRunning && it.Run.Phase != "" {
-		right = it.Run.Phase
-	}
-	if it.Run.Last != "" {
-		right = firstNonEmptyText(right, it.Run.Status) + " · " + it.Run.Last
-	}
+	right = runRightMetadata(it.Run)
 	return runState(it.Run), title, it.Run.TaskID, typ, pri, right
+}
+
+func taskRightMetadata(task Task) string {
+	parts := []string{task.Status}
+	if task.Updated != "" {
+		parts = append(parts, "u"+formatAge(task.Updated))
+	}
+	if task.Created != "" {
+		parts = append(parts, "c"+formatAge(task.Created))
+	}
+	return strings.Join(compactNonEmpty(parts), " ")
+}
+
+func runRightMetadata(run Run) string {
+	state := run.Status
+	if run.Group == taskGroupRunning && run.Phase != "" {
+		state = run.Phase
+	}
+	parts := []string{state}
+	if run.Messages > 0 {
+		parts = append(parts, "✉"+itoa(run.Messages))
+	}
+	if run.Events > 0 {
+		parts = append(parts, "◇"+itoa(run.Events))
+	}
+	if check := checkSummaryLabel(run.Checks); check != "" {
+		parts = append(parts, check)
+	}
+	if run.PRState != "" {
+		parts = append(parts, "pr:"+run.PRState)
+	}
+	if diff := diffStatLabel(run.DiffAdded, run.DiffRemoved); diff != "" {
+		parts = append(parts, diff)
+	}
+	if run.Verdict != "" {
+		parts = append(parts, run.Verdict)
+	}
+	if run.Last != "" {
+		parts = append(parts, "u"+formatAge(run.Last))
+	}
+	if run.Created != "" {
+		parts = append(parts, "c"+formatAge(run.Created))
+	}
+	return strings.Join(compactNonEmpty(parts), " ")
+}
+
+func compactNonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func checkSummaryLabel(checks CheckSummary) string {
+	if checks.Passed == 0 && checks.Failed == 0 && checks.Pending == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if checks.Passed > 0 {
+		parts = append(parts, "✓"+itoa(checks.Passed))
+	}
+	if checks.Failed > 0 {
+		parts = append(parts, "✗"+itoa(checks.Failed))
+	}
+	if checks.Pending > 0 {
+		parts = append(parts, "…"+itoa(checks.Pending))
+	}
+	return strings.Join(parts, "")
+}
+
+func diffStatLabel(added, removed int) string {
+	if added == 0 && removed == 0 {
+		return ""
+	}
+	return "+" + itoa(added) + " -" + itoa(removed)
+}
+
+func formatAge(stamp string) string {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(stamp))
+	if err != nil {
+		return stamp
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d >= 30*24*time.Hour:
+		return itoa(int(d/(30*24*time.Hour))) + "mo"
+	case d >= 7*24*time.Hour:
+		return itoa(int(d/(7*24*time.Hour))) + "w"
+	case d >= 24*time.Hour:
+		return itoa(int(d/(24*time.Hour))) + "d"
+	case d >= time.Hour:
+		return itoa(int(d/time.Hour)) + "h"
+	default:
+		return itoa(max(1, int(d/time.Minute))) + "m"
+	}
 }
 
 func rowProject(it Item) string {
@@ -354,10 +456,10 @@ func firstNonEmptyText(values ...string) string {
 }
 
 func priorityColor(priority string, visual paneVisual) color.Color {
-	switch strings.ToUpper(strings.TrimSpace(priority)) {
-	case "P0", "0":
+	switch normalizePriorityLabel(priority) {
+	case "P0":
 		return visual.Red
-	case "P1", "1":
+	case "P1":
 		return visual.Yellow
 	default:
 		return visual.Dim
