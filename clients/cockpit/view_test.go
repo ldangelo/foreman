@@ -1091,6 +1091,49 @@ func (c *mutableClient) Reports(string) []Report { return c.reports }
 
 func (c *mutableClient) Files(string) []FileChange { return c.files }
 
+func TestPaneVisualTracksFocusStyle(t *testing.T) {
+	cfg := defaultConfig().Cockpit.Focus
+
+	left := paneVisualFor(true, cfg)
+	right := paneVisualFor(false, cfg)
+	if left.Border != cBorderFocus || right.Border != cBorderBlur {
+		t.Fatalf("expected focused/blurred borders, got left=%v right=%v", left.Border, right.Border)
+	}
+	if right.Text != cDim || right.SelectedBg != cPanel {
+		t.Fatalf("expected inactive pane to use muted content, got text=%v selected=%v", right.Text, right.SelectedBg)
+	}
+
+	cfg.Style = focusStyleBorder
+	borderOnly := paneVisualFor(false, cfg)
+	if borderOnly.Text != cText || borderOnly.Border != cBorderBlur {
+		t.Fatalf("border style should keep content strong and blur border, got text=%v border=%v", borderOnly.Text, borderOnly.Border)
+	}
+
+	cfg.Style = focusStyleDim
+	dimOnly := paneVisualFor(false, cfg)
+	if dimOnly.Border != cPanel || dimOnly.Text != cDim {
+		t.Fatalf("dim style should mute content without accent frame, got text=%v border=%v", dimOnly.Text, dimOnly.Border)
+	}
+}
+
+func TestFocusLabelFollowsPaneFocus(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 100
+	m.height = 16
+	m.runs = NewMockClient().Runs()
+	m.tasks = NewMockClient().Dispatchable()
+	m.buildItems()
+	m.loadDetail()
+
+	if out := stripANSI(m.renderKeyBar(100)); !strings.Contains(out, "focus: tasks") {
+		t.Fatalf("expected task-list focus label, got %q", out)
+	}
+	m.viewFocused = true
+	if out := stripANSI(m.renderKeyBar(100)); !strings.Contains(out, "focus: details") {
+		t.Fatalf("expected details focus label, got %q", out)
+	}
+}
+
 func assertViewHeight(t *testing.T, m model) {
 	t.Helper()
 	out := stripANSI(m.renderFrame())

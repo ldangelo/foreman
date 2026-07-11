@@ -525,8 +525,8 @@ func (m model) viewerBodyWindowHeight() int {
 		if run.Attention != "" {
 			headerLines++
 		}
-		headerLines += len(m.renderRail(run, w)) + 1 // rail plus separator
-		headerLines += 2                             // tab strip plus spacer
+		headerLines += len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus))) + 1 // rail plus separator
+		headerLines += 2                                                                                   // tab strip plus spacer
 	}
 
 	actionLines := 0

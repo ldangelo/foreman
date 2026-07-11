@@ -52,15 +52,23 @@ func (m model) renderFrame() string {
 	if rightW < 20 {
 		rightW = 20
 	}
-	bodyH := m.height - 3
+	rightContentW := rightW - 1
+	if rightContentW < 20 {
+		rightContentW = 20
+	}
+	bodyH := m.height - 5
 	if bodyH < 4 {
 		bodyH = 4
 	}
 
-	rightRaw := m.renderRight(rightW)
+	leftVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	rightVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
+	rightModel := m
+	rightModel.height = bodyH + 3
+	rightRaw := rightModel.renderRight(rightContentW)
 	leftRaw := m.renderLeft(leftW, bodyH)
-	left := leftPaneStyle.Width(leftW).Height(bodyH).MaxHeight(bodyH).MaxWidth(leftW + 1).Render(leftRaw)
-	right := lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).MaxWidth(rightW).Render(rightRaw)
+	left := leftPaneStyle.Width(leftW).Height(bodyH).MaxHeight(bodyH).MaxWidth(leftW + 1).BorderForeground(leftVisual.Border).Render(leftRaw)
+	right := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderLeft(true).BorderForeground(rightVisual.Border).Width(rightContentW).Height(bodyH).MaxHeight(bodyH).MaxWidth(rightW).Render(rightRaw)
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	out := lipgloss.JoinVertical(lipgloss.Left,
@@ -163,21 +171,24 @@ func (m model) renderNotice(w int) string {
 }
 
 func (m model) renderKeyBar(w int) string {
+	focus := "focus: details"
 	hints := "↑↓/j/k scroll · ctrl+d/u page · esc task list · ⇥ tab · o open · p omp · D diffnav · G gh dash · C gh enhance · ? help · q quit"
 	if !m.viewFocused {
+		focus = "focus: tasks"
 		hints = "↑↓/j/k task · enter view · ⇥ tab · o open · p omp · D diffnav · G gh dash · C gh enhance · / search · ? help · q quit"
 	}
-	return keyBarStyle.Width(w).Render(clip(" "+hints, w))
+	return keyBarStyle.Width(w).Render(clip(" "+focus+" · "+hints, w))
 }
 
 func (m model) renderLeft(w, h int) string {
+	visual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
 	var rows []string
 	selectedLine := 0
 	activeGroup := taskGroupRunning
 	if it, ok := m.taskList.SelectedItem(); ok {
 		activeGroup = it.Group
 	}
-	gcolor := map[string]color.Color{taskGroupRunning: cGreen, taskGroupReady: cYellow, taskGroupRecent: cDim}
+	gcolor := map[string]color.Color{taskGroupRunning: visual.Green, taskGroupReady: visual.Yellow, taskGroupRecent: visual.Dim}
 	count := m.taskList.Counts(m.runs, m.tasks)
 	headerFor := func(g string) string {
 		caret := "▾"
@@ -202,18 +213,18 @@ func (m model) renderLeft(w, h int) string {
 			if i == m.taskList.SelectedIndex() {
 				selectedLine = len(rows)
 			}
-			rows = append(rows, m.renderRow(i, it, w))
+			rows = append(rows, m.renderRow(i, it, w, visual))
 		}
 	}
 	m.taskList.SetViewportRows(headerFor(activeGroup), rows, selectedLine, w, h)
 	return m.taskList.View()
 }
 
-func (m model) renderRow(i int, it Item, w int) string {
+func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 	selected := i == m.taskList.SelectedIndex()
 	var state, left, right string
 	var rightColor color.Color
-	idColor := cText
+	idColor := visual.Text
 	if it.IsTask {
 		state = it.Task.Status
 		left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.Title)
@@ -224,7 +235,7 @@ func (m model) renderRow(i int, it Item, w int) string {
 			left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.TaskID)
 		}
 		right = it.Task.TaskType
-		rightColor = cYellow
+		rightColor = visual.Yellow
 	} else {
 		state = runState(it.Run)
 		left = it.Run.Title
@@ -232,12 +243,12 @@ func (m model) renderRow(i int, it Item, w int) string {
 			left = it.Run.TaskID
 		}
 		if it.Run.Group == "RUNNING" {
-			right, rightColor = it.Run.Phase, cCyan
+			right, rightColor = it.Run.Phase, visual.Cyan
 		} else {
 			right, rightColor = it.Run.Status, statusColor(it.Run.Status)
 		}
 		if it.Run.Status == "failed" {
-			idColor = cRed
+			idColor = visual.Red
 		}
 	}
 	gl, glc := glyph(state)
@@ -249,58 +260,59 @@ func (m model) renderRow(i int, it Item, w int) string {
 	right = clip(right, phaseMax)
 
 	if selected {
-		idColor = cWhite
+		idColor = visual.White
 	}
-	leftStr := lipgloss.NewStyle().Foreground(glc).Render(gl) + " " +
+	leftStr := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
 		lipgloss.NewStyle().Foreground(idColor).Render(left)
 	rightStr := lipgloss.NewStyle().Foreground(rightColor).Render(right)
 	line := padRow(leftStr, rightStr, w)
 
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
-		st = st.Background(cSelBg)
+		st = st.Background(visual.SelectedBg)
 	}
 	return st.Render(line)
 }
 
 func (m model) renderRight(w int) string {
+	visual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
 	var s []string
 	run, isRun := m.selectedRun()
 	it, ok := m.selectedItem()
 	if !ok {
-		return dimStyle.Render("No selection.")
+		return lipgloss.NewStyle().Foreground(visual.Dim).Render("No selection.")
 	}
 
 	// header
 	if isRun {
-		hdrLeft := whiteStyle.Render(run.TaskID) + "  " + dimStyle.Render("run "+run.RunID+"…")
+		hdrLeft := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(run.TaskID) + "  " + lipgloss.NewStyle().Foreground(visual.Dim).Render("run "+run.RunID+"…")
 		status := run.Status
 		if pos, ok := m.selectedMessagePosition(); ok {
 			status += " · messages " + itoa(pos) + "/" + itoa(len(m.msgs))
 		}
-		hdrRight := lipgloss.NewStyle().Foreground(statusColor(run.Status)).Render(status)
+		hdrRight := lipgloss.NewStyle().Foreground(visualForStatus(run.Status, visual)).Render(status)
 		s = append(s, padRow(hdrLeft, hdrRight, w))
 		if run.Attention != "" {
-			s = append(s, redStyle.Render(clip("⚠ "+run.Attention, w)))
+			s = append(s, lipgloss.NewStyle().Foreground(visual.Red).Render(clip("⚠ "+run.Attention, w)))
 		}
 	} else {
 		title := it.Task.Title
 		if title == "" {
 			title = it.Task.TaskID
 		}
-		s = append(s, padRow(whiteStyle.Render(title), yellowStyle.Render(it.Task.Status), w))
+		s = append(s, padRow(lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(title), lipgloss.NewStyle().Foreground(visual.Yellow).Render(it.Task.Status), w))
 	}
-	s = append(s, dimStyle.Render(strings.Repeat("─", w)))
+	s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
 
 	// phase rail (runs only)
 	if isRun {
-		s = append(s, m.renderRail(run, w)...)
-		s = append(s, dimStyle.Render(strings.Repeat("─", w)))
+		s = append(s, m.renderRail(run, w, visual)...)
+		s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
 	}
 
 	// tabs (runs only; tasks show summary)
 	if isRun {
-		s = append(s, m.renderTabs(w))
+		s = append(s, m.renderTabs(w, visual))
 		s = append(s, "")
 	}
 
@@ -329,25 +341,28 @@ func (m model) renderRight(w int) string {
 		viewer.SetLines(m.renderViewerLines(run, it, isRun, w), policy, bodyWindowH)
 		s = append(s, strings.Split(viewer.View(), "\n")...)
 	} else {
+		if len(body) > bodyWindowH {
+			body = body[:bodyWindowH]
+		}
 		s = append(s, body...)
 	}
 	s = append(s, action...)
 	return strings.Join(s, "\n")
 }
 
-func (m model) renderRail(run Run, w int) []string {
+func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 	var chips []string
 	for i, p := range run.Pipeline {
 		gl, glc := glyph(p.State)
 		text := gl + " " + p.Name
-		st := lipgloss.NewStyle().Foreground(glc)
+		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
 		if p.State == "active" {
-			st = st.Background(cActBg)
+			st = st.Background(visual.ActiveBg)
 			if m.anim%2 == 0 {
-				st = st.Foreground(cWhite)
+				st = st.Foreground(visual.White)
 			}
 		} else if p.State == "fail" {
-			st = st.Background(cFailBg)
+			st = st.Background(visual.FailBg)
 		}
 		_ = i
 		chips = append(chips, st.Render(text))
@@ -356,7 +371,7 @@ func (m model) renderRail(run Run, w int) []string {
 	var lines []string
 	cur := ""
 	curW := 0
-	sep := dimStyle.Render(" ─ ")
+	sep := lipgloss.NewStyle().Foreground(visual.Dim).Render(" ─ ")
 	for _, c := range chips {
 		cw := lipgloss.Width(c)
 		add := cw
@@ -381,7 +396,7 @@ func (m model) renderRail(run Run, w int) []string {
 	return lines
 }
 
-func (m model) renderTabs(w int) string {
+func (m model) renderTabs(w int, visual paneVisual) string {
 	var toks []string
 	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0}
 	if m.pr.URL != "" {
@@ -402,9 +417,9 @@ func (m model) renderTabs(w int) string {
 			label += " ⧉"
 		}
 		if i == m.tab {
-			toks = append(toks, lipgloss.NewStyle().Background(lipgloss.Color("#1f6feb")).Foreground(cWhite).Render(" "+label+" "))
+			toks = append(toks, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(" "+label+" "))
 		} else {
-			toks = append(toks, dimStyle.Render(" "+label+" "))
+			toks = append(toks, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
 		}
 	}
 	return clip(strings.Join(toks, ""), w)
@@ -605,6 +620,7 @@ func (m model) renderPRLines(w int) []ViewerLine {
 	if pr.ReviewDecision != "" {
 		lines = append(lines, ViewerLine{Key: "pr:review", Text: dimStyle.Render("review   ") + textStyle.Render(clip(pr.ReviewDecision, w-9))})
 	}
+	lines = append(lines, ViewerLine{Key: "pr:actions", Text: cyanStyle.Render("o/enter") + dimStyle.Render(" open PR in browser  ") + cyanStyle.Render("C") + dimStyle.Render(" inspect CI in gh enhance")})
 	checks := greenStyle.Render("✓ "+itoa(pr.Checks.Passed)) + dimStyle.Render("  ") + redStyle.Render("✗ "+itoa(pr.Checks.Failed)) + dimStyle.Render("  ") + yellowStyle.Render("● "+itoa(pr.Checks.Pending))
 	lines = append(lines, ViewerLine{Key: "pr:checks", Text: dimStyle.Render("checks   ") + checks})
 	if pr.Err != "" {
@@ -612,14 +628,10 @@ func (m model) renderPRLines(w int) []ViewerLine {
 	}
 	return lines
 }
-
 func (m model) renderAction(w int) string {
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{
-			dimStyle.Render(strings.Repeat("┄", w)),
-			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID), w),
-			clip(cyanStyle.Render("y")+dimStyle.Render(" copy task id to clipboard")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task JSON in nvim"), w),
-			clip(cyanStyle.Render("a")+dimStyle.Render(" approve → POST /api/v1/commands task.approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit JSON → POST /api/v1/commands task.update"), w),
+			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id")+"  "+cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task JSON in nvim"), w),
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
@@ -628,9 +640,8 @@ func (m model) renderAction(w int) string {
 			return ""
 		}
 		lines := []string{
-			dimStyle.Render(strings.Repeat("┄", w)),
-			clip(greenStyle.Render("▸ PR actions ")+whiteStyle.Render(m.pr.URL), w),
-			clip(cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
+			clip(greenStyle.Render("▸ PR actions ")+cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
+			clip(dimStyle.Render(m.pr.URL), w),
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}

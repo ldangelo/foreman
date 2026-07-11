@@ -100,6 +100,11 @@ All data is fetched from the Elixir core; the cockpit never infers state the
 core has not asserted. A periodic tick (default 2s) refreshes projections and
 advances the active-phase animation.
 
+The keybar includes an explicit `focus: tasks` / `focus: details` label. The
+focused pane uses the accent border; the inactive pane uses the blur border and,
+by default, a muted content palette controlled by `cockpit.focus`.
+
+
 ## Keymap
 
 Global:
@@ -107,7 +112,7 @@ Global:
 | Key | Action |
 |-----|--------|
 | `↑`/`↓`, `j`/`k` | move task selection while the task list is focused |
-| `enter` | enter/focus the selected drill-down view |
+| `enter` | enter/focus the selected drill-down view; focus label changes to `details` |
 | `esc` | leave the drill-down view and return focus to the task list; clears search while searching |
 | `↑`/`↓`, `j`/`k` | move the highlighted line in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
 | message rows | select whole messages by header; show `messages <current>/<total>` in both the tab and run header; keep the selected message body preview visible with the header when space allows |
@@ -267,6 +272,9 @@ pr:
   provider: github
 cockpit:
   exportDir: ~/.foreman/cockpit-exports
+  focus:
+    style: both          # both | border | dim
+    dimInactive: true
 ```
 
 `mode: auto` = remote when a session is found, else inline (the recommended

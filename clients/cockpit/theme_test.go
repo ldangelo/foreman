@@ -23,6 +23,8 @@ func TestThemeTokensDriveCockpitPalette(t *testing.T) {
 		"success":        themeTokenSuccess,
 		"warning":        themeTokenWarning,
 		"danger":         themeTokenDanger,
+		"borderFocus":    themeTokenBorderFocus,
+		"borderBlur":     themeTokenBorderBlur,
 		"selected":       themeTokenBgSelected,
 		"emphasis":       themeTokenBgEmphasis,
 		"bar":            themeTokenBgBar,

@@ -62,8 +62,20 @@ type PRConfig struct {
 }
 
 type CockpitConfig struct {
-	ExportDir string `yaml:"exportDir"`
+	ExportDir string      `yaml:"exportDir"`
+	Focus     FocusConfig `yaml:"focus"`
 }
+
+type FocusConfig struct {
+	DimInactive bool   `yaml:"dimInactive"`
+	Style       string `yaml:"style"`
+}
+
+const (
+	focusStyleBoth   = "both"
+	focusStyleBorder = "border"
+	focusStyleDim    = "dim"
+)
 
 func defaultConfig() Config {
 	return Config{
@@ -75,8 +87,11 @@ func defaultConfig() Config {
 			GhEnhance: GhEnhanceConfig{Enable: "auto"},
 			Omp:       OmpConfig{Enable: "auto", Cmd: "omp", Mode: "auto", Tmux: TmuxConfig{Split: "horizontal"}, KeepShell: true, Session: "per-task"},
 		},
-		PR:      PRConfig{Provider: "github"},
-		Cockpit: CockpitConfig{ExportDir: defaultCockpitExportDir()},
+		PR: PRConfig{Provider: "github"},
+		Cockpit: CockpitConfig{
+			ExportDir: defaultCockpitExportDir(),
+			Focus:     FocusConfig{DimInactive: true, Style: focusStyleBoth},
+		},
 	}
 }
 
@@ -135,6 +150,7 @@ func (c *Config) normalize() {
 		c.Cockpit.ExportDir = defaults.Cockpit.ExportDir
 	}
 	c.Cockpit.ExportDir = expandHome(c.Cockpit.ExportDir)
+	c.Cockpit.Focus.Style = normalizeFocusStyle(c.Cockpit.Focus.Style)
 }
 
 func defaultCockpitExportDir() string {
@@ -153,6 +169,28 @@ func normalizeEnable(v string) string {
 		return "auto"
 	default:
 		return "auto"
+	}
+}
+
+func normalizeFocusStyle(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case focusStyleBoth, focusStyleBorder, focusStyleDim:
+		return strings.ToLower(strings.TrimSpace(v))
+	case "":
+		return focusStyleBoth
+	default:
+		return focusStyleBoth
+	}
+}
+
+func normalizeBool(v string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
 	}
 }
 
@@ -210,5 +248,11 @@ func applyConfigEnv(c *Config) {
 	}
 	if v := os.Getenv("COCKPIT_EXPORT_DIR"); v != "" {
 		c.Cockpit.ExportDir = expandHome(v)
+	}
+	if v := os.Getenv("COCKPIT_FOCUS_STYLE"); v != "" {
+		c.Cockpit.Focus.Style = normalizeFocusStyle(v)
+	}
+	if v := os.Getenv("COCKPIT_FOCUS_DIM_INACTIVE"); v != "" {
+		c.Cockpit.Focus.DimInactive = normalizeBool(v, c.Cockpit.Focus.DimInactive)
 	}
 }

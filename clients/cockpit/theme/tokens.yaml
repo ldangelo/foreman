@@ -13,6 +13,8 @@ border:
   primary: "#2b2f3a"
   secondary: "#3a3f4b"
   faint: "#1c1f27"
+  focus: "#56b6c2"
+  blur: "#2b2f3a"
 bg:
   canvas: "transparent"
   selected: "#1f2a44"

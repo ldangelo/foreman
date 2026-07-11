@@ -65,6 +65,30 @@ func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesCockpitFocus(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte("cockpit:\n  focus:\n    style: border\n    dimInactive: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cockpit.Focus.Style != focusStyleBorder || cfg.Cockpit.Focus.DimInactive {
+		t.Fatalf("unexpected focus config: %+v", cfg.Cockpit.Focus)
+	}
+
+	t.Setenv("COCKPIT_FOCUS_STYLE", "dim")
+	t.Setenv("COCKPIT_FOCUS_DIM_INACTIVE", "true")
+	cfg, err = loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cockpit.Focus.Style != focusStyleDim || !cfg.Cockpit.Focus.DimInactive {
+		t.Fatalf("expected env focus override, got %+v", cfg.Cockpit.Focus)
+	}
+}
+
 func TestLoadConfigParsesIntegrations(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("integrations:\n  diffnav:\n    enable: on\n    base: main\n    watch: true\n  ghDash:\n    args: [--repo, Fortium/foreman]\n  ghEnhance:\n    enable: on\n    args: [--branch, foreman/task]\npr:\n  provider: foreman\n"), 0o600); err != nil {

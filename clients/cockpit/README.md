@@ -33,6 +33,8 @@ authoritative state.
   `task.create`.
 - Right column: color-coded run header, an animated phase rail, and a
   drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
+  The active pane is called out with a focus label and accent frame; the inactive
+  pane can be dimmed via `cockpit.focus`.
 - `/` searches the focused drill-down pane when the right side is focused; the
   task-list search remains on `/` while the left side is focused. Task-list
   search uses a `filterableviewport` input with case-insensitive substring
@@ -96,7 +98,7 @@ FOREMAN_SERVER_URL=http://127.0.0.1:4766 COCKPIT_DUMP=1 ./foreman-cockpit
 
 ```
 ↑↓ / j/k  move task selection while the task list is focused
-enter     enter/focus the selected drill-down view
+enter     enter/focus the selected drill-down view; keybar reads focus: details
 esc       leave the drill-down view and return focus to the task list
 ↑↓ / j/k  move the highlighted line in focused messages/events/logs/reports/files/pr
 ctrl+d/u  half-page down/up in the focused drill-down view
@@ -125,8 +127,9 @@ preview is kept in the viewport with the header when there is room for both.
 
 Controlled by `.foreman/config.yaml` (all optional) and `COCKPIT_DIFFNAV`,
 `COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`, `COCKPIT_OMP`,
-`COCKPIT_OMP_MODE`, and `COCKPIT_EXPORT_DIR` env overrides (`auto` / `on` /
-`off` where applicable):
+`COCKPIT_OMP_MODE`, `COCKPIT_EXPORT_DIR`, `COCKPIT_FOCUS_STYLE`, and
+`COCKPIT_FOCUS_DIM_INACTIVE` env overrides (`auto` / `on` / `off` where
+applicable):
 
 ```yaml
 editor:
@@ -158,6 +161,9 @@ pr:
   provider: github
 cockpit:
   exportDir: ~/.foreman/cockpit-exports
+  focus:
+    style: both         # both | border | dim
+    dimInactive: true
 ```
 
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached

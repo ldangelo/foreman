@@ -28,6 +28,8 @@ type tokens struct {
 		Primary   string `yaml:"primary"`
 		Secondary string `yaml:"secondary"`
 		Faint     string `yaml:"faint"`
+		Focus     string `yaml:"focus"`
+		Blur      string `yaml:"blur"`
 	} `yaml:"border"`
 	BG struct {
 		Canvas   string `yaml:"canvas"`
@@ -88,7 +90,7 @@ func validate(t tokens) {
 	values := map[string]string{
 		"text.primary": t.Text.Primary, "text.secondary": t.Text.Secondary, "text.faint": t.Text.Faint, "text.inverted": t.Text.Inverted,
 		"accent": t.Accent, "accent2": t.Accent2, "success": t.Success, "warning": t.Warning, "danger": t.Danger,
-		"border.primary": t.Border.Primary, "border.secondary": t.Border.Secondary, "border.faint": t.Border.Faint,
+		"border.primary": t.Border.Primary, "border.secondary": t.Border.Secondary, "border.faint": t.Border.Faint, "border.focus": t.Border.Focus, "border.blur": t.Border.Blur,
 		"bg.selected": t.BG.Selected, "bg.emphasis": t.BG.Emphasis, "bg.failure": t.BG.Failure, "bg.action": t.BG.Action, "bg.bar": t.BG.Bar, "bg.header": t.BG.Header,
 		"diff.add": t.Diff.Add, "diff.remove": t.Diff.Remove, "diff.addBg": t.Diff.AddBG, "diff.addEmphasisBg": t.Diff.AddEmphasisBG, "diff.removeBg": t.Diff.RemoveBG, "diff.removeEmphasisBg": t.Diff.RemoveEmphasisBG,
 	}
@@ -120,6 +122,8 @@ const (
 	themeTokenBorderPrimary = %q
 	themeTokenBorderSecondary = %q
 	themeTokenBorderFaint = %q
+	themeTokenBorderFocus = %q
+	themeTokenBorderBlur = %q
 	themeTokenBgSelected = %q
 	themeTokenBgEmphasis = %q
 	themeTokenBgFailure = %q
@@ -133,7 +137,7 @@ const (
 	themeTokenFontIcons = %q
 	themeTokenGhEnhanceTheme = %q
 )
-`, t.Text.Primary, t.Text.Secondary, t.Text.Faint, t.Text.Inverted, t.Accent, t.Accent2, t.Success, t.Warning, t.Danger, t.Border.Primary, t.Border.Secondary, t.Border.Faint, t.BG.Selected, t.BG.Emphasis, t.BG.Failure, t.BG.Action, t.BG.Bar, t.BG.Header, t.Diff.Add, t.Diff.Remove, t.Diff.SyntaxTheme, t.Font.Family, t.Font.Icons, t.Tools.GhEnhanceTheme)
+`, t.Text.Primary, t.Text.Secondary, t.Text.Faint, t.Text.Inverted, t.Accent, t.Accent2, t.Success, t.Warning, t.Danger, t.Border.Primary, t.Border.Secondary, t.Border.Faint, t.Border.Focus, t.Border.Blur, t.BG.Selected, t.BG.Emphasis, t.BG.Failure, t.BG.Action, t.BG.Bar, t.BG.Header, t.Diff.Add, t.Diff.Remove, t.Diff.SyntaxTheme, t.Font.Family, t.Font.Icons, t.Tools.GhEnhanceTheme)
 }
 
 func ghTheme(t tokens) string {
