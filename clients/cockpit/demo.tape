@@ -1,5 +1,5 @@
 # Foreman Go cockpit showcase recording.
-# Requires VHS (`brew install vhs`) and a working Go toolchain.
+# Requires VHS, ttyd, and a working Go toolchain (`brew install vhs ttyd`).
 # Run from clients/cockpit with: vhs demo.tape
 
 Output demo.gif
@@ -12,14 +12,14 @@ Set Theme "Dracula"
 Type "COCKPIT_BACKEND=mock go run ."
 Enter
 Sleep 4s
-Key "?"
+Type "?"
 Sleep 2s
-Key "esc"
+Escape
 Sleep 1s
-Key "tab"
+Tab
 Sleep 1s
-Key "7"
+Type "7"
 Sleep 1s
-Key "8"
+Type "8"
 Sleep 2s
-Key "q"
+Type "q"

@@ -111,7 +111,7 @@ FOREMAN_SERVER_AUTH_TOKEN=$FOREMAN_SERVER_AUTH_TOKEN \
 COCKPIT_BACKEND=mock ./foreman-cockpit
 ```
 
-Optional showcase recording (requires developer-installed `vhs`):
+Optional showcase recording (requires developer-installed `vhs` and `ttyd`):
 
 ```bash
 vhs demo.tape
