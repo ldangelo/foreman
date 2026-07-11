@@ -1,6 +1,7 @@
 package main
 
 import (
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 	"os"
 	"strings"
@@ -230,6 +231,30 @@ func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
 	}
 	if strings.Contains(out, "explorer") || strings.Contains(out, "developer") {
 		t.Fatalf("expected compact rail to omit full phase names, got:\n%s", out)
+	}
+}
+
+func TestActivePhaseRailUsesMotionFrameUnlessReduced(t *testing.T) {
+	run := Run{Phase: "developer", Pipeline: []Phase{
+		{Name: "explorer", State: "done"},
+		{Name: "developer", State: "active"},
+		{Name: "qa", State: "pending"},
+	}}
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: "RUNNING", RunID: "run-1", Status: "running"}}
+	m.liveSpinner, _ = m.liveSpinner.Update(spinner.TickMsg{})
+
+	out := stripANSI(strings.Join(m.renderRail(run, 80, paneVisualFor(true, defaultConfig().Cockpit.Focus)), "\n"))
+	if strings.Contains(out, "● developer") || !strings.Contains(out, "developer") {
+		t.Fatalf("expected active phase rail to replace static glyph with motion frame, got:\n%s", out)
+	}
+
+	cfg := defaultConfig()
+	cfg.Cockpit.ReducedMotion = true
+	reduced := newModelWithConfig(NewMockClient(), cfg, defaultTools)
+	out = stripANSI(strings.Join(reduced.renderRail(run, 80, paneVisualFor(true, cfg.Cockpit.Focus)), "\n"))
+	if strings.Contains(out, "⠋") || !strings.Contains(out, "● developer") {
+		t.Fatalf("expected reduced motion to keep static active rail glyph, got:\n%s", out)
 	}
 }
 
@@ -1378,6 +1403,39 @@ type mutableClient struct {
 func (c *mutableClient) Runs() []Run { return c.runs }
 
 func (c *mutableClient) Messages(string) []Message { return c.messages }
+
+func TestMetricsTabShowsLoadingStateDuringRefresh(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 7
+	updated, _ := m.Update(dataMsg{runs: client.runs, tasks: client.tasks})
+	m = updated.(model)
+	m.metricsLoading = true
+	m.liveSpinner, _ = m.liveSpinner.Update(spinner.TickMsg{})
+
+	out := stripANSI(m.renderRight(80))
+	if !strings.Contains(out, "loading metrics") || strings.Contains(out, "• loading metrics") {
+		t.Fatalf("expected metrics loading line to use spinner motion frame, got:\n%s", out)
+	}
+
+	cfg := defaultConfig()
+	cfg.Cockpit.ReducedMotion = true
+	reduced := newModelWithConfig(client, cfg, defaultTools)
+	reduced.width = 120
+	reduced.height = 20
+	reduced.tab = 7
+	updated, _ = reduced.Update(dataMsg{runs: client.runs, tasks: client.tasks})
+	reduced = updated.(model)
+	reduced.metricsLoading = true
+	out = stripANSI(reduced.renderRight(80))
+	if strings.Contains(out, "⠋") || !strings.Contains(out, "loading metrics") {
+		t.Fatalf("expected reduced-motion metrics loading text, got:\n%s", out)
+	}
+}
 
 func (c *mutableClient) Logs(string) []string { return c.logs }
 

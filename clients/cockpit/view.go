@@ -565,7 +565,7 @@ func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 	}
 	var chips []string
 	for i, p := range run.Pipeline {
-		gl, glc := glyph(p.State)
+		gl, glc := m.railGlyph(p.State)
 		text := gl + " " + p.Name
 		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
 		if p.State == "active" {
@@ -625,7 +625,7 @@ func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
 		phase = run.Pipeline[idx].Name
 		state = run.Pipeline[idx].State
 	}
-	gl, glc := glyph(state)
+	gl, glc := m.railGlyph(state)
 	label := fmt.Sprintf("%s %d/%d · %s", gl, idx+1, len(run.Pipeline), phase)
 	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
 	if state == "active" {
@@ -841,7 +841,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 	case "pr":
 		return m.renderPRLines(w, visual)
 	case "metrics":
-		return renderMetricsLines(m.metrics, w, visual)
+		return m.renderMetricsLines(w, visual)
 	}
 	return s
 }
@@ -903,6 +903,29 @@ func joinStatusParts(parts ...string) string {
 		}
 	}
 	return strings.Join(out, " · ")
+}
+
+func (m model) railGlyph(state string) (string, color.Color) {
+	if state == "active" && m.shouldAnimate() {
+		return m.liveSpinner.View(), cCyan
+	}
+	return glyph(state)
+}
+
+func (m model) renderMetricsLines(w int, visual paneVisual) []ViewerLine {
+	if !m.metricsLoading {
+		return renderMetricsLines(m.metrics, w, visual)
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	lines := []ViewerLine{{
+		Key:          "metrics:loading",
+		Text:         dimStyle.Render(m.loadingLabel("metrics")),
+		Unselectable: true,
+	}}
+	if len(m.metrics.Counters) > 0 || len(m.metrics.Gauges) > 0 || len(m.metrics.PhaseDuration) > 0 {
+		lines = append(lines, renderMetricsLines(m.metrics, w, visual)...)
+	}
+	return lines
 }
 
 func (m model) loadingLabel(label string) string {

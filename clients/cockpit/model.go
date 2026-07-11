@@ -28,13 +28,14 @@ type model struct {
 	taskList TaskList
 
 	// detail for the selected run
-	msgs    []Message
-	events  []Event
-	logs    []string
-	reports []Report
-	files   []FileChange
-	pr      PRStatus
-	metrics Metrics
+	msgs           []Message
+	events         []Event
+	logs           []string
+	reports        []Report
+	files          []FileChange
+	pr             PRStatus
+	metrics        Metrics
+	metricsLoading bool
 
 	diffPreviews   map[string]DiffPreview
 	diffLoading    map[string]bool
@@ -98,17 +99,18 @@ func newModel(c Client) model {
 func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 	r := newGlamourRenderer()
 	return model{
-		client:       c,
-		config:       cfg,
-		editor:       cfg.Editor,
-		tools:        tools,
-		glam:         r,
-		taskList:     NewTaskListWithSections(cfg.Cockpit.TaskList.Sections),
-		liveSpinner:  newLiveSpinner(),
-		runClock:     stopwatch.New(stopwatch.WithInterval(time.Second)),
-		tab:          0,
-		diffPreviews: map[string]DiffPreview{},
-		diffLoading:  map[string]bool{},
+		client:         c,
+		config:         cfg,
+		editor:         cfg.Editor,
+		tools:          tools,
+		glam:           r,
+		taskList:       NewTaskListWithSections(cfg.Cockpit.TaskList.Sections),
+		metricsLoading: true,
+		liveSpinner:    newLiveSpinner(),
+		runClock:       stopwatch.New(stopwatch.WithInterval(time.Second)),
+		tab:            0,
+		diffPreviews:   map[string]DiffPreview{},
+		diffLoading:    map[string]bool{},
 	}
 }
 
@@ -142,6 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 	case tickMsg:
+		m.metricsLoading = true
 		return m, tea.Batch(loadData(m.client), tick(), m.syncMotionCmd())
 
 	case spinner.TickMsg:
@@ -169,6 +172,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dataMsg:
 		hadViewerRows := m.detailUsesViewer() && m.rowCount() > 0
 		m.runs, m.tasks, m.metrics = msg.runs, msg.tasks, msg.metrics
+		m.metricsLoading = false
 		m.taskList.SetProjectID(msg.projectID)
 		m.buildItems()
 		m.loadDetail()
@@ -310,6 +314,9 @@ func (m model) shouldAnimate() bool {
 		return false
 	}
 	if m.hasRunningRuns() {
+		return true
+	}
+	if m.metricsLoading {
 		return true
 	}
 	for _, loading := range m.diffLoading {

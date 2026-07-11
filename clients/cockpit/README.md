@@ -41,10 +41,11 @@ authoritative state.
   runs, an animated phase rail that collapses to a compact `4/10 · qa` badge on
   very narrow panes, and a drill-down tab strip (`summary · messages · events ·
   logs · reports · files · pr · metrics`). The metrics tab reads
-  `/api/v1/metrics` and renders counters, gauges, and phase durations.
-  The active pane is called out with a focus label, accent frame, and a non-color
-  `▶` task-list marker; the inactive pane can be dimmed via `cockpit.focus`. Set
-  `cockpit.reducedMotion` (or `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
+  `/api/v1/metrics`, shows a spinner while refresh data is in flight, and renders
+  counters, gauges, and phase durations. The active pane is called out with a
+  focus label, accent frame, and a non-color `▶` task-list marker; the inactive
+  pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or
+  `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
 - `/` searches the focused drill-down pane when the right side is focused; the
   task-list search remains on `/` while the left side is focused. Task-list
   search uses a `filterableviewport` input with case-insensitive substring

@@ -100,12 +100,13 @@ live in small cockpit-owned components:
 
 All data is fetched from the Elixir core; the cockpit never infers state the
 core has not asserted. A periodic tick (default 2s) refreshes projections. The
-status bar and diff-loading rows use a `bubbles/v2/spinner` only while runs or
-loading states are active, and the selected running run gets a lightweight
-`bubbles/v2/stopwatch` elapsed indicator. `cockpit.reducedMotion` disables
-spinner frames and stopwatch display for accessibility / low-power terminals.
-The metrics tab consumes `/api/v1/metrics` and renders counters, gauges, and
-phase-duration bars without client-side authoritative aggregation.
+status bar, active phase rail, diff-loading rows, and metrics refresh rows use a
+`bubbles/v2/spinner` only while runs or loading states are active, and the
+selected running run gets a lightweight `bubbles/v2/stopwatch` elapsed indicator.
+`cockpit.reducedMotion` disables spinner frames and stopwatch display for
+accessibility / low-power terminals. The metrics tab consumes `/api/v1/metrics`
+and renders counters, gauges, and phase-duration bars without client-side
+authoritative aggregation.
 
 The keybar includes an explicit `focus: tasks` / `focus: details` label. The
 focused pane uses the accent border; the inactive pane uses the blur border and,
@@ -229,7 +230,8 @@ default avoids nesting a TUI inside a TUI.
   status, failure signals, PR state, and conflicted files; `P` opens plain `omp`.
   Active running workers are refused to avoid concurrent mutations.
 - The `metrics` tab renders `/api/v1/metrics` counters, gauges, and phase
-  durations as bounded rows. Empty/missing metrics render a static empty state.
+  durations as bounded rows, with a spinner while refresh data is in flight.
+  Empty/missing metrics render a static empty state.
 - The cockpit uses generated theme artifacts from `clients/cockpit/theme/`:
   `tokens.yaml` drives Lip Gloss constants, Glamour JSON, `gh-dash.yml`,
   `enhance.env`, `diffnav/config.yml`, and `delta.gitconfig`. Handoffs pass

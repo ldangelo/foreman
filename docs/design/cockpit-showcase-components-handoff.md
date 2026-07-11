@@ -110,14 +110,15 @@ series fields.
 Acceptance: a metrics view renders live metric rows on refresh; empty/missing
 data states are graceful; no render-path aggregation blocks the TUI.
 
-### F. Motion & polish (`harmonica` + `spinner` + `stopwatch`) — Tier 3
-Spring-animate the phase-rail advance and tab/panel transitions with
-`harmonica`; replace the manual status-bar spinner with `bubbles/spinner` and add
-a spinner to diff-preview/metrics loading; show live elapsed on RUNNING runs via
-`stopwatch`. Keep motion subtle and disable-able (respect a `reducedMotion`
-config for accessibility / low-power terminals).
-Acceptance: transitions are smooth on the v2 renderer; motion can be turned off;
-no CPU spin when idle.
+### F. Motion & polish (`spinner` + `stopwatch`; `harmonica` optional) — Tier 3
+Use first-party Bubble Tea components for meaningful live motion: the phase rail
+active glyph, status bar, diff-preview loading, and metrics loading use
+`bubbles/spinner`; selected RUNNING runs show live elapsed time via `stopwatch`.
+Keep motion subtle and disable-able (respect a `reducedMotion` config for
+accessibility / low-power terminals). Spring panel/tab transitions via
+`harmonica` remain optional polish and are not required for roadmap completion.
+Acceptance: active/loading states visibly animate on the v2 renderer; motion can
+be turned off; no CPU spin when idle.
 
 ### G. (Optional) layout system (`stickers`) — Tier 3
 Only if it clearly simplifies the responsive two-column + bars layout; otherwise
