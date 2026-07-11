@@ -33,8 +33,9 @@ authoritative state.
   selected task detail is scrollable and renders id, status, workflow,
   dependencies, project, and description as an aligned field table. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
-  edit task JSON via `task.update`, and `n` to open an in-pane `textinput` /
-  `textarea` create form that posts `task.create` with `ctrl+s`.
+  edit task JSON via `task.update`, `n` to open an in-pane `textinput` /
+  `textarea` create form that posts `task.create` with `ctrl+s`, and `N` for a
+  one-line quick-add task title submitted with `enter`.
 - Right column: color-coded run header, live elapsed clock for selected running
   runs, an animated phase rail, and a drill-down tab strip (`summary · messages ·
   events · logs · reports · files · pr · metrics`). The metrics tab reads
@@ -108,6 +109,12 @@ FOREMAN_SERVER_AUTH_TOKEN=$FOREMAN_SERVER_AUTH_TOKEN \
 COCKPIT_BACKEND=mock ./foreman-cockpit
 ```
 
+Optional showcase recording (requires developer-installed `vhs`):
+
+```bash
+vhs demo.tape
+```
+
 Non-interactive live-backend smoke check:
 
 ```bash
@@ -128,7 +135,7 @@ mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls t
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab and focus it
 o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
-y         copy selected task ID               n    create task form (ctrl+s submit)
+y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
 r/R       retry / reset                       /    search     n/N match

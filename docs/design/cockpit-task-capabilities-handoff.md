@@ -104,34 +104,32 @@ Intent: press a key in the task list to add a new task.
     it.
   - `mockClient`: `CreateTask` appends to an in-memory slice so `COCKPIT_BACKEND=mock`
     shows the new row after refresh.
-- Interaction (primary, lowest-risk — mirrors `editTaskInNvim`): bind `n` (new)
-  in `handleKey` when the task list is focused. Open nvim on a JSON template:
+- Interaction: bind `n` (new) to an in-pane `textinput` / `textarea` form
+  component. Draft defaults:
 
   ```json
   { "title": "", "task_type": "task", "priority": "P2", "description": "" }
   ```
 
-  On save, parse and call `CreateTask`; on empty title, cancel with a notice.
-  Reuse `task_edit.go`'s tempfile + `tea.ExecProcess` + parse-on-return machinery
-  (factor the shared parts so create and edit share one helper). Emit
-  `taskActionDoneMsg{action:"created"}` and trigger `loadData` to refresh.
-- Optional (nice-to-have): an inline quick-add — `N` opens a one-line prompt
-  component for just the title (type/priority default), submitting on `enter`.
-  If you build this, put its state in a new `task_form.go` component (a small
-  struct with the input buffer + a `HandleKey`), consistent with `TaskList`
-  living in `task_list.go`. Skip if time-boxed; the nvim template covers it.
+  On `ctrl+s`, parse and call `CreateTask`; on empty title, cancel with a notice.
+  Emit `taskActionDoneMsg{action:"created"}` and trigger `loadData` to refresh.
+- Inline quick-add is implemented: `N` opens a one-line prompt for just the title
+  (type/priority default), submitting on `enter`. The full `n` form and quick-add
+  both live in `task_form.go`, post `task.create`, and refresh after the command
+  succeeds.
 - New tasks are created in the current project scope
   (`COCKPIT_PROJECT_ID`/`FOREMAN_PROJECT_ID` if set) so they appear in the list.
-- Acceptance: `n` from the list opens the template, and on save a new task is
-  created (live via `task.create`, or in-memory in mock) and appears in READY
-  after refresh; empty/invalid input cancels cleanly with a notice.
+- Acceptance: `n` from the list opens the full create form, `N` opens quick-add,
+  and on save a new task is created (live via `task.create`, or in-memory in
+  mock) and appears in READY after refresh; empty/invalid input cancels cleanly
+  with a notice.
 
 ## 6. Keymap additions (update spec + README)
 
 | Key | Context | Action |
 |-----|---------|--------|
-| `n` | task list focused | new task (edit template in nvim → `task.create`) |
-| `N` | task list focused | (optional) inline quick-add title |
+| `n` | task list focused | full new-task form (`ctrl+s` → `task.create`) |
+| `N` | task list focused | inline quick-add title (`enter` → `task.create`) |
 
 Leave existing task keys as-is: `y` copy id, `a` approve, `e` edit, `enter`/`o`.
 

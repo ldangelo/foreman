@@ -10,8 +10,8 @@ reduced-motion support, clickable section/task-row/drill-down-tab targets, a
 metrics tab backed by `/api/v1/metrics`, a theme installer, and richer mock data.
 Remaining showcase work is external or intentionally parked: full `bubblezone`
 zero-width action/PR-link zones and `ntcharts` are v1 Bubble Tea ecosystems at
-the verified versions, `harmonica` remains optional polish, and actual VHS/GIF
-capture requires the external `vhs` runtime.
+the verified versions, `harmonica` remains optional polish, and rendering
+`clients/cockpit/demo.tape` to a GIF requires the external `vhs` runtime.
 
 ## 1. North star
 
@@ -138,10 +138,10 @@ Record the verified version in `go.mod` and note it here.
   fleet of runs across every state, realistic phase timings, messages/events,
   reports, files, PRs, and enough history to make the charts sing. This is what
   gets recorded and what CI/tests exercise.
-- **Recorded GIF:** add a `charmbracelet/vhs` tape (`demo.tape`) that drives the
-  mock cockpit through the highlight reel (fleet metrics → pick a failing run →
-  events/logs search → open diff → clickable tabs) and produces `docs/demo.gif`.
-  Wire `vhs` as a make target, not a runtime dep.
+- **Recorded GIF:** `clients/cockpit/demo.tape` drives the mock cockpit through the
+  highlight reel (help overlay, PR tab, metrics tab) and can render `demo.gif`
+  with `vhs demo.tape`. `vhs` remains a developer-installed tool, not a runtime
+  dependency.
 - Use the new v2 `tea.WithWindowSize`/`tea.WithColorProfile` options so the demo
   renders deterministically.
 
@@ -151,7 +151,8 @@ Record the verified version in `go.mod` and note it here.
 - The metrics view reads the fleet's health at a glance and updates live.
 - Motion is smooth and can be disabled; idle CPU stays low.
 - Theme is consistent across cockpit + `diffnav`/`gh dash`/`gh enhance`.
-- `COCKPIT_BACKEND=mock` produces a demo-worthy screen; `demo.tape` renders a GIF.
+- `COCKPIT_BACKEND=mock` produces a demo-worthy screen; `demo.tape` is checked in
+  for local `vhs` GIF capture.
 - Every adopted lib is a verified v2 build; `go build/test/vet ./...` clean on
   Go 1.26; key/help generation, search parsing, spinner/stopwatch motion, and
   ANSI/Unicode width helpers are owned by v2-compatible components or delegate to

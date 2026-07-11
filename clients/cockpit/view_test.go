@@ -430,6 +430,39 @@ func TestCreateTaskFormSubmitsTypedTask(t *testing.T) {
 	}
 }
 
+func TestQuickAddTaskSubmitsTitleOnEnter(t *testing.T) {
+	client := &mutableClient{}
+	m := newModel(client)
+	m.width = 120
+	m.height = 24
+
+	updated, _ := m.Update(keyPress("N"))
+	m = updated.(model)
+	if m.taskForm == nil || !m.taskForm.quick {
+		t.Fatal("expected quick-add form")
+	}
+	for _, r := range "Quick cockpit task" {
+		updated, _ = m.Update(keyPress(string(r)))
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(specialKey(tea.KeyEnter))
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected quick-add create command")
+	}
+	msg := cmd()
+	done, ok := msg.(taskActionDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("expected successful quick-add result, got %#v ok=%v", msg, ok)
+	}
+	if m.taskForm != nil {
+		t.Fatal("expected quick-add form to close after submit")
+	}
+	if len(client.created) != 1 || client.created[0].Title != "Quick cockpit task" || client.created[0].TaskType != "task" || client.created[0].Priority != "2" {
+		t.Fatalf("unexpected quick-add task: %#v", client.created)
+	}
+}
+
 func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.pr = PRStatus{URL: "https://github.com/acme/repo/pull/42", State: "open", Checks: CheckSummary{Passed: 3, Failed: 1, Pending: 2}}

@@ -18,6 +18,7 @@ const (
 
 type taskCreateForm struct {
 	id          string
+	quick       bool
 	focus       int
 	title       textinput.Model
 	description textarea.Model
@@ -57,6 +58,12 @@ func newTaskCreateForm() taskCreateForm {
 	return form
 }
 
+func newTaskQuickAddForm() taskCreateForm {
+	form := newTaskCreateForm()
+	form.quick = true
+	return form
+}
+
 func (f *taskCreateForm) focusField(next int) tea.Cmd {
 	if next < 0 {
 		next = createFormFieldCount - 1
@@ -83,6 +90,11 @@ func (f *taskCreateForm) focusField(next int) tea.Cmd {
 }
 
 func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
+	if f.quick {
+		var cmd tea.Cmd
+		f.title, cmd = f.title.Update(msg)
+		return cmd
+	}
 	switch msg.String() {
 	case "tab":
 		return f.focusField(f.focus + 1)
@@ -130,6 +142,10 @@ func (f *taskCreateForm) SetBounds(w, h int) {
 	f.title.SetWidth(inputW)
 	f.taskType.SetWidth(inputW)
 	f.priority.SetWidth(inputW)
+	if f.quick {
+		f.title.SetWidth(inputW)
+		return
+	}
 	descH := h - 11
 	if descH < 3 {
 		descH = 3
@@ -151,6 +167,15 @@ func (f taskCreateForm) View(w, h int) string {
 			style = cyanStyle
 		}
 		return style.Render(prefix + name)
+	}
+	if f.quick {
+		return strings.Join([]string{
+			whiteStyle.Render("Quick add task") + dimStyle.Render("  "+f.id),
+			dimStyle.Render("enter create · esc cancel"),
+			"",
+			label(createFormTitle, "title"),
+			f.title.View(),
+		}, "\n")
 	}
 	return strings.Join([]string{
 		whiteStyle.Render("Create new task") + dimStyle.Render("  "+f.id),

@@ -56,7 +56,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 		},
 		{
 			binding("o", "open selected"),
-			binding("n", "new task"),
+			binding("n/N", "new task / quick add"),
 			binding("y", "copy task id"),
 			binding("a", "approve task"),
 			binding("e", "edit task"),

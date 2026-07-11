@@ -384,17 +384,26 @@ func (m model) handleTaskFormKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.taskForm = nil
 		m.notice = "new task cancelled"
 		return m, nil
-	case "ctrl+s":
-		task, err := m.taskForm.Task()
-		if err != nil {
-			m.notice = "create task: " + err.Error()
-			return m, nil
+	case "enter":
+		if !m.taskForm.quick {
+			return m, m.taskForm.Update(msg)
 		}
-		m.taskForm = nil
-		return m, createTask(m.client, task)
+		return m.submitTaskForm()
+	case "ctrl+s":
+		return m.submitTaskForm()
 	default:
 		return m, m.taskForm.Update(msg)
 	}
+}
+
+func (m model) submitTaskForm() (tea.Model, tea.Cmd) {
+	task, err := m.taskForm.Task()
+	if err != nil {
+		m.notice = "create task: " + err.Error()
+		return m, nil
+	}
+	m.taskForm = nil
+	return m, createTask(m.client, task)
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -521,6 +530,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.taskForm = &form
 		m.viewFocused = true
 		m.notice = "new task: ctrl+s create · esc cancel"
+		return m, nil
+	case "N":
+		form := newTaskQuickAddForm()
+		m.taskForm = &form
+		m.viewFocused = true
+		m.notice = "quick task: enter create · esc cancel"
 		return m, nil
 	case "a":
 		if task, ok := m.selectedTask(); ok {
@@ -935,6 +950,7 @@ func (m model) actionKeyAt(x, y int) string {
 				{label: "a approve", key: "a"},
 				{label: "e edit", key: "e"},
 				{label: "n new task form", key: "n"},
+				{label: "N quick add", key: "N"},
 			})
 		}
 		return ""
