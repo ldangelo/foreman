@@ -12,6 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/reflow/truncate"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 func clip(s string, w int) string {
@@ -21,10 +23,7 @@ func clip(s string, w int) string {
 	if ansi.StringWidth(s) <= w {
 		return s
 	}
-	if w == 1 {
-		return "…"
-	}
-	return ansi.Truncate(s, w, "…")
+	return truncate.StringWithTail(s, uint(w), "…")
 }
 
 func padRow(left, right string, w int) string {
@@ -725,29 +724,15 @@ func (m model) renderAction(w int) string {
 	return lipgloss.NewStyle().Background(cActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 }
 
-// wrap splits text into width-bounded lines (returns colored-ready plain lines).
+// wrap splits text into display-cell-width-bounded lines.
 func wrap(s string, w int) []string {
 	if w <= 0 {
 		return []string{s}
 	}
-	words := strings.Fields(s)
-	var lines []string
-	cur := ""
-	for _, word := range words {
-		if cur == "" {
-			cur = word
-		} else if utf8.RuneCountInString(cur)+1+utf8.RuneCountInString(word) <= w {
-			cur += " " + word
-		} else {
-			lines = append(lines, cur)
-			cur = word
-		}
-	}
-	if cur != "" {
-		lines = append(lines, cur)
-	}
+	out := strings.TrimRight(wordwrap.String(s, w), "\n")
+	lines := strings.Split(out, "\n")
 	if len(lines) == 0 {
-		lines = []string{""}
+		return []string{""}
 	}
 	return lines
 }

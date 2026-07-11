@@ -47,8 +47,9 @@ authoritative state.
 - The focused logs pane pans long unwrapped rows with `left` / `right`. Logs
   render line numbers. Any drill-down pane can save currently visible viewer
   rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).
-- Panes are height-bounded to the current terminal; the left list keeps the
-  selected row visible and expands up to 40 columns without starving the right pane.
+- Panes are height-bounded to the current terminal; task detail wrapping is
+  ANSI/Unicode cell-width aware, and the left list keeps the selected row visible
+  while expanding up to 40 columns without starving the right pane.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
   session when `$NVIM` is set, otherwise suspend-and-launch inline. `files`
   offers a selected-file nvim diff (`d`), an inline selected-file preview backed
@@ -218,8 +219,8 @@ notices, and actions. Component state lives in small cockpit-owned types:
   Immediately following unselectable rows (message bodies, diff previews) are
   packed with their parent selectable row when the viewport is tall enough, so
   navigation lands only on actionable/header rows while the viewport component
-  handles rendering, scrolling, horizontal panning, match highlighting, and
-  bottom-follow behavior.
+  handles rendering, ANSI/Unicode cell-width-safe wrapping, scrolling,
+  horizontal panning, match highlighting, and bottom-follow behavior.
 
 ## Layout
 

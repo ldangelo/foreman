@@ -1,6 +1,7 @@
 package main
 
 import (
+	"charm.land/lipgloss/v2"
 	"os"
 	"strings"
 	"testing"
@@ -135,6 +136,14 @@ func TestClipPreservesANSIBoundaries(t *testing.T) {
 	out := stripANSI(clipped)
 	if !strings.Contains(out, "approve") || !strings.HasSuffix(out, "…") || len([]rune(out)) > 18 {
 		t.Fatalf("expected visible clipped text with intact ellipsis, got %q", out)
+	}
+}
+
+func TestWrapUsesDisplayCellWidthForWideGlyphs(t *testing.T) {
+	for _, line := range wrap("wide 你好 ok", 8) {
+		if lipgloss.Width(line) > 8 {
+			t.Fatalf("expected wrapped line %q to fit 8 cells, got width %d", line, lipgloss.Width(line))
+		}
 	}
 }
 
