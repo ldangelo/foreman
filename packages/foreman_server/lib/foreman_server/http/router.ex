@@ -150,11 +150,12 @@ defmodule ForemanServer.Http.Router do
         snapshot.runs
         |> Map.values()
         |> Enum.map(fn run ->
-          Map.put(
-            run,
+          run
+          |> Map.put(
             :project_id,
             get_in(snapshot, [:tasks, Map.get(run, :task_id), :project_id])
           )
+          |> add_worktree_metadata(snapshot)
         end)
         |> Enum.filter(fn run ->
           is_nil(project_id) or Map.get(run, :project_id) == project_id
@@ -492,6 +493,27 @@ defmodule ForemanServer.Http.Router do
       _ -> fallback
     end
   end
+
+  defp add_worktree_metadata(run, snapshot) do
+    run_id = Map.get(run, :run_id)
+    worktree = get_in(snapshot, [:worktrees, run_id]) || %{}
+    worktree_path = Map.get(worktree, :worktree_path) || Map.get(worktree, :worktree)
+    branch = Map.get(worktree, :branch) || Map.get(worktree, :branch_name)
+    base = Map.get(worktree, :base_ref) || Map.get(worktree, :base_branch)
+
+    run
+    |> put_present(:worktree_path, worktree_path)
+    |> put_present(:worktree, worktree_path)
+    |> put_present(:branch, branch)
+    |> put_present(:branch_name, branch)
+    |> put_present(:base_ref, base)
+    |> put_present(:base_branch, base)
+    |> put_present(:revision, Map.get(worktree, :revision))
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, _key, ""), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   defp log_view_mode(nil), do: {:ok, :compact}
   defp log_view_mode(""), do: {:ok, :compact}

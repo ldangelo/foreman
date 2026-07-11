@@ -41,8 +41,8 @@ so we get polish *and* delete code that has already caused bugs.
 
 ## 2. Hard prerequisite: Bubble Tea v2
 
-The cockpit is migrating to Bubble Tea v2 / Go 1.26 (see the viewport handoff).
-**Every library below must be adopted on v2**, and the #1 selection rule —
+The cockpit has migrated to Bubble Tea v2 / Go 1.26 (see the viewport handoff).
+Any future library below must be adopted on v2, and the #1 selection rule —
 learned from the viewport library — is:
 
 > Before adding any dependency, confirm it has a **v2 build** (imports
@@ -172,11 +172,11 @@ user-facing behavior natively when the behavior is small enough.
 - **Performance** — charts and animation must not busy-loop; drive from the
   existing tick and cache derived series.
 
-## 9. Suggested sequencing
+## 9. Closed sequencing
 
-1. (Prereq) v2 migration to parity — see the viewport handoff.
-2. Tier 1: `key`+`help` → `textinput` → `lipgloss` table/list + `reflow`
-   (each deletes hand-rolled code; low risk, immediate polish).
+1. (Prereq) v2 migration to parity is complete — see the viewport handoff.
+2. Tier 1 is complete: `key`+`help`, `textinput`, and `lipgloss` table/list +
+   `reflow` replaced the corresponding hand-rolled paths.
 3. Tier 2: native hit-testing and metrics bars are implemented; revisit
    `bubblezone`/`ntcharts` only after upstream v2-compatible releases exist.
 4. Tier 3: first-party spinner/stopwatch/reduced-motion paths are implemented;

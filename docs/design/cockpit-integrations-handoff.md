@@ -29,9 +29,10 @@ Implemented in the Go cockpit module:
 - Runtime tool and `gh` extension availability checks with graceful notices for missing/disabled tools; the full-run `diffnav` handoff preflights both `diffnav` and `delta` to match the configured review stack and avoid suspending into a broken external diff path.
 - `D` full-run `diffnav` handoff from the `files` tab.
 - Inline selected-file diff previews using `delta` when available, plain `git diff` otherwise.
-- File tab population prefers the selected run worktree's `git diff --numstat`
-  and `--name-status`, then falls back to `/api/v1/runs/:run_id/debug` timeline
-  payloads when no worktree diff is available.
+- File tab population reads selected-run worktree/base metadata from `/api/v1/runs`,
+  prefers `git diff --numstat` and `--name-status` from that worktree, then falls
+  back to `/api/v1/runs/:run_id/debug` timeline payloads when no worktree diff is
+  available.
 - Global `G` `gh dash` handoff.
 - Global `C` `gh enhance` handoff from the selected run worktree.
 - Native `pr` tab backed by Foreman-projected run PR fields, including optional mergeability, review decision, and check summaries when projected, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
@@ -290,9 +291,11 @@ running anything:
 
 ## 10. Non-goals & risks
 
-- **Out of scope:** pty-embedded live TUIs (tier 3); building new Elixir
-  endpoints. If per-run PR data is not obtainable from the existing API + `gh`,
-  stop and flag it rather than adding server endpoints in this task.
+- **Out of scope:** pty-embedded live TUIs (tier 3) and brand-new integration
+  endpoints. Worktree/branch/base metadata is exposed on the existing
+  `/api/v1/runs` projection; if richer per-run PR data is not obtainable from the
+  existing API + `gh`, stop and flag it rather than adding server endpoints in
+  this task.
 - **Risks:** base-branch assumption (`origin/dev`) — make it configurable and
   fall back sensibly; diffnav Nerd-Font/`delta` requirements; `gh` auth; and the
   render path must never block on `exec` (fetch in `loadDetail`, cache results).

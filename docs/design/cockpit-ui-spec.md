@@ -74,9 +74,9 @@ The selected row drives the entire right side.
   glyphs: `✓` done, `●` active (breathing/animated), `○` pending, `✗` failed,
   `↻` retrying. It wraps on normal narrow panes and collapses to a compact
   `4/10 · qa` badge on very narrow panes. This is the at-a-glance status. (Q3)
-- **Tab strip** — `summary · messages · events · logs · reports · files`. Tabs
-  show counts; `logs`, `reports`, and `files` carry an `⧉` marker indicating
-  their rows are openable in nvim. (Q4)
+- **Tab strip** — `summary · messages · events · logs · reports · files · pr ·
+  metrics`. Tabs show counts; `logs`, `reports`, and `files` carry an `⧉` marker
+  indicating their rows are openable in nvim. (Q4)
 - **Drill-down body** — content for the active tab, scoped to the selected run
   (active or past). `summary` is default and needs no fetch beyond the run
   projection.
@@ -207,7 +207,7 @@ default avoids nesting a TUI inside a TUI.
 |-----|--------|
 | logs | `~/.foreman/logs/<run-id>.log` (or the path from `/runs/:id/logs`) |
 | reports | the artifact path from `/runs/:id/report` (e.g. `docs/reports/<task>/DEVELOPER_REPORT.md`) |
-| files | `<worktree>/<relative-path>` from the selected run worktree diff (`git diff --numstat`/`--name-status` against the projected base branch), otherwise best-effort paths derived from `/runs/:id/debug` timeline payloads |
+| files | `<worktree>/<relative-path>` from the selected run worktree/base metadata exposed by `/api/v1/runs`; file rows prefer `git diff --numstat`/`--name-status` against the projected base branch and otherwise fall back to best-effort paths derived from `/runs/:id/debug` timeline payloads |
 
 ### Files: focused diff preview and handoffs
 
@@ -319,6 +319,11 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
   attach/retry/reset, PR opens, and tool handoffs.
   Retry/reset use `run.retry`/`run.reset` commands that requeue the associated
   task to `ready`; they do not rewrite terminal run lifecycle records.
+- `/api/v1/runs` includes the selected run's worktree metadata as both canonical
+  VCS projection fields (`worktree_path`, `base_ref`, `branch`, `revision`) and
+  cockpit-friendly aliases (`worktree`, `base_branch`, `branch_name`) so local
+  file diff, diffnav, gh enhance, and OMP handoffs do not need a separate
+  worktree endpoint.
 - No auth token refresh flows; read the token from the environment.
 - No pagination controls beyond the RECENT cap.
 

@@ -219,6 +219,48 @@ defmodule ForemanServer.Http.RouterTest do
     assert metrics["gauges"]["projection_lag"] == 0
   end
 
+  test "authorized runs endpoint includes projected worktree metadata" do
+    append_event("TaskCreated", "task:task-run-worktree-http", %{
+      task_id: "task-run-worktree-http",
+      project_id: "proj-run-worktree-http",
+      title: "Run Worktree HTTP",
+      status: "ready"
+    })
+
+    append_run_event("RunStarted", %{
+      run_id: "run-worktree-http",
+      task_id: "task-run-worktree-http",
+      phase_order: ["developer"],
+      status: "running"
+    })
+
+    append_event("WorktreeCreated", "vcs:op-run-worktree-http", %{
+      run_id: "run-worktree-http",
+      operation_id: "op-run-worktree-http",
+      worktree_path: "/tmp/foreman/run-worktree-http",
+      branch: "foreman/run-worktree-http",
+      base_ref: "main",
+      revision: "abc123"
+    })
+
+    conn =
+      :get
+      |> conn("/api/v1/runs?project_id=proj-run-worktree-http")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    assert %{"ok" => true, "runs" => [run]} = Jason.decode!(conn.resp_body)
+    assert run["project_id"] == "proj-run-worktree-http"
+    assert run["worktree"] == "/tmp/foreman/run-worktree-http"
+    assert run["worktree_path"] == "/tmp/foreman/run-worktree-http"
+    assert run["branch"] == "foreman/run-worktree-http"
+    assert run["branch_name"] == "foreman/run-worktree-http"
+    assert run["base_ref"] == "main"
+    assert run["base_branch"] == "main"
+    assert run["revision"] == "abc123"
+  end
+
   test "authorized run report and debug endpoints return event-backed summaries" do
     task_debug_http_run()
 
