@@ -371,6 +371,61 @@ func TestReadyTaskDetailRendersFieldsAsAlignedTable(t *testing.T) {
 	}
 }
 
+func TestNewTaskKeyOpensCreateForm(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 24
+
+	updated, _ := m.Update(keyPress("n"))
+	m = updated.(model)
+
+	out := stripANSI(m.renderRight(80))
+	for _, want := range []string{"Create new task", "title", "description", "ctrl+s create", "esc cancel"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected create form to show %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestCreateTaskFormSubmitsTypedTask(t *testing.T) {
+	client := &mutableClient{}
+	m := newModel(client)
+	m.width = 120
+	m.height = 24
+
+	updated, _ := m.Update(keyPress("n"))
+	m = updated.(model)
+	for _, r := range "Ship cockpit form" {
+		updated, _ = m.Update(keyPress(string(r)))
+		m = updated.(model)
+	}
+	updated, _ = m.Update(specialKey(tea.KeyTab))
+	m = updated.(model)
+	for _, r := range "Detailed body" {
+		updated, _ = m.Update(keyPress(string(r)))
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(ctrlKey('s'))
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected create command")
+	}
+	msg := cmd()
+	done, ok := msg.(taskActionDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("expected successful create result, got %#v ok=%v", msg, ok)
+	}
+	if m.taskForm != nil {
+		t.Fatal("expected create form to close after submit")
+	}
+	if len(client.created) != 1 {
+		t.Fatalf("expected one created task, got %#v", client.created)
+	}
+	if client.created[0].Title != "Ship cockpit form" || client.created[0].Description != "Detailed body" {
+		t.Fatalf("unexpected created task: %#v", client.created[0])
+	}
+}
+
 func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.pr = PRStatus{URL: "https://github.com/acme/repo/pull/42", State: "open", Checks: CheckSummary{Passed: 3, Failed: 1, Pending: 2}}
@@ -383,14 +438,6 @@ func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 	}
 	if labelColumn(lineContaining(out, "passed"), "passed") != labelColumn(lineContaining(out, "failed"), "failed") {
 		t.Fatalf("expected check value columns to align, got:\n%s", out)
-	}
-}
-
-func TestNewTaskKeyLaunchesCreateCommand(t *testing.T) {
-	m := newModel(NewMockClient())
-	_, cmd := m.handleKey(keyPress("n"))
-	if cmd == nil {
-		t.Fatal("expected n to launch task create command")
 	}
 }
 
@@ -1165,6 +1212,7 @@ type mutableClient struct {
 	logs     []string
 	reports  []Report
 	files    []FileChange
+	created  []Task
 }
 
 func (c *mutableClient) Runs() []Run { return c.runs }
@@ -1176,6 +1224,11 @@ func (c *mutableClient) Logs(string) []string { return c.logs }
 func (c *mutableClient) Reports(string) []Report { return c.reports }
 
 func (c *mutableClient) Files(string) []FileChange { return c.files }
+
+func (c *mutableClient) CreateTask(task Task) error {
+	c.created = append(c.created, task)
+	return nil
+}
 
 func TestPaneVisualTracksFocusStyle(t *testing.T) {
 	cfg := defaultConfig().Cockpit.Focus

@@ -31,8 +31,8 @@ authoritative state.
   selected task detail renders id, status, workflow, dependencies, project, and
   description as an aligned field table. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
-  edit task JSON via `task.update`, and `n` to create a new task JSON draft via
-  `task.create`.
+  edit task JSON via `task.update`, and `n` to open an in-pane `textinput` /
+  `textarea` create form that posts `task.create` with `ctrl+s`.
 - Right column: color-coded run header, an animated phase rail, and a
   drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
   The active pane is called out with a focus label and accent frame; the inactive
@@ -111,7 +111,7 @@ mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls t
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–7 jump to a tab and focus it
 o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
-y         copy selected task ID               n    create task JSON in nvim
+y         copy selected task ID               n    create task form (ctrl+s submit)
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
 r/R       retry / reset                       /    search     n/N match

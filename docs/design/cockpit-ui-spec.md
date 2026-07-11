@@ -127,7 +127,7 @@ Global:
 | `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused |
 | `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
 | `g` | toggle current-project vs global scope |
-| `n` | create a new task by opening a JSON draft in nvim and posting `task.create` |
+| `n` | open an in-pane task create form; `tab`/`shift+tab` move fields, `ctrl+s` posts `task.create`, `esc` cancels |
 | `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
 | `P` | attach plain `omp` to the selected run worktree without a brief |
 | `r` | retry selected run/phase (`POST /commands`) |

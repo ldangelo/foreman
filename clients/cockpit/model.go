@@ -38,6 +38,7 @@ type model struct {
 	viewer      Viewer
 	viewFocused bool
 	helpVisible bool
+	taskForm    *taskCreateForm
 
 	width, height int
 	anim          int
@@ -242,7 +243,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) handleTaskFormKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.taskForm == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc":
+		m.taskForm = nil
+		m.notice = "new task cancelled"
+		return m, nil
+	case "ctrl+s":
+		task, err := m.taskForm.Task()
+		if err != nil {
+			m.notice = "create task: " + err.Error()
+			return m, nil
+		}
+		m.taskForm = nil
+		return m, createTask(m.client, task)
+	default:
+		return m, m.taskForm.Update(msg)
+	}
+}
+
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.taskForm != nil {
+		return m.handleTaskFormKey(msg)
+	}
 	if m.taskList.Searching() || (m.taskList.Search() != "" && msg.String() == "esc") {
 		changed, cmd := m.taskList.HandleSearchKey(msg)
 		if changed {
@@ -359,7 +385,11 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.notice = "attach → GET /api/v1/runs/" + run.RunID + "/attach"
 		}
 	case "n":
-		return m, createTaskInNvim(m.editor, m.client)
+		form := newTaskCreateForm()
+		m.taskForm = &form
+		m.viewFocused = true
+		m.notice = "new task: ctrl+s create · esc cancel"
+		return m, nil
 	case "a":
 		if task, ok := m.selectedTask(); ok {
 			return m, approveTask(m.client, task)

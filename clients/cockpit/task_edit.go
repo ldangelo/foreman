@@ -99,6 +99,12 @@ func approveTask(c Client, task Task) tea.Cmd {
 	}
 }
 
+func createTask(c Client, task Task) tea.Cmd {
+	return func() tea.Msg {
+		return taskActionDoneMsg{action: "created", taskID: task.TaskID, err: c.CreateTask(task)}
+	}
+}
+
 func editTaskInNvim(e EditorConfig, c Client, task Task) tea.Cmd {
 	tmp, err := os.CreateTemp("", "foreman-task-*.json")
 	if err != nil {

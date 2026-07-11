@@ -326,6 +326,10 @@ func (m model) renderRight(w int) string {
 		body := renderFullHelp(w, m.viewFocused)
 		return strings.Join([]string{title, dimStyle.Render("press ? or esc to close"), "", body}, "\n")
 	}
+	if m.taskForm != nil {
+		form := *m.taskForm
+		return form.View(w, m.height-3)
+	}
 	var s []string
 	run, isRun := m.selectedRun()
 	it, ok := m.selectedItem()
@@ -681,7 +685,7 @@ func (m model) renderPRLines(w int) []ViewerLine {
 func (m model) renderAction(w int) string {
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{
-			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id")+"  "+cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task JSON in nvim"), w),
+			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id")+"  "+cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form"), w),
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
