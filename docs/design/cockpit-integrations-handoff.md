@@ -33,7 +33,7 @@ Implemented in the Go cockpit module:
   payloads until a dedicated changed-file endpoint exists.
 - Global `G` `gh dash` handoff.
 - Global `C` `gh enhance` handoff from the selected run worktree.
-- Native `pr` tab backed by Foreman-projected run PR fields, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
+- Native `pr` tab backed by Foreman-projected run PR fields, including optional mergeability, review decision, and check summaries when projected, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
 
 Verification used for the implementation: `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`.
 

@@ -232,9 +232,9 @@ or `$EDITOR` (falling back to `nvim`).
   (`inbox`, `logs.entries`, `report`, `metrics`) and surfaces HTTP/JSON failures
   in the cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for
   a run, the client falls back to `/api/v1/runs/:run_id/debug` for the events tab.
-  Foreman-projected PR fields are read from `/api/v1/runs`; richer PR checks or
-  review state would require backend projection fields or optional `gh`
-  enrichment. The contract should still be regenerated from a published OpenAPI
+  Foreman-projected PR fields are read from `/api/v1/runs`, including PR URL,
+  state, mergeability, review decision, and check summary when those fields are
+  projected. The contract should still be regenerated from a published OpenAPI
   schema (ADR phase 2).
 - File-change data has no dedicated endpoint yet; `httpClient.Files` derives a
   best-effort changed-file list from `/api/v1/runs/:run_id/debug` timeline

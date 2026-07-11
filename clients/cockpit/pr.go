@@ -40,6 +40,44 @@ func prStatusFromRun(run Run) PRStatus {
 	}
 }
 
+func prStatusFromProjection(runID string, raw map[string]any) PRStatus {
+	checks := firstObj(raw, "pr_checks", "checks", "check_summary")
+	return PRStatus{
+		RunID:          runID,
+		Number:         prNumberFromURL(str(raw, "pr_url", "pull_request_url")),
+		URL:            str(raw, "pr_url", "pull_request_url"),
+		State:          str(raw, "pr_state", "state"),
+		Mergeable:      str(raw, "pr_mergeable", "mergeable"),
+		ReviewDecision: str(raw, "pr_review_decision", "review_decision"),
+		Checks: CheckSummary{
+			Passed:  firstPositiveInt(intValue(checks["passed"]), intValue(raw["pr_checks_passed"]), intValue(raw["checks_passed"])),
+			Failed:  firstPositiveInt(intValue(checks["failed"]), intValue(raw["pr_checks_failed"]), intValue(raw["checks_failed"])),
+			Pending: firstPositiveInt(intValue(checks["pending"]), intValue(raw["pr_checks_pending"]), intValue(raw["checks_pending"])),
+		},
+		HeadSHA:    str(raw, "pr_head_sha", "head_sha"),
+		BaseBranch: str(raw, "base_branch"),
+		BranchName: str(raw, "branch_name", "branch"),
+	}
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstObj(raw map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if value, ok := raw[key].(map[string]any); ok {
+			return value
+		}
+	}
+	return map[string]any{}
+}
+
 var prNumberRe = regexp.MustCompile(`/pull/(\d+)(?:$|[/?#])`)
 
 func prNumberFromURL(u string) string {

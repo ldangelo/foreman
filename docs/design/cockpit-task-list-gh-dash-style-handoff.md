@@ -143,9 +143,10 @@ Retire `space` (collapse group) for the list. Update `?` help, the keybar, and
 - **Age columns** need `created_at` + `updated_at` on `Run`/`Task`. `Run.Last`
   (updated) exists; confirm a created timestamp is available from
   `GET /api/v1/runs` / `/tasks`, else show one age.
-- **Diff `±`** needs aggregate added/removed lines per run — `httpClient.Files`
-  is currently empty (see caveats); until a file/diff endpoint exists, omit the
-  diff column for live data (mock can show it). Flag as a backend follow-up.
+- **Diff `±`** needs aggregate added/removed lines per run. `httpClient.Files`
+  now derives best-effort changed paths from `/api/v1/runs/:run_id/debug`
+  timeline payloads when present; a dedicated file/diff-stat endpoint remains a
+  backend follow-up for exact live columns.
 - **Checks / verdict** reuse the `pr` tab data and run verdict.
 - Do the aggregation in the client mapping, not on the render path.
 

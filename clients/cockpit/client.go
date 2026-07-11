@@ -795,15 +795,7 @@ func (c *httpClient) PR(runID string) PRStatus {
 		if str(r, "run_id", "id") != runID {
 			continue
 		}
-		return prStatusFromRun(Run{
-			RunID:      runID,
-			PRURL:      str(r, "pr_url", "pull_request_url"),
-			PRState:    str(r, "pr_state"),
-			PRHeadSHA:  str(r, "pr_head_sha", "head_sha"),
-			BaseBranch: str(r, "base_branch"),
-			BranchName: str(r, "branch_name"),
-			Branch:     str(r, "branch", "branch_name"),
-		})
+		return prStatusFromProjection(runID, r)
 	}
 	return PRStatus{RunID: runID}
 }

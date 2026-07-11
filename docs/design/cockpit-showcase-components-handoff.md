@@ -8,10 +8,11 @@ Implementation note (2026-07-11): the cockpit ships generated keymap/help,
 `textinput`/`textarea` task creation, table/reflow rendering, spinner/stopwatch
 reduced-motion support, clickable section/task-row/drill-down-tab targets, a
 metrics tab backed by `/api/v1/metrics`, a theme installer, and richer mock data.
-Remaining showcase work is external or intentionally parked: full `bubblezone`
-zero-width action/PR-link zones and `ntcharts` are v1 Bubble Tea ecosystems at
-the verified versions, `harmonica` remains optional polish, and rendering
-`clients/cockpit/demo.tape` to a GIF requires the external `vhs` runtime.
+No local cockpit feature is waiting on those libraries: native hit-testing covers
+section/row/action/PR clicks, native bounded bars cover the metrics tab, and
+`clients/cockpit/demo.tape` is checked in for `vhs` capture. `bubblezone` and
+`ntcharts` remain intentionally unadopted until upstream ships Bubble Tea v2
+builds; `harmonica` remains optional polish.
 
 ## 1. North star
 

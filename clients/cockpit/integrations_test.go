@@ -239,7 +239,7 @@ func TestPRStatusMapsFromRunProjection(t *testing.T) {
 		case "/api/v1/projects", "/api/v1/tasks":
 			_, _ = w.Write([]byte(`{"ok":true,"projects":[],"tasks":[]}`))
 		case "/api/v1/runs":
-			_, _ = w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-pr","task_id":"task-1","status":"running","pr_url":"https://github.com/acme/repo/pull/42","pr_state":"open","pr_head_sha":"abc123","base_branch":"main","branch_name":"foreman/task-1"}]}`))
+			_, _ = w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-pr","task_id":"task-1","status":"running","pr_url":"https://github.com/acme/repo/pull/42","pr_state":"open","pr_head_sha":"abc123","base_branch":"main","branch_name":"foreman/task-1","pr_mergeable":"mergeable","pr_review_decision":"approved","pr_checks":{"passed":3,"failed":1,"pending":2}}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -250,6 +250,9 @@ func TestPRStatusMapsFromRunProjection(t *testing.T) {
 	pr := client.PR("run-pr")
 	if pr.URL != "https://github.com/acme/repo/pull/42" || pr.Number != "42" || pr.State != "open" || pr.HeadSHA != "abc123" {
 		t.Fatalf("unexpected PR status: %+v", pr)
+	}
+	if pr.Mergeable != "mergeable" || pr.ReviewDecision != "approved" || pr.Checks.Passed != 3 || pr.Checks.Failed != 1 || pr.Checks.Pending != 2 {
+		t.Fatalf("expected rich PR projection fields: %+v", pr)
 	}
 }
 
