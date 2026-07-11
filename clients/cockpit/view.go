@@ -84,15 +84,28 @@ func (m model) renderFrame() string {
 }
 
 func leftPaneWidth(total int) int {
-	leftW := 40
+	if total < 150 {
+		leftW := 40
+		if total-leftW-1 < 44 {
+			leftW = total - 45
+		}
+		if leftW < 32 {
+			leftW = 32
+		}
+		if leftW > 40 {
+			leftW = 40
+		}
+		return leftW
+	}
+	leftW := total * 58 / 100
 	if total-leftW-1 < 44 {
 		leftW = total - 45
 	}
-	if leftW < 32 {
-		leftW = 32
-	}
-	if leftW > 40 {
+	if leftW < 40 {
 		leftW = 40
+	}
+	if leftW > 96 {
+		leftW = 96
 	}
 	return leftW
 }
@@ -283,13 +296,20 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 	gl, glc := glyph(state)
 	line1Left := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
 		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
+	if project := rowProject(it); m.taskList.Scope() == "global" && project != "" {
+		line1Left += lipgloss.NewStyle().Foreground(visual.Dim).Render(" · " + project)
+	}
 	if typ != "" {
 		line1Left += lipgloss.NewStyle().Foreground(visual.Dim).Render(" · " + typ)
 	}
 	if pri != "" {
 		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + pri)
 	}
-	line1 := padRow(clip(line1Left, w-8), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, 12)), w)
+	rightW := 18
+	if it.IsTask {
+		rightW = 8
+	}
+	line1 := padRow(clip(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
 	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip("  "+title, w))
 	row := line1 + "\n" + line2
 	st := lipgloss.NewStyle().Width(w)
@@ -308,10 +328,20 @@ func taskRowFields(it Item) (state, title, id, typ, pri, right string) {
 	typ = it.Run.TaskType
 	pri = it.Run.Priority
 	right = it.Run.Status
-	if it.Run.Group == taskGroupRunning {
+	if it.Run.Group == taskGroupRunning && it.Run.Phase != "" {
 		right = it.Run.Phase
 	}
+	if it.Run.Last != "" {
+		right = firstNonEmptyText(right, it.Run.Status) + " · " + it.Run.Last
+	}
 	return runState(it.Run), title, it.Run.TaskID, typ, pri, right
+}
+
+func rowProject(it Item) string {
+	if it.IsTask {
+		return it.Task.ProjectID
+	}
+	return it.Run.ProjectID
 }
 
 func firstNonEmptyText(values ...string) string {
@@ -742,7 +772,8 @@ func (m model) loadingLabel(label string) string {
 func (m model) renderAction(w int) string {
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{
-			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id")+"  "+cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form"), w),
+			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id"), w),
+			clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form"), w),
 		}
 		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}

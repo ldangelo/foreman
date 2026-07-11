@@ -91,13 +91,15 @@ type Item struct {
 
 // TaskList owns the left-pane sectioning, filtering, scope, and selected item
 // cursor. The root model supplies fresh projections and reacts to selection
-// changes.
+// changes. Current scope filters by projectID when it is known; global scope
+// shows every projected task/run.
 type TaskList struct {
 	items     []Item
 	selected  int
 	section   int
 	sections  []TaskSection
 	scope     string // current | global
+	projectID string
 	search    string
 	searching bool
 	viewport  *vpkg.Model[taskListObject]
@@ -191,6 +193,10 @@ func (l *TaskList) ensureViewport(width, height int) {
 	}
 }
 
+func (l *TaskList) SetProjectID(projectID string) {
+	l.projectID = strings.TrimSpace(projectID)
+}
+
 func (l *TaskList) SetData(runs []Run, tasks []Task) {
 	selectedKey := ""
 	if it, ok := l.SelectedItem(); ok {
@@ -201,6 +207,9 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 	section := l.ActiveSection()
 	items := make([]Item, 0, len(all))
 	for _, it := range all {
+		if !l.matchesScope(it) {
+			continue
+		}
 		if !matchesTaskFilter(it, section.Filter) {
 			continue
 		}
@@ -313,12 +322,25 @@ func (l TaskList) Counts(runs []Run, tasks []Task) map[string]int {
 	all := buildTaskListItems(runs, tasks)
 	for _, section := range l.Sections() {
 		for _, it := range all {
+			if !l.matchesScope(it) {
+				continue
+			}
 			if matchesTaskFilter(it, section.Filter) {
 				count[section.Name]++
 			}
 		}
 	}
 	return count
+}
+
+func (l TaskList) matchesScope(it Item) bool {
+	if l.scope != "current" || l.projectID == "" {
+		return true
+	}
+	if it.IsTask {
+		return it.Task.ProjectID == "" || it.Task.ProjectID == l.projectID
+	}
+	return it.Run.ProjectID == "" || it.Run.ProjectID == l.projectID
 }
 
 func buildTaskListItems(runs []Run, tasks []Task) []Item {

@@ -1411,6 +1411,14 @@ func TestMouseClickSelectsRunDetailTab(t *testing.T) {
 	}
 }
 
+func TestAutoTaskListWidthUsesDashLikeProportion(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 160
+	if got := m.leftPaneWidth(); got != 92 {
+		t.Fatalf("expected auto task list width to use 58%% dash-like width at 160 columns, got %d", got)
+	}
+}
+
 func TestConfiguredTaskListWidthUsesPercentage(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Cockpit.TaskList.Width = "58%"

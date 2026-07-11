@@ -7,9 +7,11 @@ Reference: gh-dash PR list (screenshot provided) — section tabs, filter line, 
 
 Implementation note (2026-07-11): the cockpit ships section tabs with live
 counts, a filter/query line, configurable sections under `cockpit.taskList`,
-field-token filtering, two-line rich task/run rows, dash-like wider list sizing,
-mouse selection for section tabs and visible rows, and focused tests in
-`task_list_test.go`, `view_test.go`, and `integrations_test.go`.
+field-token filtering, current/global scope filtering over supplied project ids,
+two-line rich task/run rows with project metadata in global scope, dash-like
+wider list sizing on wide terminals, mouse selection for section tabs and
+visible rows, and focused tests in `task_list_test.go`, `view_test.go`, and
+`integrations_test.go`.
 
 ## 1. Objective
 

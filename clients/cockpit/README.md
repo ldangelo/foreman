@@ -21,8 +21,10 @@ authoritative state.
   `Recent`, `All`) with per-section counts. `Ready` is derived from
   current-project task state (`backlog`, `ready`, `failed`, etc.), not just
   scheduler-dispatchable rows.
-- Live runs are scoped to the current project (or `COCKPIT_PROJECT_ID`) and
-  deduplicated by task. A task is `RUNNING` when both the task state and run
+- Live runs default to the current project (or `COCKPIT_PROJECT_ID`) and are
+  deduplicated by task. The `g` scope toggle filters any mixed-project
+  projection data by project id in current scope and shows all supplied
+  projects in global scope. A task is `RUNNING` when both the task state and run
   state are active (`in-progress` and `in_progress` are treated the same);
   stale in-progress run projections for closed/failed tasks are shown as
   recent, not running.
@@ -53,8 +55,9 @@ authoritative state.
   render line numbers. Any drill-down pane can save currently visible viewer
   rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).
 - Panes are height-bounded to the current terminal; task detail wrapping is
-  ANSI/Unicode cell-width aware, and the left list keeps the selected row visible
-  while expanding up to 40 columns without starving the right pane.
+  ANSI/Unicode cell-width aware. The left list stays 40 columns on narrower
+  terminals to protect the detail pane, then expands at dash-like 58% proportions
+  on wide terminals.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
   session when `$NVIM` is set, otherwise suspend-and-launch inline. `files`
   offers a selected-file nvim diff (`d`), an inline selected-file preview backed
@@ -226,17 +229,20 @@ or `$EDITOR` (falling back to `nvim`).
   review state would require backend projection fields or optional `gh`
   enrichment. The contract should still be regenerated from a published OpenAPI
   schema (ADR phase 2).
-- File-change data has no dedicated endpoint yet; `httpClient.Files` returns
-  empty pending that work. The mock client shows the intended UX.
+- File-change data has no dedicated endpoint yet; `httpClient.Files` derives a
+  best-effort changed-file list from `/api/v1/runs/:run_id/debug` timeline
+  payloads when worker tool output includes `changed`/`filesChanged` fields. The
+  mock client still shows the fuller intended UX.
 
 ## Architecture
 
 The root Bubble Tea model orchestrates client refresh, layout, focus, active tab,
 notices, and actions. Component state lives in small cockpit-owned types:
 
-- `task_list.go` owns grouped `RUNNING` / `READY` / `RECENT` rows, selection,
-  collapsed groups, scope, and a `filterableviewport`-backed left pane with a
-  sticky selected-group header and case-insensitive substring search.
+- `task_list.go` owns gh-dash-style `Running` / `Ready` / `Failed` / `Recent` /
+  `All` section tabs, configurable field-token filters, current/global project
+  scope, selected-row identity, and a `filterableviewport`-backed left pane with
+  a sticky section/filter header and case-insensitive substring search.
 - `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` and
   `filterableviewport` items, preserving selected-row identity across refreshes.
   Immediately following unselectable rows (message bodies, diff previews) are

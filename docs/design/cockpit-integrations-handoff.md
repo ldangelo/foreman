@@ -29,6 +29,8 @@ Implemented in the Go cockpit module:
 - Runtime tool and `gh` extension availability checks with graceful notices for missing/disabled tools.
 - `D` full-run `diffnav` handoff from the `files` tab.
 - Inline selected-file diff previews using `delta` when available, plain `git diff` otherwise.
+- Best-effort file tab population from `/api/v1/runs/:run_id/debug` timeline
+  payloads until a dedicated changed-file endpoint exists.
 - Global `G` `gh dash` handoff.
 - Global `C` `gh enhance` handoff from the selected run worktree.
 - Native `pr` tab backed by Foreman-projected run PR fields, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.

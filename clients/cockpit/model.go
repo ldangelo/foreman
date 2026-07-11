@@ -57,10 +57,11 @@ type model struct {
 // messages
 type tickMsg time.Time
 type dataMsg struct {
-	runs    []Run
-	tasks   []Task
-	metrics Metrics
-	errors  []string
+	projectID string
+	runs      []Run
+	tasks     []Task
+	metrics   Metrics
+	errors    []string
 }
 type nvimDoneMsg struct {
 	err    error
@@ -118,7 +119,7 @@ func loadData(c Client) tea.Cmd {
 		runs := c.Runs()
 		tasks := c.Dispatchable()
 		metrics := c.Metrics()
-		return dataMsg{runs: runs, tasks: tasks, metrics: metrics, errors: c.DrainErrors()}
+		return dataMsg{projectID: c.ProjectID(), runs: runs, tasks: tasks, metrics: metrics, errors: c.DrainErrors()}
 	}
 }
 
@@ -162,6 +163,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dataMsg:
 		hadViewerRows := m.detailUsesViewer() && m.rowCount() > 0
 		m.runs, m.tasks, m.metrics = msg.runs, msg.tasks, msg.metrics
+		m.taskList.SetProjectID(msg.projectID)
 		m.buildItems()
 		m.loadDetail()
 		var cmds []tea.Cmd
@@ -760,6 +762,10 @@ func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 				return m, m.selectTab(idx)
 			}
 		}
+		if key := m.actionKeyAt(mouse.X, mouse.Y); key != "" {
+			updated, cmd := m.handleKey(actionKeyPress(key))
+			return updated.(model), cmd
+		}
 		if m.mouseOverRightPane(msg) && m.detailUsesViewer() {
 			m.viewFocused = true
 			return m, nil
@@ -886,9 +892,107 @@ func (m model) rightTabIndexAt(x int) int {
 		if rel >= pos && rel < pos+labelLen {
 			return i
 		}
+
 		pos += labelLen
 	}
 	return -1
+}
+
+func actionKeyPress(key string) tea.KeyPressMsg {
+	r := []rune(key)
+	if len(r) == 0 {
+		return tea.KeyPressMsg(tea.Key{})
+	}
+	return tea.KeyPressMsg(tea.Key{Text: key, Code: r[0]})
+}
+
+func (m model) actionKeyAt(x, y int) string {
+	if x <= m.leftPaneWidth() {
+		return ""
+	}
+	actionLines := m.actionLineCount()
+	if actionLines == 0 {
+		return ""
+	}
+	startY := m.height - 3 - actionLines
+	if y < startY || y >= startY+actionLines {
+		return ""
+	}
+	relX := x - m.leftPaneWidth() - 2
+	if relX < 0 {
+		return ""
+	}
+	line := y - startY
+	if task, ok := m.selectedTask(); ok {
+		if line == 0 {
+			prefix := "▸ task actions " + task.TaskID + "  "
+			return actionSegmentKey(relX, prefix, []actionSegment{
+				{label: "y copy task id", key: "y"},
+			})
+		}
+		if line == 1 {
+			return actionSegmentKey(relX, "", []actionSegment{
+				{label: "a approve", key: "a"},
+				{label: "e edit", key: "e"},
+				{label: "n new task form", key: "n"},
+			})
+		}
+		return ""
+	}
+	switch tabNameAt(m.tab) {
+	case "pr":
+		if m.pr.URL == "" {
+			return ""
+		}
+		if line == 1 {
+			return "o"
+		}
+		return actionSegmentKey(relX, "▸ PR actions ", []actionSegment{
+			{label: "o/enter open PR in browser", key: "o"},
+			{label: "G open gh dash", key: "G"},
+			{label: "C inspect CI in gh enhance", key: "C"},
+		})
+	case "files":
+		if line == 1 {
+			return "o"
+		}
+		if line == 4 {
+			return "D"
+		}
+	default:
+		if m.openableTab() && line == 1 {
+			return "o"
+		}
+	}
+	return ""
+}
+
+func (m model) actionLineCount() int {
+	if action := m.renderAction(m.rightPaneWidth()); action != "" {
+		return len(strings.Split(action, "\n"))
+	}
+	return 0
+}
+
+type actionSegment struct {
+	label string
+	key   string
+}
+
+func actionSegmentKey(x int, prefix string, segments []actionSegment) string {
+	pos := utf8.RuneCountInString(prefix)
+	for i, segment := range segments {
+		start := pos
+		end := start + utf8.RuneCountInString(segment.label)
+		if x >= start && x < end {
+			return segment.key
+		}
+		pos = end
+		if i < len(segments)-1 {
+			pos += 2
+		}
+	}
+	return ""
 }
 
 func tabNameAt(tab int) string {

@@ -260,6 +260,25 @@ func TestHTTPClientFallsBackToDebugTimelineWhenEventsEndpointFails(t *testing.T)
 	}
 }
 
+func TestHTTPClientDerivesFilesFromDebugTimeline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/runs/run-live/debug":
+			w.Write([]byte(`{"ok":true,"debug":{"timeline":[{"type":"ToolCallFinished","payload":{"output":{"changed":["M src/main.go","A docs/guide.md"],"filesChanged":"- src/cli/board.ts\n- D old.txt"}}}]}}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	files := client.Files("run-live")
+	if len(files) != 4 || files[0].Path != "src/main.go" || files[0].Change != "M" || files[1].Path != "docs/guide.md" || files[1].Change != "A" || files[3].Path != "old.txt" || files[3].Change != "D" {
+		t.Fatalf("unexpected files: %#v", files)
+	}
+}
+
 func TestHTTPClientLiveServerSmoke(t *testing.T) {
 	base := os.Getenv("FOREMAN_LIVE_SMOKE_URL")
 	if base == "" {

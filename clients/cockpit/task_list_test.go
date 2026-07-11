@@ -151,3 +151,32 @@ func TestTaskListCustomSectionsUseFieldFilters(t *testing.T) {
 		t.Fatalf("expected custom feature section to match feature task only, got %#v", items)
 	}
 }
+
+func TestTaskListCurrentScopeFiltersToProjectID(t *testing.T) {
+	list := NewTaskList()
+	list.SetProjectID("proj-a")
+	list.MoveSection(4) // All
+	runs := []Run{
+		{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", ProjectID: "proj-a"},
+		{Group: taskGroupRunning, TaskID: "task-b", RunID: "run-b", ProjectID: "proj-b"},
+	}
+	tasks := []Task{
+		{TaskID: "ready-a", ProjectID: "proj-a"},
+		{TaskID: "ready-b", ProjectID: "proj-b"},
+	}
+
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 2 || items[0].Run.RunID != "run-a" || items[1].Task.TaskID != "ready-a" {
+		t.Fatalf("expected current scope to show only proj-a items, got %#v", items)
+	}
+	counts := list.Counts(runs, tasks)
+	if counts[taskSectionAll] != 2 || counts[taskSectionRunning] != 1 || counts[taskSectionReady] != 1 {
+		t.Fatalf("expected current-scope counts for proj-a only, got %#v", counts)
+	}
+
+	list.ToggleScope()
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 4 {
+		t.Fatalf("expected global scope to include all projects, got %#v", items)
+	}
+}

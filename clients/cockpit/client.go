@@ -117,6 +117,7 @@ type Metrics struct {
 // Client is the read-model contract the cockpit consumes. Every method maps to
 // an existing Elixir endpoint; the cockpit holds no authoritative state.
 type Client interface {
+	ProjectID() string
 	Runs() []Run
 	Dispatchable() []Task
 	Metrics() Metrics
@@ -161,6 +162,7 @@ type mockClient struct {
 // NewMockClient returns an in-memory client for standalone demos.
 func NewMockClient() Client { return &mockClient{tasks: defaultMockTasks()} }
 
+func (*mockClient) ProjectID() string       { return "proj-mock" }
 func (c *mockClient) DrainErrors() []string { return nil }
 func (*mockClient) Metrics() Metrics {
 	return Metrics{
@@ -637,6 +639,8 @@ func (c *httpClient) projectID() string {
 	return bestID
 }
 
+func (c *httpClient) ProjectID() string { return c.projectID() }
+
 func pathContains(root, child string) bool {
 	rel, err := filepath.Rel(root, child)
 	if err != nil {
@@ -1053,9 +1057,73 @@ func reportPreview(report map[string]any) string {
 }
 
 func (c *httpClient) Files(runID string) []FileChange {
-	// TODO(phase 2): derive changed files from the run's debug timeline or a
-	// dedicated endpoint once the /api/v1 schema for file changes is published.
-	return nil
+	m, err := c.get("/api/v1/runs/" + url.PathEscape(runID) + "/debug")
+	if err != nil {
+		return nil
+	}
+	return fileChangesFromTimeline(arrValue(obj(m, "debug")["timeline"]))
+}
+
+func fileChangesFromTimeline(timeline []map[string]any) []FileChange {
+	var out []FileChange
+	seen := map[string]bool{}
+	add := func(raw string) {
+		change, pathText := parseFileChange(raw)
+		if pathText == "" || seen[pathText] {
+			return
+		}
+		seen[pathText] = true
+		out = append(out, FileChange{Change: change, Path: pathText})
+	}
+	for _, entry := range timeline {
+		payload := obj(entry, "payload")
+		output := obj(payload, "output")
+		for _, key := range []string{"changed", "files_changed", "filesChanged", "files"} {
+			for _, pathText := range stringList(output[key]) {
+				add(pathText)
+			}
+			for _, pathText := range stringList(payload[key]) {
+				add(pathText)
+			}
+			for _, pathText := range splitFileChangeLines(stringScalar(output[key])) {
+				add(pathText)
+			}
+			for _, pathText := range splitFileChangeLines(stringScalar(payload[key])) {
+				add(pathText)
+			}
+		}
+	}
+	return out
+}
+
+func parseFileChange(raw string) (change, pathText string) {
+	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "-"))
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	fields := strings.Fields(s)
+	if len(fields) >= 2 {
+		switch strings.ToUpper(fields[0]) {
+		case "A", "M", "D":
+			return strings.ToUpper(fields[0]), strings.Join(fields[1:], " ")
+		}
+	}
+	return "M", s
+}
+
+func stringScalar(raw any) string {
+	if s, ok := raw.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func splitFileChangeLines(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return strings.Split(raw, "\n")
 }
 
 func indexOf(list []string, v string) int {
