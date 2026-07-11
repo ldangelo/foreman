@@ -6,7 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestTaskListBuildsRunningReadyRecentAndExcludesActiveReady(t *testing.T) {
+func TestTaskListSectionsBuildCountsAndExcludeActiveReady(t *testing.T) {
 	list := NewTaskList()
 	runs := []Run{
 		{Group: taskGroupRunning, TaskID: "active-task", RunID: "run-active", Status: "running", Phase: "developer", Summary: "active summary"},
@@ -18,51 +18,56 @@ func TestTaskListBuildsRunningReadyRecentAndExcludesActiveReady(t *testing.T) {
 	}
 
 	list.SetData(runs, tasks)
-	items := list.Items()
-	if len(items) != 3 {
-		t.Fatalf("expected active run, ready task, and recent run, got %d items: %#v", len(items), items)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-active" {
+		t.Fatalf("expected default Running section to show active run only, got %#v", items)
 	}
-	if items[0].Group != taskGroupRunning || items[0].Run.RunID != "run-active" {
-		t.Fatalf("expected RUNNING run first, got %#v", items[0])
+
+	list.MoveSection(1) // Ready
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 1 || !items[0].IsTask || items[0].Task.TaskID != "ready-task" {
+		t.Fatalf("expected Ready section to show non-active ready task, got %#v", items)
 	}
-	if items[1].Group != taskGroupReady || !items[1].IsTask || items[1].Task.TaskID != "ready-task" {
-		t.Fatalf("expected non-active READY task second, got %#v", items[1])
+
+	list.MoveSection(2) // Recent
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-done" {
+		t.Fatalf("expected Recent section to show recent run, got %#v", items)
 	}
-	if items[2].Group != taskGroupRecent || items[2].Run.RunID != "run-done" {
-		t.Fatalf("expected RECENT run third, got %#v", items[2])
+
+	list.MoveSection(1) // All
+	list.SetData(runs, tasks)
+	if got := len(list.Items()); got != 3 {
+		t.Fatalf("expected All section to include active run, ready task, and recent run, got %d items: %#v", got, list.Items())
 	}
 
 	counts := list.Counts(runs, tasks)
-	if counts[taskGroupRunning] != 1 || counts[taskGroupReady] != 1 || counts[taskGroupRecent] != 1 {
-		t.Fatalf("expected visible group counts to exclude active ready task, got %#v", counts)
+	if counts[taskSectionRunning] != 1 || counts[taskSectionReady] != 1 || counts[taskSectionRecent] != 1 || counts[taskSectionAll] != 3 {
+		t.Fatalf("expected section counts to exclude active ready task, got %#v", counts)
 	}
 }
 
-func TestTaskListCollapseKeepsSelectionVisible(t *testing.T) {
+func TestTaskListSectionSwitchKeepsSelectionVisible(t *testing.T) {
 	list := NewTaskList()
-	list.SetData([]Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}, []Task{{TaskID: "ready-1"}, {TaskID: "ready-2"}})
-	list.Move(1)
-	if it, _ := list.SelectedItem(); it.Task.TaskID != "ready-1" {
-		t.Fatalf("expected ready-1 selected before collapse, got %#v", it)
+	runs := []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}
+	tasks := []Task{{TaskID: "ready-1"}, {TaskID: "ready-2"}}
+	list.SetData(runs, tasks)
+
+	if it, _ := list.SelectedItem(); it.Run.RunID != "run-1" {
+		t.Fatalf("expected running row selected before section switch, got %#v", it)
 	}
-
-	list.ToggleSelectedGroup()
-	list.SetData([]Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}, []Task{{TaskID: "ready-1"}, {TaskID: "ready-2"}})
-
-	if list.Collapsed(taskGroupReady) {
-		if got := len(list.Items()); got != 1 {
-			t.Fatalf("expected collapsed READY rows hidden, got %d items", got)
-		}
-		if list.SelectedIndex() != 0 {
-			t.Fatalf("expected selection clamped to visible run, got index %d", list.SelectedIndex())
-		}
-	} else {
-		t.Fatalf("expected READY group collapsed")
+	list.MoveSection(1)
+	list.SetData(runs, tasks)
+	if got := len(list.Items()); got != 2 {
+		t.Fatalf("expected ready rows after section switch, got %d", got)
+	}
+	if list.SelectedIndex() != 0 {
+		t.Fatalf("expected selection reset to first visible row, got index %d", list.SelectedIndex())
 	}
 }
 
 func TestTaskListPreservesSelectionByStableIdentity(t *testing.T) {
 	list := NewTaskList()
+	list.MoveSection(4) // All
 	list.SetData([]Run{
 		{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a"},
 		{Group: taskGroupRecent, TaskID: "task-b", RunID: "run-b"},
@@ -83,6 +88,7 @@ func TestTaskListPreservesSelectionByStableIdentity(t *testing.T) {
 
 func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 	list := NewTaskList()
+	list.MoveSection(1) // Ready
 	list.SetData(nil, []Task{{TaskID: "alpha", Summary: "first"}, {TaskID: "beta", Summary: "second"}})
 	list.Move(1)
 

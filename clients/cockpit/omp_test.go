@@ -88,6 +88,7 @@ func TestBuildTriageBriefIncludesFailureContext(t *testing.T) {
 
 func TestPKeyAttachesOmpToSelectedRun(t *testing.T) {
 	m := newModelWithConfig(NewMockClient(), defaultConfig(), fakeTools{})
+	m.taskList.MoveSection(3)
 	m.runs = []Run{{Group: "RECENT", TaskID: "task-1", RunID: "run-1", Status: "failed", Worktree: "/tmp/wt"}}
 	m.tasks = nil
 	m.buildItems()

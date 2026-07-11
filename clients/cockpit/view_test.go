@@ -135,6 +135,7 @@ func TestWideViewDoesNotExceedTerminalHeight(t *testing.T) {
 func TestReadyTaskViewShowsApproveEditAndCreateActions(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
+	m.taskList.MoveSection(1)
 	m.height = 20
 	m.runs = nil
 	m.tasks = []Task{{TaskID: "task-ready", Title: "Ready task", Status: "backlog", ProjectID: "proj-live"}}
@@ -152,14 +153,12 @@ func TestReadyTaskViewShowsApproveEditAndCreateActions(t *testing.T) {
 func TestReadyTaskRowShowsTitlePriorityAndType(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.tasks = []Task{{TaskID: "task-ready", Title: "Create cockpit task", TaskType: "feature", Priority: "P1", Status: "backlog"}}
+	m.taskList.MoveSection(1)
 	m.buildItems()
 
 	out := stripANSI(m.renderLeft(36, 8))
-	if !strings.Contains(out, "Create cockpit task") || !strings.Contains(out, "P1") || !strings.Contains(out, "feature") {
-		t.Fatalf("expected task title, priority, and type in left list, got:\n%s", out)
-	}
-	if strings.Contains(out, "task-ready") {
-		t.Fatalf("expected task id to move out of the list row, got:\n%s", out)
+	if !strings.Contains(out, "task-ready") || !strings.Contains(out, "Create cockpit task") || !strings.Contains(out, "P1") || !strings.Contains(out, "feature") {
+		t.Fatalf("expected rich task row with id, title, priority, and type, got:\n%s", out)
 	}
 }
 
@@ -170,15 +169,12 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 	m.buildItems()
 
 	out := stripANSI(m.renderLeft(40, 6))
-	if !strings.Contains(out, "Fix failing CI") || !strings.Contains(out, "qa") {
-		t.Fatalf("expected run title and phase in row, got:\n%s", out)
-	}
-	if strings.Contains(out, "task-run") {
-		t.Fatalf("expected task id to be hidden when run title is available, got:\n%s", out)
+	if !strings.Contains(out, "task-run") || !strings.Contains(out, "Fix failing CI") || !strings.Contains(out, "qa") {
+		t.Fatalf("expected rich run row with task id, title, and phase, got:\n%s", out)
 	}
 }
 
-func TestTaskListViewportShowsStickySelectedGroupHeader(t *testing.T) {
+func TestTaskListViewportShowsSectionTabsAndSelectedRow(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = manyRuns(20)
 	m.tasks = nil
@@ -188,9 +184,8 @@ func TestTaskListViewportShowsStickySelectedGroupHeader(t *testing.T) {
 	}
 
 	out := stripANSI(m.renderLeft(40, 5))
-	lines := strings.Split(out, "\n")
-	if len(lines) == 0 || !strings.Contains(lines[0], "RUNNING") {
-		t.Fatalf("expected selected group header to stay visible, got:\n%s", out)
+	if !strings.Contains(out, "Running") || !strings.Contains(out, "Ready 0") {
+		t.Fatalf("expected section tab counts to stay visible, got:\n%s", out)
 	}
 	selected, ok := m.taskList.SelectedItem()
 	if !ok || !strings.Contains(out, selected.Run.Title) {
@@ -198,21 +193,22 @@ func TestTaskListViewportShowsStickySelectedGroupHeader(t *testing.T) {
 	}
 }
 
-func TestTaskListViewportUpdatesStickyHeaderAcrossGroups(t *testing.T) {
+func TestTaskListViewportUpdatesRowsAcrossSections(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa"}}
 	for i := range 8 {
 		m.tasks = append(m.tasks, Task{TaskID: "ready-" + itoa(i), Title: "Ready " + itoa(i), Status: "backlog"})
 	}
 	m.buildItems()
-	for range 5 {
+	m.taskList.MoveSection(1)
+	m.buildItems()
+	for range 4 {
 		m.taskList.Move(1)
 	}
 
 	out := stripANSI(m.renderLeft(40, 5))
-	lines := strings.Split(out, "\n")
-	if len(lines) == 0 || !strings.Contains(lines[0], "READY") {
-		t.Fatalf("expected sticky header to follow selected ready group, got:\n%s", out)
+	if !strings.Contains(out, "Ready 8") || !strings.Contains(out, "filter state:ready") {
+		t.Fatalf("expected ready section header and filter, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Ready 4") {
 		t.Fatalf("expected selected ready task to stay visible, got:\n%s", out)
@@ -222,6 +218,7 @@ func TestTaskListViewportUpdatesStickyHeaderAcrossGroups(t *testing.T) {
 func TestTaskListSearchUsesViewportFilterLineAndSubstringMatching(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
+	m.taskList.MoveSection(4)
 	m.height = 20
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa", Title: "Fix API"}}
 	m.tasks = []Task{{TaskID: "ready-special", Title: "Ship Search", Status: "backlog"}}
@@ -262,6 +259,7 @@ func TestTaskListSearchUsesViewportFilterLineAndSubstringMatching(t *testing.T) 
 func TestTaskRowPriorityBadgeUsesPriorityOnly(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.tasks = []Task{{TaskID: "task-p0", Title: "Fix production", TaskType: "bug", Priority: "P0", Status: "failed"}}
+	m.taskList.MoveSection(2)
 	m.buildItems()
 
 	out := stripANSI(m.renderLeft(40, 6))
@@ -269,7 +267,7 @@ func TestTaskRowPriorityBadgeUsesPriorityOnly(t *testing.T) {
 		t.Fatalf("expected separate priority badge, title, and type, got:\n%s", out)
 	}
 	if strings.Contains(out, "P0 bug") {
-		t.Fatalf("expected priority and type to be separated by the title, got:\n%s", out)
+		t.Fatalf("expected priority and type to stay separately delimited, got:\n%s", out)
 	}
 }
 
@@ -301,6 +299,7 @@ func TestReadyTaskDetailShowsFullTaskFields(t *testing.T) {
 		TaskID: "task-ready", Title: "Create cockpit task", Description: "Full task body",
 		TaskType: "feature", Priority: "P1", Status: "backlog", Depends: "task-a", Workflow: "default", ProjectID: "proj-live",
 	}}
+	m.taskList.MoveSection(1)
 	m.buildItems()
 
 	out := stripANSI(m.renderRight(80))
@@ -979,7 +978,7 @@ func TestQuestionMarkShowsKeymapHelp(t *testing.T) {
 	m := newModel(NewMockClient())
 	updated, _ := m.handleKey(keyPress("?"))
 	m = updated.(model)
-	if !strings.Contains(m.notice, "ctrl+d/u") || !strings.Contains(m.notice, "G gh dash") || !strings.Contains(m.notice, "C gh enhance") {
+	if !strings.Contains(m.notice, "[/]/H/L") || !strings.Contains(m.notice, "ctrl+d/u") || !strings.Contains(m.notice, "G gh dash") || !strings.Contains(m.notice, "C gh enhance") {
 		t.Fatalf("expected keymap help notice, got %q", m.notice)
 	}
 }

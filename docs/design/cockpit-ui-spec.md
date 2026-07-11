@@ -47,20 +47,21 @@ One screen. No view switching. Three regions plus chrome.
 
 ### Left column — the answer to Q1, Q2, Q3 at a glance
 
-A single scrollable list, always grouped in this fixed order:
+The task list is organized as a gh-dash-style section strip with counts:
 
-- **RUNNING** — runs with status `pending | running | in_progress | cooldown`.
-  Each row shows a state glyph, task title when available (task id fallback), and
-  current phase. (Q1)
-- **READY** — current-project tasks that are not terminal/running. Each row
-  shows a state glyph, priority, task title, and type; selecting one shows the
-  id, status, workflow, dependencies, project, and description, plus approve,
-  edit, and create actions. (Q2)
-- **RECENT** — terminal runs (`completed | merged | pr-created | failed | reset`),
+- **Running** — runs with status `pending | running | in_progress | cooldown`.
+  Each row shows a state glyph, id/type/priority/phase metadata, and a second
+  title/summary line. (Q1)
+- **Ready** — current-project tasks that are not terminal/running. Each row
+  shows a state glyph, id/type/priority/status metadata, and a second
+  title/summary line; selecting one shows the id, status, workflow,
+  dependencies, project, and description, plus approve, edit, and create
+  actions. (Q2)
+- **Failed** — failed/stuck/conflict/test-failed tasks or runs needing attention.
+- **Recent** — terminal runs (`completed | merged | pr-created | failed | reset`),
   most-recent first, capped (default 15). (Q3 for finished work)
+- **All** — the combined task/run list.
 
-Groups are collapsible (`RUNNING` never collapses). Attention states color the
-row: failed/conflict = red, retrying/cooldown = amber, merged/done = green.
 The selected row drives the entire right side.
 
 ### Right column — the answer to Q3 detail and Q4
@@ -122,7 +123,7 @@ Global:
 | `s` | save the currently visible focused drill-down rows to `cockpit.exportDir` |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
 | `1`–`7` | jump directly to a tab and focus it |
-| `space` | collapse/expand the focused group |
+| `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused |
 | `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
 | `g` | toggle current-project vs global scope |
 | `n` | create a new task by opening a JSON draft in nvim and posting `task.create` |

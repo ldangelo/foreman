@@ -175,103 +175,115 @@ func (m model) renderKeyBar(w int) string {
 	hints := "↑↓/j/k scroll · ctrl+d/u page · esc task list · ⇥ tab · o open · p omp · D diffnav · G gh dash · C gh enhance · ? help · q quit"
 	if !m.viewFocused {
 		focus = "focus: tasks"
-		hints = "↑↓/j/k task · enter view · ⇥ tab · o open · p omp · D diffnav · G gh dash · C gh enhance · / search · ? help · q quit"
+		hints = "[/] or H/L section · ↑↓/j/k task · / filter · enter view · ⇥ tab · n new · o open · p omp · ? help · q quit"
 	}
 	return keyBarStyle.Width(w).Render(clip(" "+focus+" · "+hints, w))
 }
 
 func (m model) renderLeft(w, h int) string {
 	visual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
-	var rows []string
-	selectedLine := 0
-	activeGroup := taskGroupRunning
-	if it, ok := m.taskList.SelectedItem(); ok {
-		activeGroup = it.Group
-	}
-	gcolor := map[string]color.Color{taskGroupRunning: visual.Green, taskGroupReady: visual.Yellow, taskGroupRecent: visual.Dim}
-	count := m.taskList.Counts(m.runs, m.tasks)
-	headerFor := func(g string) string {
-		caret := "▾"
-		if m.taskList.Collapsed(g) {
-			caret = "▸"
-		}
-		return lipgloss.NewStyle().Foreground(gcolor[g]).Bold(true).
-			Render(clip(caret+" "+g+" ("+itoa(count[g])+")", w))
+	rows := make([]string, 0, len(m.taskList.Items()))
+	selectedLine := m.taskList.SelectedIndex()
+	for i, it := range m.taskList.Items() {
+		rows = append(rows, m.renderRow(i, it, w, visual))
 	}
 
-	for _, g := range taskListGroups {
-		if g != activeGroup {
-			rows = append(rows, headerFor(g))
-		}
-		if m.taskList.Collapsed(g) {
-			continue
-		}
-		for i, it := range m.taskList.Items() {
-			if it.Group != g {
-				continue
-			}
-			if i == m.taskList.SelectedIndex() {
-				selectedLine = len(rows)
-			}
-			rows = append(rows, m.renderRow(i, it, w, visual))
+	section := m.taskList.ActiveSection()
+	headers := []string{
+		m.renderTaskSectionTabs(w, visual),
+		lipgloss.NewStyle().Foreground(visual.Dim).Render(clip("filter "+section.Filter+taskQuerySuffix(m.taskList.Search()), w)),
+	}
+	m.taskList.SetViewportRows(headers, rows, selectedLine, w, h)
+	return m.taskList.View()
+}
+
+func taskQuerySuffix(search string) string {
+	if strings.TrimSpace(search) == "" {
+		return ""
+	}
+	return " · " + search
+}
+
+func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
+	counts := m.taskList.Counts(m.runs, m.tasks)
+	active := m.taskList.ActiveSectionIndex()
+	var tabs []string
+	for i, section := range taskListSections {
+		label := section.Name + " " + itoa(counts[section.Name])
+		if i == active {
+			tabs = append(tabs, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(" "+label+" "))
+		} else {
+			tabs = append(tabs, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
 		}
 	}
-	m.taskList.SetViewportRows(headerFor(activeGroup), rows, selectedLine, w, h)
-	return m.taskList.View()
+	return clip(strings.Join(tabs, " "), w)
 }
 
 func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 	selected := i == m.taskList.SelectedIndex()
-	var state, left, right string
-	var rightColor color.Color
-	idColor := visual.Text
-	if it.IsTask {
-		state = it.Task.Status
-		left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.Title)
-		if left == "" {
-			left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.Summary)
-		}
-		if left == "" {
-			left = strings.TrimSpace(strings.TrimSpace(it.Task.Priority) + " " + it.Task.TaskID)
-		}
-		right = it.Task.TaskType
-		rightColor = visual.Yellow
-	} else {
-		state = runState(it.Run)
-		left = it.Run.Title
-		if left == "" {
-			left = it.Run.TaskID
-		}
-		if it.Run.Group == "RUNNING" {
-			right, rightColor = it.Run.Phase, visual.Cyan
-		} else {
-			right, rightColor = it.Run.Status, statusColor(it.Run.Status)
-		}
-		if it.Run.Status == "failed" {
-			idColor = visual.Red
-		}
-	}
+	state, title, id, typ, pri, right := taskRowFields(it)
 	gl, glc := glyph(state)
-	left = clip(left, w-6)
-	phaseMax := w - 3 - utf8.RuneCountInString(left)
-	if phaseMax < 3 {
-		phaseMax = 3
+	line1Left := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
+		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
+	if typ != "" {
+		line1Left += lipgloss.NewStyle().Foreground(visual.Dim).Render(" · " + typ)
 	}
-	right = clip(right, phaseMax)
-
-	if selected {
-		idColor = visual.White
+	if pri != "" {
+		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + pri)
 	}
-	leftStr := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
-		lipgloss.NewStyle().Foreground(idColor).Render(left)
-	rightStr := lipgloss.NewStyle().Foreground(rightColor).Render(right)
-	line := padRow(leftStr, rightStr, w)
-
+	line1 := padRow(clip(line1Left, w-8), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, 12)), w)
+	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip("  "+title, w))
+	row := line1 + "\n" + line2
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
 		st = st.Background(visual.SelectedBg)
 	}
-	return st.Render(line)
+	return st.Render(row)
+}
+
+func taskRowFields(it Item) (state, title, id, typ, pri, right string) {
+	if it.IsTask {
+		title = firstNonEmptyText(it.Task.Title, it.Task.Summary, it.Task.TaskID)
+		return it.Task.Status, title, it.Task.TaskID, it.Task.TaskType, it.Task.Priority, it.Task.Status
+	}
+	title = firstNonEmptyText(it.Run.Title, it.Run.Summary, it.Run.TaskID)
+	typ = it.Run.TaskType
+	pri = it.Run.Priority
+	right = it.Run.Status
+	if it.Run.Group == taskGroupRunning {
+		right = it.Run.Phase
+	}
+	return runState(it.Run), title, it.Run.TaskID, typ, pri, right
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return "—"
+}
+
+func priorityColor(priority string, visual paneVisual) color.Color {
+	switch strings.ToUpper(strings.TrimSpace(priority)) {
+	case "P0", "0":
+		return visual.Red
+	case "P1", "1":
+		return visual.Yellow
+	default:
+		return visual.Dim
+	}
+}
+
+func taskRowRightColor(it Item, visual paneVisual) color.Color {
+	if it.IsTask {
+		return statusColor(it.Task.Status)
+	}
+	if it.Run.Group == taskGroupRunning {
+		return visual.Cyan
+	}
+	return statusColor(it.Run.Status)
 }
 
 func (m model) renderRight(w int) string {

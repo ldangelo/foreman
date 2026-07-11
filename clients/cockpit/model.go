@@ -278,7 +278,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "?":
-		m.notice = "keys: n new task · enter focus · esc task list/clear search · ctrl+d/u page · / search · n/N match · ←/→ pan · s save · o open · G gh dash · C gh enhance"
+		m.notice = "keys: [/]/H/L task section · n new task · enter focus · esc task list/clear search · ctrl+d/u page · / filter · n/N match · ←/→ pan · s save · o open · G gh dash · C gh enhance"
 	case "q":
 		return m, tea.Quit
 	case "esc":
@@ -305,6 +305,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.moveRow(1)
 		}
 		return m, m.moveSel(1)
+	case "[", "H":
+		m.notice = "section: " + m.taskList.MoveSection(-1)
+		m.buildItems()
+	case "]", "L":
+		m.notice = "section: " + m.taskList.MoveSection(1)
+		m.buildItems()
 	case "tab":
 		return m, m.selectTab((m.tab + 1) % len(tabNames))
 	case "shift+tab":
@@ -547,10 +553,7 @@ func (m model) leftPaneWidth() int {
 	if total < 80 {
 		total = 80
 	}
-	if total < 92 {
-		return 22
-	}
-	return 28
+	return leftPaneWidth(total)
 }
 
 func (m model) rightPaneWidth() int {

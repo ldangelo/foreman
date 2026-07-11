@@ -15,7 +15,26 @@ const (
 	taskGroupRunning = "RUNNING"
 	taskGroupReady   = "READY"
 	taskGroupRecent  = "RECENT"
+
+	taskSectionRunning = "Running"
+	taskSectionReady   = "Ready"
+	taskSectionFailed  = "Failed"
+	taskSectionRecent  = "Recent"
+	taskSectionAll     = "All"
 )
+
+type TaskSection struct {
+	Name   string
+	Filter string
+}
+
+var taskListSections = []TaskSection{
+	{Name: taskSectionRunning, Filter: "state:running"},
+	{Name: taskSectionReady, Filter: "state:ready"},
+	{Name: taskSectionFailed, Filter: "state:failed"},
+	{Name: taskSectionRecent, Filter: "state:recent"},
+	{Name: taskSectionAll, Filter: "all"},
+}
 
 const taskListFilterModeName fvpkg.FilterModeName = "task"
 
@@ -25,25 +44,18 @@ func taskListFilterMode() fvpkg.FilterMode {
 		Key:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Label: "[task]",
 		GetMatchFunc: func(filterText string) (fvpkg.MatchFunc, error) {
-			query := strings.ToLower(filterText)
+			terms := normalizedTaskFilterTerms(filterText)
 			return func(content string) []item.ByteRange {
-				if query == "" {
+				if len(terms) == 0 {
 					return nil
 				}
 				lower := strings.ToLower(content)
-				var ranges []item.ByteRange
-				start := 0
-				for {
-					idx := strings.Index(lower[start:], query)
-					if idx == -1 {
-						break
+				for _, term := range terms {
+					if !strings.Contains(lower, term) {
+						return nil
 					}
-					from := start + idx
-					to := from + len(query)
-					ranges = append(ranges, item.ByteRange{Start: from, End: to})
-					start = to
 				}
-				return ranges
+				return []item.ByteRange{{Start: 0, End: len(content)}}
 			}, nil
 		},
 	}
@@ -59,13 +71,13 @@ type Item struct {
 	Task   Task
 }
 
-// TaskList owns the left-pane grouping, filtering, collapsed-group state, and
-// selected item cursor. The root model supplies fresh projections and reacts to
-// selection changes.
+// TaskList owns the left-pane sectioning, filtering, scope, and selected item
+// cursor. The root model supplies fresh projections and reacts to selection
+// changes.
 type TaskList struct {
 	items     []Item
 	selected  int
-	collapsed map[string]bool
+	section   int
 	scope     string // current | global
 	search    string
 	searching bool
@@ -75,20 +87,26 @@ type TaskList struct {
 
 func NewTaskList() TaskList {
 	return TaskList{
-		collapsed: map[string]bool{},
-		scope:     "current",
+		scope: "current",
 	}
 }
 
 type taskListObject struct {
-	text string
+	lines []string
 }
 
 func (o taskListObject) GetItem() item.Item {
-	return item.NewItem(o.text)
+	items := make([]item.SingleItem, 0, len(o.lines))
+	for _, line := range o.lines {
+		items = append(items, item.NewItem(line))
+	}
+	if len(items) == 1 {
+		return items[0]
+	}
+	return item.NewMultiLineItem(items...)
 }
 
-func (l *TaskList) SetViewportRows(header string, rows []string, selectedRow, width, height int) {
+func (l *TaskList) SetViewportRows(headers []string, rows []string, selectedRow, width, height int) {
 	if height < 1 {
 		height = 1
 	}
@@ -98,12 +116,12 @@ func (l *TaskList) SetViewportRows(header string, rows []string, selectedRow, wi
 	l.ensureViewport(width, height)
 	l.filter.SetWidth(width)
 	l.filter.SetHeight(height)
-	l.filter.SetWrapText(false)
-	l.filter.SetHeader([]string{header})
+	l.filter.SetWrapText(true)
+	l.filter.SetHeader(headers)
 
 	objects := make([]taskListObject, len(rows))
 	for i, row := range rows {
-		objects[i] = taskListObject{text: row}
+		objects[i] = taskListObject{lines: strings.Split(row, "\n")}
 	}
 	l.filter.SetObjects(objects)
 	if len(objects) == 0 {
@@ -130,7 +148,7 @@ func (l *TaskList) ensureViewport(width, height int) {
 	l.viewport = vpkg.New[taskListObject](
 		width,
 		height,
-		vpkg.WithWrapText[taskListObject](false),
+		vpkg.WithWrapText[taskListObject](true),
 		vpkg.WithSelectionEnabled[taskListObject](true),
 		vpkg.WithFooterEnabled[taskListObject](false),
 		vpkg.WithProgressBarEnabled[taskListObject](false),
@@ -155,37 +173,17 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 		selectedKey = itemKey(it)
 	}
 
-	q := strings.ToLower(l.search)
-	items := make([]Item, 0, len(runs)+len(tasks))
-	activeRuns := map[string]bool{}
-	add := func(group, id, text string, it Item) {
-		if q != "" && !strings.Contains(strings.ToLower(id+" "+text), q) {
-			return
+	all := buildTaskListItems(runs, tasks)
+	section := l.ActiveSection()
+	items := make([]Item, 0, len(all))
+	for _, it := range all {
+		if !matchesTaskSection(it, section.Name) {
+			continue
 		}
-		if l.collapsed[group] {
-			return
+		if !matchesTaskQuery(it, l.search) {
+			continue
 		}
 		items = append(items, it)
-	}
-
-	for _, r := range runs {
-		if r.Group != taskGroupRunning {
-			continue
-		}
-		activeRuns[r.TaskID] = true
-		add(r.Group, r.TaskID, r.Phase+" "+r.Summary, Item{Group: r.Group, Run: r})
-	}
-	for _, t := range tasks {
-		if activeRuns[t.TaskID] {
-			continue
-		}
-		add(taskGroupReady, t.TaskID, t.Priority+" "+t.Summary, Item{Group: taskGroupReady, IsTask: true, Task: t})
-	}
-	for _, r := range runs {
-		if r.Group != taskGroupRecent {
-			continue
-		}
-		add(r.Group, r.TaskID, r.Status+" "+r.Summary, Item{Group: r.Group, Run: r})
 	}
 
 	l.items = items
@@ -197,6 +195,7 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 			}
 		}
 	}
+	l.selected = 0
 	l.keepSelectedVisible()
 }
 
@@ -210,10 +209,15 @@ func (l *TaskList) Move(delta int) bool {
 	return l.selected != before
 }
 
-func (l *TaskList) ToggleSelectedGroup() {
-	if it, ok := l.SelectedItem(); ok {
-		l.collapsed[it.Group] = !l.collapsed[it.Group]
+func (l *TaskList) ToggleSelectedGroup() {}
+
+func (l *TaskList) MoveSection(delta int) string {
+	before := l.section
+	l.section = (l.section + delta + len(taskListSections)) % len(taskListSections)
+	if l.section != before {
+		l.selected = 0
 	}
+	return l.ActiveSection().Name
 }
 
 func (l *TaskList) ToggleScope() string {
@@ -254,32 +258,136 @@ func (l *TaskList) syncSearchFromFilter() {
 
 func (l TaskList) Items() []Item      { return l.items }
 func (l TaskList) SelectedIndex() int { return l.selected }
+func (l TaskList) ActiveSection() TaskSection {
+	if l.section < 0 || l.section >= len(taskListSections) {
+		return taskListSections[0]
+	}
+	return taskListSections[l.section]
+}
+func (l TaskList) ActiveSectionIndex() int { return l.section }
 func (l TaskList) SelectedItem() (Item, bool) {
 	if l.selected < 0 || l.selected >= len(l.items) {
 		return Item{}, false
 	}
 	return l.items[l.selected], true
 }
-func (l TaskList) Collapsed(group string) bool { return l.collapsed[group] }
+func (l TaskList) Collapsed(group string) bool { return false }
 func (l TaskList) Scope() string               { return l.scope }
 func (l TaskList) Search() string              { return l.search }
 func (l TaskList) Searching() bool             { return l.searching }
 
 func (l TaskList) Counts(runs []Run, tasks []Task) map[string]int {
 	count := map[string]int{}
-	activeRuns := map[string]bool{}
-	for _, r := range runs {
-		count[r.Group]++
-		if r.Group == taskGroupRunning {
-			activeRuns[r.TaskID] = true
-		}
-	}
-	for _, t := range tasks {
-		if !activeRuns[t.TaskID] {
-			count[taskGroupReady]++
+	all := buildTaskListItems(runs, tasks)
+	for _, section := range taskListSections {
+		for _, it := range all {
+			if matchesTaskSection(it, section.Name) {
+				count[section.Name]++
+			}
 		}
 	}
 	return count
+}
+
+func buildTaskListItems(runs []Run, tasks []Task) []Item {
+	items := make([]Item, 0, len(runs)+len(tasks))
+	activeRuns := map[string]bool{}
+	for _, r := range runs {
+		if r.Group != taskGroupRunning {
+			continue
+		}
+		activeRuns[r.TaskID] = true
+		items = append(items, Item{Group: r.Group, Run: r})
+	}
+	for _, t := range tasks {
+		if activeRuns[t.TaskID] {
+			continue
+		}
+		items = append(items, Item{Group: taskGroupReady, IsTask: true, Task: t})
+	}
+	for _, r := range runs {
+		if r.Group != taskGroupRecent {
+			continue
+		}
+		items = append(items, Item{Group: r.Group, Run: r})
+	}
+	return items
+}
+
+func matchesTaskSection(it Item, section string) bool {
+	switch section {
+	case taskSectionRunning:
+		return !it.IsTask && it.Run.Group == taskGroupRunning
+	case taskSectionReady:
+		return it.IsTask && !isFailedState(it.Task.Status)
+	case taskSectionFailed:
+		if it.IsTask {
+			return isFailedState(it.Task.Status)
+		}
+		return isFailedState(it.Run.Status) || strings.EqualFold(it.Run.Verdict, "fail") || strings.Contains(strings.ToLower(it.Run.Attention), "fail")
+	case taskSectionRecent:
+		return !it.IsTask && it.Run.Group == taskGroupRecent
+	case taskSectionAll:
+		return true
+	default:
+		return true
+	}
+}
+
+func isFailedState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "failed", "fail", "stuck", "conflict", "test-failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchesTaskQuery(it Item, query string) bool {
+	terms := normalizedTaskFilterTerms(query)
+	if len(terms) == 0 {
+		return true
+	}
+	haystack := taskSearchText(it)
+	for _, term := range terms {
+		if !strings.Contains(haystack, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedTaskFilterTerms(query string) []string {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if strings.Contains(field, ":") {
+			parts := strings.SplitN(field, ":", 2)
+			if parts[1] == "" || parts[1] == "false" {
+				continue
+			}
+			field = parts[1]
+		}
+		if field != "" && field != "all" && field != "true" {
+			terms = append(terms, field)
+		}
+	}
+	return terms
+}
+
+func taskSearchText(it Item) string {
+	if it.IsTask {
+		return strings.ToLower(strings.Join([]string{
+			it.Task.TaskID, it.Task.Title, it.Task.Summary, it.Task.Description,
+			it.Task.TaskType, it.Task.Priority, it.Task.Status, it.Task.Workflow,
+			it.Task.ProjectID, it.Task.Depends,
+		}, " "))
+	}
+	return strings.ToLower(strings.Join([]string{
+		it.Run.TaskID, it.Run.RunID, it.Run.Title, it.Run.Summary, it.Run.TaskType,
+		it.Run.Priority, it.Run.Status, it.Run.Phase, it.Run.Verdict, it.Run.ProjectID,
+		it.Run.Attention, it.Run.Last,
+	}, " "))
 }
 
 func (l *TaskList) keepSelectedVisible() {

@@ -17,17 +17,19 @@ authoritative state.
 ## What it shows
 
 - One screen, two navigation axes: pick an item (left), pick a drill-down (right).
-- Left column grouped `RUNNING` / `READY` / `RECENT` — `READY` is derived
-  from current-project task state (`backlog`, `ready`, `failed`, etc.), not just
+- Left column uses gh-dash-style section tabs (`Running`, `Ready`, `Failed`,
+  `Recent`, `All`) with per-section counts. `Ready` is derived from
+  current-project task state (`backlog`, `ready`, `failed`, etc.), not just
   scheduler-dispatchable rows.
 - Live runs are scoped to the current project (or `COCKPIT_PROJECT_ID`) and
   deduplicated by task. A task is `RUNNING` when both the task state and run
   state are active (`in-progress` and `in_progress` are treated the same);
   stale in-progress run projections for closed/failed tasks are shown as
   recent, not running.
-- Run rows show the task title when available, falling back to the task id; task
-  rows show priority, title, and type. The selected task detail shows id, status,
-  workflow, dependencies, project, and description. READY task
+- Task/run rows are richer two-line entries: metadata (id, type, priority,
+  phase/status) on the first line and the title/summary on the second. The
+  selected task detail shows id, status, workflow, dependencies, project, and
+  description. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
   edit task JSON via `task.update`, and `n` to create a new task JSON draft via
   `task.create`.
@@ -97,7 +99,8 @@ FOREMAN_SERVER_URL=http://127.0.0.1:4766 COCKPIT_DUMP=1 ./foreman-cockpit
 ## Keys
 
 ```
-↑↓ / j/k  move task selection while the task list is focused
+[/]/H/L   move between task-list sections while the task list is focused
+↑↓ / j/k  move task selection inside the active section
 enter     enter/focus the selected drill-down view; keybar reads focus: details
 esc       leave the drill-down view and return focus to the task list
 ↑↓ / j/k  move the highlighted line in focused messages/events/logs/reports/files/pr
@@ -111,7 +114,7 @@ a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
 r/R       retry / reset                       /    search     n/N match
 ←/→       pan focused logs                    s    save visible viewer rows
-space     collapse/expand group              ? help     q quit
+? help    q quit
 ```
 
 Opening a drill-down view with `enter`, `tab`, or `1`–`7` selects its newest
