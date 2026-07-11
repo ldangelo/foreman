@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -306,10 +307,69 @@ func TestHTTPClientFallsBackToDebugTimelineWhenEventsEndpointFails(t *testing.T)
 	}
 }
 
+func TestHTTPClientPrefersWorktreeDiffForFiles(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "cockpit@example.invalid")
+	runGit(t, repo, "config", "user.name", "Cockpit Test")
+	writeFile(t, repo, "keep.txt", "keep\n")
+	writeFile(t, repo, "remove.txt", "remove\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "base")
+	runGit(t, repo, "branch", "-M", "main")
+	runGit(t, repo, "checkout", "-b", "foreman-run")
+	writeFile(t, repo, "keep.txt", "keep\nchanged\n")
+	writeFile(t, repo, "new.txt", "new\n")
+	runGit(t, repo, "rm", "remove.txt")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "changes")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"runs": []map[string]any{{
+					"run_id":      "run-live",
+					"worktree":    repo,
+					"base_branch": "main",
+				}},
+			})
+		case "/api/v1/runs/run-live/debug":
+			t.Fatalf("worktree diff should avoid debug fallback")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	files := client.Files("run-live")
+	byPath := map[string]FileChange{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	if byPath["keep.txt"].Change != "M" || byPath["keep.txt"].Stat != "+1 -0" {
+		t.Fatalf("expected modified keep.txt with numstat, got %#v", files)
+	}
+	if byPath["new.txt"].Change != "A" || byPath["new.txt"].Stat != "+1 -0" {
+		t.Fatalf("expected added new.txt with numstat, got %#v", files)
+	}
+	if byPath["remove.txt"].Change != "D" || byPath["remove.txt"].Stat != "+0 -1" {
+		t.Fatalf("expected deleted remove.txt with numstat, got %#v", files)
+	}
+	if errors := client.DrainErrors(); len(errors) != 0 {
+		t.Fatalf("worktree diff should not surface errors, got %#v", errors)
+	}
+}
+
 func TestHTTPClientDerivesFilesFromDebugTimeline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v1/runs":
+			http.NotFound(w, r)
 		case "/api/v1/runs/run-live/debug":
 			w.Write([]byte(`{"ok":true,"debug":{"timeline":[{"type":"ToolCallFinished","payload":{"output":{"changed":["M src/main.go","A docs/guide.md"],"filesChanged":"- src/cli/board.ts\n- D old.txt"}}}]}}`))
 		default:
@@ -322,6 +382,25 @@ func TestHTTPClientDerivesFilesFromDebugTimeline(t *testing.T) {
 	files := client.Files("run-live")
 	if len(files) != 4 || files[0].Path != "src/main.go" || files[0].Change != "M" || files[1].Path != "docs/guide.md" || files[1].Change != "A" || files[3].Path != "old.txt" || files[3].Change != "D" {
 		t.Fatalf("unexpected files: %#v", files)
+	}
+	if errors := client.DrainErrors(); len(errors) != 0 {
+		t.Fatalf("debug fallback should not surface missing run projection, got %#v", errors)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(dir+"/"+name, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

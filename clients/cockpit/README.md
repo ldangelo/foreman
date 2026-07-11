@@ -241,10 +241,10 @@ or `$EDITOR` (falling back to `nvim`).
   state, mergeability, review decision, and check summary when those fields are
   projected. The contract should still be regenerated from a published OpenAPI
   schema (ADR phase 2).
-- File-change data has no dedicated endpoint yet; `httpClient.Files` derives a
-  best-effort changed-file list from `/api/v1/runs/:run_id/debug` timeline
-  payloads when worker tool output includes `changed`/`filesChanged` fields. The
-  mock client still shows the fuller intended UX.
+- File-change data has no dedicated endpoint yet; `httpClient.Files` prefers the
+  selected run worktree's `git diff --numstat`/`--name-status` against the
+  projected base branch, then falls back to `/api/v1/runs/:run_id/debug` timeline
+  payloads when no worktree diff is available.
 
 ## Architecture
 

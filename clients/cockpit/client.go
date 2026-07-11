@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -1129,11 +1130,138 @@ func reportPreview(report map[string]any) string {
 }
 
 func (c *httpClient) Files(runID string) []FileChange {
+	if run, ok := c.runProjection(runID); ok {
+		if files := fileChangesFromGitWorktree(run); len(files) > 0 {
+			return files
+		}
+	}
+
 	m, err := c.get("/api/v1/runs/" + url.PathEscape(runID) + "/debug")
 	if err != nil {
 		return nil
 	}
 	return fileChangesFromTimeline(arrValue(obj(m, "debug")["timeline"]))
+}
+
+func (c *httpClient) runProjection(runID string) (Run, bool) {
+	m, err := c.getMaybe("/api/v1/runs", false)
+	if err != nil {
+		return Run{}, false
+	}
+	for _, r := range arr(m, "runs") {
+		if str(r, "run_id", "id") != runID {
+			continue
+		}
+		return Run{
+			RunID:      runID,
+			Worktree:   str(r, "worktree", "worktree_path"),
+			BaseBranch: str(r, "base_branch", "target_branch"),
+			BranchName: str(r, "branch_name", "branch"),
+		}, true
+	}
+	return Run{}, false
+}
+
+func fileChangesFromGitWorktree(run Run) []FileChange {
+	worktree := strings.TrimSpace(run.Worktree)
+	if worktree == "" || worktree == "(cleaned)" {
+		return nil
+	}
+	worktree = expandHome(worktree)
+
+	for _, spec := range diffSpecs(run) {
+		files := fileChangesFromGitDiff(worktree, spec)
+		if len(files) > 0 {
+			return files
+		}
+	}
+	return nil
+}
+
+func diffSpecs(run Run) []string {
+	var specs []string
+	add := func(spec string) {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			return
+		}
+		for _, existing := range specs {
+			if existing == spec {
+				return
+			}
+		}
+		specs = append(specs, spec)
+	}
+	if run.BaseBranch != "" {
+		add(run.BaseBranch + "...HEAD")
+		if !strings.HasPrefix(run.BaseBranch, "origin/") {
+			add("origin/" + run.BaseBranch + "...HEAD")
+		}
+	}
+	add("origin/dev...HEAD")
+	add("origin/main...HEAD")
+	add("HEAD")
+	add("")
+	return specs
+}
+
+func fileChangesFromGitDiff(worktree, spec string) []FileChange {
+	args := []string{"-C", worktree, "diff", "--numstat"}
+	if spec != "" {
+		args = append(args, spec)
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil
+	}
+	statuses := gitDiffStatuses(worktree, spec)
+	var files []FileChange
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 3 {
+			continue
+		}
+		pathText := strings.TrimSpace(parts[len(parts)-1])
+		if pathText == "" || seen[pathText] {
+			continue
+		}
+		seen[pathText] = true
+		change := statuses[pathText]
+		if change == "" {
+			change = "M"
+		}
+		files = append(files, FileChange{
+			Change: change,
+			Path:   pathText,
+			Stat:   "+" + parts[0] + " -" + parts[1],
+		})
+	}
+	return files
+}
+
+func gitDiffStatuses(worktree, spec string) map[string]string {
+	args := []string{"-C", worktree, "diff", "--name-status"}
+	if spec != "" {
+		args = append(args, spec)
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil
+	}
+	statuses := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pathText := fields[len(fields)-1]
+		statuses[pathText] = strings.ToUpper(string([]rune(fields[0])[0]))
+	}
+	return statuses
 }
 
 func fileChangesFromTimeline(timeline []map[string]any) []FileChange {

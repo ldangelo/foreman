@@ -206,8 +206,7 @@ default avoids nesting a TUI inside a TUI.
 |-----|--------|
 | logs | `~/.foreman/logs/<run-id>.log` (or the path from `/runs/:id/logs`) |
 | reports | the artifact path from `/runs/:id/report` (e.g. `docs/reports/<task>/DEVELOPER_REPORT.md`) |
-| files | `<worktree>/<relative-path>` from a dedicated changed-file set when available, otherwise best-effort paths derived from `/runs/:id/debug` timeline payloads |
-| pr | PR URL/state/branch metadata projected on `/api/v1/runs`; `o`/`enter` opens the PR URL |
+| files | `<worktree>/<relative-path>` from the selected run worktree diff (`git diff --numstat`/`--name-status` against the projected base branch), otherwise best-effort paths derived from `/runs/:id/debug` timeline payloads |
 
 ### Files: focused diff preview and handoffs
 

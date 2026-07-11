@@ -148,10 +148,10 @@ Retire `space` (collapse group) for the list. Update `?` help, the keybar, and
   already present on `GET /api/v1/runs` (`messages_count`, `events_count`,
   `pr_state`, `pr_checks`, verdict, and added/removed diff totals when
   projected).
-- **Diff `±`** still needs aggregate added/removed lines from the backend for
-  exact live columns. `httpClient.Files` also derives best-effort changed paths
-  from `/api/v1/runs/:run_id/debug` timeline payloads when present; a dedicated
-  file/diff-stat endpoint remains a backend follow-up for exact file metadata.
+- File metadata prefers the selected run worktree's `git diff --numstat` and
+  `--name-status` against the projected base branch, then falls back to
+  `/api/v1/runs/:run_id/debug` timeline payloads when no worktree diff is
+  available. A dedicated backend endpoint remains a future contract-cleanup item.
 - Do the aggregation in the client mapping, not on the render path.
 
 ## 8. Relationship to the task-capabilities handoff
