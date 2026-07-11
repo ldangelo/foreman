@@ -155,7 +155,7 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 | `p` | a run selected | attach an `omp` session to the run's worktree, seeded with triage context for its failure mode |
 | `P` | a run selected | (optional) attach a **plain** `omp` (no briefing), for freeform work |
 
-`p`/`P` are currently unused. Update the README + spec keymaps.
+`p`/`P` are implemented and documented in the README + UI spec keymaps.
 
 ## 8. Hook points (mirror what exists)
 

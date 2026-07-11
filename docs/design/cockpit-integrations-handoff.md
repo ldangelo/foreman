@@ -309,5 +309,5 @@ running anything:
 3. Workstream C (gh-dash handoff).
 4. Workstream B (inline delta preview).
 5. Workstream D (native `pr` tab) — largest; may reveal an API gap to flag.
-6. Workstream E (gh-enhance handoff) — the remaining follow-up; mirrors C.
+6. Workstream E (gh-enhance handoff).
 7. Docs sweep (README + spec).

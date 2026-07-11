@@ -77,8 +77,8 @@ signal for low-color terminals.
 - **Focus label (cheap win).** The keybar already swaps hints on `viewFocused`;
   add an explicit `focus: tasks` / `focus: details` chip to the status or key bar
   so the state is stated as well as shown.
-- **Mouse:** if/when click-to-focus lands (bubblezone), clicking a pane sets
-  `viewFocused` accordingly — same visual treatment applies.
+- **Mouse:** click-to-focus is implemented with native pane hit-testing in
+  `handleMouse`, so the same visual treatment applies without `bubblezone`.
 
 ## 5. Theme tokens (single source of truth)
 

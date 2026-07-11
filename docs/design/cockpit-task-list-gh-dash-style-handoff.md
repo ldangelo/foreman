@@ -121,9 +121,9 @@ Follow the repo TDD rule. Each is shippable on its own.
 - Acceptance: the list is visibly the primary region; the detail pane stays
   usable; narrow terminals degrade (drop columns, then shorten title).
 
-### E. (Optional) clickable tabs & rows (`bubblezone`)
-- Per the showcase handoff, wrap section tabs and rows in zones so a click
-  selects/activates them (dash is mouse-friendly). Verify `bubblezone` v2 first.
+### E. Clickable tabs & rows (native hit-testing)
+- Section tabs and rows use cockpit-owned mouse coordinate mapping so clicks
+  select/activate them without `bubblezone`. Keep full keyboard parity.
 
 ## 6. Keymap (reconcile the two tab strips)
 
@@ -173,7 +173,7 @@ column** with section tabs + rich rows, and reuses its detail view and add-task
    change, do first.
 2. Rich two-line/columnar rows (C) + wider layout (D).
 3. Filter line (B).
-4. Optional clickable tabs/rows (E).
+4. Native clickable tabs/rows (E).
 5. Docs sweep.
 
 Sources: gh-dash ([gh-dash.dev](https://www.gh-dash.dev/), configurable

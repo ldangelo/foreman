@@ -60,10 +60,10 @@ back to v1.
 | `bubbles/v2` `textinput`/`textarea` | real text entry | replaces hand-parsed search in `TaskList`; powers add-task fields | 1 | first-party |
 | `lipgloss/v2` `table` + `list` | structured static rendering | task-detail field block, PR-checks summary — replaces `padRow` columns | 1 | first-party |
 | `muesli/reflow` | ANSI/Unicode wrap + truncate | replaces `clip`/`padRow`/`wrap` in `view.go` (correct width math) | 1 | framework-agnostic |
-| `lrstanley/bubblezone` | mouse click zones | clickable tabs/rows/action-bar/PR links (today only wheel scroll in `handleMouse`) | 2 | **verify** |
-| `NimbleMarkets/ntcharts` | sparklines/line/bar/heatmap | **new** metrics view + inline sparklines (throughput, pass/fail, phase durations) | 2 | **verify** |
-| `charmbracelet/huh` | forms | add-task form (title/type/priority/description) instead of nvim-JSON edit | 2 | **verify** |
-| `charmbracelet/harmonica` | spring animation | smooth phase-rail advance / panel transitions (replaces `anim%2` toggle) | 3 | framework-agnostic |
+| `lrstanley/bubblezone` | mouse click zones | intentionally not adopted; native hit-testing covers tabs/rows/action-bar/PR links | 2 | v1-only at `v1.0.0` |
+| `NimbleMarkets/ntcharts` | sparklines/line/bar/heatmap | intentionally not adopted; native bounded bars cover live metrics from `/api/v1/metrics` | 2 | v1-only at `v0.5.1` |
+| `charmbracelet/huh` | forms | not needed; `bubbles/v2` `textinput`/`textarea` power search and add-task forms | 2 | superseded |
+| `charmbracelet/harmonica` | spring animation | optional polish; current spinner/stopwatch/reduced-motion paths are first-party and deterministic | 3 | framework-agnostic |
 | `bubbles/v2` `spinner` | real spinner + loading state | replaces manual `↻/↺` in `renderStatusBar`; diff-preview loading | 3 | first-party |
 | `bubbles/v2` `stopwatch`/`timer` | live elapsed | live "elapsed" on RUNNING runs | 3 | first-party |
 | `76creates/stickers` (optional) | flexbox layout | retire manual two-column width math (source of the blank-pane bug) | 3 | **verify** |
@@ -94,23 +94,21 @@ swap `clip`/`padRow`/`wrap` for `reflow` so width math is ANSI/Unicode-correct.
 Acceptance: task detail and PR checks render as aligned tables; no truncation
 artifacts on wide-glyph content.
 
-### D. Clickable everything (`bubblezone`) — Tier 2
-Wrap tabs, task rows, action-bar buttons, and PR links in zones; route
-`MouseClickMsg` to select/activate them. Keep full keyboard parity.
+### D. Clickable everything (native hit-testing) — Tier 2
+Tabs, task rows, action-bar buttons, and PR actions are routed through
+cockpit-owned mouse coordinate mapping in `handleMouse`. This avoids v1-only
+`bubblezone` markers while preserving keyboard parity and stable width math.
 Acceptance: clicking a tab/row/action/PR does what the key does; wheel scroll
-still works; `lipgloss.Width` unaffected (zone markers are zero-width).
+still works; no zero-width marker dependency is required.
 
-### E. Fleet metrics (`ntcharts`) — Tier 2 — the centerpiece
-Add a top-level **metrics** view (and optional inline sparklines in the status
-bar) driven by `ntcharts`:
-- throughput (runs completed/day), pass vs fail trend, mean phase durations
-  (bar chart), queue depth / ready backlog, cycle time.
-Data: reuse `GET /api/v1/metrics` (already exists) and derive time series from
-`GET /api/v1/runs` + `GET /api/v1/events`; **verify the metrics payload shape**
-and, if the series aren't available, flag it as a backend follow-up rather than
-computing heavy aggregations client-side. Cache; never block the render path.
-Acceptance: a metrics view renders live charts that update on the 2s tick; empty
-/ missing-data states are graceful.
+### E. Fleet metrics (native bounded bars) — Tier 2
+The top-level `metrics` view reads `GET /api/v1/metrics` and renders counters,
+gauges, and phase durations as native bounded bars. Missing metrics produce a
+graceful empty state; HTTP/JSON errors surface in the cockpit notice bar. Richer
+time-series sparklines can wait for a v2-compatible charting library or backend
+series fields.
+Acceptance: a metrics view renders live metric rows on refresh; empty/missing
+data states are graceful; no render-path aggregation blocks the TUI.
 
 ### F. Motion & polish (`harmonica` + `spinner` + `stopwatch`) — Tier 3
 Spring-animate the phase-rail advance and tab/panel transitions with
@@ -129,9 +127,9 @@ keep `lipgloss` joins. Verify v2 + maintenance first.
 
 For each Tier-2/optional lib: check its `go.mod`/tags for a `charm.land/*/v2`
 dependency (or an explicitly v2-compatible release); build a throwaway spike
-importing it alongside the v2 cockpit; confirm it renders and takes events. If it
-only supports v1, park it in a "revisit when upstream ships v2" list in this doc.
-Record the verified version in `go.mod` and note it here.
+importing it alongside the v2 cockpit before adopting it. If it only supports v1,
+park it in a "revisit when upstream ships v2" list in this doc and satisfy the
+user-facing behavior natively when the behavior is small enough.
 
 ## 6. The demo (make it showcase-able)
 
@@ -175,9 +173,11 @@ Record the verified version in `go.mod` and note it here.
 1. (Prereq) v2 migration to parity — see the viewport handoff.
 2. Tier 1: `key`+`help` → `textinput` → `lipgloss` table/list + `reflow`
    (each deletes hand-rolled code; low risk, immediate polish).
-3. Tier 2, verify-then-adopt: `bubblezone` (clickable) → `ntcharts` (metrics
-   view — the showcase centerpiece) → `huh` (add-task form).
-4. Tier 3: `harmonica` motion + `spinner`/`stopwatch`; optional `stickers`.
+3. Tier 2: native hit-testing and metrics bars are implemented; revisit
+   `bubblezone`/`ntcharts` only after upstream v2-compatible releases exist.
+4. Tier 3: first-party spinner/stopwatch/reduced-motion paths are implemented;
+   `harmonica` remains optional polish, and `stickers` remains unnecessary while
+   the pane layout stays simple.
 5. Demo: rich mock dataset + `vhs` tape + `docs/demo.gif`.
 6. Docs sweep (README, `cockpit-ui-spec.md`, theme handoff cross-links).
 

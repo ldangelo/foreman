@@ -149,10 +149,10 @@ ui:
     line-numbers-minus-style   = "#ff7b72"
     line-numbers-plus-style    = "#7ee787"
 ```
-Ship as `theme/delta.gitconfig`. Inline cockpit previews still run the selected
-worktree's `git diff | delta` when `delta` is available and fall back to plain
-`git diff`; a future installer can include this fragment from user git config so
-external diffnav and inline preview styling are identical.
+Ship as `theme/delta.gitconfig`. Inline cockpit previews run the selected
+worktree's `git diff | delta --config theme/delta.gitconfig` when `delta` is
+available and fall back to plain `git diff`; `foreman-cockpit --install-themes`
+also installs the generated fragment for external git config includes.
 
 ### cockpit — Glamour (markdown reports)
 Reports use a generated `theme/glamour.json` loaded by the cockpit renderer so

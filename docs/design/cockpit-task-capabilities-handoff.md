@@ -166,5 +166,5 @@ Leave existing task keys as-is: `y` copy id, `a` approve, `e` edit, `enter`/`o`.
 
 1. WS1 (full detail view) — pure render, no new client method; fastest.
 2. WS2 (widen + richer rows) — layout + `Run.Title`/`Run.TaskType` enrichment.
-3. WS3 (`CreateTask` + `n` template flow), then optional `N` quick-add.
+3. WS3 (`CreateTask` + `n` template flow + `N` quick-add).
 4. Docs sweep.
