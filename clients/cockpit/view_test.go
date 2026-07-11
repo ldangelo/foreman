@@ -25,6 +25,10 @@ func mouseWheel(x, y int, button tea.MouseButton) tea.MouseWheelMsg {
 	return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: button})
 }
 
+func mouseClick(x, y int) tea.MouseClickMsg {
+	return tea.MouseClickMsg(tea.Mouse{X: x, Y: y, Button: tea.MouseLeft})
+}
+
 func linesText(lines []ViewerLine) []string {
 	out := make([]string, len(lines))
 	for i, line := range lines {
@@ -1301,6 +1305,119 @@ func (c *mutableClient) Files(string) []FileChange { return c.files }
 func (c *mutableClient) CreateTask(task Task) error {
 	c.created = append(c.created, task)
 	return nil
+}
+
+func TestMetricsTabRendersOperationalCounters(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 7
+	metrics := Metrics{
+		Counters: map[string]int{"phases_started": 3, "failures": 1},
+		Gauges:   map[string]int{"projection_lag": 0},
+		PhaseDuration: []PhaseDuration{
+			{RunID: "run-1", PhaseID: "developer", Status: "completed", DurationMS: 90000},
+		},
+		EmittedAt: "2026-07-11T00:00:00Z",
+	}
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable(), metrics: metrics})
+	m = updated.(model)
+
+	out := strings.Join(linesText(renderMetricsLines(metrics, 80)), "\n")
+	for _, want := range []string{"fleet metrics", "phases started", "projection lag", "developer", "compl", "90"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected metrics view to include %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestMouseClickSelectsTaskSection(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}
+	m.tasks = []Task{{TaskID: "ready-task"}}
+	m.buildItems()
+
+	updated, _ := m.Update(mouseClick(14, 2))
+	m = updated.(model)
+	if section := m.taskList.ActiveSection().Name; section != taskSectionReady {
+		t.Fatalf("expected click on Ready tab to select Ready, got %q", section)
+	}
+	if items := m.taskList.Items(); len(items) != 1 || !items[0].IsTask {
+		t.Fatalf("expected Ready click to show ready task, got %#v", items)
+	}
+}
+
+func TestMouseClickSelectsTaskRow(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{
+		{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a"},
+		{Group: taskGroupRunning, TaskID: "task-b", RunID: "run-b"},
+	}
+	m.tasks = nil
+	m.buildItems()
+
+	updated, _ := m.Update(mouseClick(3, 6))
+	m = updated.(model)
+	if it, ok := m.selectedItem(); !ok || it.Run.RunID != "run-b" {
+		t.Fatalf("expected click on second visible row to select run-b, got ok=%v item=%#v", ok, it)
+	}
+}
+
+func TestMouseClickSelectsRunDetailTab(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", Pipeline: pipe(1, -1)}}
+	m.tasks = nil
+	m.msgs = []Message{{From: "qa", To: "dev", Body: "body"}}
+	m.buildItems()
+
+	tabY := m.rightTabLineY()
+	messagesX := m.leftPaneWidth() + 12
+	updated, _ := m.Update(mouseClick(messagesX, tabY))
+	m = updated.(model)
+	if tabNameAt(m.tab) != "messages" || !m.viewFocused {
+		t.Fatalf("expected click on messages tab to select focused messages tab, got tab=%s focused=%v", tabNameAt(m.tab), m.viewFocused)
+	}
+}
+
+func TestConfiguredTaskListWidthUsesPercentage(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Cockpit.TaskList.Width = "58%"
+	m := newModelWithConfig(NewMockClient(), cfg, defaultTools)
+	m.width = 160
+	if got := m.leftPaneWidth(); got != 92 {
+		t.Fatalf("expected 58%% configured left pane width to be 92 columns, got %d", got)
+	}
+}
+
+func TestFocusedTaskDetailUsesScrollableViewer(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 12
+	m.runs = nil
+	m.tasks = []Task{{TaskID: "task-ready", Title: "Ready task", Description: strings.Repeat("line\n", 30), Status: "backlog"}}
+	m.taskList.MoveSection(1)
+	m.buildItems()
+	updated, _ := m.handleKey(specialKey(tea.KeyEnter))
+	m = updated.(model)
+	if !m.viewFocused || !m.detailUsesViewer() {
+		t.Fatalf("expected enter on task to focus scrollable detail viewer")
+	}
+	m.refreshViewer(viewerReset)
+	start := m.viewer.Cursor()
+	updated, _ = m.handleKey(specialKey(tea.KeyDown))
+	m = updated.(model)
+	if m.viewer.Cursor() <= start {
+		t.Fatalf("expected focused task detail viewer to scroll, cursor %d -> %d", start, m.viewer.Cursor())
+	}
 }
 
 func TestPaneVisualTracksFocusStyle(t *testing.T) {

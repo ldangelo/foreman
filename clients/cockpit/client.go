@@ -100,11 +100,26 @@ type FileChange struct {
 	Conflict bool
 }
 
+type PhaseDuration struct {
+	RunID      string
+	PhaseID    string
+	Status     string
+	DurationMS int
+}
+
+type Metrics struct {
+	Counters      map[string]int
+	Gauges        map[string]int
+	PhaseDuration []PhaseDuration
+	EmittedAt     string
+}
+
 // Client is the read-model contract the cockpit consumes. Every method maps to
 // an existing Elixir endpoint; the cockpit holds no authoritative state.
 type Client interface {
 	Runs() []Run
 	Dispatchable() []Task
+	Metrics() Metrics
 	Messages(runID string) []Message
 	Events(runID string) []Event
 	Logs(runID string) []string
@@ -147,6 +162,26 @@ type mockClient struct {
 func NewMockClient() Client { return &mockClient{tasks: defaultMockTasks()} }
 
 func (c *mockClient) DrainErrors() []string { return nil }
+func (*mockClient) Metrics() Metrics {
+	return Metrics{
+		Counters: map[string]int{
+			"phases_started":   18,
+			"phases_completed": 14,
+			"retries":          2,
+			"failures":         1,
+			"recoveries":       1,
+			"worker_restarts":  0,
+		},
+		Gauges: map[string]int{"projection_lag": 0},
+		PhaseDuration: []PhaseDuration{
+			{RunID: "a1b2c3d4", PhaseID: "explorer", Status: "completed", DurationMS: 42000},
+			{RunID: "a1b2c3d4", PhaseID: "developer", Status: "completed", DurationMS: 155000},
+			{RunID: "a1b2c3d4", PhaseID: "qa", Status: "failed", DurationMS: 39000},
+			{RunID: "33cc44dd", PhaseID: "finalize", Status: "failed", DurationMS: 61000},
+		},
+		EmittedAt: time.Now().Format(time.RFC3339),
+	}
+}
 func (c *mockClient) ApproveTask(task Task) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -512,6 +547,34 @@ func arrValue(raw any) []map[string]any {
 	return out
 }
 
+func intValue(raw any) int {
+	switch v := raw.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	case string:
+		n := 0
+		ok := false
+		for _, r := range strings.TrimSpace(v) {
+			if r < '0' || r > '9' {
+				return 0
+			}
+			ok = true
+			n = n*10 + int(r-'0')
+		}
+		if ok {
+			return n
+		}
+	}
+	return 0
+}
+
 func obj(m map[string]any, key string) map[string]any {
 	if mm, ok := m[key].(map[string]any); ok {
 		return mm
@@ -739,6 +802,38 @@ func (c *httpClient) PR(runID string) PRStatus {
 		})
 	}
 	return PRStatus{RunID: runID}
+}
+
+func (c *httpClient) Metrics() Metrics {
+	m, err := c.get("/api/v1/metrics")
+	if err != nil {
+		return Metrics{}
+	}
+	metrics := obj(m, "metrics")
+	counters := map[string]int{}
+	for key, value := range obj(metrics, "counters") {
+		counters[key] = intValue(value)
+	}
+	gauges := map[string]int{}
+	for key, value := range obj(metrics, "gauges") {
+		gauges[key] = intValue(value)
+	}
+	var durations []PhaseDuration
+	timers := obj(metrics, "timers")
+	for _, raw := range arrValue(timers["phase_duration_ms"]) {
+		durations = append(durations, PhaseDuration{
+			RunID:      str(raw, "run_id"),
+			PhaseID:    str(raw, "phase_id"),
+			Status:     str(raw, "status"),
+			DurationMS: intValue(raw["duration_ms"]),
+		})
+	}
+	return Metrics{
+		Counters:      counters,
+		Gauges:        gauges,
+		PhaseDuration: durations,
+		EmittedAt:     str(metrics, "emitted_at"),
+	}
 }
 
 func (c *httpClient) Dispatchable() []Task {

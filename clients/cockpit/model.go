@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/stopwatch"
@@ -13,7 +14,7 @@ import (
 	"github.com/charmbracelet/glamour"
 )
 
-var tabNames = []string{"summary", "messages", "events", "logs", "reports", "files", "pr"}
+var tabNames = []string{"summary", "messages", "events", "logs", "reports", "files", "pr", "metrics"}
 
 type model struct {
 	client Client
@@ -33,6 +34,7 @@ type model struct {
 	reports []Report
 	files   []FileChange
 	pr      PRStatus
+	metrics Metrics
 
 	diffPreviews   map[string]DiffPreview
 	diffLoading    map[string]bool
@@ -55,9 +57,10 @@ type model struct {
 // messages
 type tickMsg time.Time
 type dataMsg struct {
-	runs   []Run
-	tasks  []Task
-	errors []string
+	runs    []Run
+	tasks   []Task
+	metrics Metrics
+	errors  []string
 }
 type nvimDoneMsg struct {
 	err    error
@@ -93,7 +96,7 @@ func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 		editor:       cfg.Editor,
 		tools:        tools,
 		glam:         r,
-		taskList:     NewTaskList(),
+		taskList:     NewTaskListWithSections(cfg.Cockpit.TaskList.Sections),
 		liveSpinner:  newLiveSpinner(),
 		runClock:     stopwatch.New(stopwatch.WithInterval(time.Second)),
 		tab:          0,
@@ -114,7 +117,8 @@ func loadData(c Client) tea.Cmd {
 	return func() tea.Msg {
 		runs := c.Runs()
 		tasks := c.Dispatchable()
-		return dataMsg{runs: runs, tasks: tasks, errors: c.DrainErrors()}
+		metrics := c.Metrics()
+		return dataMsg{runs: runs, tasks: tasks, metrics: metrics, errors: c.DrainErrors()}
 	}
 }
 
@@ -124,7 +128,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		if m.viewerTab() {
+		if m.detailUsesViewer() {
 			m.refreshViewer(viewerPreserve)
 		}
 		return m, nil
@@ -156,12 +160,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case dataMsg:
-		hadViewerRows := m.viewerTab() && m.rowCount() > 0
-		m.runs, m.tasks = msg.runs, msg.tasks
+		hadViewerRows := m.detailUsesViewer() && m.rowCount() > 0
+		m.runs, m.tasks, m.metrics = msg.runs, msg.tasks, msg.metrics
 		m.buildItems()
 		m.loadDetail()
 		var cmds []tea.Cmd
-		if m.viewerTab() {
+		if m.detailUsesViewer() {
 			if hadViewerRows {
 				m.refreshViewer(viewerPreserve)
 			} else {
@@ -246,7 +250,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delete(m.diffLoading, msg.key)
 		}
 		m.diffPreviews[msg.key] = msg.preview
-		if m.viewerTab() {
+		if m.detailUsesViewer() {
 			m.refreshViewer(viewerPreserve)
 		}
 		return m, nil
@@ -403,7 +407,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	if m.viewFocused && m.viewerTab() {
+	if m.viewFocused && m.detailUsesViewer() {
 		if m.viewer.Searching() || msg.String() == "/" ||
 			(m.viewer.FilterActive() && (msg.String() == "n" || msg.String() == "N" || msg.String() == "o" || msg.String() == "esc")) {
 			return m, m.viewer.HandleKey(msg)
@@ -423,7 +427,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.viewer.Pan(max(1, m.rightPaneWidth()/4))
 			return m, nil
 		case "s":
-			if m.viewerTab() {
+			if m.detailUsesViewer() {
 				return m, m.saveVisibleViewer()
 			}
 		}
@@ -477,7 +481,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.selectTab((m.tab + 1) % len(tabNames))
 	case "shift+tab":
 		return m, m.selectTab((m.tab - 1 + len(tabNames)) % len(tabNames))
-	case "1", "2", "3", "4", "5", "6", "7":
+	case "1", "2", "3", "4", "5", "6", "7", "8":
 		return m, m.selectTab(int(msg.String()[0] - '1'))
 	case "/":
 		m.viewFocused = false
@@ -500,7 +504,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if tabNames[m.tab] == "pr" {
 			return m, m.openSelectedPR()
 		}
-		if m.viewerTab() {
+		if m.detailUsesViewer() {
 			if !m.viewFocused {
 				m.scrollToBottom()
 			}
@@ -597,7 +601,7 @@ func (m *model) moveSel(delta int) tea.Cmd {
 	}
 	m.resetViewerCursor()
 	m.loadDetail()
-	if m.viewerTab() {
+	if m.detailUsesViewer() {
 		m.scrollToBottom()
 	}
 	return tea.Batch(m.maybeLoadSelectedDiffPreview(), m.syncMotionCmd())
@@ -623,12 +627,12 @@ func (m *model) scrollToBottom() {
 func (m *model) selectTab(tab int) tea.Cmd {
 	m.tab = tab
 	m.selectInitialViewerLine()
-	m.viewFocused = m.viewerTab()
+	m.viewFocused = m.detailUsesViewer()
 	return tea.Batch(m.maybeLoadSelectedDiffPreview(), m.syncMotionCmd())
 }
 
 func (m *model) selectInitialViewerLine() {
-	if m.viewerTab() {
+	if m.detailUsesViewer() {
 		m.refreshViewer(viewerBottom)
 	} else {
 		m.viewer.SetLines(nil, viewerReset, m.viewerBodyWindowHeight())
@@ -652,7 +656,7 @@ func (m *model) selectViewerLineByKey(key string) bool {
 }
 
 func (m *model) rowCount() int {
-	if !m.viewerTab() {
+	if !m.detailUsesViewer() {
 		return 0
 	}
 	m.refreshViewer(viewerPreserve)
@@ -668,7 +672,7 @@ func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 	h := m.viewerBodyWindowHeight()
 	m.viewer.SetWrapText(tabNames[m.tab] != "logs")
 	m.viewer.SetBounds(w, h)
-	if !m.viewerTab() {
+	if !m.detailUsesViewer() {
 		m.viewer.SetLines(nil, viewerReset, h)
 		return
 	}
@@ -719,7 +723,7 @@ func (m model) leftPaneWidth() int {
 	if total < 80 {
 		total = 80
 	}
-	return leftPaneWidth(total)
+	return configuredLeftPaneWidth(total, m.config.Cockpit.TaskList)
 }
 
 func (m model) rightPaneWidth() int {
@@ -732,24 +736,127 @@ func (m model) mouseOverRightPane(msg tea.MouseMsg) bool {
 }
 
 func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
-	ev, ok := msg.(tea.MouseWheelMsg)
+	mouse := msg.Mouse()
+	if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
+		if mouse.X <= m.leftPaneWidth() && mouse.Y >= 1 && mouse.Y <= 3 {
+			if idx := m.taskSectionIndexAt(mouse.X - 1); idx >= 0 {
+				m.taskList.section = idx
+				m.taskList.selected = 0
+				m.viewFocused = false
+				m.notice = "section: " + m.taskList.ActiveSection().Name
+				m.buildItems()
+				return m, nil
+			}
+		} else if mouse.X <= m.leftPaneWidth() {
+			if idx := m.taskRowIndexAt(mouse.Y); idx >= 0 {
+				m.taskList.selected = idx
+				m.viewFocused = false
+				m.loadDetail()
+				return m, nil
+			}
+		}
+		if m.mouseOverRightPane(msg) && mouse.Y == m.rightTabLineY() {
+			if idx := m.rightTabIndexAt(mouse.X); idx >= 0 {
+				return m, m.selectTab(idx)
+			}
+		}
+		if m.mouseOverRightPane(msg) && m.detailUsesViewer() {
+			m.viewFocused = true
+			return m, nil
+		}
+		m.viewFocused = false
+		return m, nil
+	}
+
+	_, ok := msg.(tea.MouseWheelMsg)
 	if !ok {
 		return m, nil
 	}
 
-	mouse := ev.Mouse()
 	delta := mouseWheelStep
 	if mouse.Button == tea.MouseWheelUp {
 		delta = -mouseWheelStep
 	}
 
-	if m.mouseOverRightPane(msg) && m.viewerTab() {
+	if m.mouseOverRightPane(msg) && m.detailUsesViewer() {
 		m.viewFocused = true
 		return m, m.moveRow(delta)
 	}
 
 	m.viewFocused = false
 	return m, m.moveSel(delta)
+}
+
+func (m model) taskSectionIndexAt(x int) int {
+	if x < 0 {
+		return -1
+	}
+	counts := m.taskList.Counts(m.runs, m.tasks)
+	pos := 0
+	for i, section := range m.taskList.Sections() {
+		label := " " + section.Name + " " + itoa(counts[section.Name]) + " "
+		if x >= pos && x < pos+len(label) {
+			return i
+		}
+		pos += len(label) + 1
+	}
+	return -1
+}
+
+func (m model) taskRowIndexAt(y int) int {
+	// Status bar plus pane border/header lines place the first visible task row at
+	// terminal row 4. Rows are rendered as two-line items.
+	row := (y - 4) / 2
+	if y < 4 || row < 0 || row >= len(m.taskList.Items()) {
+		return -1
+	}
+	return row
+}
+
+func (m model) rightTabLineY() int {
+	run, ok := m.selectedRun()
+	if !ok {
+		return -1
+	}
+	w := m.rightPaneWidth() - 1
+	if w < 20 {
+		w = 20
+	}
+	railLines := len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
+	return 5 + railLines
+}
+
+func (m model) rightTabIndexAt(x int) int {
+	rel := x - m.leftPaneWidth() - 2
+	if rel < 0 {
+		return -1
+	}
+	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, len(m.metrics.Counters) + len(m.metrics.Gauges)}
+	if m.pr.URL != "" {
+		counts[6] = 1
+	}
+	pos := 0
+	for i, name := range tabNames {
+		label := name
+		if i == 1 && counts[i] > 0 {
+			if msgPos, ok := m.selectedMessagePosition(); ok {
+				label += " " + itoa(msgPos) + "/" + itoa(counts[i])
+			} else {
+				label += " " + itoa(counts[i])
+			}
+		} else if i > 0 && counts[i] > 0 {
+			label += " " + itoa(counts[i])
+		}
+		if tabOpenable(name) {
+			label += " ?"
+		}
+		labelLen := utf8.RuneCountInString(" " + label + " ")
+		if rel >= pos && rel < pos+labelLen {
+			return i
+		}
+		pos += labelLen
+	}
+	return -1
 }
 
 func tabNameAt(tab int) string {
@@ -770,7 +877,7 @@ func tabOpenable(name string) bool {
 
 func tabViewer(name string) bool {
 	switch name {
-	case "messages", "events", "logs", "reports", "files", "pr":
+	case "messages", "events", "logs", "reports", "files", "pr", "metrics":
 		return true
 	default:
 		return false
@@ -778,6 +885,12 @@ func tabViewer(name string) bool {
 }
 
 func (m model) viewerTab() bool { return tabViewer(tabNameAt(m.tab)) }
+func (m model) detailUsesViewer() bool {
+	if _, ok := m.selectedTask(); ok {
+		return true
+	}
+	return m.viewerTab()
+}
 
 func (m model) openableTab() bool { return tabOpenable(tabNameAt(m.tab)) }
 

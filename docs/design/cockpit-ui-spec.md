@@ -94,9 +94,9 @@ live in small cockpit-owned components:
 
 | Component | Owns |
 |-----------|------|
-| `TaskList` | grouped `RUNNING` / `READY` / `RECENT` rows mapped into a `filterableviewport` left pane, selected item, sticky selected-group header, collapsed groups, case-insensitive substring search, and scope |
+| `TaskList` | configurable section tabs mapped into a `filterableviewport` left pane, selected item, sticky section/filter header, case-insensitive substring search, and scope |
 | `Viewer` | keyed drill-down rows mapped into `robinovitch61/viewport` items, selected line identity, bottom-follow behavior, and packed unselectable child rows (message bodies / diff previews) |
-| Tab adapters | conversion of summary/messages/events/logs/reports/files/pr data into stable keyed viewer lines and nvim targets where applicable |
+| Tab adapters | conversion of summary/messages/events/logs/reports/files/pr/metrics data into stable keyed viewer lines and nvim/browser targets where applicable |
 
 All data is fetched from the Elixir core; the cockpit never infers state the
 core has not asserted. A periodic tick (default 2s) refreshes projections. The
@@ -104,10 +104,14 @@ status bar and diff-loading rows use a `bubbles/v2/spinner` only while runs or
 loading states are active, and the selected running run gets a lightweight
 `bubbles/v2/stopwatch` elapsed indicator. `cockpit.reducedMotion` disables
 spinner frames and stopwatch display for accessibility / low-power terminals.
+The metrics tab consumes `/api/v1/metrics` and renders counters, gauges, and
+phase-duration bars without client-side authoritative aggregation.
 
 The keybar includes an explicit `focus: tasks` / `focus: details` label. The
 focused pane uses the accent border; the inactive pane uses the blur border and,
 by default, a muted content palette controlled by `cockpit.focus`.
+Mouse input mirrors keyboard targets for visible task-list sections, task/run
+rows, and drill-down tabs; wheel routing remains pane-sensitive.
 
 
 ## Keymap
@@ -223,6 +227,8 @@ default avoids nesting a TUI inside a TUI.
   the cockpit and runs inline. The triage path writes a non-secret brief with run
   status, failure signals, PR state, and conflicted files; `P` opens plain `omp`.
   Active running workers are refused to avoid concurrent mutations.
+- The `metrics` tab renders `/api/v1/metrics` counters, gauges, and phase
+  durations as bounded rows. Empty/missing metrics render a static empty state.
 - The cockpit uses generated theme artifacts from `clients/cockpit/theme/`:
   `tokens.yaml` drives Lip Gloss constants, Glamour JSON, `gh-dash.yml`,
   `enhance.env`, `diffnav/config.yml`, and `delta.gitconfig`. Handoffs pass
@@ -282,13 +288,18 @@ cockpit:
   focus:
     style: both          # both | border | dim
     dimInactive: true
+  taskList:
+    width: auto          # auto | columns | percentage, e.g. 58%
+    sections: []         # optional [{name, filter}] section strip
+  reducedMotion: false
 ```
 
 `mode: auto` = remote when a session is found, else inline (the recommended
 default). `mode: remote` never suspends; `mode: inline` always suspends.
 `COCKPIT_DIFFNAV`, `COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`,
-`COCKPIT_OMP`, `COCKPIT_OMP_MODE`, and `COCKPIT_EXPORT_DIR` override the
-respective integration and cockpit export values.
+`COCKPIT_OMP`, `COCKPIT_OMP_MODE`, `COCKPIT_EXPORT_DIR`,
+`COCKPIT_FOCUS_STYLE`, `COCKPIT_FOCUS_DIM_INACTIVE`, and
+`COCKPIT_REDUCED_MOTION` override the respective integration and cockpit values.
 
 ## Non-goals for the POC
 

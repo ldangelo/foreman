@@ -62,9 +62,15 @@ type PRConfig struct {
 }
 
 type CockpitConfig struct {
-	ExportDir     string      `yaml:"exportDir"`
-	Focus         FocusConfig `yaml:"focus"`
-	ReducedMotion bool        `yaml:"reducedMotion"`
+	ExportDir     string         `yaml:"exportDir"`
+	Focus         FocusConfig    `yaml:"focus"`
+	ReducedMotion bool           `yaml:"reducedMotion"`
+	TaskList      TaskListConfig `yaml:"taskList"`
+}
+
+type TaskListConfig struct {
+	Width    string        `yaml:"width"`
+	Sections []TaskSection `yaml:"sections"`
 }
 
 type FocusConfig struct {
@@ -92,6 +98,7 @@ func defaultConfig() Config {
 		Cockpit: CockpitConfig{
 			ExportDir: defaultCockpitExportDir(),
 			Focus:     FocusConfig{DimInactive: true, Style: focusStyleBoth},
+			TaskList:  TaskListConfig{Width: "auto", Sections: defaultTaskListSections()},
 		},
 	}
 }
@@ -153,6 +160,14 @@ func (c *Config) normalize() {
 	c.Cockpit.ExportDir = expandHome(c.Cockpit.ExportDir)
 	c.Cockpit.Focus.Style = normalizeFocusStyle(c.Cockpit.Focus.Style)
 	c.Cockpit.ReducedMotion = normalizeBool("", c.Cockpit.ReducedMotion)
+	if c.Cockpit.TaskList.Width == "" {
+		c.Cockpit.TaskList.Width = defaults.Cockpit.TaskList.Width
+	}
+	if len(c.Cockpit.TaskList.Sections) == 0 {
+		c.Cockpit.TaskList.Sections = defaultTaskListSections()
+	} else {
+		c.Cockpit.TaskList.Sections = normalizeTaskSections(c.Cockpit.TaskList.Sections)
+	}
 }
 
 func defaultCockpitExportDir() string {

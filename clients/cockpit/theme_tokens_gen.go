@@ -15,6 +15,8 @@ const (
 	themeTokenBorderPrimary   = "#2b2f3a"
 	themeTokenBorderSecondary = "#3a3f4b"
 	themeTokenBorderFaint     = "#1c1f27"
+	themeTokenBorderFocus     = "#56b6c2"
+	themeTokenBorderBlur      = "#2b2f3a"
 	themeTokenBgSelected      = "#1f2a44"
 	themeTokenBgEmphasis      = "#13303a"
 	themeTokenBgFailure       = "#3a1414"

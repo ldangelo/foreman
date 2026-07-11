@@ -28,14 +28,15 @@ authoritative state.
   recent, not running.
 - Task/run rows are richer two-line entries: metadata (id, type, priority,
   phase/status) on the first line and the title/summary on the second. The
-  selected task detail renders id, status, workflow, dependencies, project, and
-  description as an aligned field table. READY task
+  selected task detail is scrollable and renders id, status, workflow,
+  dependencies, project, and description as an aligned field table. READY task
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
   edit task JSON via `task.update`, and `n` to open an in-pane `textinput` /
   `textarea` create form that posts `task.create` with `ctrl+s`.
 - Right column: color-coded run header, live elapsed clock for selected running
   runs, an animated phase rail, and a drill-down tab strip (`summary · messages ·
-  events · logs · reports · files · pr`). Loading states use the cockpit spinner.
+  events · logs · reports · files · pr · metrics`). The metrics tab reads
+  `/api/v1/metrics` and renders counters, gauges, and phase durations.
   The active pane is called out with a focus label and accent frame; the inactive
   pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or
   `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
@@ -46,6 +47,8 @@ authoritative state.
   `filterableviewport` exact matching, `enter` applies, `esc` clears, `n` / `N`
   jump between matches, and `o` toggles matches-only view while a filter is
   active.
+- Mouse clicks can switch task-list sections, select visible task/run rows, and
+  switch drill-down tabs; keyboard behavior remains canonical.
 - The focused logs pane pans long unwrapped rows with `left` / `right`. Logs
   render line numbers. Any drill-down pane can save currently visible viewer
   rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).
@@ -64,7 +67,7 @@ authoritative state.
 
 ## Run it
 
-Requires Go 1.23+.
+Requires Go 1.26+.
 
 Optional integrations are discovered at runtime and fail closed with a notice:
 `diffnav` for full-run file review, `delta` for inline selected-file previews,
@@ -110,7 +113,8 @@ esc       leave the drill-down view and return focus to the task list
 ↑↓ / j/k  move the highlighted line in focused messages/events/logs/reports/files/pr
 ctrl+d/u  half-page down/up in the focused drill-down view
 mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls that view
-⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–7 jump to a tab and focus it
+          click section tabs, visible task/run rows, or drill-down tabs to select them
+⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab and focus it
 o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n    create task form (ctrl+s submit)
@@ -121,7 +125,7 @@ r/R       retry / reset                       /    search     n/N match
 ?         show generated keymap help in the detail pane; esc or ? closes it
 ```
 
-Opening a drill-down view with `enter`, `tab`, or `1`–`7` selects its newest
+Opening a drill-down view with `enter`, `tab`, or `1`–`8` selects its newest
 rendered line. Moving inside a drill-down keeps the selected row near the middle
 of the viewport when there is room; near the top or bottom it clamps to the edge.
 Live updates keep a manually moved viewer cursor on the same rendered line when
@@ -172,6 +176,9 @@ cockpit:
     style: both         # both | border | dim
     dimInactive: true
   reducedMotion: false
+  taskList:
+    width: auto          # auto | columns | percentage, e.g. 58%
+    sections: []         # optional [{name, filter}] task/run section strip
 ```
 
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
@@ -199,13 +206,13 @@ or `$EDITOR` (falling back to `nvim`).
   *would* send (`POST /api/v1/commands`, `GET /runs/:id/attach`) rather than
   executing.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
-  (`inbox`, `logs.entries`, `report`) and surfaces HTTP/JSON failures in the
-  cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for a
-  run, the client falls back to `/api/v1/runs/:run_id/debug` for the events tab.
+  (`inbox`, `logs.entries`, `report`, `metrics`) and surfaces HTTP/JSON failures
+  in the cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for
+  a run, the client falls back to `/api/v1/runs/:run_id/debug` for the events tab.
   Foreman-projected PR fields are read from `/api/v1/runs`; richer PR checks or
-  review state would require backend projection fields or optional `gh` enrichment.
-  The contract should still be regenerated from a published OpenAPI schema
-  (ADR phase 2).
+  review state would require backend projection fields or optional `gh`
+  enrichment. The contract should still be regenerated from a published OpenAPI
+  schema (ADR phase 2).
 - File-change data has no dedicated endpoint yet; `httpClient.Files` returns
   empty pending that work. The mock client shows the intended UX.
 

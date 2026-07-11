@@ -129,3 +129,25 @@ func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 		t.Fatalf("expected cleared search to restore both rows, got %#v", list.Items())
 	}
 }
+
+func TestTaskListCustomSectionsUseFieldFilters(t *testing.T) {
+	list := NewTaskListWithSections([]TaskSection{
+		{Name: "P0 Failed", Filter: "priority:p0 state:failed"},
+		{Name: "Features", Filter: "type:feature -status:failed"},
+	})
+	runs := []Run{{Group: taskGroupRecent, TaskID: "run-task", RunID: "run-1", Priority: "P0", Status: "failed"}}
+	tasks := []Task{
+		{TaskID: "task-feature", TaskType: "feature", Priority: "P1", Status: "backlog"},
+		{TaskID: "task-bug", TaskType: "bug", Priority: "P0", Status: "backlog"},
+	}
+
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-1" {
+		t.Fatalf("expected custom failed/P0 section to match failed run, got %#v", items)
+	}
+	list.MoveSection(1)
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 1 || items[0].Task.TaskID != "task-feature" {
+		t.Fatalf("expected custom feature section to match feature task only, got %#v", items)
+	}
+}

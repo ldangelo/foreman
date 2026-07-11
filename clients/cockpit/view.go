@@ -47,7 +47,7 @@ func (m model) renderFrame() string {
 		return "starting cockpit…"
 	}
 	total := m.width
-	leftW := leftPaneWidth(total)
+	leftW := m.leftPaneWidth()
 	rightW := total - leftW - 1
 	if rightW < 20 {
 		rightW = 20
@@ -95,6 +95,32 @@ func leftPaneWidth(total int) int {
 		leftW = 40
 	}
 	return leftW
+}
+
+func configuredLeftPaneWidth(total int, cfg TaskListConfig) int {
+	defaultW := leftPaneWidth(total)
+	raw := strings.TrimSpace(cfg.Width)
+	if raw == "" || raw == "auto" {
+		return defaultW
+	}
+	leftW := defaultW
+	if strings.HasSuffix(raw, "%") {
+		pctText := strings.TrimSuffix(raw, "%")
+		if pct, ok := atoi(pctText); ok && pct > 0 {
+			leftW = total * pct / 100
+		}
+	} else if cols, ok := atoi(raw); ok && cols > 0 {
+		leftW = cols
+	}
+	minLeft := 32
+	if total < 80 {
+		minLeft = max(24, total-45)
+	}
+	maxLeft := total - 45
+	if maxLeft < minLeft {
+		maxLeft = minLeft
+	}
+	return max(minLeft, min(leftW, maxLeft))
 }
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -240,7 +266,7 @@ func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
 	counts := m.taskList.Counts(m.runs, m.tasks)
 	active := m.taskList.ActiveSectionIndex()
 	var tabs []string
-	for i, section := range taskListSections {
+	for i, section := range m.taskList.Sections() {
 		label := section.Name + " " + itoa(counts[section.Name])
 		if i == active {
 			tabs = append(tabs, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(" "+label+" "))
@@ -384,7 +410,7 @@ func (m model) renderRight(w int) string {
 	if bodyWindowH < 1 {
 		bodyWindowH = 1
 	}
-	if m.viewerTab() {
+	if m.viewerTab() || (!isRun && m.viewFocused) {
 		viewer := m.viewer
 		policy := viewerPreserve
 		if viewer.Len() == 0 {
@@ -451,7 +477,7 @@ func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 
 func (m model) renderTabs(w int, visual paneVisual) string {
 	var toks []string
-	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0}
+	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, len(m.metrics.Counters) + len(m.metrics.Gauges)}
 	if m.pr.URL != "" {
 		counts[6] = 1
 	}
@@ -529,6 +555,19 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 			{"project", it.Task.ProjectID},
 			{"description", desc},
 		}, w)...)
+		s = append(s, ViewerLine{Key: "task:description:spacer", Text: ""})
+		s = append(s, ViewerLine{Key: "task:description:title", Text: whiteStyle.Render("Description")})
+		if m.glam != nil {
+			if out, err := m.glam.Render(desc); err == nil {
+				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+					s = append(s, ViewerLine{Key: "task:description:" + itoa(i), Text: clip(ln, w)})
+				}
+				return s
+			}
+		}
+		for i, ln := range wrap(desc, w) {
+			s = append(s, ViewerLine{Key: "task:description:" + itoa(i), Text: textStyle.Render(ln)})
+		}
 		return s
 	}
 	switch tabNames[m.tab] {
@@ -631,6 +670,8 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 		}
 	case "pr":
 		return m.renderPRLines(w)
+	case "metrics":
+		return renderMetricsLines(m.metrics, w)
 	}
 	return s
 }
@@ -791,4 +832,19 @@ func itoa(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+func atoi(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
 }

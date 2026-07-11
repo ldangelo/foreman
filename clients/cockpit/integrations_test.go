@@ -90,6 +90,23 @@ func TestLoadConfigParsesCockpitFocus(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesTaskListSections(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte("cockpit:\n  taskList:\n    width: 58%\n    sections:\n      - name: Hot\n        filter: priority:p0 state:running\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cockpit.TaskList.Width != "58%" {
+		t.Fatalf("expected configured task-list width, got %q", cfg.Cockpit.TaskList.Width)
+	}
+	if len(cfg.Cockpit.TaskList.Sections) != 1 || cfg.Cockpit.TaskList.Sections[0].Name != "Hot" || cfg.Cockpit.TaskList.Sections[0].Filter != "priority:p0 state:running" {
+		t.Fatalf("unexpected task-list sections: %#v", cfg.Cockpit.TaskList.Sections)
+	}
+}
+
 func TestLoadConfigParsesIntegrations(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("integrations:\n  diffnav:\n    enable: on\n    base: main\n    watch: true\n  ghDash:\n    args: [--repo, Fortium/foreman]\n  ghEnhance:\n    enable: on\n    args: [--branch, foreman/task]\npr:\n  provider: foreman\n"), 0o600); err != nil {

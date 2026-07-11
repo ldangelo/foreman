@@ -24,16 +24,34 @@ const (
 )
 
 type TaskSection struct {
-	Name   string
-	Filter string
+	Name   string `yaml:"name"`
+	Filter string `yaml:"filter"`
 }
 
-var taskListSections = []TaskSection{
-	{Name: taskSectionRunning, Filter: "state:running"},
-	{Name: taskSectionReady, Filter: "state:ready"},
-	{Name: taskSectionFailed, Filter: "state:failed"},
-	{Name: taskSectionRecent, Filter: "state:recent"},
-	{Name: taskSectionAll, Filter: "all"},
+func defaultTaskListSections() []TaskSection {
+	return []TaskSection{
+		{Name: taskSectionRunning, Filter: "state:running"},
+		{Name: taskSectionReady, Filter: "state:ready"},
+		{Name: taskSectionFailed, Filter: "state:failed"},
+		{Name: taskSectionRecent, Filter: "state:recent"},
+		{Name: taskSectionAll, Filter: "all"},
+	}
+}
+
+func normalizeTaskSections(sections []TaskSection) []TaskSection {
+	out := make([]TaskSection, 0, len(sections))
+	for _, section := range sections {
+		name := strings.TrimSpace(section.Name)
+		filter := strings.TrimSpace(section.Filter)
+		if name == "" || filter == "" {
+			continue
+		}
+		out = append(out, TaskSection{Name: name, Filter: filter})
+	}
+	if len(out) == 0 {
+		return defaultTaskListSections()
+	}
+	return out
 }
 
 const taskListFilterModeName fvpkg.FilterModeName = "task"
@@ -78,6 +96,7 @@ type TaskList struct {
 	items     []Item
 	selected  int
 	section   int
+	sections  []TaskSection
 	scope     string // current | global
 	search    string
 	searching bool
@@ -86,8 +105,13 @@ type TaskList struct {
 }
 
 func NewTaskList() TaskList {
+	return NewTaskListWithSections(nil)
+}
+
+func NewTaskListWithSections(sections []TaskSection) TaskList {
 	return TaskList{
-		scope: "current",
+		scope:    "current",
+		sections: normalizeTaskSections(sections),
 	}
 }
 
@@ -177,10 +201,10 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 	section := l.ActiveSection()
 	items := make([]Item, 0, len(all))
 	for _, it := range all {
-		if !matchesTaskSection(it, section.Name) {
+		if !matchesTaskFilter(it, section.Filter) {
 			continue
 		}
-		if !matchesTaskQuery(it, l.search) {
+		if !matchesTaskFilter(it, l.search) {
 			continue
 		}
 		items = append(items, it)
@@ -213,7 +237,8 @@ func (l *TaskList) ToggleSelectedGroup() {}
 
 func (l *TaskList) MoveSection(delta int) string {
 	before := l.section
-	l.section = (l.section + delta + len(taskListSections)) % len(taskListSections)
+	sections := l.Sections()
+	l.section = (l.section + delta + len(sections)) % len(sections)
 	if l.section != before {
 		l.selected = 0
 	}
@@ -259,12 +284,19 @@ func (l *TaskList) syncSearchFromFilter() {
 func (l TaskList) Items() []Item      { return l.items }
 func (l TaskList) SelectedIndex() int { return l.selected }
 func (l TaskList) ActiveSection() TaskSection {
-	if l.section < 0 || l.section >= len(taskListSections) {
-		return taskListSections[0]
+	sections := l.Sections()
+	if l.section < 0 || l.section >= len(sections) {
+		return sections[0]
 	}
-	return taskListSections[l.section]
+	return sections[l.section]
 }
 func (l TaskList) ActiveSectionIndex() int { return l.section }
+func (l TaskList) Sections() []TaskSection {
+	if len(l.sections) == 0 {
+		return defaultTaskListSections()
+	}
+	return l.sections
+}
 func (l TaskList) SelectedItem() (Item, bool) {
 	if l.selected < 0 || l.selected >= len(l.items) {
 		return Item{}, false
@@ -279,9 +311,9 @@ func (l TaskList) Searching() bool             { return l.searching }
 func (l TaskList) Counts(runs []Run, tasks []Task) map[string]int {
 	count := map[string]int{}
 	all := buildTaskListItems(runs, tasks)
-	for _, section := range taskListSections {
+	for _, section := range l.Sections() {
 		for _, it := range all {
-			if matchesTaskSection(it, section.Name) {
+			if matchesTaskFilter(it, section.Filter) {
 				count[section.Name]++
 			}
 		}
@@ -315,22 +347,139 @@ func buildTaskListItems(runs []Run, tasks []Task) []Item {
 }
 
 func matchesTaskSection(it Item, section string) bool {
-	switch section {
-	case taskSectionRunning:
-		return !it.IsTask && it.Run.Group == taskGroupRunning
-	case taskSectionReady:
-		return it.IsTask && !isFailedState(it.Task.Status)
-	case taskSectionFailed:
-		if it.IsTask {
-			return isFailedState(it.Task.Status)
+	for _, configured := range defaultTaskListSections() {
+		if strings.EqualFold(section, configured.Name) {
+			return matchesTaskFilter(it, configured.Filter)
 		}
-		return isFailedState(it.Run.Status) || strings.EqualFold(it.Run.Verdict, "fail") || strings.Contains(strings.ToLower(it.Run.Attention), "fail")
-	case taskSectionRecent:
-		return !it.IsTask && it.Run.Group == taskGroupRecent
-	case taskSectionAll:
+	}
+	return matchesTaskFilter(it, section)
+}
+
+func matchesTaskFilter(it Item, query string) bool {
+	tokens := parseTaskFilter(query)
+	if len(tokens) == 0 {
 		return true
+	}
+	for _, token := range tokens {
+		matched := matchesTaskToken(it, token.field, token.value)
+		if token.negated {
+			matched = !matched
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+type taskFilterToken struct {
+	field   string
+	value   string
+	negated bool
+}
+
+func parseTaskFilter(query string) []taskFilterToken {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	tokens := make([]taskFilterToken, 0, len(fields))
+	for _, raw := range fields {
+		if raw == "" || raw == "all" {
+			continue
+		}
+		negated := false
+		for strings.HasPrefix(raw, "-") || strings.HasPrefix(raw, "!") {
+			negated = true
+			raw = strings.TrimLeft(raw, "-!")
+		}
+		if raw == "" {
+			continue
+		}
+		field, value := "text", raw
+		if strings.Contains(raw, ":") {
+			parts := strings.SplitN(raw, ":", 2)
+			field, value = parts[0], parts[1]
+		}
+		if value == "" || value == "true" {
+			value = field
+			field = "text"
+		}
+		if value == "false" {
+			negated = !negated
+			value = field
+			field = "text"
+		}
+		tokens = append(tokens, taskFilterToken{field: field, value: value, negated: negated})
+	}
+	return tokens
+}
+
+func matchesTaskToken(it Item, field, value string) bool {
+	if value == "" {
+		return true
+	}
+	switch field {
+	case "state", "is":
+		switch value {
+		case "running", "active":
+			return !it.IsTask && it.Run.Group == taskGroupRunning
+		case "ready", "open", "backlog":
+			return it.IsTask && !isFailedState(it.Task.Status)
+		case "failed", "fail", "stuck", "conflict":
+			if it.IsTask {
+				return isFailedState(it.Task.Status)
+			}
+			return isFailedState(it.Run.Status) || strings.EqualFold(it.Run.Verdict, "fail") || strings.Contains(strings.ToLower(it.Run.Attention), "fail")
+		case "recent", "done", "closed":
+			return !it.IsTask && it.Run.Group == taskGroupRecent
+		default:
+			return strings.Contains(fieldValue(it, "status"), value)
+		}
+	case "status", "priority", "type", "project", "phase", "verdict", "id", "task", "run", "title":
+		return strings.Contains(fieldValue(it, field), value)
 	default:
-		return true
+		return strings.Contains(taskSearchText(it), value)
+	}
+}
+
+func fieldValue(it Item, field string) string {
+	if it.IsTask {
+		switch field {
+		case "status":
+			return strings.ToLower(it.Task.Status)
+		case "priority":
+			return strings.ToLower(it.Task.Priority)
+		case "type":
+			return strings.ToLower(it.Task.TaskType)
+		case "project":
+			return strings.ToLower(it.Task.ProjectID)
+		case "id", "task":
+			return strings.ToLower(it.Task.TaskID)
+		case "title":
+			return strings.ToLower(it.Task.Title)
+		default:
+			return ""
+		}
+	}
+	switch field {
+	case "status":
+		return strings.ToLower(it.Run.Status)
+	case "priority":
+		return strings.ToLower(it.Run.Priority)
+	case "type":
+		return strings.ToLower(it.Run.TaskType)
+	case "project":
+		return strings.ToLower(it.Run.ProjectID)
+	case "phase":
+		return strings.ToLower(it.Run.Phase)
+	case "verdict":
+		return strings.ToLower(it.Run.Verdict)
+	case "id", "task":
+		return strings.ToLower(it.Run.TaskID)
+	case "run":
+		return strings.ToLower(it.Run.RunID)
+	case "title":
+		return strings.ToLower(it.Run.Title)
+	default:
+		return ""
 	}
 }
 
@@ -343,33 +492,12 @@ func isFailedState(state string) bool {
 	}
 }
 
-func matchesTaskQuery(it Item, query string) bool {
-	terms := normalizedTaskFilterTerms(query)
-	if len(terms) == 0 {
-		return true
-	}
-	haystack := taskSearchText(it)
-	for _, term := range terms {
-		if !strings.Contains(haystack, term) {
-			return false
-		}
-	}
-	return true
-}
-
 func normalizedTaskFilterTerms(query string) []string {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
-	terms := make([]string, 0, len(fields))
-	for _, field := range fields {
-		if strings.Contains(field, ":") {
-			parts := strings.SplitN(field, ":", 2)
-			if parts[1] == "" || parts[1] == "false" {
-				continue
-			}
-			field = parts[1]
-		}
-		if field != "" && field != "all" && field != "true" {
-			terms = append(terms, field)
+	tokens := parseTaskFilter(query)
+	terms := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if token.value != "" {
+			terms = append(terms, token.value)
 		}
 	}
 	return terms
