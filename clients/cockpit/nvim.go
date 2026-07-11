@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -27,6 +30,9 @@ func defaultEditorConfig() EditorConfig {
 type target struct {
 	label    string
 	path     string
+	worktree string
+	relPath  string
+	base     string
 	isFile   bool
 	conflict bool
 	ok       bool
@@ -51,12 +57,26 @@ func resolveTarget(m model) target {
 				return target{label: r.Name, path: run.Worktree + "/docs/reports/" + run.TaskID + "/" + r.Name, ok: true}
 			}
 		}
-		if idx := m.selectedFileIndex(); idx >= 0 {
+		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {
 			f := m.files[idx]
-			return target{label: f.Path, path: run.Worktree + "/" + f.Path, isFile: true, conflict: f.Conflict, ok: true}
+			base := selectedDiffBase(run, m.config.Integrations)
+			return fileTarget(run, f.Path, base, f.Conflict)
 		}
 	}
 	return target{}
+}
+
+func fileTarget(run Run, relPath, base string, conflict bool) target {
+	return target{
+		label:    relPath,
+		path:     run.Worktree + "/" + relPath,
+		worktree: run.Worktree,
+		relPath:  relPath,
+		base:     base,
+		isFile:   true,
+		conflict: conflict,
+		ok:       true,
+	}
 }
 
 // serverAddr returns the remote nvim socket to use, if any.
@@ -82,7 +102,7 @@ func (e EditorConfig) useRemote() bool {
 // describe returns a human-readable command + mode string for the action bar.
 func describe(e EditorConfig, t target, diff bool) (string, string) {
 	if e.useRemote() {
-		cmd := e.Cmd + " " + strings.Join(nvimRemoteArgs(e.serverAddr(), t.path, diff, t.conflict), " ")
+		cmd := e.Cmd + " " + strings.Join(nvimRemoteArgs(e.serverAddr(), t.path, diff, t.conflict, t.describeBasePath()), " ")
 		if diff && t.conflict {
 			return cmd, "remote 3-way → your attached nvim session"
 		}
@@ -95,23 +115,28 @@ func describe(e EditorConfig, t target, diff bool) (string, string) {
 		return e.Cmd + " -c 'Gvdiffsplit!' " + t.path, "inline (3-way) → suspends cockpit, resumes on exit"
 	}
 	if diff {
-		return e.Cmd + " -d " + t.path, "inline diff → suspends cockpit, resumes on exit"
+		return e.Cmd + " -d " + t.describeBasePath() + " " + t.path, "inline diff → suspends cockpit, resumes on exit"
 	}
 	return e.Cmd + " " + t.path, "inline → suspends cockpit, resumes on exit"
 }
 
-func nvimRemoteArgs(server, path string, diff, conflict bool) []string {
+func nvimRemoteArgs(server, path string, diff, conflict bool, basePath string) []string {
 	if !diff {
 		return []string{"--server", server, "--remote", path}
 	}
-	cmd := "<Esc>:edit " + nvimExPath(path)
 	if conflict {
-		cmd += " | Gvdiffsplit!"
-	} else {
-		cmd += " | diffthis"
+		cmd := "<Esc>:edit " + nvimExPath(path) + " | Gvdiffsplit!<CR>"
+		return []string{"--server", server, "--remote-send", cmd}
 	}
-	cmd += "<CR>"
+	cmd := "<Esc>:edit " + nvimExPath(basePath) + " | diffthis | vert diffsplit " + nvimExPath(path) + "<CR>"
 	return []string{"--server", server, "--remote-send", cmd}
+}
+
+func (t target) describeBasePath() string {
+	if t.base != "" && t.relPath != "" {
+		return t.base + ":" + t.relPath
+	}
+	return "[base]"
 }
 
 func nvimExPath(path string) string {
@@ -124,6 +149,60 @@ func nvimExPath(path string) string {
 		"#", "\\#",
 	)
 	return replacer.Replace(path)
+}
+
+func prepareNvimDiffFiles(t target) (string, string, func(), error) {
+	workPath := expandHome(t.path)
+	basePath, cleanupBase, err := writeBaseFile(t)
+	if err != nil {
+		return "", "", cleanupBase, err
+	}
+	cleanupWork := func() {}
+	if _, err := os.Stat(workPath); err != nil {
+		file, createErr := os.CreateTemp("", "foreman-cockpit-work-*"+filepath.Ext(t.relPath))
+		if createErr != nil {
+			cleanupBase()
+			return "", "", func() {}, createErr
+		}
+		_ = file.Close()
+		workPath = file.Name()
+		cleanupWork = func() { _ = os.Remove(workPath) }
+	}
+	cleanup := func() {
+		cleanupBase()
+		cleanupWork()
+	}
+	return basePath, workPath, cleanup, nil
+}
+
+func writeBaseFile(t target) (string, func(), error) {
+	cleanup := func() {}
+	if strings.TrimSpace(t.worktree) == "" || strings.TrimSpace(t.relPath) == "" || strings.TrimSpace(t.base) == "" {
+		return "", cleanup, errors.New("no base revision available for selected diff")
+	}
+	output, err := exec.Command("git", "-C", expandHome(t.worktree), "show", t.base+":"+t.relPath).Output()
+	if err != nil {
+		if _, statErr := os.Stat(expandHome(t.path)); statErr == nil {
+			output = nil
+		} else {
+			return "", cleanup, fmt.Errorf("read base file: %w", err)
+		}
+	}
+	file, err := os.CreateTemp("", "foreman-cockpit-base-*"+filepath.Ext(t.relPath))
+	if err != nil {
+		return "", cleanup, err
+	}
+	if _, err := file.Write(output); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return "", cleanup, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", cleanup, err
+	}
+	cleanup = func() { _ = os.Remove(file.Name()) }
+	return file.Name(), cleanup, nil
 }
 
 func expandHome(p string) string {
@@ -144,13 +223,32 @@ func openInNvim(e EditorConfig, t target, diff bool) tea.Cmd {
 	path := expandHome(t.path)
 
 	if e.useRemote() {
-		c := exec.Command(e.Cmd, nvimRemoteArgs(e.serverAddr(), path, diff, t.conflict)...)
 		return func() tea.Msg {
+			basePath := t.describeBasePath()
+			if diff && !t.conflict {
+				var err error
+				basePath, path, _, err = prepareNvimDiffFiles(t)
+				if err != nil {
+					return nvimDoneMsg{err: err, remote: true, label: t.label}
+				}
+			}
+			c := exec.Command(e.Cmd, nvimRemoteArgs(e.serverAddr(), path, diff, t.conflict, basePath)...)
 			err := c.Run()
 			return nvimDoneMsg{err: err, remote: true, label: t.label}
 		}
 	}
 
+	if diff && !t.conflict {
+		basePath, workPath, cleanup, err := prepareNvimDiffFiles(t)
+		if err != nil {
+			return func() tea.Msg { return nvimDoneMsg{err: err, remote: false, label: t.label} }
+		}
+		c := exec.Command(e.Cmd, "-d", basePath, workPath)
+		return tea.ExecProcess(c, func(err error) tea.Msg {
+			cleanup()
+			return nvimDoneMsg{err: err, remote: false, label: t.label}
+		})
+	}
 	var c *exec.Cmd
 	switch {
 	case diff && t.conflict:

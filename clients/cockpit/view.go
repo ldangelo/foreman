@@ -813,7 +813,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			if f.Conflict {
 				stat = redStyle.Render("conflict")
 			}
-			t := target{label: f.Path, path: run.Worktree + "/" + f.Path, isFile: true, conflict: f.Conflict, ok: true}
+			t := fileTarget(run, f.Path, selectedDiffBase(run, m.config.Integrations), f.Conflict)
 			line := padRow(lipgloss.NewStyle().Foreground(cc).Render(f.Change)+" "+textStyle.Render(clip(f.Path, w-14)), stat, w)
 			add("file:"+f.Path, line, t)
 		}
@@ -960,7 +960,7 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	}
 	runActionLine := ""
 	if run, ok := m.selectedRun(); ok {
-		runActionLine = clip(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset"), w)
+		runActionLine = clip(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset")+"  "+cyanStyle.Render("p")+dimStyle.Render(" omp")+"  "+cyanStyle.Render("P")+dimStyle.Render(" plain omp")+"  "+cyanStyle.Render("G")+dimStyle.Render(" gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" enhance"), w)
 	}
 	t := resolveTarget(m)
 	if !t.ok {

@@ -990,6 +990,10 @@ func (m model) actionKeyAt(x, y int) string {
 			{label: "A attach", key: "A"},
 			{label: "r retry", key: "r"},
 			{label: "R reset", key: "R"},
+			{label: "p omp", key: "p"},
+			{label: "P plain omp", key: "P"},
+			{label: "G gh dash", key: "G"},
+			{label: "C enhance", key: "C"},
 		})
 	}
 	switch tabNameAt(m.tab) {

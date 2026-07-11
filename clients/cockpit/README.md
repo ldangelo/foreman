@@ -41,8 +41,9 @@ authoritative state.
   runs, an animated phase rail that collapses to a compact `4/10 · qa` badge on
   very narrow panes, and a drill-down tab strip (`summary · messages · events ·
   logs · reports · files · pr · metrics`). The files tab exposes plain nvim open
-  (`o`), selected-file nvim diff (`d`), and full-run `diffnav` (`D`). The metrics
-  tab reads `/api/v1/metrics`, shows a spinner while refresh data is in flight,
+  (`o`), selected-file nvim diff against the projected base (`d`), and full-run
+  `diffnav` (`D`). The metrics tab reads `/api/v1/metrics`, shows a spinner while
+  refresh data is in flight,
   counts counters, gauges, and phase durations in the tab badge, and renders all
   three as bounded rows. The active pane is called out with a
   focus label, accent frame, and a non-color `▶` task-list marker; the inactive
@@ -226,6 +227,31 @@ current config home, backing up existing differing files with `.bak`; `delta`
 still requires including the installed fragment from git config for external
 tools outside cockpit-managed previews.
 
+`gh dash` can also point back into the cockpit workflow through custom PR
+keybindings. Configure `repoPaths` so `{{.RepoPath}}` resolves locally, then add
+commands such as:
+
+```yaml
+keybindings:
+  prs:
+    - key: f
+      name: foreman cockpit
+      command: >
+        cd {{.RepoPath}} && foreman-cockpit
+    - key: d
+      name: foreman diffnav
+      command: >
+        cd {{.RepoPath}} && git diff {{.BaseRefName}}...HEAD | diffnav
+    - key: c
+      name: gh enhance
+      command: >
+        cd {{.RepoPath}} && gh enhance
+```
+
+The template fields come from `gh dash`; `{{.RepoPath}}` is resolved by its
+`repoPaths` config and `{{.PrNumber}}`/`{{.BaseRefName}}` describe the selected
+PR. Keep these as operator-local commands rather than cockpit runtime behavior.
+
 ## nvim open modes
 
 In this POC the editor mode is inferred from config/env: `remote` when `$NVIM` is
@@ -235,8 +261,8 @@ or `$EDITOR` (falling back to `nvim`).
 ## Status / caveats
 
 - POC quality: READY task approval/edit/create, selected-run attach/retry/reset,
-  PR browser opens, and `omp` handoffs are live actions through the cockpit
-  client and command bus.
+  `omp` triage/plain handoffs, `gh dash`, `gh enhance`, and PR browser opens are
+  live actions through the cockpit client, command bus, and tool handoffs.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
   (`inbox`, `logs.entries`, `report`, `metrics`) and surfaces HTTP/JSON failures
   in the cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for

@@ -188,10 +188,10 @@ Intent: a global key opens the full GitHub dashboard.
   append([]string{"dash"}, cfg.GhDash.Args...)...)`. Launch via `tea.ExecProcess`.
 - Acceptance: `G` suspends the cockpit, opens `gh dash`, returns on quit; missing
   `gh`/`gh dash` shows a notice.
-- Optional stretch: document the reverse direction in the spec — `gh dash` custom
-  commands can launch `foreman-cockpit`/`diffnav`/`gh enhance` with
-  `{{.RepoPath}}` / `{{.PrNumber}}` context. No cockpit code needed; just a
-  config recipe.
+- Reverse direction documented: `gh dash` custom PR keybindings can launch
+  `foreman-cockpit`, `diffnav`, or `gh enhance` from `{{.RepoPath}}` while using
+  `{{.PrNumber}}`, `{{.BaseRefName}}`, and other selected-PR template fields.
+  This remains an operator-local config recipe, not cockpit runtime code.
 
 ### E. gh-enhance GitHub Actions handoff (tier 1) — implemented
 

@@ -1637,6 +1637,18 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  "), startY+5); key != "r" {
 		t.Fatalf("expected run retry action segment, got %q", key)
 	}
+	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  r retry  R reset  "), startY+5); key != "p" {
+		t.Fatalf("expected omp action segment, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  r retry  R reset  p omp  "), startY+5); key != "P" {
+		t.Fatalf("expected plain omp action segment, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  r retry  R reset  p omp  P plain omp  "), startY+5); key != "G" {
+		t.Fatalf("expected gh dash run action segment, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  r retry  R reset  p omp  P plain omp  G gh dash  "), startY+5); key != "C" {
+		t.Fatalf("expected gh enhance run action segment, got %q", key)
+	}
 
 	m.tab = 6 // pr
 	m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42"}

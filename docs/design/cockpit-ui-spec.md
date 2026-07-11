@@ -81,8 +81,9 @@ The selected row drives the entire right side.
   (active or past). `summary` is default and needs no fetch beyond the run
   projection.
 - **Action bar** — appears only on openable tabs when a row is selected; shows
-  the exact resolved command and the open mode (remote vs inline). See nvim
-  integration.
+  the exact resolved command and the open mode (remote vs inline). The run action
+  row exposes attach/retry/reset, `omp`, `gh dash`, and `gh enhance` for both
+  keyboard and mouse hit-testing. See nvim integration.
 
 ## State model
 
@@ -305,6 +306,12 @@ default). `mode: remote` never suspends; `mode: inline` always suspends.
 `COCKPIT_OMP`, `COCKPIT_OMP_MODE`, `COCKPIT_EXPORT_DIR`,
 `COCKPIT_FOCUS_STYLE`, `COCKPIT_FOCUS_DIM_INACTIVE`, and
 `COCKPIT_REDUCED_MOTION` override the respective integration and cockpit values.
+
+`gh dash` reverse handoffs are operator-local config, not cockpit state. Add
+custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
+`repoPaths` plus selected-PR fields such as `{{.PrNumber}}` and
+`{{.BaseRefName}}`, for example to `cd {{.RepoPath}} && foreman-cockpit`,
+`git diff {{.BaseRefName}}...HEAD | diffnav`, or `gh enhance`.
 
 ## Non-goals for the POC
 
