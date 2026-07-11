@@ -344,6 +344,45 @@ defmodule ForemanServer.Http.RouterTest do
            ]
   end
 
+  test "authorized debug endpoint includes PR lifecycle payloads for fallback parsing" do
+    append_run_event("RunStarted", %{run_id: "run-http-pr-debug", phase_order: ["developer"]})
+
+    append_run_event("PrReady", %{
+      run_id: "run-http-pr-debug",
+      project_id: "proj-http-pr-debug",
+      task_id: "task-http-pr-debug",
+      pr_url: "https://github.com/acme/repo/pull/44",
+      head_sha: "abc999",
+      base_branch: "main",
+      branch_name: "foreman/task-http-pr-debug"
+    })
+
+    append_event("PrGateObserved", "pr:run-http-pr-debug", %{
+      pr_id: "pr-run-http-pr-debug",
+      run_id: "run-http-pr-debug",
+      checks: %{passed: 1, failed: 0, pending: 2},
+      review: "approved",
+      mergeable: "mergeable"
+    })
+
+    conn =
+      :get
+      |> conn("/api/v1/runs/run-http-pr-debug/debug")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    timeline = Jason.decode!(conn.resp_body)["debug"]["timeline"]
+    assert Enum.map(timeline, & &1["type"]) == ["RunStarted", "PrReady", "PrGateObserved"]
+    pr_ready = Enum.find(timeline, &(&1["type"] == "PrReady"))
+    pr_gate = Enum.find(timeline, &(&1["type"] == "PrGateObserved"))
+
+    assert get_in(pr_ready, ["payload", "pr_url"]) == "https://github.com/acme/repo/pull/44"
+    assert get_in(pr_ready, ["payload", "head_sha"]) == "abc999"
+    assert get_in(pr_gate, ["payload", "checks", "pending"]) == 2
+    assert get_in(pr_gate, ["payload", "review"]) == "approved"
+  end
+
   test "authorized top-level external trigger command creates and dedupes integration task" do
     command = top_level_external_trigger_command()
 

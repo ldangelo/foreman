@@ -831,17 +831,45 @@ func (c *httpClient) Runs() []Run {
 }
 
 func (c *httpClient) PR(runID string) PRStatus {
-	m, err := c.get("/api/v1/runs")
+	m, err := c.getMaybe("/api/v1/runs", false)
+	if err == nil {
+		for _, r := range arr(m, "runs") {
+			if str(r, "run_id", "id") != runID {
+				continue
+			}
+			if pr := prStatusFromProjection(runID, r); hasPRStatus(pr) {
+				return pr
+			}
+			break
+		}
+	}
+
+	if pr := c.prStatusFromEvents(runID); hasPRStatus(pr) {
+		return pr
+	}
+	if pr := c.prStatusFromDebug(runID); hasPRStatus(pr) {
+		return pr
+	}
 	if err != nil {
 		return PRStatus{RunID: runID, Err: err.Error()}
 	}
-	for _, r := range arr(m, "runs") {
-		if str(r, "run_id", "id") != runID {
-			continue
-		}
-		return prStatusFromProjection(runID, r)
-	}
 	return PRStatus{RunID: runID}
+}
+
+func (c *httpClient) prStatusFromEvents(runID string) PRStatus {
+	m, err := c.getMaybe("/api/v1/events?run_id="+url.QueryEscape(runID), false)
+	if err != nil {
+		return PRStatus{RunID: runID}
+	}
+	return prStatusFromEventRows(runID, arr(m, "events"))
+}
+
+func (c *httpClient) prStatusFromDebug(runID string) PRStatus {
+	m, err := c.getMaybe("/api/v1/runs/"+url.PathEscape(runID)+"/debug", false)
+	if err != nil {
+		return PRStatus{RunID: runID}
+	}
+	return prStatusFromEventRows(runID, arrValue(obj(m, "debug")["timeline"]))
 }
 
 func (c *httpClient) Metrics() Metrics {

@@ -286,6 +286,61 @@ func TestPRStatusMapsFromRunProjection(t *testing.T) {
 	}
 }
 
+func TestPRStatusFallsBackToEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/projects", "/api/v1/tasks":
+			_, _ = w.Write([]byte(`{"ok":true,"projects":[],"tasks":[]}`))
+		case "/api/v1/runs":
+			_, _ = w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-pr","task_id":"task-1","status":"running"}]}`))
+		case "/api/v1/events":
+			if r.URL.Query().Get("run_id") != "run-pr" {
+				t.Fatalf("expected PR fallback to query selected run, got %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"events":[{"event_type":"PrGateObserved","run_id":"run-pr","checks":{"passed":4,"failed":0,"pending":1},"review":"approved","mergeable":"mergeable"},{"event_type":"PrReady","run_id":"run-pr","pr_url":"https://github.com/acme/repo/pull/43","head_sha":"def456","base_branch":"main","branch_name":"foreman/task-2"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	pr := client.PR("run-pr")
+	if pr.URL != "https://github.com/acme/repo/pull/43" || pr.Number != "43" || pr.State != "open" || pr.HeadSHA != "def456" {
+		t.Fatalf("unexpected PR event fallback status: %+v", pr)
+	}
+	if pr.Mergeable != "mergeable" || pr.ReviewDecision != "approved" || pr.Checks.Passed != 4 || pr.Checks.Pending != 1 {
+		t.Fatalf("expected PR gate fields from events: %+v", pr)
+	}
+}
+
+func TestPRStatusFallsBackToDebugTimeline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/projects", "/api/v1/tasks":
+			_, _ = w.Write([]byte(`{"ok":true,"projects":[],"tasks":[]}`))
+		case "/api/v1/runs":
+			_, _ = w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-pr","task_id":"task-1","status":"running"}]}`))
+		case "/api/v1/events":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"ok":false}`))
+		case "/api/v1/runs/run-pr/debug":
+			_, _ = w.Write([]byte(`{"ok":true,"debug":{"timeline":[{"type":"PrRetargeted","payload":{"run_id":"run-pr","pr_url":"https://github.com/acme/repo/pull/44","head_sha":"abc999","new_base_branch":"release","branch_name":"foreman/task-3"}}]}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	pr := client.PR("run-pr")
+	if pr.URL != "https://github.com/acme/repo/pull/44" || pr.Number != "44" || pr.State != "open" || pr.HeadSHA != "abc999" || pr.BaseBranch != "release" {
+		t.Fatalf("unexpected PR debug fallback status: %+v", pr)
+	}
+}
+
 func TestPRTabIsViewerButNotOpenable(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.tab = 6

@@ -35,7 +35,7 @@ Implemented in the Go cockpit module:
   when no worktree diff is available.
 - Global `G` `gh dash` handoff.
 - Global `C` `gh enhance` handoff from the selected run worktree.
-- Native `pr` tab backed by Foreman-projected run PR fields, including optional mergeability, review decision, and check summaries when projected, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
+- Native `pr` tab backed by Foreman-projected run PR fields, including mergeability, review decision, and check summaries, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
 
 Verification used for the implementation: `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`.
 
@@ -76,15 +76,17 @@ Confirmed hook points in `clients/cockpit/`:
   `renderAction(w)` renders the action bar. Add the `pr` tab body here.
 - `client.go` — the `Client` interface, the `Run`/`Task`/`Message`/`Event`/
   `Report`/`FileChange` types, `httpClient` with `get()`, helpers `arr`/`obj`/
-  `str`/`stringList`, `DrainErrors()`, and `NewMockClient()`. Add PR data here.
+  `str`/`stringList`, `DrainErrors()`, and `NewMockClient()` include the PR data
+  consumed by the native tab.
 - `styles.go` — palette (`cGreen`/`cYellow`/`cRed`/`cCyan`/`cDim` …) for status
   coloring.
 - `main.go` — `clientForConfig`, `ensureTTY()` (handoffs require a TTY — already
   guaranteed for the interactive path).
 
-Run struct now includes PR projection fields used by the native `pr` tab:
-`PRURL`, `PRState`, `PRHeadSHA`, `BaseBranch`, and `BranchName`. `Client.PR`
-returns the selected run's `PRStatus`; no dedicated PR endpoint is required yet.
+The run projection and client parser now expose the PR fields used by the native
+`pr` tab: `PRURL`, `PRState`, `PRHeadSHA`, `BaseBranch`, `BranchName`,
+mergeability, review decision, and check summary. `Client.PR` returns the
+selected run's `PRStatus`; no dedicated PR endpoint is required.
 
 ## 4. Dependencies & graceful degradation
 
@@ -232,13 +234,13 @@ process — the true single-pane win.
      `pr_review_decision`, and `pr_checks`. The run projection also carries
      cockpit row counts and diff totals.
   2. Otherwise derive from `GET /api/v1/events` / `…/runs/:id/debug` (the events
-     tab already falls back to debug) by folding `run.pr.*` events.
-  3. As a last resort for live check/review detail, shell `gh pr view <url>
-     --json state,statusCheckRollup,reviewDecision,mergeable` (guarded by `gh`
-     availability). Keep this behind the `pr.provider: github` config.
-- Add `Client.PR(runID string) PRStatus` to the interface; implement on both
-  `httpClient` and `mockClient` (give the mock realistic data for the existing
-  `foreman-a1b2c` / merged / failed runs).
+     tab already falls back to debug) by folding `run.pr.*` and PR-gate events.
+     The client does not shell out to `gh pr view` for data; `gh` remains an
+     opener/enhancement handoff, while Foreman projections/debug timelines are
+     the authoritative cockpit data source.
+- `Client.PR(runID string) PRStatus` is implemented on both `httpClient` and
+  `mockClient`, with realistic mock PR data for the existing `foreman-a1b2c`,
+  merged, and failed runs.
 - Render in `view.go`: PR number + state (color by state: open=cyan,
   merged=green, closed=red, draft=dim), mergeable, a checks summary
   (`✓ 4  ✗ 1  ● 2` using the palette), review decision, and the URL.
@@ -283,8 +285,8 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
 - `docs/design/cockpit-ui-spec.md` — add the `pr` tab to the tab strip, the
   diffnav/gh-dash/gh-enhance integration section, the keymap table, and the
   config surface.
-- `docs/adr/0001-…` — no change expected; note here if the PR data need forces a
-  new `/api/v1` field (that would be an Elixir-core follow-up, out of this task).
+- No ADR update was needed; the required PR readiness fields were added to the
+  existing `/api/v1/runs` projection instead of creating a new endpoint.
 
 ## 10. Non-goals & risks
 

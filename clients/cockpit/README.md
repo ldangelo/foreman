@@ -272,9 +272,10 @@ or `$EDITOR` (falling back to `nvim`).
   a run, the client falls back to `/api/v1/runs/:run_id/debug` for the events tab.
   Foreman-projected worktree/branch/base metadata, row counts, diff totals, and
   PR fields are read from `/api/v1/runs`, including PR URL, state, mergeability,
-  review decision, and check summary when those optional PR fields are projected.
-  The contract should still be regenerated from a published OpenAPI schema (ADR
-  phase 2).
+  review decision, and check summary; if a legacy run lacks those projected PR
+  fields, `httpClient.PR` folds `/api/v1/events` and then debug timeline PR
+  payloads. The contract should still be regenerated from a published OpenAPI
+  schema (ADR phase 2).
 - File-change data has no dedicated endpoint yet; `httpClient.Files` prefers the
   selected run worktree and projected base branch from `/api/v1/runs`, runs
   `git diff --numstat`/`--name-status`, then falls back to
