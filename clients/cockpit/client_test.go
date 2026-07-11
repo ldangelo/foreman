@@ -16,7 +16,7 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/tasks":
-			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"task-live","title":"Live task","priority":"P1","status":"in_progress","project_id":"proj-live"},{"task_id":"task-ready","title":"Ready task","priority":"P2","status":"ready","workflow":"default","project_id":"proj-live"}]}`))
+			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"task-live","title":"Live task","priority":"P1","status":"in_progress","project_id":"proj-live"},{"task_id":"task-ready","title":"Ready task","priority":"P2","status":"ready","workflow":"default","project_id":"proj-live","dependencies":["task-parent","task-blocker"]}]}`))
 		case "/api/v1/runs":
 			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-live","task_id":"task-live","status":"running","current_phase":"developer","priority":"P1","created_at":"2026-07-09T00:00:00Z","updated_at":"2026-07-10T00:00:00Z","status_text":"working","messages_count":2,"events_count":4,"pr_state":"open","pr_checks":{"passed":3,"failed":1},"additions":12,"deletions":5}]}`))
 		case "/api/v1/inbox":
@@ -52,6 +52,9 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	tasks := client.Dispatchable()
 	if len(tasks) != 1 || tasks[0].TaskID != "task-ready" || tasks[0].Summary != "Ready task" {
 		t.Fatalf("unexpected tasks: %#v", tasks)
+	}
+	if tasks[0].Depends != "task-parent, task-blocker" {
+		t.Fatalf("expected dependencies from live projection, got %#v", tasks[0])
 	}
 
 	messages := client.Messages("run-live")

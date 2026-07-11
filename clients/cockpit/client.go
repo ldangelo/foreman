@@ -706,13 +706,20 @@ func taskFromMap(t map[string]any) Task {
 		TaskType:    str(t, "task_type", "type"),
 		Priority:    str(t, "priority"),
 		Status:      str(t, "status"),
-		Depends:     str(t, "depends_on"),
+		Depends:     taskDepends(t),
 		Workflow:    str(t, "workflow"),
 		Summary:     str(t, "title"),
 		ProjectID:   str(t, "project_id"),
 		Created:     str(t, "created_at"),
 		Updated:     str(t, "updated_at"),
 	}
+}
+
+func taskDepends(t map[string]any) string {
+	if depends := str(t, "depends_on"); depends != "" {
+		return depends
+	}
+	return strings.Join(stringList(t["dependencies"]), ", ")
 }
 
 func activeTaskStatus(status string) bool {

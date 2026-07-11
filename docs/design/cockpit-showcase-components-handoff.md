@@ -68,7 +68,7 @@ back to v1.
 | `charmbracelet/harmonica` | spring animation | optional polish; current spinner/stopwatch/reduced-motion paths are first-party and deterministic | 3 | framework-agnostic |
 | `bubbles/v2` `spinner` | real spinner + loading state | replaces manual `↻/↺` in `renderStatusBar`; diff-preview loading | 3 | first-party |
 | `bubbles/v2` `stopwatch`/`timer` | live elapsed | live "elapsed" on RUNNING runs | 3 | first-party |
-| `76creates/stickers` (optional) | flexbox layout | retire manual two-column width math (source of the blank-pane bug) | 3 | **verify** |
+| `76creates/stickers` (optional) | flexbox layout | not adopted; current pane layout is simple, deterministic, and covered by resize/render tests | 3 | optional/parked |
 
 Explicitly **not** adopting: `bubbles/viewport` (superseded by
 `robinovitch61/viewport`), `wish`, `filepicker` (nvim/diffnav own files).
@@ -185,7 +185,7 @@ user-facing behavior natively when the behavior is small enough.
 5. Demo: rich mock dataset + checked-in `clients/cockpit/demo.tape`; generated
    `demo.gif` is a local developer artifact when `vhs` is installed, not a
    committed roadmap dependency.
-6. Docs sweep (README, `cockpit-ui-spec.md`, theme handoff cross-links).
+6. Docs sweep (README, `cockpit-ui-spec.md`, theme handoff cross-links) is complete; future edits should document only new behavior.
 
 Sources: [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles),
 [bubbles v2](https://pkg.go.dev/charm.land/bubbles/v2),
