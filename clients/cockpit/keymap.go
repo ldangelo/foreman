@@ -42,7 +42,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 			binding("[/] H/L", "task section"),
 			binding("↑↓/j/k", "move task/row"),
 			binding("/", "filter focused pane"),
-			binding("enter", "focus details"),
+			binding("enter", "attach/focus details"),
 			binding("esc", "back/clear/close help"),
 			binding("g", "scope current/global"),
 		},
@@ -60,7 +60,8 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 			binding("y", "copy task id"),
 			binding("a", "approve task"),
 			binding("e", "edit task"),
-			binding("r/R", "retry/reset cmd"),
+			binding("A", "attach run"),
+			binding("r/R", "retry/reset run"),
 		},
 		{
 			binding("p/P", "omp triage/plain omp"),

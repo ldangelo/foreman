@@ -529,10 +529,8 @@ func (m model) renderRight(w int) string {
 
 	body := m.renderBody(run, it, isRun, w, visual)
 	var action []string
-	if !isRun || m.openableTab() || tabNames[m.tab] == "pr" {
-		if ab := m.renderAction(w, visual); ab != "" {
-			action = strings.Split(ab, "\n")
-		}
+	if ab := m.renderAction(w, visual); ab != "" {
+		action = strings.Split(ab, "\n")
 	}
 	bodyH := m.height - 3
 	if bodyH < 4 {
@@ -937,8 +935,15 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		}
 		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
+	runActionLine := ""
+	if run, ok := m.selectedRun(); ok {
+		runActionLine = clip(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset"), w)
+	}
 	t := resolveTarget(m)
 	if !t.ok {
+		if runActionLine != "" {
+			return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(runActionLine)
+		}
 		return ""
 	}
 	diff := tabNames[m.tab] == "files"
@@ -955,6 +960,9 @@ func (m model) renderAction(w int, visual paneVisual) string {
 			clip(dimStyle.Render("→ "+mode), w),
 			clip(cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
 		}
+		if runActionLine != "" {
+			lines = append(lines, runActionLine)
+		}
 		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 	}
 	lines := []string{
@@ -962,6 +970,9 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		clip(head, w),
 		clip(dimStyle.Render("$ ")+cyanStyle.Render(cmd), w),
 		clip(dimStyle.Render("→ "+mode), w),
+	}
+	if runActionLine != "" {
+		lines = append(lines, runActionLine)
 	}
 	return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 }

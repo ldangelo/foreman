@@ -820,14 +820,14 @@ func TestSelectedMessageHeaderAndBodyStayInViewport(t *testing.T) {
 	}
 	m := newModel(client)
 	m.width = 120
-	m.height = 11
+	m.height = 12
 	m.tab = 1
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
 	h := m.viewerBodyWindowHeight()
-	if h < 2 {
-		t.Fatalf("test setup expected at least two visible message rows, got %d", h)
+	if h < 3 {
+		t.Fatalf("test setup expected room for selected message body, got %d", h)
 	}
 	if m.viewer.Cursor() != 4 {
 		t.Fatalf("expected last message header selected, got row=%d", m.viewer.Cursor())
@@ -1370,6 +1370,9 @@ type mutableClient struct {
 	reports  []Report
 	files    []FileChange
 	created  []Task
+	retried  []Run
+	reset    []Run
+	attached []Run
 }
 
 func (c *mutableClient) Runs() []Run { return c.runs }
@@ -1384,6 +1387,21 @@ func (c *mutableClient) Files(string) []FileChange { return c.files }
 
 func (c *mutableClient) CreateTask(task Task) error {
 	c.created = append(c.created, task)
+	return nil
+}
+
+func (c *mutableClient) RetryRun(run Run) error {
+	c.retried = append(c.retried, run)
+	return nil
+}
+
+func (c *mutableClient) ResetRun(run Run) error {
+	c.reset = append(c.reset, run)
+	return nil
+}
+
+func (c *mutableClient) AttachRun(run Run) error {
+	c.attached = append(c.attached, run)
 	return nil
 }
 
@@ -1517,7 +1535,7 @@ func TestMouseActionHitTestingCoversTaskActions(t *testing.T) {
 	}
 }
 
-func TestMouseActionHitTestingCoversFilesAndPRActions(t *testing.T) {
+func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
 	m.height = 22
@@ -1535,6 +1553,9 @@ func TestMouseActionHitTestingCoversFilesAndPRActions(t *testing.T) {
 	if key := m.actionKeyAt(x, startY+4); key != "D" {
 		t.Fatalf("expected full diff action, got %q", key)
 	}
+	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  "), startY+5); key != "r" {
+		t.Fatalf("expected run retry action segment, got %q", key)
+	}
 
 	m.tab = 6 // pr
 	m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42"}
@@ -1547,24 +1568,50 @@ func TestMouseActionHitTestingCoversFilesAndPRActions(t *testing.T) {
 	}
 }
 
-func TestRetryResetKeysExposeExternalCommands(t *testing.T) {
-	m := newModel(NewMockClient())
+func TestRunActionKeysExecuteCockpitCommands(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
+	}
+	m := newModel(client)
 	m.width = 120
 	m.height = 20
-	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}}
+	m.runs = client.runs
 	m.tasks = nil
 	m.buildItems()
 
-	updated, _ := m.handleKey(keyPress("r"))
+	updated, cmd := m.handleKey(keyPress("A"))
 	m = updated.(model)
-	if !strings.Contains(m.notice, "foreman retry task-1") {
-		t.Fatalf("expected retry key to expose external retry command, got %q", m.notice)
+	if cmd == nil {
+		t.Fatal("expected attach command")
+	}
+	if msg, ok := cmd().(runActionDoneMsg); !ok || msg.err != nil || msg.action != "attach requested" {
+		t.Fatalf("expected attach done message, got %#v", msg)
+	}
+	if len(client.attached) != 1 || client.attached[0].RunID != "run-1" {
+		t.Fatalf("expected attach to target selected run, got %#v", client.attached)
 	}
 
-	updated, _ = m.handleKey(keyPress("R"))
+	updated, cmd = m.handleKey(keyPress("r"))
 	m = updated.(model)
-	if !strings.Contains(m.notice, "foreman reset task-1") {
-		t.Fatalf("expected reset key to expose external reset command, got %q", m.notice)
+	if cmd == nil {
+		t.Fatal("expected retry command")
+	}
+	if msg, ok := cmd().(runActionDoneMsg); !ok || msg.err != nil || msg.action != "retry requested" {
+		t.Fatalf("expected retry done message, got %#v", msg)
+	}
+	if len(client.retried) != 1 || client.retried[0].TaskID != "task-1" {
+		t.Fatalf("expected retry to target selected task, got %#v", client.retried)
+	}
+
+	_, cmd = m.handleKey(keyPress("R"))
+	if cmd == nil {
+		t.Fatal("expected reset command")
+	}
+	if msg, ok := cmd().(runActionDoneMsg); !ok || msg.err != nil || msg.action != "reset requested" {
+		t.Fatalf("expected reset done message, got %#v", msg)
+	}
+	if len(client.reset) != 1 || client.reset[0].TaskID != "task-1" {
+		t.Fatalf("expected reset to target selected task, got %#v", client.reset)
 	}
 }
 func TestAutoTaskListWidthUsesDashLikeProportion(t *testing.T) {

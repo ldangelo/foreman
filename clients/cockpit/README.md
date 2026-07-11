@@ -135,12 +135,13 @@ ctrl+d/u  half-page down/up in the focused drill-down view
 mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls that view
           click section tabs, visible task/run rows, or drill-down tabs to select them
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab and focus it
+/         search focused pane                  n/N  next / previous match
 o/enter   open selected row in nvim; on pr, open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
-r/R       retry/reset command hints         /    search     n/N match
+A         attach selected run                  r/R  retry / reset selected run
 ←/→       pan focused logs                    s    save visible viewer rows
 ?         show generated keymap help in the detail pane; esc or ? closes it
 ```
@@ -228,10 +229,9 @@ or `$EDITOR` (falling back to `nvim`).
 
 ## Status / caveats
 
-- POC quality: READY task approval/edit/create, PR browser opens, and `omp`
-  handoffs are live actions. `r` / `R` / attach still show the command they
-  *would* send (`POST /api/v1/commands`, `GET /runs/:id/attach`) rather than
-  executing.
+- POC quality: READY task approval/edit/create, selected-run attach/retry/reset,
+  PR browser opens, and `omp` handoffs are live actions through the cockpit
+  client and command bus.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
   (`inbox`, `logs.entries`, `report`, `metrics`) and surfaces HTTP/JSON failures
   in the cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for

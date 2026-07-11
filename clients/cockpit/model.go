@@ -73,6 +73,12 @@ type taskActionDoneMsg struct {
 	taskID string
 	err    error
 }
+type runActionDoneMsg struct {
+	action string
+	runID  string
+	taskID string
+	err    error
+}
 type prOpenDoneMsg struct {
 	err error
 }
@@ -195,6 +201,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		label := msg.taskID
 		if label == "" {
 			label = "task"
+		}
+		if msg.err != nil {
+			m.notice = msg.action + " " + label + ": " + msg.err.Error()
+			return m, nil
+		}
+		m.notice = label + " " + msg.action
+		return m, loadData(m.client)
+	case runActionDoneMsg:
+		label := msg.taskID
+		if label == "" {
+			label = msg.runID
+		}
+		if label == "" {
+			label = "run"
 		}
 		if msg.err != nil {
 			m.notice = msg.action + " " + label + ": " + msg.err.Error()
@@ -520,7 +540,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.maybeLoadSelectedDiffPreview()
 		}
 		if run, ok := m.selectedRun(); ok {
-			m.notice = "attach → GET /api/v1/runs/" + run.RunID + "/attach"
+			return m, attachRun(m.client, run)
 		}
 	case "n":
 		form := newTaskCreateForm()
@@ -574,14 +594,21 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, attachOmp(m, run, true)
 		}
 		m.notice = "omp: no run selected"
+	case "A":
+		if run, ok := m.selectedRun(); ok {
+			return m, attachRun(m.client, run)
+		}
+		m.notice = "attach: no run selected"
 	case "r":
 		if run, ok := m.selectedRun(); ok {
-			m.notice = "retry outside cockpit: foreman retry " + run.TaskID
+			return m, retryRun(m.client, run)
 		}
+		m.notice = "retry: no run selected"
 	case "R":
 		if run, ok := m.selectedRun(); ok {
-			m.notice = "reset outside cockpit: foreman reset " + run.TaskID
+			return m, resetRun(m.client, run)
 		}
+		m.notice = "reset: no run selected"
 	}
 	return m, nil
 }
@@ -720,10 +747,8 @@ func (m model) viewerBodyWindowHeight() int {
 	}
 
 	actionLines := 0
-	if !isRun || m.openableTab() || tabNames[m.tab] == "pr" {
-		if action := m.renderAction(w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)); action != "" {
-			actionLines = len(strings.Split(action, "\n"))
-		}
+	if action := m.renderAction(w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)); action != "" {
+		actionLines = len(strings.Split(action, "\n"))
 	}
 
 	bodyH := m.height - 3
@@ -951,6 +976,14 @@ func (m model) actionKeyAt(x, y int) string {
 			})
 		}
 		return ""
+	}
+	if run, ok := m.selectedRun(); ok && tabNameAt(m.tab) != "pr" && line == actionLines-1 {
+		prefix := "▸ run actions " + run.RunID + "  "
+		return actionSegmentKey(relX, prefix, []actionSegment{
+			{label: "A attach", key: "A"},
+			{label: "r retry", key: "r"},
+			{label: "R reset", key: "R"},
+		})
 	}
 	switch tabNameAt(m.tab) {
 	case "pr":

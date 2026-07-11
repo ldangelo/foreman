@@ -214,8 +214,15 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 	if err := client.CreateTask(created); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if len(commands) != 3 {
-		t.Fatalf("expected three commands, got %#v", commands)
+	run := Run{RunID: "run-live", TaskID: "task-ready", ProjectID: "proj-live"}
+	if err := client.RetryRun(run); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if err := client.ResetRun(run); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if len(commands) != 7 {
+		t.Fatalf("expected seven commands, got %#v", commands)
 	}
 	if commands[0]["command_type"] != "task.approve" {
 		t.Fatalf("expected task.approve command, got %#v", commands[0])
@@ -237,6 +244,42 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 	createPayload := commands[2]["payload"].(map[string]any)
 	if createPayload["task_id"] != "task-new" || createPayload["title"] != "New task" || createPayload["task_type"] != "feature" || createPayload["source"] != "cockpit" {
 		t.Fatalf("unexpected create payload: %#v", createPayload)
+	}
+	if commands[3]["command_type"] != "run.update" || commands[4]["command_type"] != "task.update" {
+		t.Fatalf("expected retry to reset run then ready task, got %#v %#v", commands[3], commands[4])
+	}
+	retryRunPayload := commands[3]["payload"].(map[string]any)
+	if retryRunPayload["run_id"] != "run-live" || retryRunPayload["status"] != "reset" {
+		t.Fatalf("unexpected retry run payload: %#v", retryRunPayload)
+	}
+	retryTaskPayload := commands[4]["payload"].(map[string]any)
+	if retryTaskPayload["task_id"] != "task-ready" || retryTaskPayload["status"] != "ready" {
+		t.Fatalf("unexpected retry task payload: %#v", retryTaskPayload)
+	}
+	if commands[5]["command_type"] != "run.update" || commands[6]["command_type"] != "task.update" {
+		t.Fatalf("expected reset to reset run then ready task, got %#v %#v", commands[5], commands[6])
+	}
+}
+
+func TestHTTPClientRequestsAttachEndpoint(t *testing.T) {
+	var gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		gotPath = r.URL.EscapedPath()
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"ok":true,"attach":{"status":"ready"}}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "secret")
+	if err := client.AttachRun(Run{RunID: "run/with space"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if gotPath != "/api/v1/runs/run%2Fwith%20space/attach" {
+		t.Fatalf("unexpected attach path %q", gotPath)
+	}
+	if gotAuth != "Bearer secret" {
+		t.Fatalf("expected auth header, got %q", gotAuth)
 	}
 }
 func TestHTTPClientFallsBackToDebugTimelineWhenEventsEndpointFails(t *testing.T) {

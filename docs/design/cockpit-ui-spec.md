@@ -134,11 +134,12 @@ Global:
 | `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused |
 | `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
 | `g` | toggle current-project vs global scope |
-| `n` / `N` | task list: full create form / one-line quick-add; drill-down filter: next / previous match |
+| `enter` | focus details; on PR, open the PR in a browser |
+| `A` | attach the selected run through `GET /api/v1/runs/:id/attach` |
 | `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
 | `P` | attach plain `omp` to the selected run worktree without a brief |
-| `r` | show the external `foreman retry <task>` command for the selected run |
-| `R` | show the external `foreman reset <task>` command for the selected run |
+| `r` | retry the selected run through the command bus |
+| `R` | reset the selected run through the command bus |
 | `G` | open `gh dash` when enabled and available |
 | `C` | open `gh enhance` for the selected run when enabled and available |
 | `?` | toggle generated keymap help in the right detail pane; `esc` closes it |
@@ -305,8 +306,8 @@ default). `mode: remote` never suspends; `mode: inline` always suspends.
 
 ## Non-goals for the POC
 
-- No write/command execution beyond READY task mutations, task creation, PR opens,
-  and tool handoffs; retry/reset execution remains out of scope for the POC.
+- No write/command execution beyond READY task mutations, task creation, selected-run
+  attach/retry/reset, PR opens, and tool handoffs.
 - No auth token refresh flows; read the token from the environment.
 - No pagination controls beyond the RECENT cap.
 

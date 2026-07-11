@@ -139,6 +139,9 @@ type Client interface {
 	ApproveTask(task Task) error
 	UpdateTask(task Task) error
 	CreateTask(task Task) error
+	RetryRun(run Run) error
+	ResetRun(run Run) error
+	AttachRun(run Run) error
 }
 
 func pipe(activeIdx, failIdx int) []Phase {
@@ -219,6 +222,24 @@ func (c *mockClient) CreateTask(task Task) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.tasks = append(c.tasks, task)
+	return nil
+}
+func (c *mockClient) RetryRun(run Run) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tasks = append(c.tasks, Task{TaskID: run.TaskID, Title: run.Title, TaskType: run.TaskType, Priority: run.Priority, Status: "ready", Summary: run.Summary})
+	return nil
+}
+func (c *mockClient) ResetRun(run Run) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tasks = append(c.tasks, Task{TaskID: run.TaskID, Title: run.Title, TaskType: run.TaskType, Priority: run.Priority, Status: "ready", Summary: run.Summary})
+	return nil
+}
+func (*mockClient) AttachRun(run Run) error {
+	if strings.TrimSpace(run.RunID) == "" {
+		return fmt.Errorf("run id is required")
+	}
 	return nil
 }
 func (*mockClient) PR(runID string) PRStatus {
@@ -913,6 +934,50 @@ func (c *httpClient) CreateTask(task Task) error {
 		"status":      task.Status,
 		"source":      "cockpit",
 	})
+}
+
+func (c *httpClient) RetryRun(run Run) error {
+	return c.resetRunForRetry(run, "retry requested from cockpit")
+}
+
+func (c *httpClient) ResetRun(run Run) error {
+	return c.resetRunForRetry(run, "reset requested from cockpit")
+}
+
+func (c *httpClient) resetRunForRetry(run Run, reason string) error {
+	projectID := run.ProjectID
+	if projectID == "" {
+		projectID = c.projectID()
+	}
+	if strings.TrimSpace(run.TaskID) == "" {
+		return fmt.Errorf("task id is required")
+	}
+	if strings.TrimSpace(run.RunID) != "" {
+		if err := c.postCommand("run.update", map[string]any{
+			"project_id": projectID,
+			"run_id":     run.RunID,
+			"task_id":    run.TaskID,
+			"status":     "reset",
+			"reason":     reason,
+			"source":     "cockpit",
+		}); err != nil {
+			return err
+		}
+	}
+	return c.postCommand("task.update", map[string]any{
+		"project_id": projectID,
+		"task_id":    run.TaskID,
+		"status":     "ready",
+		"source":     "cockpit",
+	})
+}
+
+func (c *httpClient) AttachRun(run Run) error {
+	if strings.TrimSpace(run.RunID) == "" {
+		return fmt.Errorf("run id is required")
+	}
+	_, err := c.getMaybe("/api/v1/runs/"+url.PathEscape(run.RunID)+"/attach", true)
+	return err
 }
 
 func (c *httpClient) Messages(runID string) []Message {
