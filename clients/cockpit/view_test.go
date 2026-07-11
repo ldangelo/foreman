@@ -277,6 +277,35 @@ func TestTaskListViewportShowsSectionTabsAndSelectedRow(t *testing.T) {
 	}
 }
 
+func TestStatusBarIncludesActiveTaskSectionPosition(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 140
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{
+		{TaskID: "ready-1", Status: "ready", Title: "First ready"},
+		{TaskID: "ready-2", Status: "ready", Title: "Second ready"},
+	}
+	m.buildItems()
+
+	if out := stripANSI(m.renderStatusBar(140)); !strings.Contains(out, "Running 1/1") {
+		t.Fatalf("expected running section position in status bar, got %q", out)
+	}
+	m.taskList.MoveSection(1)
+	m.buildItems()
+	if out := stripANSI(m.renderStatusBar(140)); !strings.Contains(out, "Ready 1/2") {
+		t.Fatalf("expected ready section position in status bar, got %q", out)
+	}
+	m.taskList.Move(1)
+	if out := stripANSI(m.renderStatusBar(140)); !strings.Contains(out, "Ready 2/2") {
+		t.Fatalf("expected selected ready row position in status bar, got %q", out)
+	}
+	m.taskList.MoveSection(1)
+	m.buildItems()
+	if out := stripANSI(m.renderStatusBar(140)); !strings.Contains(out, "Failed 0/0") {
+		t.Fatalf("expected empty section position in status bar, got %q", out)
+	}
+}
+
 func TestTaskListViewportUpdatesRowsAcrossSections(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa"}}
@@ -535,6 +564,47 @@ func TestQuickAddTaskSubmitsTitleOnEnter(t *testing.T) {
 	}
 }
 
+func TestQuickAddTaskRoundTripsIntoReadyList(t *testing.T) {
+	client := NewMockClient()
+	m := newModel(client)
+	m.width = 120
+	m.height = 24
+
+	updated, _ := m.Update(keyPress("N"))
+	m = updated.(model)
+	for _, r := range "Round trip task" {
+		updated, _ = m.Update(keyPress(string(r)))
+		m = updated.(model)
+	}
+	updated, cmd := m.Update(specialKey(tea.KeyEnter))
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected quick-add create command")
+	}
+	done, ok := cmd().(taskActionDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("expected successful create result, got %#v ok=%v", done, ok)
+	}
+	updated, cmd = m.Update(done)
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected successful create to reload data")
+	}
+	msg, ok := cmd().(dataMsg)
+	if !ok {
+		t.Fatalf("expected reload data message, got %#v", msg)
+	}
+	updated, _ = m.Update(msg)
+	m = updated.(model)
+	m.taskList.MoveSection(1)
+	m.buildItems()
+
+	out := stripANSI(m.renderLeft(60, 20))
+	if !strings.Contains(out, "Round trip task") {
+		t.Fatalf("expected created task to appear in Ready list after reload, got:\n%s", out)
+	}
+}
+
 func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.pr = PRStatus{URL: "https://github.com/acme/repo/pull/42", State: "open", Checks: CheckSummary{Passed: 3, Failed: 1, Pending: 2}}
@@ -613,6 +683,30 @@ func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 	m = updated.(model)
 	if m.taskList.SelectedIndex() != 1 || m.viewer.Cursor() != 0 {
 		t.Fatalf("expected unfocused j to move task selection, got sel=%d row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor())
+	}
+}
+
+func TestEnterOnSummaryFocusesDetailsWithoutAttachingRun(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Summary: "first"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.runs = client.runs
+	m.tab = 0
+	m.buildItems()
+
+	updated, cmd := m.handleKey(specialKey(tea.KeyEnter))
+	if cmd != nil {
+		t.Fatalf("enter should focus summary details, not attach the run")
+	}
+	m = updated.(model)
+	if !m.viewFocused {
+		t.Fatalf("expected enter to focus summary details")
+	}
+	if len(client.attached) != 0 {
+		t.Fatalf("expected attach to remain on A only, got %#v", client.attached)
 	}
 }
 

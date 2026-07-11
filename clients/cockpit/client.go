@@ -258,18 +258,31 @@ func (*mockClient) PR(runID string) PRStatus {
 			BaseBranch:     "origin/dev",
 			BranchName:     "foreman-a1b2c",
 		}
-	case "deadbeef":
+	case "77aa11bb":
 		return PRStatus{
 			RunID:          runID,
-			Number:         "43",
-			URL:            "https://github.com/Fortium/foreman/pull/43",
+			Number:         "482",
+			URL:            "https://github.com/Fortium/foreman/pull/482",
 			State:          "merged",
 			Mergeable:      "mergeable",
 			ReviewDecision: "approved",
 			Checks:         CheckSummary{Passed: 7},
-			HeadSHA:        "sha-deadbeef",
+			HeadSHA:        "sha-77aa11bb",
 			BaseBranch:     "origin/dev",
-			BranchName:     "foreman-done",
+			BranchName:     "foreman-77aa1",
+		}
+	case "33cc44dd":
+		return PRStatus{
+			RunID:          runID,
+			Number:         "483",
+			URL:            "https://github.com/Fortium/foreman/pull/483",
+			State:          "open",
+			Mergeable:      "conflicting",
+			ReviewDecision: "changes_requested",
+			Checks:         CheckSummary{Passed: 3, Failed: 2},
+			HeadSHA:        "sha-33cc44dd",
+			BaseBranch:     "origin/dev",
+			BranchName:     "foreman-33cc4",
 		}
 	default:
 		return PRStatus{RunID: runID}
@@ -1294,33 +1307,91 @@ func gitDiffStatuses(worktree, spec string) map[string]string {
 func fileChangesFromTimeline(timeline []map[string]any) []FileChange {
 	var out []FileChange
 	seen := map[string]bool{}
-	add := func(raw string) {
-		change, pathText := parseFileChange(raw)
-		if pathText == "" || seen[pathText] {
+	add := func(file FileChange) {
+		file.Path = strings.TrimSpace(file.Path)
+		if file.Path == "" || seen[file.Path] {
 			return
 		}
-		seen[pathText] = true
-		out = append(out, FileChange{Change: change, Path: pathText})
+		file.Change = normalizeFileChangeKind(file.Change)
+		seen[file.Path] = true
+		out = append(out, file)
 	}
+	addParsed := func(raw string) {
+		change, pathText := parseFileChange(raw)
+		add(FileChange{Change: change, Path: pathText})
+	}
+	var addValue func(any)
+	addValue = func(raw any) {
+		switch v := raw.(type) {
+		case string:
+			for _, pathText := range splitFileChangeLines(v) {
+				addParsed(pathText)
+			}
+		case []any:
+			for _, item := range v {
+				addValue(item)
+			}
+		case []map[string]any:
+			for _, item := range v {
+				addValue(item)
+			}
+		case map[string]any:
+			if file, ok := fileChangeFromMap(v); ok {
+				add(file)
+			}
+		}
+	}
+	keys := []string{"file_changes", "fileChanges", "changed", "files_changed", "filesChanged", "files"}
 	for _, entry := range timeline {
+		for _, key := range keys {
+			addValue(entry[key])
+		}
 		payload := obj(entry, "payload")
 		output := obj(payload, "output")
-		for _, key := range []string{"changed", "files_changed", "filesChanged", "files"} {
-			for _, pathText := range stringList(output[key]) {
-				add(pathText)
-			}
-			for _, pathText := range stringList(payload[key]) {
-				add(pathText)
-			}
-			for _, pathText := range splitFileChangeLines(stringScalar(output[key])) {
-				add(pathText)
-			}
-			for _, pathText := range splitFileChangeLines(stringScalar(payload[key])) {
-				add(pathText)
+		details := obj(payload, "details")
+		for _, source := range []map[string]any{output, payload, details} {
+			for _, key := range keys {
+				addValue(source[key])
 			}
 		}
 	}
 	return out
+}
+
+func fileChangeFromMap(raw map[string]any) (FileChange, bool) {
+	pathText := strings.TrimSpace(str(raw, "path", "file", "name"))
+	if pathText == "" {
+		return FileChange{}, false
+	}
+	stat := str(raw, "stat")
+	_, hasAdditions := raw["additions"]
+	_, hasDeletions := raw["deletions"]
+	if stat == "" && (hasAdditions || hasDeletions) {
+		stat = fmt.Sprintf("+%d -%d", intValue(raw["additions"]), intValue(raw["deletions"]))
+	}
+	return FileChange{
+		Change:   str(raw, "change", "status"),
+		Path:     pathText,
+		Stat:     stat,
+		Conflict: normalizeBool(str(raw, "conflict"), false),
+	}, true
+}
+
+func normalizeFileChangeKind(change string) string {
+	s := strings.ToUpper(strings.TrimSpace(change))
+	if s == "" {
+		return "M"
+	}
+	switch {
+	case strings.HasPrefix(s, "A"):
+		return "A"
+	case strings.HasPrefix(s, "D"):
+		return "D"
+	case strings.HasPrefix(s, "M"):
+		return "M"
+	default:
+		return s
+	}
 }
 
 func parseFileChange(raw string) (change, pathText string) {

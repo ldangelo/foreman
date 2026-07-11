@@ -215,7 +215,13 @@ func (m model) renderStatusBar(w int) string {
 	if m.editor.serverAddr() != "" {
 		nvim = "nvim ⇄ attached"
 	}
-	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") + cyanStyle.Render(m.liveIndicator())
+	section := m.taskList.ActiveSection().Name
+	position := "0/0"
+	if total := len(m.taskList.Items()); total > 0 {
+		position = fmt.Sprintf("%d/%d", m.taskList.SelectedIndex()+1, total)
+	}
+	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
+		yellowStyle.Render(section+" "+position) + dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
 
 	return statusBarStyle.Width(w).Render(clip(padRow(left, right, w), w))
 }

@@ -24,7 +24,7 @@ One screen. No view switching. Three regions plus chrome.
 
 ```
 ┌ foreman watch — cockpit ─────────────────────────────────────────────────────┐
-│ foreman  3 running · 5 ready · 14 done      nvim ⇄ attached · dev · ↻ 2s      │  status bar
+│ foreman  3 running · 5 ready · 14 done      nvim ⇄ attached · dev · Ready 2/5 · ↻ 2s │  status bar
 ├───────────────────────────┬───────────────────────────────────────────────────┤
 │ Running 3  Ready 5  Failed 1 │  TRD-2026-014   run a1b2c3d4…          running │  detail header
 │ filter: current project      │  ───────────────────────────────────────────── │
@@ -287,8 +287,6 @@ integrations:
     keepShell: true
     session: per-task
     args: []
-pr:
-  provider: github
 cockpit:
   exportDir: ~/.foreman/cockpit-exports
   focus:

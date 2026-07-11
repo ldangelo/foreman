@@ -49,8 +49,8 @@ nvim JSON as the primary create flow.
 | `n` | task list focused | full new-task form (`ctrl+s` → `task.create`) |
 | `N` | task list focused | inline quick-add title (`enter` → `task.create`) |
 
-Existing task keys remain: `y` copy id, `a` approve, `e` edit, `enter`/`o`
-open the selected details.
+Existing task keys remain: `y` copy id, `a` approve, `e` edit, `enter` focuses
+the selected details, and `o` opens rows that have external targets.
 
 ## 4. Verification completed
 

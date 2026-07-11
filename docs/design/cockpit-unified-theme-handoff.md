@@ -26,7 +26,7 @@ importantly — the diff rendering.
 
 | Tool | Theming surface | Notes |
 |------|-----------------|-------|
-| **cockpit** | `theme/tokens.yaml` → generated `theme_tokens_gen.go`; Glamour JSON for markdown; `delta` for inline diff preview | Implemented as the source of truth for cockpit colors and report rendering. |
+| **cockpit** | `theme/tokens.yaml` → generated `clients/cockpit/theme_tokens_gen.go`; Glamour JSON for markdown; `delta` for inline diff preview | Implemented as the source of truth for cockpit colors and report rendering. |
 | **gh-dash** | generated `theme/gh-dash.yml` with `theme.colors` (`text.{primary,secondary,inverted,faint,warning,success}`, `background.selected`, `border.{primary,secondary,faint}`), plus keybindings | Generated fragment exists and `--install-themes` can write it to the config home with backups. |
 | **gh-enhance** | `ENHANCE_THEME` Bubbletint theme id | Implemented as generated `theme/enhance.env`, cockpit handoff env, and `--install-themes` output. Full custom schema/config path is not used. |
 | **diffnav** | generated `theme/diffnav/config.yml` → `ui:` (icons, sideBySide, file-tree width, header/footer, colorFileNames…). Diff **body** color is delegated to **delta** | Cockpit sets `$DIFFNAV_CONFIG_DIR` to the packaged dir during handoff; `--install-themes` can write the same fragment to the user config home. |
@@ -191,11 +191,11 @@ difference rather than forcing it.
 
 ## 7. Delivery: one source, installed everywhere
 
-- `clients/cockpit/theme/` holds `tokens.yaml` (authority) + generated fragments:
-  `gh-dash.yml`, `enhance.env`, `diffnav.yml`, `diffnav/config.yml`,
-  `delta.gitconfig`, `glamour.json`, and `theme_tokens_gen.go`.
-- `theme/gen.go` reads `tokens.yaml` and writes all fragments plus the cockpit's
-  color constants, so editing one file re-themes the suite.
+- `clients/cockpit/theme/` holds `tokens.yaml` (authority) plus generated
+  external fragments: `gh-dash.yml`, `enhance.env`, `diffnav.yml`,
+  `diffnav/config.yml`, `delta.gitconfig`, and `glamour.json`.
+- `theme/gen.go` reads `tokens.yaml` and writes those fragments plus
+  `clients/cockpit/theme_tokens_gen.go`, the cockpit's generated color constants.
 - `foreman-cockpit --install-themes` writes generated fragments to the config
   home (`$XDG_CONFIG_HOME` or `~/.config`): `gh-dash/config.yml`,
   `diffnav/config.yml`, `foreman-cockpit/enhance.env`,

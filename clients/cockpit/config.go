@@ -11,7 +11,6 @@ import (
 type Config struct {
 	Editor       EditorConfig  `yaml:"editor"`
 	Integrations Integrations  `yaml:"integrations"`
-	PR           PRConfig      `yaml:"pr"`
 	Cockpit      CockpitConfig `yaml:"cockpit"`
 }
 
@@ -57,9 +56,6 @@ type TmuxConfig struct {
 	Split string `yaml:"split"`
 }
 
-type PRConfig struct {
-	Provider string `yaml:"provider"`
-}
 
 type CockpitConfig struct {
 	ExportDir     string         `yaml:"exportDir"`
@@ -94,7 +90,6 @@ func defaultConfig() Config {
 			GhEnhance: GhEnhanceConfig{Enable: "auto"},
 			Omp:       OmpConfig{Enable: "auto", Cmd: "omp", Mode: "auto", Tmux: TmuxConfig{Split: "horizontal"}, KeepShell: true, Session: "per-task"},
 		},
-		PR: PRConfig{Provider: "github"},
 		Cockpit: CockpitConfig{
 			ExportDir: defaultCockpitExportDir(),
 			Focus:     FocusConfig{DimInactive: true, Style: focusStyleBoth},
@@ -151,9 +146,6 @@ func (c *Config) normalize() {
 		c.Integrations.Omp.Session = defaults.Integrations.Omp.Session
 	}
 	c.Integrations.Omp.Session = normalizeOmpSession(c.Integrations.Omp.Session)
-	if c.PR.Provider == "" {
-		c.PR.Provider = defaults.PR.Provider
-	}
 	if c.Cockpit.ExportDir == "" {
 		c.Cockpit.ExportDir = defaults.Cockpit.ExportDir
 	}

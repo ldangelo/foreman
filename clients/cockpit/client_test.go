@@ -108,6 +108,50 @@ func TestHTTPClientSurfacesDecodeErrors(t *testing.T) {
 	}
 }
 
+func TestHTTPClientParsesMetricsEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/v1/metrics" {
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+		w.Write([]byte(`{"ok":true,"metrics":{"counters":{"phases_started":3,"failures":"1"},"gauges":{"projection_lag":2},"timers":{"phase_duration_ms":[{"run_id":"run-1","phase_id":"qa","status":"failed","duration_ms":1500}]},"emitted_at":"2026-07-10T00:00:00Z"}}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	metrics := client.Metrics()
+	if metrics.Counters["phases_started"] != 3 || metrics.Counters["failures"] != 1 {
+		t.Fatalf("unexpected counters: %#v", metrics.Counters)
+	}
+	if metrics.Gauges["projection_lag"] != 2 {
+		t.Fatalf("unexpected gauges: %#v", metrics.Gauges)
+	}
+	if len(metrics.PhaseDuration) != 1 || metrics.PhaseDuration[0].RunID != "run-1" || metrics.PhaseDuration[0].DurationMS != 1500 {
+		t.Fatalf("unexpected phase durations: %#v", metrics.PhaseDuration)
+	}
+	if metrics.EmittedAt != "2026-07-10T00:00:00Z" {
+		t.Fatalf("unexpected emitted_at: %q", metrics.EmittedAt)
+	}
+}
+
+func TestHTTPClientMetricsErrorsAreSurfaced(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		http.Error(w, `{"error":{"code":"METRICS_DOWN"}}`, http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	metrics := client.Metrics()
+	if len(metrics.Counters) != 0 || len(metrics.Gauges) != 0 || len(metrics.PhaseDuration) != 0 {
+		t.Fatalf("expected empty metrics on HTTP failure, got %#v", metrics)
+	}
+	errors := client.DrainErrors()
+	if len(errors) != 1 || !strings.Contains(errors[0], "GET /api/v1/metrics: 502 Bad Gateway") || !strings.Contains(errors[0], "METRICS_DOWN") {
+		t.Fatalf("expected metrics error with body snippet, got %#v", errors)
+	}
+}
+
 func TestHTTPClientDoesNotTreatStaleRunsAsRunningTasks(t *testing.T) {
 	t.Setenv("COCKPIT_PROJECT_ID", "proj-live")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +432,55 @@ func TestHTTPClientDerivesFilesFromDebugTimeline(t *testing.T) {
 	}
 	if errors := client.DrainErrors(); len(errors) != 0 {
 		t.Fatalf("debug fallback should not surface missing run projection, got %#v", errors)
+	}
+}
+
+func TestHTTPClientDerivesStructuredFilesFromDebugTimeline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/runs":
+			http.NotFound(w, r)
+		case "/api/v1/runs/run-live/debug":
+			w.Write([]byte(`{"ok":true,"debug":{"timeline":[{"type":"ToolCallFinished","file_changes":[{"path":"lib/debug.ex","change":"M","additions":2,"deletions":13,"conflict":true}],"payload":{"details":{"file_changes":[{"file":"docs/guide.md","status":"A","additions":5,"deletions":0}]},"output":{"changed":[{"path":"src/main.go","status":"D","additions":0,"deletions":7}]}}}]}}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	files := client.Files("run-live")
+	if len(files) != 3 {
+		t.Fatalf("expected three structured files, got %#v", files)
+	}
+	byPath := map[string]FileChange{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	if file := byPath["lib/debug.ex"]; file.Change != "M" || file.Stat != "+2 -13" || !file.Conflict {
+		t.Fatalf("unexpected top-level file_changes entry: %#v", file)
+	}
+	if file := byPath["docs/guide.md"]; file.Change != "A" || file.Stat != "+5 -0" {
+		t.Fatalf("unexpected details file_changes entry: %#v", file)
+	}
+	if file := byPath["src/main.go"]; file.Change != "D" || file.Stat != "+0 -7" {
+		t.Fatalf("unexpected output changed entry: %#v", file)
+	}
+}
+
+func TestMockClientPRDataCoversCurrentDemoRuns(t *testing.T) {
+	client := NewMockClient()
+	want := map[string]string{
+		"a1b2c3d4": "draft",
+		"77aa11bb": "merged",
+		"33cc44dd": "open",
+	}
+	for runID, state := range want {
+		pr := client.PR(runID)
+		if pr.URL == "" || pr.State != state {
+			t.Fatalf("expected mock PR for %s with state %s, got %#v", runID, state, pr)
+		}
 	}
 }
 

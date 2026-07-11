@@ -21,8 +21,8 @@ Make the cockpit's left task list read like gh-dash's PR list:
 1. **Section tabs instead of a tree.** Replace the collapsible `RUNNING` /
    `READY` / `RECENT` groups with a top tab strip of sections (with counts),
    like dash's `My Pull Requests (4) | Needs My Review (0) | Involved (0)`.
-2. **A filter/query line** under the tabs showing the active section's filter,
-   editable like dash's `is:pr repo:… is:open author:@me`.
+2. **A filter/query line** under the tabs showing the active section's static
+   configured filter plus the transient `/` search query.
 3. **Richer rows** — two-line, columnar rows with more metadata around the task
    id (title, type, priority, phase/status, checks, diff, age), like dash's
    `repo/#num by @author` + bold title + columns.
@@ -36,12 +36,12 @@ the v2 component set.
 | gh-dash element (screenshot) | Cockpit equivalent |
 |---|---|
 | Top section tabs `My PRs (4) | Needs Review (0) | Involved (0)` | task **section tabs** with counts: `Running (N) | Ready (N) | Failed (N) | Recent (N) | All` (configurable) |
-| Query line `is:pr repo:… author:@me` | per-section **filter line** (editable via `/`) |
+| Query line `is:pr repo:… author:@me` | per-section **filter line** plus additive task-list search via `/` |
 | Row line 1 `repo/foreman #301 by @ldangelo` + state icon | row line 1: `foreman-<id> · <type> · P<pri>` + state glyph (+ project when global) |
 | Row line 2 bold title `[ESCALATED] test(prompts)…` | row line 2: **bold task title** |
 | Columns: 💬 checks ● diff `+73.5k -215.8k` · ages `1h 1mo` | columns: msgs/events · checks/verdict glyph · PR dot · diff `±` (runs) · updated/created age |
 | Selected-row dark band | selected-row band highlight (already have `cSelBg`) |
-| Bottom bar `PRs · Issues · cockpit · PR 1/4` | existing status bar (extend with section + position) |
+| Bottom bar `PRs · Issues · cockpit · PR 1/4` | status bar includes active section + selected position |
 | Right detail pane (Overview/Activity/Commits/Checks/Files tabs) | existing right drill-down (`summary…pr`) — unchanged |
 
 Note: this introduces **two independent tab strips** — task **sections**
@@ -97,7 +97,7 @@ section groups by state within one scrollable table. Ship tabs first.
 | Key | Action |
 |-----|--------|
 | `[` / `]` | previous / next **task section** |
-| `/` | edit the active section's **filter** |
+| `/` | search/refine within the active section; configured section filters stay static |
 | `↑`/`↓`, `j`/`k` | move selection within the section |
 | `tab` / `shift+tab`, `1`–`8` | **drill-down** tabs on the right |
 | `g` | scope current-project ↔ global |
@@ -115,8 +115,8 @@ collapsible tree.
   `pr_checks`, verdict, and added/removed diff totals).
 - File metadata prefers the selected run worktree's `git diff --numstat` and
   `--name-status` against the projected base branch, then falls back to
-  `/api/v1/runs/:run_id/debug` timeline `payload` / `file_changes` fields when
-  no worktree diff is available.
+  structured or legacy `/api/v1/runs/:run_id/debug` timeline `payload` /
+  `file_changes` fields when no worktree diff is available.
 - The shipped cockpit does not require a dedicated file-metadata endpoint. Such
   an endpoint would be optional API cleanup, not roadmap completion work.
 - Aggregation happens in client mapping, not on the render path.
@@ -131,9 +131,9 @@ reuses the detail view and add-task (`n`/`N`) flows unchanged.
 
 - Tests cover section filter predicates, counts per section, row renderer output,
   two-line keep-visible math, age formatting, current/global scope, mouse
-  hit-testing, and configured sections.
+  hit-testing, configured sections, and status-bar section position.
 - README and `cockpit-ui-spec.md` document the section tabs, layout proportions,
-  keymap, and two-strip model.
+  keymap, status bar, and two-strip model.
 - No new backend endpoints were added; the read-only client architecture is
   preserved.
 

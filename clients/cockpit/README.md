@@ -21,6 +21,9 @@ authoritative state.
   `Recent`, `All`) with per-section counts. `Ready` is derived from
   current-project task state (`backlog`, `ready`, `failed`, etc.), not just
   scheduler-dispatchable rows.
+- The status bar includes the active left-pane section and selected position
+  (for example `Ready 2/5`) so section navigation remains visible outside the
+  list header.
 - Live runs default to the current project (or `COCKPIT_PROJECT_ID`) and are
   deduplicated by task. The `g` scope toggle filters any mixed-project
   projection data by project id in current scope and shows all supplied
@@ -143,7 +146,7 @@ mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls t
           click section tabs, visible task/run rows, or drill-down tabs to select them
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab and focus it
 /         search focused pane                  n/N  next / previous match
-o/enter   open selected row in nvim; on pr, open PR in browser
+o         open selected row in nvim; on pr, o/enter open PR in browser
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim
@@ -196,8 +199,6 @@ integrations:
     keepShell: true
     session: per-task
     args: []
-pr:
-  provider: github
 cockpit:
   exportDir: ~/.foreman/cockpit-exports
   focus:
@@ -278,7 +279,7 @@ or `$EDITOR` (falling back to `nvim`).
   schema (ADR phase 2).
 - File-change data has no dedicated endpoint yet; `httpClient.Files` prefers the
   selected run worktree and projected base branch from `/api/v1/runs`, runs
-  `git diff --numstat`/`--name-status`, then falls back to
+  `git diff --numstat`/`--name-status`, then falls back to structured or legacy
   `/api/v1/runs/:run_id/debug` timeline `payload` / `file_changes` fields when
   no worktree diff is available.
 

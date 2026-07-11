@@ -69,9 +69,6 @@ func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 	if cfg.Integrations.GhEnhance.Enable != "off" {
 		t.Fatalf("expected env override to disable gh enhance, got %q", cfg.Integrations.GhEnhance.Enable)
 	}
-	if cfg.PR.Provider != "github" {
-		t.Fatalf("expected default PR provider github, got %q", cfg.PR.Provider)
-	}
 }
 
 func TestLoadConfigParsesCockpitFocus(t *testing.T) {
@@ -118,7 +115,7 @@ func TestLoadConfigParsesTaskListSections(t *testing.T) {
 
 func TestLoadConfigParsesIntegrations(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
-	if err := os.WriteFile(path, []byte("integrations:\n  diffnav:\n    enable: on\n    base: main\n    watch: true\n  ghDash:\n    args: [--repo, Fortium/foreman]\n  ghEnhance:\n    enable: on\n    args: [--branch, foreman/task]\npr:\n  provider: foreman\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("integrations:\n  diffnav:\n    enable: on\n    base: main\n    watch: true\n  ghDash:\n    args: [--repo, Fortium/foreman]\n  ghEnhance:\n    enable: on\n    args: [--branch, foreman/task]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := loadConfig(path)
@@ -136,9 +133,6 @@ func TestLoadConfigParsesIntegrations(t *testing.T) {
 	}
 	if got := strings.Join(cfg.Integrations.GhEnhance.Args, " "); got != "--branch foreman/task" {
 		t.Fatalf("unexpected gh enhance args %q", got)
-	}
-	if cfg.PR.Provider != "foreman" {
-		t.Fatalf("unexpected PR provider %q", cfg.PR.Provider)
 	}
 }
 

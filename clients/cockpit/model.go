@@ -1083,7 +1083,7 @@ func tabViewer(name string) bool {
 
 func (m model) viewerTab() bool { return tabViewer(tabNameAt(m.tab)) }
 func (m model) detailUsesViewer() bool {
-	if _, ok := m.selectedTask(); ok {
+	if _, ok := m.selectedItem(); ok {
 		return true
 	}
 	return m.viewerTab()

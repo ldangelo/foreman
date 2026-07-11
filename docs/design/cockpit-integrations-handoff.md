@@ -25,14 +25,15 @@ external Charm TUIs and one native view:
 
 Implemented in the Go cockpit module:
 
-- Config loading for optional `diffnav`, `delta`, `gh dash`, `gh enhance`, and PR integration settings.
+- Config loading for optional `diffnav`, `delta`, `gh dash`, and `gh enhance`
+  integration settings.
 - Runtime tool and `gh` extension availability checks with graceful notices for missing/disabled tools; the full-run `diffnav` handoff preflights both `diffnav` and `delta` to match the configured review stack and avoid suspending into a broken external diff path.
 - `D` full-run `diffnav` handoff from the `files` tab.
 - Inline selected-file diff previews using `delta` when available, plain `git diff` otherwise.
 - File tab population reads selected-run worktree/base metadata from `/api/v1/runs`,
   prefers `git diff --numstat` and `--name-status` from that worktree, then falls
-  back to `/api/v1/runs/:run_id/debug` timeline `payload` / `file_changes` fields
-  when no worktree diff is available.
+  back to structured or legacy `/api/v1/runs/:run_id/debug` timeline `payload` /
+  `file_changes` fields when no worktree diff is available.
 - Global `G` `gh dash` handoff.
 - Global `C` `gh enhance` handoff from the selected run worktree.
 - Native `pr` tab backed by Foreman-projected run PR fields, including mergeability, review decision, and check summaries, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
@@ -104,8 +105,8 @@ Never crash, never block.
 
 ## 5. Configuration surface
 
-Extend `.foreman/config.yaml` (parsed where `EditorConfig` is loaded). All
-optional; shown with defaults:
+The cockpit reads `.foreman/config.yaml` into `Config.Integrations` and
+`Config.Cockpit`. All optional; shown with defaults:
 
 ```yaml
 integrations:
@@ -121,13 +122,10 @@ integrations:
   ghEnhance:
     enable: auto
     args: []            # extra args appended to `gh enhance`
-pr:
-  provider: github      # source of PR status (github via gh, or foreman events)
 ```
 
-Load into an `Integrations` struct next to `EditorConfig`. Env overrides for
-tests: `COCKPIT_DIFFNAV=off`, `COCKPIT_DELTA=off`, `COCKPIT_GHDASH=off`,
-`COCKPIT_GHENHANCE=off`.
+Env overrides for integration enablement remain `COCKPIT_DIFFNAV=off`,
+`COCKPIT_DELTA=off`, `COCKPIT_GHDASH=off`, and `COCKPIT_GHENHANCE=off`.
 
 ## 6. Closed workstreams
 
