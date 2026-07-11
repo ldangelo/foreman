@@ -40,9 +40,11 @@ authoritative state.
 - Right column: color-coded run header, live elapsed clock for selected running
   runs, an animated phase rail that collapses to a compact `4/10 · qa` badge on
   very narrow panes, and a drill-down tab strip (`summary · messages · events ·
-  logs · reports · files · pr · metrics`). The metrics tab reads
-  `/api/v1/metrics`, shows a spinner while refresh data is in flight, and renders
-  counters, gauges, and phase durations. The active pane is called out with a
+  logs · reports · files · pr · metrics`). The files tab exposes plain nvim open
+  (`o`), selected-file nvim diff (`d`), and full-run `diffnav` (`D`). The metrics
+  tab reads `/api/v1/metrics`, shows a spinner while refresh data is in flight,
+  counts counters, gauges, and phase durations in the tab badge, and renders all
+  three as bounded rows. The active pane is called out with a
   focus label, accent frame, and a non-color `▶` task-list marker; the inactive
   pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or
   `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
@@ -112,7 +114,9 @@ FOREMAN_SERVER_AUTH_TOKEN=$FOREMAN_SERVER_AUTH_TOKEN \
 COCKPIT_BACKEND=mock ./foreman-cockpit
 ```
 
-Optional showcase recording (requires developer-installed `vhs` and `ttyd`):
+Optional showcase recording (requires developer-installed `vhs` and `ttyd`);
+`demo.tape` sets `COCKPIT_DEMO=1`, which forces a deterministic Bubble Tea
+window size and truecolor profile via v2 program options:
 
 ```bash
 vhs demo.tape

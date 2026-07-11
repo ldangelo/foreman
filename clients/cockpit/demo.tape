@@ -9,7 +9,7 @@ Set Width 1280
 Set Height 720
 Set Theme "Dracula"
 
-Type "COCKPIT_BACKEND=mock go run ."
+Type "COCKPIT_BACKEND=mock COCKPIT_DEMO=1 go run ."
 Enter
 Sleep 4s
 Type "?"

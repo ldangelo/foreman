@@ -25,10 +25,7 @@ func diffnavCommand(run Run, cfg Integrations, tools ToolResolver) (*exec.Cmd, e
 	if wt == "" || wt == "(cleaned)" {
 		return nil, errors.New("no worktree available for diffnav")
 	}
-	base := cfg.Diffnav.Base
-	if base == "" {
-		base = "origin/dev"
-	}
+	base := selectedDiffBase(run, cfg)
 	pipeline := fmt.Sprintf("git -C %s diff %s...HEAD | diffnav", shellQuote(expandHome(wt)), shellQuote(base))
 	if cfg.Diffnav.Watch {
 		pipeline = fmt.Sprintf("git -C %s diff %s...HEAD | diffnav --watch", shellQuote(expandHome(wt)), shellQuote(base))

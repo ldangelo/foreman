@@ -34,6 +34,15 @@ func TestInstallThemesRequested(t *testing.T) {
 	}
 }
 
+func TestProgramOptionsFromEnvEnablesDeterministicDemoMode(t *testing.T) {
+	if opts := programOptionsFromEnv(""); len(opts) != 0 {
+		t.Fatalf("expected no default program options, got %d", len(opts))
+	}
+	if opts := programOptionsFromEnv("true"); len(opts) != 2 {
+		t.Fatalf("expected deterministic demo window/color options, got %d", len(opts))
+	}
+}
+
 func TestClientForConfigDefaultsToLocalLiveServer(t *testing.T) {
 	client := clientForConfig("", "", "")
 	httpClient, ok := client.(*httpClient)

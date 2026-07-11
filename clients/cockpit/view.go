@@ -639,7 +639,7 @@ func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
 
 func (m model) renderTabs(w int, visual paneVisual) string {
 	var toks []string
-	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, len(m.metrics.Counters) + len(m.metrics.Gauges)}
+	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, metricsCount(m.metrics)}
 	if m.pr.URL != "" {
 		counts[6] = 1
 	}
@@ -819,7 +819,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		}
 		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {
 			f := m.files[idx]
-			base := selectedDiffBase(m.config.Integrations)
+			base := selectedDiffBase(run, m.config.Integrations)
 			key := diffPreviewKey(run, f.Path, base)
 			add("diff-preview:"+f.Path+":spacer", "", target{})
 			if m.diffLoading[key] {
@@ -969,8 +969,8 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		}
 		return ""
 	}
-	diff := tabNames[m.tab] == "files"
-	cmd, mode := describe(m.editor, t, diff)
+	diffCmd, diffMode := describe(m.editor, t, true)
+	plainCmd, plainMode := describe(m.editor, t, false)
 	head := greenStyle.Render("▸ open ") + whiteStyle.Render(t.label) + greenStyle.Render(" in nvim")
 	if t.conflict {
 		head += redStyle.Render("  (conflict — 3-way)")
@@ -979,9 +979,9 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		lines := []string{
 			dimStyle.Render(strings.Repeat("┄", w)),
 			clip(head, w),
-			clip(dimStyle.Render("$ ")+cyanStyle.Render(cmd), w),
-			clip(dimStyle.Render("→ "+mode), w),
-			clip(cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
+			clip(dimStyle.Render("$ ")+cyanStyle.Render(diffCmd), w),
+			clip(dimStyle.Render("→ "+diffMode), w),
+			clip(cyanStyle.Render("o")+dimStyle.Render(" open plain  ")+cyanStyle.Render("d")+dimStyle.Render(" open selected diff  ")+cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
 		}
 		if runActionLine != "" {
 			lines = append(lines, runActionLine)
@@ -991,8 +991,8 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	lines := []string{
 		dimStyle.Render(strings.Repeat("┄", w)),
 		clip(head, w),
-		clip(dimStyle.Render("$ ")+cyanStyle.Render(cmd), w),
-		clip(dimStyle.Render("→ "+mode), w),
+		clip(dimStyle.Render("$ ")+cyanStyle.Render(plainCmd), w),
+		clip(dimStyle.Render("→ "+plainMode), w),
 	}
 	if runActionLine != "" {
 		lines = append(lines, runActionLine)

@@ -913,7 +913,7 @@ func (m model) rightTabIndexAt(x int) int {
 	if rel < 0 {
 		return -1
 	}
-	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, len(m.metrics.Counters) + len(m.metrics.Gauges)}
+	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, metricsCount(m.metrics)}
 	if m.pr.URL != "" {
 		counts[6] = 1
 	}
@@ -1010,7 +1010,11 @@ func (m model) actionKeyAt(x, y int) string {
 			return "o"
 		}
 		if line == 4 {
-			return "D"
+			return actionSegmentKey(relX, "", []actionSegment{
+				{label: "o open plain", key: "o"},
+				{label: "d open selected diff", key: "d"},
+				{label: "D open run diff in diffnav", key: "D"},
+			})
 		}
 	default:
 		if m.openableTab() && line == 1 {
@@ -1180,7 +1184,7 @@ func (m *model) maybeLoadSelectedDiffPreview() tea.Cmd {
 		return nil
 	}
 	path := m.files[idx].Path
-	base := selectedDiffBase(m.config.Integrations)
+	base := selectedDiffBase(run, m.config.Integrations)
 	key := diffPreviewKey(run, path, base)
 	if _, ok := m.diffPreviews[key]; ok {
 		return nil

@@ -82,7 +82,14 @@ func (e EditorConfig) useRemote() bool {
 // describe returns a human-readable command + mode string for the action bar.
 func describe(e EditorConfig, t target, diff bool) (string, string) {
 	if e.useRemote() {
-		return e.Cmd + " --server $NVIM --remote " + t.path, "remote → your attached nvim session"
+		cmd := e.Cmd + " " + strings.Join(nvimRemoteArgs(e.serverAddr(), t.path, diff, t.conflict), " ")
+		if diff && t.conflict {
+			return cmd, "remote 3-way → your attached nvim session"
+		}
+		if diff {
+			return cmd, "remote diff → your attached nvim session"
+		}
+		return cmd, "remote → your attached nvim session"
 	}
 	if diff && t.conflict {
 		return e.Cmd + " -c 'Gvdiffsplit!' " + t.path, "inline (3-way) → suspends cockpit, resumes on exit"
@@ -91,6 +98,32 @@ func describe(e EditorConfig, t target, diff bool) (string, string) {
 		return e.Cmd + " -d " + t.path, "inline diff → suspends cockpit, resumes on exit"
 	}
 	return e.Cmd + " " + t.path, "inline → suspends cockpit, resumes on exit"
+}
+
+func nvimRemoteArgs(server, path string, diff, conflict bool) []string {
+	if !diff {
+		return []string{"--server", server, "--remote", path}
+	}
+	cmd := "<Esc>:edit " + nvimExPath(path)
+	if conflict {
+		cmd += " | Gvdiffsplit!"
+	} else {
+		cmd += " | diffthis"
+	}
+	cmd += "<CR>"
+	return []string{"--server", server, "--remote-send", cmd}
+}
+
+func nvimExPath(path string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		" ", "\\ ",
+		"\t", "\\\t",
+		"|", "\\|",
+		"%", "\\%",
+		"#", "\\#",
+	)
+	return replacer.Replace(path)
 }
 
 func expandHome(p string) string {
@@ -111,8 +144,7 @@ func openInNvim(e EditorConfig, t target, diff bool) tea.Cmd {
 	path := expandHome(t.path)
 
 	if e.useRemote() {
-		args := []string{"--server", e.serverAddr(), "--remote", path}
-		c := exec.Command(e.Cmd, args...)
+		c := exec.Command(e.Cmd, nvimRemoteArgs(e.serverAddr(), path, diff, t.conflict)...)
 		return func() tea.Msg {
 			err := c.Run()
 			return nvimDoneMsg{err: err, remote: true, label: t.label}

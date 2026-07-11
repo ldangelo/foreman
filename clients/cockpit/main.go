@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
 // Foreman cockpit — Bubble Tea POC.
@@ -46,10 +47,20 @@ func main() {
 	if cfgErr != nil {
 		m.notice = "config: " + cfgErr.Error()
 	}
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, programOptionsFromEnv(os.Getenv("COCKPIT_DEMO"))...)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "cockpit error:", err)
 		os.Exit(1)
+	}
+}
+
+func programOptionsFromEnv(demo string) []tea.ProgramOption {
+	if demo != "1" && !strings.EqualFold(demo, "true") {
+		return nil
+	}
+	return []tea.ProgramOption{
+		tea.WithWindowSize(120, 32),
+		tea.WithColorProfile(colorprofile.TrueColor),
 	}
 }
 

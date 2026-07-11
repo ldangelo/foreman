@@ -210,10 +210,10 @@ default avoids nesting a TUI inside a TUI.
 
 ### Files: focused diff preview and handoffs
 
-- `o` opens the file plain (at top of buffer).
-- `d` opens the selected file diff in nvim. Remote mode sends a diff command to
-  the running session; inline mode uses `nvim -d`. Conflicted files open a
-  3-way diff (`Gvdiffsplit!` / merge layout).
+- `o` opens the file plain in nvim.
+- `d` opens the selected file as an nvim diff against the projected base. Remote
+  mode sends a diff command to the running session; inline mode uses `nvim -d`.
+  Conflicted files open a 3-way diff (`Gvdiffsplit!` / merge layout).
 - `D` opens a full-run `git diff <base>...HEAD | diffnav` handoff when enabled.
 - The files tab also renders an inline preview for the selected file. It uses
   `git diff <base>...HEAD -- <path> | delta` when `delta` is enabled and
@@ -229,7 +229,8 @@ default avoids nesting a TUI inside a TUI.
   status, failure signals, PR state, and conflicted files; `P` opens plain `omp`.
   Active running workers are refused to avoid concurrent mutations.
 - The `metrics` tab renders `/api/v1/metrics` counters, gauges, and phase
-  durations as bounded rows, with a spinner while refresh data is in flight.
+  durations as bounded rows, counts all three in the tab badge, and shows a
+  spinner while refresh data is in flight.
   Empty/missing metrics render a static empty state.
 - The cockpit uses generated theme artifacts from `clients/cockpit/theme/`:
   `tokens.yaml` drives Lip Gloss constants, Glamour JSON, `gh-dash.yml`,

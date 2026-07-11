@@ -157,6 +157,13 @@ func TestDiffnavCommandValidationAndShape(t *testing.T) {
 	if !hasEnv(cmd.Env, "DIFFNAV_CONFIG_DIR=") {
 		t.Fatalf("expected diffnav command to inherit theme config dir, env=%v", cmd.Env)
 	}
+	runBase, err := diffnavCommand(Run{RunID: "run-1", Worktree: "/tmp/wt", BaseBranch: "main"}, cfg, fakeTools{"diffnav": true, "delta": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runBase.Args[2], "'main'...HEAD") {
+		t.Fatalf("expected projected run base branch in diffnav pipeline %q", runBase.Args[2])
+	}
 	if _, err := diffnavCommand(Run{RunID: "run-1"}, cfg, fakeTools{"diffnav": true, "delta": true}); err == nil || !strings.Contains(err.Error(), "no worktree") {
 		t.Fatalf("expected empty worktree error, got %v", err)
 	}
@@ -215,6 +222,20 @@ func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 	}
 	if !strings.Contains(cmd.Args[2], "git -C '/tmp/wt' diff 'origin/dev'...HEAD -- 'src/a file.go'") {
 		t.Fatalf("unexpected git diff command %q", cmd.Args[2])
+	}
+}
+
+func TestDeltaPreviewCommandUsesProjectedRunBaseBranch(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt", BaseBranch: "main"}, "src/a.go", cfg, fakeTools{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usingDelta {
+		t.Fatal("expected plain git diff when delta is absent")
+	}
+	if !strings.Contains(cmd.Args[2], "git -C '/tmp/wt' diff 'main'...HEAD -- 'src/a.go'") {
+		t.Fatalf("expected projected run base branch in git diff command %q", cmd.Args[2])
 	}
 }
 

@@ -1238,7 +1238,7 @@ func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(m.config.Integrations))
+	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(client.runs[0], m.config.Integrations))
 	m.diffPreviews[key] = DiffPreview{RunID: "run-1", Path: "src/a.go", Lines: []string{"diff --git a/src/a.go b/src/a.go", "+added"}}
 	delete(m.diffLoading, key)
 	out := stripANSI(m.renderFrame())
@@ -1258,7 +1258,7 @@ func TestMotionStatusAndDiffLoadingRespectReducedMotion(t *testing.T) {
 	m.tab = 5
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(m.config.Integrations))
+	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(client.runs[0], m.config.Integrations))
 	m.diffLoading[key] = true
 
 	out := stripANSI(m.renderFrame())
@@ -1490,6 +1490,23 @@ func TestMetricsTabRendersOperationalCounters(t *testing.T) {
 	}
 }
 
+func TestMetricsTabCountIncludesPhaseDurations(t *testing.T) {
+	m := newModel(&mutableClient{})
+	m.width = 120
+	m.height = 20
+	m.tab = 7
+	m.metrics = Metrics{
+		PhaseDuration: []PhaseDuration{{RunID: "run-1", PhaseID: "developer", Status: "completed", DurationMS: 90000}},
+	}
+	out := stripANSI(m.renderTabs(120, paneVisualFor(true, defaultConfig().Cockpit.Focus)))
+	if !strings.Contains(out, "metrics 1") {
+		t.Fatalf("expected metrics tab count to include phase durations, got %q", out)
+	}
+	if idx := m.rightTabIndexAt(strings.Index(out, "metrics 1") + m.leftPaneWidth() + 2); idx != 7 {
+		t.Fatalf("expected metrics tab hit zone to include phase duration count, got %d from %q", idx, out)
+	}
+}
+
 func TestMouseClickSelectsTaskSection(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
@@ -1608,7 +1625,13 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	if key := m.actionKeyAt(x, startY+1); key != "o" {
 		t.Fatalf("expected files open action, got %q", key)
 	}
-	if key := m.actionKeyAt(x, startY+4); key != "D" {
+	if key := m.actionKeyAt(x, startY+4); key != "o" {
+		t.Fatalf("expected plain open action, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("o open plain  "), startY+4); key != "d" {
+		t.Fatalf("expected selected file diff action, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("o open plain  d open selected diff  "), startY+4); key != "D" {
 		t.Fatalf("expected full diff action, got %q", key)
 	}
 	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  "), startY+5); key != "r" {
@@ -1623,6 +1646,10 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	}
 	if key := m.actionKeyAt(x+len("▸ PR actions o/enter open PR in browser  G open gh dash  "), startY); key != "C" {
 		t.Fatalf("expected gh enhance PR action segment, got %q", key)
+	}
+	help := stripANSI(renderFullHelp(120, true))
+	if !strings.Contains(help, "selected file diff") {
+		t.Fatalf("expected generated help to include selected file diff, got:\n%s", help)
 	}
 }
 

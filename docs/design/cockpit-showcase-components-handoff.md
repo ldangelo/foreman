@@ -7,8 +7,9 @@ Related: `docs/design/cockpit-viewport-investigation.md` (v2 migration), `cockpi
 Implementation note (2026-07-11): the cockpit ships generated keymap/help,
 `textinput`/`textarea` task creation, table/reflow rendering, spinner/stopwatch
 reduced-motion support, clickable section/task-row/drill-down-tab/action targets,
-a metrics tab backed by `/api/v1/metrics`, a theme installer, richer mock data,
-and a verified `vhs demo.tape` flow covering help, PR, and metrics frames.
+selected-file diff actions, a metrics tab backed by `/api/v1/metrics`, a theme
+installer, richer mock data, and a verified `vhs demo.tape` flow covering help,
+PR, and metrics frames with deterministic Bubble Tea v2 window/color options.
 No local cockpit feature is waiting on those libraries: native hit-testing covers
 section/row/action/PR clicks, native bounded bars cover the metrics tab, and
 `clients/cockpit/demo.tape` is checked in for `vhs` capture. `bubblezone` and
@@ -143,8 +144,9 @@ user-facing behavior natively when the behavior is small enough.
   highlight reel (help overlay, PR tab, metrics tab) and can render `demo.gif`
   with `vhs demo.tape`. `vhs` remains a developer-installed tool, not a runtime
   dependency.
-- Use the new v2 `tea.WithWindowSize`/`tea.WithColorProfile` options so the demo
-  renders deterministically.
+- `clients/cockpit/demo.tape` sets `COCKPIT_DEMO=1`; startup applies the v2
+  `tea.WithWindowSize` and `tea.WithColorProfile` options so the demo renders
+  deterministically.
 
 ## 7. Acceptance (showcase bar)
 

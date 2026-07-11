@@ -30,7 +30,10 @@ func diffPreviewKey(run Run, filePath, base string) string {
 	return run.RunID + "\x00" + base + "\x00" + filePath
 }
 
-func selectedDiffBase(cfg Integrations) string {
+func selectedDiffBase(run Run, cfg Integrations) string {
+	if run.BaseBranch != "" {
+		return run.BaseBranch
+	}
 	if cfg.Diffnav.Base != "" {
 		return cfg.Diffnav.Base
 	}
@@ -45,7 +48,7 @@ func deltaPreviewCommand(run Run, filePath string, cfg Integrations, tools ToolR
 	if strings.TrimSpace(filePath) == "" {
 		return nil, false, errors.New("no file selected for diff preview")
 	}
-	base := selectedDiffBase(cfg)
+	base := selectedDiffBase(run, cfg)
 	gitDiff := fmt.Sprintf("git -C %s diff %s...HEAD -- %s", shellQuote(expandHome(wt)), shellQuote(base), shellQuote(filePath))
 	useDelta := normalizeEnable(cfg.Delta.Enable) != "off" && os.Getenv("NO_COLOR") == "" && tools.Available("delta")
 	if useDelta {
@@ -55,7 +58,7 @@ func deltaPreviewCommand(run Run, filePath string, cfg Integrations, tools ToolR
 }
 
 func loadDiffPreview(run Run, filePath string, cfg Integrations, tools ToolResolver) tea.Cmd {
-	base := selectedDiffBase(cfg)
+	base := selectedDiffBase(run, cfg)
 	key := diffPreviewKey(run, filePath, base)
 	return func() tea.Msg {
 		cmd, usingDelta, err := deltaPreviewCommand(run, filePath, cfg, tools)

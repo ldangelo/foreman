@@ -7,6 +7,10 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+func metricsCount(metrics Metrics) int {
+	return len(metrics.Counters) + len(metrics.Gauges) + len(metrics.PhaseDuration)
+}
+
 func renderMetricsLines(metrics Metrics, w int, visual paneVisual) []ViewerLine {
 	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
 	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
