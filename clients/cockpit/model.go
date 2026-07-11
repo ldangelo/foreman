@@ -579,11 +579,11 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.notice = "omp: no run selected"
 	case "r":
 		if run, ok := m.selectedRun(); ok {
-			m.notice = "retry queued → POST /api/v1/commands (run " + run.RunID + ")"
+			m.notice = "retry outside cockpit: foreman retry " + run.TaskID
 		}
 	case "R":
 		if run, ok := m.selectedRun(); ok {
-			m.notice = "reset requested (confirm) → run " + run.RunID
+			m.notice = "reset outside cockpit: foreman reset " + run.TaskID
 		}
 	}
 	return m, nil

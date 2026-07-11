@@ -116,13 +116,19 @@ func ompShellLine(run Run, brief string, cfg OmpConfig) string {
 	}
 	parts := []string{shellQuote(cmd)}
 	parts = append(parts, quoteArgs(cfg.Args)...)
-	if cfg.Session == "per-task" && run.TaskID != "" {
-		// OMP's session flag may change; keep the launcher configurable by not
-		// assuming one here. The stable seed is the briefing file path.
+	sessionDir := ompSessionDir(run, cfg)
+	if sessionDir != "" {
+		parts = append(parts, "--session-dir", shellQuote(sessionDir))
+		if hasOmpSession(sessionDir) {
+			parts = append(parts, "--continue")
+		}
 	}
-	line := strings.Join(parts, " ")
+	line := "exec " + strings.Join(parts, " ")
+	if sessionDir != "" {
+		line = "mkdir -p " + shellQuote(sessionDir) + "; " + line
+	}
 	if brief == "" {
-		return "exec " + line
+		return line
 	}
 	message := "Foreman triage brief: " + brief + " — read it first, then work in this tree."
 	return "printf %s\\n\\n " + shellQuote(message) + "; exec " + line
@@ -134,6 +140,51 @@ func quoteArgs(args []string) []string {
 		out = append(out, shellQuote(arg))
 	}
 	return out
+}
+
+func ompSessionDir(run Run, cfg OmpConfig) string {
+	if strings.ToLower(strings.TrimSpace(cfg.Session)) != "per-task" || strings.TrimSpace(run.TaskID) == "" {
+		return ""
+	}
+	return filepath.Join(stateHome(), "foreman-cockpit", "omp", safePathSegment(run.TaskID))
+}
+
+func stateHome() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return xdg
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".local", "state")
+	}
+	return os.TempDir()
+}
+
+func safePathSegment(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "task"
+	}
+	return b.String()
+}
+
+func hasOmpSession(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		found = true
+		return filepath.SkipAll
+	})
+	return found
 }
 
 func buildTriageBrief(m model, run Run) string {

@@ -1513,6 +1513,26 @@ func TestMouseActionHitTestingCoversFilesAndPRActions(t *testing.T) {
 	}
 }
 
+func TestRetryResetKeysExposeExternalCommands(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}}
+	m.tasks = nil
+	m.buildItems()
+
+	updated, _ := m.handleKey(keyPress("r"))
+	m = updated.(model)
+	if !strings.Contains(m.notice, "foreman retry task-1") {
+		t.Fatalf("expected retry key to expose external retry command, got %q", m.notice)
+	}
+
+	updated, _ = m.handleKey(keyPress("R"))
+	m = updated.(model)
+	if !strings.Contains(m.notice, "foreman reset task-1") {
+		t.Fatalf("expected reset key to expose external reset command, got %q", m.notice)
+	}
+}
 func TestAutoTaskListWidthUsesDashLikeProportion(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 160

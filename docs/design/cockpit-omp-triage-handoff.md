@@ -1,16 +1,17 @@
 # Handoff — Attach an `omp` (oh-my-pi) session to a run's worktree
 
-Status: Implemented in `clients/cockpit/` with documented upstream flag caveats · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` · Date: 2026-07-10 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Related: `docs/design/cockpit-integrations-handoff.md`, `docs/adr/0001-go-clients-elixir-core-runtime.md`, `clients/cockpit/`
 
 Implementation note (2026-07-11): the cockpit implements `p`/`P`, auto tmux vs
 inline launch, worktree/active-worker guards, configurable command/args/session
-mode, triage brief writing with safe fallback outside the worktree unless
+mode, per-task OMP session directories with `--continue` when a prior session is
+present, triage brief writing with safe fallback outside the worktree unless
 `.foreman/` is gitignored, PR/failure/conflict/report/log context, and
-sensitive-line redaction. OMP named/resumable session flags and direct opening
-instruction injection remain intentionally configurable rather than hard-coded
-until `omp --help`/`omp.sh` stabilizes the exact interactive flags.
+sensitive-line redaction. Direct interactive opening-instruction injection stays
+out of the launch path; the cockpit writes the brief and prints a read-it-first
+message before starting `omp`.
 
 ## 1. Objective
 
@@ -32,17 +33,16 @@ handing the human the identical runtime — operating in the exact worktree/bran
 Foreman created. After a fix, the human commits/pushes on that branch and
 Foreman's PR reconciliation picks it up (and `r` can re-run the failed phase).
 
-## 2. What `omp` is (verify flags at omp.sh before finalizing)
+## 2. What `omp` is (verified with `omp --help` 2026-07-11)
 
 - Binary: **`omp`** (Rust terminal coding agent; fork of `@mariozechner/pi-coding-agent`).
 - `omp` alone launches the interactive TUI. `omp -p "<prompt>"` answers a single
   prompt and **exits** (non-interactive — do NOT use `-p` for the attach flow).
 - Sessions behave like git branches: **resume / fork / branch / share**.
-- For an interactive session seeded with an opening instruction, confirm the
-  exact mechanism (`omp "<message>"` positional, `--message`, or type-after-launch)
-  from `omp --help` / omp.sh. Fallback that always works: launch bare `omp` in
-  the worktree after writing a briefing file, and the opening instruction just
-  says "read ./.foreman/triage-<run>.md".
+- Interactive launch accepts an initial positional message, but the cockpit does
+  not depend on injecting text into the running TUI. It launches `omp` in the
+  worktree after writing a briefing file, and the opening instruction printed
+  before launch says to read that brief first.
 
 Treat the binary + args as **config** (`integrations.omp.cmd`, default `omp`), so
 this works even if the invocation differs.
@@ -123,9 +123,10 @@ Pick the opening instruction by failure mode (a small `switch` on
 | `coderabbit_*` (cli-review) | "Address these CodeRabbit findings (see CR_CLI_REPORT.md): …" |
 | generic `failed`/`stuck` | "This Foreman run failed at `<phase>`. Investigate using ./.foreman/triage-<run>.md and propose a fix." |
 
-Session identity: key the omp session by task id (e.g. `--session foreman-<task>`
-if omp supports named sessions) so re-attaching **resumes** context rather than
-starting cold — verify the flag against omp's session CLI.
+Session identity is keyed by task id using `--session-dir
+<state>/foreman-cockpit/omp/<task>`; if that directory already contains an OMP
+session file, the launcher adds `--continue` so re-attaching resumes context
+rather than starting cold.
 
 ## 6. Configuration
 

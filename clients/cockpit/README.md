@@ -139,7 +139,7 @@ d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
-r/R       retry / reset                       /    search     n/N match
+r/R       retry/reset command hints         /    search     n/N match
 ←/→       pan focused logs                    s    save visible viewer rows
 ?         show generated keymap help in the detail pane; esc or ? closes it
 ```
@@ -204,8 +204,10 @@ The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
 command output. `diffnav`, `gh dash`, `gh enhance`, and inline `omp` run through
 `tea.ExecProcess`; `omp` prefers a non-suspending tmux pane when `$TMUX` is set.
 `p` writes a non-secret triage brief for the selected failed/stuck run and starts
-`omp`; `P` opens plain `omp` without a brief. The brief includes PR state, recent
-signals, conflicted files, targeted report excerpts, and error-like log lines.
+`omp`; `P` opens plain `omp` without a brief. With `session: per-task`, each task
+uses a stable `--session-dir` under the user state directory and adds `--continue`
+when a prior session exists. The brief includes PR state, recent signals,
+conflicted files, targeted report excerpts, and error-like log lines.
 Active-looking runs (`running`, `in_progress`, `pending`) are refused even if a
 projection group is stale, avoiding two agents mutating the same worktree.
 Inline file previews read a completed `git diff | delta --config

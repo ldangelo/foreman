@@ -78,6 +78,35 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	}
 }
 
+func TestOmpPerTaskSessionUsesStableStateDirAndContinuesExistingSession(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+	cfg := defaultConfig().Integrations.Omp
+	cfg.Cmd = "omp-dev"
+	cfg.Session = "per-task"
+	run := Run{TaskID: "task/one", RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}
+
+	first := ompShellLine(run, "", cfg)
+	sessionDir := filepath.Join(stateDir, "foreman-cockpit", "omp", "task-one")
+	if !strings.Contains(first, "--session-dir "+shellQuote(sessionDir)) {
+		t.Fatalf("expected stable per-task session dir in command, got %q", first)
+	}
+	if strings.Contains(first, "--continue") {
+		t.Fatalf("did not expect continue before a prior session exists, got %q", first)
+	}
+
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next := ompShellLine(run, "", cfg)
+	if !strings.Contains(next, "--continue") {
+		t.Fatalf("expected existing per-task session to continue, got %q", next)
+	}
+}
+
 func TestBuildTriageBriefIncludesFailureContext(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.events = []Event{{Type: "ToolCallFinished", Detail: "go test failed", At: "now"}}

@@ -60,7 +60,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 			binding("y", "copy task id"),
 			binding("a", "approve task"),
 			binding("e", "edit task"),
-			binding("r/R", "retry/reset"),
+			binding("r/R", "retry/reset cmd"),
 		},
 		{
 			binding("p/P", "omp triage/plain omp"),

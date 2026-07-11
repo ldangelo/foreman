@@ -137,8 +137,8 @@ Global:
 | `n` / `N` | task list: full create form / one-line quick-add; drill-down filter: next / previous match |
 | `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
 | `P` | attach plain `omp` to the selected run worktree without a brief |
-| `r` | retry selected run/phase (`POST /commands`) |
-| `R` | reset selected task (confirmed) |
+| `r` | show the external `foreman retry <task>` command for the selected run |
+| `R` | show the external `foreman reset <task>` command for the selected run |
 | `G` | open `gh dash` when enabled and available |
 | `C` | open `gh enhance` for the selected run when enabled and available |
 | `?` | toggle generated keymap help in the right detail pane; `esc` closes it |
