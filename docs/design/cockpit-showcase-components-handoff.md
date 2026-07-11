@@ -1,13 +1,14 @@
 # Handoff — A showcase-grade cockpit: adopting the Bubble Tea ecosystem
 
-Status: Implemented in `clients/cockpit/` with external showcase caveats · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with local showcase smoke complete · Date: 2026-07-11 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Related: `docs/design/cockpit-viewport-investigation.md` (v2 migration), `cockpit-unified-theme-handoff.md`, `cockpit-task-capabilities-handoff.md`, `cockpit-ui-spec.md`
 
 Implementation note (2026-07-11): the cockpit ships generated keymap/help,
 `textinput`/`textarea` task creation, table/reflow rendering, spinner/stopwatch
 reduced-motion support, clickable section/task-row/drill-down-tab/action targets,
-a metrics tab backed by `/api/v1/metrics`, a theme installer, and richer mock data.
+a metrics tab backed by `/api/v1/metrics`, a theme installer, richer mock data,
+and a verified `vhs demo.tape` flow covering help, PR, and metrics frames.
 No local cockpit feature is waiting on those libraries: native hit-testing covers
 section/row/action/PR clicks, native bounded bars cover the metrics tab, and
 `clients/cockpit/demo.tape` is checked in for `vhs` capture. `bubblezone` and

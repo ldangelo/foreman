@@ -1,6 +1,6 @@
 # Handoff — Make cockpit + gh-dash + gh-enhance + diffnav feel like one app
 
-Status: Implemented in `clients/cockpit/` with visual-QA caveats · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with local visual smoke complete · Date: 2026-07-11 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea + config authoring)
 Related: `docs/design/cockpit-ui-spec.md`, `docs/design/cockpit-integrations-handoff.md`
 Target: `clients/cockpit/` + shipped theme configs for the three external TUIs
@@ -228,7 +228,7 @@ font. A row is "done" only when the same token looks the same in cockpit, dash,
 enhance, and diffnav.
 
 Programmatic checks: `tokens.yaml` validates (all color tokens are `#RRGGBB`);
-generator output is byte-stable (`go run theme/gen.go` diff clean); cockpit
+generator output is byte-stable (`go generate ./...` stays clean); cockpit
 builds/tests/vet clean (`go test ./...`, `go build ./...`, `go vet ./...`).
 
 ## 10. Implementation status
@@ -248,10 +248,11 @@ Done in `clients/cockpit/`:
 8. Inline delta previews pass the packaged `theme/delta.gitconfig` with
    `delta --config`.
 
-Remaining external/manual work:
-
-1. Visual screenshot QA across cockpit, dash, enhance, and diffnav in an
-   installed truecolor terminal.
+Local visual smoke completed with `vhs demo.tape` and frame inspection for the
+cockpit help, PR, and metrics views. The external surfaces use generated or
+packaged fragments (`gh-dash.yml`, `enhance.env`, `diffnav/config.yml`, and
+`delta.gitconfig`); release QA may still compare side-by-side screenshots in the
+operator's terminal, but no local code or generated-theme work remains.
 
 ## 11. Non-goals
 
