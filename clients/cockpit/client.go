@@ -945,37 +945,29 @@ func (c *httpClient) CreateTask(task Task) error {
 }
 
 func (c *httpClient) RetryRun(run Run) error {
-	return c.resetRunForRetry(run, "retry requested from cockpit")
+	return c.requeueRunTask(run, "run.retry", "retry requested from cockpit")
 }
 
 func (c *httpClient) ResetRun(run Run) error {
-	return c.resetRunForRetry(run, "reset requested from cockpit")
+	return c.requeueRunTask(run, "run.reset", "reset requested from cockpit")
 }
 
-func (c *httpClient) resetRunForRetry(run Run, reason string) error {
+func (c *httpClient) requeueRunTask(run Run, commandType string, reason string) error {
 	projectID := run.ProjectID
 	if projectID == "" {
 		projectID = c.projectID()
 	}
+	if strings.TrimSpace(run.RunID) == "" {
+		return fmt.Errorf("run id is required")
+	}
 	if strings.TrimSpace(run.TaskID) == "" {
 		return fmt.Errorf("task id is required")
 	}
-	if strings.TrimSpace(run.RunID) != "" {
-		if err := c.postCommand("run.update", map[string]any{
-			"project_id": projectID,
-			"run_id":     run.RunID,
-			"task_id":    run.TaskID,
-			"status":     "reset",
-			"reason":     reason,
-			"source":     "cockpit",
-		}); err != nil {
-			return err
-		}
-	}
-	return c.postCommand("task.update", map[string]any{
+	return c.postCommand(commandType, map[string]any{
 		"project_id": projectID,
+		"run_id":     run.RunID,
 		"task_id":    run.TaskID,
-		"status":     "ready",
+		"reason":     reason,
 		"source":     "cockpit",
 	})
 }

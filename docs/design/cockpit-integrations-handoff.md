@@ -155,8 +155,8 @@ Intent: from a run's `files` tab, open the whole run diff in diffnav.
   mirroring `openInNvim`. Handle `diffnavDoneMsg` in `Update` to set a notice.
 - If `run.Worktree` is empty/`(cleaned)` (merged/failed runs), show a notice
   instead of launching.
-- Optional: when `cfg.Diffnav.Watch`, append `--watch` semantics per diffnav docs
-  (re-runs the diff and refreshes) — nice for active runs.
+- When `cfg.Diffnav.Watch` is true, append `--watch` semantics per diffnav docs
+  (re-runs the diff and refreshes) for active runs.
 - Acceptance: on the `files` tab of a run with a worktree, `D` suspends the
   cockpit, shows diffnav with the run's changed files, and returns cleanly on
   quit; missing diffnav/delta shows a notice and does nothing else.
@@ -222,16 +222,12 @@ but does not replace.
 Intent: a `pr` tab showing the selected run's PR status without any external
 process — the true single-pane win.
 
-- Add `"pr"` to `tabNames` (append after `files`; it is not an nvim-openable tab,
-  so keep it out of the `>= firstOpenableTab` open/diff logic — verify
-  `openableTab()` still refers only to logs/reports/files).
-- Data source, in priority order (inspect the Elixir side to confirm exact
-  fields — see `packages/foreman_server/lib/foreman_server/projection_store/`
-  for `PrUpdated` / `PrReady` / `run.pr.merge` events and any `pr_url`/`pr_state`
-  on the run projection):
-  1. If the run projection (`GET /api/v1/runs`) exposes PR fields, extend the
-     `Run` struct (`PRNumber`, `PRState`, `PRURL`, `Mergeable`, `Checks`) and map
-     them in `httpClient.Runs()`.
+- Add `"pr"` to `tabNames` (append after `files`). It is a viewer tab, but not an
+  nvim-openable tab; `openableTab()` stays limited to logs/reports/files.
+- Data source, in priority order:
+  1. Prefer PR fields on the run projection (`GET /api/v1/runs`): `pr_url`,
+     `pr_state`, `pr_head_sha`, branch/base fields, `pr_mergeable`,
+     `pr_review_decision`, and `pr_checks`.
   2. Otherwise derive from `GET /api/v1/events` / `…/runs/:id/debug` (the events
      tab already falls back to debug) by folding `run.pr.*` events.
   3. As a last resort for live check/review detail, shell `gh pr view <url>
@@ -244,8 +240,9 @@ process — the true single-pane win.
   merged=green, closed=red, draft=dim), mergeable, a checks summary
   (`✓ 4  ✗ 1  ● 2` using the palette), review decision, and the URL.
 - Actions on the `pr` tab: `o`/`enter` opens the PR in the browser (`gh pr view
-  --web <url>` or an `openLink`-style fallback); reuse `G` to jump into `gh dash`
-  filtered to `head:<run.Branch>` if feasible.
+  --web <url>` or an `openLink`-style fallback). Global `G` still opens the
+  configured repo-wide `gh dash`; PR-specific reverse handoffs live in operator
+  `gh-dash.yml` keybindings, not cockpit runtime code.
 - Empty state: runs without a PR show "No PR for this run yet."
 - Acceptance: selecting a run with a PR shows live-ish PR status on the `pr` tab;
   runs without a PR show the empty state; no blocking calls on the render path

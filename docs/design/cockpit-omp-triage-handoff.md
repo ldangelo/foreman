@@ -82,9 +82,8 @@ Resolve mode from config (`tmux | inline | window | auto`; default `auto`):
 
 - **`auto`**: tmux when `$TMUX` present, else inline.
 
-- Optional (document, don't build now): other multiplexers — zellij
-  (`zellij action new-pane --cwd`), wezterm (`wezterm cli split-pane --cwd`),
-  kitty (`kitty @ launch --cwd`). Same builder shape behind config.
+- Other multiplexers (zellij, wezterm, kitty) are not part of the closed roadmap.
+  The shipped cockpit supports tmux and inline fallback.
 
 ## 4. Where it runs + safety
 
@@ -154,57 +153,49 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 | Key | Context | Action |
 |-----|---------|--------|
 | `p` | a run selected | attach an `omp` session to the run's worktree, seeded with triage context for its failure mode |
-| `P` | a run selected | (optional) attach a **plain** `omp` (no briefing), for freeform work |
+| `P` | a run selected | attach a **plain** `omp` session without briefing, for freeform work |
 
 `p`/`P` are implemented and documented in the README + UI spec keymaps.
 
-## 8. Hook points (mirror what exists)
+## 8. Implemented hook points
 
-- New `omp.go`: `OmpConfig`, `resolveOmpMode`, `ompTmuxCommand`, `ompInlineCommand`
-  (pure builders returning `*exec.Cmd`), `buildTriageBrief(m, run) string`,
-  `ompOpening(run, brief, cfg) string`, and `attachOmp(...) tea.Cmd` that picks
-  background-tmux vs `tea.ExecProcess` and emits `ompDoneMsg`.
-- `model.go`: add the `p`/`P` cases in `handleKey` (guard on `selectedRun`), the
-  `ompDoneMsg` case in `Update` (set notice), following the `openGhEnhance` /
-  `diffnavDoneMsg` precedent.
-- Reuse `expandHome`, the worktree resolution, and the tool-availability resolver
-  already in the module.
+- `omp.go` owns `OmpConfig`, `resolveOmpMode`, `ompTmuxCommand`,
+  `ompInlineCommand`, `buildTriageBrief`, `ompOpening`, and `attachOmp`.
+- `model.go` handles the `p`/`P` key cases and `ompDoneMsg`, following the
+  `openGhEnhance` / `diffnavDoneMsg` notice pattern.
+- The implementation reuses `expandHome`, worktree resolution, and the
+  cached tool-availability resolver already in the module.
 
-## 9. Testing (TDD, table-driven)
+## 9. Verification coverage
 
-- Builders (`ompTmuxCommand`, `ompInlineCommand`) — assert `.Path`/`.Args`/`.Dir`
-  across `mode`, `split`, `keepShell`, and `session` permutations; assert the
-  inline path sets `Dir` and the tmux path uses `-c <worktree>`.
-- `resolveOmpMode` — `auto` picks tmux only when `$TMUX` set; `on/off` honored;
-  missing binary/worktree → error path.
-- `buildTriageBrief` — table tests per failure mode produce the right sections
-  and opening instruction; never includes secrets.
-- Concurrency guard — active run requires confirmation / is refused.
-- `go build ./... && go test ./...` and `go vet` clean.
+- Builders (`ompTmuxCommand`, `ompInlineCommand`) assert `.Path`/`.Args`/`.Dir`
+  across mode, split, keep-shell, and session permutations; the inline path sets
+  `Dir`, and the tmux path uses `-c <worktree>`.
+- `resolveOmpMode` tests cover `auto`, `$TMUX`, `on/off`, missing binary, and
+  missing worktree paths.
+- `buildTriageBrief` tests cover failure-mode sections and opening instructions
+  without secrets.
+- Active-run safeguards are covered so the cockpit does not silently attach to a
+  worktree an active worker may be mutating.
 
-## 10. Docs to update
+## 10. Documentation and verification completed
 
-- `clients/cockpit/README.md` — `p`/`P` keys, `omp` dependency (optional), the
-  `integrations.omp` config block, and a note that this is a **live** session.
-- `docs/design/cockpit-ui-spec.md` — keymap rows + a short "omp triage" section.
+- `clients/cockpit/README.md` documents `p`/`P`, optional `omp`, the
+  `integrations.omp` config block, and that this is a live mutating session.
+- `docs/design/cockpit-ui-spec.md` documents the keymap rows and OMP triage
+  behavior.
+- Tests cover tmux/inline command builders, mode resolution, brief generation,
+  session continuation, active-run safeguards, and missing-tool notices.
 
-## 11. Non-goals & risks
+## 11. Closed non-goals & risks
 
 - No embedding of omp's TUI inside the cockpit (still tier-3 / out of scope); this
   is a pane/handoff launch only.
 - No new backend endpoints; brief is built from data the cockpit already fetches.
-- Risks: worktree contention with an active worker (guarded, §4); `.foreman/`
-  gitignore (write temp if needed); omp CLI flag drift (keep launcher configurable
-  and verify at omp.sh); secrets must never enter the briefing file.
-
-## 12. Suggested sequencing
-
-1. `OmpConfig` + detection + `resolveOmpMode` (+ tests).
-2. Inline path (`ompInlineCommand` via `tea.ExecProcess`) + `p` bound to a bare
-   session — smallest end-to-end slice.
-3. tmux pane path + `$TMUX` detection + `keepShell`.
-4. `buildTriageBrief` + per-mode opening instructions + briefing file.
-5. Named/resumable sessions (`session: per-task`) + concurrency guard.
-6. Docs sweep.
+- zellij, wezterm, and kitty support are future external-integration ideas, not
+  Go cockpit roadmap blockers.
+- Risks kept in the implementation: worktree contention with an active worker is
+  guarded, brief files avoid unignored `.foreman/` paths, launcher flags remain
+  configurable for OMP CLI drift, and secrets must never enter briefing files.
 
 Sources: [omp.sh docs](https://omp.sh/docs), [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), [@mariozechner/pi-coding-agent](https://www.npmjs.com/package/@mariozechner/pi-coding-agent)

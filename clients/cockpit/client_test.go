@@ -225,8 +225,8 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 	if err := client.ResetRun(run); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	if len(commands) != 7 {
-		t.Fatalf("expected seven commands, got %#v", commands)
+	if len(commands) != 5 {
+		t.Fatalf("expected five commands, got %#v", commands)
 	}
 	if commands[0]["command_type"] != "task.approve" {
 		t.Fatalf("expected task.approve command, got %#v", commands[0])
@@ -249,19 +249,19 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 	if createPayload["task_id"] != "task-new" || createPayload["title"] != "New task" || createPayload["task_type"] != "feature" || createPayload["source"] != "cockpit" {
 		t.Fatalf("unexpected create payload: %#v", createPayload)
 	}
-	if commands[3]["command_type"] != "run.update" || commands[4]["command_type"] != "task.update" {
-		t.Fatalf("expected retry to reset run then ready task, got %#v %#v", commands[3], commands[4])
+	if commands[3]["command_type"] != "run.retry" {
+		t.Fatalf("expected retry command, got %#v", commands[3])
 	}
-	retryRunPayload := commands[3]["payload"].(map[string]any)
-	if retryRunPayload["run_id"] != "run-live" || retryRunPayload["status"] != "reset" {
-		t.Fatalf("unexpected retry run payload: %#v", retryRunPayload)
+	retryPayload := commands[3]["payload"].(map[string]any)
+	if retryPayload["run_id"] != "run-live" || retryPayload["task_id"] != "task-ready" {
+		t.Fatalf("unexpected retry payload: %#v", retryPayload)
 	}
-	retryTaskPayload := commands[4]["payload"].(map[string]any)
-	if retryTaskPayload["task_id"] != "task-ready" || retryTaskPayload["status"] != "ready" {
-		t.Fatalf("unexpected retry task payload: %#v", retryTaskPayload)
+	if commands[4]["command_type"] != "run.reset" {
+		t.Fatalf("expected reset command, got %#v", commands[4])
 	}
-	if commands[5]["command_type"] != "run.update" || commands[6]["command_type"] != "task.update" {
-		t.Fatalf("expected reset to reset run then ready task, got %#v %#v", commands[5], commands[6])
+	resetPayload := commands[4]["payload"].(map[string]any)
+	if resetPayload["run_id"] != "run-live" || resetPayload["task_id"] != "task-ready" {
+		t.Fatalf("unexpected reset payload: %#v", resetPayload)
 	}
 }
 

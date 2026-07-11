@@ -35,6 +35,9 @@ defmodule ForemanServer.AggregateRouter do
       "task." <> _ ->
         route_task(command_type, payload)
 
+      type when type in ["run.retry", "run.reset"] ->
+        route_run_requeue(command_type, payload)
+
       "run." <> _ ->
         route_run(command_type, payload)
 
@@ -128,6 +131,33 @@ defmodule ForemanServer.AggregateRouter do
   defp route_run(command_type, payload) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id) do
       Aggregate.decide(Run, "run:#{run_id}", command_type, payload)
+    end
+  end
+
+  defp route_run_requeue(command_type, payload) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         :ok <- require_run_exists(run_id) do
+      reason =
+        Aggregate.get(payload, :reason) ||
+          if command_type == "run.retry", do: "retry requested", else: "reset requested"
+
+      task_payload =
+        payload
+        |> Map.put(:run_id, run_id)
+        |> Map.put(:task_id, task_id)
+        |> Map.put(:status, "ready")
+        |> Map.put(:reason, reason)
+        |> Map.put_new(:source, "command_bus")
+
+      Aggregate.decide(Task, "task:#{task_id}", "task.update", task_payload)
+    end
+  end
+
+  defp require_run_exists(run_id) do
+    case Aggregate.load(Run, "run:#{run_id}") do
+      {%{exists?: true}, _version} -> :ok
+      _ -> {:error, {:not_found, :run, run_id}}
     end
   end
 

@@ -260,9 +260,11 @@ or `$EDITOR` (falling back to `nvim`).
 
 ## Status / caveats
 
-- POC quality: READY task approval/edit/create, selected-run attach/retry/reset,
-  `omp` triage/plain handoffs, `gh dash`, `gh enhance`, and PR browser opens are
-  live actions through the cockpit client, command bus, and tool handoffs.
+- POC quality: READY task approval/edit/create, selected-run attach, `omp`
+  triage/plain handoffs, `gh dash`, `gh enhance`, and PR browser opens are live
+  actions through the cockpit client, command bus, and tool handoffs. Selected-run
+  retry/reset post `run.retry`/`run.reset`; the server requeues the associated
+  task to `ready` without mutating the terminal run record.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
   (`inbox`, `logs.entries`, `report`, `metrics`) and surfaces HTTP/JSON failures
   in the cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for

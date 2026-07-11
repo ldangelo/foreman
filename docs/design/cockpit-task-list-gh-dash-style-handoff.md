@@ -61,85 +61,51 @@ tradeoff the user chose. Mitigate the lost overview by:
 Fallback if the overview loss bites: a hybrid where an "All" (or "Overview")
 section groups by state within one scrollable table. Ship tabs first.
 
-## 4. What changes in the code
+## 4. Implemented code shape
 
-- `task_list.go` (`TaskList`) — today owns grouped rows + `collapsed` + `scope` +
-  search + `keepSelectedVisible`. Replace grouping with **sections**: a section
-  list, an active-section index, per-section filter, and filtered items for the
-  active section only. Keep selection + keep-visible + scope.
-- `view.go` `renderLeft`/`renderRow` — replace the grouped tree render with a
-  **section tab strip + filter line + rich table rows**. Widen `leftW`.
-- `model.go` `handleKey` — add section navigation; repurpose `/` to edit the
-  active section's filter; retire `space` (collapse group) for the list.
-- `client.go` `Run`/`Task` — ensure the columns' data exists (title, type,
-  priority already added; verify timestamps + diff stat + checks, §7).
+- `task_list.go` owns section tabs, active-section index, section filters,
+  current/global project scope, filtered items, selection identity, sticky
+  headers, and keep-visible behavior.
+- `view.go` renders the section tab strip, filter line, rich two-line rows, and
+  dash-like wider left pane. Narrow terminals drop columns before wrapping.
+- `model.go` routes section navigation, filter editing, scope toggling, and
+  mouse hit-testing without `bubblezone`.
+- `client.go` maps the row metadata used by the list: task title/type/priority,
+  run title/status/phase, timestamps, messages/events counts, PR/check fields,
+  verdict, diff totals, and dependency text.
 
-## 5. Workstreams
+## 5. Implemented sections and filters
 
-Follow the repo TDD rule. Each is shippable on its own.
+- Default sections are `Running`, `Ready`, `Failed`, `Recent`, and `All`.
+- Configured sections live under `.foreman/config.yaml`:
 
-### A. Section tabs (replace the tree)
-- Define default sections, each a filter over the merged run/task set:
-  `Running` (active runs), `Ready` (dispatchable/ready tasks), `Failed`
-  (failed/stuck/conflict + verdict=fail), `Recent` (terminal runs), `All`.
-- Render a tab strip above the list (reuse the right-pane tab rendering style)
-  with **counts** per section. Active tab highlighted with the theme accent.
-- Config: `.foreman/config.yaml` `taskSections:` — an ordered list of
-  `{name, filter}` mirroring gh-dash's `prSections`, so sections are
-  user-definable; ship the defaults above when unset.
-- Acceptance: tabs switch the visible list; counts are correct and live; the
-  default section is `Running`.
+  ```yaml
+  cockpit:
+    taskList:
+      sections:
+        - name: Ready P0
+          filter: state:ready priority:P0
+  ```
 
-### B. Filter / query line
-- Under the tabs, show the active section's filter (e.g. `state:running`), and
-  make `/` open a `bubbles/v2 textinput` to edit it, applying on `enter`,
-  clearing on `esc` — matching dash's query line.
-- Filter grammar (start minimal, extend later): space-separated terms —
-  `state:…`, `type:…`, `priority:P0`, `attention:true`, plus bare text matched
-  against id/title. Keep it a pure, unit-tested predicate function.
-- Acceptance: editing the filter narrows the current section live; invalid terms
-  are ignored gracefully; `esc` restores the section default.
+- The filter grammar is intentionally small and closed for the shipped cockpit:
+  `state:…`, `type:…`, `priority:P0`, `attention:true|false`, and bare text
+  matched against id/title/rendered row text. Unknown field tokens are ignored
+  gracefully.
 
-### C. Rich two-line / columnar rows
-- Row line 1: state glyph + `foreman-<id>` + `· <type>` + `· P<pri>` (+ project
-  when scope is global). Line 2: bold title (truncate with `…`).
-- Right-aligned columns (show what the row has): msgs/events count, checks /
-  verdict glyph, PR state dot, diff `+add -del` (runs with a worktree), and age
-  columns (updated, created) formatted like dash (`1h`, `2w`, `1mo`).
-- Rendering: prefer a custom two-line row renderer with `lipgloss/v2` for the
-  dash look; use `bubbles/v2 table` only if you drop to single-line rows. Reuse
-  `reflow`-correct truncation (see showcase handoff) so wide glyphs don't break
-  columns.
-- Selected row: full-width band (`cSelBg`), matching dash.
-- Acceptance: rows show id+type+priority+title plus the columns; long titles
-  truncate; columns align; the selected band spans the row width.
-
-### D. Wider, dash-like layout
-- Give the list the dominant share: `leftW ≈ 58%` of total width (dash-like),
-  clamped to keep the right pane usable (`min rightW ≈ 48`), configurable via
-  `taskList.width` (`auto` | fixed | percent). Two-line rows mean the viewport
-  windowing must count 2 lines per row — update the keep-visible math.
-- Acceptance: the list is visibly the primary region; the detail pane stays
-  usable; narrow terminals degrade (drop columns, then shorten title).
-
-### E. Clickable tabs & rows (native hit-testing)
-- Section tabs and rows use cockpit-owned mouse coordinate mapping so clicks
-  select/activate them without `bubblezone`. Keep full keyboard parity.
-
-## 6. Keymap (reconcile the two tab strips)
+## 6. Keymap
 
 | Key | Action |
 |-----|--------|
-| `[` / `]` (or `H` / `L`) | previous / next **task section** |
+| `[` / `]` | previous / next **task section** |
 | `/` | edit the active section's **filter** |
 | `↑`/`↓`, `j`/`k` | move selection within the section |
-| `tab` / `shift+tab`, `1`–`7` | **drill-down** tabs on the right (unchanged) |
-| `g` | scope current-project ↔ global (unchanged) |
+| `tab` / `shift+tab`, `1`–`8` | **drill-down** tabs on the right |
+| `g` | scope current-project ↔ global |
 
-Retire `space` (collapse group) for the list. Update `?` help, the keybar, and
-`cockpit-ui-spec.md` to show section nav and the two-strip model.
+`space` no longer collapses groups because the left pane is section-tabbed, not a
+collapsible tree.
 
-## 7. Data the columns need
+## 7. Data and API closure
 
 - **Age columns** read `created_at` + `updated_at` from `Run`/`Task` projections
   when supplied; rows degrade to the available timestamp instead of fetching
@@ -151,34 +117,26 @@ Retire `space` (collapse group) for the list. Update `?` help, the keybar, and
 - File metadata prefers the selected run worktree's `git diff --numstat` and
   `--name-status` against the projected base branch, then falls back to
   `/api/v1/runs/:run_id/debug` timeline payloads when no worktree diff is
-  available. A dedicated backend endpoint remains a future contract-cleanup item.
-- Do the aggregation in the client mapping, not on the render path.
+  available.
+- The shipped cockpit does not require a dedicated file-metadata endpoint. Such
+  an endpoint would be optional API cleanup, not roadmap completion work.
+- Aggregation happens in client mapping, not on the render path.
 
 ## 8. Relationship to the task-capabilities handoff
 
-That handoff already added `title`/`type`/`priority` to rows and the full task
-detail view. This handoff **supersedes its "collapsible grouped tree" left
-column** with section tabs + rich rows, and reuses its detail view and add-task
-(`n`) flow unchanged. Don't re-litigate the detail pane here.
+That handoff added rich task fields and creation. This handoff supersedes only
+the old collapsible grouped-tree left column with section tabs + rich rows, and
+reuses the detail view and add-task (`n`/`N`) flows unchanged.
 
-## 9. Testing, docs, non-goals
+## 9. Verification completed and closed non-goals
 
-- Tests: section filter predicate (table-driven), counts per section, row
-  renderer output (id/type/pri/title + columns within `leftW`), two-line
-  keep-visible math, age formatting. `go build/test/vet ./...` clean.
-- Docs: README (Keys, "What it shows"), `cockpit-ui-spec.md` (left column →
-  section tabs, layout proportions, keymap, two-strip model).
-- Non-goals: no change to the right drill-down; no new backend endpoints beyond
-  confirming timestamps/diff availability; keep the read-only-client architecture.
-
-## 10. Sequencing
-
-1. Section model + tabs with counts (A) — replaces the tree; biggest structural
-   change, do first.
-2. Rich two-line/columnar rows (C) + wider layout (D).
-3. Filter line (B).
-4. Native clickable tabs/rows (E).
-5. Docs sweep.
+- Tests cover section filter predicates, counts per section, row renderer output,
+  two-line keep-visible math, age formatting, current/global scope, mouse
+  hit-testing, and configured sections.
+- README and `cockpit-ui-spec.md` document the section tabs, layout proportions,
+  keymap, and two-strip model.
+- No new backend endpoints were added; the read-only client architecture is
+  preserved.
 
 Sources: gh-dash ([gh-dash.dev](https://www.gh-dash.dev/), configurable
 `prSections`), [bubbles v2](https://pkg.go.dev/charm.land/bubbles/v2),

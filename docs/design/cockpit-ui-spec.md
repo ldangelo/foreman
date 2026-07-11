@@ -317,6 +317,8 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
 
 - No write/command execution beyond READY task mutations, task creation, selected-run
   attach/retry/reset, PR opens, and tool handoffs.
+  Retry/reset use `run.retry`/`run.reset` commands that requeue the associated
+  task to `ready`; they do not rewrite terminal run lifecycle records.
 - No auth token refresh flows; read the token from the environment.
 - No pagination controls beyond the RECENT cap.
 

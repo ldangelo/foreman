@@ -44,8 +44,8 @@ that class of bug and adds features.
 | messages "keep header visible / by-whole-message" special-case | sticky header + selection |
 | long log lines hard-clipped with `…` | **horizontal pan** or wrap toggle |
 | no in-view search in logs/events/messages | **`filterableviewport`** search + next/prev + matches-only |
-| "export logs/report" (not built) | save-to-file |
-| line-number prefixing (not built) | `MultiItem` |
+| save visible logs/report rows | save-to-file |
+| stable log line-number prefixes | `MultiItem` |
 
 Library specifics to lean on: generic `viewport.New[T]` where your type
 implements `Object.GetItem() item.Item`; sticky top/bottom auto-follow;
@@ -53,67 +53,30 @@ configurable sticky header; highlight ranges; `filterableviewport` with
 exact/regex/case-insensitive/fuzzy modes, match highlighting, next/prev match,
 matches-only, match limit, and search history.
 
-## 4. Workstream 1 — Bubble Tea v2 migration to parity (do first, no library yet)
+## 4. Workstream 1 — Bubble Tea v2 migration to parity (complete)
 
-Goal: the cockpit compiles, runs, and behaves exactly as today, but on v2. Land
-this on a branch and keep the v1 build until v2 reaches parity.
+The cockpit now builds and runs on Bubble Tea v2 / Lip Gloss v2. The v1 build was
+retired after parity was verified.
 
 Verified against the official
 [Bubble Tea v2 upgrade guide](https://github.com/charmbracelet/bubbletea/blob/main/UPGRADE_GUIDE_V2.md)
 and [Lip Gloss v2 upgrade guide](https://github.com/charmbracelet/bubbles/blob/main/UPGRADE_GUIDE_V2.md).
-The exact cockpit call-sites that change:
+Implemented migration points:
 
 | Cockpit call-site (file) | v1 | v2 |
 |---|---|---|
-| `main.go` `tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())` | program options | `tea.NewProgram(m)`; set features in `View()` (see below) |
-| `view.go` `View() string` | returns `string` | returns `tea.View` (`tea.NewView(frame)`, then `v.AltScreen=true`, `v.MouseMode=tea.MouseModeCellMotion`) |
-| `model.go` `case tea.KeyMsg:` | struct | `case tea.KeyPressMsg:` (`tea.KeyMsg` is now an interface) |
-| `handleKey` `msg.Runes` (search input) | `[]rune` | `msg.Text` (string) |
-| `handleKey` `msg.Type == tea.KeyCtrlD` / `tea.KeyCtrlU` | key-type consts | `msg.String()=="ctrl+d"`/`"ctrl+u"` (or `msg.Code=='d' && msg.Mod==tea.ModCtrl`) |
-| `handleKey` `case " ", "space"` | space is `" "` | space is `"space"` (already handled — keep) |
-| `handleMouse(tea.MouseMsg)` wheel | struct + `msg.Action`/`msg.Button` | `case tea.MouseWheelMsg` with `tea.MouseWheelUp`/`Down`; coords via `msg.Mouse()` |
-| `styles.go` / `theme/gen.go` lipgloss | `github.com/charmbracelet/lipgloss` | `charm.land/lipgloss/v2` — see its upgrade guide for the color/style API |
+| `main.go` program setup | program options for alt-screen/mouse | `tea.NewProgram(m)`; features are requested from `View()` |
+| `view.go` `View()` | returned `string` | returns `tea.View` with content plus alt-screen/mouse mode |
+| `model.go` key handling | `tea.KeyMsg` struct | `tea.KeyPressMsg` and text/code/mod fields |
+| mouse handling | `tea.MouseMsg` struct | v2 mouse interfaces with wheel/button variants |
+| Lip Gloss imports | `github.com/charmbracelet/lipgloss` | `charm.land/lipgloss/v2` |
 
-Steps:
+The deterministic test/dump path uses Bubble Tea v2 program options such as
+`tea.WithWindowSize` and `tea.WithColorProfile` so `COCKPIT_DUMP` and the VHS
+demo render without a real TTY.
 
-1. `go.mod`: bump to `go 1.26`; swap `github.com/charmbracelet/bubbletea` →
-   `charm.land/bubbletea/v2`, `lipgloss` → `charm.land/lipgloss/v2`; add
-   `charm.land/bubbles/v2` if used. `go mod tidy`.
-2. Update imports across the module (`tea`, `lipgloss`).
-3. **Declarative View (the biggest change).** `View()` returns `tea.View`, not a
-   string. Wrap the composed frame: `v := tea.NewView(frame); v.AltScreen = true;
-   v.MouseMode = tea.MouseModeCellMotion; return v`. This is where the removed
-   `tea.WithAltScreen()`/`tea.WithMouseCellMotion()` options now live, so `main.go`
-   drops them from `NewProgram`. **`writeDebugDump` must read `v.Content`** (the
-   rendered string), not a returned string.
-4. **Keys** (`model.go` `handleKey`): match `tea.KeyPressMsg`. Rename the search
-   input `msg.Runes` → `msg.Text`; replace the `msg.Type == tea.KeyCtrlD/CtrlU`
-   half-page paths with `msg.String()` (`"ctrl+d"`/`"ctrl+u"`) or `msg.Code`+
-   `msg.Mod`. `msg.String()` still drives the rest of the `switch`; `"space"` is
-   already handled.
-5. **Mouse** (`handleMouse`): `tea.MouseMsg` is an interface — handle
-   `tea.MouseWheelMsg` (`tea.MouseWheelUp`/`Down`) for wheel scroll; read coords
-   via `msg.Mouse()`. Button constants dropped the `Button` infix. Mouse mode
-   moved to the View field (step 3).
-6. **Commands/handoffs stay put.** `tea.ExecProcess`, `tea.Batch`, and `tea.Tick`
-   are **not** in the v2 removed list — the nvim/diffnav/gh/omp handoffs and the
-   2s refresh keep working unchanged. `tea.WindowSizeMsg` (the message) stays;
-   only the `tea.WindowSize()` *command* was renamed to `tea.RequestWindowSize`
-   (cockpit doesn't use it), and `tea.Sequentially`→`tea.Sequence` (unused).
-   `p.Run()` is unchanged.
-7. **lipgloss v2** (`styles.go`, `theme/gen.go`): follow the Lip Gloss v2 upgrade
-   guide for the color/style API; ensure `//go:generate go run theme/gen.go` still
-   emits valid v2 constants. The theme tokens (hex) are unchanged.
-8. **Glamour**: confirm it builds under the v2 dep set; if not, feed pre-rendered
-   strings as content (unchanged behavior) or swap renderer.
-9. **Free testing win:** adopt the new `tea.WithColorProfile(p)` and
-   `tea.WithWindowSize(w, h)` program options in the cockpit's tests /
-   `COCKPIT_DUMP` path so rendering is deterministic without a real TTY.
-10. Verify parity: `go build ./... && go test ./... && go vet ./...` on Go 1.26;
-    manual run at parity (task list, all drill-down tabs, mouse, handoffs).
-
-Acceptance (WS1): identical behavior to the v1 build, on v2. No viewport library
-yet. v1 build removed only after this passes.
+Acceptance is closed: v2 parity passed with build, test, vet, mock dump smoke,
+mouse/key coverage, and handoff command coverage.
 
 ## 5. Workstream 2 — Drill-down `Viewer` → `viewport` (complete)
 
@@ -173,24 +136,24 @@ helper, and the final docs references that treated WS6 as pending. Remaining
 window sizing is pane layout only; drill-down scrolling/panning/searching lives
 in `Viewer`, and task-list scrolling/searching lives in `TaskList`.
 
-## 10. Risks & mitigations
+## 10. Resolved risks & mitigations
 
-- **Whole-app migration** — mitigate by doing WS1 to parity on a branch, keeping
-  v1 until v2 matches, and only then adding the library.
-- **v2 API churn** — key/mouse/lipgloss names may differ from this doc; treat the
-  deltas in §4 as a checklist to verify against the official v2 migration guide,
-  not verbatim.
-- **Glamour under v2** — verify early (WS1 step 7); fallback is feeding rendered
-  strings as items.
-- **Go 1.26 toolchain** — update dev + CI images before starting.
-- **Handoffs (`tea.ExecProcess`)** — nvim/diffnav/gh/omp all rely on it; confirm
-  v2 parity in WS1 step 5 before proceeding.
+- **Whole-app migration:** closed by migrating the whole cockpit to v2 before
+  adding viewport-backed components; the v1 build is no longer retained.
+- **v2 API churn:** closed by checking the official v2 guides and updating the
+  concrete call-sites listed above.
+- **Glamour under v2:** closed by keeping rendered markdown as viewport item
+  content.
+- **Go toolchain:** the nested module now records the required Go/tool versions
+  in `clients/cockpit/go.mod`.
+- **Handoffs (`tea.ExecProcess`):** nvim/diffnav/gh/omp command handoffs are
+  covered after the v2 migration.
 
 ## 11. Rejected alternatives
 
-- **Stay on v1, borrow the patterns into `Viewer`** — cheaper now but re-implements
-  and re-tests what the library already solves, and you'd still migrate later.
-  Fallback only if the v2 move is deferred.
+- **Stay on v1, borrow the patterns into `Viewer`:** rejected; the cockpit now
+  uses the v2-compatible viewport path directly instead of reimplementing library
+  behavior on v1.
 - **Vendor/port a subset to v1** — the library is generic and v2-coupled; a clean
   backport is more work than the borrow-the-patterns option and orphans upstream
   fixes.
