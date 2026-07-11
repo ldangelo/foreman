@@ -214,13 +214,6 @@ func (v Viewer) SelectedKey() string { return v.selectedKey }
 
 func (v Viewer) Len() int { return len(v.lines) }
 
-func (v Viewer) MaxScroll(height int) int {
-	if len(v.lines) == 0 {
-		return 0
-	}
-	return max(0, len(v.lines)-viewerHeight(height))
-}
-
 func (v Viewer) XOffset() int {
 	if v.viewport == nil {
 		return v.xOffset

@@ -1,6 +1,6 @@
 # Foreman Cockpit — UI/UX Design Spec
 
-Status: Draft · Date: 2026-07-09 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with documented POC caveats · Date: 2026-07-11 · Owner: Leo D'Angelo
 Related: ADR 0001 (Go clients over Elixir core), current `src/cli/super-tui`
 
 ## Goal
@@ -26,20 +26,20 @@ One screen. No view switching. Three regions plus chrome.
 ┌ foreman watch — cockpit ─────────────────────────────────────────────────────┐
 │ foreman  3 running · 5 ready · 14 done      nvim ⇄ attached · dev · ↻ 2s      │  status bar
 ├───────────────────────────┬───────────────────────────────────────────────────┤
-│ RUNNING (3)               │  TRD-2026-014   run a1b2c3d4…            running    │  detail header
-│ ▸ TRD-2026-014  developer │  ─────────────────────────────────────────────────│
-│   PRD-2026-004  qa        │  explorer ✓─developer ●─documentation ○─qa ○─ …    │  phase rail
-│   TASK-338      cr-dev  ↻ │  ─────────────────────────────────────────────────│
-│                           │  [summary] messages 3  events 4  logs⧉  reports⧉ files⧉│  tab strip
-│ READY (5)                 │  ─────────────────────────────────────────────────│
-│   TASK-341  P0            │  Status: implementing auth middleware…             │  drill-down body
-│   TASK-342  P1            │  worktree ~/wt/TRD-2026-014                         │
-│   …                       │  branch   foreman/TRD-2026-014                     │
-│                           │  last     12s ago · progress_update                │
-│ RECENT (12)               │                                                    │
-│   TASK-330  merged ✓      │                                                    │
-│   TASK-329  failed  ✗     │─────────────────────────────────────────────────  │
-│                           │  ▸ open DEVELOPER_REPORT.md in nvim (action bar)   │  action bar
+│ Running 3  Ready 5  Failed 1 │  TRD-2026-014   run a1b2c3d4…          running │  detail header
+│ filter: current project      │  ───────────────────────────────────────────── │
+│ ● TRD-2026-014 · task · P0   │  explorer ✓─developer ●─documentation ○─qa ○… │  phase rail
+│   implement auth middleware  │  ───────────────────────────────────────────── │
+│ ▸ TASK-338 · bug · P1    qa  │  [summary] messages 3 events 4 logs⧉ reports⧉ │  tab strip
+│   fix flaky retry handling   │  files⧉ pr 1 metrics 2                        │
+│ Ready  Failed  Recent  All   │                                                │
+│ ○ TASK-341 · feature · P0    │  Status: implementing auth middleware…         │  drill-down body
+│   add OAuth provider config  │  worktree ~/wt/TRD-2026-014                    │
+│ ✗ TASK-329 · bug · P2 failed │  branch   foreman/TRD-2026-014                 │
+│   rebase conflict in finalize│  last     12s ago · progress_update            │
+│                              │                                                │
+│                              │ ─────────────────────────────────────────────  │
+│                              │ ▸ open DEVELOPER_REPORT.md in nvim            │  action bar
 ├───────────────────────────┴───────────────────────────────────────────────────┤
 │ ↑↓/j/k tasks  enter view  ctrl+d/u page  D diffnav  G gh dash  C enhance  ? help │  keybar
 └────────────────────────────────────────────────────────────────────────────────┘

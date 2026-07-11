@@ -153,8 +153,9 @@ Record the verified version in `go.mod` and note it here.
 - Theme is consistent across cockpit + `diffnav`/`gh dash`/`gh enhance`.
 - `COCKPIT_BACKEND=mock` produces a demo-worthy screen; `demo.tape` renders a GIF.
 - Every adopted lib is a verified v2 build; `go build/test/vet ./...` clean on
-  Go 1.26; hand-rolled code it replaces (`?`/keybar, search parsing, `clip`/
-  `padRow`/`wrap`, manual spinner) is deleted.
+  Go 1.26; key/help generation, search parsing, spinner/stopwatch motion, and
+  ANSI/Unicode width helpers are owned by v2-compatible components or delegate to
+  `reflow` rather than bespoke terminal math.
 
 ## 8. Non-goals & risks
 

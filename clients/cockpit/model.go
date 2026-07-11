@@ -687,7 +687,7 @@ func (m model) buildViewerLines(w int) []ViewerLine {
 	if !ok {
 		return nil
 	}
-	return m.renderViewerLines(run, it, isRun, w)
+	return m.renderViewerLines(run, it, isRun, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus))
 }
 
 func (m model) viewerBodyWindowHeight() int {
@@ -709,7 +709,7 @@ func (m model) viewerBodyWindowHeight() int {
 
 	actionLines := 0
 	if !isRun || m.openableTab() || tabNames[m.tab] == "pr" {
-		if action := m.renderAction(w); action != "" {
+		if action := m.renderAction(w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)); action != "" {
 			actionLines = len(strings.Split(action, "\n"))
 		}
 	}
@@ -968,7 +968,7 @@ func (m model) actionKeyAt(x, y int) string {
 }
 
 func (m model) actionLineCount() int {
-	if action := m.renderAction(m.rightPaneWidth()); action != "" {
+	if action := m.renderAction(m.rightPaneWidth(), paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)); action != "" {
 		return len(strings.Split(action, "\n"))
 	}
 	return 0

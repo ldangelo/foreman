@@ -434,7 +434,7 @@ func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.pr = PRStatus{URL: "https://github.com/acme/repo/pull/42", State: "open", Checks: CheckSummary{Passed: 3, Failed: 1, Pending: 2}}
 
-	out := stripANSI(strings.Join(linesText(m.renderPRLines(80)), "\n"))
+	out := stripANSI(strings.Join(linesText(m.renderPRLines(80, paneVisualFor(true, defaultConfig().Cockpit.Focus))), "\n"))
 	for _, want := range []string{"passed", "failed", "pending"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected PR checks table row %q, got:\n%s", want, out)
@@ -1326,7 +1326,7 @@ func TestMetricsTabRendersOperationalCounters(t *testing.T) {
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable(), metrics: metrics})
 	m = updated.(model)
 
-	out := strings.Join(linesText(renderMetricsLines(metrics, 80)), "\n")
+	out := strings.Join(linesText(renderMetricsLines(metrics, 80, paneVisualFor(true, defaultConfig().Cockpit.Focus))), "\n")
 	for _, want := range []string{"fleet metrics", "phases started", "projection lag", "developer", "compl", "90"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected metrics view to include %q, got:\n%s", want, out)
@@ -1473,6 +1473,28 @@ func TestPaneVisualTracksFocusStyle(t *testing.T) {
 	dimOnly := paneVisualFor(false, cfg)
 	if dimOnly.Border != cPanel || dimOnly.Text != cDim {
 		t.Fatalf("dim style should mute content without accent frame, got text=%v border=%v", dimOnly.Text, dimOnly.Border)
+	}
+}
+
+func TestInactiveViewerBodyUsesMutedVisual(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = NewMockClient().Runs()
+	m.tasks = NewMockClient().Dispatchable()
+	m.buildItems()
+	m.loadDetail()
+	run, isRun := m.selectedRun()
+	it, ok := m.selectedItem()
+	if !ok || !isRun {
+		t.Fatal("expected selected run")
+	}
+
+	active := strings.Join(linesText(m.renderViewerLines(run, it, isRun, 80, paneVisualFor(true, m.config.Cockpit.Focus))), "\n")
+	inactive := strings.Join(linesText(m.renderViewerLines(run, it, isRun, 80, paneVisualFor(false, m.config.Cockpit.Focus))), "\n")
+	if stripANSI(active) != stripANSI(inactive) {
+		t.Fatalf("focus dimming should not change visible text:\nactive=%s\ninactive=%s", active, inactive)
+	}
+	if active == inactive {
+		t.Fatalf("expected inactive viewer body to use different ANSI styling")
 	}
 }
 

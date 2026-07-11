@@ -138,7 +138,7 @@ func configuredLeftPaneWidth(total int, cfg TaskListConfig) int {
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-func renderFieldTable(prefix string, rows [][2]string, w int) []ViewerLine {
+func renderFieldTable(prefix string, rows [][2]string, w int, visual paneVisual) []ViewerLine {
 	t := table.New().
 		BorderTop(false).
 		BorderBottom(false).
@@ -151,9 +151,9 @@ func renderFieldTable(prefix string, rows [][2]string, w int) []ViewerLine {
 		Width(w).
 		StyleFunc(func(_, col int) lipgloss.Style {
 			if col == 0 {
-				return dimStyle
+				return lipgloss.NewStyle().Foreground(visual.Dim)
 			}
-			return textStyle
+			return lipgloss.NewStyle().Foreground(visual.Text)
 		})
 	for _, row := range rows {
 		if row[1] == "" {
@@ -425,10 +425,10 @@ func (m model) renderRight(w int) string {
 		s = append(s, "")
 	}
 
-	body := m.renderBody(run, it, isRun, w)
+	body := m.renderBody(run, it, isRun, w, visual)
 	var action []string
 	if !isRun || m.openableTab() || tabNames[m.tab] == "pr" {
-		if ab := m.renderAction(w); ab != "" {
+		if ab := m.renderAction(w, visual); ab != "" {
 			action = strings.Split(ab, "\n")
 		}
 	}
@@ -447,7 +447,7 @@ func (m model) renderRight(w int) string {
 			policy = viewerBottom
 		}
 		viewer.SetBounds(w, bodyWindowH)
-		viewer.SetLines(m.renderViewerLines(run, it, isRun, w), policy, bodyWindowH)
+		viewer.SetLines(m.renderViewerLines(run, it, isRun, w, visual), policy, bodyWindowH)
 		s = append(s, strings.Split(viewer.View(), "\n")...)
 	} else {
 		if len(body) > bodyWindowH {
@@ -548,8 +548,8 @@ func (m model) selectedMessagePosition() (int, bool) {
 	return pos, true
 }
 
-func (m model) renderBody(run Run, it Item, isRun bool, w int) []string {
-	lines := m.renderViewerLines(run, it, isRun, w)
+func (m model) renderBody(run Run, it Item, isRun bool, w int, visual paneVisual) []string {
+	lines := m.renderViewerLines(run, it, isRun, w, visual)
 	out := make([]string, len(lines))
 	for i, line := range lines {
 		out[i] = line.Text
@@ -557,7 +557,15 @@ func (m model) renderBody(run Run, it Item, isRun bool, w int) []string {
 	return out
 }
 
-func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLine {
+func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual paneVisual) []ViewerLine {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	purpleStyle := lipgloss.NewStyle().Foreground(visual.Purple)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
+	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
+	redStyle := lipgloss.NewStyle().Foreground(visual.Red)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
 	var s []ViewerLine
 	add := func(key, text string, t target) {
 		s = append(s, ViewerLine{Key: key, Text: text, Target: t})
@@ -584,7 +592,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 			{"depends", it.Task.Depends},
 			{"project", it.Task.ProjectID},
 			{"description", desc},
-		}, w)...)
+		}, w, visual)...)
 		s = append(s, ViewerLine{Key: "task:description:spacer", Text: ""})
 		s = append(s, ViewerLine{Key: "task:description:title", Text: whiteStyle.Render("Description")})
 		if m.glam != nil {
@@ -699,14 +707,17 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 			}
 		}
 	case "pr":
-		return m.renderPRLines(w)
+		return m.renderPRLines(w, visual)
 	case "metrics":
-		return renderMetricsLines(m.metrics, w)
+		return renderMetricsLines(m.metrics, w, visual)
 	}
 	return s
 }
 
-func (m model) renderPRLines(w int) []ViewerLine {
+func (m model) renderPRLines(w int, visual paneVisual) []ViewerLine {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
 	pr := m.pr
 	if pr.URL == "" {
 		return []ViewerLine{{Key: "pr:empty", Text: dimStyle.Render("No PR for this run yet.")}}
@@ -746,7 +757,7 @@ func (m model) renderPRLines(w int) []ViewerLine {
 		{Key: "pr:title", Text: padRow(cyanStyle.Render(title), lipgloss.NewStyle().Foreground(stateColor).Render(state), w)},
 		{Key: "pr:actions", Text: cyanStyle.Render("o/enter") + dimStyle.Render(" open PR in browser  ") + cyanStyle.Render("C") + dimStyle.Render(" inspect CI in gh enhance")},
 	}
-	lines = append(lines, renderFieldTable("pr:fields", rows, w)...)
+	lines = append(lines, renderFieldTable("pr:fields", rows, w, visual)...)
 	if pr.Err != "" {
 		lines = append(lines, ViewerLine{Key: "pr:error", Text: yellowStyle.Render("PR detail: " + pr.Err)})
 	}
@@ -769,13 +780,18 @@ func (m model) loadingLabel(label string) string {
 	return m.liveSpinner.View() + " loading " + label + "…"
 }
 
-func (m model) renderAction(w int) string {
+func (m model) renderAction(w int, visual paneVisual) string {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
+	redStyle := lipgloss.NewStyle().Foreground(visual.Red)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{
 			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id"), w),
 			clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form"), w),
 		}
-		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
 	if tabNames[m.tab] == "pr" {
 		if m.pr.URL == "" {
@@ -785,7 +801,7 @@ func (m model) renderAction(w int) string {
 			clip(greenStyle.Render("▸ PR actions ")+cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
 			clip(dimStyle.Render(m.pr.URL), w),
 		}
-		return lipgloss.NewStyle().Background(cActionBg).Width(w).Render(strings.Join(lines, "\n"))
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
 	t := resolveTarget(m)
 	if !t.ok {
@@ -805,7 +821,7 @@ func (m model) renderAction(w int) string {
 			clip(dimStyle.Render("→ "+mode), w),
 			clip(cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
 		}
-		return lipgloss.NewStyle().Background(cActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 	}
 	lines := []string{
 		dimStyle.Render(strings.Repeat("┄", w)),
@@ -813,7 +829,7 @@ func (m model) renderAction(w int) string {
 		clip(dimStyle.Render("$ ")+cyanStyle.Render(cmd), w),
 		clip(dimStyle.Render("→ "+mode), w),
 	}
-	return lipgloss.NewStyle().Background(cActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
 }
 
 // wrap splits text into display-cell-width-bounded lines.

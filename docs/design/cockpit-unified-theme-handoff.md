@@ -242,8 +242,10 @@ Done in `clients/cockpit/`:
    constants.
 4. Handoffs pass packaged theme env for `diffnav` and `gh enhance`.
 5. Cockpit keymap covers `?` help and `ctrl+d/u` half-page viewer scrolling.
-6. `foreman-cockpit --install-themes` installs generated fragments with backups.
-7. Inline delta previews pass the packaged `theme/delta.gitconfig` with
+6. Generated `gh-dash.yml` includes converged built-in keybindings for `?`, `/`,
+   `j/k`, `h/l`, `ctrl+d/u`, `o`/`enter`, `y`/`Y`, and quit.
+7. `foreman-cockpit --install-themes` installs generated fragments with backups.
+8. Inline delta previews pass the packaged `theme/delta.gitconfig` with
    `delta --config`.
 
 Remaining external/manual work:

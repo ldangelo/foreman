@@ -54,6 +54,11 @@ func TestThemeProjectionFragmentsUseTokens(t *testing.T) {
 	if !strings.Contains(string(dash), themeTokenTextPrimary) || !strings.Contains(string(dash), themeTokenBgSelected) || !strings.Contains(string(dash), themeTokenDanger) {
 		t.Fatalf("gh-dash theme does not include core tokens:\n%s", string(dash))
 	}
+	for _, want := range []string{"builtin: search", "builtin: down", "builtin: pageDown", "builtin: openGithub", "builtin: copyurl"} {
+		if !strings.Contains(string(dash), want) {
+			t.Fatalf("gh-dash theme missing keybinding %q:\n%s", want, string(dash))
+		}
+	}
 	enhance, err := os.ReadFile("theme/enhance.env")
 	if err != nil {
 		t.Fatal(err)

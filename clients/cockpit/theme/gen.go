@@ -164,6 +164,34 @@ keybindings:
   universal:
     - key: q
       builtin: quit
+    - key: "?"
+      builtin: help
+    - key: /
+      builtin: search
+    - key: j
+      builtin: down
+    - key: k
+      builtin: up
+    - key: ctrl+d
+      builtin: pageDown
+    - key: ctrl+u
+      builtin: pageUp
+    - key: h
+      builtin: prevSection
+    - key: l
+      builtin: nextSection
+    - key: g
+      builtin: firstLine
+    - key: G
+      builtin: lastLine
+    - key: o
+      builtin: openGithub
+    - key: enter
+      builtin: openGithub
+    - key: y
+      builtin: copyNumber
+    - key: Y
+      builtin: copyurl
 `, t.Text.Primary, t.Text.Secondary, t.Text.Inverted, t.Text.Faint, t.Danger, t.Success, t.BG.Selected, t.Border.Primary, t.Border.Secondary, t.Border.Faint)
 }
 
