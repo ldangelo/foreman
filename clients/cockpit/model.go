@@ -37,6 +37,7 @@ type model struct {
 	tab         int
 	viewer      Viewer
 	viewFocused bool
+	helpVisible bool
 
 	width, height int
 	anim          int
@@ -278,10 +279,19 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "?":
-		m.notice = "keys: [/]/H/L task section · n new task · enter focus · esc task list/clear search · ctrl+d/u page · / filter · n/N match · ←/→ pan · s save · o open · G gh dash · C gh enhance"
+		m.helpVisible = !m.helpVisible
+		if m.helpVisible {
+			m.notice = "help: generated keymap"
+		} else {
+			m.notice = ""
+		}
 	case "q":
 		return m, tea.Quit
 	case "esc":
+		if m.helpVisible {
+			m.helpVisible = false
+			return m, nil
+		}
 		if m.viewFocused {
 			m.viewFocused = false
 		}

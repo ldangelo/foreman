@@ -114,7 +114,7 @@ a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
 r/R       retry / reset                       /    search     n/N match
 ←/→       pan focused logs                    s    save visible viewer rows
-? help    q quit
+?         show generated keymap help in the detail pane; esc or ? closes it
 ```
 
 Opening a drill-down view with `enter`, `tab`, or `1`–`7` selects its newest

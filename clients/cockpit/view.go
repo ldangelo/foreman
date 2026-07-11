@@ -172,11 +172,10 @@ func (m model) renderNotice(w int) string {
 
 func (m model) renderKeyBar(w int) string {
 	focus := "focus: details"
-	hints := "↑↓/j/k scroll · ctrl+d/u page · esc task list · ⇥ tab · o open · p omp · D diffnav · G gh dash · C gh enhance · ? help · q quit"
 	if !m.viewFocused {
 		focus = "focus: tasks"
-		hints = "[/] or H/L section · ↑↓/j/k task · / filter · enter view · ⇥ tab · n new · o open · p omp · ? help · q quit"
 	}
+	hints := renderHelpLine(max(1, w-utf8.RuneCountInString(focus)-4), m.viewFocused)
 	return keyBarStyle.Width(w).Render(clip(" "+focus+" · "+hints, w))
 }
 
@@ -288,6 +287,11 @@ func taskRowRightColor(it Item, visual paneVisual) color.Color {
 
 func (m model) renderRight(w int) string {
 	visual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
+	if m.helpVisible {
+		title := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render("Cockpit keys")
+		body := renderFullHelp(w, m.viewFocused)
+		return strings.Join([]string{title, dimStyle.Render("press ? or esc to close"), "", body}, "\n")
+	}
 	var s []string
 	run, isRun := m.selectedRun()
 	it, ok := m.selectedItem()

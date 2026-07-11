@@ -974,12 +974,23 @@ func TestUppercaseCReportsMissingEnhanceExtension(t *testing.T) {
 	}
 }
 
-func TestQuestionMarkShowsKeymapHelp(t *testing.T) {
+func TestQuestionMarkShowsGeneratedKeymapHelp(t *testing.T) {
 	m := newModel(NewMockClient())
 	updated, _ := m.handleKey(keyPress("?"))
 	m = updated.(model)
-	if !strings.Contains(m.notice, "[/]/H/L") || !strings.Contains(m.notice, "ctrl+d/u") || !strings.Contains(m.notice, "G gh dash") || !strings.Contains(m.notice, "C gh enhance") {
-		t.Fatalf("expected keymap help notice, got %q", m.notice)
+	if !m.helpVisible {
+		t.Fatalf("expected help view to become visible")
+	}
+	out := stripANSI(m.renderRight(80))
+	for _, want := range []string{"task section", "new task", "omp triage", "gh dash", "gh enhance", "quit"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected generated help to include %q, got:\n%s", want, out)
+		}
+	}
+	updated, _ = m.handleKey(specialKey(tea.KeyEsc))
+	m = updated.(model)
+	if m.helpVisible {
+		t.Fatalf("expected esc to close help view")
 	}
 }
 

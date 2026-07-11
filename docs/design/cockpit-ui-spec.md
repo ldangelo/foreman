@@ -133,7 +133,7 @@ Global:
 | `R` | reset selected task (confirmed) |
 | `G` | open `gh dash` when enabled and available |
 | `C` | open `gh enhance` for the selected run when enabled and available |
-| `?` | show the compact cockpit keymap help notice |
+| `?` | toggle generated keymap help in the right detail pane; `esc` closes it |
 | `q` | quit |
 
 
