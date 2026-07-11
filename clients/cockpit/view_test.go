@@ -1138,6 +1138,79 @@ func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
 	}
 }
 
+func TestMotionStatusAndDiffLoadingRespectReducedMotion(t *testing.T) {
+	client := &mutableClient{
+		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
+		files: []FileChange{{Change: "M", Path: "src/a.go", Stat: "+1 -1"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 5
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	key := diffPreviewKey(client.runs[0], "src/a.go", selectedDiffBase(m.config.Integrations))
+	m.diffLoading[key] = true
+
+	out := stripANSI(m.renderFrame())
+	if !strings.Contains(out, "⠋ live") {
+		t.Fatalf("expected status bar to use spinner-backed live indicator, got:\n%s", out)
+	}
+	if !strings.Contains(out, "⠋ loading diff preview") {
+		t.Fatalf("expected diff preview loading state to use spinner, got:\n%s", out)
+	}
+
+	cfg := defaultConfig()
+	cfg.Cockpit.ReducedMotion = true
+	reduced := newModelWithConfig(client, cfg, defaultTools)
+	reduced.width = 120
+	reduced.height = 20
+	reduced.tab = 5
+	updated, _ = reduced.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	reduced = updated.(model)
+	reduced.diffLoading[key] = true
+	out = stripANSI(reduced.renderFrame())
+	if strings.Contains(out, "⠋") {
+		t.Fatalf("expected reduced motion to suppress spinner frames, got:\n%s", out)
+	}
+	if !strings.Contains(out, "live") || !strings.Contains(out, "loading diff preview") {
+		t.Fatalf("expected reduced motion to keep static status/loading text, got:\n%s", out)
+	}
+}
+
+func TestSelectedRunningRunShowsLiveClock(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	if !m.runClockActive || m.runClockRunID != "run-1" {
+		t.Fatalf("expected selected running run to arm stopwatch, active=%v run=%q", m.runClockActive, m.runClockRunID)
+	}
+	out := stripANSI(m.renderRight(80))
+	if !strings.Contains(out, "running · 0s") {
+		t.Fatalf("expected running header to include live clock, got:\n%s", out)
+	}
+
+	cfg := defaultConfig()
+	cfg.Cockpit.ReducedMotion = true
+	reduced := newModelWithConfig(client, cfg, defaultTools)
+	reduced.width = 120
+	reduced.height = 20
+	updated, _ = reduced.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	reduced = updated.(model)
+	if reduced.runClockActive {
+		t.Fatalf("expected reduced motion to avoid arming stopwatch")
+	}
+	out = stripANSI(reduced.renderRight(80))
+	if strings.Contains(out, "running · 0s") {
+		t.Fatalf("expected reduced motion header to omit live clock, got:\n%s", out)
+	}
+}
+
 func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	long := strings.Repeat("x", 80) + " TAIL"
 	client := &mutableClient{

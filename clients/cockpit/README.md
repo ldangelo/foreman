@@ -33,10 +33,12 @@ authoritative state.
   rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
   edit task JSON via `task.update`, and `n` to open an in-pane `textinput` /
   `textarea` create form that posts `task.create` with `ctrl+s`.
-- Right column: color-coded run header, an animated phase rail, and a
-  drill-down tab strip (`summary · messages · events · logs · reports · files · pr`).
+- Right column: color-coded run header, live elapsed clock for selected running
+  runs, an animated phase rail, and a drill-down tab strip (`summary · messages ·
+  events · logs · reports · files · pr`). Loading states use the cockpit spinner.
   The active pane is called out with a focus label and accent frame; the inactive
-  pane can be dimmed via `cockpit.focus`.
+  pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or
+  `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
 - `/` searches the focused drill-down pane when the right side is focused; the
   task-list search remains on `/` while the left side is focused. Task-list
   search uses a `filterableviewport` input with case-insensitive substring
@@ -132,9 +134,9 @@ preview is kept in the viewport with the header when there is room for both.
 
 Controlled by `.foreman/config.yaml` (all optional) and `COCKPIT_DIFFNAV`,
 `COCKPIT_DELTA`, `COCKPIT_GHDASH`, `COCKPIT_GHENHANCE`, `COCKPIT_OMP`,
-`COCKPIT_OMP_MODE`, `COCKPIT_EXPORT_DIR`, `COCKPIT_FOCUS_STYLE`, and
-`COCKPIT_FOCUS_DIM_INACTIVE` env overrides (`auto` / `on` / `off` where
-applicable):
+`COCKPIT_OMP_MODE`, `COCKPIT_EXPORT_DIR`, `COCKPIT_FOCUS_STYLE`,
+`COCKPIT_FOCUS_DIM_INACTIVE`, and `COCKPIT_REDUCED_MOTION` env overrides
+(`auto` / `on` / `off` where applicable):
 
 ```yaml
 editor:
@@ -169,6 +171,7 @@ cockpit:
   focus:
     style: both         # both | border | dim
     dimInactive: true
+  reducedMotion: false
 ```
 
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached

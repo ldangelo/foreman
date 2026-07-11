@@ -67,25 +67,26 @@ func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 
 func TestLoadConfigParsesCockpitFocus(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
-	if err := os.WriteFile(path, []byte("cockpit:\n  focus:\n    style: border\n    dimInactive: false\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("cockpit:\n  focus:\n    style: border\n    dimInactive: false\n  reducedMotion: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := loadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Cockpit.Focus.Style != focusStyleBorder || cfg.Cockpit.Focus.DimInactive {
-		t.Fatalf("unexpected focus config: %+v", cfg.Cockpit.Focus)
+	if cfg.Cockpit.Focus.Style != focusStyleBorder || cfg.Cockpit.Focus.DimInactive || !cfg.Cockpit.ReducedMotion {
+		t.Fatalf("unexpected cockpit config: %+v", cfg.Cockpit)
 	}
 
 	t.Setenv("COCKPIT_FOCUS_STYLE", "dim")
 	t.Setenv("COCKPIT_FOCUS_DIM_INACTIVE", "true")
+	t.Setenv("COCKPIT_REDUCED_MOTION", "false")
 	cfg, err = loadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Cockpit.Focus.Style != focusStyleDim || !cfg.Cockpit.Focus.DimInactive {
-		t.Fatalf("expected env focus override, got %+v", cfg.Cockpit.Focus)
+	if cfg.Cockpit.Focus.Style != focusStyleDim || !cfg.Cockpit.Focus.DimInactive || cfg.Cockpit.ReducedMotion {
+		t.Fatalf("expected env cockpit override, got %+v", cfg.Cockpit)
 	}
 }
 

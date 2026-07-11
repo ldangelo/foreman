@@ -88,9 +88,9 @@ The selected row drives the entire right side.
 
 The cockpit is an Elm-architecture app (Bubble Tea `model → update → view`).
 The root model owns cross-component orchestration: client refresh, layout size,
-selected run/task identity, active tab, focus, notices/errors, animation ticks,
-and mutating commands. Local UI mechanics live in small cockpit-owned
-components:
+selected run/task identity, active tab, focus, notices/errors, spinner state,
+selected-running-run stopwatch state, and mutating commands. Local UI mechanics
+live in small cockpit-owned components:
 
 | Component | Owns |
 |-----------|------|
@@ -99,8 +99,11 @@ components:
 | Tab adapters | conversion of summary/messages/events/logs/reports/files/pr data into stable keyed viewer lines and nvim targets where applicable |
 
 All data is fetched from the Elixir core; the cockpit never infers state the
-core has not asserted. A periodic tick (default 2s) refreshes projections and
-advances the active-phase animation.
+core has not asserted. A periodic tick (default 2s) refreshes projections. The
+status bar and diff-loading rows use a `bubbles/v2/spinner` only while runs or
+loading states are active, and the selected running run gets a lightweight
+`bubbles/v2/stopwatch` elapsed indicator. `cockpit.reducedMotion` disables
+spinner frames and stopwatch display for accessibility / low-power terminals.
 
 The keybar includes an explicit `focus: tasks` / `focus: details` label. The
 focused pane uses the accent border; the inactive pane uses the blur border and,

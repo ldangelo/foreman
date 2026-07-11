@@ -175,8 +175,7 @@ func (m model) renderStatusBar(w int) string {
 	if m.editor.serverAddr() != "" {
 		nvim = "nvim ⇄ attached"
 	}
-	spin := []string{"↻", "↺"}[m.anim%2]
-	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") + cyanStyle.Render(spin+" live")
+	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") + cyanStyle.Render(m.liveIndicator())
 
 	return statusBarStyle.Width(w).Render(clip(padRow(left, right, w), w))
 }
@@ -344,7 +343,7 @@ func (m model) renderRight(w int) string {
 		if pos, ok := m.selectedMessagePosition(); ok {
 			status += " · messages " + itoa(pos) + "/" + itoa(len(m.msgs))
 		}
-		hdrRight := lipgloss.NewStyle().Foreground(visualForStatus(run.Status, visual)).Render(status)
+		hdrRight := lipgloss.NewStyle().Foreground(visualForStatus(run.Status, visual)).Render(joinStatusParts(status, m.selectedRunClock()))
 		s = append(s, padRow(hdrLeft, hdrRight, w))
 		if run.Attention != "" {
 			s = append(s, lipgloss.NewStyle().Foreground(visual.Red).Render(clip("⚠ "+run.Attention, w)))
@@ -411,9 +410,9 @@ func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 		text := gl + " " + p.Name
 		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
 		if p.State == "active" {
-			st = st.Background(visual.ActiveBg)
-			if m.anim%2 == 0 {
-				st = st.Foreground(visual.White)
+			st = st.Background(visual.ActiveBg).Foreground(visual.White)
+			if m.config.Cockpit.ReducedMotion {
+				st = st.Bold(true)
 			}
 		} else if p.State == "fail" {
 			st = st.Background(visual.FailBg)
@@ -615,7 +614,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int) []ViewerLi
 			key := diffPreviewKey(run, f.Path, base)
 			add("diff-preview:"+f.Path+":spacer", "", target{})
 			if m.diffLoading[key] {
-				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":loading", Text: dimStyle.Render("loading diff preview…"), Unselectable: true})
+				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":loading", Text: dimStyle.Render(m.loadingLabel("diff preview")), Unselectable: true})
 			} else if preview, ok := m.diffPreviews[key]; ok {
 				if preview.Err != "" {
 					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":error", Text: yellowStyle.Render("diff preview: " + preview.Err), Unselectable: true})
@@ -682,6 +681,23 @@ func (m model) renderPRLines(w int) []ViewerLine {
 	}
 	return lines
 }
+func joinStatusParts(parts ...string) string {
+	var out []string
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, " · ")
+}
+
+func (m model) loadingLabel(label string) string {
+	if m.config.Cockpit.ReducedMotion {
+		return "loading " + label + "…"
+	}
+	return m.liveSpinner.View() + " loading " + label + "…"
+}
+
 func (m model) renderAction(w int) string {
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{

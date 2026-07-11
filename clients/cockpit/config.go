@@ -62,8 +62,9 @@ type PRConfig struct {
 }
 
 type CockpitConfig struct {
-	ExportDir string      `yaml:"exportDir"`
-	Focus     FocusConfig `yaml:"focus"`
+	ExportDir     string      `yaml:"exportDir"`
+	Focus         FocusConfig `yaml:"focus"`
+	ReducedMotion bool        `yaml:"reducedMotion"`
 }
 
 type FocusConfig struct {
@@ -151,6 +152,7 @@ func (c *Config) normalize() {
 	}
 	c.Cockpit.ExportDir = expandHome(c.Cockpit.ExportDir)
 	c.Cockpit.Focus.Style = normalizeFocusStyle(c.Cockpit.Focus.Style)
+	c.Cockpit.ReducedMotion = normalizeBool("", c.Cockpit.ReducedMotion)
 }
 
 func defaultCockpitExportDir() string {
@@ -254,5 +256,8 @@ func applyConfigEnv(c *Config) {
 	}
 	if v := os.Getenv("COCKPIT_FOCUS_DIM_INACTIVE"); v != "" {
 		c.Cockpit.Focus.DimInactive = normalizeBool(v, c.Cockpit.Focus.DimInactive)
+	}
+	if v := os.Getenv("COCKPIT_REDUCED_MOTION"); v != "" {
+		c.Cockpit.ReducedMotion = normalizeBool(v, c.Cockpit.ReducedMotion)
 	}
 }

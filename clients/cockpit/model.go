@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/stopwatch"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 )
 
@@ -31,8 +34,13 @@ type model struct {
 	files   []FileChange
 	pr      PRStatus
 
-	diffPreviews map[string]DiffPreview
-	diffLoading  map[string]bool
+	diffPreviews   map[string]DiffPreview
+	diffLoading    map[string]bool
+	liveSpinner    spinner.Model
+	spinnerActive  bool
+	runClock       stopwatch.Model
+	runClockRunID  string
+	runClockActive bool
 
 	tab         int
 	viewer      Viewer
@@ -41,7 +49,6 @@ type model struct {
 	taskForm    *taskCreateForm
 
 	width, height int
-	anim          int
 	notice        string
 }
 
@@ -87,6 +94,8 @@ func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 		tools:        tools,
 		glam:         r,
 		taskList:     NewTaskList(),
+		liveSpinner:  newLiveSpinner(),
+		runClock:     stopwatch.New(stopwatch.WithInterval(time.Second)),
 		tab:          0,
 		diffPreviews: map[string]DiffPreview{},
 		diffLoading:  map[string]bool{},
@@ -94,7 +103,7 @@ func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(loadData(m.client), tick())
+	return tea.Batch(loadData(m.client), tick(), m.syncMotionCmd())
 }
 
 func tick() tea.Cmd {
@@ -122,28 +131,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 	case tickMsg:
+		return m, tea.Batch(loadData(m.client), tick(), m.syncMotionCmd())
 
-		m.anim++
-		return m, tea.Batch(loadData(m.client), tick())
+	case spinner.TickMsg:
+		if !m.shouldAnimate() {
+			m.spinnerActive = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.liveSpinner, cmd = m.liveSpinner.Update(msg)
+		m.spinnerActive = true
+		return m, cmd
+
+	case stopwatch.StartStopMsg, stopwatch.ResetMsg, stopwatch.TickMsg:
+		var cmd tea.Cmd
+		m.runClock, cmd = m.runClock.Update(msg)
+		if !m.shouldRunClock() {
+			m.runClockActive = false
+			if m.runClock.Running() {
+				return m, m.runClock.Stop()
+			}
+			return m, nil
+		}
+		return m, cmd
 
 	case dataMsg:
 		hadViewerRows := m.viewerTab() && m.rowCount() > 0
 		m.runs, m.tasks = msg.runs, msg.tasks
 		m.buildItems()
 		m.loadDetail()
-		var cmd tea.Cmd
+		var cmds []tea.Cmd
 		if m.viewerTab() {
 			if hadViewerRows {
 				m.refreshViewer(viewerPreserve)
 			} else {
 				m.refreshViewer(viewerBottom)
 			}
-			cmd = m.maybeLoadSelectedDiffPreview()
+			cmds = append(cmds, m.maybeLoadSelectedDiffPreview())
 		}
 		if len(msg.errors) > 0 {
 			m.notice = formatClientErrors(msg.errors)
 		}
-		return m, cmd
+		cmds = append(cmds, m.syncMotionCmd())
+		return m, tea.Batch(cmds...)
 
 	case nvimDoneMsg:
 		if msg.err != nil {
@@ -241,6 +271,102 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+func newLiveSpinner() spinner.Model {
+	return spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(cCyan)),
+	)
+}
+
+func (m model) shouldAnimate() bool {
+	if m.config.Cockpit.ReducedMotion {
+		return false
+	}
+	if m.hasRunningRuns() {
+		return true
+	}
+	for _, loading := range m.diffLoading {
+		if loading {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) hasRunningRuns() bool {
+	for _, run := range m.runs {
+		if run.Group == taskGroupRunning || strings.EqualFold(run.Status, "running") {
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) shouldRunClock() bool {
+	return !m.config.Cockpit.ReducedMotion && m.selectedRunningRunID() != ""
+}
+
+func (m model) selectedRunningRunID() string {
+	run, ok := m.selectedRun()
+	if !ok {
+		return ""
+	}
+	if run.Group == taskGroupRunning || strings.EqualFold(run.Status, "running") {
+		return run.RunID
+	}
+	return ""
+}
+
+func (m model) liveIndicator() string {
+	if m.config.Cockpit.ReducedMotion {
+		return "live"
+	}
+	if m.shouldAnimate() {
+		return m.liveSpinner.View() + " live"
+	}
+	return "idle"
+}
+
+func (m model) selectedRunClock() string {
+	if !m.shouldRunClock() {
+		return ""
+	}
+	if elapsed := strings.TrimSpace(m.runClock.View()); elapsed != "" && elapsed != "0s" {
+		return elapsed
+	}
+	return "0s"
+}
+
+func (m *model) syncMotionCmd() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.shouldAnimate() {
+		if !m.spinnerActive {
+			m.spinnerActive = true
+			cmds = append(cmds, func() tea.Msg { return m.liveSpinner.Tick() })
+		}
+	} else {
+		m.spinnerActive = false
+	}
+
+	runID := m.selectedRunningRunID()
+	if !m.config.Cockpit.ReducedMotion && runID != "" {
+		if runID != m.runClockRunID {
+			m.runClockRunID = runID
+			m.runClockActive = true
+			cmds = append(cmds, m.runClock.Reset(), m.runClock.Start())
+		} else if !m.runClockActive {
+			m.runClockActive = true
+			cmds = append(cmds, m.runClock.Start())
+		}
+	} else {
+		m.runClockRunID = ""
+		if m.runClockActive {
+			m.runClockActive = false
+			cmds = append(cmds, m.runClock.Stop())
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) handleTaskFormKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -474,7 +600,7 @@ func (m *model) moveSel(delta int) tea.Cmd {
 	if m.viewerTab() {
 		m.scrollToBottom()
 	}
-	return m.maybeLoadSelectedDiffPreview()
+	return tea.Batch(m.maybeLoadSelectedDiffPreview(), m.syncMotionCmd())
 }
 
 func (m *model) moveRow(delta int) tea.Cmd {
@@ -498,7 +624,7 @@ func (m *model) selectTab(tab int) tea.Cmd {
 	m.tab = tab
 	m.selectInitialViewerLine()
 	m.viewFocused = m.viewerTab()
-	return m.maybeLoadSelectedDiffPreview()
+	return tea.Batch(m.maybeLoadSelectedDiffPreview(), m.syncMotionCmd())
 }
 
 func (m *model) selectInitialViewerLine() {
