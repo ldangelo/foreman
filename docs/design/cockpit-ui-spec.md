@@ -305,7 +305,8 @@ default). `mode: remote` never suspends; `mode: inline` always suspends.
 
 ## Non-goals for the POC
 
-- No write/command execution beyond READY task mutations, PR opens, and tool handoffs; retry/reset remain stubs.
+- No write/command execution beyond READY task mutations, task creation, PR opens,
+  and tool handoffs; retry/reset execution remains out of scope for the POC.
 - No auth token refresh flows; read the token from the environment.
 - No pagination controls beyond the RECENT cap.
 

@@ -1457,6 +1457,62 @@ func TestMouseClickSelectsRunDetailTab(t *testing.T) {
 	}
 }
 
+func TestMouseActionHitTestingCoversTaskActions(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = nil
+	m.tasks = []Task{{TaskID: "task-ready", Title: "Ready task", Status: "backlog"}}
+	m.taskList.MoveSection(1)
+	m.buildItems()
+
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2
+	copyX := x + len("▸ task actions task-ready  ")
+	if key := m.actionKeyAt(copyX, startY); key != "y" {
+		t.Fatalf("expected first task action segment to copy id, got %q", key)
+	}
+	if key := m.actionKeyAt(x, startY+1); key != "a" {
+		t.Fatalf("expected second task action line to approve, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("a approve  "), startY+1); key != "e" {
+		t.Fatalf("expected edit task action segment, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("a approve  e edit  n new task form  "), startY+1); key != "N" {
+		t.Fatalf("expected quick-add task action segment, got %q", key)
+	}
+}
+
+func TestMouseActionHitTestingCoversFilesAndPRActions(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 22
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}}
+	m.files = []FileChange{{Change: "M", Path: "src/a.go"}}
+	m.buildItems()
+	m.tab = 5 // files
+	m.refreshViewer(viewerReset)
+
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2
+	if key := m.actionKeyAt(x, startY+1); key != "o" {
+		t.Fatalf("expected files open action, got %q", key)
+	}
+	if key := m.actionKeyAt(x, startY+4); key != "D" {
+		t.Fatalf("expected full diff action, got %q", key)
+	}
+
+	m.tab = 6 // pr
+	m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42"}
+	startY = m.height - 3 - m.actionLineCount()
+	if key := m.actionKeyAt(x+len("▸ PR actions o/enter open PR in browser  "), startY); key != "G" {
+		t.Fatalf("expected gh dash PR action segment, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("▸ PR actions o/enter open PR in browser  G open gh dash  "), startY); key != "C" {
+		t.Fatalf("expected gh enhance PR action segment, got %q", key)
+	}
+}
+
 func TestAutoTaskListWidthUsesDashLikeProportion(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 160

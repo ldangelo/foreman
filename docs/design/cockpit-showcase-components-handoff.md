@@ -6,8 +6,8 @@ Related: `docs/design/cockpit-viewport-investigation.md` (v2 migration), `cockpi
 
 Implementation note (2026-07-11): the cockpit ships generated keymap/help,
 `textinput`/`textarea` task creation, table/reflow rendering, spinner/stopwatch
-reduced-motion support, clickable section/task-row/drill-down-tab targets, a
-metrics tab backed by `/api/v1/metrics`, a theme installer, and richer mock data.
+reduced-motion support, clickable section/task-row/drill-down-tab/action targets,
+a metrics tab backed by `/api/v1/metrics`, a theme installer, and richer mock data.
 No local cockpit feature is waiting on those libraries: native hit-testing covers
 section/row/action/PR clicks, native bounded bars cover the metrics tab, and
 `clients/cockpit/demo.tape` is checked in for `vhs` capture. `bubblezone` and
