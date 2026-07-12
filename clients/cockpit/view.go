@@ -661,7 +661,7 @@ func (m model) renderTabs(w int, visual paneVisual) string {
 			label += " " + itoa(counts[i])
 		}
 		if tabOpenable(name) {
-			label += " ⧉"
+			label += " " + openableTabMarker
 		}
 		if i == m.tab {
 			toks = append(toks, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(" "+label+" "))

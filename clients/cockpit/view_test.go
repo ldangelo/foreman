@@ -1741,6 +1741,25 @@ func TestMetricsTabCountIncludesPhaseDurations(t *testing.T) {
 	}
 }
 
+func TestOpenableTabMarkerDrivesHitTesting(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", Pipeline: pipe(1, -1)}}
+	m.tasks = nil
+	m.logs = []string{"log line"}
+	m.buildItems()
+
+	out := stripANSI(m.renderTabs(120, paneVisualFor(true, defaultConfig().Cockpit.Focus)))
+	marker := strings.Index(out, openableTabMarker)
+	if marker < 0 || !strings.Contains(out, "logs 1 "+openableTabMarker) {
+		t.Fatalf("expected rendered openable tab marker, got %q", out)
+	}
+	if idx := m.rightTabIndexAt(marker + m.leftPaneWidth() + 2); idx != 3 {
+		t.Fatalf("expected rendered openable marker to stay inside logs hit zone, got %d from %q", idx, out)
+	}
+}
+
 func TestMouseClickSelectsTaskSection(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120

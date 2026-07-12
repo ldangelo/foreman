@@ -16,6 +16,8 @@ import (
 
 var tabNames = []string{"summary", "messages", "events", "logs", "reports", "files", "pr", "metrics"}
 
+const openableTabMarker = "⧉"
+
 type model struct {
 	client Client
 	config Config
@@ -955,7 +957,7 @@ func (m model) rightTabIndexAt(x int) int {
 			label += " " + itoa(counts[i])
 		}
 		if tabOpenable(name) {
-			label += " ?"
+			label += " " + openableTabMarker
 		}
 		labelLen := utf8.RuneCountInString(" " + label + " ")
 		if rel >= pos && rel < pos+labelLen {
