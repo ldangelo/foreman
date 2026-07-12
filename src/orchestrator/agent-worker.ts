@@ -1230,6 +1230,28 @@ async function hasChangesAgainstBase(vcsBackend: VcsBackend | undefined, repoPat
   return changedFiles.length > 0;
 }
 
+/**
+ * Branch invariant: the worktree must be on the canonical foreman/<taskId> branch.
+ *
+ * Workers can drift off the canonical branch (e.g. via `git checkout -b fix/foo`)
+ * which causes checkpoint/create-pr/finalize to commit/push from the wrong branch
+ * while inspecting/checking the canonical branch — silently closing tasks without PRs.
+ *
+ * This helper provides structured drift detection for fail-fast enforcement in
+ * mutating phases. Returns { valid, expected, actual } so callers can produce
+ * detailed error messages.
+ */
+async function requireCanonicalBranch(
+  vcsBackend: VcsBackend | undefined,
+  worktreePath: string,
+  taskId: string,
+): Promise<{ valid: boolean; expected: string; actual: string }> {
+  const expected = `foreman/${taskId}`;
+  if (!vcsBackend) return { valid: true, expected, actual: "" };
+  const actual = await vcsBackend.getCurrentBranch(worktreePath);
+  return { valid: actual === expected, expected, actual };
+}
+
 async function resolvePrBaseBranch(args: {
   store: WorkerStoreCompat;
   runId: string;
@@ -1376,6 +1398,28 @@ async function runCreatePrBuiltinPhase(args: {
   const priorPrUrl = typeof store.getRun(config.runId)?.pr_url === "string" ? store.getRun(config.runId)?.pr_url : undefined;
   const priorMetadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
   const hasPriorPrMetadata = existsSync(priorMetadataPath);
+
+  // Branch invariant: fail fast if worktree is on wrong branch.
+  // Workers can switch to an ad-hoc branch (e.g. `git checkout -b fix/foo`) and
+  // commit real work there. Without this check, hasChangesAgainstBase compares
+  // foreman/<taskId> to base while the actual work sits on the drifted branch —
+  // silently closing the task with no PR.
+  const branchInvariant = await requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId);
+  if (!branchInvariant.valid) {
+    const msg = `[CREATE-PR] BRANCH DRIFT: expected '${branchInvariant.expected}', found '${branchInvariant.actual}' in '${config.worktreePath}'. Worktree must be on the canonical foreman/${config.taskId} branch.`;
+    log(msg);
+    sendMail(agentMailClient, "foreman", "agent-error", {
+      taskId: config.taskId,
+      runId: config.runId,
+      phase: "create-pr",
+      error: "branch_drift",
+      expected: branchInvariant.expected,
+      actual: branchInvariant.actual,
+      worktreePath: config.worktreePath,
+    });
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: msg, stopPipelineSuccess: false };
+  }
+
   if (!branchHasChanges && !priorPrUrl && !hasPriorPrMetadata) {
     // Guardrail: DO NOT close the task when there's no diff against base.
     // Closing tasks without a PR bypasses the review process and can mask
@@ -1476,6 +1520,17 @@ async function checkpointWorktreeAndEnsureDraftPrAfterPhase(args: {
     if (!workflowConfig.phases.some((candidate) => candidate.name === "create-pr")) return;
     if (!vcsBackend) return;
     if (config.env.FOREMAN_RUNTIME_MODE === "test" || process.env.FOREMAN_RUNTIME_MODE === "test") return;
+
+    // Branch invariant: fail fast if worktree is on wrong branch.
+    // Workers can switch to an ad-hoc branch (e.g. `git checkout -b fix/foo`) and
+    // commit real work there. This function stages, commits, and pushes using the
+    // canonical branch name — but if HEAD is on a drifted branch, commit/push
+    // operate on the wrong branch while we check foreman/<taskId>.
+    const branchInvariant = await requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId);
+    if (!branchInvariant.valid) {
+      log(`[CHECKPOINT] BRANCH DRIFT: expected '${branchInvariant.expected}', found '${branchInvariant.actual}' in '${config.worktreePath}'. Skipping checkpoint — worktree must be on the canonical foreman/${config.taskId} branch.`);
+      return;
+    }
 
     const baseBranch = await resolvePrBaseBranch({
       store,

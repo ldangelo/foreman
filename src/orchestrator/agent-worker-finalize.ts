@@ -156,21 +156,30 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
   // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
   // failed rebase or manual intervention), causing push to fail with
   // "src refspec does not match any".
+  //
+  // IMPORTANT: We do NOT auto-recover by checking out the expected branch.
+  // Auto-recovery masks "branch drift" where workers switch to an ad-hoc branch
+  // (e.g. `git checkout -b fix/foo`), commit real work there, then finalize
+  // checks out the canonical branch and pushes from the wrong branch.
+  // Fail-fast ensures the task fails visibly rather than silently losing work.
   const expectedBranch = `foreman/${taskId}`;
   let branchVerified = false;
   try {
     const currentBranch = await vcs.getCurrentBranch(worktreePath);
     if (currentBranch !== expectedBranch) {
-      log(`[FINALIZE] Branch mismatch: on '${currentBranch}', expected '${expectedBranch}' — attempting checkout`);
-      await vcs.checkoutBranch(worktreePath, expectedBranch);
-      log(`[FINALIZE] Checked out ${expectedBranch}`);
+      const msg = `[FINALIZE] BRANCH DRIFT: expected '${expectedBranch}', found '${currentBranch}' in '${worktreePath}'. Worktree must be on the canonical foreman/${taskId} branch. Will NOT auto-checkout — failing fast to preserve work.`;
+      log(msg);
+      await appendFile(logFile, `${msg}\n`);
       report.push(
         `## Branch Verification`,
-        `- Was: ${currentBranch}`,
         `- Expected: ${expectedBranch}`,
-        `- Status: RECOVERED (checkout succeeded)`,
+        `- Actual: ${currentBranch}`,
+        `- Worktree: ${worktreePath}`,
+        `- Status: FAILED (branch drift detected)`,
+        `- Action: FAIL-FAST (no auto-checkout to preserve work on drifted branch)`,
         "",
       );
+      branchVerified = false;
     } else {
       log(`[FINALIZE] Branch verified: ${currentBranch}`);
       report.push(
@@ -179,8 +188,8 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
         `- Status: OK`,
         "",
       );
+      branchVerified = true;
     }
-    branchVerified = true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[FINALIZE] Branch verification failed: ${msg.slice(0, 200)}`);
