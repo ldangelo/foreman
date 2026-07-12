@@ -52,12 +52,37 @@ func resolveOmpMode(cfg OmpConfig, run Run, tools ToolResolver, env []string) (s
 }
 
 func runHasActiveWorker(run Run) bool {
+	if strings.EqualFold(run.Group, taskGroupRunning) {
+		return true
+	}
 	switch normalizeStatus(run.Status) {
 	case "running", "in_progress", "pending", "cooldown":
 		return true
 	default:
 		return false
 	}
+}
+
+func briefMessageLines(msg Message) []string {
+	lines := make([]string, 0, 2)
+	subject := strings.TrimSpace(msg.Subject)
+	body := firstNonEmptyLine(msg.Body)
+	if subject != "" {
+		lines = append(lines, subject)
+	}
+	if body != "" && !strings.EqualFold(body, subject) {
+		lines = append(lines, body)
+	}
+	return lines
+}
+
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func envHas(env []string, prefix string) bool {
@@ -229,11 +254,7 @@ func buildTriageBrief(m model, run Run, briefPath string) string {
 			if i >= 5 {
 				break
 			}
-			line := strings.TrimSpace(msg.Subject)
-			if line == "" {
-				line = strings.TrimSpace(msg.Body)
-			}
-			if line != "" {
+			for _, line := range briefMessageLines(msg) {
 				fmt.Fprintf(&b, "- %s\n", redactBriefLine(line))
 			}
 		}

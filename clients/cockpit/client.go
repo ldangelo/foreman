@@ -927,7 +927,7 @@ func (c *httpClient) Dispatchable() []Task {
 	tasks := c.taskIndex(projectID)
 	out := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
-		if readyTaskStatus(task.Status) {
+		if readyTaskStatus(task.Status) || activeTaskStatus(task.Status) {
 			out = append(out, task)
 		}
 	}

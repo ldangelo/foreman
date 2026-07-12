@@ -39,6 +39,9 @@ func TestThemeTokensDriveCockpitPalette(t *testing.T) {
 			t.Fatalf("token %s must be #RRGGBB, got %q", name, value)
 		}
 	}
+	if cWhite != cText {
+		t.Fatalf("cWhite must come from the text.primary token")
+	}
 }
 
 func TestThemeProjectionFragmentsUseTokens(t *testing.T) {

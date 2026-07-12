@@ -14,13 +14,14 @@ func TestTaskListSectionsBuildCountsAndExcludeActiveReady(t *testing.T) {
 		{Group: taskGroupRecent, TaskID: "done-task", RunID: "run-done", Status: "merged", Summary: "done summary"},
 	}
 	tasks := []Task{
-		{TaskID: "active-task", Priority: "P0", Summary: "should not duplicate"},
-		{TaskID: "ready-task", Priority: "P1", Summary: "ready summary"},
+		{TaskID: "active-task", Status: "in_progress", Priority: "P0", Summary: "should not duplicate"},
+		{TaskID: "pending-task", Status: "pending", Priority: "P0", Summary: "active without run"},
+		{TaskID: "ready-task", Status: "backlog", Priority: "P1", Summary: "ready summary"},
 	}
 
 	list.SetData(runs, tasks)
-	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-active" {
-		t.Fatalf("expected default Running section to show active run only, got %#v", items)
+	if items := list.Items(); len(items) != 2 || items[0].Run.RunID != "run-active" || !items[1].IsTask || items[1].Task.TaskID != "pending-task" {
+		t.Fatalf("expected default Running section to show active run and active task-only row, got %#v", items)
 	}
 
 	list.MoveSection(1) // Ready
@@ -37,13 +38,13 @@ func TestTaskListSectionsBuildCountsAndExcludeActiveReady(t *testing.T) {
 
 	list.MoveSection(1) // All
 	list.SetData(runs, tasks)
-	if got := len(list.Items()); got != 3 {
-		t.Fatalf("expected All section to include active run, ready task, and recent run, got %d items: %#v", got, list.Items())
+	if got := len(list.Items()); got != 4 {
+		t.Fatalf("expected All section to include active run, active task, ready task, and recent run, got %d items: %#v", got, list.Items())
 	}
 
 	counts := list.Counts(runs, tasks)
-	if counts[taskSectionRunning] != 1 || counts[taskSectionReady] != 1 || counts[taskSectionRecent] != 1 || counts[taskSectionAll] != 3 {
-		t.Fatalf("expected section counts to exclude active ready task, got %#v", counts)
+	if counts[taskSectionRunning] != 2 || counts[taskSectionReady] != 1 || counts[taskSectionRecent] != 1 || counts[taskSectionAll] != 4 {
+		t.Fatalf("expected section counts to classify active task-only rows as running, got %#v", counts)
 	}
 }
 

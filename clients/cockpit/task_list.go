@@ -366,7 +366,11 @@ func buildTaskListItems(runs []Run, tasks []Task) []Item {
 		if activeRuns[t.TaskID] {
 			continue
 		}
-		items = append(items, Item{Group: taskGroupReady, IsTask: true, Task: t})
+		group := taskGroupReady
+		if activeTaskStatus(t.Status) {
+			group = taskGroupRunning
+		}
+		items = append(items, Item{Group: group, IsTask: true, Task: t})
 	}
 	sort.SliceStable(recentRuns, func(i, j int) bool {
 		return recentRuns[i].Last > recentRuns[j].Last
@@ -445,9 +449,12 @@ func matchesTaskToken(it Item, field, value string) bool {
 	case "state", "is":
 		switch value {
 		case "running", "active":
-			return !it.IsTask && it.Run.Group == taskGroupRunning
+			if it.IsTask {
+				return activeTaskStatus(it.Task.Status)
+			}
+			return it.Run.Group == taskGroupRunning
 		case "ready", "open", "backlog":
-			return it.IsTask && !isFailedState(it.Task.Status)
+			return it.IsTask && readyTaskStatus(it.Task.Status) && !isFailedState(it.Task.Status)
 		case "failed", "fail", "stuck", "conflict":
 			if it.IsTask {
 				return isFailedState(it.Task.Status)

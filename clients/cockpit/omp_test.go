@@ -44,8 +44,21 @@ func TestResolveOmpModeHonorsAutoTmuxAndValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "run is active") {
 		t.Fatalf("expected active run guard, got %v", err)
 	}
+	_, err = resolveOmpMode(cfg, Run{RunID: "run-1", Worktree: "/tmp/wt", Status: "failed", Group: "RUNNING"}, fakeTools{"omp": true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "run is active") {
+		t.Fatalf("expected running group guard even with stale status, got %v", err)
+	}
+	cfg.Enable = "off"
+	_, err = resolveOmpMode(cfg, Run{RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}, fakeTools{"omp": true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled omp error, got %v", err)
+	}
+	cfg.Enable = "on"
+	_, err = resolveOmpMode(cfg, Run{RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}, fakeTools{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "omp not found") {
+		t.Fatalf("expected missing omp error, got %v", err)
+	}
 }
-
 func TestResolveOmpModeRefusesActiveStatusEvenWhenGroupStale(t *testing.T) {
 	cfg := defaultConfig().Integrations.Omp
 	for _, status := range []string{"pending", "running", "in_progress", "cooldown"} {
@@ -74,12 +87,22 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 		t.Fatalf("expected inline command to exec omp exactly once, got %q", inline.Args[2])
 	}
 
+	cfg.KeepShell = true
 	tmux, err := ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(tmux.Path, "tmux") || !strings.Contains(strings.Join(tmux.Args, " "), "split-window -v -c /tmp/wt") || !strings.Contains(strings.Join(tmux.Args, " "), "omp-dev") {
+	joinedTmux := strings.Join(tmux.Args, " ")
+	if !strings.HasSuffix(tmux.Path, "tmux") || !strings.Contains(joinedTmux, "split-window -v -c /tmp/wt") || !strings.Contains(joinedTmux, "omp-dev") || !strings.Contains(joinedTmux, "exec ${SHELL:-/bin/sh}") {
 		t.Fatalf("unexpected tmux command: path=%q args=%v", tmux.Path, tmux.Args)
+	}
+	cfg.KeepShell = false
+	tmux, err = ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(tmux.Args, " "), "exec ${SHELL:-/bin/sh}") {
+		t.Fatalf("expected keep-shell disabled to omit shell handoff, got %v", tmux.Args)
 	}
 }
 
@@ -129,6 +152,20 @@ func TestBuildTriageBriefIncludesFailureContext(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(brief), "token") || strings.Contains(strings.ToLower(brief), "secret") {
 		t.Fatalf("brief should not include secret-like labels:\n%s", brief)
+	}
+}
+
+func TestBuildTriageBriefIncludesMessageBodyFailureSignal(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.msgs = []Message{{Subject: "handoff", Body: "ERROR: integration failed\nSECRET_TOKEN=abc"}}
+	run := Run{TaskID: "task-1", RunID: "run-1", Phase: "qa", Status: "failed", Attention: "ci_failed", Worktree: "/tmp/wt"}
+
+	brief := buildTriageBrief(m, run, "/tmp/wt/.foreman/triage-run-1.md")
+	if !strings.Contains(brief, "handoff") || !strings.Contains(brief, "ERROR: integration failed") {
+		t.Fatalf("expected subject and body failure signal in brief:\n%s", brief)
+	}
+	if strings.Contains(brief, "SECRET_TOKEN") {
+		t.Fatalf("expected secret-like body line to be omitted/redacted:\n%s", brief)
 	}
 }
 

@@ -28,8 +28,9 @@ authoritative state.
   deduplicated by task. The `g` scope toggle filters any mixed-project
   projection data by project id in current scope and shows all supplied
   projects in global scope. A task is `RUNNING` when both the task state and run
-  state are active (`in-progress` and `in_progress` are treated the same);
-  stale in-progress run projections for closed/failed tasks are shown as
+  state are active (`in-progress` and `in_progress` are treated the same), or
+  when an active task projection has no run row yet. Stale in-progress run
+  projections for closed/failed tasks are shown as
   recent, not running.
 - Task/run rows are richer two-line entries: metadata (id, type, priority,
   phase/status, and available counts/checks/PR/diff/age columns) on the first

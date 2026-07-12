@@ -198,17 +198,13 @@ func writeDebugDump(m model, leftW, rightW, bodyH int, rightRaw, out string) {
 }
 
 func (m model) renderStatusBar(w int) string {
-	running, recent := 0, 0
-	for _, r := range m.runs {
-		if r.Group == "RUNNING" {
-			running++
-		} else if r.Group == "RECENT" {
-			recent++
-		}
-	}
+	counts := m.taskList.Counts(m.runs, m.tasks)
+	running := counts[taskSectionRunning]
+	ready := counts[taskSectionReady]
+	recent := counts[taskSectionRecent]
 	left := purpleStyle.Bold(true).Render("foreman") + "  " +
 		greenStyle.Render(itoa(running)+" running") + dimStyle.Render(" · ") +
-		yellowStyle.Render(itoa(len(m.tasks))+" ready") + dimStyle.Render(" · ") +
+		yellowStyle.Render(itoa(ready)+" ready") + dimStyle.Render(" · ") +
 		dimStyle.Render(itoa(recent)+" recent")
 
 	nvim := "nvim: inline"

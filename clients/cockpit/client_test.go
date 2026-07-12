@@ -50,14 +50,14 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	}
 
 	tasks := client.Dispatchable()
-	if len(tasks) != 2 || tasks[0].TaskID != "task-ready" || tasks[0].Summary != "Ready task" {
+	if len(tasks) != 3 || tasks[0].TaskID != "task-live" || tasks[1].TaskID != "task-ready" || tasks[1].Summary != "Ready task" {
 		t.Fatalf("unexpected tasks: %#v", tasks)
 	}
-	if tasks[0].Description != "Detailed task body" || tasks[0].TaskType != "feature" || tasks[0].Priority != "P2" || tasks[0].Depends != "task-parent" || tasks[0].Workflow != "default" || tasks[0].ProjectID != "proj-live" || tasks[0].Created == "" || tasks[0].Updated == "" {
-		t.Fatalf("expected rich task fields from live projection, got %#v", tasks[0])
+	if tasks[1].Description != "Detailed task body" || tasks[1].TaskType != "feature" || tasks[1].Priority != "P2" || tasks[1].Depends != "task-parent" || tasks[1].Workflow != "default" || tasks[1].ProjectID != "proj-live" || tasks[1].Created == "" || tasks[1].Updated == "" {
+		t.Fatalf("expected rich task fields from live projection, got %#v", tasks[1])
 	}
-	if tasks[1].Depends != "task-parent, task-blocker" {
-		t.Fatalf("expected dependency array from live projection, got %#v", tasks[1])
+	if tasks[2].Depends != "task-parent, task-blocker" {
+		t.Fatalf("expected dependency array from live projection, got %#v", tasks[2])
 	}
 
 	messages := client.Messages("run-live")
@@ -203,8 +203,27 @@ func TestHTTPClientTreatsHyphenatedInProgressTaskAsRunning(t *testing.T) {
 		t.Fatalf("expected run title/type/priority from task projection, got title=%q type=%q priority=%q", runs[0].Title, runs[0].TaskType, runs[0].Priority)
 	}
 	tasks := client.Dispatchable()
-	if len(tasks) != 1 || tasks[0].TaskID != "ready-task" {
-		t.Fatalf("expected active task excluded from READY, got %#v", tasks)
+	if len(tasks) != 2 || tasks[0].TaskID != "active-task" || tasks[1].TaskID != "ready-task" {
+		t.Fatalf("expected active and ready task projections for task-list classification, got %#v", tasks)
+	}
+}
+
+func TestHTTPClientKeepsActiveTaskWithoutRunVisible(t *testing.T) {
+	t.Setenv("COCKPIT_PROJECT_ID", "proj-live")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/tasks":
+			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"pending-task","title":"Pending task","status":"pending","project_id":"proj-live"},{"task_id":"ready-task","title":"Ready task","status":"backlog","project_id":"proj-live"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	tasks := NewHTTPClient(server.URL, "").Dispatchable()
+	if len(tasks) != 2 || tasks[0].TaskID != "pending-task" || tasks[1].TaskID != "ready-task" {
+		t.Fatalf("expected active task without run to stay visible to the cockpit, got %#v", tasks)
 	}
 }
 

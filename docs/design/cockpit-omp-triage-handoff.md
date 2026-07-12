@@ -94,7 +94,7 @@ Resolve mode from config (`tmux | inline | window | auto`; default `auto`):
 - **Concurrency guard (important):** do NOT silently attach to a worktree an
   active Foreman worker is writing (`RUNNING`/`in_progress`). Two agents editing
   the same tree corrupts state. Behavior:
-  - Best targets: `failed`, `stuck`, `conflict`, `cooldown`, and `RECENT` runs.
+  - Best targets: `failed`, `stuck`, `conflict`, and `RECENT` runs.
   - For an actively-running worker, require a confirmation keypress (or refuse
     with a notice: "run is active — reset/stop it before attaching omp").
 - This is a **live, mutating** session (unlike the read-only handoffs). Say so in

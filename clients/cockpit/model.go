@@ -1256,7 +1256,7 @@ func (m model) selectedTask() (Task, bool) {
 
 func (m model) selectedReadyTask() (Task, bool) {
 	task, ok := m.selectedTask()
-	if !ok || isFailedState(task.Status) {
+	if !ok || !readyTaskStatus(task.Status) || isFailedState(task.Status) {
 		return Task{}, false
 	}
 	return task, true

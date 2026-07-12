@@ -247,6 +247,18 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestActiveTaskOnlyRowRendersInRunningSection(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = nil
+	m.tasks = []Task{{TaskID: "task-pending", Title: "Waiting for worker", TaskType: "feature", Priority: "P0", Status: "pending"}}
+	m.buildItems()
+
+	out := stripANSI(m.renderLeft(50, 6))
+	if !strings.Contains(out, "task-pending") || !strings.Contains(out, "Waiting for worker") || !strings.Contains(out, "pending") {
+		t.Fatalf("expected active task-only row in Running section, got:\n%s", out)
+	}
+}
+
 func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
 	m := newModel(NewMockClient())
 	run := Run{Phase: "qa", Pipeline: pipe(3, -1)}
@@ -308,12 +320,13 @@ func TestStatusBarIncludesActiveTaskSectionPosition(t *testing.T) {
 	m.width = 140
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running"}}
 	m.tasks = []Task{
+		{TaskID: "active-task", Status: "pending", Title: "Pending task"},
 		{TaskID: "ready-1", Status: "ready", Title: "First ready"},
 		{TaskID: "ready-2", Status: "ready", Title: "Second ready"},
 	}
 	m.buildItems()
 
-	if out := stripANSI(m.renderStatusBar(140)); !strings.Contains(out, "Running 1/1") {
+	if out := stripANSI(m.renderStatusBar(140)); !strings.Contains(out, "Running 1/2") {
 		t.Fatalf("expected running section position in status bar, got %q", out)
 	}
 	m.taskList.MoveSection(1)

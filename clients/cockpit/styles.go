@@ -16,7 +16,7 @@ var (
 	cPurple = lipgloss.Color(themeTokenAccent2)
 	cText   = lipgloss.Color(themeTokenTextPrimary)
 	cDim    = lipgloss.Color(themeTokenTextFaint)
-	cWhite  = lipgloss.Color("#ffffff")
+	cWhite  = lipgloss.Color(themeTokenTextPrimary)
 
 	cSelBg       = lipgloss.Color(themeTokenBgSelected)
 	cActBg       = lipgloss.Color(themeTokenBgEmphasis)
