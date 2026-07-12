@@ -1952,6 +1952,47 @@ func TestMouseClickPRActionOpensPR(t *testing.T) {
 	}
 }
 
+func TestMouseClickPRURLLineOpensPR(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "pr-wait"}}
+	m.tasks = nil
+	m.tab = 6
+	m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42"}
+	m.tools = fakeTools{}
+	m.buildItems()
+
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2
+	_, cmd := m.Update(mouseClick(x, startY+1))
+	if cmd == nil {
+		t.Fatal("expected mouse click on PR URL line to attempt opening PR")
+	}
+	if msg, ok := cmd().(prOpenDoneMsg); !ok {
+		t.Fatalf("expected prOpenDoneMsg, got %T", msg)
+	}
+}
+
+func TestMouseClickFileActionOpensSelectedTarget(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 22
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}}
+	m.files = []FileChange{{Change: "M", Path: "src/a.go"}}
+	m.tasks = nil
+	m.tab = 5
+	m.buildItems()
+	m.refreshViewer(viewerReset)
+
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2
+	_, cmd := m.Update(mouseClick(x, startY+4))
+	if cmd == nil {
+		t.Fatal("expected mouse click on file open action to launch selected target")
+	}
+}
+
 func TestRunActionKeysExecuteCockpitCommands(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
