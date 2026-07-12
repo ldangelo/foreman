@@ -12,6 +12,7 @@ import { mkdir, appendFile, writeFile } from "node:fs/promises";
 import { isAbsolute, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AgentMailClient } from "../lib/agent-mail-client.js";
+import { ElixirServerClient, type ElixirTask } from "../lib/elixir-server-client.js";
 import type { ForemanStore } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/interface.js";
 import type { PrReviewContext, PrWaitSnapshot, PrWaitStatus } from "./pr-review-context.js";
@@ -598,4 +599,245 @@ export function createMergeGateStatusTool(
 
 // Re-export PrWaitStatus for consumers of this module
 export type { PrWaitStatus };
+
+// ── Task context tools ─────────────────────────────────────────────────────
+
+const TaskGetParams = Type.Object({
+  taskId: Type.String({ description: "The task ID to retrieve" }),
+});
+
+/**
+ * Create a task_get ToolDefinition that reads full task context from the Elixir backend.
+ *
+ * Returns task metadata including title, description, status, annotations, and dependencies.
+ * Enforces per-run/task scoping via context.runId and context.taskId for audit trail.
+ */
+export function createTaskGetTool(client: ElixirServerClient, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "task_get",
+    label: "Task Get",
+    description: "Read full task context including title, description, status, annotations, and dependencies from the task store.",
+    promptSnippet: "Read full task context via ElixirServerClient.getTask()",
+    promptGuidelines: [
+      "Use task_get to understand the task's current state and context",
+      "Returns task metadata including title, description, status, annotations, and dependencies",
+    ],
+    parameters: TaskGetParams,
+    async execute(_toolCallId: string, params: Static<typeof TaskGetParams>) {
+      try {
+        const task = await client.getTask(params.taskId);
+        if (!task) {
+          await appendToolLog(context, `task_get not_found taskId=${params.taskId}`);
+          return {
+            content: [{ type: "text" as const, text: `Task ${params.taskId} not found` }],
+            details: { taskId: params.taskId, found: false },
+          };
+        }
+        const enriched = {
+          ...task,
+          _meta: {
+            runId: context.runId,
+            taskId: context.taskId,
+            phase: context.phase,
+            retrievedAt: nowIso(),
+          },
+        };
+        await appendToolLog(context, `task_get ok taskId=${params.taskId}`);
+        return {
+          content: [{ type: "text" as const, text: safeJson(enriched) }],
+          details: enriched,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `task_get failed taskId=${params.taskId} error=${msg}`);
+        return {
+          content: [{ type: "text" as const, text: `Failed to get task: ${msg}` }],
+          details: { taskId: params.taskId, error: msg },
+        };
+      }
+    },
+  } as ToolDefinition;
+}
+
+const TaskStatusParams = Type.Object({
+  taskId: Type.String({ description: "The task ID to check" }),
+});
+
+/**
+ * Create a task_status ToolDefinition that reads only the task status field.
+ *
+ * Lightweight query for polling task completion or status changes without
+ * fetching the full task context.
+ */
+export function createTaskStatusTool(client: ElixirServerClient, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "task_status",
+    label: "Task Status",
+    description: "Read only the current status of a task (e.g., pending, in-progress, completed, blocked). Lightweight polling without full context.",
+    promptSnippet: "Read task status via ElixirServerClient.getTask()",
+    promptGuidelines: [
+      "Use task_status for lightweight status polling without fetching full task context",
+      "Returns only the status field; use task_get for full context",
+    ],
+    parameters: TaskStatusParams,
+    async execute(_toolCallId: string, params: Static<typeof TaskStatusParams>) {
+      try {
+        const task = await client.getTask(params.taskId);
+        if (!task) {
+          await appendToolLog(context, `task_status not_found taskId=${params.taskId}`);
+          return {
+            content: [{ type: "text" as const, text: `Task ${params.taskId} not found` }],
+            details: { taskId: params.taskId, found: false, status: null },
+          };
+        }
+        const result = {
+          taskId: params.taskId,
+          status: task.status ?? null,
+          updatedAt: task.updated_at ?? null,
+        };
+        await appendToolLog(context, `task_status ok taskId=${params.taskId} status=${result.status}`);
+        return {
+          content: [{ type: "text" as const, text: safeJson(result) }],
+          details: result,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `task_status failed taskId=${params.taskId} error=${msg}`);
+        return {
+          content: [{ type: "text" as const, text: `Failed to get task status: ${msg}` }],
+          details: { taskId: params.taskId, error: msg },
+        };
+      }
+    },
+  } as ToolDefinition;
+}
+
+const TaskAnnotateParams = Type.Object({
+  taskId: Type.String({ description: "The task ID to annotate" }),
+  body: Type.String({ description: "Annotation content — note text or risk description" }),
+});
+
+/**
+ * Create a task_note_add ToolDefinition that writes operator-visible notes to the task.
+ *
+ * Annotations are stored via the Elixir backend's task.annotate command and are
+ * visible in the operator UI. Includes run_id scoping for audit trail.
+ */
+export function createTaskNoteAddTool(client: ElixirServerClient, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "task_note_add",
+    label: "Task Note Add",
+    description: "Add an operator-visible note to a task. Notes are stored in the task store and visible in the operator UI.",
+    promptSnippet: "Write operator-visible notes via sendCommand('task.annotate', {...})",
+    promptGuidelines: [
+      "Use task_note_add to record findings, decisions, or context for operators",
+      "Annotations are visible in the operator UI and audit trail",
+    ],
+    parameters: TaskAnnotateParams,
+    async execute(_toolCallId: string, params: Static<typeof TaskAnnotateParams>) {
+      try {
+        const response = await client.sendCommand({
+          command_id: `note-add-${params.taskId}-${Date.now()}`,
+          command_type: "task.annotate",
+          payload: {
+            project_id: context.taskId.split("-")[0],
+            task_id: params.taskId,
+            author: "agent",
+            kind: "note",
+            body: params.body,
+            run_id: context.runId,
+          },
+        });
+        if (!response.ok) {
+          await appendToolLog(context, `task_note_add failed taskId=${params.taskId} error=${response.error.message}`);
+          return {
+            content: [{ type: "text" as const, text: `Failed to add note: ${response.error.message}` }],
+            details: { taskId: params.taskId, error: response.error.message },
+          };
+        }
+        const result = {
+          taskId: params.taskId,
+          kind: "note",
+          body: params.body,
+          runId: context.runId,
+          addedAt: nowIso(),
+        };
+        await appendToolLog(context, `task_note_add ok taskId=${params.taskId}`);
+        return {
+          content: [{ type: "text" as const, text: `Note added to task ${params.taskId}` }],
+          details: result,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `task_note_add failed taskId=${params.taskId} error=${msg}`);
+        return {
+          content: [{ type: "text" as const, text: `Failed to add note: ${msg}` }],
+          details: { taskId: params.taskId, error: msg },
+        };
+      }
+    },
+  } as ToolDefinition;
+}
+
+/**
+ * Create a task_risk_add ToolDefinition that writes operator-visible risks to the task.
+ *
+ * Risks are stored via the Elixir backend's task.annotate command with kind="risk"
+ * and are visible in the operator UI for risk tracking.
+ */
+export function createTaskRiskAddTool(client: ElixirServerClient, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "task_risk_add",
+    label: "Task Risk Add",
+    description: "Add an operator-visible risk to a task. Risks are stored in the task store and visible in the operator UI for risk tracking.",
+    promptSnippet: "Write operator-visible risks via sendCommand('task.annotate', {kind: 'risk', ...})",
+    promptGuidelines: [
+      "Use task_risk_add to document potential blockers, uncertainties, or concerns",
+      "Risks are visible in the operator UI for tracking and mitigation",
+    ],
+    parameters: TaskAnnotateParams,
+    async execute(_toolCallId: string, params: Static<typeof TaskAnnotateParams>) {
+      try {
+        const response = await client.sendCommand({
+          command_id: `risk-add-${params.taskId}-${Date.now()}`,
+          command_type: "task.annotate",
+          payload: {
+            project_id: context.taskId.split("-")[0],
+            task_id: params.taskId,
+            author: "agent",
+            kind: "risk",
+            body: params.body,
+            run_id: context.runId,
+          },
+        });
+        if (!response.ok) {
+          await appendToolLog(context, `task_risk_add failed taskId=${params.taskId} error=${response.error.message}`);
+          return {
+            content: [{ type: "text" as const, text: `Failed to add risk: ${response.error.message}` }],
+            details: { taskId: params.taskId, error: response.error.message },
+          };
+        }
+        const result = {
+          taskId: params.taskId,
+          kind: "risk",
+          body: params.body,
+          runId: context.runId,
+          addedAt: nowIso(),
+        };
+        await appendToolLog(context, `task_risk_add ok taskId=${params.taskId}`);
+        return {
+          content: [{ type: "text" as const, text: `Risk added to task ${params.taskId}` }],
+          details: result,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await appendToolLog(context, `task_risk_add failed taskId=${params.taskId} error=${msg}`);
+        return {
+          content: [{ type: "text" as const, text: `Failed to add risk: ${msg}` }],
+          details: { taskId: params.taskId, error: msg },
+        };
+      }
+    },
+  } as ToolDefinition;
+}
 

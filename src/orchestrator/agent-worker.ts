@@ -30,6 +30,10 @@ import {
   createSafeCommandRunTool,
   createSendMailTool,
   createTaskBlockTool,
+  createTaskGetTool,
+  createTaskNoteAddTool,
+  createTaskRiskAddTool,
+  createTaskStatusTool,
   createValidationResultTool,
   createMergeGateStatusTool,
   type ForemanToolContext,
@@ -861,6 +865,20 @@ async function runPhase(
     // Agents fall back to shell commands for these operations.
     const reason = err instanceof Error ? err.message : String(err);
     await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] VCS/PR tools unavailable: ${reason}\n`);
+  }
+
+  // Task context tools — require ElixirServerClient for task reads and annotations.
+  if (process.env.FOREMAN_SERVER_URL) {
+    const taskClient = new ElixirServerClient(
+      process.env.FOREMAN_SERVER_URL,
+      process.env.FOREMAN_WORKER_EVENT_TOKEN ?? process.env.FOREMAN_SERVER_AUTH_TOKEN,
+    );
+    customTools.push(createTaskGetTool(taskClient, foremanToolContext));
+    customTools.push(createTaskStatusTool(taskClient, foremanToolContext));
+    customTools.push(createTaskNoteAddTool(taskClient, foremanToolContext));
+    customTools.push(createTaskRiskAddTool(taskClient, foremanToolContext));
+  } else {
+    await appendFile(logFile, `[PHASE: ${role.toUpperCase()}] Task context tools unavailable: FOREMAN_SERVER_URL not set\n`);
   }
 
   let policySequence = 0;
