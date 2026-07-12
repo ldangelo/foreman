@@ -271,7 +271,7 @@ foreman run --dry-run             # Check Elixir server availability without tic
 foreman run --no-watch            # Tick once and exit
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, retries non-fast-forward branch publication with `--force-with-lease`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, retries non-fast-forward branch publication with `--force-with-lease`, and writes finalize reports without asking an LLM to drive git. Finalize also verifies the worktree is on the canonical `foreman/<task-id>` branch and fails fast with a clear message if the branch has drifted (e.g., from a manual `git checkout` in an active worktree). Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 

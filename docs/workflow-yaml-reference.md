@@ -307,7 +307,7 @@ Prompt phases with artifacts under `{task.projectReportsDir}` must instruct the 
 
 ### Finalize Phase
 
-Bundled workflows use a deterministic builtin `finalize` phase. It runs dependency install/typecheck, stages/restores workspace-safe files, commits, rebases when the target changed after QA, conditionally reruns tests, pushes `foreman/<task-id>`, and writes `FINALIZE_VALIDATION.md` plus `FINALIZE_REPORT.md`. Earlier mutating phases may already have pushed draft PR checkpoints via `checkpointPr`; finalize remains the authoritative final commit before the explicit PR phases. Keep `artifact`, `verdict`, `retryWith`, and `retryOnFail` on the phase so validation failures still loop back through remediation.
+Bundled workflows use a deterministic builtin `finalize` phase. It runs dependency install/typecheck, stages/restores workspace-safe files, commits, rebases when the target changed after QA, conditionally reruns tests, pushes `foreman/<task-id>`, and writes `FINALIZE_VALIDATION.md` plus `FINALIZE_REPORT.md`. The finalize step verifies the worktree is on the canonical `foreman/<task-id>` branch before attempting operations; if the branch has drifted (e.g., from manual `git checkout` or a previous failed run on a different branch), finalize fails immediately instead of silently auto-recovering. Earlier mutating phases may already have pushed draft PR checkpoints via `checkpointPr`; finalize remains the authoritative final commit before the explicit PR phases. Keep `artifact`, `verdict`, `retryWith`, and `retryOnFail` on the phase so validation failures still loop back through remediation.
 
 ```yaml
   - name: finalize
