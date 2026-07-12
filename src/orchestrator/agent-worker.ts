@@ -1377,6 +1377,11 @@ async function runCreatePrBuiltinPhase(args: {
   const priorMetadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
   const hasPriorPrMetadata = existsSync(priorMetadataPath);
   if (!branchHasChanges && !priorPrUrl && !hasPriorPrMetadata) {
+    // Guardrail: DO NOT close the task when there's no diff against base.
+    // Closing tasks without a PR bypasses the review process and can mask
+    // "branch drift" where the worktree was rebased/merged by another process.
+    // Instead, skip PR creation and let the pipeline succeed without closing.
+    // Operators should triage the task if no merge is needed.
     const metadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
     await mkdir(dirname(metadataPath), { recursive: true });
     await writeFile(metadataPath, JSON.stringify({
@@ -1384,11 +1389,9 @@ async function runCreatePrBuiltinPhase(args: {
       reason: "no_changes_against_base",
       branchName,
       baseBranch,
+      note: "Task NOT closed — PR creation skipped due to zero diff. Operator should triage if no merge is needed.",
     }, null, 2) + "\n", "utf8");
-    await runtimeTaskClient.close(config.taskId, "No changes against target branch; acceptance already satisfied.").catch((err: unknown) => {
-      log(`[CREATE-PR] no-change task close failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    });
-    log(`[CREATE-PR] No changes between ${baseBranch} and ${branchName}; skipping PR and closing task.`);
+    log(`[CREATE-PR] No changes between ${baseBranch} and ${branchName}; skipping PR creation. Task remains open for operator triage.`);
     sendMail(agentMailClient, "foreman", "phase-complete", {
       taskId: config.taskId,
       runId: config.runId,
