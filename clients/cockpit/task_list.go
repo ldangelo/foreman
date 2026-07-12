@@ -1,14 +1,14 @@
 package main
 
 import (
-	"strings"
-
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	fvpkg "github.com/robinovitch61/viewport/filterableviewport"
 	vpkg "github.com/robinovitch61/viewport/viewport"
 	"github.com/robinovitch61/viewport/viewport/item"
+	"sort"
+	"strings"
 )
 
 const (
@@ -22,6 +22,8 @@ const (
 	taskSectionRecent  = "Recent"
 	taskSectionAll     = "All"
 )
+
+const defaultRecentSectionLimit = 15
 
 type TaskSection struct {
 	Name   string `yaml:"name"`
@@ -203,6 +205,7 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 
 	all := buildTaskListItems(runs, tasks)
 	section := l.ActiveSection()
+	capRecent := sectionUsesRecentCap(section)
 	items := make([]Item, 0, len(all))
 	for _, it := range all {
 		if !l.matchesScope(it) {
@@ -213,6 +216,9 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 		}
 		if !matchesTaskFilter(it, l.search) {
 			continue
+		}
+		if capRecent && len(items) >= defaultRecentSectionLimit {
+			break
 		}
 		items = append(items, it)
 	}
@@ -328,6 +334,11 @@ func (l TaskList) Counts(runs []Run, tasks []Task) map[string]int {
 	return count
 }
 
+func sectionUsesRecentCap(section TaskSection) bool {
+	return strings.EqualFold(strings.TrimSpace(section.Name), taskSectionRecent) &&
+		strings.EqualFold(strings.TrimSpace(section.Filter), "state:recent")
+}
+
 func (l TaskList) matchesScope(it Item) bool {
 	if l.scope != "current" || l.projectID == "" {
 		return true
@@ -341,12 +352,15 @@ func (l TaskList) matchesScope(it Item) bool {
 func buildTaskListItems(runs []Run, tasks []Task) []Item {
 	items := make([]Item, 0, len(runs)+len(tasks))
 	activeRuns := map[string]bool{}
+	recentRuns := make([]Run, 0, len(runs))
 	for _, r := range runs {
-		if r.Group != taskGroupRunning {
-			continue
+		switch r.Group {
+		case taskGroupRunning:
+			activeRuns[r.TaskID] = true
+			items = append(items, Item{Group: r.Group, Run: r})
+		case taskGroupRecent:
+			recentRuns = append(recentRuns, r)
 		}
-		activeRuns[r.TaskID] = true
-		items = append(items, Item{Group: r.Group, Run: r})
 	}
 	for _, t := range tasks {
 		if activeRuns[t.TaskID] {
@@ -354,10 +368,10 @@ func buildTaskListItems(runs []Run, tasks []Task) []Item {
 		}
 		items = append(items, Item{Group: taskGroupReady, IsTask: true, Task: t})
 	}
-	for _, r := range runs {
-		if r.Group != taskGroupRecent {
-			continue
-		}
+	sort.SliceStable(recentRuns, func(i, j int) bool {
+		return recentRuns[i].Last > recentRuns[j].Last
+	})
+	for _, r := range recentRuns {
 		items = append(items, Item{Group: r.Group, Run: r})
 	}
 	return items

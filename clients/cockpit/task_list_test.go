@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -43,6 +44,34 @@ func TestTaskListSectionsBuildCountsAndExcludeActiveReady(t *testing.T) {
 	counts := list.Counts(runs, tasks)
 	if counts[taskSectionRunning] != 1 || counts[taskSectionReady] != 1 || counts[taskSectionRecent] != 1 || counts[taskSectionAll] != 3 {
 		t.Fatalf("expected section counts to exclude active ready task, got %#v", counts)
+	}
+}
+
+func TestRecentSectionIsMostRecentFirstAndCapped(t *testing.T) {
+	list := NewTaskList()
+	list.MoveSection(3) // Recent
+	runs := make([]Run, 0, defaultRecentSectionLimit+5)
+	for i := 0; i < defaultRecentSectionLimit+5; i++ {
+		runs = append(runs, Run{
+			Group:  taskGroupRecent,
+			TaskID: fmt.Sprintf("task-%02d", i),
+			RunID:  fmt.Sprintf("run-%02d", i),
+			Status: "merged",
+			Last:   fmt.Sprintf("2026-07-10T00:%02d:00Z", i),
+		})
+	}
+
+	list.SetData(runs, nil)
+	items := list.Items()
+	if len(items) != defaultRecentSectionLimit {
+		t.Fatalf("expected Recent section cap %d, got %d", defaultRecentSectionLimit, len(items))
+	}
+	if items[0].Run.RunID != "run-19" || items[len(items)-1].Run.RunID != "run-05" {
+		t.Fatalf("expected most recent capped window run-19..run-05, got first=%s last=%s", items[0].Run.RunID, items[len(items)-1].Run.RunID)
+	}
+	counts := list.Counts(runs, nil)
+	if counts[taskSectionRecent] != defaultRecentSectionLimit+5 {
+		t.Fatalf("expected Recent count to report full matching total, got %#v", counts)
 	}
 }
 

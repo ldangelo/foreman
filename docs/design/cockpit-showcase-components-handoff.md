@@ -42,8 +42,8 @@ so we get polish *and* delete code that has already caused bugs.
 ## 2. Hard prerequisite: Bubble Tea v2
 
 The cockpit has migrated to Bubble Tea v2 / Go 1.26 (see the viewport handoff).
-Additional libraries below must be adopted only when they support v2. The #1
-selection rule — learned from the viewport library — is:
+Additional libraries remain excluded unless they support v2. The #1 selection
+rule — learned from the viewport library — is:
 
 > Before adding any dependency, confirm it has a **v2 build** (imports
 > `charm.land/bubbletea/v2` / `lipgloss/v2`, not the v1 `github.com/charmbracelet/*`).
@@ -74,8 +74,8 @@ Explicitly **not** adopting: `bubbles/viewport` (superseded by
 
 ## 4. Closed showcase workstreams
 
-All workstreams below are implemented except explicitly parked optional libraries.
-Keep their acceptance clauses as regression contracts.
+All in-scope workstreams below are implemented; explicitly excluded libraries are
+scope boundaries. Keep acceptance clauses as regression contracts.
 
 ### A. Discoverable keymap (`key` + `help`) — Tier 1
 Define `key.Binding`s once; render a `help` bubble (short line in the keybar,

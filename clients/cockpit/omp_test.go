@@ -220,3 +220,51 @@ func TestPKeyAttachesOmpToSelectedRun(t *testing.T) {
 		t.Fatalf("expected omp missing notice from command, got %q", m.notice)
 	}
 }
+
+func TestUppercasePKeyOpensPlainOmpWithoutTriageBrief(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte(".foreman/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	marker := filepath.Join(worktree, "tmux-ran")
+	tmux := filepath.Join(binDir, "tmux")
+	scriptBody := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(marker) + "\n"
+	if err := os.WriteFile(tmux, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := defaultConfig()
+	cfg.Integrations.Omp.Cmd = "omp-dev"
+	cfg.Integrations.Omp.Mode = "tmux"
+	cfg.Integrations.Omp.Session = "none"
+	cfg.Integrations.Omp.Args = []string{"--probe"}
+	m := newModelWithConfig(NewMockClient(), cfg, fakeTools{"omp-dev": true})
+	m.taskList.MoveSection(3) // Recent
+	m.runs = []Run{{Group: taskGroupRecent, TaskID: "task-1", RunID: "run-1", Status: "failed", Worktree: worktree}}
+	m.tasks = nil
+	m.buildItems()
+
+	_, cmd := m.handleKey(keyPress("P"))
+	if cmd == nil {
+		t.Fatal("expected P to launch plain omp command")
+	}
+	msg := cmd()
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+	if !strings.Contains(m.notice, "opened omp in tmux pane") {
+		t.Fatalf("expected plain omp tmux command to close cleanly, got %q", m.notice)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(data)
+	if !strings.Contains(output, "omp-dev") || !strings.Contains(output, "--probe") || strings.Contains(output, "triage-run-1.md") || strings.Contains(output, "FOREMAN_TRIAGE_BRIEF") {
+		t.Fatalf("expected plain omp invocation without triage brief, got:\n%s", output)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".foreman", "triage-run-1.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected P not to write a triage brief, stat err=%v", err)
+	}
+}

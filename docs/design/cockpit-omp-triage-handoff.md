@@ -130,7 +130,7 @@ rather than starting cold.
 
 ## 6. Configuration
 
-Add to `.foreman/config.yaml` `integrations:` and an env override
+Implemented `.foreman/config.yaml` shape and env overrides
 (`COCKPIT_OMP=auto|on|off`, plus `COCKPIT_OMP_MODE`):
 
 ```yaml
@@ -186,7 +186,8 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 - `docs/design/cockpit-ui-spec.md` documents the keymap rows and OMP triage
   behavior.
 - Tests cover tmux/inline command builders, mode resolution, brief generation,
-  session continuation, active-run safeguards, and missing-tool notices.
+  plain `P` launches without writing a triage brief, session continuation,
+  active-run safeguards, and missing-tool notices.
 
 ## 11. Closed non-goals & risks
 
