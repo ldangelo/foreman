@@ -10,7 +10,7 @@ reduced-motion support, clickable section/task-row/drill-down-tab/action targets
 selected-file diff actions, a metrics tab backed by `/api/v1/metrics`, a theme
 installer, richer mock data, deterministic Bubble Tea v2 demo options, and a
 checked-in `vhs demo.tape` for local help/PR/metrics frame capture.
-No local cockpit feature is waiting on those libraries: native hit-testing covers
+No local cockpit feature depends on those libraries: native hit-testing covers
 section/row/action/PR clicks, native bounded bars cover the metrics tab, and
 `clients/cockpit/demo.tape` is checked in for `vhs` capture. `bubblezone` and
 `ntcharts` remain intentionally unadopted until upstream ships Bubble Tea v2

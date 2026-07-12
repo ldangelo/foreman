@@ -129,8 +129,8 @@ Env overrides for integration enablement remain `COCKPIT_DIFFNAV=off`,
 
 ## 6. Closed workstreams
 
-The workstreams below are implemented. Keep the historical criteria as
-regression contracts, not as work still to do.
+The workstreams below are implemented. Keep the historical criteria as closed
+regression contracts.
 
 ### A. diffnav review on the `files` tab (tier 1 handoff)
 

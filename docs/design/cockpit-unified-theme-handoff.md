@@ -1,6 +1,6 @@
 # Handoff — Make cockpit + gh-dash + gh-enhance + diffnav feel like one app
 
-Status: Implemented in `clients/cockpit/` with local visual smoke complete · Date: 2026-07-11 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with historical local visual smoke complete · Date: 2026-07-11 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea + config authoring)
 Related: `docs/design/cockpit-ui-spec.md`, `docs/design/cockpit-integrations-handoff.md`
 Target: `clients/cockpit/` + shipped theme configs for the three external TUIs
