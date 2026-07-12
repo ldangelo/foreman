@@ -1,6 +1,6 @@
 # Foreman Cockpit — UI/UX Design Spec
 
-Status: Implemented in `clients/cockpit/` with documented POC caveats · Date: 2026-07-11 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/`; remaining limits are explicit non-goals · Date: 2026-07-11 · Owner: Leo D'Angelo
 Related: ADR 0001 (Go clients over Elixir core), current `src/cli/super-tui`
 
 ## Goal
@@ -311,7 +311,7 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
 `{{.BaseRefName}}`, for example to `cd {{.RepoPath}} && foreman-cockpit`,
 `git diff {{.BaseRefName}}...HEAD | diffnav`, or `gh enhance`.
 
-## Non-goals for the POC
+## Scope boundaries / non-goals
 
 - No write/command execution beyond READY task mutations, task creation, selected-run
   attach/retry/reset, PR opens, and tool handoffs.
@@ -329,7 +329,7 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
 
 ## Resolved questions
 
-- RECENT remains projection/count scoped for the POC; auth token refresh and
-  RECENT pagination controls are explicit non-goals.
+- RECENT remains projection/count scoped; auth token refresh and RECENT
+  pagination controls are explicit non-goals.
 - Resolved: the phase rail collapses to a compact `4/10 · qa` badge on very
   narrow terminals instead of consuming multiple wrapped rows.

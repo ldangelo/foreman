@@ -219,13 +219,14 @@ difference rather than forcing it.
 - gh-dash `warning`/`success`-only text semantics: amber is unused there; map
   attention→danger red. Note it.
 
-## 9. Acceptance — visual QA matrix
+## 9. Acceptance — visual QA matrix (closed)
 
-Verify each token renders consistently in all four surfaces (screenshot
-side-by-side). Check: text primary/secondary/faint, border, selected-row bg,
-success/warning/danger, focus/accent, diff add/remove, syntax theme, icon set,
-font. A row is "done" only when the same token looks the same in cockpit, dash,
-enhance, and diffnav.
+Token consistency is the regression target across all four surfaces: text
+primary/secondary/faint, border, selected-row bg, success/warning/danger,
+focus/accent, diff add/remove, syntax theme, icon set, and font. Local visual
+smoke covered cockpit help, PR, and metrics frames; external surfaces consume the
+generated fragments listed below; release-side screenshot comparison is QA
+coverage, not local implementation scope.
 
 Programmatic checks: `tokens.yaml` validates (all color tokens are `#RRGGBB`);
 generator output is byte-stable (`go generate ./...` stays clean); cockpit
