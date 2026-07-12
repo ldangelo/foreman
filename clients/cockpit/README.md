@@ -20,7 +20,8 @@ authoritative state.
 - Left column uses gh-dash-style section tabs (`Running`, `Ready`, `Failed`,
   `Recent`, `All`) with per-section counts. `Ready` is derived from
   current-project task state (`backlog`, `ready`, `failed`, etc.), not just
-  scheduler-dispatchable rows.
+  scheduler-dispatchable rows; `Failed` includes failed/stuck/conflict tasks and
+  runs with any non-empty attention reason.
 - The status bar includes the active left-pane section and selected position
   (for example `Ready 2/5`) so section navigation remains visible outside the
   list header.
@@ -216,10 +217,13 @@ cockpit:
 The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
 command output. `diffnav`, `gh dash`, `gh enhance`, and inline `omp` run through
 `tea.ExecProcess`; `omp` prefers a non-suspending tmux pane when `$TMUX` is set.
-`p` writes a non-secret triage brief for the selected failed/stuck run and starts
-`omp`; `P` opens plain `omp` without a brief. The brief's opening instruction
-references the exact written path, including the temp-dir fallback used when the
-worktree does not ignore `.foreman/`. With `session: per-task`, each task uses a
+`p` writes a triage brief for the selected failed/stuck run and starts `omp`;
+secret-like lines (`token`, `secret`, `authorization`/`bearer`, API/private keys,
+passwords, credentials, and common GitHub PAT prefixes) are redacted before the
+brief is written. `P` opens plain `omp` without a brief. The brief's opening
+instruction references the exact written path, including the temp-dir fallback
+used when the worktree does not ignore `.foreman/`. With `session: per-task`,
+each task uses a
 stable `--session-dir` under the user state directory and adds `--continue` when
 a prior session exists. The brief includes PR state, recent signals, conflicted
 files, targeted report excerpts, and error-like log lines.
@@ -294,9 +298,10 @@ The root Bubble Tea model orchestrates client refresh, layout, focus, active tab
 notices, and actions. Component state lives in small cockpit-owned types:
 
 - `task_list.go` owns gh-dash-style `Running` / `Ready` / `Failed` / `Recent` /
-  `All` section tabs, configurable field-token filters, current/global project
-  scope, selected-row identity, and a `filterableviewport`-backed left pane with
-  a sticky section/filter header and case-insensitive substring search.
+  `All` section tabs, configurable field-token filters (including `attention`,
+  `pr`, and `messages`), current/global project scope, selected-row identity, and
+  a `filterableviewport`-backed left pane with a sticky section/filter header and
+  case-insensitive substring search over rendered row metadata.
 - `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` and
   `filterableviewport` items, preserving selected-row identity across refreshes.
   Immediately following unselectable rows (message bodies, diff previews) are

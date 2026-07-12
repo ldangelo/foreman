@@ -459,7 +459,7 @@ func matchesTaskToken(it Item, field, value string) bool {
 			if it.IsTask {
 				return isFailedState(it.Task.Status)
 			}
-			return isFailedState(it.Run.Status) || strings.EqualFold(it.Run.Verdict, "fail") || strings.Contains(strings.ToLower(it.Run.Attention), "fail")
+			return runNeedsAttention(it.Run)
 		case "recent", "done", "closed":
 			return !it.IsTask && it.Run.Group == taskGroupRecent
 		default:
@@ -467,7 +467,7 @@ func matchesTaskToken(it Item, field, value string) bool {
 		}
 	case "text":
 		return strings.Contains(taskSearchText(it), value)
-	case "status", "priority", "type", "project", "phase", "verdict", "id", "task", "run", "title":
+	case "status", "priority", "type", "project", "phase", "verdict", "id", "task", "run", "title", "pr", "messages":
 		return strings.Contains(fieldValue(it, field), value)
 	case "attention":
 		hasAttention := false
@@ -528,6 +528,10 @@ func fieldValue(it Item, field string) string {
 		return strings.ToLower(it.Run.RunID)
 	case "title":
 		return strings.ToLower(it.Run.Title)
+	case "pr":
+		return strings.ToLower(it.Run.PRState)
+	case "messages":
+		return strings.ToLower(itoa(it.Run.Messages))
 	default:
 		return ""
 	}
@@ -540,6 +544,13 @@ func isFailedState(state string) bool {
 	default:
 		return false
 	}
+}
+
+func runNeedsAttention(run Run) bool {
+	attention := strings.TrimSpace(run.Attention)
+	return isFailedState(run.Status) ||
+		strings.EqualFold(run.Verdict, "fail") ||
+		(attention != "" && attention != "-")
 }
 
 func normalizedTaskFilterTerms(query string) []string {
@@ -564,7 +575,7 @@ func taskSearchText(it Item) string {
 	return strings.ToLower(strings.Join([]string{
 		it.Run.TaskID, it.Run.RunID, it.Run.Title, it.Run.Summary, it.Run.TaskType,
 		it.Run.Priority, it.Run.Status, it.Run.Phase, it.Run.Verdict, it.Run.ProjectID,
-		it.Run.Attention, it.Run.Last,
+		it.Run.Attention, it.Run.PRState, it.Run.Last, runRightMetadata(it.Run),
 	}, " "))
 }
 

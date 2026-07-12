@@ -7,10 +7,11 @@ Reference: gh-dash PR list (screenshot provided) — section tabs, filter line, 
 
 Implementation note (2026-07-11): the cockpit ships section tabs with live
 counts, a filter/query line, configurable sections under `cockpit.taskList`,
-field-token filtering including `attention:true`/`false` and ignored unknown
-field tokens, current/global scope filtering over supplied project ids, two-line
-rich task/run rows with project metadata in global scope and available
-right-side metadata columns, dash-like wider list sizing on wide terminals,
+field-token filtering including `attention:true`/`false`, `pr:<state>`,
+`messages:<count>`, and ignored unknown field tokens, current/global scope
+filtering over supplied project ids, two-line rich task/run rows with project
+metadata in global scope and available right-side metadata columns, dash-like
+wider list sizing on wide terminals,
 mouse selection for section tabs and visible rows, and focused tests in
 `task_list_test.go`, `view_test.go`, and `integrations_test.go`.
 
@@ -88,9 +89,9 @@ section groups by state within one scrollable table. Ship tabs first.
   ```
 
 - The filter grammar is intentionally small and closed for the shipped cockpit:
-  `state:…`, `type:…`, `priority:P0`, `attention:true|false`, and bare text
-  matched against id/title/rendered row text. Unknown field tokens are ignored
-  gracefully.
+  `state:…`, `type:…`, `priority:P0`, `attention:true|false`, `pr:<state>`,
+  `messages:<count>`, and bare text matched against id/title/rendered row text.
+  Unknown field tokens are ignored gracefully.
 
 ## 6. Keymap
 

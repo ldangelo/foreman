@@ -58,7 +58,8 @@ The task list is organized as a gh-dash-style section strip with counts:
   workflow, dependencies, project, and description, plus approve, edit, and create
   actions. Wrapped detail text must respect terminal display cell width, including
   ANSI styling and wide glyphs. (Q2)
-- **Failed** — failed/stuck/conflict/test-failed tasks or runs needing attention.
+- **Failed** — failed/stuck/conflict/test-failed tasks or runs with any non-empty
+  attention reason.
 - **Recent** — terminal runs (`completed | merged | pr-created | failed | reset`),
   most-recent first, capped (default 15). (Q3 for finished work)
 - **All** — the combined task/run list.

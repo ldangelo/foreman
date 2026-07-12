@@ -48,6 +48,33 @@ func TestTaskListSectionsBuildCountsAndExcludeActiveReady(t *testing.T) {
 	}
 }
 
+func TestTaskListTreatsAttentionRunsAsFailedAndSearchesVisibleMetadata(t *testing.T) {
+	list := NewTaskList()
+	runs := []Run{
+		{Group: taskGroupRecent, TaskID: "task-needs-review", RunID: "run-needs-review", Status: "completed", PRState: "open", Messages: 2, Attention: "needs-review"},
+		{Group: taskGroupRecent, TaskID: "task-clean", RunID: "run-clean", Status: "completed", PRState: "closed"},
+	}
+
+	list.MoveSection(2) // Failed
+	list.SetData(runs, nil)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-needs-review" {
+		t.Fatalf("expected attention run in Failed section, got %#v", items)
+	}
+
+	list.MoveSection(2) // All
+	list.search = "pr:open"
+	list.SetData(runs, nil)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-needs-review" {
+		t.Fatalf("expected pr metadata search to find open run only, got %#v", items)
+	}
+
+	list.search = "✉2"
+	list.SetData(runs, nil)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-needs-review" {
+		t.Fatalf("expected visible message-count metadata search to find open run only, got %#v", items)
+	}
+}
+
 func TestRecentSectionIsMostRecentFirstAndCapped(t *testing.T) {
 	list := NewTaskList()
 	list.MoveSection(3) // Recent

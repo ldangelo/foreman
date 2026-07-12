@@ -351,8 +351,14 @@ func briefExcerptLines(text string, limit int) []string {
 
 func redactBriefLine(line string) string {
 	lower := strings.ToLower(line)
-	if strings.Contains(lower, "token") || strings.Contains(lower, "secret") || strings.Contains(lower, "authorization") {
-		return "[redacted sensitive line]"
+	for _, marker := range []string{
+		"authorization", "bearer ", "token", "secret", "api_key", "api-key",
+		"private_key", "private-key", "password", "passwd", "credential",
+		"github_pat_", "ghp_",
+	} {
+		if strings.Contains(lower, marker) {
+			return "[redacted sensitive line]"
+		}
 	}
 	return line
 }

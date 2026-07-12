@@ -169,6 +169,32 @@ func TestBuildTriageBriefIncludesMessageBodyFailureSignal(t *testing.T) {
 	}
 }
 
+func TestBuildTriageBriefRedactsCommonSecretAndBearerLines(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.msgs = []Message{{
+		Subject: "handoff",
+		Body: strings.Join([]string{
+			"ERROR: integration failed",
+			"api_key=abc",
+			"Authorization: Bearer secret",
+			"github_pat_abc",
+			"private_key: secret",
+			"password=hunter2",
+		}, "\n"),
+	}}
+	run := Run{TaskID: "task-1", RunID: "run-1", Phase: "qa", Status: "failed", Attention: "ci_failed", Worktree: "/tmp/wt"}
+
+	brief := buildTriageBrief(m, run, "/tmp/wt/.foreman/triage-run-1.md")
+	for _, leak := range []string{"api_key", "Authorization", "github_pat", "private_key", "hunter2"} {
+		if strings.Contains(brief, leak) {
+			t.Fatalf("expected %q to be redacted from brief:\n%s", leak, brief)
+		}
+	}
+	if !strings.Contains(brief, "ERROR: integration failed") {
+		t.Fatalf("expected non-secret failure signal to remain:\n%s", brief)
+	}
+}
+
 func TestBuildTriageBriefIncludesReportsLogsAndRedactsSecrets(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.reports = []Report{

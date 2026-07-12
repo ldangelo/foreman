@@ -98,7 +98,9 @@ Resolve mode from config (`tmux | inline | window | auto`; default `auto`):
   - For an actively-running worker, require a confirmation keypress (or refuse
     with a notice: "run is active — reset/stop it before attaching omp").
 - This is a **live, mutating** session (unlike the read-only handoffs). Say so in
-  the notice/docs. Never write secrets/tokens into the briefing file.
+  the notice/docs. Briefing files redact common secret-bearing lines before write:
+  `token`, `secret`, `authorization`/`bearer`, API/private keys, passwords,
+  credentials, and common GitHub PAT prefixes.
 
 ## 5. Triage context (what makes it useful)
 
@@ -175,7 +177,8 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 - `resolveOmpMode` tests cover `auto`, `$TMUX`, `on/off`, missing binary, and
   missing worktree paths.
 - `buildTriageBrief` tests cover failure-mode sections, opening instructions
-  with the actual written brief path, and sensitive-line redaction.
+  with the actual written brief path, and redaction for common secret/bearer/PAT
+  lines.
 - Active-run safeguards are covered so the cockpit does not silently attach to a
   worktree an active worker may be mutating.
 
