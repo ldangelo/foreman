@@ -60,8 +60,8 @@ Resolve mode from config (`tmux | inline | window | auto`; default `auto`):
   // omp.go
   func ompTmuxCommand(run Run, brief string, cfg OmpConfig) *exec.Cmd {
       wt := expandHome(run.Worktree)
-      inner := shellQuote(cfg.Cmd) + " " + ompOpening(run, brief, cfg)
-      if cfg.KeepShell { inner += "; exec $SHELL" } // keep pane after omp exits
+      inner := ompShellLine(run, brief, cfg, !cfg.KeepShell)
+      if cfg.KeepShell { inner += "; exec ${SHELL:-/bin/sh}" } // keep pane after omp exits
       switch cfg.Tmux.Split {
       case "window":
           return exec.Command("tmux", "new-window", "-c", wt, "-n", "omp:"+run.TaskID, inner)
@@ -77,9 +77,9 @@ Resolve mode from config (`tmux | inline | window | auto`; default `auto`):
   command returns immediately; emit `ompDoneMsg{}` and set a notice
   ("opened omp in tmux pane"). Do NOT use `tea.ExecProcess` here (no suspend).
 
-- **inline (fallback).** No tmux → `tea.ExecProcess(exec.Command(cfg.Cmd, …))`
-  with `cmd.Dir = wt`; suspend the cockpit, run `omp`, resume on exit. Identical
-  shape to `openInNvim`'s inline path.
+- **inline (fallback).** No tmux → run `bash -lc ompShellLine(...)` through
+  `tea.ExecProcess` with `cmd.Dir = wt`; suspend the cockpit, run `omp`, resume
+  on exit. Identical shape to `openInNvim`'s inline path.
 
 - **`auto`**: tmux when `$TMUX` present, else inline.
 
@@ -162,8 +162,8 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 
 ## 8. Implemented hook points
 
-- `omp.go` owns `OmpConfig`, `resolveOmpMode`, `ompTmuxCommand`,
-  `ompInlineCommand`, `buildTriageBrief`, `ompOpening`, and `attachOmp`.
+- `config.go` owns `OmpConfig`; `omp.go` owns `resolveOmpMode`, `ompTmuxCommand`,
+  `ompInlineCommand`, `buildTriageBrief`, `ompShellLine`, and `attachOmp`.
 - `model.go` handles the `p`/`P` key cases and `ompDoneMsg`, following the
   `openGhEnhance` / `diffnavDoneMsg` notice pattern.
 - The implementation reuses `expandHome`, worktree resolution, and the

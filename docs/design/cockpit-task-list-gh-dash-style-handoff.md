@@ -40,7 +40,7 @@ the v2 component set.
 | Query line `is:pr repo:… author:@me` | per-section **filter line** plus additive task-list search via `/` |
 | Row line 1 `repo/foreman #301 by @ldangelo` + state icon | row line 1: `foreman-<id> · <type> · P<pri>` + state glyph (+ project when global) |
 | Row line 2 bold title `[ESCALATED] test(prompts)…` | row line 2: **bold task title** |
-| Columns: 💬 checks ● diff `+73.5k -215.8k` · ages `1h 1mo` | columns: msgs/events · checks/verdict glyph · PR dot · diff `±` (runs) · updated/created age |
+| Columns: 💬 checks ● diff `+73.5k -215.8k` · ages `1h 1mo` | columns: msgs/events · checks/verdict glyph · PR state label (`pr:<state>`) · diff `±` (runs) · updated/created age |
 | Selected-row dark band | selected-row band highlight (already have `cSelBg`) |
 | Bottom bar `PRs · Issues · cockpit · PR 1/4` | status bar includes active section + selected position |
 | Right detail pane (Overview/Activity/Commits/Checks/Files tabs) | existing right drill-down (`summary…pr`) — unchanged |

@@ -75,8 +75,8 @@ showcase still runs the interactive program under VHS/ttyd, while
 `COCKPIT_DEMO=1` adds Bubble Tea v2 `tea.WithWindowSize` and
 `tea.WithColorProfile` options for stable recording.
 
-Acceptance is closed: v2 parity passed with build, test, vet, mock dump smoke,
-mouse/key coverage, and handoff command coverage.
+Acceptance is closed from historical implementation verification: v2 parity passed
+with build, test, vet, mock dump smoke, mouse/key coverage, and handoff command coverage.
 
 ## 5. Workstream 2 — Drill-down `Viewer` → `viewport` (complete)
 

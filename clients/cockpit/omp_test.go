@@ -131,6 +131,9 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	if !strings.HasSuffix(tmux.Path, "tmux") || !strings.Contains(joinedTmux, "split-window -v -c /tmp/wt") || !strings.Contains(joinedTmux, "omp-dev") || !strings.Contains(joinedTmux, "exec ${SHELL:-/bin/sh}") {
 		t.Fatalf("unexpected tmux command: path=%q args=%v", tmux.Path, tmux.Args)
 	}
+	if strings.Contains(joinedTmux, "exec 'omp-dev'") {
+		t.Fatalf("expected keep-shell tmux command to run omp before shell handoff without exec, got %q", joinedTmux)
+	}
 	cfg.KeepShell = false
 	tmux, err = ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
 	if err != nil {
@@ -176,7 +179,7 @@ func TestOmpPerTaskSessionUsesStableStateDirAndContinuesExistingSession(t *testi
 	cfg.Session = "per-task"
 	run := Run{TaskID: "task/one", RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}
 
-	first := ompShellLine(run, "", cfg)
+	first := ompShellLine(run, "", cfg, true)
 	sessionDir := filepath.Join(stateDir, "foreman-cockpit", "omp", "task-one")
 	if !strings.Contains(first, "--session-dir "+shellQuote(sessionDir)) {
 		t.Fatalf("expected stable per-task session dir in command, got %q", first)
@@ -191,7 +194,7 @@ func TestOmpPerTaskSessionUsesStableStateDirAndContinuesExistingSession(t *testi
 	if err := os.WriteFile(filepath.Join(sessionDir, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	next := ompShellLine(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
+	next := ompShellLine(run, "/tmp/wt/.foreman/triage-run-1.md", cfg, true)
 	if !strings.Contains(next, "--continue") {
 		t.Fatalf("expected existing per-task session to continue with briefing, got %q", next)
 	}

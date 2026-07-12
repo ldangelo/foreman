@@ -102,7 +102,7 @@ func ompInlineCommand(run Run, brief string, cfg OmpConfig) (*exec.Cmd, error) {
 	if wt == "" || wt == "(cleaned)" {
 		return nil, errors.New("no worktree available for omp")
 	}
-	cmd := exec.Command("bash", "-lc", ompShellLine(run, brief, cfg))
+	cmd := exec.Command("bash", "-lc", ompShellLine(run, brief, cfg, true))
 	cmd.Dir = expandHome(wt)
 	if brief != "" {
 		appendCmdEnv(cmd, "FOREMAN_TRIAGE_BRIEF="+brief)
@@ -115,7 +115,7 @@ func ompTmuxCommand(run Run, brief string, cfg OmpConfig) (*exec.Cmd, error) {
 	if wt == "" || wt == "(cleaned)" {
 		return nil, errors.New("no worktree available for omp")
 	}
-	inner := ompShellLine(run, brief, cfg)
+	inner := ompShellLine(run, brief, cfg, !cfg.KeepShell)
 	if cfg.KeepShell {
 		inner += "; exec ${SHELL:-/bin/sh}"
 	}
@@ -134,7 +134,7 @@ func ompTmuxCommand(run Run, brief string, cfg OmpConfig) (*exec.Cmd, error) {
 	}
 }
 
-func ompShellLine(run Run, brief string, cfg OmpConfig) string {
+func ompShellLine(run Run, brief string, cfg OmpConfig, execProcess bool) string {
 	cmd := cfg.Cmd
 	if cmd == "" {
 		cmd = "omp"
@@ -149,15 +149,18 @@ func ompShellLine(run Run, brief string, cfg OmpConfig) string {
 		}
 	}
 	line := strings.Join(parts, " ")
-	execLine := "exec " + line
+	runLine := line
+	if execProcess {
+		runLine = "exec " + runLine
+	}
 	if sessionDir != "" {
-		execLine = "mkdir -p " + shellQuote(sessionDir) + "; " + execLine
+		runLine = "mkdir -p " + shellQuote(sessionDir) + "; " + runLine
 	}
 	if brief == "" {
-		return execLine
+		return runLine
 	}
 	message := "Foreman triage brief: " + brief + " — read it first, then work in this tree."
-	return "printf %s\\n\\n " + shellQuote(message) + "; " + execLine
+	return "printf %s\\n\\n " + shellQuote(message) + "; " + runLine
 }
 
 func quoteArgs(args []string) []string {

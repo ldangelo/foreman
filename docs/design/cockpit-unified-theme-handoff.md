@@ -223,15 +223,15 @@ difference rather than forcing it.
 
 Token consistency is the regression target across all four surfaces: text
 primary/secondary/faint, border, selected-row bg, success/warning/danger,
-focus/accent, diff add/remove, syntax theme, icon set, and font. Local visual
-smoke covered cockpit help, PR, and metrics frames; external surfaces consume the
-generated fragments listed below; release-side screenshot comparison is QA
-coverage, not local implementation scope.
+focus/accent, diff add/remove, syntax theme, icon set, and font. Historical local
+visual smoke covered cockpit help, PR, and metrics frames; external surfaces
+consume the generated fragments listed below; release-side screenshot comparison
+is QA coverage, not local implementation scope.
 
 Programmatic checks keep `tokens.yaml` valid (all color tokens are `#RRGGBB`),
 generator output byte-stable (`TestThemeGeneratorOutputIsByteStable` plus
-`go generate ./...`), and cockpit build/test/vet clean (`go test ./...`,
-`go build ./...`, `go vet ./...`).
+`go generate ./...`). Release verification should keep cockpit build/test/vet
+clean (`go test ./...`, `go build ./...`, `go vet ./...`).
 
 ## 10. Implementation status
 

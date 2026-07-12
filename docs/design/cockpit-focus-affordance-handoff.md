@@ -39,8 +39,8 @@ Interaction is already implemented and unchanged: focus starts in the task list;
 - `cockpit.focus.style = both|border|dim` and
   `cockpit.focus.dimInactive = true|false` control the treatment.
 - `COCKPIT_FOCUS_STYLE` and `COCKPIT_FOCUS_DIM_INACTIVE` override local config.
-- `NO_COLOR` still leaves a structural signal through pane frames, tab treatment,
-  the focus label, and the task-list `▶` marker.
+- `NO_COLOR` still leaves structural signals through stable pane layout, tab
+  treatment, the focus label, and the task-list `▶` marker.
 
 ## 4. Verification completed
 

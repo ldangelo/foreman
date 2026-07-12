@@ -314,8 +314,8 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
   Retry/reset use `run.retry`/`run.reset` commands that requeue the associated
   task to `ready`; they do not rewrite terminal run lifecycle records.
 - `/api/v1/runs` includes selected-run metadata as both canonical VCS projection
-  fields (`worktree_path`, `base_ref`, `branch`, `revision`) and cockpit-friendly
-  aliases (`worktree`, `base_branch`, `branch_name`). It also exposes row counts,
+  fields (`worktree_path`, `base_ref`, `branch`) and cockpit-friendly aliases
+  (`worktree`, `base_branch`, `branch_name`). It also exposes row counts,
   diff totals, and PR readiness fields (`messages_count`, `events_count`,
   `diff_added`, `diff_removed`, `pr_checks`, `pr_review_decision`,
   `pr_mergeable`) so local file diff, diffnav, gh enhance, OMP, and PR handoffs

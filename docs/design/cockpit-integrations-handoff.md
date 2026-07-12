@@ -38,7 +38,7 @@ Implemented in the Go cockpit module:
 - Global `C` `gh enhance` handoff from the selected run worktree.
 - Native `pr` tab backed by Foreman-projected run PR fields, including mergeability, review decision, and check summaries, with `o`/`enter` opening the PR URL and action hints for PR/CI triage.
 
-Verification used for the implementation: `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`.
+Historical implementation verification used `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`; rerun the release verification before shipping new integration changes.
 
 ## 2. Guiding decision (do not deviate without flagging)
 
@@ -276,7 +276,7 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
 - `toolAvailable` / integration enablement modes independent of PATH.
 - PR projection mapping from `/api/v1/runs`, including checks and review fields.
 - Mock client file diffs, PR state, and render paths for `COCKPIT_BACKEND=mock`.
-- `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`.
+- Historical broad verification: `go test ./...`, `go build ./...`, and `go vet ./...` in `clients/cockpit`; rerun before shipping new integration changes.
 
 ## 9. Documentation updated
 

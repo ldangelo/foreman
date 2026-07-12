@@ -1,6 +1,6 @@
 # Handoff — A showcase-grade cockpit: adopting the Bubble Tea ecosystem
 
-Status: Implemented in `clients/cockpit/` with local showcase smoke complete · Date: 2026-07-11 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` with historical local showcase smoke complete · Date: 2026-07-11 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Related: `docs/design/cockpit-viewport-investigation.md` (v2 migration), `cockpit-unified-theme-handoff.md`, `cockpit-task-capabilities-handoff.md`, `cockpit-ui-spec.md`
 
@@ -79,12 +79,12 @@ All in-scope workstreams below are implemented; explicitly excluded libraries ar
 scope boundaries. Keep acceptance clauses as regression contracts.
 
 ### A. Discoverable keymap (`key` + `help`) — Tier 1
-Define `key.Binding`s once; render a `help` bubble (short line inside the
-existing keybar, full overlay on `?`). Removes drift between hand-maintained
-shortcut prose and actual bindings, and matches the idiom `viewport`/`gh-dash`
-already use.
-Regression contract: `?` shows a complete, accurate help view generated from
-the bindings; the keybar auto-summarizes.
+Define `key.Binding`s for the advertised help surface; render a `help` bubble
+(short line inside the existing keybar, full overlay on `?`). The bindings mirror
+the `handleKey` switch and reduce drift between hand-maintained shortcut prose and
+actual bindings, matching the idiom `viewport`/`gh-dash` already use.
+Regression contract: `?` shows accurate generated help for advertised cockpit
+bindings; the keybar auto-summarizes.
 
 ### B. First-class input (`textinput` / `textarea`) — Tier 1
 Use `filterableviewport`'s `textinput`-backed filter line for `/` search; use
@@ -154,7 +154,7 @@ component.
 
 ## 7. Acceptance (showcase bar)
 
-- Keyboard and mouse reach every action; `?` help is complete and generated.
+- Keyboard and mouse reach every action; `?` help is generated from the advertised bindings.
 - The metrics view reads the fleet's health at a glance and updates live.
 - Motion is smooth and can be disabled; idle CPU stays low.
 - Theme is consistent across cockpit + `diffnav`/`gh dash`/`gh enhance`.

@@ -57,7 +57,7 @@ the selected details, and `o` opens rows that have external targets.
 - Payload tests cover task create/update/approve/retry/reset command fields,
   including duplicated `type`/`task_type`, priority defaults, project scoping,
   identity-preserving update drafts, command ordering, field-token message-count
-  search, and empty-title cancellation.
+  search, and empty-title rejection/no-submit behavior.
 - Render/form/list tests cover rich task rows, detail fields, row glyph/status
   classification, failed-like status classification, truncation/narrow layout,
   scoped `n`/`N` create keys, editable title/description/type/priority fields,
