@@ -1,6 +1,6 @@
 # Foreman Cockpit — UI/UX Design Spec
 
-Status: Implemented in `clients/cockpit/`; remaining limits are explicit non-goals · Date: 2026-07-11 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/`; scope boundaries are explicit non-goals · Date: 2026-07-11 · Owner: Leo D'Angelo
 Related: ADR 0001 (Go clients over Elixir core), current `src/cli/super-tui`
 
 ## Goal

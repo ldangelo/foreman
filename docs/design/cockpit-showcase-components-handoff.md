@@ -42,17 +42,16 @@ so we get polish *and* delete code that has already caused bugs.
 ## 2. Hard prerequisite: Bubble Tea v2
 
 The cockpit has migrated to Bubble Tea v2 / Go 1.26 (see the viewport handoff).
-Any future library below must be adopted on v2, and the #1 selection rule —
-learned from the viewport library — is:
+Additional libraries below must be adopted only when they support v2. The #1
+selection rule — learned from the viewport library — is:
 
 > Before adding any dependency, confirm it has a **v2 build** (imports
 > `charm.land/bubbletea/v2` / `lipgloss/v2`, not the v1 `github.com/charmbracelet/*`).
 > A v1-only component drags in a conflicting runtime and will not compile.
 
-Charm's own `bubbles`, `lipgloss`, `glamour`, `harmonica` are first-party and
-track v2. Community libs (`bubblezone`, `ntcharts`, `huh`, `stickers`) must be
-verified per §5 before commitment; if one lags v2, defer it — don't fork the app
-back to v1.
+Charm's own `bubbles`, `lipgloss`, and `glamour` are first-party and track v2.
+Community libs (`bubblezone`, `ntcharts`, `huh`, `stickers`) are not part of the
+closed roadmap unless they satisfy §5; never fork the app back to v1 for them.
 
 ## 3. Component shortlist (what, why, where)
 
@@ -108,32 +107,31 @@ scroll still works; no zero-width marker dependency is required.
 The top-level `metrics` view reads `GET /api/v1/metrics` and renders counters,
 gauges, and phase durations as native bounded bars. Missing metrics produce a
 graceful empty state; HTTP/JSON errors surface in the cockpit notice bar. Richer
-time-series sparklines can wait for a v2-compatible charting library or backend
-series fields.
+time-series sparklines are explicitly outside the closed roadmap until both a
+v2-compatible charting library and backend series fields exist.
 Regression contract: a metrics view renders live metric rows on refresh;
 empty/missing data states are graceful; no render-path aggregation blocks the TUI.
 
-### F. Motion & polish (`spinner` + `stopwatch`; `harmonica` optional) — Tier 3
+### F. Motion & polish (`spinner` + `stopwatch`) — Tier 3
 Use first-party Bubble Tea components for meaningful live motion: the phase rail
 active glyph, status bar, diff-preview loading, and metrics loading use
 `bubbles/spinner`; selected RUNNING runs show live elapsed time via `stopwatch`.
 Keep motion subtle and disable-able (respect a `reducedMotion` config for
 accessibility / low-power terminals). Spring panel/tab transitions via
-`harmonica` remain optional polish and are not required for roadmap completion.
+`harmonica` are outside the closed roadmap.
 Regression contract: active/loading states visibly animate on the v2 renderer;
 motion can be turned off; no CPU spin when idle.
 
-### G. (Optional) layout system (`stickers`) — Tier 3
-Only if it clearly simplifies the responsive two-column + bars layout; otherwise
-keep `lipgloss` joins. Verify v2 + maintenance first.
+### G. Excluded layout system (`stickers`)
+`stickers` was not adopted because it does not clearly simplify the responsive
+two-column + bars layout; the cockpit keeps `lipgloss` joins.
 
-## 5. Per-library v2 verification (do before adding each)
+## 5. Per-library v2 rule
 
-For each Tier-2/optional lib: check its `go.mod`/tags for a `charm.land/*/v2`
-dependency (or an explicitly v2-compatible release); build a throwaway spike
-importing it alongside the v2 cockpit before adopting it. If it only supports v1,
-park it in a "revisit when upstream ships v2" list in this doc and satisfy the
-user-facing behavior natively when the behavior is small enough.
+Any additional UI library must prove v2 compatibility by checking its
+`go.mod`/tags for a `charm.land/*/v2` dependency (or an explicitly v2-compatible
+release) and by building a throwaway spike alongside the v2 cockpit before
+adoption. If it only supports v1, it is excluded from this cockpit.
 
 ## 6. The demo (make it showcase-able)
 
@@ -178,15 +176,15 @@ user-facing behavior natively when the behavior is small enough.
 1. (Prereq) v2 migration to parity is complete — see the viewport handoff.
 2. Tier 1 is complete: `key`+`help`, `textinput`, and `lipgloss` table +
    `reflow` replaced the corresponding hand-rolled paths.
-3. Tier 2: native hit-testing and metrics bars are implemented; revisit
-   `bubblezone`/`ntcharts` only after upstream v2-compatible releases exist.
+3. Tier 2: native hit-testing and metrics bars are implemented; `bubblezone` and
+   `ntcharts` remain excluded until upstream v2-compatible releases exist and a
+   new behavior requires them.
 4. Tier 3: first-party spinner/stopwatch/reduced-motion paths are implemented;
-   `harmonica` remains optional polish, and `stickers` remains unnecessary while
-   the pane layout stays simple.
+   `harmonica` and `stickers` remain excluded while the pane layout stays simple.
 5. Demo: rich mock dataset + checked-in `clients/cockpit/demo.tape`; generated
    `demo.gif` is a local developer artifact when `vhs` is installed, not a
    committed roadmap dependency.
-6. Docs sweep (README, `cockpit-ui-spec.md`, theme handoff cross-links) is complete; future edits should document only new behavior.
+6. Docs sweep (README, `cockpit-ui-spec.md`, theme handoff cross-links) is complete; subsequent edits should document only new behavior.
 
 Sources: [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles),
 [bubbles v2](https://pkg.go.dev/charm.land/bubbles/v2),

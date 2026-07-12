@@ -193,8 +193,8 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 - No embedding of omp's TUI inside the cockpit (still tier-3 / out of scope); this
   is a pane/handoff launch only.
 - No new backend endpoints; brief is built from data the cockpit already fetches.
-- zellij, wezterm, and kitty support are future external-integration ideas, not
-  Go cockpit roadmap blockers.
+- zellij, wezterm, and kitty support are excluded external-integration ideas,
+  not Go cockpit roadmap features.
 - Risks kept in the implementation: worktree contention with an active worker is
   guarded, brief files avoid unignored `.foreman/` paths, launcher flags remain
   configurable for OMP CLI drift, and secrets must never enter briefing files.

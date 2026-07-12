@@ -292,9 +292,9 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
   endpoints. Worktree/branch/base metadata, PR readiness fields, row counts, and
   diff totals are exposed on the existing `/api/v1/runs` projection; file-change
   fallback data is exposed on the existing `/api/v1/runs/:run_id/debug` timeline.
-- **Risks:** base-branch assumption (`origin/dev`) — make it configurable and
-  fall back sensibly; diffnav Nerd-Font/`delta` requirements; `gh` auth; and the
-  render path must never block on `exec` (fetch in `loadDetail`, cache results).
+- **Resolved risks:** the diff base is configurable (`diff.files.base`) and falls
+  back sensibly; diffnav Nerd-Font/`delta` requirements and `gh` auth failures
+  surface as notices; exec work stays out of render paths by loading/caching detail.
 - **Consistency:** full-screen external review tools (`diffnav`, `gh dash`, and
   `gh enhance`) go through `tea.ExecProcess` and set a notice on return, exactly
   like `openInNvim`/`editTaskInNvim`. OMP tmux mode is the exception: it uses a
