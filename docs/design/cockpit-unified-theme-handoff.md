@@ -228,9 +228,9 @@ smoke covered cockpit help, PR, and metrics frames; external surfaces consume th
 generated fragments listed below; release-side screenshot comparison is QA
 coverage, not local implementation scope.
 
-Programmatic checks: `tokens.yaml` validates (all color tokens are `#RRGGBB`);
-generator output is byte-stable (`go generate ./...` stays clean); cockpit
-builds/tests/vet clean (`go test ./...`, `go build ./...`, `go vet ./...`).
+Programmatic checks should keep `tokens.yaml` valid (all color tokens are
+`#RRGGBB`), generator output byte-stable (`go generate ./...` stays clean), and
+cockpit build/test/vet clean (`go test ./...`, `go build ./...`, `go vet ./...`).
 
 ## 10. Implementation status
 

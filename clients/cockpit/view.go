@@ -331,7 +331,7 @@ func taskRowFields(it Item) (state, title, id, typ, pri, right string) {
 	if it.IsTask {
 		title = firstNonEmptyText(it.Task.Title, it.Task.Summary, it.Task.TaskID)
 		right = taskRightMetadata(it.Task)
-		return it.Task.Status, title, it.Task.TaskID, it.Task.TaskType, it.Task.Priority, right
+		return taskState(it.Task), title, it.Task.TaskID, it.Task.TaskType, it.Task.Priority, right
 	}
 	title = firstNonEmptyText(it.Run.Title, it.Run.Summary, it.Run.TaskID)
 	typ = it.Run.TaskType
@@ -1017,16 +1017,34 @@ func wrap(s string, w int) []string {
 	return lines
 }
 
-func runState(r Run) string {
+func taskState(t Task) string {
 	switch {
-	case r.Status == "failed" || r.Status == "conflict":
+	case isFailedState(t.Status):
 		return "fail"
-	case r.Status == "merged" || r.Status == "completed" || r.Status == "pr-created":
-		return "done"
-	case r.Verdict == "retrying" || r.Status == "cooldown":
+	case normalizeStatus(t.Status) == "cooldown":
 		return "retry"
-	default:
+	case activeTaskStatus(t.Status):
 		return "active"
+	default:
+		return "ready"
+	}
+}
+
+func runState(r Run) string {
+	status := normalizeStatus(r.Status)
+	switch {
+	case isFailedState(r.Status) || isFailedState(status):
+		return "fail"
+	case strings.EqualFold(r.Verdict, "retrying") || status == "cooldown":
+		return "retry"
+	case status == "merged" || status == "completed" || status == "pr_created" || status == "reset" || status == "cancelled" || status == "closed" || status == "deleted":
+		return "done"
+	case r.Group == taskGroupRunning && activeTaskStatus(status):
+		return "active"
+	case r.Group == taskGroupRunning:
+		return "active"
+	default:
+		return "done"
 	}
 }
 

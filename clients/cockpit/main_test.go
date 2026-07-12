@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestDumpRequested(t *testing.T) {
 	cases := []struct {
@@ -22,6 +27,33 @@ func TestDumpRequested(t *testing.T) {
 				t.Fatalf("dumpRequested(%#v, %q) = %v, want %v", tc.args, tc.env, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDumpClientSmokesMockBackend(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	err = dumpClient(NewMockClient())
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	os.Stdout = oldStdout
+	out, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err != nil {
+		t.Fatalf("dumpClient returned error: %v", err)
+	}
+	text := string(out)
+	for _, want := range []string{"runs=", "running=", "recent=", "ready=", "first_run=", "messages=", "events=", "logs=", "reports="} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected dump output to include %q, got:\n%s", want, text)
+		}
 	}
 }
 

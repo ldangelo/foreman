@@ -259,6 +259,71 @@ func TestActiveTaskOnlyRowRendersInRunningSection(t *testing.T) {
 	}
 }
 
+func TestTaskAndRunRowGlyphsFollowStatusClassification(t *testing.T) {
+	cases := []struct {
+		name  string
+		item  Item
+		want  string
+		avoid string
+	}{
+		{
+			name: "active task",
+			item: Item{IsTask: true, Task: Task{TaskID: "task-pending", Title: "Waiting", Status: "pending"}},
+			want: "● task-pending",
+		},
+		{
+			name: "failed task",
+			item: Item{IsTask: true, Task: Task{TaskID: "task-stuck", Title: "Needs help", Status: "stuck"}},
+			want: "✗ task-stuck",
+		},
+		{
+			name: "failed run",
+			item: Item{Run: Run{Group: taskGroupRecent, TaskID: "task-test-failed", RunID: "run-1", Title: "Tests failed", Status: "test-failed"}},
+			want: "✗ task-test-failed",
+		},
+		{
+			name:  "reset run",
+			item:  Item{Run: Run{Group: taskGroupRecent, TaskID: "task-reset", RunID: "run-reset", Title: "Reset", Status: "reset"}},
+			want:  "✓ task-reset",
+			avoid: "● task-reset",
+		},
+	}
+	m := newModel(NewMockClient())
+	visual := paneVisualFor(true, defaultConfig().Cockpit.Focus)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m.taskList.SetData(nil, nil)
+			out := stripANSI(m.renderRow(0, tc.item, 60, visual))
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("expected row glyph/status %q, got:\n%s", tc.want, out)
+			}
+			if tc.avoid != "" && strings.Contains(out, tc.avoid) {
+				t.Fatalf("expected row not to render %q, got:\n%s", tc.avoid, out)
+			}
+		})
+	}
+}
+
+func TestTaskRowAgeMetadataRendersUpdatedCreatedAndFallbacks(t *testing.T) {
+	now := time.Now()
+	m := newModel(NewMockClient())
+	m.tasks = []Task{
+		{TaskID: "task-both", Title: "Both timestamps", Status: "backlog", Updated: now.Add(-2 * time.Hour).Format(time.RFC3339), Created: now.Add(-48 * time.Hour).Format(time.RFC3339)},
+		{TaskID: "task-created", Title: "Created only", Status: "backlog", Created: now.Add(-3 * time.Hour).Format(time.RFC3339)},
+		{TaskID: "task-updated", Title: "Updated only", Status: "backlog", Updated: now.Add(-4 * time.Hour).Format(time.RFC3339)},
+	}
+	m.runs = nil
+	m.taskList.MoveSection(1)
+	m.buildItems()
+
+	out := stripANSI(m.renderLeft(96, 10))
+	for _, want := range []string{"task-both", "u2h", "c2d", "task-created", "c3h", "task-updated", "u4h"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected task age metadata %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
 	m := newModel(NewMockClient())
 	run := Run{Phase: "qa", Pipeline: pipe(3, -1)}
@@ -906,6 +971,41 @@ func TestTaskSectionChangesReloadSelectedDetail(t *testing.T) {
 	}
 }
 
+func TestMouseClickVisibleTaskRowSelectsAndReloadsDetail(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: taskGroupRunning, TaskID: "task-first", RunID: "run-first", Status: "running"},
+			{Group: taskGroupRunning, TaskID: "task-second", RunID: "run-second", Status: "running"},
+		},
+		messagesByRun: map[string][]Message{
+			"run-first":  {{From: "dev", To: "qa", Subject: "first-detail"}},
+			"run-second": {{From: "qa", To: "dev", Subject: "second-detail"}},
+		},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 1
+	m.runs = client.runs
+	m.buildItems()
+	m.loadDetail()
+	if len(m.msgs) != 1 || m.msgs[0].Subject != "first-detail" {
+		t.Fatalf("test setup expected first detail, got %#v", m.msgs)
+	}
+
+	updated, _ := m.Update(mouseClick(2, 6))
+	m = updated.(model)
+	if it, ok := m.selectedItem(); !ok || it.Run.RunID != "run-second" {
+		t.Fatalf("expected second visible row to be selected, got ok=%v item=%#v", ok, it)
+	}
+	if m.viewFocused {
+		t.Fatal("expected left-row click to return focus to task list")
+	}
+	if len(m.msgs) != 1 || m.msgs[0].Subject != "second-detail" {
+		t.Fatalf("expected clicked row to reload detail, got %#v", m.msgs)
+	}
+}
+
 func TestTaskListOnlyKeysAreIgnoredWhenDetailsFocused(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
@@ -1081,6 +1181,41 @@ func TestFocusedViewerSlashStartsDrilldownSearch(t *testing.T) {
 	selected, ok := m.viewer.SelectedLine()
 	if !ok || !strings.Contains(stripANSI(selected.Text), "needle target") {
 		t.Fatalf("expected search to select matching log row, got %#v ok=%v", selected, ok)
+	}
+}
+
+func TestFocusedViewerSearchSupportsCursorEditAndPaste(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
+		logs: []string{"alpha", "read target", "omega"},
+	}
+	m := newModel(client)
+	m.width = 100
+	m.height = 12
+	m.tab = 3
+	m.viewFocused = true
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	updated, _ = m.handleKey(keyPress("/"))
+	m = updated.(model)
+	updated, _ = m.handleKey(keyPress("rxd"))
+	m = updated.(model)
+	updated, _ = m.handleKey(specialKey(tea.KeyLeft))
+	m = updated.(model)
+	updated, _ = m.handleKey(specialKey(tea.KeyBackspace))
+	m = updated.(model)
+	updated, _ = m.handleKey(keyPress("ea"))
+	m = updated.(model)
+	updated, _ = m.handleKey(specialKey(tea.KeyEnter))
+	m = updated.(model)
+
+	if m.taskList.Searching() || m.taskList.Search() != "" {
+		t.Fatalf("expected focused drill-down search not to mutate task-list search, query=%q", m.taskList.Search())
+	}
+	selected, ok := m.viewer.SelectedLine()
+	if !ok || !strings.Contains(stripANSI(selected.Text), "read target") {
+		t.Fatalf("expected edited pasted viewer query to select read target, got %#v ok=%v", selected, ok)
 	}
 }
 
@@ -1610,6 +1745,54 @@ func TestUppercaseCReportsMissingEnhanceExtension(t *testing.T) {
 	}
 	if done.err == nil || !strings.Contains(done.err.Error(), "gh enhance not found") {
 		t.Fatalf("expected missing extension error, got %v", done.err)
+	}
+}
+
+func TestUppercaseDLaunchesDiffnavFromFilesTab(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{
+			Group:    "RUNNING",
+			TaskID:   "task-1",
+			RunID:    "run-1",
+			Status:   "running",
+			Worktree: "/tmp/work",
+		}},
+	}
+	m := newModel(client)
+	m.tab = 5
+	m.tools = fakeTools{}
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	_, cmd := m.handleKey(keyPress("D"))
+	if cmd == nil {
+		t.Fatal("expected D on files tab to route to diffnav")
+	}
+	msg := cmd()
+	done, ok := msg.(diffnavDoneMsg)
+	if !ok {
+		t.Fatalf("expected diffnavDoneMsg, got %T", msg)
+	}
+	if done.err == nil || !strings.Contains(done.err.Error(), "diffnav not found") {
+		t.Fatalf("expected missing diffnav error, got %v", done.err)
+	}
+}
+
+func TestUppercaseGLaunchesGhDash(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.tools = fakeTools{"gh": true}
+
+	_, cmd := m.handleKey(keyPress("G"))
+	if cmd == nil {
+		t.Fatal("expected G to route to gh dash")
+	}
+	msg := cmd()
+	done, ok := msg.(ghDashDoneMsg)
+	if !ok {
+		t.Fatalf("expected ghDashDoneMsg, got %T", msg)
+	}
+	if done.err == nil || !strings.Contains(done.err.Error(), "gh dash not found") {
+		t.Fatalf("expected missing gh dash extension error, got %v", done.err)
 	}
 }
 

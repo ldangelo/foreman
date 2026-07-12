@@ -58,12 +58,13 @@ the selected details, and `o` opens rows that have external targets.
   including duplicated `type`/`task_type`, priority defaults, project scoping,
   identity-preserving update drafts, command ordering, field-token message-count
   search, and empty-title cancellation.
-- Render/form/list tests cover rich task rows, detail fields,
-  failed-like status classification, truncation/narrow layout, scoped `n`/`N`
-  create keys, editable title/description/type/priority fields, focus wrapping,
-  and mock create round-tripping into the READY list.
-- Focused and full cockpit verification has passed with `go test ./...`,
-  `go generate ./...`, `go vet ./...`, build, and mock dump smoke.
+- Render/form/list tests cover rich task rows, detail fields, row glyph/status
+  classification, failed-like status classification, truncation/narrow layout,
+  scoped `n`/`N` create keys, editable title/description/type/priority fields,
+  focus wrapping, and mock create round-tripping into the READY list.
+- Release verification should run `go test ./...`, `go generate ./...`,
+  `go vet ./...`, build, and mock dump smoke; focused tests cover the shipped
+  task and command contracts above.
 
 ## 5. Closed non-goals
 

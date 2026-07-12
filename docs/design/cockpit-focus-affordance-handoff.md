@@ -46,8 +46,8 @@ Interaction is already implemented and unchanged: focus starts in the task list;
 
 - Focus render tests cover task-list-focused and details-focused states.
 - Config tests cover `focus.style`, `dimInactive`, and environment overrides.
-- Mock dump smoke was run with `NO_COLOR=1`, confirming the cockpit still renders
-  a readable focus signal without ANSI color.
+- `NO_COLOR` render tests cover the task-list `▶` marker and focus labels,
+  confirming readable structural focus signals without ANSI color.
 
 ## 5. Closed non-goals
 

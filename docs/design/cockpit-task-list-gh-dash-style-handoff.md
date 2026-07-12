@@ -131,10 +131,10 @@ reuses the detail view and add-task (`n`/`N`) flows unchanged.
 ## 9. Verification completed and closed non-goals
 
 - Tests cover section filter predicates, counts per section, RECENT most-recent
-  ordering and default cap, row renderer output, two-line keep-visible math, age
-  formatting, current/global scope, mouse hit-testing, configured sections,
-  status-bar section position, and detail reloads when section navigation changes
-  the selected row.
+  ordering and default cap, row renderer output, row glyph/status classification,
+  two-line keep-visible math, task age formatting/fallbacks, current/global
+  scope, mouse hit-testing for sections/actions/visible rows, configured
+  sections, status-bar section position, and detail reloads when selection changes.
 - README and `cockpit-ui-spec.md` document the section tabs, layout proportions,
   keymap, status bar, and two-strip model.
 - No new backend endpoints were added; the read-only client architecture is

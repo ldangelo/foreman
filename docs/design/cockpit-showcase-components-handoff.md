@@ -49,7 +49,8 @@ rule — learned from the viewport library — is:
 > `charm.land/bubbletea/v2` / `lipgloss/v2`, not the v1 `github.com/charmbracelet/*`).
 > A v1-only component drags in a conflicting runtime and will not compile.
 
-Charm's own `bubbles`, `lipgloss`, and `glamour` are first-party and track v2.
+Charm's own `bubbles` and `lipgloss` track v2; Glamour remains the markdown-rendering
+exception described in §5.
 Community libs (`bubblezone`, `ntcharts`, `huh`, `stickers`) are not part of the
 closed roadmap unless they satisfy §5; never fork the app back to v1 for them.
 
@@ -57,7 +58,7 @@ closed roadmap unless they satisfy §5; never fork the app back to v1 for them.
 
 | Component | Purpose | Cockpit call-site it replaces / adds | Tier | v2? |
 |-----------|---------|--------------------------------------|------|-----|
-| `bubbles/v2` `key` + `help` | self-documenting keymap | replaces the hand-rolled `?` notice + `renderKeyBar` in `view.go` | 1 | first-party |
+| `bubbles/v2` `key` + `help` | self-documenting keymap | drives the short help rendered by `renderKeyBar` and the full `?` overlay in `view.go` | 1 | first-party |
 | `bubbles/v2` `textinput`/`textarea` | real text entry | `filterableviewport` supplies a `textinput`-backed search line; add-task fields use `textinput`/`textarea` directly | 1 | first-party |
 | `lipgloss/v2` `table` | structured static rendering | task-detail field block and PR-checks summary | 1 | first-party |
 | `muesli/reflow` | ANSI/Unicode wrap + truncate | delegates clipping/wrapping in `view.go` to display-cell-aware helpers | 1 | framework-agnostic |
@@ -78,9 +79,10 @@ All in-scope workstreams below are implemented; explicitly excluded libraries ar
 scope boundaries. Keep acceptance clauses as regression contracts.
 
 ### A. Discoverable keymap (`key` + `help`) — Tier 1
-Define `key.Binding`s once; render a `help` bubble (short line in the keybar,
-full overlay on `?`). Removes the drift between the hand-maintained keybar and
-actual bindings, and matches the idiom `viewport`/`gh-dash` already use.
+Define `key.Binding`s once; render a `help` bubble (short line inside the
+existing keybar, full overlay on `?`). Removes drift between hand-maintained
+shortcut prose and actual bindings, and matches the idiom `viewport`/`gh-dash`
+already use.
 Regression contract: `?` shows a complete, accurate help view generated from
 the bindings; the keybar auto-summarizes.
 
@@ -158,10 +160,10 @@ component.
 - Theme is consistent across cockpit + `diffnav`/`gh dash`/`gh enhance`.
 - `COCKPIT_BACKEND=mock` produces a demo-worthy screen; `demo.tape` is checked in
   for local `vhs` GIF capture.
-- Every adopted terminal UI/control lib is a verified v2 build; `go build/test/vet ./...`
-  is clean on Go 1.26; key/help generation, search parsing, spinner/stopwatch
-  motion, and ANSI/Unicode width helpers are owned by v2-compatible components or delegate to
-  `reflow` rather than bespoke terminal math.
+- Every adopted terminal UI/control lib is a verified v2 build; CI/release checks
+  should keep `go build/test/vet ./...` clean on Go 1.26. Key/help generation,
+  search parsing, spinner/stopwatch motion, and ANSI/Unicode width helpers are
+  owned by v2-compatible components or delegate to `reflow` rather than bespoke terminal math.
 
 ## 8. Non-goals & risks
 

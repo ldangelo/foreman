@@ -60,8 +60,8 @@ The task list is organized as a gh-dash-style section strip with counts:
   ANSI styling and wide glyphs. (Q2)
 - **Failed** — failed/stuck/conflict/test-failed tasks or runs with any non-empty
   attention reason.
-- **Recent** — terminal runs (`completed | merged | pr-created | failed | reset`),
-  most-recent first, capped (default 15). (Q3 for finished work)
+- **Recent** — projected runs that are not currently active, most-recent first,
+  capped in the default Recent section (default 15) while counts keep the full total. (Q3 for finished work)
 - **All** — the combined task/run list.
 
 The selected row drives the entire right side.

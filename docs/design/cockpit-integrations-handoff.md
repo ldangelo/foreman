@@ -175,8 +175,8 @@ process takeover), the way `reports` render markdown through Glamour today.
   `deltaPreviewCommand(run, path, width, cfg, tools)` and a thin runner; cache
   the output per (runID, path) so it isn't recomputed every render/tick. Degrade
   to a plain `git diff` (or the existing file list) when delta is absent.
-- Keep it inside the existing `Viewer` line model so scrolling/`fitBlock` still
-  work. Do not break the `o`/`d`/`D` actions.
+- Keep it inside the existing `Viewer` line model so viewport-backed scrolling
+  still works. Do not break the `o`/`d`/`D` actions.
 - Regression contract: moving the cursor onto a changed file shows its colored
   diff inline; no external process is launched; absent delta falls back to plain
   diff text; loading and cached-preview guards prevent recomputation on render/tick.
