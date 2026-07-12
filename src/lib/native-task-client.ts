@@ -300,14 +300,4 @@ export class NativeTaskClient implements ITaskClient {
     });
   }
 
-  /**
-   * Fetch comments for an issue as a formatted markdown string.
-   * Returns null since native tasks do not have a comments feature.
-   *
-   * This method is optional in ITaskClient but is implemented here
-   * for completeness. The dispatcher handles the null case gracefully.
-   */
-  async comments(_id: string): Promise<string | null> {
-    return null;
-  }
 }
