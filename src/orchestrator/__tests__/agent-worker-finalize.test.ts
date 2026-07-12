@@ -196,7 +196,10 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("calls vcs.push with correct branch name", async () => {
-    const vcs = makeMockVcs();
+    // Override getCurrentBranch to return the expected branch for this task
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/bd-xyz-999"),
+    });
     await finalize(makeConfig({ worktreePath: tmpDir, taskId: "bd-xyz-999" }), logFile, vcs);
     expect(vcs.push).toHaveBeenCalledWith(tmpDir, "foreman/bd-xyz-999");
   });
@@ -836,55 +839,72 @@ describe("finalize() — branch verification", () => {
     expect(content).toContain("Status: OK");
   });
 
-  it("attempts checkoutBranch when on a different branch and push succeeds after recovery", async () => {
+  it("FAILS with branch drift when on a different branch — does NOT auto-checkout", async () => {
+    // Branch drift detection: when worktree is on wrong branch, fail-fast
+    // instead of auto-recovering. Workers should not be on wrong branches.
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
     });
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
-    expect(vcs.checkoutBranch).toHaveBeenCalledWith(tmpDir, "foreman/bd-test-001");
-    expect(result.success).toBe(true);
+    // Should NOT attempt checkoutBranch — fail-fast instead
+    expect(vcs.checkoutBranch).not.toHaveBeenCalled();
+    // Should report branch drift failure
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("## Branch Verification");
+    expect(content).toContain("FAIL-FAST");
+    expect(content).toContain("no auto-checkout");
+    // Should skip push due to branch drift
+    expect(content).toContain("## Push");
+    expect(content).toContain("SKIPPED (branch verification failed)");
+    // Should fail the finalize
+    expect(result.success).toBe(false);
   });
 
-  it("reports RECOVERED status in branch verification section after mismatch checkout", async () => {
+  it("reports FAIL-FAST status in branch verification when branch mismatch detected", async () => {
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
     });
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Branch Verification");
-    expect(content).toContain("Status: RECOVERED (checkout succeeded)");
-    expect(content).toContain("Was: main");
+    expect(content).toContain("Status: FAILED (branch drift detected)");
+    expect(content).toContain("Expected: foreman/bd-test-001");
+    expect(content).toContain("Actual: main");
   });
 
-  it("attempts checkoutBranch when in detached HEAD state and push succeeds after recovery", async () => {
+  it("FAILS when in detached HEAD state — does NOT auto-recover", async () => {
+    // Detached HEAD is treated as branch drift — fail-fast instead of recovering
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("HEAD"),
     });
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
-    expect(vcs.checkoutBranch).toHaveBeenCalled();
-    expect(result.success).toBe(true);
-  });
-
-  it("skips push and returns false when checkoutBranch fails after branch mismatch", async () => {
-    const vcs = makeMockVcs({
-      getCurrentBranch: vi.fn().mockResolvedValue("main"),
-      checkoutBranch: vi.fn().mockRejectedValue(new Error("error: pathspec 'foreman/bd-test-001' did not match any file(s)")),
-    });
-    const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
-    expect(vcs.push).not.toHaveBeenCalled();
+    // Should NOT attempt checkoutBranch
+    expect(vcs.checkoutBranch).not.toHaveBeenCalled();
+    // Should fail
     expect(result.success).toBe(false);
-    expect(mockEnqueueToMergeQueue).not.toHaveBeenCalled();
+    const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
+    expect(content).toContain("FAIL-FAST");
   });
 
-  it("reports Branch Verification FAILED and Push SKIPPED when checkout fails", async () => {
+  it("does NOT call checkoutBranch when branch drift detected — fail-fast preserves work", async () => {
+    // The key invariant: when branch drift is detected, we fail-fast WITHOUT
+    // attempting checkoutBranch. This prevents accidentally losing work that
+    // was committed on the drifted branch.
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("other-branch"),
-      checkoutBranch: vi.fn().mockRejectedValue(new Error("checkout failed")),
+    });
+    await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
+    expect(vcs.checkoutBranch).not.toHaveBeenCalled();
+  });
+
+  it("reports Branch Verification FAILED and Push SKIPPED when branch drift detected", async () => {
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("other-branch"),
     });
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Branch Verification");
-    expect(content).toContain("Status: FAILED");
+    expect(content).toContain("Status: FAILED (branch drift detected)");
     expect(content).toContain("## Push");
     expect(content).toContain("Status: SKIPPED (branch verification failed)");
     expect(content).toContain("## Task Status");

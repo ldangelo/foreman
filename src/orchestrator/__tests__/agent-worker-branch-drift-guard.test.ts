@@ -76,7 +76,8 @@ describe("agent-worker.ts — create-pr branch drift guard", () => {
 
   it("returns success: false when branch drift detected in create-pr", () => {
     const idx = source.indexOf("BRANCH DRIFT");
-    const block = source.slice(Math.max(0, idx - 100), idx + 500);
+    // The return statement with success: false is ~300 chars after "BRANCH DRIFT"
+    const block = source.slice(Math.max(0, idx - 50), idx + 700);
     expect(block).toContain("success: false");
     expect(block).toContain("stopPipelineSuccess: false");
   });
@@ -160,7 +161,8 @@ describe("agent-worker-finalize.ts — finalize branch drift guard", () => {
   it("fails with BRANCH DRIFT error instead of auto-recovering", () => {
     const idx = source.indexOf("BRANCH DRIFT");
     expect(idx).toBeGreaterThan(-1);
-    const block = source.slice(Math.max(0, idx - 200), idx + 300);
+    // FAIL-FAST appears in the report.push() section ~740 chars after "BRANCH DRIFT"
+    const block = source.slice(Math.max(0, idx - 50), idx + 1000);
     expect(block).toContain("FAIL-FAST");
     expect(block).toContain("no auto-checkout");
   });
@@ -168,15 +170,17 @@ describe("agent-worker-finalize.ts — finalize branch drift guard", () => {
   it("logs error message with expected/actual/worktreePath", () => {
     const idx = source.indexOf("[FINALIZE] BRANCH DRIFT");
     expect(idx).toBeGreaterThan(-1);
+    // Finalize uses currentBranch variable (not actual) and worktreePath
     const block = source.slice(Math.max(0, idx - 50), idx + 400);
     expect(block).toContain("expected");
-    expect(block).toContain("actual");
+    expect(block).toContain("currentBranch");
     expect(block).toContain("worktreePath");
   });
 
   it("sets branchVerified = false when drift detected (no auto-checkout)", () => {
     const idx = source.indexOf("BRANCH DRIFT");
-    const block = source.slice(Math.max(0, idx - 100), idx + 500);
+    // branchVerified = false is ~967 chars after "BRANCH DRIFT" in the log
+    const block = source.slice(Math.max(0, idx - 50), idx + 1200);
     expect(block).toContain("branchVerified = false");
     // Should NOT call checkoutBranch
     expect(block).not.toContain("checkoutBranch");
@@ -205,20 +209,31 @@ describe("agent-worker.ts — hasChangesAgainstBase cannot close task on drift",
     expect(source).toContain("async function hasChangesAgainstBase(");
   });
 
-  it("branch drift check in create-pr is independent of hasChangesAgainstBase", () => {
-    // The branch drift check should be a separate guard, not rely on
-    // hasChangesAgainstBase to detect drift
+  it("branch drift check prevents no-change task closure", () => {
+    // The branch drift check must come BEFORE the no-change close block.
+    // hasChangesAgainstBase can be called before or after requireCanonicalBranch;
+    // what matters is that the branch drift check prevents closing when drifted.
     const createPrIdx = source.indexOf("async function runCreatePrBuiltinPhase(");
-    const fnBlock = source.slice(createPrIdx, createPrIdx + 5000);
+    const fnBlock = source.slice(createPrIdx, createPrIdx + 8000);
 
-    // Find positions of both checks
+    // Both checks should exist in the function
+    expect(fnBlock).toContain("requireCanonicalBranch");
+    expect(fnBlock).toContain("hasChangesAgainstBase");
+
+    // The branch drift check returns early BEFORE the no-change close block
     const branchInvariantIdx = fnBlock.indexOf("requireCanonicalBranch");
-    const hasChangesIdx = fnBlock.indexOf("hasChangesAgainstBase");
+    const noChangeIdx = fnBlock.indexOf('reason: "no_changes_against_base"');
+    const successReturnIdx = fnBlock.indexOf("success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: \"no_changes_against_base\"");
 
     expect(branchInvariantIdx).toBeGreaterThan(-1);
-    expect(hasChangesIdx).toBeGreaterThan(-1);
+    expect(noChangeIdx).toBeGreaterThan(-1);
+    expect(successReturnIdx).toBeGreaterThan(-1);
 
-    // The branch invariant check should come first
-    expect(branchInvariantIdx).toBeLessThan(hasChangesIdx);
+    // The branch drift check returns false before reaching the no-change success
+    // The fail-fast return comes between branchInvariant and noChange
+    const failFastIdx = fnBlock.indexOf("success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, outputText: msg");
+
+    expect(failFastIdx).toBeGreaterThan(-1);
+    expect(failFastIdx).toBeLessThan(noChangeIdx);
   });
 });

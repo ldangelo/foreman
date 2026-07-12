@@ -91,8 +91,11 @@ describe("AC-T-014-2: agent-worker-finalize.ts — VcsBackend method usage", () 
     expect(source).toContain("await vcs.getCurrentBranch(");
   });
 
-  it("uses vcs.checkoutBranch() to recover from branch mismatch", () => {
-    expect(source).toContain("await vcs.checkoutBranch(");
+  it("does NOT use vcs.checkoutBranch() to recover from branch mismatch (fail-fast instead)", () => {
+    // Branch drift detection: when worktree is on wrong branch, fail-fast
+    // instead of auto-recovering via checkoutBranch. This prevents accidentally
+    // losing work committed on the drifted branch.
+    expect(source).not.toContain("await vcs.checkoutBranch(");
   });
 
   it("uses vcs.push() to push the branch to origin", () => {
