@@ -57,8 +57,9 @@ the selected details, and `o` opens rows that have external targets.
 - Payload tests cover task create/update command fields, including duplicated
   `type`/`task_type`, priority defaults, project scoping, identity-preserving
   update drafts, field-token message-count search, and empty-title cancellation.
-- Render tests cover rich task rows, detail fields, truncation/narrow layout,
-  scoped `n`/`N` create keys, and mock create round-tripping into the READY list.
+- Render/form tests cover rich task rows, detail fields, truncation/narrow layout,
+  scoped `n`/`N` create keys, editable title/description/type/priority fields,
+  focus wrapping, and mock create round-tripping into the READY list.
 - Focused and full cockpit verification has passed with `go test ./...`,
   `go generate ./...`, `go vet ./...`, build, and mock dump smoke.
 

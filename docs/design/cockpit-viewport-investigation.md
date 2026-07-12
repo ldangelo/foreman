@@ -70,9 +70,10 @@ Implemented migration points:
 | mouse handling | `tea.MouseMsg` struct | v2 mouse interfaces with wheel/button variants |
 | Lip Gloss imports | `github.com/charmbracelet/lipgloss` | `charm.land/lipgloss/v2` |
 
-The deterministic test/dump path uses Bubble Tea v2 program options such as
-`tea.WithWindowSize` and `tea.WithColorProfile` so `COCKPIT_DUMP` and the VHS
-demo render without a real TTY.
+The deterministic dump path uses `COCKPIT_DUMP=1` before TTY startup. The VHS
+showcase still runs the interactive program under VHS/ttyd, while
+`COCKPIT_DEMO=1` adds Bubble Tea v2 `tea.WithWindowSize` and
+`tea.WithColorProfile` options for stable recording.
 
 Acceptance is closed: v2 parity passed with build, test, vet, mock dump smoke,
 mouse/key coverage, and handoff command coverage.

@@ -87,3 +87,46 @@ func TestTaskCreateFormTitleSupportsCursorEditAndPaste(t *testing.T) {
 		t.Fatalf("expected editable pasted title, got %q", task.Title)
 	}
 }
+
+func TestTaskCreateFormDescriptionTypeAndPriorityAreEditable(t *testing.T) {
+	form := newTaskCreateForm()
+	form.Update(keyPress("Task with fields"))
+	form.Update(specialKey(tea.KeyTab))
+	form.Update(keyPress("Bdy"))
+	form.Update(specialKey(tea.KeyLeft))
+	form.Update(specialKey(tea.KeyBackspace))
+	form.Update(keyPress("od"))
+	form.Update(specialKey(tea.KeyTab))
+	form.Update(ctrlKey('u'))
+	form.Update(keyPress("bug"))
+	form.Update(specialKey(tea.KeyTab))
+	form.Update(ctrlKey('u'))
+	form.Update(keyPress("0"))
+
+	task, err := form.Task()
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if task.Description != "Body" || task.TaskType != "bug" || task.Priority != "P0" {
+		t.Fatalf("expected editable description/type/priority, got %#v", task)
+	}
+}
+
+func TestTaskCreateFormFocusTraversalWrapsFields(t *testing.T) {
+	form := newTaskCreateForm()
+	for range createFormFieldCount - 1 {
+		form.Update(specialKey(tea.KeyTab))
+	}
+	if form.focus != createFormPriority {
+		t.Fatalf("expected priority focus before wrap, got %d", form.focus)
+	}
+
+	form.Update(specialKey(tea.KeyTab))
+	if form.focus != createFormTitle {
+		t.Fatalf("expected tab to wrap to title, got %d", form.focus)
+	}
+	form.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	if form.focus != createFormPriority {
+		t.Fatalf("expected shift+tab to wrap to priority, got %d", form.focus)
+	}
+}
