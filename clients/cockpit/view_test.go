@@ -710,6 +710,85 @@ func TestEnterOnSummaryFocusesDetailsWithoutAttachingRun(t *testing.T) {
 	}
 }
 
+func TestTaskSectionChangesReloadSelectedDetail(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: taskGroupRunning, TaskID: "task-running", RunID: "run-running", Status: "running"},
+			{Group: taskGroupRecent, TaskID: "task-failed", RunID: "run-failed", Status: "failed"},
+		},
+		messagesByRun: map[string][]Message{
+			"run-running": {{From: "dev", To: "qa", Subject: "from-running"}},
+			"run-failed":  {{From: "qa", To: "dev", Subject: "from-failed"}},
+		},
+	}
+	cfg := defaultConfig()
+	cfg.Cockpit.TaskList.Sections = []TaskSection{
+		{Name: taskSectionRunning, Filter: "state:running"},
+		{Name: taskSectionFailed, Filter: "state:failed"},
+	}
+	m := newModelWithConfig(client, cfg, defaultTools)
+	m.width = 120
+	m.height = 20
+	m.tab = 1
+	m.runs = client.runs
+	m.buildItems()
+	m.loadDetail()
+	if len(m.msgs) != 1 || m.msgs[0].Subject != "from-running" {
+		t.Fatalf("test setup expected running messages, got %#v", m.msgs)
+	}
+
+	updated, _ := m.handleKey(keyPress("]"))
+	m = updated.(model)
+	if it, ok := m.selectedItem(); !ok || it.Run.RunID != "run-failed" {
+		t.Fatalf("expected section navigation to select failed run, got ok=%v item=%#v", ok, it)
+	}
+	if len(m.msgs) != 1 || m.msgs[0].Subject != "from-failed" {
+		t.Fatalf("expected section navigation to reload failed run messages, got %#v", m.msgs)
+	}
+
+	updated, _ = m.Update(mouseClick(2, 2))
+	m = updated.(model)
+	if it, ok := m.selectedItem(); !ok || it.Run.RunID != "run-running" {
+		t.Fatalf("expected mouse section click to select running run, got ok=%v item=%#v", ok, it)
+	}
+	if len(m.msgs) != 1 || m.msgs[0].Subject != "from-running" {
+		t.Fatalf("expected mouse section click to reload running messages, got %#v", m.msgs)
+	}
+}
+
+func TestTaskListOnlyKeysAreIgnoredWhenDetailsFocused(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-1", RunID: "run-1", Status: "running"}}
+	m.buildItems()
+	m.viewFocused = true
+	startSection := m.taskList.ActiveSectionIndex()
+
+	for _, key := range []string{"]", "H", "n", "N"} {
+		updated, _ := m.handleKey(keyPress(key))
+		m = updated.(model)
+	}
+	if got := m.taskList.ActiveSectionIndex(); got != startSection {
+		t.Fatalf("expected focused detail keys not to move task section, got %d want %d", got, startSection)
+	}
+	if m.taskForm != nil {
+		t.Fatalf("expected focused detail n/N not to open task forms")
+	}
+
+	m.viewFocused = false
+	updated, _ := m.handleKey(keyPress("]"))
+	m = updated.(model)
+	if got := m.taskList.ActiveSectionIndex(); got == startSection {
+		t.Fatalf("expected task-list-focused section key to move section")
+	}
+	updated, _ = m.handleKey(keyPress("n"))
+	m = updated.(model)
+	if m.taskForm == nil {
+		t.Fatalf("expected task-list-focused n to open create form")
+	}
+}
+
 func TestTabToMessagesFocusesViewerForImmediateScrolling(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
@@ -1483,20 +1562,26 @@ func TestFocusedViewerSavesVisibleContent(t *testing.T) {
 
 type mutableClient struct {
 	mockClient
-	runs     []Run
-	messages []Message
-	logs     []string
-	reports  []Report
-	files    []FileChange
-	created  []Task
-	retried  []Run
-	reset    []Run
-	attached []Run
+	runs          []Run
+	messages      []Message
+	messagesByRun map[string][]Message
+	logs          []string
+	reports       []Report
+	files         []FileChange
+	created       []Task
+	retried       []Run
+	reset         []Run
+	attached      []Run
 }
 
 func (c *mutableClient) Runs() []Run { return c.runs }
 
-func (c *mutableClient) Messages(string) []Message { return c.messages }
+func (c *mutableClient) Messages(runID string) []Message {
+	if c.messagesByRun != nil {
+		return c.messagesByRun[runID]
+	}
+	return c.messages
+}
 
 func TestMetricsTabShowsLoadingStateDuringRefresh(t *testing.T) {
 	client := &mutableClient{

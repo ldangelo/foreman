@@ -119,7 +119,7 @@ func TestBuildTriageBriefIncludesFailureContext(t *testing.T) {
 	m.files = []FileChange{{Change: "M", Path: "src/conflict.ts", Conflict: true}}
 	m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42", State: "open"}
 	run := Run{TaskID: "task-1", RunID: "run-1", Phase: "finalize", Status: "failed", Attention: "failed: merge_conflict", Worktree: "/tmp/wt"}
-	brief := buildTriageBrief(m, run)
+	brief := buildTriageBrief(m, run, "/tmp/wt/.foreman/triage-run-1.md")
 	for _, want := range []string{"task-1", "run-1", "merge_conflict", "go test failed", "src/conflict.ts", "https://github.com/Fortium/foreman/pull/42"} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("expected %q in brief:\n%s", want, brief)
@@ -139,7 +139,7 @@ func TestBuildTriageBriefIncludesReportsLogsAndRedactsSecrets(t *testing.T) {
 	m.logs = []string{"ok", "ERROR: test failed", "authorization bearer secret"}
 	run := Run{TaskID: "task-1", RunID: "run-1", Phase: "qa", Status: "failed", Attention: "ci_failed", Worktree: "/tmp/wt"}
 
-	brief := buildTriageBrief(m, run)
+	brief := buildTriageBrief(m, run, "/tmp/wt/.foreman/triage-run-1.md")
 	for _, want := range []string{"Report excerpts", "CR_CLI_REPORT.md", "Review finding", "FINALIZE_VALIDATION.md", "Error log excerpt", "ERROR: test failed"} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("expected %q in brief:\n%s", want, brief)
@@ -176,6 +176,29 @@ func TestWriteTriageBriefUsesWorktreeOnlyWhenForemanIgnored(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("expected triage brief mode 0600, got %v", info.Mode().Perm())
+	}
+}
+
+func TestTriageBriefOpeningUsesActualWrittenPath(t *testing.T) {
+	worktree := t.TempDir()
+	run := Run{TaskID: "task-1", RunID: "run-actual", Phase: "qa", Status: "failed", Attention: "ci_failed", Worktree: worktree}
+	path, err := triageBriefPath(worktree, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := buildTriageBrief(newModel(NewMockClient()), run, path)
+	if err := writeTriageBriefFile(path, brief); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), path) {
+		t.Fatalf("expected brief to point at actual written path %q, got:\n%s", path, body)
+	}
+	if strings.Contains(string(body), "./.foreman/triage-run-actual.md") {
+		t.Fatalf("brief still points at worktree-local path despite temp fallback:\n%s", body)
 	}
 }
 

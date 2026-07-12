@@ -214,10 +214,12 @@ The cockpit only uses these tools as full-screen Bubble Tea handoffs or cached
 command output. `diffnav`, `gh dash`, `gh enhance`, and inline `omp` run through
 `tea.ExecProcess`; `omp` prefers a non-suspending tmux pane when `$TMUX` is set.
 `p` writes a non-secret triage brief for the selected failed/stuck run and starts
-`omp`; `P` opens plain `omp` without a brief. With `session: per-task`, each task
-uses a stable `--session-dir` under the user state directory and adds `--continue`
-when a prior session exists. The brief includes PR state, recent signals,
-conflicted files, targeted report excerpts, and error-like log lines.
+`omp`; `P` opens plain `omp` without a brief. The brief's opening instruction
+references the exact written path, including the temp-dir fallback used when the
+worktree does not ignore `.foreman/`. With `session: per-task`, each task uses a
+stable `--session-dir` under the user state directory and adds `--continue` when
+a prior session exists. The brief includes PR state, recent signals, conflicted
+files, targeted report excerpts, and error-like log lines.
 Active-looking runs (`running`, `in_progress`, `pending`) are refused even if a
 projection group is stale, avoiding two agents mutating the same worktree.
 Inline file previews read a completed `git diff | delta --config

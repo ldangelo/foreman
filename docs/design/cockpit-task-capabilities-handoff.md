@@ -7,7 +7,7 @@ Related: `docs/design/cockpit-ui-spec.md`, `clients/cockpit/`
 
 Implementation note (2026-07-11): the shipped UX intentionally uses rich two-line
 task/run rows and an in-pane `textinput`/`textarea` create form instead of the
-earlier one-line/no-id row and nvim-JSON-first create sketch. Task detail is
+earlier one-line/no-id create sketch. Task detail is
 scrollable through the shared `Viewer`; `clients/cockpit/README.md` and
 `docs/design/cockpit-ui-spec.md` are authoritative for operator behavior.
 ## 1. Implemented scope
@@ -57,8 +57,8 @@ the selected details, and `o` opens rows that have external targets.
 - Payload tests cover task create/update command fields, including duplicated
   `type`/`task_type`, priority defaults, project scoping, and empty-title
   cancellation.
-- Render tests cover rich task rows, detail fields, truncation/narrow layout, and
-  mock create round-tripping into the READY list.
+- Render tests cover rich task rows, detail fields, truncation/narrow layout,
+  scoped `n`/`N` create keys, and mock create round-tripping into the READY list.
 - Focused and full cockpit verification has passed with `go test ./...`,
   `go generate ./...`, `go vet ./...`, build, and mock dump smoke.
 

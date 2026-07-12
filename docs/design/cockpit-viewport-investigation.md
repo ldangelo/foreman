@@ -7,11 +7,11 @@ Related: `clients/cockpit/viewer.go`, `view.go`, `task_list.go`, `model.go`, `st
 
 ## 1. Objective & decision
 
-Replace the cockpit's three hand-rolled viewport implementations (`Viewer`, the
-`view.go` window helpers, and `TaskList` windowing) with the battle-tested
-`robinovitch61/viewport` component, and gain capabilities it doesn't have today:
+Replace the cockpit's three viewport-like surfaces (`Viewer`, the `view.go`
+line-shaping helpers, and `TaskList` windowing) with the battle-tested
+`robinovitch61/viewport` component, and gain capabilities it didn't have before:
 **in-view search** (logs/events/messages), **horizontal pan** for long lines,
-**sticky headers**, and save-to-file.
+selection-preserving packed rows, and save-to-file.
 
 The library targets **Bubble Tea v2 + Go 1.26**; the cockpit nested module now
 targets Go 1.26 and Bubble Tea v2. WS1 landed the whole-app v2 migration, WS2
@@ -39,17 +39,17 @@ that class of bug and adds features.
 |---|---|
 | Drill-down cursor/offset/bottom-follow/clamp | core viewport |
 | Summary/body clipping in `view.go` | Lip Gloss pane bounds and viewport-backed drill-downs |
-| Task-list windowing + keep-selected-visible | selection + sticky header |
-| messages "keep header visible / by-whole-message" special-case | sticky header + selection |
+| Task-list windowing + keep-selected-visible | viewport selection plus a sticky section/filter header |
+| messages "keep header visible / by-whole-message" special-case | packed child rows owned by selectable message headers |
 | long log lines hard-clipped with `…` | **horizontal pan** or wrap toggle |
 | no in-view search in logs/events/messages | **`filterableviewport`** search + next/prev + matches-only |
 | save visible logs/report rows | save-to-file |
 | stable log line-number prefixes | `MultiItem` |
 
 Library specifics to lean on: generic `viewport.New[T]` where your type
-implements `Object.GetItem() item.Item`; sticky top/bottom auto-follow;
-configurable sticky header; highlight ranges; `filterableviewport` with
-exact/regex/case-insensitive/fuzzy modes, match highlighting, next/prev match,
+implements `Object.GetItem() item.Item`; top/bottom auto-follow; optional fixed
+headers; highlight ranges; `filterableviewport` with exact/regex/case-insensitive/fuzzy
+modes, match highlighting, next/prev match,
 matches-only, match limit, and search history.
 
 ## 4. Workstream 1 — Bubble Tea v2 migration to parity (complete)
@@ -83,9 +83,8 @@ mouse/key coverage, and handoff command coverage.
   `ViewerLine`s to `item.NewItem(...)` (the stable keys map directly to item
   identity, preserving cursor-across-refresh).
 - Instantiate `viewport.New[viewerObject](w, h, WithSelectionEnabled(true), …)`;
-  wire selection, **sticky header** (the detail/messages header — replaces the
-  messages special-case), and **sticky bottom auto-follow** for live logs
-  (replaces `viewerBottom`/`scrollToBottom`).
+  wire selection, packed child rows for message bodies/diff previews, and the
+  bottom-follow policy for append-only live logs.
 - Route the drill-down key/mouse events into `vp.Update(msg)`; keep the root
   model's focus model (`viewFocused`) deciding whether keys go to the list or the
   viewport.

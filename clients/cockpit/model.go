@@ -510,11 +510,15 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.moveSel(1)
 	case "[", "H":
-		m.notice = "section: " + m.taskList.MoveSection(-1)
-		m.buildItems()
+		if m.viewFocused {
+			return m, nil
+		}
+		return m, m.moveTaskSection(-1)
 	case "]", "L":
-		m.notice = "section: " + m.taskList.MoveSection(1)
-		m.buildItems()
+		if m.viewFocused {
+			return m, nil
+		}
+		return m, m.moveTaskSection(1)
 	case "tab":
 		return m, m.selectTab((m.tab + 1) % len(tabNames))
 	case "shift+tab":
@@ -527,6 +531,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.notice = "scope: " + m.taskList.ToggleScope()
 		m.buildItems()
+		return m, m.reloadSelectedDetail()
 	case "o":
 		if tabNames[m.tab] == "pr" {
 			return m, m.openSelectedPR()
@@ -550,12 +555,18 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, attachRun(m.client, run)
 		}
 	case "n":
+		if m.viewFocused {
+			return m, nil
+		}
 		form := newTaskCreateForm()
 		m.taskForm = &form
 		m.viewFocused = true
 		m.notice = "new task: ctrl+s create · esc cancel"
 		return m, nil
 	case "N":
+		if m.viewFocused {
+			return m, nil
+		}
 		form := newTaskQuickAddForm()
 		m.taskForm = &form
 		m.viewFocused = true
@@ -647,6 +658,16 @@ func (m *model) moveSel(delta int) tea.Cmd {
 	if !m.taskList.Move(delta) {
 		return nil
 	}
+	return m.reloadSelectedDetail()
+}
+
+func (m *model) moveTaskSection(delta int) tea.Cmd {
+	m.notice = "section: " + m.taskList.MoveSection(delta)
+	m.buildItems()
+	return m.reloadSelectedDetail()
+}
+
+func (m *model) reloadSelectedDetail() tea.Cmd {
 	m.resetViewerCursor()
 	m.loadDetail()
 	if m.detailUsesViewer() {
@@ -791,7 +812,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 				m.viewFocused = false
 				m.notice = "section: " + m.taskList.ActiveSection().Name
 				m.buildItems()
-				return m, nil
+				return m, m.reloadSelectedDetail()
 			}
 		} else if mouse.X <= m.leftPaneWidth() {
 			if idx := m.taskRowIndexAt(mouse.Y); idx >= 0 {

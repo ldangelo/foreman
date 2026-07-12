@@ -8,10 +8,11 @@ Implementation note (2026-07-11): the cockpit implements `p`/`P`, auto tmux vs
 inline launch, worktree/active-worker guards, configurable command/args/session
 mode, per-task OMP session directories with `--continue` when a prior session is
 present, triage brief writing with safe fallback outside the worktree unless
-`.foreman/` is gitignored, PR/failure/conflict/report/log context, and
-sensitive-line redaction. Direct interactive opening-instruction injection stays
-out of the launch path; the cockpit writes the brief and prints a read-it-first
-message before starting `omp`.
+`.foreman/` is gitignored, opening instructions that point at the exact written
+brief path, PR/failure/conflict/report/log context, and sensitive-line
+redaction. Direct interactive opening-instruction injection stays out of the
+launch path; the cockpit writes the brief and prints a read-it-first message
+before starting `omp`.
 
 ## 1. Objective
 
@@ -120,7 +121,7 @@ Pick the opening instruction by failure mode (a small `switch` on
 | `merge_conflict` (finalize/merge-resolver) | "Resolve the rebase/merge conflicts in this worktree. Conflicted files: … Run `git status` first." |
 | `ci_failed` (cicd) | "CI failed. Reproduce the failing build/tests here and fix them." |
 | `coderabbit_*` (cli-review) | "Address these CodeRabbit findings (see CR_CLI_REPORT.md): …" |
-| generic `failed`/`stuck` | "This Foreman run failed at `<phase>`. Investigate using ./.foreman/triage-<run>.md and propose a fix." |
+| generic `failed`/`stuck` | "This Foreman run failed at `<phase>`. Investigate using `<brief-path>` and propose a fix." |
 
 Session identity is keyed by task id using `--session-dir
 <state>/foreman-cockpit/omp/<task>`; if that directory already contains an OMP
@@ -173,8 +174,8 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
   `Dir`, and the tmux path uses `-c <worktree>`.
 - `resolveOmpMode` tests cover `auto`, `$TMUX`, `on/off`, missing binary, and
   missing worktree paths.
-- `buildTriageBrief` tests cover failure-mode sections and opening instructions
-  without secrets.
+- `buildTriageBrief` tests cover failure-mode sections, opening instructions
+  with the actual written brief path, and sensitive-line redaction.
 - Active-run safeguards are covered so the cockpit does not silently attach to a
   worktree an active worker may be mutating.
 

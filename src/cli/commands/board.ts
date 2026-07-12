@@ -85,10 +85,10 @@ export function boardColumnForTaskStatus(status: string): BoardStatus {
   if (["failed", "stuck", "conflict", "blocked", "review"].includes(normalized)) {
     return "needs_attention";
   }
-  if (["merged", "completed", "done"].includes(normalized)) {
+  if (["merged", "completed", "done", "closed"].includes(normalized)) {
     return "closed";
   }
-  return normalizeStatusForBoard(status) ?? "needs_attention";
+  return normalizeStatusForBoard(status) ?? "closed";
 }
 
 function boardStatusToStoreStatus(status: BoardStatus): string {
@@ -327,11 +327,49 @@ function boardTaskFromElixir(row: ElixirTask): BoardTask {
   };
 }
 
-export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStatus, BoardTask[]>> {
+/**
+ * Resolve a user-provided filter value to the target BoardStatus.
+ * Handles common aliases: completed/closed, in-progress/in_progress, needs-attention/needs_attention.
+ */
+export function resolveFilterToBoardStatus(filter: string | undefined): BoardStatus | null {
+  if (!filter) return null;
+  const normalized = filter.replace(/-/g, "_").toLowerCase();
+  // Handle aliases for closed column
+  if (["completed", "closed", "merged", "done"].includes(normalized)) {
+    return "closed";
+  }
+  // Handle aliases for in_progress
+  if (["in_progress", "inprogress", "in-progress"].includes(normalized)) {
+    return "in_progress";
+  }
+  // Handle aliases for needs_attention
+  if (["needs_attention", "needsattention", "needs-attention", "blocked"].includes(normalized)) {
+    return "needs_attention";
+  }
+  // Handle backlog aliases
+  if (["backlog", "open", "todo"].includes(normalized)) {
+    return "backlog";
+  }
+  // Handle ready aliases
+  if (["ready"].includes(normalized)) {
+    return "ready";
+  }
+  // Try direct match to BOARD_STATUSES
+  return normalizeStatusForBoard(normalized);
+}
+
+/**
+ * Filter tasks to only include those in the specified board status column.
+ */
+function applyStatusFilter(tasks: BoardTask[], targetStatus: BoardStatus): BoardTask[] {
+  return tasks.filter((task) => boardColumnForTaskStatus(task.status) === targetStatus);
+}
+
+export async function loadBoardTasks(projectPath: string, options: { filter?: string } = {}): Promise<Map<BoardStatus, BoardTask[]>> {
   const context = await resolveBoardContext(projectPath);
   const rows = context.backend === "elixir"
     ? (await context.client.listTasks())
-        .filter((task) => !task.project_id || task.project_id === context.projectId)
+        .filter((task) => task.project_id === context.projectId)
         .map(boardTaskFromElixir)
     : (await context.client.tasks.list({ projectId: context.projectId, limit: 1000 }) as TaskRow[])
         .map(boardTaskFromRow);
@@ -341,7 +379,13 @@ export async function loadBoardTasks(projectPath: string): Promise<Map<BoardStat
     map.set(status, []);
   }
 
-  for (const row of rows) {
+  // Apply status filter if specified
+  const targetStatus = resolveFilterToBoardStatus(options.filter);
+  const filteredRows = targetStatus !== null
+    ? applyStatusFilter(rows, targetStatus)
+    : rows;
+
+  for (const row of filteredRows) {
     const status = boardColumnForTaskStatus(row.status);
     map.get(status)!.push(row);
   }
@@ -1868,6 +1912,57 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
   };
 }
 
+// ── Static board snapshot renderer ────────────────────────────────────────────
+
+/**
+ * Render a static snapshot of the board to stdout (for script/non-TTY usage).
+ * This is used by --all mode to render deterministic per-project snapshots.
+ */
+export async function renderBoardSnapshot(
+  projectPath: string,
+  projectName: string,
+  options: { limit?: number; filter?: string } = {},
+): Promise<void> {
+  try {
+    const tasks = await loadBoardTasks(projectPath, { filter: options.filter });
+    const totalTasks = [...tasks.values()].reduce((sum, t) => sum + t.length, 0);
+    const terminalWidth = getTerminalWidth();
+    const sortMode: SortMode = "updated";
+    const sortedTasks = sortBoardColumns(tasks, sortMode);
+    const nav: NavigationState = { colIndex: 0, rowIndex: 0 };
+
+    const state: RenderState = {
+      tasks: sortedTasks,
+      nav,
+      totalTasks,
+      errorMessage: null,
+      flashTaskId: null,
+      showHelp: false,
+      showDetail: false,
+      detailTask: null,
+      detailNotesStatus: "idle",
+      detailNotesError: null,
+      sortMode,
+      refreshStatus: undefined,
+      refreshSpinnerFrame: undefined,
+      refreshedAt: null,
+    };
+
+    const output = renderBoard(state, projectName, terminalWidth, options.limit, getTerminalHeight());
+    process.stdout.write(output + "\n");
+
+    if (options.filter) {
+      const targetStatus = resolveFilterToBoardStatus(options.filter);
+      if (targetStatus) {
+        const filteredCount = sortedTasks.get(targetStatus)?.length ?? 0;
+        console.log(chalk.dim(`Filtered to ${filteredCount} task(s) in ${STATUS_LABELS[targetStatus]}`));
+      }
+    }
+  } catch (err) {
+    console.error(chalk.red(`Failed to render board for ${projectName}: ${err instanceof Error ? err.message : String(err)}`));
+  }
+}
+
 // ── Main board loop ────────────────────────────────────────────────────────────
 
 export interface BoardOptions {
@@ -1905,11 +2000,11 @@ async function readLine(prompt: string): Promise<string> {
  * Run the interactive kanban board TUI loop.
  */
 export async function runBoard(opts: BoardOptions): Promise<void> {
-  const { projectPath, projectName, limit } = opts;
+  const { projectPath, projectName, limit, filter } = opts;
 
   let tasks: Map<BoardStatus, BoardTask[]>;
   try {
-    tasks = await loadBoardTasks(projectPath);
+    tasks = await loadBoardTasks(projectPath, { filter });
   } catch (err) {
     console.error(chalk.red(`Failed to load tasks: ${err instanceof Error ? err.message : String(err)}`));
     return;
@@ -2184,7 +2279,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
     if (result.needsRefresh) {
       startRefreshSpinner();
       try {
-        tasks = await loadBoardTasks(projectPath);
+        tasks = await loadBoardTasks(projectPath, { filter });
         tasks = sortBoardColumns(tasks, sortMode);
         normalizeNavRowIndex(nav, tasks);
         refreshStatus = "refreshed";
@@ -2252,11 +2347,10 @@ export const boardCommand = new Command("board")
       for (const project of projects) {
         const projectPath = project.path ?? await resolveProjectPathFromOptions({ project: project.name });
         console.log(chalk.bold(`\n=== ${project.name} ===`));
-        try {
-          runBoard({ projectPath, projectName: project.name, limit: opts.limit ? parseInt(opts.limit, 10) : undefined, filter: opts.filter });
-        } catch (err) {
-          console.error(chalk.red(`Board error for ${project.name}: ${err instanceof Error ? err.message : String(err)}`));
-        }
+        await renderBoardSnapshot(projectPath, project.name, {
+          limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
+          filter: opts.filter,
+        });
       }
       return;
     }

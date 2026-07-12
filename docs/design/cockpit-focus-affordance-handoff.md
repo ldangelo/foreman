@@ -28,6 +28,9 @@ Interaction is already implemented and unchanged: focus starts in the task list;
   is visible without relying on color alone.
 - Mouse click-to-focus uses native pane hit-testing in `handleMouse`; no
   `bubblezone` dependency is required.
+- Detail-focused key handling preserves that ownership: task-list section
+  navigation and task creation keys are ignored while the right pane is focused,
+  except for explicit mouse clicks back into the task list.
 
 ## 3. Theme/config contract
 

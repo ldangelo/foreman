@@ -188,7 +188,7 @@ func hasOmpSession(dir string) bool {
 	return found
 }
 
-func buildTriageBrief(m model, run Run) string {
+func buildTriageBrief(m model, run Run, briefPath string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Foreman triage brief\n\n")
 	fmt.Fprintf(&b, "- Task: %s\n- Run: %s\n- Status: %s\n- Phase: %s\n", run.TaskID, run.RunID, run.Status, run.Phase)
@@ -209,7 +209,7 @@ func buildTriageBrief(m model, run Run) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n## Opening instruction\n\n")
-	b.WriteString(ompOpening(run, "./.foreman/triage-"+run.RunID+".md", m.config.Integrations.Omp))
+	b.WriteString(ompOpening(run, briefPath, m.config.Integrations.Omp))
 	b.WriteString("\n")
 	if len(m.events) > 0 || len(m.msgs) > 0 {
 		b.WriteString("\n## Recent signals\n\n")
@@ -336,7 +336,7 @@ func redactBriefLine(line string) string {
 	return line
 }
 
-func writeTriageBrief(worktree, runID, content string) (string, error) {
+func triageBriefPath(worktree, runID string) (string, error) {
 	wt := expandHome(strings.TrimSpace(worktree))
 	if wt == "" || wt == "(cleaned)" {
 		return "", errors.New("no worktree available for omp")
@@ -346,15 +346,25 @@ func writeTriageBrief(worktree, runID, content string) (string, error) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", err
 		}
-		path := filepath.Join(dir, "triage-"+runID+".md")
-		return path, os.WriteFile(path, []byte(content), 0o600)
+		return filepath.Join(dir, "triage-"+runID+".md"), nil
 	}
 	dir, err := os.MkdirTemp("", "foreman-triage-*")
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "triage-"+runID+".md")
-	return path, os.WriteFile(path, []byte(content), 0o600)
+	return filepath.Join(dir, "triage-"+runID+".md"), nil
+}
+
+func writeTriageBrief(worktree, runID, content string) (string, error) {
+	path, err := triageBriefPath(worktree, runID)
+	if err != nil {
+		return "", err
+	}
+	return path, writeTriageBriefFile(path, content)
+}
+
+func writeTriageBriefFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 func worktreeIgnoresForeman(worktree string) bool {
@@ -380,8 +390,11 @@ func attachOmp(m model, run Run, plain bool) tea.Cmd {
 	brief := ""
 	if !plain {
 		var err error
-		brief, err = writeTriageBrief(run.Worktree, run.RunID, buildTriageBrief(m, run))
+		brief, err = triageBriefPath(run.Worktree, run.RunID)
 		if err != nil {
+			return func() tea.Msg { return ompDoneMsg{err: err, mode: mode, plain: plain} }
+		}
+		if err := writeTriageBriefFile(brief, buildTriageBrief(m, run, brief)); err != nil {
 			return func() tea.Msg { return ompDoneMsg{err: err, mode: mode, plain: plain} }
 		}
 	}
