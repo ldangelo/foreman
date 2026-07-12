@@ -1232,14 +1232,15 @@ func fileChangesFromGitWorktree(run Run) []FileChange {
 		return nil
 	}
 	worktree = expandHome(worktree)
+	conflicts := gitConflictStatuses(worktree)
 
 	for _, spec := range diffSpecs(run) {
-		files := fileChangesFromGitDiff(worktree, spec)
+		files := fileChangesFromGitDiff(worktree, spec, conflicts)
 		if len(files) > 0 {
 			return files
 		}
 	}
-	return nil
+	return conflictFileChanges(conflicts)
 }
 
 func diffSpecs(run Run) []string {
@@ -1269,7 +1270,7 @@ func diffSpecs(run Run) []string {
 	return specs
 }
 
-func fileChangesFromGitDiff(worktree, spec string) []FileChange {
+func fileChangesFromGitDiff(worktree, spec string, conflicts map[string]bool) []FileChange {
 	args := []string{"-C", worktree, "diff", "--numstat"}
 	if spec != "" {
 		args = append(args, spec)
@@ -1298,11 +1299,17 @@ func fileChangesFromGitDiff(worktree, spec string) []FileChange {
 		if change == "" {
 			change = "M"
 		}
-		files = append(files, FileChange{
+		file := FileChange{
 			Change: change,
 			Path:   pathText,
 			Stat:   "+" + parts[0] + " -" + parts[1],
-		})
+		}
+		if conflicts[pathText] || isUnmergedGitStatus(change) {
+			file.Change = "U"
+			file.Conflict = true
+			file.Stat = "conflict"
+		}
+		files = append(files, file)
 	}
 	return files
 }
@@ -1326,6 +1333,51 @@ func gitDiffStatuses(worktree, spec string) map[string]string {
 		statuses[pathText] = strings.ToUpper(string([]rune(fields[0])[0]))
 	}
 	return statuses
+}
+
+func gitConflictStatuses(worktree string) map[string]bool {
+	out, err := exec.Command("git", "-C", worktree, "status", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+	conflicts := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if len(line) < 4 || !isUnmergedGitStatus(line[:2]) {
+			continue
+		}
+		pathText := strings.TrimSpace(line[3:])
+		if i := strings.LastIndex(pathText, " -> "); i >= 0 {
+			pathText = strings.TrimSpace(pathText[i+4:])
+		}
+		if pathText != "" {
+			conflicts[pathText] = true
+		}
+	}
+	return conflicts
+}
+
+func isUnmergedGitStatus(status string) bool {
+	status = strings.ToUpper(strings.TrimSpace(status))
+	if status == "AA" || status == "DD" {
+		return true
+	}
+	return strings.Contains(status, "U")
+}
+
+func conflictFileChanges(conflicts map[string]bool) []FileChange {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(conflicts))
+	for path := range conflicts {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	files := make([]FileChange, 0, len(paths))
+	for _, path := range paths {
+		files = append(files, FileChange{Change: "U", Path: path, Stat: "conflict", Conflict: true})
+	}
+	return files
 }
 
 func fileChangesFromTimeline(timeline []map[string]any) []FileChange {

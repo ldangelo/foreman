@@ -40,7 +40,7 @@ func selectedDiffBase(run Run, cfg Integrations) string {
 	return "origin/dev"
 }
 
-func deltaPreviewCommand(run Run, filePath string, cfg Integrations, tools ToolResolver) (*exec.Cmd, bool, error) {
+func deltaPreviewCommand(run Run, filePath string, width int, cfg Integrations, tools ToolResolver) (*exec.Cmd, bool, error) {
 	wt := strings.TrimSpace(run.Worktree)
 	if wt == "" || wt == "(cleaned)" {
 		return nil, false, errors.New("no worktree available for diff preview")
@@ -52,16 +52,20 @@ func deltaPreviewCommand(run Run, filePath string, cfg Integrations, tools ToolR
 	gitDiff := fmt.Sprintf("git -C %s diff %s...HEAD -- %s", shellQuote(expandHome(wt)), shellQuote(base), shellQuote(filePath))
 	useDelta := normalizeEnable(cfg.Delta.Enable) != "off" && os.Getenv("NO_COLOR") == "" && tools.Available("delta")
 	if useDelta {
-		return exec.Command("bash", "-lc", gitDiff+" | delta --config "+shellQuote(cockpitThemePath("delta.gitconfig"))+" --color-only"), true, nil
+		cmd := exec.Command("bash", "-lc", gitDiff+" | delta --config "+shellQuote(cockpitThemePath("delta.gitconfig"))+" --color-only")
+		applyColumns(cmd, width)
+		return cmd, true, nil
 	}
-	return exec.Command("bash", "-lc", gitDiff), false, nil
+	cmd := exec.Command("bash", "-lc", gitDiff)
+	applyColumns(cmd, width)
+	return cmd, false, nil
 }
 
-func loadDiffPreview(run Run, filePath string, cfg Integrations, tools ToolResolver) tea.Cmd {
+func loadDiffPreview(run Run, filePath string, width int, cfg Integrations, tools ToolResolver) tea.Cmd {
 	base := selectedDiffBase(run, cfg)
 	key := diffPreviewKey(run, filePath, base)
 	return func() tea.Msg {
-		cmd, usingDelta, err := deltaPreviewCommand(run, filePath, cfg, tools)
+		cmd, usingDelta, err := deltaPreviewCommand(run, filePath, width, cfg, tools)
 		preview := DiffPreview{RunID: run.RunID, Path: filePath, Base: base, Plain: !usingDelta}
 		if err != nil {
 			preview.Err = err.Error()
@@ -84,4 +88,11 @@ func loadDiffPreview(run Run, filePath string, cfg Integrations, tools ToolResol
 		}
 		return diffPreviewMsg{key: key, preview: preview}
 	}
+}
+
+func applyColumns(cmd *exec.Cmd, width int) {
+	if width <= 0 {
+		return
+	}
+	cmd.Env = append(os.Environ(), fmt.Sprintf("COLUMNS=%d", width))
 }

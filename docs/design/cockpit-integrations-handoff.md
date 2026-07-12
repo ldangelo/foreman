@@ -169,11 +169,12 @@ process takeover), the way `reports` render markdown through Glamour today.
 
 - In the `files` branch of the viewer/body render, for the selected file build:
   `git -C <wt> diff <base>...HEAD -- <path>` piped through `delta --color-only`
-  (respect `NO_COLOR`/width). Capture stdout, split into viewer lines.
-- Put the exec behind a pure builder `deltaPreviewCommand(run, path, cfg)` and a
-  thin runner; cache the output per (runID, path) so it isn't recomputed every
-  render/tick. Degrade to a plain `git diff` (or the existing file list) when
-  delta is absent.
+  (respect `NO_COLOR` and the focused pane width via `COLUMNS`). Capture stdout,
+  split into viewer lines.
+- Put the exec behind a pure builder
+  `deltaPreviewCommand(run, path, width, cfg, tools)` and a thin runner; cache
+  the output per (runID, path) so it isn't recomputed every render/tick. Degrade
+  to a plain `git diff` (or the existing file list) when delta is absent.
 - Keep it inside the existing `Viewer` line model so scrolling/`fitBlock` still
   work. Do not break the `o`/`d`/`D` actions.
 - Regression contract: moving the cursor onto a changed file shows its colored
@@ -294,8 +295,9 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
   diff totals are exposed on the existing `/api/v1/runs` projection; file-change
   fallback data is exposed on the existing `/api/v1/runs/:run_id/debug` timeline.
 - **Resolved risks:** the diff base is configurable (`integrations.diffnav.base`) and falls
-  back sensibly; diffnav Nerd-Font/`delta` requirements and `gh` auth failures
-  surface as notices; exec work stays out of render paths by loading/caching detail.
+  back sensibly; conflicted worktree files are marked in the file list; diffnav
+  Nerd-Font/`delta` requirements and `gh` auth failures surface as notices; exec
+  work stays out of render paths by loading/caching detail.
 - **Consistency:** full-screen external review tools (`diffnav`, `gh dash`, and
   `gh enhance`) go through `tea.ExecProcess` and set a notice on return, exactly
   like `openInNvim`/`editTaskInNvim`. OMP tmux mode is the exception: it uses a

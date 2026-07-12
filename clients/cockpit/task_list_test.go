@@ -81,6 +81,28 @@ func TestTaskListTreatsAttentionRunsAsFailedAndSearchesVisibleMetadata(t *testin
 	}
 }
 
+func TestFailedSectionIncludesFailedLikeTaskAndRunStatuses(t *testing.T) {
+	for _, status := range []string{"failed", "stuck", "conflict", "test-failed"} {
+		t.Run("task_"+status, func(t *testing.T) {
+			list := NewTaskList()
+			list.MoveSection(2) // Failed
+			list.SetData(nil, []Task{{TaskID: "task-" + status, Status: status}})
+			if items := list.Items(); len(items) != 1 || !items[0].IsTask || items[0].Task.Status != status {
+				t.Fatalf("expected %s task in Failed section, got %#v", status, items)
+			}
+		})
+
+		t.Run("run_"+status, func(t *testing.T) {
+			list := NewTaskList()
+			list.MoveSection(2) // Failed
+			list.SetData([]Run{{Group: taskGroupRecent, RunID: "run-" + status, Status: status}}, nil)
+			if items := list.Items(); len(items) != 1 || items[0].Run.Status != status {
+				t.Fatalf("expected %s run in Failed section, got %#v", status, items)
+			}
+		})
+	}
+}
+
 func TestRecentSectionIsMostRecentFirstAndCapped(t *testing.T) {
 	list := NewTaskList()
 	list.MoveSection(3) // Recent

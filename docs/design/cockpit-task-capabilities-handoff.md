@@ -54,18 +54,21 @@ the selected details, and `o` opens rows that have external targets.
 
 ## 4. Verification completed
 
-- Payload tests cover task create/update command fields, including duplicated
-  `type`/`task_type`, priority defaults, project scoping, identity-preserving
-  update drafts, field-token message-count search, and empty-title cancellation.
-- Render/form tests cover rich task rows, detail fields, truncation/narrow layout,
-  scoped `n`/`N` create keys, editable title/description/type/priority fields,
-  focus wrapping, and mock create round-tripping into the READY list.
+- Payload tests cover task create/update/approve/retry/reset command fields,
+  including duplicated `type`/`task_type`, priority defaults, project scoping,
+  identity-preserving update drafts, command ordering, field-token message-count
+  search, and empty-title cancellation.
+- Render/form/list tests cover rich task rows, detail fields,
+  failed-like status classification, truncation/narrow layout, scoped `n`/`N`
+  create keys, editable title/description/type/priority fields, focus wrapping,
+  and mock create round-tripping into the READY list.
 - Focused and full cockpit verification has passed with `go test ./...`,
   `go generate ./...`, `go vet ./...`, build, and mock dump smoke.
 
 ## 5. Closed non-goals
 
-- No new backend endpoint was added; the shipped flow uses the existing Elixir
-  command bus route `task.create`.
+- No new backend endpoint was added; the shipped flows use the existing Elixir
+  command bus routes for `task.create`, `task.update`, `task.approve`,
+  `run.retry`, and `run.reset`.
 - No regression to run rows or RUNNING/RECENT grouping; the list uses viewport
   row identity and row-height-aware hit-testing.

@@ -305,14 +305,14 @@ func TestHTTPClientPostsReadyTaskActions(t *testing.T) {
 		t.Fatalf("expected task.update command, got %#v", commands[1])
 	}
 	updatePayload := commands[1]["payload"].(map[string]any)
-	if updatePayload["title"] != "Edited task" || updatePayload["description"] != "new" || updatePayload["status"] != "ready" {
+	if updatePayload["project_id"] != "proj-live" || updatePayload["title"] != "Edited task" || updatePayload["description"] != "new" || updatePayload["type"] != "bug" || updatePayload["task_type"] != "bug" || updatePayload["priority"] != "P2" || updatePayload["status"] != "ready" {
 		t.Fatalf("unexpected update payload: %#v", updatePayload)
 	}
 	if commands[2]["command_type"] != "task.create" {
 		t.Fatalf("expected task.create command, got %#v", commands[2])
 	}
 	createPayload := commands[2]["payload"].(map[string]any)
-	if createPayload["task_id"] != "task-new" || createPayload["title"] != "New task" || createPayload["task_type"] != "feature" || createPayload["source"] != "cockpit" {
+	if createPayload["project_id"] != "proj-live" || createPayload["task_id"] != "task-new" || createPayload["title"] != "New task" || createPayload["description"] != "fresh" || createPayload["type"] != "feature" || createPayload["task_type"] != "feature" || createPayload["priority"] != "1" || createPayload["source"] != "cockpit" {
 		t.Fatalf("unexpected create payload: %#v", createPayload)
 	}
 	if commands[3]["command_type"] != "run.retry" {
@@ -433,6 +433,57 @@ func TestHTTPClientPrefersWorktreeDiffForFiles(t *testing.T) {
 	}
 }
 
+func TestHTTPClientMarksWorktreeMergeConflicts(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "cockpit@example.invalid")
+	runGit(t, repo, "config", "user.name", "Cockpit Test")
+	writeFile(t, repo, "conflict.txt", "base\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "base")
+	runGit(t, repo, "branch", "-M", "main")
+	runGit(t, repo, "checkout", "-b", "foreman-run")
+	writeFile(t, repo, "conflict.txt", "branch\n")
+	runGit(t, repo, "commit", "-am", "branch")
+	runGit(t, repo, "checkout", "main")
+	writeFile(t, repo, "conflict.txt", "main\n")
+	runGit(t, repo, "commit", "-am", "main")
+	runGit(t, repo, "checkout", "foreman-run")
+	runGitWantFailure(t, repo, "merge", "main")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"runs": []map[string]any{{
+					"run_id":   "run-live",
+					"worktree": repo,
+					"base_ref": "main",
+				}},
+			})
+		case "/api/v1/runs/run-live/debug":
+			t.Fatalf("worktree conflict detection should avoid debug fallback")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	files := NewHTTPClient(server.URL, "").Files("run-live")
+	if len(files) == 0 {
+		t.Fatal("expected conflicted worktree files")
+	}
+	byPath := map[string]FileChange{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	if file := byPath["conflict.txt"]; file.Change != "U" || file.Stat != "conflict" || !file.Conflict {
+		t.Fatalf("expected conflict metadata from preferred worktree diff, got %#v from %#v", file, files)
+	}
+}
+
 func TestHTTPClientDerivesFilesFromDebugTimeline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -512,6 +563,15 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func runGitWantFailure(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("git %v unexpectedly succeeded:\n%s", args, string(out))
 	}
 }
 

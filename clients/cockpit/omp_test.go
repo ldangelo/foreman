@@ -118,6 +118,9 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	if strings.Contains(inline.Args[2], "exec exec") {
 		t.Fatalf("expected inline command to exec omp exactly once, got %q", inline.Args[2])
 	}
+	if strings.Contains(inline.Args[2], "'-p'") || strings.Contains(inline.Args[2], "\"-p\"") || strings.Contains(inline.Args[2], "--prompt") {
+		t.Fatalf("expected attach flow to avoid prompt injection flags, got %q", inline.Args[2])
+	}
 
 	cfg.KeepShell = true
 	tmux, err := ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
@@ -135,6 +138,9 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(tmux.Args, " "), "exec ${SHELL:-/bin/sh}") {
 		t.Fatalf("expected keep-shell disabled to omit shell handoff, got %v", tmux.Args)
+	}
+	if strings.Contains(strings.Join(tmux.Args, " "), "'-p'") || strings.Contains(strings.Join(tmux.Args, " "), "\"-p\"") || strings.Contains(strings.Join(tmux.Args, " "), "--prompt") {
+		t.Fatalf("expected tmux attach flow to avoid prompt injection flags, got %v", tmux.Args)
 	}
 }
 

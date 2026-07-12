@@ -1237,7 +1237,7 @@ func (m *model) maybeLoadSelectedDiffPreview() tea.Cmd {
 		return nil
 	}
 	m.diffLoading[key] = true
-	return loadDiffPreview(run, path, m.config.Integrations, m.tools)
+	return loadDiffPreview(run, path, m.rightPaneWidth(), m.config.Integrations, m.tools)
 }
 
 func (m model) openSelectedPR() tea.Cmd {

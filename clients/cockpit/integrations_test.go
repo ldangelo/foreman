@@ -265,7 +265,7 @@ func TestGhCommandsReportMissingGitHubCLI(t *testing.T) {
 
 func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 	cfg := defaultConfig().Integrations
-	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a file.go", cfg, fakeTools{})
+	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a file.go", 80, cfg, fakeTools{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 func TestDeltaPreviewCommandHonorsDisabledAndNoColor(t *testing.T) {
 	cfg := defaultConfig().Integrations
 	cfg.Delta.Enable = "off"
-	_, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", cfg, fakeTools{"delta": true})
+	_, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", 80, cfg, fakeTools{"delta": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestDeltaPreviewCommandHonorsDisabledAndNoColor(t *testing.T) {
 
 	cfg.Delta.Enable = "on"
 	t.Setenv("NO_COLOR", "1")
-	_, usingDelta, err = deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", cfg, fakeTools{"delta": true})
+	_, usingDelta, err = deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", 80, cfg, fakeTools{"delta": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestDeltaPreviewCommandHonorsDisabledAndNoColor(t *testing.T) {
 
 func TestDeltaPreviewCommandUsesProjectedRunBaseBranch(t *testing.T) {
 	cfg := defaultConfig().Integrations
-	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt", BaseBranch: "main"}, "src/a.go", cfg, fakeTools{})
+	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt", BaseBranch: "main"}, "src/a.go", 80, cfg, fakeTools{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestDeltaPreviewCommandUsesProjectedRunBaseBranch(t *testing.T) {
 func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	cfg := defaultConfig().Integrations
-	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", cfg, fakeTools{"delta": true})
+	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", 123, cfg, fakeTools{"delta": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +325,9 @@ func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
 	}
 	if !strings.Contains(cmd.Args[2], " | delta --config ") || !strings.Contains(cmd.Args[2], "theme/delta.gitconfig") {
 		t.Fatalf("expected packaged delta config in command %q", cmd.Args[2])
+	}
+	if !envContains(cmd.Env, "COLUMNS=123") {
+		t.Fatalf("expected delta preview command to receive viewport width, got env %#v", cmd.Env)
 	}
 }
 
@@ -455,4 +458,27 @@ func TestPRTabIsViewerButNotOpenable(t *testing.T) {
 	if m.openableTab() {
 		t.Fatal("expected pr tab not to be nvim-openable")
 	}
+}
+
+func TestOpenPRCommandPrefersGitHubCLIAndRequiresURL(t *testing.T) {
+	cmd, err := openPRCommand(PRStatus{URL: "https://github.com/acme/repo/pull/44"}, fakeTools{"gh": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cmd.Args, " "); got != "gh pr view --web https://github.com/acme/repo/pull/44" {
+		t.Fatalf("unexpected gh PR command %q", got)
+	}
+
+	if _, err := openPRCommand(PRStatus{}, fakeTools{"gh": true}); err == nil || !strings.Contains(err.Error(), "no PR URL") {
+		t.Fatalf("expected missing URL error, got %v", err)
+	}
+}
+
+func envContains(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
 }
