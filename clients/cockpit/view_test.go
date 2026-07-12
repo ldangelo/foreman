@@ -537,6 +537,25 @@ func TestTaskListFocusMarkerSurvivesNoColor(t *testing.T) {
 	}
 }
 
+func TestActiveTabsUseStructuralMarkerWithoutColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-run", RunID: "run-1", Status: "running"}}
+	m.tasks = nil
+	m.buildItems()
+
+	left := stripANSI(m.renderLeft(60, 6))
+	if !strings.Contains(left, "[Running 1]") {
+		t.Fatalf("expected active task section to use non-color marker, got:\n%s", left)
+	}
+
+	m.tab = 3 // logs
+	rightTabs := stripANSI(m.renderTabs(120, paneVisualFor(true, m.config.Cockpit.Focus)))
+	if !strings.Contains(rightTabs, "[logs") {
+		t.Fatalf("expected active drill-down tab to use non-color marker, got:\n%s", rightTabs)
+	}
+}
+
 func TestFocusLabelFollowsActivePane(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120

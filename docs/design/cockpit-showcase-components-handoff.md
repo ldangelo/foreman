@@ -8,8 +8,8 @@ Implementation note (2026-07-11): the cockpit ships generated keymap/help,
 `textinput`/`textarea` task creation, table/reflow rendering, spinner/stopwatch
 reduced-motion support, clickable section/task-row/drill-down-tab/action targets,
 selected-file diff actions, a metrics tab backed by `/api/v1/metrics`, a theme
-installer, richer mock data, and a verified `vhs demo.tape` flow covering help,
-PR, and metrics frames with deterministic Bubble Tea v2 window/color options.
+installer, richer mock data, deterministic Bubble Tea v2 demo options, and a
+checked-in `vhs demo.tape` for local help/PR/metrics frame capture.
 No local cockpit feature is waiting on those libraries: native hit-testing covers
 section/row/action/PR clicks, native bounded bars cover the metrics tab, and
 `clients/cockpit/demo.tape` is checked in for `vhs` capture. `bubblezone` and

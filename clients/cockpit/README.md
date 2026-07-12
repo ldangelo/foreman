@@ -53,9 +53,10 @@ authoritative state.
   `diffnav` (`D`). The metrics tab reads `/api/v1/metrics`, shows a spinner
   while refresh data is in flight, counts counters, gauges, and phase durations
   in the tab badge, and renders all three as bounded rows. The active pane is
-  called out with a focus label, accent frame, and a non-color `▶` task-list
-  marker; the inactive pane can be dimmed via `cockpit.focus`. Set
-  `cockpit.reducedMotion` (or
+  called out with a focus label, accent frame, non-color active-tab brackets, and
+  a non-color `▶` task-list marker; the inactive pane can be dimmed via
+  `cockpit.focus`.
+  Set `cockpit.reducedMotion` (or
   `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
 - `/` searches the focused drill-down pane when the right side is focused; the
   task-list search remains on `/` while the left side is focused. Task-list

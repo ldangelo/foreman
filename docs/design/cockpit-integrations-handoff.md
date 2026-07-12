@@ -268,10 +268,11 @@ Leave `d` (per-file nvim diff), `o` (open in nvim), `g` (scope), `r`/`R` as-is.
 
 The shipped tests keep process handoffs behind pure builder functions and cover:
 
-- `diffnavCommand`, `ghDashCommand`, `ghEnhanceCommand`, and
-  `deltaPreviewCommand` command construction, disabled/missing-tool paths
-  (including missing `gh`), empty-worktree/no-branch branches, and selected-file
-  diff-preview loading/cache guards.
+- `diffnavCommand`, `ghDashCommand`, `ghEnhanceCommand`,
+  `deltaPreviewCommand`, and the selected-file diff-preview runner command
+  construction, disabled/missing-tool paths (including missing `gh`),
+  empty-worktree/no-branch branches, selected-file loading/cache guards, and
+  viewport-width `COLUMNS` propagation into the actual preview subprocess.
 - `toolAvailable` / integration enablement modes independent of PATH.
 - PR projection mapping from `/api/v1/runs`, including checks and review fields.
 - Mock client file diffs, PR state, and render paths for `COCKPIT_BACKEND=mock`.
@@ -279,9 +280,10 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
 
 ## 9. Documentation updated
 
-- `clients/cockpit/README.md` — new keys (`D`, `G`, `C`), the `pr` tab, dependency
+- `clients/cockpit/README.md` — keys (`D`, `G`, `C`), the `pr` tab, dependency
   list (diffnav, delta, gh + gh-dash + gh-enhance, Nerd Font), and the
-  `integrations`/`pr` config block.
+  `integrations` config block. The `pr` tab is projection-driven and has no
+  separate config block.
 - `docs/design/cockpit-ui-spec.md` — add the `pr` tab to the tab strip, the
   diffnav/gh-dash/gh-enhance integration section, the keymap table, and the
   config surface.

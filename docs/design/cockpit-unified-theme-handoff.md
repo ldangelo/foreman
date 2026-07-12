@@ -228,9 +228,10 @@ smoke covered cockpit help, PR, and metrics frames; external surfaces consume th
 generated fragments listed below; release-side screenshot comparison is QA
 coverage, not local implementation scope.
 
-Programmatic checks should keep `tokens.yaml` valid (all color tokens are
-`#RRGGBB`), generator output byte-stable (`go generate ./...` stays clean), and
-cockpit build/test/vet clean (`go test ./...`, `go build ./...`, `go vet ./...`).
+Programmatic checks keep `tokens.yaml` valid (all color tokens are `#RRGGBB`),
+generator output byte-stable (`TestThemeGeneratorOutputIsByteStable` plus
+`go generate ./...`), and cockpit build/test/vet clean (`go test ./...`,
+`go build ./...`, `go vet ./...`).
 
 ## 10. Implementation status
 
@@ -249,9 +250,9 @@ Done in `clients/cockpit/`:
 8. Inline delta previews pass the packaged `theme/delta.gitconfig` with
    `delta --config`.
 
-Local visual smoke completed with `vhs demo.tape` and frame inspection for the
-cockpit help, PR, and metrics views. The external surfaces use generated or
-packaged fragments (`gh-dash.yml`, `enhance.env`, `diffnav/config.yml`, and
+`clients/cockpit/demo.tape` is checked in for local `vhs` smoke/frame inspection
+of the cockpit help, PR, and metrics views. The external surfaces use generated
+or packaged fragments (`gh-dash.yml`, `enhance.env`, `diffnav/config.yml`, and
 `delta.gitconfig`); release QA may still compare side-by-side screenshots in the
 operator's terminal, but no local code or generated-theme work remains.
 

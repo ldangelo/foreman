@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -104,6 +105,58 @@ func TestThemeProjectionFragmentsUseTokens(t *testing.T) {
 	}
 	if !strings.Contains(string(glamour), themeTokenTextPrimary) || !strings.Contains(string(glamour), themeTokenAccent) || !strings.Contains(string(glamour), themeTokenAccent2) {
 		t.Fatalf("glamour theme does not include cockpit text/accent tokens:\n%s", string(glamour))
+	}
+}
+
+func TestThemeGeneratorOutputIsByteStable(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, "theme"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"go.mod", "go.sum", "theme/gen.go", "theme/tokens.yaml"} {
+		copyTestFile(t, path, filepath.Join(tmp, path))
+	}
+
+	cmd := exec.Command("go", "run", "theme/gen.go")
+	cmd.Dir = tmp
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate theme fragments: %v\n%s", err, string(out))
+	}
+
+	for _, path := range []string{
+		"theme_tokens_gen.go",
+		"theme/gh-dash.yml",
+		"theme/enhance.env",
+		"theme/diffnav.yml",
+		"theme/diffnav/config.yml",
+		"theme/delta.gitconfig",
+		"theme/glamour.json",
+	} {
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(tmp, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("generated %s is not byte-stable", path)
+		}
+	}
+}
+
+func copyTestFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

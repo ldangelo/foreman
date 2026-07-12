@@ -286,6 +286,13 @@ func focusMarker(focused bool) string {
 	return " "
 }
 
+func activeTabLabel(label string) string {
+	if os.Getenv("NO_COLOR") != "" {
+		return "[" + label + "]"
+	}
+	return " " + label + " "
+}
+
 func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
 	counts := m.taskList.Counts(m.runs, m.tasks)
 	active := m.taskList.ActiveSectionIndex()
@@ -293,7 +300,7 @@ func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
 	for i, section := range m.taskList.Sections() {
 		label := section.Name + " " + itoa(counts[section.Name])
 		if i == active {
-			tabs = append(tabs, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(" "+label+" "))
+			tabs = append(tabs, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(activeTabLabel(label)))
 		} else {
 			tabs = append(tabs, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
 		}
@@ -660,7 +667,7 @@ func (m model) renderTabs(w int, visual paneVisual) string {
 			label += " " + openableTabMarker
 		}
 		if i == m.tab {
-			toks = append(toks, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(" "+label+" "))
+			toks = append(toks, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(activeTabLabel(label)))
 		} else {
 			toks = append(toks, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
 		}

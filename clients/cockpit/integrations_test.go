@@ -331,6 +331,40 @@ func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDiffPreviewPreservesViewportColumns(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "cockpit@example.invalid")
+	runGit(t, repo, "config", "user.name", "Cockpit Test")
+	if err := os.Mkdir(repo+"/src", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repo+"/src/a.go", []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "base")
+	if err := os.WriteFile(repo+"/src/a.go", []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "commit", "-am", "change")
+
+	diffTool := t.TempDir() + "/external-diff"
+	if err := os.WriteFile(diffTool, []byte("#!/bin/sh\nprintf 'columns=%s\\n' \"$COLUMNS\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_EXTERNAL_DIFF", diffTool)
+
+	cmd := loadDiffPreview(Run{RunID: "run-1", Worktree: repo, BaseBranch: "HEAD~1"}, "src/a.go", 77, defaultConfig().Integrations, fakeTools{})
+	msg := cmd().(diffPreviewMsg)
+	if msg.preview.Err != "" {
+		t.Fatalf("unexpected preview error: %s", msg.preview.Err)
+	}
+	if len(msg.preview.Lines) != 1 || msg.preview.Lines[0] != "columns=77" {
+		t.Fatalf("expected runner to preserve COLUMNS=77, got %#v", msg.preview.Lines)
+	}
+}
+
 func TestMaybeLoadSelectedDiffPreviewUsesLoadingAndCacheGuards(t *testing.T) {
 	m := newModel(NewMockClient())
 	run := Run{Group: taskGroupRunning, RunID: "run-1", TaskID: "task-1", Status: "running", Worktree: "/tmp/wt"}

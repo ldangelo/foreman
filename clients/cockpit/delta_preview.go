@@ -73,8 +73,10 @@ func loadDiffPreview(run Run, filePath string, width int, cfg Integrations, tool
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
-		out, err := cmd.CombinedOutput()
+		runCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+		runCmd.Dir = cmd.Dir
+		runCmd.Env = cmd.Env
+		out, err := runCmd.CombinedOutput()
 		if ctx.Err() == context.DeadlineExceeded {
 			preview.Err = "diff preview timed out"
 			return diffPreviewMsg{key: key, preview: preview}
