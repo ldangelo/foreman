@@ -99,6 +99,7 @@ type Report struct {
 	Size    string
 	Status  string
 	Preview string // markdown, rendered with Glamour in the drill-down
+	Path    string
 }
 
 // FileChange is a changed file in a run's worktree.
@@ -133,6 +134,7 @@ type Client interface {
 	Messages(runID string) []Message
 	Events(runID string) []Event
 	Logs(runID string) []string
+	LogPath(runID string) string
 	Reports(runID string) []Report
 	Files(runID string) []FileChange
 	DrainErrors() []string
@@ -419,6 +421,8 @@ func (*mockClient) Logs(runID string) []string {
 	return []string{"(no log lines)"}
 }
 
+func (*mockClient) LogPath(string) string { return "" }
+
 func (*mockClient) Reports(runID string) []Report {
 	switch runID {
 	case "a1b2c3d4":
@@ -463,13 +467,14 @@ type httpClient struct {
 	token string
 	hc    *http.Client
 
-	mu     sync.Mutex
-	errors []string
+	mu       sync.Mutex
+	errors   []string
+	logPaths map[string]string
 }
 
 // NewHTTPClient returns a client bound to a running Elixir server.
 func NewHTTPClient(base, token string) Client {
-	return &httpClient{base: strings.TrimRight(base, "/"), token: token, hc: &http.Client{Timeout: 5 * time.Second}}
+	return &httpClient{base: strings.TrimRight(base, "/"), token: token, hc: &http.Client{Timeout: 5 * time.Second}, logPaths: map[string]string{}}
 }
 
 func (c *httpClient) get(p string) (map[string]any, error) {
@@ -1088,7 +1093,9 @@ func (c *httpClient) Logs(runID string) []string {
 	if err != nil {
 		return []string{"(logs unavailable: " + err.Error() + ")"}
 	}
-	entries := arrValue(obj(m, "logs")["entries"])
+	logs := obj(m, "logs")
+	c.setLogPath(runID, firstNonEmpty(str(logs, "path", "log_path"), str(m, "path", "log_path")))
+	entries := arrValue(logs["entries"])
 	if len(entries) == 0 {
 		entries = arr(m, "logs")
 	}
@@ -1103,6 +1110,22 @@ func (c *httpClient) Logs(runID string) []string {
 	return out
 }
 
+func (c *httpClient) setLogPath(runID, logPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if logPath == "" {
+		delete(c.logPaths, runID)
+		return
+	}
+	c.logPaths[runID] = logPath
+}
+
+func (c *httpClient) LogPath(runID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.logPaths[runID]
+}
+
 func (c *httpClient) Reports(runID string) []Report {
 	m, err := c.get("/api/v1/runs/" + url.PathEscape(runID) + "/report")
 	if err != nil {
@@ -1115,7 +1138,7 @@ func (c *httpClient) Reports(runID string) []Report {
 	preview := reportPreview(report)
 	var out []Report
 	for _, p := range append(stringList(report["report_paths"]), stringList(report["artifact_paths"])...) {
-		out = append(out, Report{Name: path.Base(p), Status: "recorded", Preview: "`" + p + "`\n\n" + preview})
+		out = append(out, Report{Name: path.Base(p), Path: p, Status: "recorded", Preview: "`" + p + "`\n\n" + preview})
 	}
 	if len(out) == 0 {
 		out = append(out, Report{Name: "run report", Status: str(report, "status"), Preview: preview})
@@ -1144,7 +1167,7 @@ func eventDetail(x map[string]any) string {
 func reportsFromArray(items []map[string]any) []Report {
 	var out []Report
 	for _, x := range items {
-		out = append(out, Report{Name: str(x, "name"), Size: str(x, "size"), Status: str(x, "status"), Preview: str(x, "content")})
+		out = append(out, Report{Name: str(x, "name"), Path: str(x, "path", "artifact_path", "report_path"), Size: str(x, "size"), Status: str(x, "status"), Preview: str(x, "content")})
 	}
 	return out
 }
@@ -1195,7 +1218,7 @@ func (c *httpClient) runProjection(runID string) (Run, bool) {
 		return Run{
 			RunID:      runID,
 			Worktree:   str(r, "worktree", "worktree_path"),
-			BaseBranch: str(r, "base_branch", "target_branch"),
+			BaseBranch: str(r, "base_branch", "base_ref", "target_branch"),
 			BranchName: str(r, "branch_name", "branch"),
 		}, true
 	}

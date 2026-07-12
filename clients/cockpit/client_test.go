@@ -16,7 +16,7 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/tasks":
-			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"task-live","title":"Live task","priority":"P1","status":"in_progress","project_id":"proj-live"},{"task_id":"task-ready","title":"Ready task","priority":"P2","status":"ready","workflow":"default","project_id":"proj-live","dependencies":["task-parent","task-blocker"]}]}`))
+			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"task-live","title":"Live task","priority":"P1","status":"in_progress","project_id":"proj-live"},{"task_id":"task-ready","title":"Ready task","description":"Detailed task body","task_type":"feature","priority":"P2","status":"ready","workflow":"default","project_id":"proj-live","depends_on":"task-parent","created_at":"2026-07-09T00:00:00Z","updated_at":"2026-07-10T00:00:00Z"},{"task_id":"task-array","title":"Array dependency task","priority":"P3","status":"ready","project_id":"proj-live","dependencies":["task-parent","task-blocker"]}]}`))
 		case "/api/v1/runs":
 			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-live","task_id":"task-live","status":"running","current_phase":"developer","priority":"P1","created_at":"2026-07-09T00:00:00Z","updated_at":"2026-07-10T00:00:00Z","status_text":"working","worktree_path":"/tmp/foreman/run-live","branch":"foreman/run-live","base_ref":"main","messages_count":2,"events_count":4,"pr_state":"open","pr_checks":{"passed":3,"failed":1},"additions":12,"deletions":5}]}`))
 		case "/api/v1/inbox":
@@ -30,7 +30,7 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 			}
 			w.Write([]byte(`{"ok":true,"events":[{"run_id":"run-live","occurred_at":"2026-07-10T00:02:00Z","event_type":"PhaseStarted","payload":{"phase_id":"developer"}}]}`))
 		case "/api/v1/runs/run-live/logs":
-			w.Write([]byte(`{"ok":true,"logs":{"run_id":"run-live","mode":"compact","entries":[{"message":"developer started","type":"PhaseStarted"}]}}`))
+			w.Write([]byte(`{"ok":true,"logs":{"run_id":"run-live","path":"/tmp/foreman/run-live/custom.log","mode":"compact","entries":[{"message":"developer started","type":"PhaseStarted"}]}}`))
 		case "/api/v1/runs/run-live/report":
 			w.Write([]byte(`{"ok":true,"report":{"run_id":"run-live","status":"running","current_phase":"developer","report_paths":["docs/reports/task-live/DEVELOPER_REPORT.md"],"artifact_paths":["artifacts/task-live/build.log"],"summary":{"event_count":3}}}`))
 		default:
@@ -50,11 +50,14 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	}
 
 	tasks := client.Dispatchable()
-	if len(tasks) != 1 || tasks[0].TaskID != "task-ready" || tasks[0].Summary != "Ready task" {
+	if len(tasks) != 2 || tasks[0].TaskID != "task-ready" || tasks[0].Summary != "Ready task" {
 		t.Fatalf("unexpected tasks: %#v", tasks)
 	}
-	if tasks[0].Depends != "task-parent, task-blocker" {
-		t.Fatalf("expected dependencies from live projection, got %#v", tasks[0])
+	if tasks[0].Description != "Detailed task body" || tasks[0].TaskType != "feature" || tasks[0].Priority != "P2" || tasks[0].Depends != "task-parent" || tasks[0].Workflow != "default" || tasks[0].ProjectID != "proj-live" || tasks[0].Created == "" || tasks[0].Updated == "" {
+		t.Fatalf("expected rich task fields from live projection, got %#v", tasks[0])
+	}
+	if tasks[1].Depends != "task-parent, task-blocker" {
+		t.Fatalf("expected dependency array from live projection, got %#v", tasks[1])
 	}
 
 	messages := client.Messages("run-live")
@@ -68,12 +71,12 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	}
 
 	logs := client.Logs("run-live")
-	if len(logs) != 1 || logs[0] != "developer started" {
-		t.Fatalf("unexpected logs: %#v", logs)
+	if len(logs) != 1 || logs[0] != "developer started" || client.LogPath("run-live") != "/tmp/foreman/run-live/custom.log" {
+		t.Fatalf("unexpected logs/path: logs=%#v path=%q", logs, client.LogPath("run-live"))
 	}
 
 	reports := client.Reports("run-live")
-	if len(reports) != 2 || reports[0].Name != "DEVELOPER_REPORT.md" || !strings.Contains(reports[0].Preview, "docs/reports/task-live/DEVELOPER_REPORT.md") {
+	if len(reports) != 2 || reports[0].Name != "DEVELOPER_REPORT.md" || reports[0].Path != "docs/reports/task-live/DEVELOPER_REPORT.md" || reports[1].Path != "artifacts/task-live/build.log" || !strings.Contains(reports[0].Preview, "docs/reports/task-live/DEVELOPER_REPORT.md") {
 		t.Fatalf("unexpected reports: %#v", reports)
 	}
 
@@ -182,9 +185,9 @@ func TestHTTPClientTreatsHyphenatedInProgressTaskAsRunning(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/tasks":
-			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"active-task","title":"Active task","task_type":"feature","status":"in-progress","project_id":"proj-live"},{"task_id":"ready-task","title":"Ready task","status":"backlog","project_id":"proj-live"}]}`))
+			w.Write([]byte(`{"ok":true,"tasks":[{"task_id":"active-task","title":"Active task","task_type":"feature","priority":"P0","status":"in-progress","project_id":"proj-live"},{"task_id":"ready-task","title":"Ready task","priority":"P2","status":"backlog","project_id":"proj-live"}]}`))
 		case "/api/v1/runs":
-			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"active-run","task_id":"active-task","status":"in_progress","current_phase":"developer","updated_at":"2026-07-10T00:00:00Z"}]}`))
+			w.Write([]byte(`{"ok":true,"runs":[{"run_id":"active-run","task_id":"active-task","status":"in_progress","current_phase":"developer","priority":"","updated_at":"2026-07-10T00:00:00Z"}]}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.String())
 		}
@@ -196,8 +199,8 @@ func TestHTTPClientTreatsHyphenatedInProgressTaskAsRunning(t *testing.T) {
 	if len(runs) != 1 || runs[0].RunID != "active-run" || runs[0].Group != "RUNNING" {
 		t.Fatalf("expected hyphenated in-progress task with active run to be RUNNING, got %#v", runs)
 	}
-	if runs[0].Title != "Active task" || runs[0].TaskType != "feature" {
-		t.Fatalf("expected run title/type from task projection, got title=%q type=%q", runs[0].Title, runs[0].TaskType)
+	if runs[0].Title != "Active task" || runs[0].TaskType != "feature" || runs[0].Priority != "P0" {
+		t.Fatalf("expected run title/type/priority from task projection, got title=%q type=%q priority=%q", runs[0].Title, runs[0].TaskType, runs[0].Priority)
 	}
 	tasks := client.Dispatchable()
 	if len(tasks) != 1 || tasks[0].TaskID != "ready-task" {
@@ -378,9 +381,9 @@ func TestHTTPClientPrefersWorktreeDiffForFiles(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"runs": []map[string]any{{
-					"run_id":      "run-live",
-					"worktree":    repo,
-					"base_branch": "main",
+					"run_id":   "run-live",
+					"worktree": repo,
+					"base_ref": "main",
 				}},
 			})
 		case "/api/v1/runs/run-live/debug":

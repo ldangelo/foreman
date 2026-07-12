@@ -410,7 +410,7 @@ func checkSummaryLabel(checks CheckSummary) string {
 		parts = append(parts, "✗"+itoa(checks.Failed))
 	}
 	if checks.Pending > 0 {
-		parts = append(parts, "…"+itoa(checks.Pending))
+		parts = append(parts, "●"+itoa(checks.Pending))
 	}
 	return strings.Join(parts, "")
 }
@@ -772,8 +772,8 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			add("event:"+e.At+":"+e.Type+":"+e.Detail, clip(dimStyle.Render(e.At+" ")+yellowStyle.Render(e.Type)+" "+textStyle.Render(e.Detail), w), target{})
 		}
 	case "logs":
-		t := target{label: "run log", path: "~/.foreman/logs/" + run.RunID + ".log", ok: true}
-		add("log:target:"+run.RunID, greenStyle.Render("⧉ ")+cyanStyle.Render("~/.foreman/logs/"+run.RunID+".log"), t)
+		t := logTarget(run, m.logPath)
+		add("log:target:"+run.RunID, greenStyle.Render("⧉ ")+cyanStyle.Render(t.path), t)
 		for i, ln := range m.logs {
 			prefix := dimStyle.Render(fmt.Sprintf("%4d │ ", i+1))
 			add("log:"+itoa(i)+":"+ln, prefix+textStyle.Render(ln), t)
@@ -788,14 +788,14 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			if r.Status != "done" {
 				sc = cYellow
 			}
-			t := target{label: r.Name, path: run.Worktree + "/docs/reports/" + run.TaskID + "/" + r.Name, ok: true}
+			t := reportTarget(run, r)
 			line := padRow(greenStyle.Render("⧉ ")+cyanStyle.Render(r.Name)+dimStyle.Render(" "+r.Size),
 				lipgloss.NewStyle().Foreground(sc).Render(r.Status), w)
 			add("report:"+r.Name, line, t)
 		}
 		if idx >= 0 && m.glam != nil {
 			r := m.reports[idx]
-			t := target{label: r.Name, path: run.Worktree + "/docs/reports/" + run.TaskID + "/" + r.Name, ok: true}
+			t := reportTarget(run, r)
 			if out, err := m.glam.Render(r.Preview); err == nil {
 				add("report-preview:"+r.Name+":spacer", "", t)
 				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
@@ -950,7 +950,9 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{
 			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id"), w),
-			clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form")+"  "+cyanStyle.Render("N")+dimStyle.Render(" quick add"), w),
+		}
+		if _, ready := m.selectedReadyTask(); ready {
+			lines = append(lines, clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form")+"  "+cyanStyle.Render("N")+dimStyle.Render(" quick add"), w))
 		}
 		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}

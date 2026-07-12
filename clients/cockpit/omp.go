@@ -53,7 +53,7 @@ func resolveOmpMode(cfg OmpConfig, run Run, tools ToolResolver, env []string) (s
 
 func runHasActiveWorker(run Run) bool {
 	switch normalizeStatus(run.Status) {
-	case "running", "in_progress", "pending":
+	case "running", "in_progress", "pending", "cooldown":
 		return true
 	default:
 		return false

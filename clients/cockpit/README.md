@@ -43,11 +43,13 @@ authoritative state.
 - Right column: color-coded run header, live elapsed clock for selected running
   runs, an animated phase rail that collapses to a compact `4/10 · qa` badge on
   very narrow panes, and a drill-down tab strip (`summary · messages · events ·
-  logs · reports · files · pr · metrics`). The files tab exposes plain nvim open
-  (`o`), selected-file nvim diff against the projected base (`d`), and full-run
-  `diffnav` (`D`). The metrics tab reads `/api/v1/metrics`, shows a spinner while
-  refresh data is in flight,
-  counts counters, gauges, and phase durations in the tab badge, and renders all
+  logs · reports · files · pr · metrics`). Log and report open targets prefer
+  explicit paths returned by the live `/logs` and `/report` endpoints, falling
+  back to the historical `.foreman/logs` and `docs/reports` paths when omitted.
+  The files tab exposes plain nvim open (`o`), selected-file nvim diff against
+  the projected base (`d`), and full-run `diffnav` (`D`). The metrics tab reads
+  `/api/v1/metrics`, shows a spinner while refresh data is in flight, counts
+  counters, gauges, and phase durations in the tab badge, and renders all
   three as bounded rows. The active pane is called out with a
   focus label, accent frame, and a non-color `▶` task-list marker; the inactive
   pane can be dimmed via `cockpit.focus`. Set `cockpit.reducedMotion` (or

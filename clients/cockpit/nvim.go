@@ -46,7 +46,7 @@ func resolveTarget(m model) target {
 	}
 	switch tabNames[m.tab] {
 	case "logs":
-		return target{label: "run log", path: "~/.foreman/logs/" + run.RunID + ".log", ok: true}
+		return logTarget(run, m.logPath)
 	case "reports", "files":
 		if line, ok := m.viewer.SelectedLine(); ok && line.Target.ok {
 			return line.Target
@@ -54,7 +54,7 @@ func resolveTarget(m model) target {
 		if tabNames[m.tab] == "reports" {
 			if idx := m.selectedReportIndex(); idx >= 0 {
 				r := m.reports[idx]
-				return target{label: r.Name, path: run.Worktree + "/docs/reports/" + run.TaskID + "/" + r.Name, ok: true}
+				return reportTarget(run, r)
 			}
 		}
 		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {
@@ -64,6 +64,23 @@ func resolveTarget(m model) target {
 		}
 	}
 	return target{}
+}
+
+func logTarget(run Run, logPath string) target {
+	if strings.TrimSpace(logPath) == "" {
+		logPath = "~/.foreman/logs/" + run.RunID + ".log"
+	}
+	return target{label: "run log", path: logPath, ok: true}
+}
+
+func reportTarget(run Run, r Report) target {
+	reportPath := strings.TrimSpace(r.Path)
+	if reportPath == "" {
+		reportPath = filepath.Join(run.Worktree, "docs", "reports", run.TaskID, r.Name)
+	} else if !filepath.IsAbs(reportPath) && run.Worktree != "" && run.Worktree != "(cleaned)" {
+		reportPath = filepath.Join(run.Worktree, reportPath)
+	}
+	return target{label: r.Name, path: reportPath, ok: true}
 }
 
 func fileTarget(run Run, relPath, base string, conflict bool) target {

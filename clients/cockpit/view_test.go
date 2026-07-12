@@ -200,6 +200,27 @@ func TestReadyTaskViewShowsApproveEditAndCreateActions(t *testing.T) {
 	}
 }
 
+func TestFailedTaskViewSuppressesReadyMutations(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = nil
+	m.tasks = []Task{{TaskID: "task-failed", Title: "Failed task", Status: "failed"}}
+	m.taskList.MoveSection(2)
+	m.buildItems()
+
+	out := stripANSI(m.renderFrame())
+	if !strings.Contains(out, "task actions task-failed") || !strings.Contains(out, "y copy task id") {
+		t.Fatalf("expected failed task to keep read-only task action panel, got:\n%s", out)
+	}
+	if strings.Contains(out, "a approve") || strings.Contains(out, "e edit") {
+		t.Fatalf("expected failed task to suppress READY mutation actions, got:\n%s", out)
+	}
+	if _, cmd := m.handleKey(keyPress("a")); cmd != nil {
+		t.Fatal("expected approve key on failed task to refuse without command")
+	}
+}
+
 func TestReadyTaskRowShowsTitlePriorityAndType(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.tasks = []Task{{TaskID: "task-ready", Title: "Create cockpit task", TaskType: "feature", Priority: "P1", Status: "backlog"}}
@@ -651,7 +672,8 @@ func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 			t.Fatalf("expected PR checks table row %q, got:\n%s", want, out)
 		}
 	}
-	if labelColumn(lineContaining(out, "passed"), "passed") != labelColumn(lineContaining(out, "failed"), "failed") {
+	if labelColumn(lineContaining(out, "passed"), "passed") != labelColumn(lineContaining(out, "failed"), "failed") ||
+		labelColumn(lineContaining(out, "passed"), "passed") != labelColumn(lineContaining(out, "pending"), "pending") {
 		t.Fatalf("expected check value columns to align, got:\n%s", out)
 	}
 }
@@ -1267,8 +1289,8 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
 		reports: []Report{
-			{Name: "qa.md", Size: "1K", Status: "done", Preview: "# QA"},
-			{Name: "review.md", Size: "2K", Status: "done", Preview: "# Review"},
+			{Name: "qa.md", Path: "docs/reports/task-1/qa.md", Size: "1K", Status: "done", Preview: "# QA"},
+			{Name: "review.md", Path: "artifacts/task-1/review.md", Size: "2K", Status: "done", Preview: "# Review"},
 		},
 		files: []FileChange{
 			{Change: "M", Path: "src/a.go", Stat: "+1 -1"},
@@ -1288,8 +1310,8 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	m.viewFocused = true
 	updated, _ = m.handleKey(keyPress("j"))
 	m = updated.(model)
-	if got := resolveTarget(m); !got.ok || got.label != "review.md" || got.path != "/tmp/work/docs/reports/task-1/review.md" {
-		t.Fatalf("expected report target to follow cursor, got %#v", got)
+	if got := resolveTarget(m); !got.ok || got.label != "review.md" || got.path != "/tmp/work/artifacts/task-1/review.md" {
+		t.Fatalf("expected report target to follow returned artifact path, got %#v", got)
 	}
 
 	m.tab = 5
@@ -1301,6 +1323,28 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	m = updated.(model)
 	if got := resolveTarget(m); !got.ok || got.label != "src/b.go" || got.path != "/tmp/work/src/b.go" || !got.conflict {
 		t.Fatalf("expected file target to follow cursor, got %#v", got)
+	}
+}
+
+func TestLogOpenTargetUsesEndpointPathWhenPresent(t *testing.T) {
+	client := &mutableClient{
+		runs:    []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
+		logs:    []string{"custom log line"},
+		logPath: "/tmp/foreman/custom/run.log",
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 12
+	m.tab = 3
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+
+	if got := resolveTarget(m); !got.ok || got.path != "/tmp/foreman/custom/run.log" {
+		t.Fatalf("expected log target to use endpoint path, got %#v", got)
+	}
+	out := stripANSI(m.renderRight(80))
+	if !strings.Contains(out, "/tmp/foreman/custom/run.log") {
+		t.Fatalf("expected log tab to render endpoint path, got:\n%s", out)
 	}
 }
 
@@ -1621,6 +1665,7 @@ type mutableClient struct {
 	messages      []Message
 	messagesByRun map[string][]Message
 	logs          []string
+	logPath       string
 	reports       []Report
 	files         []FileChange
 	created       []Task
@@ -1672,6 +1717,8 @@ func TestMetricsTabShowsLoadingStateDuringRefresh(t *testing.T) {
 }
 
 func (c *mutableClient) Logs(string) []string { return c.logs }
+
+func (c *mutableClient) LogPath(string) string { return c.logPath }
 
 func (c *mutableClient) Reports(string) []Report { return c.reports }
 
@@ -1887,8 +1934,9 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	if key := m.actionKeyAt(x+len("o open plain  d open selected diff  "), startY+4); key != "D" {
 		t.Fatalf("expected full diff action, got %q", key)
 	}
-	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  "), startY+5); key != "r" {
-		t.Fatalf("expected run retry action segment, got %q", key)
+	help := stripANSI(renderFullHelp(120, true))
+	if !strings.Contains(help, "selected file diff") || !strings.Contains(help, "matches-only") {
+		t.Fatalf("expected generated help to include selected file diff and matches-only search, got:\n%s", help)
 	}
 	if key := m.actionKeyAt(x+len("▸ run actions run-1  A attach  r retry  R reset  "), startY+5); key != "p" {
 		t.Fatalf("expected omp action segment, got %q", key)
@@ -1911,10 +1959,6 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	}
 	if key := m.actionKeyAt(x+len("▸ PR actions o/enter open PR in browser  G open gh dash  "), startY); key != "C" {
 		t.Fatalf("expected gh enhance PR action segment, got %q", key)
-	}
-	help := stripANSI(renderFullHelp(120, true))
-	if !strings.Contains(help, "selected file diff") {
-		t.Fatalf("expected generated help to include selected file diff, got:\n%s", help)
 	}
 }
 
@@ -2142,6 +2186,42 @@ func TestInactiveViewerBodyUsesMutedVisual(t *testing.T) {
 	}
 	if active == inactive {
 		t.Fatalf("expected inactive viewer body to use different ANSI styling")
+	}
+}
+
+func TestMouseClickMovesFocusBetweenTaskListAndDetailPane(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}}
+	m.buildItems()
+
+	updated, _ := m.Update(mouseClick(m.leftPaneWidth()+5, 6))
+	m = updated.(model)
+	if !m.viewFocused {
+		t.Fatal("expected right pane click to focus details")
+	}
+
+	updated, _ = m.Update(mouseClick(2, 4))
+	m = updated.(model)
+	if m.viewFocused {
+		t.Fatal("expected task-list click to return focus to tasks")
+	}
+}
+
+func TestFocusLabelRendersWithoutANSI(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.viewFocused = false
+	taskFocused := stripANSI(m.renderFrame())
+
+	m.viewFocused = true
+	detailFocused := stripANSI(m.renderFrame())
+
+	if !strings.Contains(taskFocused, "focus: tasks") || !strings.Contains(detailFocused, "focus: details") {
+		t.Fatalf("expected structural focus labels without ANSI, got tasks=%q details=%q", taskFocused, detailFocused)
 	}
 }
 

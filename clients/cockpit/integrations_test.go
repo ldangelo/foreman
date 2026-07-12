@@ -166,6 +166,24 @@ func TestDiffnavCommandValidationAndShape(t *testing.T) {
 	}
 }
 
+func TestDiffnavCommandDisabledAndWatchShape(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	cfg.Diffnav.Enable = "off"
+	if _, err := diffnavCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{"diffnav": true, "delta": true}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled diffnav error, got %v", err)
+	}
+
+	cfg.Diffnav.Enable = "on"
+	cfg.Diffnav.Watch = true
+	cmd, err := diffnavCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{"diffnav": true, "delta": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cmd.Args[2], "diffnav --watch") {
+		t.Fatalf("expected diffnav watch flag in command, got %q", cmd.Args[2])
+	}
+}
+
 func TestGhDashCommandUsesConfiguredArgs(t *testing.T) {
 	cfg := defaultConfig().Integrations
 	cfg.GhDash.Args = []string{"--repo", "Fortium/foreman"}
@@ -178,6 +196,14 @@ func TestGhDashCommandUsesConfiguredArgs(t *testing.T) {
 	}
 	if _, err := ghDashCommand(cfg, fakeTools{"gh": true}); err == nil || !strings.Contains(err.Error(), "gh dash not found") {
 		t.Fatalf("expected missing gh dash extension error, got %v", err)
+	}
+}
+
+func TestGhDashCommandDisabled(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	cfg.GhDash.Enable = "off"
+	if _, err := ghDashCommand(cfg, fakeTools{"gh": true, "ext:dash": true}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled gh dash error, got %v", err)
 	}
 }
 
@@ -205,6 +231,14 @@ func TestGhEnhanceCommandUsesSelectedRunWorktree(t *testing.T) {
 	}
 }
 
+func TestGhEnhanceCommandDisabled(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	cfg.GhEnhance.Enable = "off"
+	if _, err := ghEnhanceCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{"gh": true, "ext:enhance": true}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected disabled gh enhance error, got %v", err)
+	}
+}
+
 func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 	cfg := defaultConfig().Integrations
 	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a file.go", cfg, fakeTools{})
@@ -216,6 +250,28 @@ func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 	}
 	if !strings.Contains(cmd.Args[2], "git -C '/tmp/wt' diff 'origin/dev'...HEAD -- 'src/a file.go'") {
 		t.Fatalf("unexpected git diff command %q", cmd.Args[2])
+	}
+}
+
+func TestDeltaPreviewCommandHonorsDisabledAndNoColor(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	cfg.Delta.Enable = "off"
+	_, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", cfg, fakeTools{"delta": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usingDelta {
+		t.Fatal("expected disabled delta preview to fall back to plain git diff")
+	}
+
+	cfg.Delta.Enable = "on"
+	t.Setenv("NO_COLOR", "1")
+	_, usingDelta, err = deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", cfg, fakeTools{"delta": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usingDelta {
+		t.Fatal("expected NO_COLOR delta preview to fall back to plain git diff")
 	}
 }
 
@@ -263,7 +319,7 @@ func TestPRStatusMapsFromRunProjection(t *testing.T) {
 		case "/api/v1/projects", "/api/v1/tasks":
 			_, _ = w.Write([]byte(`{"ok":true,"projects":[],"tasks":[]}`))
 		case "/api/v1/runs":
-			_, _ = w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-pr","task_id":"task-1","status":"running","pr_url":"https://github.com/acme/repo/pull/42","pr_state":"open","pr_head_sha":"abc123","base_branch":"main","branch_name":"foreman/task-1","pr_mergeable":"mergeable","pr_review_decision":"approved","pr_checks":{"passed":3,"failed":1,"pending":2}}]}`))
+			_, _ = w.Write([]byte(`{"ok":true,"runs":[{"run_id":"run-pr","task_id":"task-1","status":"running","pr_url":"https://github.com/acme/repo/pull/42","pr_state":"open","pr_head_sha":"abc123","base_ref":"main","branch_name":"foreman/task-1","pr_mergeable":"mergeable","pr_review_decision":"approved","pr_checks":{"passed":3,"failed":1,"pending":2}}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -274,6 +330,9 @@ func TestPRStatusMapsFromRunProjection(t *testing.T) {
 	pr := client.PR("run-pr")
 	if pr.URL != "https://github.com/acme/repo/pull/42" || pr.Number != "42" || pr.State != "open" || pr.HeadSHA != "abc123" {
 		t.Fatalf("unexpected PR status: %+v", pr)
+	}
+	if pr.BaseBranch != "main" || pr.BranchName != "foreman/task-1" {
+		t.Fatalf("expected PR branch fields from base_ref projection: %+v", pr)
 	}
 	if pr.Mergeable != "mergeable" || pr.ReviewDecision != "approved" || pr.Checks.Passed != 3 || pr.Checks.Failed != 1 || pr.Checks.Pending != 2 {
 		t.Fatalf("expected rich PR projection fields: %+v", pr)

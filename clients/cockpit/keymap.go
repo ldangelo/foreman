@@ -51,6 +51,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 			binding("1–8", "jump tab"),
 			binding("ctrl+d/u", "page details"),
 			binding("n/N", "next/prev match"),
+			binding("o (filter)", "matches-only"),
 			binding("←/→", "pan logs"),
 			binding("s", "save visible rows"),
 		},

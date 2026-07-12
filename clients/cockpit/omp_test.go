@@ -48,9 +48,11 @@ func TestResolveOmpModeHonorsAutoTmuxAndValidation(t *testing.T) {
 
 func TestResolveOmpModeRefusesActiveStatusEvenWhenGroupStale(t *testing.T) {
 	cfg := defaultConfig().Integrations.Omp
-	_, err := resolveOmpMode(cfg, Run{RunID: "run-stale", Worktree: "/tmp/wt", Status: "in_progress", Group: "RECENT"}, fakeTools{"omp": true}, nil)
-	if err == nil || !strings.Contains(err.Error(), "run is active") {
-		t.Fatalf("expected active status guard independent of group, got %v", err)
+	for _, status := range []string{"pending", "running", "in_progress", "cooldown"} {
+		_, err := resolveOmpMode(cfg, Run{RunID: "run-stale", Worktree: "/tmp/wt", Status: status, Group: "RECENT"}, fakeTools{"omp": true}, nil)
+		if err == nil || !strings.Contains(err.Error(), "run is active") {
+			t.Fatalf("expected active status guard for %s independent of group, got %v", status, err)
+		}
 	}
 }
 

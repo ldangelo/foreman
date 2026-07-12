@@ -56,7 +56,7 @@ func prStatusFromProjection(runID string, raw map[string]any) PRStatus {
 			Pending: firstPositiveInt(intValue(checks["pending"]), intValue(raw["pr_checks_pending"]), intValue(raw["checks_pending"])),
 		},
 		HeadSHA:    str(raw, "pr_head_sha", "head_sha"),
-		BaseBranch: str(raw, "base_branch"),
+		BaseBranch: str(raw, "base_branch", "base_ref", "target_branch"),
 		BranchName: str(raw, "branch_name", "branch"),
 	}
 }

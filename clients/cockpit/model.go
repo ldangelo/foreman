@@ -33,6 +33,7 @@ type model struct {
 	msgs           []Message
 	events         []Event
 	logs           []string
+	logPath        string
 	reports        []Report
 	files          []FileChange
 	pr             PRStatus
@@ -579,13 +580,15 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.notice = "quick task: enter create · esc cancel"
 		return m, nil
 	case "a":
-		if task, ok := m.selectedTask(); ok {
+		if task, ok := m.selectedReadyTask(); ok {
 			return m, approveTask(m.client, task)
 		}
+		m.notice = "approve: select a READY task"
 	case "e":
-		if task, ok := m.selectedTask(); ok {
+		if task, ok := m.selectedReadyTask(); ok {
 			return m, editTaskInNvim(m.editor, m.client, task)
 		}
+		m.notice = "edit: select a READY task"
 	case "y":
 		if taskID, ok := m.selectedTaskID(); ok {
 			return m, copyTaskID(taskID)
@@ -1001,7 +1004,7 @@ func (m model) actionKeyAt(x, y int) string {
 				{label: "y copy task id", key: "y"},
 			})
 		}
-		if line == 1 {
+		if _, ready := m.selectedReadyTask(); ready && line == 1 {
 			return actionSegmentKey(relX, "", []actionSegment{
 				{label: "a approve", key: "a"},
 				{label: "e edit", key: "e"},
@@ -1175,13 +1178,14 @@ func (m model) selectedFileIndex() int {
 func (m *model) loadDetail() {
 	run, ok := m.selectedRun()
 	if !ok {
-		m.msgs, m.events, m.logs, m.reports, m.files = nil, nil, nil, nil, nil
+		m.msgs, m.events, m.logs, m.logPath, m.reports, m.files = nil, nil, nil, "", nil, nil
 		m.pr = PRStatus{}
 		return
 	}
 	m.msgs = m.client.Messages(run.RunID)
 	m.events = m.client.Events(run.RunID)
 	m.logs = m.client.Logs(run.RunID)
+	m.logPath = m.client.LogPath(run.RunID)
 	m.reports = m.client.Reports(run.RunID)
 	m.files = m.client.Files(run.RunID)
 	m.pr = m.client.PR(run.RunID)
@@ -1248,6 +1252,14 @@ func (m model) selectedTask() (Task, bool) {
 		return Task{}, false
 	}
 	return it.Task, true
+}
+
+func (m model) selectedReadyTask() (Task, bool) {
+	task, ok := m.selectedTask()
+	if !ok || isFailedState(task.Status) {
+		return Task{}, false
+	}
+	return task, true
 }
 
 func (m model) selectedTaskID() (string, bool) {
