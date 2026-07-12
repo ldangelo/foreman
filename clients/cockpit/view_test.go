@@ -1899,6 +1899,59 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	}
 }
 
+func TestMouseClickRunActionExecutesCommand(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.runs = client.runs
+	m.tasks = nil
+	m.buildItems()
+
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2 + len("▸ run actions run-1  A attach  ")
+	updated, cmd := m.Update(mouseClick(x, startY))
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected mouse click on retry action to execute command")
+	}
+	if msg, ok := cmd().(runActionDoneMsg); !ok || msg.err != nil || msg.action != "retry requested" {
+		t.Fatalf("expected retry done message from mouse action, got %#v", msg)
+	}
+	if len(client.retried) != 1 || client.retried[0].RunID != "run-1" || client.retried[0].TaskID != "task-1" {
+		t.Fatalf("expected mouse retry to target selected run, got %#v", client.retried)
+	}
+}
+
+func TestMouseClickPRActionOpensPR(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "pr-wait"}}
+	m.tasks = nil
+	m.tab = 6
+	m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42"}
+	m.tools = fakeTools{}
+	m.buildItems()
+
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2 + len("▸ PR actions ")
+	_, cmd := m.Update(mouseClick(x, startY))
+	if cmd == nil {
+		t.Fatal("expected mouse click on PR action to attempt opening PR")
+	}
+	msg := cmd()
+	done, ok := msg.(prOpenDoneMsg)
+	if !ok {
+		t.Fatalf("expected prOpenDoneMsg, got %T", msg)
+	}
+	if done.err == nil || !strings.Contains(done.err.Error(), "gh not found") {
+		t.Fatalf("expected missing opener error from PR mouse action, got %v", done.err)
+	}
+}
+
 func TestRunActionKeysExecuteCockpitCommands(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
