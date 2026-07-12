@@ -1,6 +1,6 @@
 # Handoff — Migrate the cockpit to Bubble Tea v2 and adopt `robinovitch61/viewport`
 
-Status: WS1–WS6 complete · Date: 2026-07-10 · Owner: Leo D'Angelo
+Status: Implemented in `clients/cockpit/` (WS1–WS6 complete) · Date: 2026-07-10 · Owner: Leo D'Angelo
 Audience: local coding agent (Go / Bubble Tea)
 Subject: [`github.com/robinovitch61/viewport`](https://github.com/robinovitch61/viewport)
 Related: `clients/cockpit/viewer.go`, `view.go`, `task_list.go`, `model.go`, `styles.go`, `theme/gen.go`
