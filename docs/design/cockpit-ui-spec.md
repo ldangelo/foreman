@@ -99,15 +99,15 @@ live in small cockpit-owned components:
 | `Viewer` | keyed drill-down rows mapped into `robinovitch61/viewport` items, selected line identity, bottom-follow behavior, and packed unselectable child rows (message bodies / diff previews) |
 | Tab adapters | conversion of summary/messages/events/logs/reports/files/pr/metrics data into stable keyed viewer lines and nvim/browser targets where applicable |
 
-All data is fetched from the Elixir core; the cockpit never infers state the
-core has not asserted. A periodic tick (default 2s) refreshes projections. The
-status bar, active phase rail, diff-loading rows, and metrics refresh rows use a
-`bubbles/v2/spinner` only while runs or loading states are active, and the
-selected running run gets a lightweight `bubbles/v2/stopwatch` elapsed indicator.
-`cockpit.reducedMotion` disables spinner frames and stopwatch display for
-accessibility / low-power terminals. The metrics tab consumes `/api/v1/metrics`
-and renders counters, gauges, and phase-duration bars without client-side
-authoritative aggregation.
+All data is fetched from the Elixir core; the cockpit only derives presentation
+state from asserted task/run status, phase, and projection fields. A periodic
+tick (default 2s) refreshes projections. The status bar, active phase rail,
+diff-loading rows, and metrics refresh rows use a `bubbles/v2/spinner` only while
+runs or loading states are active, and the selected running run gets a lightweight
+`bubbles/v2/stopwatch` elapsed indicator. `cockpit.reducedMotion` disables spinner
+frames and stopwatch display for accessibility / low-power terminals. The metrics
+tab consumes `/api/v1/metrics` and renders counters, gauges, and phase-duration
+bars without client-side authoritative aggregation.
 
 The keybar includes an explicit `focus: tasks` / `focus: details` label. The
 focused pane uses the accent border; the inactive pane uses the blur border and,

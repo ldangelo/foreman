@@ -125,7 +125,7 @@ left-pane scrolling is driven by viewport selection instead of `windowLines`.
 
 WS5b routed task-list search input through `filterableviewport` while preserving
 case-insensitive substring filtering over task/run ids and row text, selection
-clamping, and group collapse behavior.
+clamping, and section-tab behavior.
 
 ## 9. Workstream 6 — Delete bespoke windowing + docs (complete)
 

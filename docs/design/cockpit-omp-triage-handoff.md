@@ -118,7 +118,7 @@ Pick the opening instruction by failure mode (a small `switch` on
 
 | Mode (signal) | Opening instruction to omp |
 |---------------|----------------------------|
-| `merge_conflict` (finalize/merge-resolver) | "Resolve the rebase/merge conflicts in this worktree. Conflicted files: … Run `git status` first." |
+| `merge_conflict` (finalize/merge-resolver) | "Resolve the rebase/merge conflicts in this worktree. See the generated brief for conflicted files, then run `git status` first." |
 | `ci_failed` (cicd) | "CI failed. Reproduce the failing build/tests here and fix them." |
 | `coderabbit_*` (cli-review) | "Address these CodeRabbit findings (see CR_CLI_REPORT.md): …" |
 | generic `failed`/`stuck` | "This Foreman run failed at `<phase>`. Investigate using `<brief-path>` and propose a fix." |
