@@ -49,7 +49,7 @@ One screen. No view switching. Three regions plus chrome.
 
 The task list is organized as a gh-dash-style section strip with counts:
 
-- **Running** — runs with status `pending | running | in_progress | cooldown`.
+- **Running** — tasks and runs whose task/run status is active (`pending | running | in_progress | cooldown`).
   Each row shows a state glyph, id/type/priority/phase metadata, and a second
   title/summary line. (Q1)
 - **Ready** — current-project tasks that are not terminal/running. Each row
@@ -80,10 +80,10 @@ The selected row drives the entire right side.
 - **Drill-down body** — content for the active tab, scoped to the selected run
   (active or past). `summary` is default and needs no fetch beyond the run
   projection.
-- **Action bar** — appears only on openable tabs when a row is selected; shows
-  the exact resolved command and the open mode (remote vs inline). The run action
-  row exposes attach/retry/reset, `omp`, `gh dash`, and `gh enhance` for both
-  keyboard and mouse hit-testing. See nvim integration.
+- **Action bar** — shows the exact resolved command and open mode for openable
+  rows, and also exposes run/task/PR action rows. Run actions include
+  attach/retry/reset, `omp`, `gh dash`, and `gh enhance` for both keyboard and
+  mouse hit-testing. See nvim integration.
 
 ## State model
 

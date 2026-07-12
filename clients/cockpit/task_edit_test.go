@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 func TestTaskFromCreateDraftBuildsTaskPayload(t *testing.T) {
 	task, err := taskFromCreateDraft(taskDraft{
@@ -29,5 +33,21 @@ func TestDraftFromNewTaskDefaultsToP2(t *testing.T) {
 func TestTaskFromCreateDraftRequiresTitle(t *testing.T) {
 	if _, err := taskFromCreateDraft(taskDraft{ID: "task-new"}); err == nil {
 		t.Fatal("expected missing title to be rejected")
+	}
+}
+
+func TestTaskCreateFormTitleSupportsCursorEditAndPaste(t *testing.T) {
+	form := newTaskCreateForm()
+	form.Update(keyPress("Tsk"))
+	form.Update(specialKey(tea.KeyLeft))
+	form.Update(specialKey(tea.KeyBackspace))
+	form.Update(keyPress("as"))
+
+	task, err := form.Task()
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if task.Title != "Task" {
+		t.Fatalf("expected editable pasted title, got %q", task.Title)
 	}
 }

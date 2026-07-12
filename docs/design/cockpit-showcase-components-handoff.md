@@ -59,7 +59,7 @@ back to v1.
 | Component | Purpose | Cockpit call-site it replaces / adds | Tier | v2? |
 |-----------|---------|--------------------------------------|------|-----|
 | `bubbles/v2` `key` + `help` | self-documenting keymap | replaces the hand-rolled `?` notice + `renderKeyBar` in `view.go` | 1 | first-party |
-| `bubbles/v2` `textinput`/`textarea` | real text entry | replaces hand-parsed search in `TaskList`; powers add-task fields | 1 | first-party |
+| `bubbles/v2` `textinput`/`textarea` | real text entry | `filterableviewport` supplies a `textinput`-backed search line; add-task fields use `textinput`/`textarea` directly | 1 | first-party |
 | `lipgloss/v2` `table` | structured static rendering | task-detail field block and PR-checks summary | 1 | first-party |
 | `muesli/reflow` | ANSI/Unicode wrap + truncate | delegates clipping/wrapping in `view.go` to display-cell-aware helpers | 1 | framework-agnostic |
 | `lrstanley/bubblezone` | mouse click zones | intentionally not adopted; native hit-testing covers tabs/rows/action-bar/PR links | 2 | v1-only at `v1.0.0` |
@@ -86,8 +86,8 @@ Regression contract: `?` shows a complete, accurate help view generated from
 the bindings; the keybar auto-summarizes.
 
 ### B. First-class input (`textinput` / `textarea`) — Tier 1
-Replace the bespoke search key handling with a `textinput` for `/` search and the
-`filterableviewport` filter; use `textinput`/`textarea` for add-task fields.
+Use `filterableviewport`'s `textinput`-backed filter line for `/` search; use
+`textinput`/`textarea` directly for add-task fields.
 Regression contract: search and add-task inputs support cursor movement, edit,
 and paste.
 

@@ -295,9 +295,10 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
 - **Risks:** base-branch assumption (`origin/dev`) — make it configurable and
   fall back sensibly; diffnav Nerd-Font/`delta` requirements; `gh` auth; and the
   render path must never block on `exec` (fetch in `loadDetail`, cache results).
-- **Consistency:** every handoff must go through `tea.ExecProcess` and set a
-  notice on return, exactly like `openInNvim`/`editTaskInNvim`. Do not spawn
-  detached processes for interactive tools.
+- **Consistency:** full-screen external review tools (`diffnav`, `gh dash`, and
+  `gh enhance`) go through `tea.ExecProcess` and set a notice on return, exactly
+  like `openInNvim`/`editTaskInNvim`. OMP tmux mode is the exception: it uses a
+  non-suspending tmux pane/window when configured or auto-detected.
 
 ## 11. Closed PR breakdown
 

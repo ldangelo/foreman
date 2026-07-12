@@ -459,10 +459,14 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+u":
 			return m, m.moveRow(-max(1, m.viewerBodyWindowHeight()/2))
 		case "left":
-			m.viewer.Pan(-max(1, m.rightPaneWidth()/4))
+			if m.detailAllowsHorizontalPan() {
+				m.viewer.Pan(-max(1, m.rightPaneWidth()/4))
+			}
 			return m, nil
 		case "right":
-			m.viewer.Pan(max(1, m.rightPaneWidth()/4))
+			if m.detailAllowsHorizontalPan() {
+				m.viewer.Pan(max(1, m.rightPaneWidth()/4))
+			}
 			return m, nil
 		case "s":
 			if m.detailUsesViewer() {
@@ -1109,6 +1113,8 @@ func (m model) detailUsesViewer() bool {
 	}
 	return m.viewerTab()
 }
+
+func (m model) detailAllowsHorizontalPan() bool { return tabNameAt(m.tab) == "logs" }
 
 func (m model) openableTab() bool { return tabOpenable(tabNameAt(m.tab)) }
 

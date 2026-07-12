@@ -12,7 +12,12 @@ import (
 )
 
 func keyPress(text string) tea.KeyPressMsg {
-	return tea.KeyPressMsg(tea.Key{Text: text, Code: []rune(text)[0]})
+	runes := []rune(text)
+	code := runes[0]
+	if len(runes) > 1 {
+		code = tea.KeyExtended
+	}
+	return tea.KeyPressMsg(tea.Key{Text: text, Code: code})
 }
 
 func specialKey(code rune) tea.KeyPressMsg {
@@ -366,6 +371,37 @@ func TestTaskListSearchUsesViewportFilterLineAndSubstringMatching(t *testing.T) 
 	m = updated.(model)
 	if m.taskList.Search() != "" || len(m.taskList.Items()) != 2 {
 		t.Fatalf("expected escape to clear applied task-list search, query=%q items=%d", m.taskList.Search(), len(m.taskList.Items()))
+	}
+}
+
+func TestTaskListSearchSupportsCursorEditAndPaste(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.taskList.MoveSection(4)
+	m.tasks = []Task{
+		{TaskID: "read-task", Title: "Read pasted query", Status: "backlog"},
+		{TaskID: "other-task", Title: "Other task", Status: "backlog"},
+	}
+	m.buildItems()
+	_ = m.renderLeft(40, 8)
+
+	updated, _ := m.handleKey(keyPress("/"))
+	m = updated.(model)
+	updated, _ = m.handleKey(keyPress("rxd"))
+	m = updated.(model)
+	updated, _ = m.handleKey(specialKey(tea.KeyLeft))
+	m = updated.(model)
+	updated, _ = m.handleKey(specialKey(tea.KeyBackspace))
+	m = updated.(model)
+	updated, _ = m.handleKey(keyPress("ea"))
+	m = updated.(model)
+
+	if !m.taskList.Searching() || m.taskList.Search() != "read" {
+		t.Fatalf("expected editable pasted task-list query %q, searching=%v", m.taskList.Search(), m.taskList.Searching())
+	}
+	if len(m.taskList.Items()) != 1 || m.taskList.Items()[0].Task.TaskID != "read-task" {
+		t.Fatalf("expected edited pasted query to match read-task only, got %#v", m.taskList.Items())
 	}
 }
 
@@ -1522,6 +1558,25 @@ func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	after := stripANSI(m.renderRight(m.rightPaneWidth()))
 	if !strings.Contains(after, "TAIL") || m.viewer.XOffset() == 0 {
 		t.Fatalf("expected right arrow to pan long log lines into view, offset=%d:\n%s", m.viewer.XOffset(), after)
+	}
+}
+
+func TestHorizontalPanIsScopedToLogsTab(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: strings.Repeat("summary ", 20)}},
+	}
+	m := newModel(client)
+	m.width = 80
+	m.height = 12
+	m.viewFocused = true
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	updated, _ = m.handleKey(specialKey(tea.KeyRight))
+	m = updated.(model)
+
+	if m.viewer.XOffset() != 0 {
+		t.Fatalf("expected right arrow outside logs to leave horizontal offset unchanged, got %d", m.viewer.XOffset())
 	}
 }
 
