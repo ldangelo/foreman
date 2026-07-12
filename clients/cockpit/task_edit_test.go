@@ -23,6 +23,42 @@ func TestTaskFromCreateDraftBuildsTaskPayload(t *testing.T) {
 	}
 }
 
+func TestTaskFromDraftBuildsUpdatePayloadWithoutChangingIdentity(t *testing.T) {
+	existing := Task{
+		TaskID:      "task-1",
+		Title:       "Old title",
+		Description: "old body",
+		TaskType:    "bug",
+		Priority:    "P0",
+		Status:      "backlog",
+	}
+
+	task, err := taskFromDraft(existing, taskDraft{
+		ID:          "task-1",
+		Title:       "New title",
+		Description: "new body",
+		Type:        "feature",
+		Priority:    "2",
+		Status:      "ready",
+	})
+	if err != nil {
+		t.Fatalf("taskFromDraft: %v", err)
+	}
+	if task.TaskID != "task-1" || task.Title != "New title" || task.Description != "new body" || task.TaskType != "feature" || task.Priority != "P2" || task.Status != "ready" {
+		t.Fatalf("unexpected updated task: %#v", task)
+	}
+}
+
+func TestTaskFromDraftRejectsIdentityChangesAndMissingTitle(t *testing.T) {
+	existing := Task{TaskID: "task-1", Title: "Old title"}
+	if _, err := taskFromDraft(existing, taskDraft{ID: "task-2", Title: "New title"}); err == nil {
+		t.Fatal("expected changed task id to be rejected")
+	}
+	if _, err := taskFromDraft(existing, taskDraft{ID: "task-1"}); err == nil {
+		t.Fatal("expected missing title to be rejected")
+	}
+}
+
 func TestDraftFromNewTaskDefaultsToP2(t *testing.T) {
 	draft := draftFromNewTask()
 	if draft.Priority != "P2" {

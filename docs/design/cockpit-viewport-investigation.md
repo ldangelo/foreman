@@ -92,8 +92,8 @@ mouse/key coverage, and handoff command coverage.
   target on the object (or a parallel map keyed by item identity).
 
 Regression contract: cursor identity is preserved across the 2s refresh;
-bottom-follow works for live logs; clamp-at-edges works; messages are navigable
-by whole message; nvim/diffnav targets still resolve.
+bottom-follow works for live logs; clamp-at-edges works; summary drill-down rows
+scroll through the shared viewer; messages are navigable by whole message; nvim/diffnav targets still resolve.
 
 ## 6. Workstream 3 — In-view search via `filterableviewport` (complete)
 
@@ -103,8 +103,8 @@ by whole message; nvim/diffnav targets still resolve.
   clears, `n`/`N` jump matches, and `o` toggles matches-only view. README/spec
   keybars are updated.
 
-Regression contract: filtering, match navigation, and matches-only mode work in
-logs/events/messages with no key collision against task-list search.
+Regression contract: filtering, `n`/`N` match navigation, and matches-only mode
+work in logs/events/messages with no key collision against task-list search.
 
 ## 7. Workstream 4 — Long-line handling & extras (complete)
 

@@ -470,12 +470,12 @@ func priorityColor(priority string, visual paneVisual) color.Color {
 
 func taskRowRightColor(it Item, visual paneVisual) color.Color {
 	if it.IsTask {
-		return statusColor(it.Task.Status)
+		return visualForStatus(it.Task.Status, visual)
 	}
 	if it.Run.Group == taskGroupRunning {
 		return visual.Cyan
 	}
-	return statusColor(it.Run.Status)
+	return visualForStatus(it.Run.Status, visual)
 }
 
 func (m model) renderRight(w int) string {
@@ -542,7 +542,7 @@ func (m model) renderRight(w int) string {
 	if bodyWindowH < 1 {
 		bodyWindowH = 1
 	}
-	if m.viewerTab() || (!isRun && m.viewFocused) {
+	if (isRun && m.viewerTab()) || (!isRun && m.viewFocused) {
 		viewer := m.viewer
 		policy := viewerPreserve
 		if viewer.Len() == 0 {
@@ -780,9 +780,9 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		}
 		idx := m.selectedReportIndex()
 		for _, r := range m.reports {
-			sc := cGreen
+			sc := visual.Green
 			if r.Status != "done" {
-				sc = cYellow
+				sc = visual.Yellow
 			}
 			t := reportTarget(run, r)
 			line := padRow(greenStyle.Render("⧉ ")+cyanStyle.Render(r.Name)+dimStyle.Render(" "+r.Size),
@@ -804,12 +804,12 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			return []ViewerLine{{Key: "files:empty", Text: dimStyle.Render("No file changes.")}}
 		}
 		for _, f := range m.files {
-			cc := cYellow
+			cc := visual.Yellow
 			switch f.Change {
 			case "A":
-				cc = cGreen
+				cc = visual.Green
 			case "D":
-				cc = cRed
+				cc = visual.Red
 			}
 			stat := dimStyle.Render(f.Stat)
 			if f.Conflict {
@@ -860,14 +860,14 @@ func (m model) renderPRLines(w int, visual paneVisual) []ViewerLine {
 	if state == "" {
 		state = "unknown"
 	}
-	stateColor := cCyan
+	stateColor := visual.Cyan
 	switch strings.ToLower(state) {
 	case "merged":
-		stateColor = cGreen
+		stateColor = visual.Green
 	case "closed":
-		stateColor = cRed
+		stateColor = visual.Red
 	case "draft":
-		stateColor = cDim
+		stateColor = visual.Dim
 	}
 	title := "PR"
 	if pr.Number != "" {

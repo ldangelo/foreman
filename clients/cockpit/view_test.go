@@ -781,6 +781,36 @@ func TestEnterOnSummaryFocusesDetailsWithoutAttachingRun(t *testing.T) {
 	}
 }
 
+func TestRunSummaryUsesScrollableViewer(t *testing.T) {
+	lines := make([]string, 18)
+	for i := range lines {
+		lines[i] = "summary line " + itoa(i)
+	}
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 12
+	m.runs = []Run{{
+		Group:    taskGroupRunning,
+		TaskID:   "task-1",
+		RunID:    "run-1",
+		Status:   "running",
+		Phase:    "developer",
+		Summary:  strings.Join(lines, "\n"),
+		Worktree: "/tmp/wt",
+	}}
+	m.tab = 0
+	m.viewFocused = true
+	m.buildItems()
+
+	if !m.selectViewerLineByKey("summary:12") {
+		t.Fatal("expected summary line to be selectable through the viewer")
+	}
+	out := stripANSI(m.renderRight(m.rightPaneWidth()))
+	if !strings.Contains(out, "summary line 12") || strings.Contains(out, "summary line 0") {
+		t.Fatalf("expected summary tab to render the viewer-selected window, got:\n%s", out)
+	}
+}
+
 func TestTaskSectionChangesReloadSelectedDetail(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{
@@ -1047,6 +1077,38 @@ func TestViewerSearchCanToggleMatchesOnly(t *testing.T) {
 	rendered := stripANSI(viewer.View())
 	if strings.Contains(rendered, "alpha") || strings.Contains(rendered, "omega") || !strings.Contains(rendered, "needle target") {
 		t.Fatalf("expected matches-only search view, got:\n%s", rendered)
+	}
+}
+
+func TestViewerSearchNextAndPreviousMatchNavigation(t *testing.T) {
+	var viewer Viewer
+	viewer.SetBounds(40, 4)
+	lines := []ViewerLine{
+		{Key: "a", Text: "alpha"},
+		{Key: "b", Text: "needle first"},
+		{Key: "c", Text: "middle"},
+		{Key: "d", Text: "needle second"},
+	}
+	viewer.SetLines(lines, viewerReset, 4)
+	viewer.HandleKey(keyPress("/"))
+	for _, ch := range "needle" {
+		viewer.HandleKey(keyPress(string(ch)))
+	}
+	viewer.HandleKey(specialKey(tea.KeyEnter))
+
+	selected, ok := viewer.SelectedLine()
+	if !ok || selected.Key != "b" {
+		t.Fatalf("expected search to select first match, got %#v ok=%v", selected, ok)
+	}
+	viewer.HandleKey(keyPress("n"))
+	selected, ok = viewer.SelectedLine()
+	if !ok || selected.Key != "d" {
+		t.Fatalf("expected n to select next match, got %#v ok=%v", selected, ok)
+	}
+	viewer.HandleKey(keyPress("N"))
+	selected, ok = viewer.SelectedLine()
+	if !ok || selected.Key != "b" {
+		t.Fatalf("expected N to select previous match, got %#v ok=%v", selected, ok)
 	}
 }
 
@@ -1385,6 +1447,36 @@ func TestPRTabRendersProjectedStatusAndAction(t *testing.T) {
 	out := stripANSI(m.renderFrame())
 	if !strings.Contains(out, "pr 1") || !strings.Contains(out, "https://github.com/acme/repo/pull/42") || !strings.Contains(out, "open PR in browser") || !strings.Contains(out, "gh enhance") {
 		t.Fatalf("expected PR tab status, browser action, and gh enhance hint, got:\n%s", out)
+	}
+}
+
+func TestPRTabEmptyStateHasNoOpenAction(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{
+			Group:  taskGroupRunning,
+			TaskID: "task-1",
+			RunID:  "run-1",
+			Status: "running",
+			Phase:  "developer",
+		}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 6
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	out := stripANSI(m.renderFrame())
+	if !strings.Contains(out, "No PR for this run yet.") {
+		t.Fatalf("expected PR tab empty state, got:\n%s", out)
+	}
+	if strings.Contains(out, "open PR in browser") {
+		t.Fatalf("expected missing PR to suppress open actions, got:\n%s", out)
+	}
+	_, cmd := m.handleKey(specialKey(tea.KeyEnter))
+	if cmd != nil {
+		t.Fatal("expected enter on empty PR tab to avoid opening a PR")
 	}
 }
 
@@ -2199,6 +2291,65 @@ func TestInactiveViewerBodyUsesMutedVisual(t *testing.T) {
 	}
 	if active == inactive {
 		t.Fatalf("expected inactive viewer body to use different ANSI styling")
+	}
+}
+
+func TestInactiveMetadataAdaptersUseMutedVisual(t *testing.T) {
+	cfg := defaultConfig().Cockpit.Focus
+	active := paneVisualFor(true, cfg)
+	inactive := paneVisualFor(false, cfg)
+
+	taskActive := taskRowRightColor(Item{IsTask: true, Task: Task{Status: "failed"}}, active)
+	taskInactive := taskRowRightColor(Item{IsTask: true, Task: Task{Status: "failed"}}, inactive)
+	if taskActive != cRed || taskInactive != cDim {
+		t.Fatalf("expected task row status to use active red and inactive dim, got active=%v inactive=%v", taskActive, taskInactive)
+	}
+
+	m := newModel(NewMockClient())
+	run := Run{RunID: "run-1", TaskID: "task-1", Status: "running"}
+	item := Item{Run: run}
+	for _, tc := range []struct {
+		name  string
+		tab   int
+		setup func()
+	}{
+		{
+			name: "reports",
+			tab:  4,
+			setup: func() {
+				m.reports = []Report{{Name: "qa.md", Size: "1K", Status: "pending"}}
+			},
+		},
+		{
+			name: "files",
+			tab:  5,
+			setup: func() {
+				m.files = []FileChange{{Change: "A", Path: "src/a.go", Stat: "+1"}}
+			},
+		},
+		{
+			name: "pr",
+			tab:  6,
+			setup: func() {
+				m.pr = PRStatus{URL: "https://github.com/Fortium/foreman/pull/42", State: "closed"}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m.reports = nil
+			m.files = nil
+			m.pr = PRStatus{}
+			m.tab = tc.tab
+			tc.setup()
+			activeLines := strings.Join(linesText(m.renderViewerLines(run, item, true, 80, active)), "\n")
+			inactiveLines := strings.Join(linesText(m.renderViewerLines(run, item, true, 80, inactive)), "\n")
+			if stripANSI(activeLines) != stripANSI(inactiveLines) {
+				t.Fatalf("focus dimming should preserve visible text:\nactive=%s\ninactive=%s", activeLines, inactiveLines)
+			}
+			if activeLines == inactiveLines {
+				t.Fatalf("expected inactive %s adapter to use muted ANSI styling", tc.name)
+			}
+		})
 	}
 }
 

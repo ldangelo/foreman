@@ -26,6 +26,18 @@ func TestLoadConfigParsesOmpIntegration(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAppliesOmpEnvOverrides(t *testing.T) {
+	t.Setenv("COCKPIT_OMP", "off")
+	t.Setenv("COCKPIT_OMP_MODE", "window")
+	cfg, err := loadConfig(t.TempDir() + "/missing.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Integrations.Omp.Enable != "off" || cfg.Integrations.Omp.Mode != "window" {
+		t.Fatalf("expected OMP env overrides, got %+v", cfg.Integrations.Omp)
+	}
+}
+
 func TestResolveOmpModeHonorsAutoTmuxAndValidation(t *testing.T) {
 	cfg := defaultConfig().Integrations.Omp
 	mode, err := resolveOmpMode(cfg, Run{RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}, fakeTools{"omp": true}, []string{"TMUX=/tmp/tmux"})
@@ -59,6 +71,26 @@ func TestResolveOmpModeHonorsAutoTmuxAndValidation(t *testing.T) {
 		t.Fatalf("expected missing omp error, got %v", err)
 	}
 }
+
+func TestResolveOmpModeHonorsExplicitModes(t *testing.T) {
+	run := Run{RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}
+	for _, tc := range []struct {
+		configured string
+		want       string
+	}{
+		{configured: "inline", want: "inline"},
+		{configured: "tmux", want: "tmux"},
+		{configured: "window", want: "tmux"},
+	} {
+		cfg := defaultConfig().Integrations.Omp
+		cfg.Mode = tc.configured
+		mode, err := resolveOmpMode(cfg, run, fakeTools{"omp": true}, nil)
+		if err != nil || mode != tc.want {
+			t.Fatalf("mode %q: expected %q, got mode=%q err=%v", tc.configured, tc.want, mode, err)
+		}
+	}
+}
+
 func TestResolveOmpModeRefusesActiveStatusEvenWhenGroupStale(t *testing.T) {
 	cfg := defaultConfig().Integrations.Omp
 	for _, status := range []string{"pending", "running", "in_progress", "cooldown"} {
@@ -103,6 +135,30 @@ func TestOmpCommandsUseWorktreeAndBriefing(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(tmux.Args, " "), "exec ${SHELL:-/bin/sh}") {
 		t.Fatalf("expected keep-shell disabled to omit shell handoff, got %v", tmux.Args)
+	}
+}
+
+func TestOmpTmuxCommandShapesDefaultHorizontalAndWindowModes(t *testing.T) {
+	cfg := defaultConfig().Integrations.Omp
+	run := Run{TaskID: "task-1", RunID: "run-1", Worktree: "/tmp/wt", Status: "failed"}
+
+	horizontal, err := ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(horizontal.Args, " ")
+	if !strings.Contains(joined, "split-window -h -c /tmp/wt") {
+		t.Fatalf("expected default horizontal split, got path=%q args=%v", horizontal.Path, horizontal.Args)
+	}
+
+	cfg.Mode = "window"
+	window, err := ompTmuxCommand(run, "/tmp/wt/.foreman/triage-run-1.md", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(window.Args, " ")
+	if !strings.Contains(joined, "new-window -c /tmp/wt -n omp:task-1") {
+		t.Fatalf("expected window mode to use tmux new-window, got path=%q args=%v", window.Path, window.Args)
 	}
 }
 

@@ -541,6 +541,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.reloadSelectedDetail()
 	case "o":
 		if tabNames[m.tab] == "pr" {
+			if m.pr.URL == "" {
+				m.notice = "pr: no PR for this run yet"
+				return m, nil
+			}
 			return m, m.openSelectedPR()
 		}
 		if m.openableTab() {
@@ -548,7 +552,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, openInNvim(m.editor, t, false)
 		}
 	case "enter":
-		if tabNames[m.tab] == "pr" {
+		if tabNames[m.tab] == "pr" && m.pr.URL != "" {
 			return m, m.openSelectedPR()
 		}
 		if m.detailUsesViewer() {
@@ -1104,7 +1108,7 @@ func tabOpenable(name string) bool {
 
 func tabViewer(name string) bool {
 	switch name {
-	case "messages", "events", "logs", "reports", "files", "pr", "metrics":
+	case "summary", "messages", "events", "logs", "reports", "files", "pr", "metrics":
 		return true
 	default:
 		return false

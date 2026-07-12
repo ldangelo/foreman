@@ -173,9 +173,10 @@ with the existing `toolAvailable`/resolver and `$TMUX` for tmux mode.
 
 - Builders (`ompTmuxCommand`, `ompInlineCommand`) assert `.Path`/`.Args`/`.Dir`
   across mode, split, keep-shell, and session permutations; the inline path sets
-  `Dir`, and the tmux path uses `-c <worktree>`.
-- `resolveOmpMode` tests cover `auto`, `$TMUX`, `on/off`, missing binary, and
-  missing worktree paths.
+  `Dir`, the tmux path uses `-c <worktree>`, and explicit `window` mode maps to
+  `tmux new-window`.
+- `resolveOmpMode` tests cover `auto`, `$TMUX`, explicit `inline`/`tmux`/`window`,
+  `on/off`, missing binary, missing worktree paths, and `COCKPIT_OMP*` env overrides.
 - `buildTriageBrief` tests cover failure-mode sections, opening instructions
   with the actual written brief path, and redaction for common secret/bearer/PAT
   lines.

@@ -73,6 +73,12 @@ func TestTaskListTreatsAttentionRunsAsFailedAndSearchesVisibleMetadata(t *testin
 	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-needs-review" {
 		t.Fatalf("expected visible message-count metadata search to find open run only, got %#v", items)
 	}
+
+	list.search = "messages:2"
+	list.SetData(runs, nil)
+	if items := list.Items(); len(items) != 1 || items[0].Run.RunID != "run-needs-review" {
+		t.Fatalf("expected messages field-token search to find message-count metadata, got %#v", items)
+	}
 }
 
 func TestRecentSectionIsMostRecentFirstAndCapped(t *testing.T) {

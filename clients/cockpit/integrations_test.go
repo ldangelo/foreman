@@ -239,6 +239,16 @@ func TestGhEnhanceCommandDisabled(t *testing.T) {
 	}
 }
 
+func TestGhCommandsReportMissingGitHubCLI(t *testing.T) {
+	cfg := defaultConfig().Integrations
+	if _, err := ghDashCommand(cfg, fakeTools{}); err == nil || !strings.Contains(err.Error(), "gh not found") {
+		t.Fatalf("expected missing gh error for gh dash, got %v", err)
+	}
+	if _, err := ghEnhanceCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, cfg, fakeTools{}); err == nil || !strings.Contains(err.Error(), "gh not found") {
+		t.Fatalf("expected missing gh error for gh enhance, got %v", err)
+	}
+}
+
 func TestDeltaPreviewCommandFallsBackToPlainGitDiff(t *testing.T) {
 	cfg := defaultConfig().Integrations
 	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a file.go", cfg, fakeTools{})
@@ -303,6 +313,34 @@ func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
 		t.Fatalf("expected packaged delta config in command %q", cmd.Args[2])
 	}
 }
+
+func TestMaybeLoadSelectedDiffPreviewUsesLoadingAndCacheGuards(t *testing.T) {
+	m := newModel(NewMockClient())
+	run := Run{Group: taskGroupRunning, RunID: "run-1", TaskID: "task-1", Status: "running", Worktree: "/tmp/wt"}
+	m.runs = []Run{run}
+	m.files = []FileChange{{Change: "M", Path: "src/a.go"}}
+	m.tab = 5
+	m.tools = fakeTools{}
+	m.buildItems()
+
+	cmd := m.maybeLoadSelectedDiffPreview()
+	if cmd == nil {
+		t.Fatal("expected first selected-file preview request to start loading")
+	}
+	key := diffPreviewKey(run, "src/a.go", selectedDiffBase(run, m.config.Integrations))
+	if !m.diffLoading[key] {
+		t.Fatalf("expected diff preview key to be marked loading, got %#v", m.diffLoading)
+	}
+	if cmd := m.maybeLoadSelectedDiffPreview(); cmd != nil {
+		t.Fatal("expected in-flight diff preview to suppress recomputation")
+	}
+	m.diffLoading = map[string]bool{}
+	m.diffPreviews[key] = DiffPreview{RunID: "run-1", Path: "src/a.go", Lines: []string{"cached"}}
+	if cmd := m.maybeLoadSelectedDiffPreview(); cmd != nil {
+		t.Fatal("expected cached diff preview to suppress recomputation")
+	}
+}
+
 func hasEnv(env []string, prefix string) bool {
 	for _, item := range env {
 		if strings.HasPrefix(item, prefix) {

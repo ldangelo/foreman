@@ -178,7 +178,7 @@ process takeover), the way `reports` render markdown through Glamour today.
   work. Do not break the `o`/`d`/`D` actions.
 - Regression contract: moving the cursor onto a changed file shows its colored
   diff inline; no external process is launched; absent delta falls back to plain
-  diff text.
+  diff text; loading and cached-preview guards prevent recomputation on render/tick.
 
 ### C. gh-dash repo-wide handoff (tier 1)
 
@@ -268,8 +268,9 @@ Leave `d` (per-file nvim diff), `o` (open in nvim), `g` (scope), `r`/`R` as-is.
 The shipped tests keep process handoffs behind pure builder functions and cover:
 
 - `diffnavCommand`, `ghDashCommand`, `ghEnhanceCommand`, and
-  `deltaPreviewCommand` command construction, disabled/missing-tool paths, and
-  empty-worktree/no-branch branches.
+  `deltaPreviewCommand` command construction, disabled/missing-tool paths
+  (including missing `gh`), empty-worktree/no-branch branches, and selected-file
+  diff-preview loading/cache guards.
 - `toolAvailable` / integration enablement modes independent of PATH.
 - PR projection mapping from `/api/v1/runs`, including checks and review fields.
 - Mock client file diffs, PR state, and render paths for `COCKPIT_BACKEND=mock`.
