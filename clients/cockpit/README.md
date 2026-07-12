@@ -1,6 +1,6 @@
-# Foreman cockpit — Bubble Tea POC
+# Foreman cockpit — Bubble Tea client
 
-A proof-of-concept of the single-pane Foreman cockpit, built with
+The Go implementation of the single-pane Foreman cockpit is built with
 [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) +
 [Lip Gloss v2](https://github.com/charmbracelet/lipgloss) +
 [Glamour](https://github.com/charmbracelet/glamour) +
@@ -9,7 +9,7 @@ A proof-of-concept of the single-pane Foreman cockpit, built with
 The nested Go module targets the Bubble Tea v2 `tea.View` API: alt-screen and
 mouse mode are requested from `View()` rather than program options.
 
-It demonstrates the redesign in `docs/design/cockpit-ui-spec.md` and the
+It implements the redesign in `docs/design/cockpit-ui-spec.md` and the
 architecture direction in `docs/adr/0001-go-clients-elixir-core-runtime.md`:
 a Go client that reads the Elixir core's `/api/v1` projections and holds no
 authoritative state.
@@ -258,13 +258,13 @@ PR. Keep these as operator-local commands rather than cockpit runtime behavior.
 
 ## nvim open modes
 
-In this POC the editor mode is inferred from config/env: `remote` when `$NVIM` is
+In this client the editor mode is inferred from config/env: `remote` when `$NVIM` is
 present in `auto`, otherwise `inline`. The editor binary comes from `editor.cmd`
 or `$EDITOR` (falling back to `nvim`).
 
-## Status / caveats
+## Status / scope
 
-- POC quality: READY task approval/edit/create, selected-run attach, `omp`
+- READY task approval/edit/create, selected-run attach, `omp`
   triage/plain handoffs, `gh dash`, `gh enhance`, and PR browser opens are live
   actions through the cockpit client, command bus, and tool handoffs. Selected-run
   retry/reset post `run.retry`/`run.reset`; the server requeues the associated
@@ -277,9 +277,9 @@ or `$EDITOR` (falling back to `nvim`).
   PR fields are read from `/api/v1/runs`, including PR URL, state, mergeability,
   review decision, and check summary; if a legacy run lacks those projected PR
   fields, `httpClient.PR` folds `/api/v1/events` and then debug timeline PR
-  payloads. The contract should still be regenerated from a published OpenAPI
-  schema (ADR phase 2).
-- File-change data has no dedicated endpoint yet; `httpClient.Files` prefers the
+  payloads. ADR phase 2 will replace the hand mapping with generated client code
+  when a published OpenAPI schema is available.
+- No dedicated file-change endpoint is required; `httpClient.Files` prefers the
   selected run worktree and projected base branch from `/api/v1/runs`, runs
   `git diff --numstat`/`--name-status`, then falls back to structured or legacy
   `/api/v1/runs/:run_id/debug` timeline `payload` / `file_changes` fields when
