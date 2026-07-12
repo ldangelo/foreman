@@ -293,7 +293,7 @@ The shipped tests keep process handoffs behind pure builder functions and cover:
   endpoints. Worktree/branch/base metadata, PR readiness fields, row counts, and
   diff totals are exposed on the existing `/api/v1/runs` projection; file-change
   fallback data is exposed on the existing `/api/v1/runs/:run_id/debug` timeline.
-- **Resolved risks:** the diff base is configurable (`diff.files.base`) and falls
+- **Resolved risks:** the diff base is configurable (`integrations.diffnav.base`) and falls
   back sensibly; diffnav Nerd-Font/`delta` requirements and `gh` auth failures
   surface as notices; exec work stays out of render paths by loading/caching detail.
 - **Consistency:** full-screen external review tools (`diffnav`, `gh dash`, and

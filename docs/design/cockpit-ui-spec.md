@@ -260,12 +260,7 @@ sensible defaults shown):
 editor:
   cmd: nvim              # editor binary
   mode: auto             # auto | remote | inline
-  remote:
-    autodetect: true     # use $NVIM / discovered --listen socket
-    server: ""           # explicit socket/address override
-  diff:
-    files: diff          # diff | edit  (default action for the files tab)
-    tool: ""             # git difftool name; empty = nvim -d
+  remoteServer: ""       # explicit socket/address override; empty = autodetect $NVIM
 integrations:
   diffnav:
     enable: auto         # auto | on | off

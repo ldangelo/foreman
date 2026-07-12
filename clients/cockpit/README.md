@@ -181,6 +181,7 @@ Controlled by `.foreman/config.yaml` (all optional) and `COCKPIT_DIFFNAV`,
 editor:
   cmd: nvim
   mode: auto
+  remoteServer: ""   # explicit socket/address; empty = autodetect $NVIM
 integrations:
   diffnav:
     enable: auto
@@ -265,9 +266,11 @@ PR. Keep these as operator-local commands rather than cockpit runtime behavior.
 
 ## nvim open modes
 
-In this client the editor mode is inferred from config/env: `remote` when `$NVIM` is
-present in `auto`, otherwise `inline`. The editor binary comes from `editor.cmd`
-or `$EDITOR` (falling back to `nvim`).
+In this client the editor mode is inferred from config/env: `auto` uses a remote
+session when `editor.remoteServer` or `$NVIM` is present, otherwise `inline`.
+`remote` always targets the configured/discovered session, and `inline` always
+suspends the cockpit. The editor binary comes from `editor.cmd` or `$EDITOR`
+(falling back to `nvim`).
 
 ## Status / scope
 

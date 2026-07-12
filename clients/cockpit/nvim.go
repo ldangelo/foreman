@@ -13,9 +13,9 @@ import (
 
 // EditorConfig mirrors the `.foreman/config.yaml` editor block from the spec.
 type EditorConfig struct {
-	Cmd          string // editor binary, default "nvim"
-	Mode         string // auto | remote | inline
-	RemoteServer string // explicit --server address; empty = autodetect $NVIM
+	Cmd          string `yaml:"cmd"`          // editor binary, default "nvim"
+	Mode         string `yaml:"mode"`         // auto | remote | inline
+	RemoteServer string `yaml:"remoteServer"` // explicit --server address; empty = autodetect $NVIM
 }
 
 func defaultEditorConfig() EditorConfig {

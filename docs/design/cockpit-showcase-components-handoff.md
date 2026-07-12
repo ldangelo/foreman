@@ -126,12 +126,15 @@ motion can be turned off; no CPU spin when idle.
 `stickers` was not adopted because it does not clearly simplify the responsive
 two-column + bars layout; the cockpit keeps `lipgloss` joins.
 
-## 5. Per-library v2 rule
+## 5. Per-library compatibility rule
 
-Any additional UI library must prove v2 compatibility by checking its
-`go.mod`/tags for a `charm.land/*/v2` dependency (or an explicitly v2-compatible
-release) and by building a throwaway spike alongside the v2 cockpit before
-adoption. If it only supports v1, it is excluded from this cockpit.
+Additional terminal UI/control libraries must prove Bubble Tea v2 compatibility by
+checking their `go.mod`/tags for a `charm.land/*/v2` dependency (or an
+explicitly v2-compatible release) and by building a throwaway spike alongside the
+v2 cockpit before adoption. If a UI/control library only supports v1, it is
+excluded from this cockpit. Glamour remains the markdown renderer and carries its
+own legacy module path; it is treated as content rendering, not a Bubble Tea
+component.
 
 ## 6. The demo (make it showcase-able)
 
@@ -155,9 +158,9 @@ adoption. If it only supports v1, it is excluded from this cockpit.
 - Theme is consistent across cockpit + `diffnav`/`gh dash`/`gh enhance`.
 - `COCKPIT_BACKEND=mock` produces a demo-worthy screen; `demo.tape` is checked in
   for local `vhs` GIF capture.
-- Every adopted lib is a verified v2 build; `go build/test/vet ./...` clean on
-  Go 1.26; key/help generation, search parsing, spinner/stopwatch motion, and
-  ANSI/Unicode width helpers are owned by v2-compatible components or delegate to
+- Every adopted terminal UI/control lib is a verified v2 build; `go build/test/vet ./...`
+  is clean on Go 1.26; key/help generation, search parsing, spinner/stopwatch
+  motion, and ANSI/Unicode width helpers are owned by v2-compatible components or delegate to
   `reflow` rather than bespoke terminal math.
 
 ## 8. Non-goals & risks

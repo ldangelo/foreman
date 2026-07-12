@@ -472,6 +472,55 @@ func TestTaskListFocusMarkerSurvivesNoColor(t *testing.T) {
 	}
 }
 
+func TestFocusLabelFollowsActivePane(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}}
+	m.tasks = nil
+	m.buildItems()
+	out := stripANSI(m.renderKeyBar(120))
+	if !strings.Contains(out, "focus: tasks") {
+		t.Fatalf("expected key bar to expose task-list focus, got:\n%s", out)
+	}
+
+	m.viewFocused = true
+	out = stripANSI(m.renderKeyBar(120))
+	if !strings.Contains(out, "focus: details") {
+		t.Fatalf("expected key bar to expose detail-pane focus, got:\n%s", out)
+	}
+}
+
+func TestPaneVisualUsesFocusedAndBlurredBorders(t *testing.T) {
+	cfg := defaultConfig().Cockpit.Focus
+	focused := paneVisualFor(true, cfg)
+	blurred := paneVisualFor(false, cfg)
+
+	if focused.Border == blurred.Border {
+		t.Fatalf("expected focused and blurred pane borders to differ, both got %v", focused.Border)
+	}
+	if focused.Border != cBorderFocus || blurred.Border != cBorderBlur {
+		t.Fatalf("expected generated border tokens, focused=%v blurred=%v", focused.Border, blurred.Border)
+	}
+}
+
+func TestStatusBarReportsEffectiveNvimMode(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.editor = EditorConfig{Cmd: "nvim", Mode: "inline", RemoteServer: "/tmp/nvim.sock"}
+	out := stripANSI(m.renderStatusBar(120))
+	if !strings.Contains(out, "nvim: inline") || strings.Contains(out, "nvim ⇄ attached") {
+		t.Fatalf("expected inline editor mode to stay inline even with a server address, got:\n%s", out)
+	}
+
+	m.editor = EditorConfig{Cmd: "nvim", Mode: "auto", RemoteServer: "/tmp/nvim.sock"}
+	out = stripANSI(m.renderStatusBar(120))
+	if !strings.Contains(out, "nvim ⇄ attached") {
+		t.Fatalf("expected auto editor mode with a server address to report attached, got:\n%s", out)
+	}
+}
+
 func TestSpaceDoesNotMutateSectionList(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-run", RunID: "run-1", Status: "running"}}
@@ -1818,6 +1867,44 @@ func TestMetricsTabShowsLoadingStateDuringRefresh(t *testing.T) {
 	out = stripANSI(reduced.renderRight(80))
 	if strings.Contains(out, "⠋") || !strings.Contains(out, "loading metrics") {
 		t.Fatalf("expected reduced-motion metrics loading text, got:\n%s", out)
+	}
+}
+
+func TestMetricsTabShowsEmptyAndErrorStates(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 7
+
+	updated, _ := m.Update(dataMsg{runs: client.runs, metrics: Metrics{}, errors: []string{"GET /api/v1/metrics: 502 Bad Gateway"}})
+	m = updated.(model)
+
+	out := stripANSI(m.renderRight(80))
+	if !strings.Contains(out, "No metrics reported yet.") {
+		t.Fatalf("expected empty metrics state, got:\n%s", out)
+	}
+	if m.notice != "GET /api/v1/metrics: 502 Bad Gateway" {
+		t.Fatalf("expected metrics error notice, got %q", m.notice)
+	}
+}
+
+func TestIdleCockpitDoesNotAnimateSpinner(t *testing.T) {
+	m := newModel(&mutableClient{})
+	m.metricsLoading = false
+	m.spinnerActive = true
+
+	cmd := m.syncMotionCmd()
+	if m.spinnerActive {
+		t.Fatal("expected idle cockpit to stop spinner")
+	}
+	if m.shouldAnimate() {
+		t.Fatal("expected no animation when there are no running runs, loading metrics, or loading diffs")
+	}
+	if cmd != nil {
+		t.Fatalf("expected no spinner command while idle, got %#v", cmd)
 	}
 }
 

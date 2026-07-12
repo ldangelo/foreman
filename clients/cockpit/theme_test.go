@@ -76,6 +76,20 @@ func TestThemeProjectionFragmentsUseTokens(t *testing.T) {
 	if !strings.Contains(string(delta), themeTokenDiffSyntaxTheme) || !strings.Contains(string(delta), themeTokenDiffAdd) || !strings.Contains(string(delta), themeTokenDiffRemove) {
 		t.Fatalf("delta config does not include diff tokens:\n%s", string(delta))
 	}
+	diffnav, err := os.ReadFile("theme/diffnav.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diffnav), "nerd-fonts-status") || !strings.Contains(string(diffnav), "showDiffStats: true") {
+		t.Fatalf("diffnav theme does not include expected visual defaults:\n%s", string(diffnav))
+	}
+	glamour, err := os.ReadFile("theme/glamour.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(glamour), themeTokenTextPrimary) || !strings.Contains(string(glamour), themeTokenAccent) || !strings.Contains(string(glamour), themeTokenAccent2) {
+		t.Fatalf("glamour theme does not include cockpit text/accent tokens:\n%s", string(glamour))
+	}
 }
 
 func TestInstallThemeFragmentsWritesAndBacksUpConfigs(t *testing.T) {

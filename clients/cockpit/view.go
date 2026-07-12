@@ -208,7 +208,7 @@ func (m model) renderStatusBar(w int) string {
 		dimStyle.Render(itoa(recent)+" recent")
 
 	nvim := "nvim: inline"
-	if m.editor.serverAddr() != "" {
+	if m.editor.useRemote() {
 		nvim = "nvim ⇄ attached"
 	}
 	section := m.taskList.ActiveSection().Name

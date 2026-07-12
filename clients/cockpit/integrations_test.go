@@ -71,6 +71,20 @@ func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesEditorRemoteServer(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte("editor:\n  cmd: nvim\n  mode: remote\n  remoteServer: /tmp/nvim.sock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Editor.Cmd != "nvim" || cfg.Editor.Mode != "remote" || cfg.Editor.RemoteServer != "/tmp/nvim.sock" {
+		t.Fatalf("unexpected editor config: %+v", cfg.Editor)
+	}
+}
+
 func TestLoadConfigParsesCockpitFocus(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("cockpit:\n  focus:\n    style: border\n    dimInactive: false\n  reducedMotion: true\n"), 0o600); err != nil {

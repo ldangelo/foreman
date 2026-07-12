@@ -279,6 +279,28 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  defp domain_event(command_type, payload) when command_type in ["run.retry", "run.reset"] do
+    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id),
+         {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
+         :ok <- require_existing_run(run_id),
+         :ok <- require_existing_task(task_id) do
+      default_reason =
+        if command_type == "run.retry", do: "retry requested", else: "reset requested"
+
+      reason = Map.get(payload, :reason) || default_reason
+
+      task_payload =
+        payload
+        |> Map.put(:run_id, run_id)
+        |> Map.put(:task_id, task_id)
+        |> Map.put(:status, "ready")
+        |> Map.put(:reason, reason)
+        |> Map.put_new(:source, "command_bus")
+
+      {:ok, "TaskUpdated", task_payload, "task:#{task_id}"}
+    end
+  end
+
   defp domain_event(command_type, payload)
        when command_type in [
               "run.pr.update",
@@ -326,6 +348,22 @@ defmodule ForemanServer.CommandRouter do
       :ok
     else
       {:error, {:not_found, :project, project_id}}
+    end
+  end
+
+  defp require_existing_run(run_id) do
+    if Map.has_key?(ProjectionStore.snapshot().runs, run_id) do
+      :ok
+    else
+      {:error, {:not_found, :run, run_id}}
+    end
+  end
+
+  defp require_existing_task(task_id) do
+    if ProjectionStore.task(task_id) do
+      :ok
+    else
+      {:error, {:not_found, :task, task_id}}
     end
   end
 
