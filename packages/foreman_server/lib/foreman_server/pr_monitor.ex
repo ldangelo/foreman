@@ -142,8 +142,14 @@ defmodule ForemanServer.PrMonitor do
         |> Map.put(:action, "closed")
         |> Map.put(:reason, "GitHub reports PR closed without merge")
 
-      case handle_command(command_handler, "run.pr.reset", payload) do
-        {:ok, _} -> %{empty_summary() | closed: 1}
+      with {:ok, _} <- handle_command(command_handler, "run.pr.reset", payload),
+           {:ok, _} <-
+             handle_command(command_handler, "task.close", %{
+               task_id: context.task_id,
+               project_id: context.project_id
+             }) do
+        %{empty_summary() | closed: 1}
+      else
         {:error, _reason} -> %{empty_summary() | errors: 1}
       end
     end

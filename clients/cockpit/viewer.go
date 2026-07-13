@@ -18,6 +18,8 @@ type ViewerLine struct {
 	Key          string
 	Text         string
 	Target       target
+	Detail       []string
+	DetailFunc   func() []string
 	Unselectable bool
 	KeepNext     bool
 }
@@ -45,21 +47,22 @@ func (o viewerObject) GetItem() item.Item { return o.item }
 // message bodies and diff previews render with their parent row while cursor
 // movement still lands only on actionable rows.
 type Viewer struct {
-	lines          []ViewerLine
-	objects        []viewerObject
-	viewport       *vpkg.Model[viewerObject]
-	filter         *fvpkg.Model[viewerObject]
-	cursor         int
-	offset         int
-	selectedObject int
-	selectedKey    string
-	followBottom   bool
-	searchActive   bool
-	width          int
-	height         int
-	xOffset        int
-	wrapText       bool
-	wrapTextSet    bool
+	lines           []ViewerLine
+	objects         []viewerObject
+	viewport        *vpkg.Model[viewerObject]
+	filter          *fvpkg.Model[viewerObject]
+	cursor          int
+	offset          int
+	selectedObject  int
+	selectedKey     string
+	followBottom    bool
+	searchActive    bool
+	width           int
+	height          int
+	xOffset         int
+	wrapText        bool
+	wrapTextSet     bool
+	selectionPrefix string
 }
 
 func (v *Viewer) SetWrapText(wrap bool) {
@@ -67,6 +70,13 @@ func (v *Viewer) SetWrapText(wrap bool) {
 	v.wrapTextSet = true
 	if v.viewport != nil {
 		v.viewport.SetWrapText(wrap)
+	}
+}
+
+func (v *Viewer) SetSelectionPrefix(prefix string) {
+	v.selectionPrefix = prefix
+	if v.viewport != nil {
+		v.viewport.SetStyles(v.styles())
 	}
 }
 
@@ -93,7 +103,8 @@ func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height
 	v.viewport.SetWrapText(v.wrapText)
 	oldObjectCount := len(v.objects)
 	v.lines = lines
-	v.objects = buildViewerObjects(lines, v.height)
+	baseObjects := buildViewerObjects(lines, v.height, "")
+	v.objects = baseObjects
 	if len(v.objects) == 0 {
 		v.cursor = 0
 		v.offset = 0
@@ -128,10 +139,11 @@ func (v *Viewer) SetLines(lines []ViewerLine, policy viewerRefreshPolicy, height
 		v.ensureViewport()
 		v.viewport.SetWrapText(v.wrapText)
 	}
-	v.selectedObject = max(0, min(next, len(v.objects)-1))
+	v.selectedObject = max(0, min(next, len(baseObjects)-1))
 	v.cursor = v.objects[v.selectedObject].lineIndex
 	v.followBottom = v.selectedObject == len(v.objects)-1
 	v.updateSelectedKey()
+	v.objects = buildViewerObjects(lines, v.height, v.selectedKey)
 	v.filter.SetBottomSticky(false)
 	v.setObjects(v.objects)
 	v.syncViewportSelection()
@@ -161,6 +173,7 @@ func (v *Viewer) Move(delta, height int) {
 	v.cursor = v.objects[v.selectedObject].lineIndex
 	v.followBottom = v.selectedObject == len(v.objects)-1
 	v.updateSelectedKey()
+	v.rebuildObjectsForSelection()
 	v.filter.SetBottomSticky(false)
 	v.syncViewportSelection()
 	v.updateOffset()
@@ -249,6 +262,7 @@ func (v *Viewer) SelectKey(key string, height int) bool {
 	v.cursor = v.objects[idx].lineIndex
 	v.followBottom = idx == len(v.objects)-1
 	v.updateSelectedKey()
+	v.rebuildObjectsForSelection()
 	v.filter.SetBottomSticky(false)
 	v.syncViewportSelection()
 	v.updateOffset()
@@ -297,8 +311,7 @@ func (v *Viewer) ensureViewport() {
 	if v.viewport != nil {
 		return
 	}
-	styles := vpkg.DefaultStyles()
-	styles.SelectedItemStyle = lipgloss.NewStyle().Background(cActBg)
+	styles := v.styles()
 	v.viewport = vpkg.New[viewerObject](
 		v.width,
 		v.viewportHeight(),
@@ -323,6 +336,13 @@ func (v *Viewer) ensureViewport() {
 
 }
 
+func (v Viewer) styles() vpkg.Styles {
+	styles := vpkg.DefaultStyles()
+	styles.SelectionPrefix = v.selectionPrefix
+	styles.SelectedItemStyle = lipgloss.NewStyle().Background(cSelBg).Foreground(cWhite).Bold(true)
+	return styles
+}
+
 func (v *Viewer) syncViewportSelection() {
 	if v.filter == nil || len(v.objects) == 0 {
 		return
@@ -339,6 +359,20 @@ func (v *Viewer) setObjects(objects []viewerObject) {
 	}
 }
 
+func (v *Viewer) rebuildObjectsForSelection() {
+	if len(v.objects) == 0 {
+		return
+	}
+	key := v.selectedKey
+	v.objects = buildViewerObjects(v.lines, v.height, key)
+	if idx, ok := v.objectIndexByKey(key); ok {
+		v.selectedObject = idx
+		v.cursor = v.objects[idx].lineIndex
+	}
+	v.setObjects(v.objects)
+	v.applyXOffset()
+}
+
 func (v *Viewer) syncFromFilterSelection() {
 	if v.filter == nil || len(v.objects) == 0 {
 		return
@@ -352,6 +386,7 @@ func (v *Viewer) syncFromFilterSelection() {
 		v.cursor = v.objects[idx].lineIndex
 		v.followBottom = idx == len(v.objects)-1
 		v.updateSelectedKey()
+		v.rebuildObjectsForSelection()
 		v.viewport.EnsureItemInView(v.selectedObject, 0, 1, 0, 0)
 		v.updateOffset()
 	}
@@ -389,7 +424,7 @@ func (v *Viewer) updateSelectedKey() {
 	}
 }
 
-func buildViewerObjects(lines []ViewerLine, height int) []viewerObject {
+func buildViewerObjects(lines []ViewerLine, height int, selectedKey string) []viewerObject {
 	objects := make([]viewerObject, 0, len(lines))
 	packUnselectable := height > 2
 	for i, line := range lines {
@@ -407,10 +442,20 @@ func buildViewerObjects(lines []ViewerLine, height int) []viewerObject {
 			line:      line,
 			lines:     []string{line.Text},
 		}
+		if line.Key == selectedKey && packUnselectable {
+			obj.lines = append(obj.lines, viewerLineDetail(line)...)
+		}
 		obj.item = viewerItem(obj.lines)
 		objects = append(objects, obj)
 	}
 	return objects
+}
+
+func viewerLineDetail(line ViewerLine) []string {
+	if line.DetailFunc != nil {
+		return line.DetailFunc()
+	}
+	return line.Detail
 }
 
 func viewerItem(lines []string) item.Item {

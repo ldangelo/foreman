@@ -15,9 +15,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
-// defaultPhases is the visible slice of the default workflow pipeline.
+// defaultPhases is only a last-resort fallback when neither the run projection
+// nor the workflow definition can provide phase order.
 var defaultPhases = []string{
 	"explorer", "developer", "documentation", "qa", "reviewer",
 	"cli-review", "finalize", "create-pr", "pr-wait", "merge",
@@ -25,8 +28,9 @@ var defaultPhases = []string{
 
 // Phase is one step of a run's pipeline.
 type Phase struct {
-	Name  string
-	State string // done | active | pending | fail | retry
+	Name    string
+	State   string // done | active | pending | fail | retry
+	Retries int
 }
 
 // Run is a projection of an orchestration run (GET /api/v1/runs).
@@ -59,6 +63,7 @@ type Run struct {
 	PRHeadSHA   string
 	BaseBranch  string
 	BranchName  string
+	ProjectPath string
 }
 
 // Task is a current-project task shown in the READY bucket.
@@ -162,6 +167,219 @@ func pipe(activeIdx, failIdx int) []Phase {
 		out[i] = Phase{Name: name, State: state}
 	}
 	return out
+}
+
+func pipelineForRun(raw map[string]any, task Task, status, currentPhase string) []Phase {
+	order := phaseOrderForRun(raw, task)
+	if currentPhase != "" && indexOf(order, currentPhase) < 0 {
+		order = append(order, currentPhase)
+	}
+	if len(order) == 0 {
+		order = append([]string(nil), defaultPhases...)
+	}
+	phaseStatus := phaseStatusMap(raw["phase_status"])
+	retries := phaseRetryCounts(raw["retry_history"])
+	activeIdx := indexOf(order, currentPhase)
+	out := make([]Phase, len(order))
+	for i, name := range order {
+		state := phaseState(phaseStatus[name])
+		if state == "" {
+			state = inferredPhaseState(i, activeIdx, status)
+		}
+		out[i] = Phase{Name: name, State: state, Retries: retries[name]}
+	}
+	return out
+}
+
+func phaseOrderForRun(raw map[string]any, task Task) []string {
+	if order := nonEmptyStringList(raw["phase_order"]); len(order) > 0 {
+		return order
+	}
+	if order := phaseNamesFromRaw(raw["phases"]); len(order) > 0 {
+		return order
+	}
+	if order := workflowPhaseOrder(workflowNameForRun(raw, task)); len(order) > 0 {
+		return order
+	}
+	return append([]string(nil), defaultPhases...)
+}
+
+func workflowNameForRun(raw map[string]any, task Task) string {
+	if workflow := cleanWorkflowName(str(raw, "workflow")); workflow != "" {
+		return workflow
+	}
+	if workflow := cleanWorkflowName(task.Workflow); workflow != "" {
+		return workflow
+	}
+	if task.TaskType != "" {
+		return task.TaskType
+	}
+	if taskType := str(raw, "task_type", "type"); taskType != "" {
+		return taskType
+	}
+	return "feature"
+}
+
+func cleanWorkflowName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(name, " ("); idx > 0 {
+		name = name[:idx]
+	}
+	return strings.TrimSpace(name)
+}
+
+type workflowFile struct {
+	Phases []struct {
+		Name string `yaml:"name"`
+	} `yaml:"phases"`
+}
+
+var workflowPhaseCache sync.Map
+
+func workflowPhaseOrder(workflow string) []string {
+	workflow = cleanWorkflowName(workflow)
+	if workflow == "" {
+		return nil
+	}
+	if cached, ok := workflowPhaseCache.Load(workflow); ok {
+		return append([]string(nil), cached.([]string)...)
+	}
+	for _, candidate := range workflowDefinitionPaths(workflow) {
+		data, err := os.ReadFile(candidate)
+		if err != nil {
+			continue
+		}
+		var wf workflowFile
+		if yaml.Unmarshal(data, &wf) != nil {
+			continue
+		}
+		order := make([]string, 0, len(wf.Phases))
+		for _, phase := range wf.Phases {
+			if name := strings.TrimSpace(phase.Name); name != "" {
+				order = append(order, name)
+			}
+		}
+		if len(order) > 0 {
+			workflowPhaseCache.Store(workflow, order)
+			return append([]string(nil), order...)
+		}
+	}
+	return nil
+}
+
+func workflowDefinitionPaths(workflow string) []string {
+	var paths []string
+	cwd, err := os.Getwd()
+	if err == nil {
+		for dir := cwd; ; dir = filepath.Dir(dir) {
+			paths = append(paths,
+				filepath.Join(dir, ".foreman", "workflows", workflow+".yaml"),
+				filepath.Join(dir, "src", "defaults", "workflows", workflow+".yaml"),
+			)
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".foreman", "workflows", workflow+".yaml"))
+	}
+	return paths
+}
+
+func nonEmptyStringList(raw any) []string {
+	items := stringList(raw)
+	out := items[:0]
+	for _, item := range items {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func phaseNamesFromRaw(raw any) []string {
+	if names := nonEmptyStringList(raw); len(names) > 0 {
+		return names
+	}
+	phases := arrValue(raw)
+	out := make([]string, 0, len(phases))
+	for _, phase := range phases {
+		if name := str(phase, "name", "id", "phase_id"); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func phaseStatusMap(raw any) map[string]string {
+	out := map[string]string{}
+	if values, ok := raw.(map[string]any); ok {
+		for phase, status := range values {
+			out[phase] = fmt.Sprintf("%v", status)
+		}
+	}
+	return out
+}
+
+func phaseRetryCounts(raw any) map[string]int {
+	counts := map[string]int{}
+	for _, entry := range arrValue(raw) {
+		phase := str(entry, "phase_id", "phase")
+		if phase == "" {
+			continue
+		}
+		attempt := intValue(entry["attempt"])
+		if attempt > counts[phase] {
+			counts[phase] = attempt
+			continue
+		}
+		if attempt == 0 {
+			counts[phase]++
+		}
+	}
+	return counts
+}
+
+func phaseState(status string) string {
+	switch normalizeStatus(status) {
+	case "completed", "complete", "succeeded", "success", "done", "passed", "pass":
+		return "done"
+	case "in_progress", "running", "active", "started":
+		return "active"
+	case "retrying", "retry", "cooldown":
+		return "retry"
+	case "failed", "failure", "fail", "error", "errored", "conflict", "blocked":
+		return "fail"
+	case "pending", "queued", "idle":
+		return "pending"
+	default:
+		return ""
+	}
+}
+
+func inferredPhaseState(idx, activeIdx int, status string) string {
+	status = normalizeStatus(status)
+	switch {
+	case activeIdx < 0 && (status == "completed" || status == "merged" || status == "pr_created"):
+		return "done"
+	case activeIdx < 0:
+		return "pending"
+	case idx < activeIdx:
+		return "done"
+	case idx == activeIdx && (status == "failed" || status == "conflict" || status == "blocked"):
+		return "fail"
+	case idx == activeIdx && (status == "cooldown" || status == "retrying"):
+		return "retry"
+	case idx == activeIdx:
+		return "active"
+	default:
+		return "pending"
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -317,8 +535,12 @@ func (*mockClient) Runs() []Run {
 			Phase: "cr-developer", Priority: "P2", Verdict: "retrying", Elapsed: "1m 06s",
 			Worktree: "~/.foreman/worktrees/foreman-5a4b3", Branch: "foreman-5a4b3",
 			Last: "6s ago · retry.scheduled", Attention: "retrying: coderabbit_findings (2)",
-			Summary:  "Retrying after CodeRabbit findings (2 blocking). Rate-limit cooldown 45s.",
-			Pipeline: func() []Phase { p := pipe(5, -1); p[5] = Phase{"cli-review", "retry"}; return p }(),
+			Summary: "Retrying after CodeRabbit findings (2 blocking). Rate-limit cooldown 45s.",
+			Pipeline: func() []Phase {
+				p := pipe(5, -1)
+				p[5] = Phase{Name: "cli-review", State: "retry", Retries: 2}
+				return p
+			}(),
 		},
 		{
 			Group: "RECENT", TaskID: "foreman-77aa1", RunID: "77aa11bb", Status: "merged",
@@ -686,6 +908,21 @@ func (c *httpClient) projectID() string {
 	}
 	return bestID
 }
+func (c *httpClient) projectPaths() map[string]string {
+	m, err := c.getMaybe("/api/v1/projects", false)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, p := range arr(m, "projects") {
+		projectID := str(p, "project_id", "id")
+		projectPath := str(p, "path", "root")
+		if projectID != "" && projectPath != "" {
+			out[projectID] = projectPath
+		}
+	}
+	return out
+}
 
 func (c *httpClient) ProjectID() string { return c.projectID() }
 
@@ -778,6 +1015,34 @@ func newerRun(a, b Run) Run {
 	return a
 }
 
+func projectedWorktree(raw map[string]any) string {
+	worktree := str(raw, "worktree", "worktree_path")
+	if strings.TrimSpace(worktree) != "" && strings.TrimSpace(worktree) != "(cleaned)" {
+		return worktree
+	}
+	if fallback := fallbackRunWorktree(str(raw, "project_id"), str(raw, "task_id")); fallback != "" {
+		return fallback
+	}
+	return worktree
+}
+
+func fallbackRunWorktree(projectID, taskID string) string {
+	projectID = strings.TrimSpace(projectID)
+	taskID = strings.TrimSpace(taskID)
+	if projectID == "" || taskID == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	worktree := filepath.Join(home, ".foreman", "worktrees", projectID, taskID)
+	if info, err := os.Stat(worktree); err == nil && info.IsDir() {
+		return worktree
+	}
+	return ""
+}
+
 func (c *httpClient) Runs() []Run {
 	projectID := c.projectID()
 	tasks := c.taskIndex(projectID)
@@ -801,19 +1066,15 @@ func (c *httpClient) Runs() []Run {
 			group = "RUNNING"
 		}
 		phase := str(r, "current_phase", "phase")
-		active := indexOf(defaultPhases, phase)
-		failIdx := -1
-		if status == "failed" || status == "conflict" || task.Status == "failed" {
-			failIdx = active
-		}
+		runProjectID := str(r, "project_id")
 		run := Run{
 			Group: group, TaskID: taskID, RunID: str(r, "run_id", "id"),
 			Status: status, Phase: phase, Priority: str(r, "priority"),
 			Title: str(r, "title", "task_title"), TaskType: str(r, "type", "task_type"),
-			Verdict: str(r, "verdict"), Worktree: str(r, "worktree", "worktree_path"), Branch: str(r, "branch", "branch_name"),
-			ProjectID: str(r, "project_id"), Created: str(r, "created_at"), Last: str(r, "updated_at", "last"),
+			Verdict: str(r, "verdict"), Worktree: projectedWorktree(r), Branch: str(r, "branch", "branch_name"),
+			ProjectID: runProjectID, Created: str(r, "created_at"), Last: str(r, "updated_at", "last"),
 			Summary: str(r, "status_text", "summary"), Attention: str(r, "attention", "failure_reason", "reason", "status_reason"),
-			Pipeline: pipe(active, failIdx),
+			Pipeline: pipelineForRun(r, task, status, phase),
 			PRURL:    str(r, "pr_url", "pull_request_url"), PRState: str(r, "pr_state"),
 			PRHeadSHA: str(r, "pr_head_sha", "head_sha"), BaseBranch: str(r, "base_branch", "base_ref", "target_branch"),
 			BranchName:  str(r, "branch_name", "branch"),
@@ -1195,7 +1456,7 @@ func reportPreview(report map[string]any) string {
 
 func (c *httpClient) Files(runID string) []FileChange {
 	if run, ok := c.runProjection(runID); ok {
-		if files := fileChangesFromGitWorktree(run); len(files) > 0 {
+		if files := fileChangesFromGitProjection(run); len(files) > 0 {
 			return files
 		}
 	}
@@ -1216,14 +1477,31 @@ func (c *httpClient) runProjection(runID string) (Run, bool) {
 		if str(r, "run_id", "id") != runID {
 			continue
 		}
+		projectID := str(r, "project_id")
+		worktree := projectedWorktree(r)
+		projectPath := ""
+		if projectID != "" && (strings.TrimSpace(worktree) == "" || strings.TrimSpace(worktree) == "(cleaned)") {
+			projectPath = c.projectPaths()[projectID]
+		}
 		return Run{
-			RunID:      runID,
-			Worktree:   str(r, "worktree", "worktree_path"),
-			BaseBranch: str(r, "base_branch", "base_ref", "target_branch"),
-			BranchName: str(r, "branch_name", "branch"),
+			RunID:       runID,
+			Worktree:    worktree,
+			ProjectID:   projectID,
+			ProjectPath: projectPath,
+			BaseBranch:  str(r, "base_branch", "base_ref", "target_branch"),
+			Branch:      str(r, "branch", "branch_name"),
+			BranchName:  str(r, "branch_name", "branch"),
+			PRHeadSHA:   str(r, "pr_head_sha", "head_sha"),
 		}, true
 	}
 	return Run{}, false
+}
+
+func fileChangesFromGitProjection(run Run) []FileChange {
+	if files := fileChangesFromGitWorktree(run); len(files) > 0 {
+		return files
+	}
+	return fileChangesFromGitBranch(run)
 }
 
 func fileChangesFromGitWorktree(run Run) []FileChange {
@@ -1243,8 +1521,32 @@ func fileChangesFromGitWorktree(run Run) []FileChange {
 	return conflictFileChanges(conflicts)
 }
 
+func fileChangesFromGitBranch(run Run) []FileChange {
+	projectPath := strings.TrimSpace(run.ProjectPath)
+	target := firstNonEmpty(run.BranchName, run.Branch, run.PRHeadSHA)
+	if projectPath == "" || target == "" {
+		return nil
+	}
+	projectPath = expandHome(projectPath)
+	for _, spec := range diffSpecsForTarget(run, target) {
+		files := fileChangesFromGitDiff(projectPath, spec, nil)
+		if len(files) > 0 {
+			return files
+		}
+	}
+	return nil
+}
+
 func diffSpecs(run Run) []string {
+	return diffSpecsForTarget(run, "HEAD")
+}
+
+func diffSpecsForTarget(run Run, target string) []string {
 	var specs []string
+	target = strings.TrimSpace(target)
+	if target == "" {
+		target = "HEAD"
+	}
 	add := func(spec string) {
 		spec = strings.TrimSpace(spec)
 		if spec == "" {
@@ -1258,15 +1560,17 @@ func diffSpecs(run Run) []string {
 		specs = append(specs, spec)
 	}
 	if run.BaseBranch != "" {
-		add(run.BaseBranch + "...HEAD")
+		add(run.BaseBranch + "..." + target)
 		if !strings.HasPrefix(run.BaseBranch, "origin/") {
-			add("origin/" + run.BaseBranch + "...HEAD")
+			add("origin/" + run.BaseBranch + "..." + target)
 		}
 	}
-	add("origin/dev...HEAD")
-	add("origin/main...HEAD")
-	add("HEAD")
-	add("")
+	add("origin/dev..." + target)
+	add("origin/main..." + target)
+	if target == "HEAD" {
+		add("HEAD")
+		add("")
+	}
 	return specs
 }
 

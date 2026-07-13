@@ -14,7 +14,7 @@
  */
 
 import { writeFileSync, renameSync, existsSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { ForemanStore } from "../lib/store.js";
@@ -152,24 +152,42 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
     }
   }
 
-  // Branch Verification — ensure we're on the correct branch before pushing.
-  // Worktrees can end up in detached HEAD or on a wrong branch (e.g. after a
-  // failed rebase or manual intervention), causing push to fail with
-  // "src refspec does not match any".
+  // Branch Verification — fail-fast if the worktree is not on the canonical branch.
+  // Auto-recovery via checkout was removed: silently switching branches can cause
+  // work to be committed on the wrong branch while the actual changes remain elsewhere.
   const expectedBranch = `foreman/${taskId}`;
   let branchVerified = false;
   try {
     const currentBranch = await vcs.getCurrentBranch(worktreePath);
     if (currentBranch !== expectedBranch) {
-      log(`[FINALIZE] Branch mismatch: on '${currentBranch}', expected '${expectedBranch}' — attempting checkout`);
-      await vcs.checkoutBranch(worktreePath, expectedBranch);
-      log(`[FINALIZE] Checked out ${expectedBranch}`);
+      // Fail-fast: do not auto-checkout or commit on the wrong branch.
+      const errorMsg = `branch_drift: expected '${expectedBranch}', found '${currentBranch}' in '${worktreePath}'`;
+      log(`[FINALIZE] Branch drift detected — ${errorMsg}`);
+      await appendFile(logFile, `[FINALIZE] Branch drift error: ${errorMsg}\n`);
       report.push(
         `## Branch Verification`,
-        `- Was: ${currentBranch}`,
         `- Expected: ${expectedBranch}`,
-        `- Status: RECOVERED (checkout succeeded)`,
+        `- Actual: ${currentBranch}`,
+        `- Worktree: ${worktreePath}`,
+        `- Status: FAILED (branch_drift)`,
         "",
+      );
+      // Write error artifact for operator visibility
+      const errorArtifactPath = join(worktreePath, "BRANCH_DRIFT_ERROR.json");
+      await writeFile(
+        errorArtifactPath,
+        JSON.stringify(
+          {
+            error: "branch_drift",
+            expected: expectedBranch,
+            actual: currentBranch,
+            worktreePath,
+            taskId,
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
       );
     } else {
       log(`[FINALIZE] Branch verified: ${currentBranch}`);
@@ -179,8 +197,8 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
         `- Status: OK`,
         "",
       );
+      branchVerified = true;
     }
-    branchVerified = true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[FINALIZE] Branch verification failed: ${msg.slice(0, 200)}`);

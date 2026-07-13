@@ -71,10 +71,11 @@ The selected row drives the entire right side.
 - **Detail header** — task id, run id, and run status (color-coded). For
   attention runs, a second line states the reason (`failed: merge_conflict`,
   `retrying: coderabbit_findings (2)`).
-- **Phase rail** — the workflow phases as a horizontal sequence with per-phase
-  glyphs: `✓` done, `●` active (breathing/animated), `○` pending, `✗` failed,
-  `↻` retrying. It wraps on normal narrow panes and collapses to a compact
-  `4/10 · qa` badge on very narrow panes. This is the at-a-glance status. (Q3)
+- **Phase rail** — the selected run's workflow phases as a horizontal sequence
+  with per-phase retry counts and glyphs: `✓` done, `●` active
+  (breathing/animated), `○` pending, `✗` failed, `↻` retrying. It wraps on normal
+  narrow panes and collapses to a compact `4/10 · qa r2` badge on very narrow
+  panes. This is the at-a-glance status. (Q3)
 - **Tab strip** — `summary · messages · events · logs · reports · files · pr ·
   metrics`. Tabs show counts; `logs`, `reports`, and `files` carry an `⧉` marker
   indicating their rows are openable in nvim. (Q4)
@@ -124,20 +125,20 @@ Global:
 | Key | Action |
 |-----|--------|
 | `↑`/`↓`, `j`/`k` | move task selection while the task list is focused |
-| `enter` | enter/focus the selected drill-down view; focus label changes to `details` |
+| `enter` | enter/focus the selected drill-down view; in focused files, open the selected file |
 | `esc` | leave the drill-down view and return focus to the task list; clears search while searching |
-| `↑`/`↓`, `j`/`k` | move the highlighted line in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
-| message rows | select whole messages by header; show `messages <current>/<total>` in both the tab and run header; keep the selected message body preview visible with the header when space allows |
+| `↑`/`↓`, `j`/`k` | move the highlighted row in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
+| message/event/log rows | messages render as selectable table rows with `date/time` (`mm/dd hh:mm`), sender, receiver, and message columns; event/log rows select one signal row at a time with a visible `▶` marker; selected messages show metadata/body detail, selected events show time/type/detail, selected logs show line/text detail; message tabs also show `messages <current>/<total>` in both the tab and run header |
 | mouse wheel | scroll the pane under the pointer: task list on the left, active drill-down view on the right |
 | `ctrl+d` / `ctrl+u` | half-page down/up in the focused drill-down view |
-| `←` / `→` | pan long unwrapped rows in the focused logs view |
+| `←` / `→` | pan long focused log rows when horizontal overflow remains |
 | `s` | save the currently visible focused drill-down rows to `cockpit.exportDir` |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
 | `1`–`8` | jump directly to a tab and focus it |
 | `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused |
 | `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
 | `g` | toggle current-project vs global scope |
-| `enter` | focus details; on PR, open the PR in a browser |
+| `enter` | focus details; on PR, open the PR in a browser; in focused files, open the selected file |
 | `A` | attach the selected run through `GET /api/v1/runs/:id/attach` |
 | `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
 | `P` | attach plain `omp` to the selected run worktree without a brief |
@@ -181,7 +182,7 @@ Openable tabs (`logs`, `reports`, `files`) add:
 
 | Key | Action |
 |-----|--------|
-| `o` | open the selected row in nvim; on `pr`, open the PR URL in a browser |
+| `o` / focused `enter` | open the selected file row in nvim; on `pr`, open the PR URL in a browser |
 | `d` | open a selected-file diff in nvim (files only; conflicts open 3-way) |
 | `D` | open the full run diff in `diffnav` from the files tab |
 
@@ -208,18 +209,18 @@ default avoids nesting a TUI inside a TUI.
 |-----|--------|
 | logs | `~/.foreman/logs/<run-id>.log` (or the path from `/runs/:id/logs`) |
 | reports | the artifact path from `/runs/:id/report` (e.g. `docs/reports/<task>/DEVELOPER_REPORT.md`) |
-| files | `<worktree>/<relative-path>` from the selected run worktree/base metadata exposed by `/api/v1/runs`; file rows prefer `git diff --numstat`/`--name-status` against the projected base branch and otherwise fall back to best-effort paths derived from `/runs/:id/debug` timeline payloads |
+| files | `<worktree>/<relative-path>` from the selected run worktree/base metadata exposed by `/api/v1/runs`, or the local `.foreman/worktrees/<project-id>/<task-id>` fallback when the run projection omits a worktree; file rows prefer `git diff --numstat`/`--name-status` against the projected base branch and otherwise fall back to best-effort paths derived from `/runs/:id/debug` timeline payloads |
 
 ### Files: focused diff preview and handoffs
 
-- `o` opens the file plain in nvim.
+- `o` or focused `enter` opens the file plain in nvim.
 - `d` opens the selected file as an nvim diff against the projected base. Remote
   mode sends a diff command to the running session; inline mode uses `nvim -d`.
   Conflicted files open a 3-way diff (`Gvdiffsplit!` / merge layout).
 - `D` opens a full-run `git diff <base>...HEAD | diffnav` handoff when enabled.
 - The files tab also renders an inline preview for the selected file. It uses
-  `git diff <base>...HEAD -- <path> | delta` when `delta` is enabled and
-  available, and falls back to plain `git diff` output otherwise.
+  `git diff <base>...HEAD -- <path> | delta --side-by-side` when `delta` is
+  enabled and available, and falls back to plain `git diff` output otherwise.
 - `C` opens `gh enhance` as a full-screen handoff for the selected run worktree
   when the GitHub CLI and extension are available; use it from the `pr` tab to
   inspect failing/pending Actions checks and rerun jobs.
@@ -327,5 +328,6 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
 
 - RECENT remains projection/count scoped; auth token refresh and RECENT
   pagination controls are explicit non-goals.
-- Resolved: the phase rail collapses to a compact `4/10 · qa` badge on very
+- Resolved: the phase rail follows the selected run's workflow phase order,
+  includes retry counts, and collapses to a compact `4/10 · qa r2` badge on very
   narrow terminals instead of consuming multiple wrapped rows.

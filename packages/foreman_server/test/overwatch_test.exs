@@ -60,6 +60,31 @@ defmodule ForemanServer.OverwatchTest do
     assert Enum.any?(inbox, &(&1.from == "overwatch" and &1.to == "explorer"))
   end
 
+  test "explorer allows Grep and rejects Graphify tools" do
+    assert {:ok, %{allowed: true, action: "approve"}} =
+             Overwatch.check_tool(%{
+               run_id: "run-1",
+               task_id: "task-1",
+               phase_id: "explorer",
+               tool_name: "Grep",
+               tool_call_id: "tool-grep",
+               args: %{pattern: "Task", path: "src"}
+             })
+
+    assert {:ok, decision} =
+             Overwatch.check_tool(%{
+               run_id: "run-1",
+               task_id: "task-1",
+               phase_id: "explorer",
+               tool_name: "GraphifyQuery",
+               tool_call_id: "tool-graphify",
+               args: %{query: "Task"}
+             })
+
+    refute decision.allowed
+    assert decision.reason =~ "Graphify tools are disabled"
+  end
+
   test "approves ordinary file reads" do
     file =
       Path.join(

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,52 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 
 	if errors := client.DrainErrors(); len(errors) != 0 {
 		t.Fatalf("unexpected client errors: %#v", errors)
+	}
+}
+
+func TestPipelineUsesRunPhaseOrderAndRetryCounts(t *testing.T) {
+	pipeline := pipelineForRun(map[string]any{
+		"phase_order": []any{"fix", "qa", "merge"},
+		"phase_status": map[string]any{
+			"fix": "completed",
+			"qa":  "retrying",
+		},
+		"retry_history": []any{
+			map[string]any{"phase_id": "qa", "attempt": 1},
+			map[string]any{"phase_id": "qa", "attempt": 2},
+		},
+	}, Task{}, "running", "qa")
+
+	if got, want := len(pipeline), 3; got != want {
+		t.Fatalf("expected %d workflow phases, got %#v", want, pipeline)
+	}
+	if pipeline[0].Name != "fix" || pipeline[0].State != "done" || pipeline[0].Retries != 0 {
+		t.Fatalf("expected completed fix phase with zero retries, got %#v", pipeline[0])
+	}
+	if pipeline[1].Name != "qa" || pipeline[1].State != "retry" || pipeline[1].Retries != 2 {
+		t.Fatalf("expected retrying qa phase with two retries, got %#v", pipeline[1])
+	}
+	if pipeline[2].Name != "merge" || pipeline[2].State != "pending" || pipeline[2].Retries != 0 {
+		t.Fatalf("expected pending merge phase with zero retries, got %#v", pipeline[2])
+	}
+}
+
+func TestPipelineFallsBackToWorkflowDefinition(t *testing.T) {
+	home := t.TempDir()
+	workflowDir := filepath.Join(home, ".foreman", "workflows")
+	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "custom-cockpit-test.yaml"), []byte("phases:\n  - name: alpha\n  - name: beta\n"), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	t.Setenv("HOME", home)
+	workflowPhaseCache.Delete("custom-cockpit-test")
+
+	pipeline := pipelineForRun(map[string]any{}, Task{Workflow: "custom-cockpit-test (2 phases)"}, "running", "beta")
+
+	if len(pipeline) != 2 || pipeline[0].Name != "alpha" || pipeline[0].State != "done" || pipeline[1].Name != "beta" || pipeline[1].State != "active" {
+		t.Fatalf("expected workflow definition phases with beta active, got %#v", pipeline)
 	}
 }
 
@@ -430,6 +477,119 @@ func TestHTTPClientPrefersWorktreeDiffForFiles(t *testing.T) {
 	}
 	if errors := client.DrainErrors(); len(errors) != 0 {
 		t.Fatalf("worktree diff should not surface errors, got %#v", errors)
+	}
+}
+func TestHTTPClientUsesForemanWorktreeFallbackForProjectedFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, ".foreman", "worktrees", "proj-live", "task-ready")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir fallback worktree: %v", err)
+	}
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "cockpit@example.invalid")
+	runGit(t, repo, "config", "user.name", "Cockpit Test")
+	writeFile(t, repo, "keep.txt", "keep\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "base")
+	runGit(t, repo, "branch", "-M", "main")
+	runGit(t, repo, "checkout", "-b", "foreman-run")
+	writeFile(t, repo, "keep.txt", "keep\nchanged\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "changes")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"runs": []map[string]any{{
+					"run_id":     "run-live",
+					"task_id":    "task-ready",
+					"project_id": "proj-live",
+					"base_ref":   "main",
+				}},
+			})
+		case "/api/v1/runs/run-live/debug":
+			t.Fatalf("foreman worktree fallback should avoid debug fallback")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	files := client.Files("run-live")
+	if len(files) != 1 || files[0].Path != "keep.txt" || files[0].Change != "M" {
+		t.Fatalf("expected fallback foreman worktree diff, got %#v", files)
+	}
+}
+
+func TestHTTPClientDerivesFilesFromProjectBranchWhenWorktreeMissing(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "cockpit@example.invalid")
+	runGit(t, repo, "config", "user.name", "Cockpit Test")
+	writeFile(t, repo, "keep.txt", "keep\n")
+	writeFile(t, repo, "remove.txt", "remove\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "base")
+	runGit(t, repo, "branch", "-M", "main")
+	runGit(t, repo, "checkout", "-b", "foreman/foreman-37350")
+	writeFile(t, repo, "keep.txt", "keep\nchanged\n")
+	writeFile(t, repo, "new.txt", "new\n")
+	runGit(t, repo, "rm", "remove.txt")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "changes")
+	runGit(t, repo, "checkout", "main")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"runs": []map[string]any{{
+					"run_id":      "run-live",
+					"project_id":  "project-live",
+					"base_branch": "main",
+					"branch_name": "foreman/foreman-37350",
+				}},
+			})
+		case "/api/v1/projects":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"projects": []map[string]any{{
+					"project_id": "project-live",
+					"path":       repo,
+				}},
+			})
+		case "/api/v1/runs/run-live/debug":
+			t.Fatalf("project branch diff should avoid debug fallback")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	files := client.Files("run-live")
+	byPath := map[string]FileChange{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	if byPath["keep.txt"].Change != "M" || byPath["keep.txt"].Stat != "+1 -0" {
+		t.Fatalf("expected modified keep.txt from branch diff, got %#v", files)
+	}
+	if byPath["new.txt"].Change != "A" || byPath["new.txt"].Stat != "+1 -0" {
+		t.Fatalf("expected added new.txt from branch diff, got %#v", files)
+	}
+	if byPath["remove.txt"].Change != "D" || byPath["remove.txt"].Stat != "+0 -1" {
+		t.Fatalf("expected deleted remove.txt from branch diff, got %#v", files)
+	}
+	if errors := client.DrainErrors(); len(errors) != 0 {
+		t.Fatalf("project branch diff should not surface errors, got %#v", errors)
 	}
 }
 

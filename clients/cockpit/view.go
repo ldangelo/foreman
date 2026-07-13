@@ -575,7 +575,7 @@ func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 	var chips []string
 	for i, p := range run.Pipeline {
 		gl, glc := m.railGlyph(p.State)
-		text := gl + " " + p.Name
+		text := gl + " " + p.Name + " r" + itoa(p.Retries)
 		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
 		if p.State == "active" {
 			st = st.Background(visual.ActiveBg).Foreground(visual.White)
@@ -635,7 +635,7 @@ func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
 		state = run.Pipeline[idx].State
 	}
 	gl, glc := m.railGlyph(state)
-	label := fmt.Sprintf("%s %d/%d · %s", gl, idx+1, len(run.Pipeline), phase)
+	label := fmt.Sprintf("%s %d/%d · %s r%d", gl, idx+1, len(run.Pipeline), phase, run.Pipeline[idx].Retries)
 	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
 	if state == "active" {
 		st = st.Background(visual.ActiveBg).Foreground(visual.White)
@@ -649,7 +649,13 @@ func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
 func (m model) renderTabs(w int, visual paneVisual) string {
 	var toks []string
 	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, metricsCount(m.metrics)}
-	if m.pr.URL != "" {
+	if run, ok := m.selectedRun(); ok {
+		counts[1] = run.Messages
+		counts[2] = run.Events
+		if run.PRURL != "" || m.pr.URL != "" {
+			counts[6] = 1
+		}
+	} else if m.pr.URL != "" {
 		counts[6] = 1
 	}
 	for i, name := range tabNames {
@@ -676,17 +682,39 @@ func (m model) renderTabs(w int, visual paneVisual) string {
 }
 
 func (m model) selectedMessagePosition() (int, bool) {
+	idx, ok := m.selectedMessageIndex()
+	if !ok {
+		return 0, false
+	}
+	return idx + 1, true
+}
+
+func (m model) selectedMessageIndex() (int, bool) {
 	if m.tab != 1 || len(m.msgs) == 0 {
 		return 0, false
 	}
-	pos := m.viewer.Cursor()/2 + 1
-	if pos < 1 {
-		pos = 1
+	if line, ok := m.viewer.SelectedLine(); ok {
+		for i, message := range m.msgs {
+			if line.Key == messageKey(message)+":header" {
+				return i, true
+			}
+		}
 	}
-	if pos > len(m.msgs) {
-		pos = len(m.msgs)
+	return min(m.viewer.Cursor(), len(m.msgs)-1), true
+}
+
+func (m model) selectedLogIndex() (int, bool) {
+	if tabNames[m.tab] != "logs" || len(m.logs) == 0 {
+		return 0, false
 	}
-	return pos, true
+	if line, ok := m.viewer.SelectedLine(); ok {
+		for i, logLine := range m.logs {
+			if line.Key == "log:"+itoa(i)+":"+logLine {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (m model) renderBody(run Run, it Item, isRun bool, w int, visual paneVisual) []string {
@@ -701,7 +729,6 @@ func (m model) renderBody(run Run, it Item, isRun bool, w int, visual paneVisual
 func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual paneVisual) []ViewerLine {
 	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
 	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
-	purpleStyle := lipgloss.NewStyle().Foreground(visual.Purple)
 	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
 	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
 	redStyle := lipgloss.NewStyle().Foreground(visual.Red)
@@ -759,28 +786,11 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		add("summary:branch", kv("branch", run.Branch), target{})
 		add("summary:last", kv("last", run.Last), target{})
 	case "messages":
-		if len(m.msgs) == 0 {
-			return []ViewerLine{{Key: "messages:empty", Text: dimStyle.Render("No mail for this run.")}}
-		}
-		for _, mm := range m.msgs {
-			base := "message:" + mm.At + ":" + mm.From + ":" + mm.To + ":" + mm.Subject
-			s = append(s, ViewerLine{Key: base + ":header", Text: clip(dimStyle.Render("["+mm.At+"] ")+purpleStyle.Render(mm.From+" → "+mm.To)+" "+cyanStyle.Render(mm.Subject), w), KeepNext: true})
-			s = append(s, ViewerLine{Key: base + ":body:" + mm.Body, Text: clip("  "+textStyle.Render(mm.Body), w), Unselectable: true})
-		}
+		return renderMessageLines(m.msgs, w, visual)
 	case "events":
-		if len(m.events) == 0 {
-			return []ViewerLine{{Key: "events:empty", Text: dimStyle.Render("No events recorded.")}}
-		}
-		for _, e := range m.events {
-			add("event:"+e.At+":"+e.Type+":"+e.Detail, clip(dimStyle.Render(e.At+" ")+yellowStyle.Render(e.Type)+" "+textStyle.Render(e.Detail), w), target{})
-		}
+		return renderEventLines(m.events, w, visual)
 	case "logs":
-		t := logTarget(run, m.logPath)
-		add("log:target:"+run.RunID, greenStyle.Render("⧉ ")+cyanStyle.Render(t.path), t)
-		for i, ln := range m.logs {
-			prefix := dimStyle.Render(fmt.Sprintf("%4d │ ", i+1))
-			add("log:"+itoa(i)+":"+ln, prefix+textStyle.Render(ln), t)
-		}
+		return renderLogLines(run, m.logs, m.logPath, w, visual)
 	case "reports":
 		if len(m.reports) == 0 {
 			return []ViewerLine{{Key: "reports:empty", Text: dimStyle.Render("No reports produced yet.")}}
@@ -853,6 +863,174 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		return m.renderMetricsLines(w, visual)
 	}
 	return s
+}
+
+func detailKV(key, value string, w int, visual paneVisual) string {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	return dimStyle.Render("  "+key+"  ") + textStyle.Render(clip(value, max(1, w-len(key)-4)))
+}
+
+func detailWrapped(label, value string, w int, visual paneVisual) []string {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	if strings.TrimSpace(value) == "" {
+		value = "(empty)"
+	}
+	lines := []string{dimStyle.Render("  " + label)}
+	for _, ln := range wrap(value, max(1, w-4)) {
+		lines = append(lines, "    "+textStyle.Render(ln))
+	}
+	return lines
+}
+
+func messageKey(message Message) string {
+	return "message:" + message.At + ":" + message.From + ":" + message.To + ":" + message.Subject
+}
+
+func formatMessageTime(stamp string) string {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(stamp))
+	if err != nil {
+		return stamp
+	}
+	return t.Format("01/02 15:04")
+}
+
+func messageColumnWidths(w int) (int, int, int, int) {
+	timeW := 11
+	fromW := 14
+	toW := 14
+	msgW := w - timeW - fromW - toW - 6
+	if msgW >= 8 {
+		return timeW, fromW, toW, msgW
+	}
+	fromW = 10
+	toW = 10
+	msgW = w - timeW - fromW - toW - 6
+	if msgW >= 8 {
+		return timeW, fromW, toW, msgW
+	}
+	fromW = 8
+	toW = 8
+	msgW = max(1, w-timeW-fromW-toW-6)
+	return timeW, fromW, toW, msgW
+}
+
+func messageCell(value string, width int, style lipgloss.Style) string {
+	text := clip(value, width)
+	pad := width - ansi.StringWidth(text)
+	if pad < 0 {
+		pad = 0
+	}
+	return style.Render(text) + strings.Repeat(" ", pad)
+}
+
+func renderMessageRow(at, from, to, message string, w int, visual paneVisual, header bool) string {
+	timeW, fromW, toW, msgW := messageColumnWidths(w)
+	style := lipgloss.NewStyle().Foreground(visual.Text)
+	if header {
+		style = lipgloss.NewStyle().Foreground(visual.Dim).Bold(true)
+	}
+	timeStyle := style
+	fromStyle := style
+	toStyle := style
+	msgStyle := style
+	if !header {
+		timeStyle = lipgloss.NewStyle().Foreground(visual.Dim)
+		fromStyle = lipgloss.NewStyle().Foreground(visual.Purple)
+		toStyle = lipgloss.NewStyle().Foreground(visual.Purple)
+		msgStyle = lipgloss.NewStyle().Foreground(visual.Cyan)
+	}
+	return strings.TrimRight(messageCell(at, timeW, timeStyle)+"  "+messageCell(from, fromW, fromStyle)+"  "+messageCell(to, toW, toStyle)+"  "+messageCell(message, msgW, msgStyle), " ")
+}
+
+func messagePreview(message Message) string {
+	if strings.TrimSpace(message.Subject) != "" {
+		return message.Subject
+	}
+	return strings.TrimSpace(strings.ReplaceAll(message.Body, "\n", " "))
+}
+func renderMessageLines(messages []Message, w int, visual paneVisual) []ViewerLine {
+	if len(messages) == 0 {
+		return []ViewerLine{{Key: "messages:empty", Text: lipgloss.NewStyle().Foreground(visual.Dim).Render("No mail for this run.")}}
+	}
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	lines := make([]ViewerLine, 0, len(messages))
+	for _, mm := range messages {
+		base := messageKey(mm)
+		key := base + ":row"
+		message := mm
+		lines = append(lines, ViewerLine{
+			Key:  key,
+			Text: renderMessageRow(formatMessageTime(message.At), message.From, message.To, messagePreview(message), w, visual, false),
+			DetailFunc: func() []string {
+				detail := []string{
+					whiteStyle.Render("  Message detail"),
+					detailKV("at", formatMessageTime(message.At), w, visual),
+					detailKV("from", message.From, w, visual),
+					detailKV("to", message.To, w, visual),
+					detailKV("subject", message.Subject, w, visual),
+				}
+				return append(detail, detailWrapped("body", message.Body, w, visual)...)
+			},
+		})
+	}
+	return lines
+}
+
+func renderEventLines(events []Event, w int, visual paneVisual) []ViewerLine {
+	if len(events) == 0 {
+		return []ViewerLine{{Key: "events:empty", Text: lipgloss.NewStyle().Foreground(visual.Dim).Render("No events recorded.")}}
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	lines := make([]ViewerLine, 0, len(events))
+	for i, e := range events {
+		event := e
+		lines = append(lines, ViewerLine{
+			Key:  "event:" + itoa(i) + ":" + event.At + ":" + event.Type + ":" + event.Detail,
+			Text: clip(dimStyle.Render(event.At+" ")+yellowStyle.Render(event.Type)+" "+textStyle.Render(event.Detail), w),
+			DetailFunc: func() []string {
+				detail := []string{
+					whiteStyle.Render("  Event detail"),
+					detailKV("at", event.At, w, visual),
+					detailKV("type", event.Type, w, visual),
+				}
+				return append(detail, detailWrapped("detail", event.Detail, w, visual)...)
+			},
+		})
+	}
+	return lines
+}
+
+func renderLogLines(run Run, logs []string, logPath string, w int, visual paneVisual) []ViewerLine {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	t := logTarget(run, logPath)
+	lines := []ViewerLine{{Key: "log:target:" + run.RunID, Text: greenStyle.Render("⧉ ") + cyanStyle.Render(t.path), Target: t}}
+	for i, ln := range logs {
+		prefix := dimStyle.Render(fmt.Sprintf("%4d │ ", i+1))
+		lineNumber := i + 1
+		logLine := ln
+		lines = append(lines, ViewerLine{
+			Key:    "log:" + itoa(i) + ":" + logLine,
+			Text:   prefix + textStyle.Render(logLine),
+			Target: t,
+			DetailFunc: func() []string {
+				detail := []string{
+					whiteStyle.Render("  Log detail"),
+					detailKV("line", itoa(lineNumber), w, visual),
+				}
+				return append(detail, detailWrapped("text", logLine, w, visual)...)
+			},
+		})
+	}
+	return lines
 }
 
 func (m model) renderPRLines(w int, visual paneVisual) []ViewerLine {
@@ -1004,6 +1182,9 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		clip(head, w),
 		clip(dimStyle.Render("$ ")+cyanStyle.Render(plainCmd), w),
 		clip(dimStyle.Render("→ "+plainMode), w),
+	}
+	if idx, ok := m.selectedLogIndex(); ok {
+		lines = append(lines, clip(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx]), w))
 	}
 	if runActionLine != "" {
 		lines = append(lines, runActionLine)

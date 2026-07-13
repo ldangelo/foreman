@@ -68,7 +68,8 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -87,7 +88,8 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -106,7 +108,8 @@ phases:
     retryOnly: true
     prompt: developer.md
     tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
     models:
       default: MiniMax
       P0: MiniMax
@@ -209,38 +212,6 @@ phases:
     mail:
       onStart: true
       onComplete: true
-
-  - name: pr-wait
-    builtin: true
-    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
-    timeoutSecs: 1200
-    retryWith: developer
-    retryWithByReason:
-      "ci_failed:": cicd-developer
-      "pr_review_failed_checks:": cicd-developer
-      "coderabbit_": cr-developer
-      "merge_conflict:": merge-resolver
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
-
-
-  - name: merge
-    builtin: true
-    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
-    retryWith: developer
-    retryWithByReason:
-      "ci_failed:": cicd-developer
-      "pr_review_failed_checks:": cicd-developer
-      "coderabbit_": cr-developer
-      "merge_conflict:": merge-resolver
-    retryOnFail: 2
-    mail:
-      onStart: true
-      onComplete: true
-      onFail: developer
 
 onFailure:
   name: troubleshooter

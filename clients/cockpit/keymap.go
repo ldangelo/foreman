@@ -42,7 +42,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 			binding("[/] H/L", "task section"),
 			binding("↑↓/j/k", "move task/row"),
 			binding("/", "filter focused pane"),
-			binding("enter", "focus details / open PR"),
+			binding("enter", "focus details / open file / open PR"),
 			binding("esc", "back/clear/close help"),
 			binding("g", "scope current/global"),
 		},

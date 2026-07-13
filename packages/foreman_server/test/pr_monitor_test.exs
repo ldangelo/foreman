@@ -126,6 +126,48 @@ defmodule ForemanServer.PrMonitorTest do
     assert task_payload.status == "merged"
   end
 
+  test "closed recorded PR records run reset then closes task" do
+    seed_recorded_pr!(pr_state: "open")
+
+    put_observations(%{
+      @pr_url =>
+        {:ok,
+         %{
+           state: :closed,
+           url: @pr_url,
+           head_ref_oid: "head-sha",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
+    })
+
+    assert {:ok, %{closed: 1, errors: 0}} = PrMonitor.tick_once()
+
+    assert_receive {:checked_pr, @project_path, @pr_url}
+
+    assert_receive {:handled_command,
+                    %{
+                      command_type: "run.pr.reset",
+                      payload: reset_payload
+                    }}
+
+    assert reset_payload.run_id == @run_id
+    assert reset_payload.project_id == @project_id
+    assert reset_payload.task_id == @task_id
+    assert reset_payload.pr_url == @pr_url
+    assert reset_payload.action == "closed"
+    assert reset_payload.reason == "GitHub reports PR closed without merge"
+
+    assert_receive {:handled_command,
+                    %{
+                      command_type: "task.close",
+                      payload: close_payload
+                    }}
+
+    assert close_payload.project_id == @project_id
+    assert close_payload.task_id == @task_id
+  end
+
   test "closed open and draft observations never mark the task merged" do
     observations =
       [:closed, :open, :draft]

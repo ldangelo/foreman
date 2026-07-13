@@ -284,7 +284,7 @@ defmodule ForemanServer.Overwatch do
     do:
       "Use the source report as steering context. Avoid rediscovery unless the report conflicts with direct evidence."
 
-  defp decide_tool(phase_id, "read", args) do
+  defp decide_tool(_phase_id, "read", args) do
     path = fetch(args, :path) || fetch(args, :file_path) || fetch(args, :filePath)
 
     cond do
@@ -292,22 +292,24 @@ defmodule ForemanServer.Overwatch do
         deny("read requires explicit file path")
 
       File.dir?(path) ->
-        deny("read target is a directory; use Glob or Graphify to select regular files")
+        deny("read target is a directory; use Glob to select regular files")
 
-      stale_graphify_path?(path) ->
-        deny("read target does not exist; treat Graphify path as stale and rediscover")
-
-      phase_id in ["explorer", :explorer] and not File.exists?(path) ->
-        deny("explorer read target does not exist; rediscover with Graphify/Glob")
+      missing_read_path?(path) ->
+        deny("read target does not exist; rediscover with Grep or Glob")
 
       true ->
         approve("tool allowed")
     end
   end
 
+  defp decide_tool(_phase_id, tool_name, _args)
+       when tool_name in ["graphify", "graphifyquery", "graphifyexplain"] do
+    deny("Graphify tools are disabled; use Grep, Glob, and Read")
+  end
+
   defp decide_tool("explorer", tool_name, _args)
-       when tool_name in ["bash", "grep", "find", "ls"] do
-    deny("explorer must use Graphify/Glob/Read discovery, not shell or text-search bypasses")
+       when tool_name in ["bash", "find", "ls"] do
+    deny("explorer must use Grep/Glob/Read discovery, not shell commands")
   end
 
   defp decide_tool(_phase_id, "bash", args) do
@@ -325,7 +327,7 @@ defmodule ForemanServer.Overwatch do
   defp approve(reason), do: %{allowed: true, action: "approve", reason: reason, message: nil}
   defp deny(reason), do: %{allowed: false, action: "deny", reason: reason, message: reason}
 
-  defp stale_graphify_path?(path), do: is_binary(path) and not File.exists?(path)
+  defp missing_read_path?(path), do: is_binary(path) and not File.exists?(path)
 
   defp dangerous_command?(command) when is_binary(command) do
     normalized = command |> String.downcase() |> String.replace(~r/\s+/, " ")

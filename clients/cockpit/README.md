@@ -43,14 +43,20 @@ authoritative state.
   `textarea` create form that posts `task.create` with `ctrl+s`, and `N` for a
   one-line quick-add task title submitted with `enter`.
 - Right column: color-coded run header, live elapsed clock for selected running
-  runs, an animated phase rail that collapses to a compact `4/10 · qa` badge on
-  very narrow panes, and a drill-down tab strip (`summary · messages · events ·
-  logs · reports · files · pr · metrics`). Log and report open targets prefer
+  runs, an animated workflow phase rail with per-phase retry counts that
+  collapses to a compact `4/10 · qa r2` badge on very narrow panes, and a
+  drill-down tab strip (`summary · messages · events · logs · reports · files ·
+  pr · metrics`). Log and report open targets prefer
   explicit paths returned by the live `/logs` and `/report` endpoints, falling
   back to the historical `.foreman/logs` and `docs/reports` paths when omitted.
+  Message rows render as a table (`date/time` in `mm/dd hh:mm`, sender,
+  receiver, message); event and log tabs use specialized selectable rows. The
+  selected row is marked with `▶` and expands with packed detail for message
+  metadata/body, event metadata/detail, or log line/text while preserving
+  row-based navigation and search.
   The files tab exposes conflict-aware changed-file metadata, plain nvim open
-  (`o`), selected-file nvim diff against the projected base (`d`), and full-run
-  `diffnav` (`D`). The metrics tab reads `/api/v1/metrics`, shows a spinner
+  (`o`/focused `enter`), selected-file nvim diff against the projected base
+  (`d`), and full-run `diffnav` (`D`). The metrics tab reads `/api/v1/metrics`,
   while refresh data is in flight, counts counters, gauges, and phase durations
   in the tab badge, and renders all three as bounded rows. The active pane is
   called out with a focus label, accent frame, non-color active-tab brackets, and
@@ -77,8 +83,9 @@ authoritative state.
   on wide terminals.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
   session when `$NVIM` is set, otherwise suspend-and-launch inline. `files`
-  offers a selected-file nvim diff (`d`), an inline selected-file preview backed
-  by `delta` when available, and a full-run `diffnav` handoff (`D`) when enabled.
+  offers a selected-file nvim diff (`d`), an inline selected-file side-by-side
+  preview backed by `delta` when available, and a full-run `diffnav` handoff
+  (`D`) when enabled.
   Conflicts open a 3-way diff.
 - The `pr` tab shows Foreman-projected PR URL/state/branch metadata plus an
   aligned check summary table, and opens the PR in a browser with `o`/`enter`
@@ -90,8 +97,8 @@ authoritative state.
 Requires Go 1.26+.
 
 Optional integrations are discovered at runtime and fail closed with a notice:
-`diffnav` for full-run file review, `delta` for inline selected-file previews,
-`gh` plus the `gh dash` extension for repo-wide triage, `gh` plus the
+`diffnav` for full-run file review, `delta` for side-by-side inline selected-file
+previews, `gh` plus the `gh dash` extension for repo-wide triage, `gh` plus the
 `gh enhance` extension for GitHub Actions triage, `omp` for live worktree triage
 in a tmux pane or inline handoff, and a platform browser opener (`open` on macOS
 or `xdg-open` on Linux) for PR links. Cockpit ships generated theme fragments
@@ -144,15 +151,15 @@ FOREMAN_SERVER_URL=http://127.0.0.1:4766 COCKPIT_DUMP=1 ./foreman-cockpit
 ```
 [/]/H/L   move between task-list sections while the task list is focused
 ↑↓ / j/k  move task selection inside the active section
-enter     enter/focus the selected drill-down view; keybar reads focus: details
+enter     enter/focus the selected drill-down view; focused files opens selected row
 esc       leave the drill-down view and return focus to the task list
-↑↓ / j/k  move the highlighted line in focused messages/events/logs/reports/files/pr
+↑↓ / j/k  move the highlighted row; messages/events/logs mark selection with `▶`
 ctrl+d/u  half-page down/up in the focused drill-down view
 mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls that view
           click section tabs, visible task/run rows, or drill-down tabs to select them
 ⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab and focus it
 /         search focused pane                  n/N  next / previous match
-o         open selected row in nvim; on pr, o/enter open PR in browser
+o         open selected row in nvim; focused files enter opens the selected file
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim

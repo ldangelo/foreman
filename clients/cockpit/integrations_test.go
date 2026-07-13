@@ -321,7 +321,7 @@ func TestDeltaPreviewCommandUsesProjectedRunBaseBranch(t *testing.T) {
 	}
 }
 
-func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
+func TestDeltaPreviewCommandUsesSideBySidePackagedThemeConfig(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	cfg := defaultConfig().Integrations
 	cmd, usingDelta, err := deltaPreviewCommand(Run{RunID: "run-1", Worktree: "/tmp/wt"}, "src/a.go", 123, cfg, fakeTools{"delta": true})
@@ -331,8 +331,11 @@ func TestDeltaPreviewCommandUsesPackagedThemeConfig(t *testing.T) {
 	if !usingDelta {
 		t.Fatal("expected delta preview when delta is available")
 	}
-	if !strings.Contains(cmd.Args[2], " | delta --config ") || !strings.Contains(cmd.Args[2], "theme/delta.gitconfig") {
-		t.Fatalf("expected packaged delta config in command %q", cmd.Args[2])
+	if !strings.Contains(cmd.Args[2], " | delta --config ") || !strings.Contains(cmd.Args[2], "theme/delta.gitconfig") || !strings.Contains(cmd.Args[2], " --side-by-side") {
+		t.Fatalf("expected packaged side-by-side delta config in command %q", cmd.Args[2])
+	}
+	if strings.Contains(cmd.Args[2], "--color-only") {
+		t.Fatalf("expected inline delta preview to use full side-by-side rendering, got %q", cmd.Args[2])
 	}
 	if !envContains(cmd.Env, "COLUMNS=123") {
 		t.Fatalf("expected delta preview command to receive viewport width, got env %#v", cmd.Env)

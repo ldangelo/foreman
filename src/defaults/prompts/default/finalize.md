@@ -84,9 +84,9 @@ Check the current branch:
 ```
 {{vcsBranchVerifyCommand}}
 ```
-If the output is NOT `foreman/{{taskId}}`, check it out:
+**If the output is NOT `foreman/{{taskId}}`, this is a branch drift error.** Do NOT attempt to checkout or create branches. Send an error and stop:
 ```
-git checkout foreman/{{taskId}}
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","taskId":"{{taskId}}","error":"branch_drift: expected foreman/{{taskId}}, found <actual> in {{worktreePath}}","retryable":false}'
 ```
 
 ### Step 6: Integrate the latest target-branch changes into this task branch only when drift exists

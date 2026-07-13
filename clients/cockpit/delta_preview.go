@@ -52,7 +52,7 @@ func deltaPreviewCommand(run Run, filePath string, width int, cfg Integrations, 
 	gitDiff := fmt.Sprintf("git -C %s diff %s...HEAD -- %s", shellQuote(expandHome(wt)), shellQuote(base), shellQuote(filePath))
 	useDelta := normalizeEnable(cfg.Delta.Enable) != "off" && os.Getenv("NO_COLOR") == "" && tools.Available("delta")
 	if useDelta {
-		cmd := exec.Command("bash", "-lc", gitDiff+" | delta --config "+shellQuote(cockpitThemePath("delta.gitconfig"))+" --color-only")
+		cmd := exec.Command("bash", "-lc", gitDiff+" | delta --config "+shellQuote(cockpitThemePath("delta.gitconfig"))+" --side-by-side")
 		applyColumns(cmd, width)
 		return cmd, true, nil
 	}

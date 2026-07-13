@@ -28,6 +28,55 @@ func ctrlKey(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: code, Mod: tea.ModCtrl})
 }
 
+func shiftedKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: code, Mod: tea.ModShift})
+}
+
+func TestIntegrationShortcutsAcceptShiftModifiedLetters(t *testing.T) {
+	cfg := defaultConfig()
+	tools := fakeTools{
+		"diffnav":     true,
+		"delta":       true,
+		"gh":          true,
+		"ext:dash":    true,
+		"ext:enhance": true,
+		"omp":         true,
+	}
+	m := newModelWithConfig(NewMockClient(), cfg, tools)
+	m.runs = []Run{{
+		Group:    taskGroupRecent,
+		TaskID:   "task-failed",
+		RunID:    "run-failed",
+		Status:   "failed",
+		Worktree: "/tmp/wt",
+	}}
+	m.buildItems()
+	m.taskList.MoveSection(2)
+	m.buildItems()
+	if _, ok := m.selectedRun(); !ok {
+		t.Fatal("expected failed run selection")
+	}
+
+	for _, tc := range []struct {
+		name string
+		tab  int
+		key  tea.KeyPressMsg
+	}{
+		{name: "diffnav", tab: 5, key: shiftedKey('d')},
+		{name: "gh dash", tab: 0, key: shiftedKey('g')},
+		{name: "gh enhance", tab: 0, key: shiftedKey('c')},
+		{name: "plain omp", tab: 0, key: shiftedKey('p')},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m.tab = tc.tab
+			_, cmd := m.handleKey(tc.key)
+			if cmd == nil {
+				t.Fatalf("expected %s shortcut to dispatch a command", tc.name)
+			}
+		})
+	}
+}
+
 func mouseWheel(x, y int, button tea.MouseButton) tea.MouseWheelMsg {
 	return tea.MouseWheelMsg(tea.Mouse{X: x, Y: y, Button: button})
 }
@@ -93,6 +142,41 @@ func TestViewerUsesViewportSelectionAndIdentity(t *testing.T) {
 	selected, ok := viewer.SelectedLine()
 	if !ok || selected.Key != "8" || selected.Text != "row 8 updated" {
 		t.Fatalf("expected selection identity to survive refresh, got %#v ok=%v", selected, ok)
+	}
+}
+
+func TestViewerSelectionPrefixAndLazyDetailFollowMovement(t *testing.T) {
+	var viewer Viewer
+	viewer.SetSelectionPrefix("▶ ")
+	viewer.SetBounds(60, 6)
+	detailCalls := 0
+	lines := []ViewerLine{
+		{Key: "0", Text: "first", DetailFunc: func() []string {
+			detailCalls++
+			return []string{"detail first"}
+		}},
+		{Key: "1", Text: "second", DetailFunc: func() []string {
+			detailCalls++
+			return []string{"detail second"}
+		}},
+	}
+
+	viewer.SetLines(lines, viewerReset, 6)
+	rendered := stripANSI(viewer.View())
+	if !strings.Contains(rendered, "▶ first") || !strings.Contains(rendered, "detail first") || strings.Contains(rendered, "detail second") {
+		t.Fatalf("expected selected first row to carry prefix and detail, got:\n%s", rendered)
+	}
+	if detailCalls != 1 {
+		t.Fatalf("expected only selected detail to be built, got %d calls", detailCalls)
+	}
+
+	viewer.Move(1, 6)
+	rendered = stripANSI(viewer.View())
+	if !strings.Contains(rendered, "▶ second") || !strings.Contains(rendered, "detail second") || strings.Contains(rendered, "detail first") {
+		t.Fatalf("expected selected detail to follow movement, got:\n%s", rendered)
+	}
+	if detailCalls != 2 {
+		t.Fatalf("expected movement to build only the new selected detail, got %d calls", detailCalls)
 	}
 }
 
@@ -327,9 +411,10 @@ func TestTaskRowAgeMetadataRendersUpdatedCreatedAndFallbacks(t *testing.T) {
 func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
 	m := newModel(NewMockClient())
 	run := Run{Phase: "qa", Pipeline: pipe(3, -1)}
+	run.Pipeline[3].Retries = 2
 
 	out := stripANSI(strings.Join(m.renderRail(run, 20, paneVisualFor(true, defaultConfig().Cockpit.Focus)), "\n"))
-	if !strings.Contains(out, "4/10 · qa") {
+	if !strings.Contains(out, "4/10 · qa r2") {
 		t.Fatalf("expected compact phase badge on narrow width, got:\n%s", out)
 	}
 	if strings.Contains(out, "explorer") || strings.Contains(out, "developer") {
@@ -340,7 +425,7 @@ func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
 func TestActivePhaseRailUsesMotionFrameUnlessReduced(t *testing.T) {
 	run := Run{Phase: "developer", Pipeline: []Phase{
 		{Name: "explorer", State: "done"},
-		{Name: "developer", State: "active"},
+		{Name: "developer", State: "active", Retries: 1},
 		{Name: "qa", State: "pending"},
 	}}
 	m := newModel(NewMockClient())
@@ -348,16 +433,16 @@ func TestActivePhaseRailUsesMotionFrameUnlessReduced(t *testing.T) {
 	m.liveSpinner, _ = m.liveSpinner.Update(spinner.TickMsg{})
 
 	out := stripANSI(strings.Join(m.renderRail(run, 80, paneVisualFor(true, defaultConfig().Cockpit.Focus)), "\n"))
-	if strings.Contains(out, "● developer") || !strings.Contains(out, "developer") {
-		t.Fatalf("expected active phase rail to replace static glyph with motion frame, got:\n%s", out)
+	if strings.Contains(out, "● developer") || !strings.Contains(out, "developer r1") {
+		t.Fatalf("expected active phase rail with retry count to replace static glyph with motion frame, got:\n%s", out)
 	}
 
 	cfg := defaultConfig()
 	cfg.Cockpit.ReducedMotion = true
 	reduced := newModelWithConfig(NewMockClient(), cfg, defaultTools)
 	out = stripANSI(strings.Join(reduced.renderRail(run, 80, paneVisualFor(true, cfg.Cockpit.Focus)), "\n"))
-	if strings.Contains(out, "⠋") || !strings.Contains(out, "● developer") {
-		t.Fatalf("expected reduced motion to keep static active rail glyph, got:\n%s", out)
+	if strings.Contains(out, "⠋") || !strings.Contains(out, "● developer r1") {
+		t.Fatalf("expected reduced motion to keep static active rail glyph with retry count, got:\n%s", out)
 	}
 }
 
@@ -824,6 +909,29 @@ func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 	}
 }
 
+func TestMessagesRenderAsTimestampedTableRows(t *testing.T) {
+	lines := renderMessageLines([]Message{{
+		At:      "2026-07-12T13:45:00Z",
+		From:    "developer",
+		To:      "qa",
+		Subject: "handoff ready",
+		Body:    "full handoff body",
+	}}, 80, paneVisualFor(true, defaultConfig().Cockpit.Focus))
+
+	if len(lines) != 1 {
+		t.Fatalf("expected one message row, got %#v", lines)
+	}
+	out := stripANSI(strings.Join(linesText(lines), "\n"))
+	for _, want := range []string{"07/12 13:45", "developer", "qa", "handoff ready"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected message table to include %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "2026-07-12T13:45:00Z") || strings.Contains(out, "developer → qa") {
+		t.Fatalf("expected compact table row format, got:\n%s", out)
+	}
+}
+
 func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 120
@@ -850,20 +958,20 @@ func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 	bottomRow := m.viewer.Cursor()
 	updated, _ = m.handleKey(keyPress("k"))
 	m = updated.(model)
-	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
-		t.Fatalf("expected focused k to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
+	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-1 {
+		t.Fatalf("expected focused k to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-1)
 	}
 
 	updated, _ = m.handleKey(specialKey(tea.KeyUp))
 	m = updated.(model)
-	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-4 {
-		t.Fatalf("expected focused up to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-4)
+	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
+		t.Fatalf("expected focused up to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
 	}
 
 	updated, _ = m.handleKey(specialKey(tea.KeyDown))
 	m = updated.(model)
-	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
-		t.Fatalf("expected focused down to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
+	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-1 {
+		t.Fatalf("expected focused down to move viewer cursor only, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-1)
 	}
 
 	updated, _ = m.handleKey(ctrlKey('d'))
@@ -890,6 +998,69 @@ func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
 	}
 }
 
+func TestTaskNavigationDoesNotEagerLoadInactiveDetailTabs(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Summary: "first"},
+			{Group: "RUNNING", TaskID: "task-2", RunID: "run-2", Status: "running", Summary: "second"},
+		},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 0
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+
+	updated, _ = m.handleKey(keyPress("j"))
+	m = updated.(model)
+
+	if m.taskList.SelectedIndex() != 1 {
+		t.Fatalf("expected task navigation to move selection, got %d", m.taskList.SelectedIndex())
+	}
+	if client.messagesCalls != 0 || client.eventsCalls != 0 || client.logsCalls != 0 || client.reportsCalls != 0 || client.filesCalls != 0 || client.prCalls != 0 {
+		t.Fatalf("summary navigation should not load inactive detail tabs, got messages=%d events=%d logs=%d reports=%d files=%d pr=%d", client.messagesCalls, client.eventsCalls, client.logsCalls, client.reportsCalls, client.filesCalls, client.prCalls)
+	}
+	rendered := stripANSI(m.renderRight(80))
+	if !strings.Contains(rendered, "second") {
+		t.Fatalf("expected summary pane to follow the selected run without eager detail loads, got:\n%s", rendered)
+	}
+}
+
+func TestTaskNavigationOnlyLoadsActiveDetailTab(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Messages: 1},
+			{Group: "RUNNING", TaskID: "task-2", RunID: "run-2", Status: "running", Messages: 1},
+		},
+		messagesByRun: map[string][]Message{
+			"run-1": {{At: "1", From: "qa", To: "developer", Subject: "first", Body: "first body"}},
+			"run-2": {{At: "2", From: "qa", To: "developer", Subject: "second", Body: "second body"}},
+		},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 1
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	client.messagesCalls = 0
+
+	updated, _ = m.handleKey(keyPress("j"))
+	m = updated.(model)
+
+	if client.messagesCalls != 1 {
+		t.Fatalf("expected navigation on messages tab to load messages once, got %d", client.messagesCalls)
+	}
+	if client.eventsCalls != 0 || client.logsCalls != 0 || client.reportsCalls != 0 || client.filesCalls != 0 || client.prCalls != 0 {
+		t.Fatalf("messages navigation should not load inactive detail tabs, got events=%d logs=%d reports=%d files=%d pr=%d", client.eventsCalls, client.logsCalls, client.reportsCalls, client.filesCalls, client.prCalls)
+	}
+	rendered := stripANSI(m.renderRight(80))
+	if !strings.Contains(rendered, "second body") || strings.Contains(rendered, "first body") {
+		t.Fatalf("expected active messages tab to reload for the selected run, got:\n%s", rendered)
+	}
+}
+
 func TestEnterOnSummaryFocusesDetailsWithoutAttachingRun(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Summary: "first"}},
@@ -911,6 +1082,111 @@ func TestEnterOnSummaryFocusesDetailsWithoutAttachingRun(t *testing.T) {
 	}
 	if len(client.attached) != 0 {
 		t.Fatalf("expected attach to remain on A only, got %#v", client.attached)
+	}
+}
+func TestEnterOnFocusedFilesOpensSelectedFile(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{
+		Group:    "RUNNING",
+		TaskID:   "task-1",
+		RunID:    "run-1",
+		Status:   "running",
+		Worktree: t.TempDir(),
+	}}
+	m.files = []FileChange{{Change: "M", Path: "src/a.go"}}
+	m.tab = 5
+	m.viewFocused = true
+	m.buildItems()
+	m.refreshViewer(viewerReset)
+	target := resolveTarget(m)
+	if !target.ok || target.path != m.runs[0].Worktree+"/src/a.go" {
+		t.Fatalf("expected selected file target inside worktree, got %#v", target)
+	}
+
+	_, cmd := m.handleKey(specialKey(tea.KeyEnter))
+	if cmd == nil {
+		t.Fatal("expected enter on focused files view to open the selected file")
+	}
+}
+func TestMessageViewerShowsSelectedMessageDetail(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
+	m.msgs = []Message{{At: "2026-07-12T00:00:00Z", From: "developer", To: "qa", Subject: "handoff", Body: "ready for review"}}
+	m.tab = 1
+	m.viewFocused = true
+	m.buildItems()
+	m.refreshViewer(viewerReset)
+
+	rendered := stripANSI(m.renderRight(m.rightPaneWidth()))
+	for _, want := range []string{"Message detail", "from  developer", "body", "ready for review"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected selected message detail %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestMovingFocusedMessageUpdatesVisibleDetail(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
+	m.msgs = []Message{
+		{At: "1", From: "qa", To: "developer", Subject: "first", Body: "first body"},
+		{At: "2", From: "qa", To: "developer", Subject: "second", Body: "second body"},
+	}
+	m.tab = 1
+	m.viewFocused = true
+	m.buildItems()
+	m.refreshViewer(viewerReset)
+
+	updated, _ := m.handleKey(keyPress("j"))
+	m = updated.(model)
+	rendered := stripANSI(m.renderRight(m.rightPaneWidth()))
+	if !strings.Contains(rendered, "▶ 2") || !strings.Contains(rendered, "second body") || strings.Contains(rendered, "first body") {
+		t.Fatalf("expected focused message movement to make the second row obvious and current, got:\n%s", rendered)
+	}
+}
+
+func TestEventViewerShowsSelectedEventDetail(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
+	m.events = []Event{{At: "2026-07-12T00:00:01Z", Type: "ToolCallFinished", Detail: "go test failed"}}
+	m.tab = 2
+	m.viewFocused = true
+	m.buildItems()
+	m.refreshViewer(viewerReset)
+
+	rendered := stripANSI(m.renderRight(m.rightPaneWidth()))
+	for _, want := range []string{"Event detail", "type  ToolCallFinished", "detail", "go test failed"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected selected event detail %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestLogViewerShowsSelectedLogDetail(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
+	m.logs = []string{"alpha", "ERROR: compile failed"}
+	m.logPath = "/tmp/run.log"
+	m.tab = 3
+	m.viewFocused = true
+	m.buildItems()
+	m.refreshViewer(viewerBottom)
+
+	rendered := stripANSI(m.renderRight(m.rightPaneWidth()))
+	for _, want := range []string{"Log detail", "line 2", "ERROR: compile failed"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected selected log detail %q, got:\n%s", want, rendered)
+		}
 	}
 }
 
@@ -1059,16 +1335,20 @@ func TestTaskListOnlyKeysAreIgnoredWhenDetailsFocused(t *testing.T) {
 }
 
 func TestTabToMessagesFocusesViewerForImmediateScrolling(t *testing.T) {
-	m := newModel(NewMockClient())
-	m.width = 120
-	m.height = 20
-	m.runs = []Run{
-		{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Summary: "first"},
-		{Group: "RUNNING", TaskID: "task-2", RunID: "run-2", Status: "running", Summary: "second"},
+	client := &mutableClient{
+		runs: []Run{
+			{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Summary: "first", Messages: 10},
+			{Group: "RUNNING", TaskID: "task-2", RunID: "run-2", Status: "running", Summary: "second"},
+		},
+		messagesByRun: map[string][]Message{"run-1": {}},
 	}
 	for i := range 10 {
-		m.msgs = append(m.msgs, Message{At: itoa(i), From: "a", To: "b", Subject: "subject-" + itoa(i), Body: "body-" + itoa(i)})
+		client.messagesByRun["run-1"] = append(client.messagesByRun["run-1"], Message{At: itoa(i), From: "a", To: "b", Subject: "subject-" + itoa(i), Body: "body-" + itoa(i)})
 	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.runs = client.runs
 	m.buildItems()
 
 	updated, _ := m.handleKey(specialKey(tea.KeyTab))
@@ -1080,8 +1360,8 @@ func TestTabToMessagesFocusesViewerForImmediateScrolling(t *testing.T) {
 	bottomRow := m.viewer.Cursor()
 	updated, _ = m.handleKey(keyPress("k"))
 	m = updated.(model)
-	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-2 {
-		t.Fatalf("expected k after tabbing to messages to scroll messages, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-2)
+	if m.taskList.SelectedIndex() != 0 || m.viewer.Cursor() != bottomRow-1 {
+		t.Fatalf("expected k after tabbing to messages to scroll messages, got sel=%d row=%d want row=%d", m.taskList.SelectedIndex(), m.viewer.Cursor(), bottomRow-1)
 	}
 }
 
@@ -1109,7 +1389,7 @@ func TestMouseWheelOverMessagesScrollsViewerNotTasks(t *testing.T) {
 	if m.taskList.SelectedIndex() != 0 {
 		t.Fatalf("expected mouse wheel over messages to leave task selection unchanged, got %d", m.taskList.SelectedIndex())
 	}
-	if want := startRow - 2*mouseWheelStep; m.viewer.Cursor() != want {
+	if want := startRow - mouseWheelStep; m.viewer.Cursor() != want {
 		t.Fatalf("expected mouse wheel over messages to move viewer cursor, got row=%d want=%d", m.viewer.Cursor(), want)
 	}
 }
@@ -1334,7 +1614,7 @@ func TestDataUpdateScrollsViewerToBottom(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	if want := m.rowCount() - 2; want <= 0 || m.viewer.Cursor() != want {
+	if want := m.rowCount() - 1; want <= 0 || m.viewer.Cursor() != want {
 		t.Fatalf("expected messages viewer cursor at bottom message header, got row=%d want=%d", m.viewer.Cursor(), want)
 	}
 	selected, ok := m.viewer.SelectedLine()
@@ -1363,7 +1643,7 @@ func TestSelectedMessageHeaderAndBodyStayInViewport(t *testing.T) {
 	if h < 3 {
 		t.Fatalf("test setup expected room for selected message body, got %d", h)
 	}
-	if m.viewer.Cursor() != 4 {
+	if m.viewer.Cursor() != 2 {
 		t.Fatalf("expected last message header selected, got row=%d", m.viewer.Cursor())
 	}
 	if m.viewer.Offset() > m.viewer.Cursor() || m.viewer.Cursor()+1 >= m.viewer.Offset()+h {
@@ -1426,7 +1706,7 @@ func TestBottomMessageHeaderAndPositionRenderInTinyViewport(t *testing.T) {
 	if !strings.Contains(rendered, "running · messages 3/3") {
 		t.Fatalf("expected header to show selected message position, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "[1] qa → developer first") {
+	if !strings.Contains(rendered, "▶ 1") || !strings.Contains(rendered, "qa") || !strings.Contains(rendered, "developer") || !strings.Contains(rendered, "first") {
 		t.Fatalf("expected bottom selected message header to render in tiny viewport, got:\n%s", rendered)
 	}
 }
@@ -1503,8 +1783,8 @@ func TestMessageRefreshPreservesCursorWhenNewMessagesPrepend(t *testing.T) {
 	if got := m.viewerCursorKey(); got != selectedKey {
 		t.Fatalf("expected message refresh to preserve selected line key, got %q want %q", got, selectedKey)
 	}
-	if m.viewer.Cursor() != movedRow+2 {
-		t.Fatalf("expected cursor to follow prepended message from row %d to %d, got %d", movedRow, movedRow+2, m.viewer.Cursor())
+	if m.viewer.Cursor() != movedRow+1 {
+		t.Fatalf("expected cursor to follow prepended message from row %d to %d, got %d", movedRow, movedRow+1, m.viewer.Cursor())
 	}
 }
 
@@ -1549,7 +1829,7 @@ func TestViewerRefreshClampsWhenContentShrinks(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
-	if m.viewer.Cursor() != 4 {
+	if m.viewer.Cursor() != 2 {
 		t.Fatalf("test setup expected cursor at last selectable message header, got %d", m.viewer.Cursor())
 	}
 
@@ -1592,8 +1872,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 		t.Fatalf("expected report target to follow returned artifact path, got %#v", got)
 	}
 
-	m.tab = 5
-	m.selectInitialViewerLine()
+	m.selectTab(5)
 	if !m.selectViewerLineByKey("file:src/a.go") {
 		t.Fatalf("test setup could not select first file")
 	}
@@ -2028,11 +2307,18 @@ type mutableClient struct {
 	retried       []Run
 	reset         []Run
 	attached      []Run
+	messagesCalls int
+	eventsCalls   int
+	logsCalls     int
+	reportsCalls  int
+	filesCalls    int
+	prCalls       int
 }
 
 func (c *mutableClient) Runs() []Run { return c.runs }
 
 func (c *mutableClient) Messages(runID string) []Message {
+	c.messagesCalls++
 	if c.messagesByRun != nil {
 		return c.messagesByRun[runID]
 	}
@@ -2110,13 +2396,32 @@ func TestIdleCockpitDoesNotAnimateSpinner(t *testing.T) {
 	}
 }
 
-func (c *mutableClient) Logs(string) []string { return c.logs }
+func (c *mutableClient) Events(string) []Event {
+	c.eventsCalls++
+	return nil
+}
+
+func (c *mutableClient) Logs(string) []string {
+	c.logsCalls++
+	return c.logs
+}
 
 func (c *mutableClient) LogPath(string) string { return c.logPath }
 
-func (c *mutableClient) Reports(string) []Report { return c.reports }
+func (c *mutableClient) Reports(string) []Report {
+	c.reportsCalls++
+	return c.reports
+}
 
-func (c *mutableClient) Files(string) []FileChange { return c.files }
+func (c *mutableClient) Files(string) []FileChange {
+	c.filesCalls++
+	return c.files
+}
+
+func (c *mutableClient) PR(runID string) PRStatus {
+	c.prCalls++
+	return c.mockClient.PR(runID)
+}
 
 func (c *mutableClient) CreateTask(task Task) error {
 	c.created = append(c.created, task)

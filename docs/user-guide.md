@@ -131,7 +131,7 @@ Important phase reports:
 | PR wait | `PR_WAIT_REPORT.md` |
 | Merge | `MERGE_REPORT.md` |
 
-Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses `Grep`, `Glob`, and targeted `Read` discovery, and omits nested delegation tools from fix/remediation phases. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman run`, `foreman run --watch`, and worker startup check for stale installed prompts/workflows and abort before scheduling agents when drift is detected. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
+Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses `Grep`, `Glob`, and targeted `Read` discovery, and omits nested delegation tools from fix/remediation phases. Elixir Overwatch rejects Graphify tools in all phases so discovery stays file-based and avoids slow generated worktree artifacts. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman run`, `foreman run --watch`, and worker startup check for stale installed prompts/workflows and abort before scheduling agents when drift is detected. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
 
 ### Bundled Foreman Skills
 
@@ -283,7 +283,7 @@ foreman logs <run-id>
 foreman attach <run-id>
 ```
 
-Use `foreman watch` as the canonical live cockpit. From the same full-height TTY session you can move through the task/run selector, inbox timeline, status/workflow flow chart, board context, and detail tabs for logs, reports, and files. `foreman inbox`, `foreman status --live`, and TTY `foreman board` open the same cockpit with different initial views; non-TTY output, `foreman inbox --non-interactive`, `foreman status --json`, `foreman status --watch`, `foreman watch --no-watch`, and filtered/all board paths remain scriptable. The status view shows ordered phase nodes, retry arrows, current failure/error text, artifacts, and active phase activity. Use `/` for search, `1/2/3` for active/attention/all scopes, `!`/`p`/`d` for failed/PR/dirty-worktree filters, and `a` or `:` for the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text.
+Use `foreman watch` as the canonical live cockpit. From the same full-height TTY session you can move through the task/run selector, inbox timeline, status/workflow flow chart, board context, and detail tabs for logs, reports, and files. `foreman inbox`, `foreman status --live`, and TTY `foreman board` open the same cockpit with different initial views; non-TTY output, `foreman inbox --non-interactive`, `foreman status --json`, `foreman status --watch`, `foreman watch --no-watch`, and filtered/all board paths remain scriptable. The cockpit phase rail follows the selected run's workflow phase order and shows per-phase retry counts; the status view shows ordered phase nodes, retry arrows, current failure/error text, artifacts, and active phase activity. Use `/` for search, `1/2/3` for active/attention/all scopes, `!`/`p`/`d` for failed/PR/dirty-worktree filters, and `a` or `:` for the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text.
 
 ### 8. Triage Failures
 
@@ -308,7 +308,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 Merge-capable workflows checkpoint draft PRs after successful mutating phases, then wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The final `create-pr` phase refreshes the existing draft and marks it ready instead of creating a second PR. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
 
-The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman closes only the run PR state and leaves the task unchanged for operator triage.
+The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman records the run PR state as closed and closes the associated task.
 
 
 ```bash
@@ -330,7 +330,7 @@ Common cockpit keys:
 | `i` | Inbox timeline view |
 | `s` | Status/workflow view |
 | `b` | Board context view |
-| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs |
+| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; messages use `mm/dd hh:mm`, sender, receiver, and message columns |
 | `/` | Search tasks, runs, messages, events, and report paths |
 | `1` / `2` / `3` | Active, attention, all scopes |
 | `!` / `p` / `d` | Failed, has PR, dirty worktree filters |

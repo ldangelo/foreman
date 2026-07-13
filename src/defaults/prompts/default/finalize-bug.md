@@ -46,9 +46,9 @@ Run:
 ```
 {{vcsBranchVerifyCommand}}
 ```
-If output is not `foreman/{{taskId}}`, run:
+**If output is NOT `foreman/{{taskId}}`, this is a branch drift error.** Do NOT attempt to checkout or create branches. Send an error and stop:
 ```
-git checkout foreman/{{taskId}}
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"finalize","taskId":"{{taskId}}","error":"branch_drift: expected foreman/{{taskId}}, found <actual> in {{worktreePath}}","retryable":false}'
 ```
 
 ### Step 4: Integrate target drift only when required

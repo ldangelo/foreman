@@ -436,11 +436,20 @@ func (m model) submitTaskForm() (tea.Model, tea.Cmd) {
 	return m, createTask(m.client, task)
 }
 
+func keyName(msg tea.KeyPressMsg) string {
+	key := msg.Key()
+	if key.Text == "" && key.Mod == tea.ModShift && key.Code >= 'a' && key.Code <= 'z' {
+		return strings.ToUpper(string(key.Code))
+	}
+	return msg.String()
+}
+
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.taskForm != nil {
 		return m.handleTaskFormKey(msg)
 	}
-	if m.taskList.Searching() || (m.taskList.Search() != "" && msg.String() == "esc") {
+	key := keyName(msg)
+	if m.taskList.Searching() || (m.taskList.Search() != "" && key == "esc") {
 		changed, cmd := m.taskList.HandleSearchKey(msg)
 		if changed {
 			m.buildItems()
@@ -449,14 +458,14 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.viewFocused && m.detailUsesViewer() {
-		if m.viewer.Searching() || msg.String() == "/" ||
-			(m.viewer.FilterActive() && (msg.String() == "n" || msg.String() == "N" || msg.String() == "o" || msg.String() == "esc")) {
+		if m.viewer.Searching() || key == "/" ||
+			(m.viewer.FilterActive() && (key == "n" || key == "N" || key == "o" || key == "esc")) {
 			return m, m.viewer.HandleKey(msg)
 		}
 	}
 
 	if m.viewFocused {
-		switch msg.String() {
+		switch key {
 		case "ctrl+d":
 			return m, m.moveRow(max(1, m.viewerBodyWindowHeight()/2))
 		case "ctrl+u":
@@ -478,7 +487,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	switch msg.String() {
+	switch key {
 	case "?":
 		m.helpVisible = !m.helpVisible
 		if m.helpVisible {
@@ -531,7 +540,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		return m, m.selectTab((m.tab - 1 + len(tabNames)) % len(tabNames))
 	case "1", "2", "3", "4", "5", "6", "7", "8":
-		return m, m.selectTab(int(msg.String()[0] - '1'))
+		return m, m.selectTab(int(key[0] - '1'))
 	case "/":
 		m.viewFocused = false
 		return m, m.taskList.StartSearch(msg)
@@ -552,6 +561,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, openInNvim(m.editor, t, false)
 		}
 	case "enter":
+		if m.viewFocused && tabNames[m.tab] == "files" {
+			t := resolveTarget(m)
+			return m, openInNvim(m.editor, t, false)
+		}
 		if tabNames[m.tab] == "pr" && m.pr.URL != "" {
 			return m, m.openSelectedPR()
 		}
@@ -690,9 +703,11 @@ func (m *model) reloadSelectedDetail() tea.Cmd {
 }
 
 func (m *model) moveRow(delta int) tea.Cmd {
-	m.refreshViewer(viewerPreserve)
+	if m.viewer.Len() == 0 {
+		m.refreshViewer(viewerPreserve)
+	}
 	m.viewer.Move(delta, m.viewerBodyWindowHeight())
-	if tabNames[m.tab] == "reports" || tabNames[m.tab] == "files" {
+	if tabNames[m.tab] == "files" {
 		m.refreshViewer(viewerPreserve)
 	}
 	return m.maybeLoadSelectedDiffPreview()
@@ -708,6 +723,7 @@ func (m *model) scrollToBottom() {
 
 func (m *model) selectTab(tab int) tea.Cmd {
 	m.tab = tab
+	m.loadDetail()
 	m.selectInitialViewerLine()
 	m.viewFocused = m.detailUsesViewer()
 	return tea.Batch(m.maybeLoadSelectedDiffPreview(), m.syncMotionCmd())
@@ -749,9 +765,19 @@ func (m model) viewerBodyLines() []string {
 	return m.viewer.TextLines()
 }
 
+func viewerSelectionPrefix(tab string) string {
+	switch tab {
+	case "messages", "events", "logs":
+		return "▶ "
+	default:
+		return ""
+	}
+}
+
 func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 	w := m.rightPaneWidth()
 	h := m.viewerBodyWindowHeight()
+	m.viewer.SetSelectionPrefix(viewerSelectionPrefix(tabNames[m.tab]))
 	m.viewer.SetWrapText(tabNames[m.tab] != "logs")
 	m.viewer.SetBounds(w, h)
 	if !m.detailUsesViewer() {
@@ -1186,17 +1212,22 @@ func (m *model) loadDetail() {
 		m.pr = PRStatus{}
 		return
 	}
-	m.msgs = m.client.Messages(run.RunID)
-	m.events = m.client.Events(run.RunID)
-	m.logs = m.client.Logs(run.RunID)
-	m.logPath = m.client.LogPath(run.RunID)
-	m.reports = m.client.Reports(run.RunID)
-	m.files = m.client.Files(run.RunID)
-	m.pr = m.client.PR(run.RunID)
-	if m.pr.URL == "" {
-		base := prStatusFromRun(run)
-		if base.URL != "" {
-			m.pr = base
+	m.pr = prStatusFromRun(run)
+	switch tabNames[m.tab] {
+	case "messages":
+		m.msgs = m.client.Messages(run.RunID)
+	case "events":
+		m.events = m.client.Events(run.RunID)
+	case "logs":
+		m.logs = m.client.Logs(run.RunID)
+		m.logPath = m.client.LogPath(run.RunID)
+	case "reports":
+		m.reports = m.client.Reports(run.RunID)
+	case "files":
+		m.files = m.client.Files(run.RunID)
+	case "pr":
+		if pr := m.client.PR(run.RunID); pr.URL != "" {
+			m.pr = pr
 		}
 	}
 	if errors := m.client.DrainErrors(); len(errors) > 0 {

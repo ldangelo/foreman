@@ -1230,6 +1230,21 @@ async function hasChangesAgainstBase(vcsBackend: VcsBackend | undefined, repoPat
   return changedFiles.length > 0;
 }
 
+/**
+ * Verify the worktree is on the canonical foreman/<taskId> branch.
+ * Returns branch invariant check result with expected/actual/worktree details.
+ */
+async function requireCanonicalBranch(
+  vcsBackend: VcsBackend | undefined,
+  worktreePath: string,
+  taskId: string,
+): Promise<{ valid: boolean; expected: string; actual: string; worktreePath: string }> {
+  const expected = `foreman/${taskId}`;
+  if (!vcsBackend) return { valid: true, expected, actual: "", worktreePath };
+  const actual = await vcsBackend.getCurrentBranch(worktreePath);
+  return { valid: actual === expected, expected, actual, worktreePath };
+}
+
 async function resolvePrBaseBranch(args: {
   store: WorkerStoreCompat;
   runId: string;
@@ -1372,6 +1387,31 @@ async function runCreatePrBuiltinPhase(args: {
   );
   const baseBranch = await resolvePrBaseBranch({ store, runId: config.runId, targetBranch: config.targetBranch, vcsBackend, projectPath: pipelineProjectPath });
   const branchName = `foreman/${config.taskId}`;
+
+  // Branch invariant check: fail fast if the worktree is not on the canonical branch.
+  // This prevents the no-change skip from closing a task when the worker drifted.
+  const branchInvariant = await requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId);
+  if (!branchInvariant.valid) {
+    const errorMsg = `branch_drift: expected '${branchInvariant.expected}', found '${branchInvariant.actual}' in '${branchInvariant.worktreePath}'`;
+    log(`[CREATE-PR] Branch drift detected — ${errorMsg}`);
+    sendMail(agentMailClient, "foreman", "agent-error", {
+      taskId: config.taskId,
+      runId: config.runId,
+      phase: "create-pr",
+      error: errorMsg,
+      retryable: false,
+    });
+    return {
+      success: false,
+      costUsd: 0,
+      turns: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      outputText: errorMsg,
+      error: errorMsg,
+    };
+  }
+
   const branchHasChanges = await hasChangesAgainstBase(vcsBackend, pipelineProjectPath, baseBranch, branchName).catch(() => true);
   const priorPrUrl = typeof store.getRun(config.runId)?.pr_url === "string" ? store.getRun(config.runId)?.pr_url : undefined;
   const priorMetadataPath = resolveArtifactPath(config.worktreePath, join(workerReportDir(config), "PR_METADATA.json"));
@@ -1473,6 +1513,15 @@ async function checkpointWorktreeAndEnsureDraftPrAfterPhase(args: {
     if (!workflowConfig.phases.some((candidate) => candidate.name === "create-pr")) return;
     if (!vcsBackend) return;
     if (config.env.FOREMAN_RUNTIME_MODE === "test" || process.env.FOREMAN_RUNTIME_MODE === "test") return;
+
+    // Branch invariant check: fail fast if the worktree is not on the canonical branch.
+    // Do not commit/push if drift exists — the actual work is on the wrong branch.
+    const branchInvariant = await requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId);
+    if (!branchInvariant.valid) {
+      const errorMsg = `branch_drift: expected '${branchInvariant.expected}', found '${branchInvariant.actual}' in '${branchInvariant.worktreePath}'`;
+      log(`[CHECKPOINT] Branch drift detected — ${errorMsg}; skipping checkpoint commit/push.`);
+      return;
+    }
 
     const baseBranch = await resolvePrBaseBranch({
       store,

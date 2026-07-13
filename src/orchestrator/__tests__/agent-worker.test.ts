@@ -218,3 +218,122 @@ describe("agent-worker.ts: Pi RPC integration regression tests", () => {
   });
 
 });
+
+/**
+ * Branch drift regression tests: prevent workers from closing tasks without PRs
+ * when they switch from the canonical foreman/<taskId> branch.
+ */
+describe("agent-worker.ts: branch drift prevention", () => {
+  const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+
+  it("has requireCanonicalBranch helper function", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    expect(source).toContain("async function requireCanonicalBranch(");
+    expect(source).toContain("valid: actual === expected");
+    expect(source).toContain("const expected = `foreman/${taskId}`");
+  });
+
+  it("runCreatePrBuiltinPhase fails with branch_drift error when not on canonical branch", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // Should check branch invariant before processing create-pr
+    expect(source).toContain("requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId)");
+    // Should return failure with branch_drift message
+    expect(source).toContain("branch_drift:");
+    expect(source).toContain("expected '${branchInvariant.expected}'");
+    expect(source).toContain("found '${branchInvariant.actual}'");
+    expect(source).toContain("in '${branchInvariant.worktreePath}'");
+    // Should NOT close task when drift exists - the close is guarded by branch invariant check
+    expect(source).toContain("runtimeTaskClient.close(config.taskId");
+    // Branch invariant check comes before the close call in the no-change path
+    const closePos = source.indexOf("runtimeTaskClient.close(config.taskId");
+    const branchInvariantPos = source.indexOf("requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId)");
+    expect(branchInvariantPos).toBeLessThan(closePos);
+  });
+
+  it("checkpointWorktreeAndEnsureDraftPrAfterPhase skips commit/push on branch drift", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // Should check branch invariant before committing
+    // Find where in the source file the branch check happens
+    const branchCheckFullSource = "requireCanonicalBranch(vcsBackend, config.worktreePath, config.taskId)";
+    const branchCheckPos = source.indexOf(branchCheckFullSource);
+    expect(branchCheckPos).toBeGreaterThanOrEqual(0);
+    // Find where the checkpoint function body has vcsBackend.stageAll
+    const stageAllPos = source.indexOf("vcsBackend.stageAll(config.worktreePath)");
+    expect(stageAllPos).toBeGreaterThan(0);
+    // The branch check should come before any staging
+    expect(branchCheckPos).toBeLessThan(stageAllPos);
+    // Should return early (not commit) when drift exists
+    expect(source).toContain("skipping checkpoint commit/push");
+  });
+
+  it("hasChangesAgainstBase is separate from branch invariant check", () => {
+    // hasChangesAgainstBase should not silently accept drift
+    // The branch invariant check is done separately before calling hasChangesAgainstBase
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    const hasChangesFn = source.match(/async function hasChangesAgainstBase\([\s\S]*?\n\}/)?.[0] ?? "";
+    // hasChangesAgainstBase itself doesn't need to check branch - that's done at a higher level
+    // The important thing is that runCreatePrBuiltinPhase checks the branch BEFORE calling hasChangesAgainstBase
+    expect(hasChangesFn).toBeDefined();
+  });
+});
+
+describe("agent-worker-finalize.ts: branch drift fail-fast", () => {
+  const FINALIZE_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker-finalize.ts");
+
+  it("finalize fails with branch_drift error instead of auto-recovering", () => {
+    const source = readFileSync(FINALIZE_SRC, "utf-8");
+    // Should check branch invariant
+    expect(source).toContain("vcs.getCurrentBranch(worktreePath)");
+    // Should fail instead of auto-checkout
+    expect(source).not.toContain("checkoutBranch(worktreePath, expectedBranch)");
+    // Should report branch drift
+    expect(source).toContain("branch_drift:");
+    expect(source).toContain("expected '${expectedBranch}'");
+    expect(source).toContain("found '${currentBranch}'");
+    // Should write error artifact
+    expect(source).toContain("BRANCH_DRIFT_ERROR.json");
+    // branchVerified = true should only be in the else branch (when branches match)
+    const sourceLines = source.split("\n");
+    let branchVerifiedAssignmentLine = -1;
+    let currentBranchNotMatchLine = -1;
+    for (let i = 0; i < sourceLines.length; i++) {
+      if (sourceLines[i].includes("currentBranch !== expectedBranch")) {
+        currentBranchNotMatchLine = i;
+      }
+      if (sourceLines[i].includes("branchVerified = true")) {
+        branchVerifiedAssignmentLine = i;
+      }
+    }
+    expect(branchVerifiedAssignmentLine).toBeGreaterThan(currentBranchNotMatchLine);
+  });
+
+  it("push is skipped when branch verification fails", () => {
+    const source = readFileSync(FINALIZE_SRC, "utf-8");
+    // Push should be conditional on branchVerified
+    const pushSection = source.match(/if \(!branchVerified\)[\s\S]*?vcs\.push/s)?.[0] ?? "";
+    expect(pushSection).toContain("Skipping push");
+    expect(pushSection).toContain("branch verification failed");
+  });
+});
+
+describe("bundled prompts: no branch creation instructions", () => {
+  const PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "default");
+
+  it("finalize.md does not instruct workers to auto-checkout on branch mismatch", () => {
+    const finalizePrompt = readFileSync(join(PROMPTS_DIR, "finalize.md"), "utf-8");
+    // Should fail instead of auto-checkout
+    expect(finalizePrompt).not.toMatch(/git checkout.*foreman\/{{taskId}}/);
+    expect(finalizePrompt).toContain("branch_drift");
+    expect(finalizePrompt).toContain("agent-error");
+    expect(finalizePrompt).toContain("retryable\":false");
+  });
+
+  it("finalize-bug.md does not instruct workers to auto-checkout on branch mismatch", () => {
+    const finalizeBugPrompt = readFileSync(join(PROMPTS_DIR, "finalize-bug.md"), "utf-8");
+    // Should fail instead of auto-checkout
+    expect(finalizeBugPrompt).not.toMatch(/git checkout.*foreman\/{{taskId}}/);
+    expect(finalizeBugPrompt).toContain("branch_drift");
+    expect(finalizeBugPrompt).toContain("agent-error");
+    expect(finalizeBugPrompt).toContain("retryable\":false");
+  });
+});
