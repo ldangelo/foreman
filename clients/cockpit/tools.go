@@ -65,6 +65,9 @@ func parseGhExtensions(out string) map[string]bool {
 			continue
 		}
 		name := fields[0]
+		if name == "gh" && len(fields) > 1 {
+			name = "gh-" + fields[1]
+		}
 		base := name
 		if i := strings.LastIndex(base, "/"); i >= 0 {
 			base = base[i+1:]

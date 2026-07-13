@@ -50,6 +50,14 @@ func TestParseGhExtensions(t *testing.T) {
 	if !available["enhance"] {
 		t.Fatal("expected gh-enhance extension to register as enhance")
 	}
+
+	spaceSeparated := parseGhExtensions("gh dash\t\t\ngh enhance\t\t\n")
+	if !spaceSeparated["dash"] {
+		t.Fatal("expected gh dash extension list output to register as dash")
+	}
+	if !spaceSeparated["enhance"] {
+		t.Fatal("expected gh enhance extension list output to register as enhance")
+	}
 }
 
 func TestLoadConfigDefaultsAndEnvOverrides(t *testing.T) {
