@@ -356,19 +356,32 @@ const BUNDLED_WORKFLOWS_DIR = join(
   "workflows",
 );
 
-/** Known workflow names with bundled defaults. */
-export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = [
-  "default",
-  "quick",
-  "smoke",
-  "epic",
-  "bug",
-  "task",
-  "feature",
-  "chore",
-  "docs",
-  "question",
-];
+const BUNDLED_WORKFLOW_ORDER: Record<string, number> = {
+  default: 0,
+  smoke: 1,
+  epic: 2,
+  bug: 3,
+  task: 4,
+  feature: 5,
+};
+
+function listBundledWorkflowNames(): string[] {
+  try {
+    const names = readdirSync(BUNDLED_WORKFLOWS_DIR)
+      .filter((file) => file.endsWith(".yaml") || file.endsWith(".yml"))
+      .map((file) => file.replace(/\.ya?ml$/, ""));
+    return names.sort(
+      (a, b) =>
+        (BUNDLED_WORKFLOW_ORDER[a] ?? Number.MAX_SAFE_INTEGER) -
+          (BUNDLED_WORKFLOW_ORDER[b] ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Workflow names currently present in src/defaults/workflows. */
+export const BUNDLED_WORKFLOW_NAMES: ReadonlyArray<string> = listBundledWorkflowNames();
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -949,8 +962,8 @@ export function listAvailableWorkflows(): string[] {
  * Installs any missing bundled workflow YAML (never overwrites existing
  * files), then returns the names that are still missing (e.g. when the
  * bundled defaults directory is unavailable). Used by the `foreman run`
- * preflight so that newly added bundled workflows (e.g. quick.yaml) are
- * installed on the fly instead of blocking dispatch for existing installs.
+ * preflight so newly added bundled workflow files are installed on the fly
+ * instead of blocking dispatch for existing installs.
  *
  * @param projectRoot - Absolute path to the project root.
  * @returns Array of workflow names still missing after the install attempt.

@@ -11,10 +11,11 @@ import { tmpdir } from "node:os";
 // vi.hoisted() ensures mock variables are initialised before the module
 // factory runs (vitest hoists vi.mock() calls to the top of the file).
 
-const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockUpdateTaskStatus } = vi.hoisted(() => ({
+const { mockExecFileSync, mockEnqueueToMergeQueue, mockAppendFile, mockWriteFile, mockUpdateTaskStatus } = vi.hoisted(() => ({
   mockExecFileSync: vi.fn(),
   mockEnqueueToMergeQueue: vi.fn().mockReturnValue({ success: true }),
   mockAppendFile: vi.fn().mockResolvedValue(undefined),
+  mockWriteFile: vi.fn().mockResolvedValue(undefined),
   mockUpdateTaskStatus: vi.fn(),
 }));
 
@@ -24,6 +25,7 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("node:fs/promises", () => ({
   appendFile: mockAppendFile,
+  writeFile: mockWriteFile,
 }));
 
 vi.mock("../agent-worker-enqueue.js", () => ({
@@ -196,7 +198,9 @@ describe("finalize() — push succeeds", () => {
   });
 
   it("calls vcs.push with correct branch name", async () => {
-    const vcs = makeMockVcs();
+    const vcs = makeMockVcs({
+      getCurrentBranch: vi.fn().mockResolvedValue("foreman/bd-xyz-999"),
+    });
     await finalize(makeConfig({ worktreePath: tmpDir, taskId: "bd-xyz-999" }), logFile, vcs);
     expect(vcs.push).toHaveBeenCalledWith(tmpDir, "foreman/bd-xyz-999");
   });
@@ -836,36 +840,43 @@ describe("finalize() — branch verification", () => {
     expect(content).toContain("Status: OK");
   });
 
-  it("attempts checkoutBranch when on a different branch and push succeeds after recovery", async () => {
+  it("skips push when on a different branch and writes a branch-drift artifact", async () => {
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
     });
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
-    expect(vcs.checkoutBranch).toHaveBeenCalledWith(tmpDir, "foreman/bd-test-001");
-    expect(result.success).toBe(true);
+    expect(vcs.checkoutBranch).not.toHaveBeenCalled();
+    expect(vcs.push).not.toHaveBeenCalled();
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      join(tmpDir, "BRANCH_DRIFT_ERROR.json"),
+      expect.stringContaining('"actual": "main"'),
+      "utf8",
+    );
+    expect(result.success).toBe(false);
   });
 
-  it("reports RECOVERED status in branch verification section after mismatch checkout", async () => {
+  it("reports FAILED status in branch verification section after branch mismatch", async () => {
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
     });
     await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
     const content = readFileSync(join(tmpDir, "FINALIZE_REPORT.md"), "utf-8");
     expect(content).toContain("## Branch Verification");
-    expect(content).toContain("Status: RECOVERED (checkout succeeded)");
-    expect(content).toContain("Was: main");
+    expect(content).toContain("Status: FAILED (branch_drift)");
+    expect(content).toContain("Actual: main");
   });
 
-  it("attempts checkoutBranch when in detached HEAD state and push succeeds after recovery", async () => {
+  it("skips push when in detached HEAD state", async () => {
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("HEAD"),
     });
     const result = await finalize(makeConfig({ worktreePath: tmpDir }), logFile, vcs);
-    expect(vcs.checkoutBranch).toHaveBeenCalled();
-    expect(result.success).toBe(true);
+    expect(vcs.checkoutBranch).not.toHaveBeenCalled();
+    expect(vcs.push).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
   });
 
-  it("skips push and returns false when checkoutBranch fails after branch mismatch", async () => {
+  it("skips push and returns false after branch mismatch", async () => {
     const vcs = makeMockVcs({
       getCurrentBranch: vi.fn().mockResolvedValue("main"),
       checkoutBranch: vi.fn().mockRejectedValue(new Error("error: pathspec 'foreman/bd-test-001' did not match any file(s)")),

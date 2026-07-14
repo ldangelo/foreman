@@ -165,6 +165,26 @@ phases:
       reserve: true
       leaseSecs: 600
 
+  - name: merge-resolver
+    checkpointPr: true
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
   # ── Phase 3: cli-review (builtin) ───────────────────────────────────────
   - name: cli-review
     builtin: true
@@ -199,6 +219,37 @@ phases:
       onStart: true
       onComplete: true
 
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: repair
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    retryWith: repair
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
 onFailure:
   name: troubleshooter
   prompt: troubleshooter.md

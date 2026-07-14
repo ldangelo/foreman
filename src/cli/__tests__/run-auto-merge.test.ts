@@ -220,7 +220,7 @@ vi.mock("../../lib/workflow-loader.js", () => ({
   findMissingWorkflows: () => [],
   findStaleWorkflows: () => [],
   ensureBundledWorkflowsInstalled: () => [],
-  listAvailableWorkflows: () => ["default", "quick"],
+  listAvailableWorkflows: () => ["default", "smoke"],
   loadWorkflowConfig: () => ({
     name: "default",
     phases: [

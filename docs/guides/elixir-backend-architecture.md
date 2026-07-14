@@ -24,7 +24,7 @@ Legacy spellings remain hidden or compatibility-only during migration and point 
 | `foreman task` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
-| `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow without those phases |
+| `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow <name>` with a custom workflow YAML that omits those phases |
 | `foreman inbox send` replaces removed `foreman mail send` | Use `foreman inbox send` |
 
 Legacy TS delegation has been removed after cutover. `foreman daemon start|restart` refuses to launch the Node daemon scheduler; use `foreman server start` so the Elixir scheduler is the only active scheduler for the project. The scheduler ticks every 5 seconds by default, claims dispatchable `ready` tasks within configured capacity, and launches the Node/Pi worker bridge.

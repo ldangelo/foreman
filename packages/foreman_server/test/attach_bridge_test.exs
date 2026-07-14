@@ -264,7 +264,8 @@ defmodule ForemanServer.AttachBridgeTest do
 
       assert EventStore.stream("attach:#{run_id}") == before_events
       snapshot = ProjectionStore.snapshot()
-      assert snapshot.runs[run_id].phase_status["developer"] == "interrupted"
+      expected_phase_status = if status == "blocked", do: "interrupted", else: status
+      assert snapshot.runs[run_id].phase_status["developer"] == expected_phase_status
       refute snapshot.runs[run_id].recovery_next_action == "restart_phase"
     end
   end
@@ -288,7 +289,10 @@ defmodule ForemanServer.AttachBridgeTest do
 
       assert resume.status == 409
       assert EventStore.stream("attach:#{run_id}") == before_events
-      assert ProjectionStore.snapshot().runs[run_id].phase_status["developer"] == "interrupted"
+      expected_phase_status = if status == "blocked", do: "interrupted", else: status
+
+      assert ProjectionStore.snapshot().runs[run_id].phase_status["developer"] ==
+               expected_phase_status
     end
   end
 

@@ -91,8 +91,8 @@ describe("AC-T-014-2: agent-worker-finalize.ts — VcsBackend method usage", () 
     expect(source).toContain("await vcs.getCurrentBranch(");
   });
 
-  it("uses vcs.checkoutBranch() to recover from branch mismatch", () => {
-    expect(source).toContain("await vcs.checkoutBranch(");
+  it("does not auto-checkout during branch verification", () => {
+    expect(source).not.toContain("await vcs.checkoutBranch(");
   });
 
   it("uses vcs.push() to push the branch to origin", () => {

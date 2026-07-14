@@ -34,7 +34,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 | `foreman dashboard` | `foreman watch` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
-| `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow quick` or a custom workflow |
+| `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow <custom-workflow>` |
 | removed `foreman mail send` | `foreman inbox send` |
 
 Legacy TS delegation and Node daemon start/restart were removed after the Elixir cutover; use `foreman server start` for the scheduler.
@@ -125,7 +125,7 @@ foreman run --no-watch             # Tick once and exit; monitor with watch/stat
 | `--runtime-mode <mode>` | — | Runtime mode: `normal`\|`test` (test uses deterministic phase-runner seams) |
 | `--yes` | — | Answer yes to run confirmation prompts (for non-interactive dispatch) |
 
-> **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow quick` (a bundled workflow without explorer/reviewer phases) or a custom workflow instead.
+> **Deprecated:** `--skip-explore` and `--skip-review` are still parsed for backwards compatibility but have **no effect** on the pipeline (phase shape is defined entirely by the workflow YAML). They are hidden from `--help` and print a deprecation warning. Use `--workflow <custom-workflow>` with a project-local or global workflow that has the phase shape you want.
 
 Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS`, `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`, and `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS`. When exceeded, Foreman stops the run, writes a native task failure note, and marks the run stuck for operator action.
 
@@ -747,7 +747,7 @@ foreman task create --title "Fix login timeout" --description "Session expires t
 |--------|---------|-------------|
 | `--title <text>` | — | Task title (required) |
 | `--description <text>` | — | Optional task description |
-| `--type <type>` | `task` | Task type: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question` |
+| `--type <type>` | `task` | Task type. Bundled auto-routed types: `task`, `bug`, `feature`, `epic`, `smoke`; project/global workflows can declare additional `task_type` values. |
 | `--priority <level>` | `medium` | Priority: `0`–`4` or `critical`/`high`/`medium`/`low`/`backlog` |
 | `--from-text <description>` | — | Removed after Elixir cutover; use `--title` and `--description` |
 | `--parent <id>` / `--dry-run` / `--no-llm` / `--model` | — | Removed natural-language generator options |

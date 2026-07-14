@@ -201,10 +201,10 @@ describe("collectRuntimeAssetIssues", () => {
     const issues = collectRuntimeAssetIssues(projectRoot, {});
 
     // Missing bundled workflows must not block `foreman run` — they are
-    // installed on the fly so newly added bundled workflows (e.g. quick.yaml)
-    // do not break existing ~/.foreman/workflows/ installs.
+    // installed on the fly so newly added bundled workflows do not break
+    // existing ~/.foreman/workflows/ installs.
     expect(issues.some((issue) => issue.includes("missing workflows"))).toBe(false);
-    expect(existsSync(join(projectRoot, "workflows", "quick.yaml"))).toBe(true);
     expect(existsSync(join(projectRoot, "workflows", "default.yaml"))).toBe(true);
+    expect(existsSync(join(projectRoot, "workflows", "smoke.yaml"))).toBe(true);
   });
 });

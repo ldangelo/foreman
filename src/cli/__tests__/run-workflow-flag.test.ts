@@ -4,7 +4,7 @@
  *
  * The skip flags never affected the YAML-driven pipeline (they were only
  * consumed by the legacy lead-agent prompt builder). They are kept as hidden,
- * deprecated no-ops for backwards compatibility; `--workflow quick` is the
+ * deprecated no-ops for backwards compatibility; a custom workflow YAML is the
  * YAML-first replacement.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -64,22 +64,22 @@ describe("skipFlagsDeprecationWarning", () => {
     expect(skipFlagsDeprecationWarning({ skipExplore: false, skipReview: false })).toBeNull();
   });
 
-  it("warns that the flags have no effect and suggests --workflow quick for `foreman run`", () => {
+  it("warns that the flags have no effect and suggests a custom workflow for `foreman run`", () => {
     const warning = skipFlagsDeprecationWarning({ skipExplore: true });
     expect(warning).toBeTruthy();
     expect(warning).toContain("--skip-explore");
     expect(warning).toContain("no effect");
-    expect(warning).toContain("--workflow quick");
+    expect(warning).toContain("--workflow <name>");
   });
 
-  it("suggests passing `quick` as the workflow argument for `foreman run task`", () => {
+  it("suggests passing a custom workflow as the workflow argument for `foreman run task`", () => {
     // `foreman run task <task-id> <workflow>` takes the workflow as a
     // positional argument — there is no --workflow flag on that subcommand.
     const warning = skipFlagsDeprecationWarning({ skipExplore: true }, "task");
     expect(warning).toBeTruthy();
     expect(warning).toContain("--skip-explore");
     expect(warning).toContain("no effect");
-    expect(warning).not.toContain("--workflow quick");
+    expect(warning).not.toContain("--workflow <name>");
     expect(warning).toContain("workflow argument");
   });
 
@@ -105,7 +105,7 @@ describe("validateWorkflowOverride", () => {
   });
 
   it("accepts a bundled workflow name", () => {
-    const result = validateWorkflowOverride("quick", foremanHome);
+    const result = validateWorkflowOverride("smoke", foremanHome);
     expect(result.ok).toBe(true);
   });
 
@@ -115,7 +115,8 @@ describe("validateWorkflowOverride", () => {
     if (!result.ok) {
       expect(result.message).toContain("nope-not-a-workflow");
       expect(result.message).toContain("default");
-      expect(result.message).toContain("quick");
+      expect(result.message).toContain("smoke");
+      expect(result.message).not.toContain("quick");
     }
   });
 });

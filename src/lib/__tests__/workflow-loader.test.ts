@@ -400,20 +400,14 @@ phases:
     expect(explorerPhase?.tools?.allowed).not.toContain("GraphifyExplain");
   });
 
-  it("loads bundled bug and chore workflows with scoped fix prompts", () => {
-    for (const workflow of ["bug", "chore"] as const) {
-      const config = loadWorkflowConfig(workflow, tmpDir);
-      const fixPhase = config.phases.find((p) => p.name === "fix");
-      const validationPhase = config.phases.find((p) => p.name === (workflow === "bug" ? "qa" : "test"));
-      expect(fixPhase?.prompt).toBe("fix-issue.md");
-      expect(fixPhase?.command).toBeUndefined();
-      if (workflow === "bug") {
-        expect(validationPhase?.prompt).toBe("qa.md");
-        expect(config.phases.find((p) => p.name === "developer")?.retryOnly).toBe(true);
-      } else {
-        expect(validationPhase?.bash).toBe("npm run test:unit");
-      }
-    }
+  it("loads bundled bug workflow with scoped fix prompt", () => {
+    const config = loadWorkflowConfig("bug", tmpDir);
+    const fixPhase = config.phases.find((p) => p.name === "fix");
+    const validationPhase = config.phases.find((p) => p.name === "qa");
+    expect(fixPhase?.prompt).toBe("fix-issue.md");
+    expect(fixPhase?.command).toBeUndefined();
+    expect(validationPhase?.prompt).toBe("qa.md");
+    expect(config.phases.find((p) => p.name === "developer")?.retryOnly).toBe(true);
   });
 
   it("feature workflow inserts cli-review, PR wait, and merge phases after reviewer", () => {
@@ -450,11 +444,11 @@ phases:
   });
 
   it("bundled auto-merge workflows expose PR wait and merge phases", () => {
-    const workflows = ["default", "feature", "bug", "chore", "docs", "task", "quick"];
+    const workflows = ["default", "feature", "bug", "task", "epic"];
     for (const workflowName of workflows) {
       const config = loadWorkflowConfig(workflowName, tmpDir);
       const phaseNames = config.phases.map((phase) => phase.name);
-      if (workflowName === "bug") {
+      if (workflowName === "bug" || workflowName === "epic") {
         expect(phaseNames, workflowName).not.toContain("cli-review");
       } else {
         expect(phaseNames, workflowName).toContain("cli-review");
@@ -473,11 +467,8 @@ phases:
     const expectedCheckpointPhases: Record<string, string[]> = {
       default: ["developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
       feature: ["developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
-      quick: ["developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
       bug: ["fix", "developer", "cicd-developer", "cr-developer", "merge-resolver", "documentation"],
       task: ["fix", "repair", "documentation", "cicd-developer", "cr-developer", "merge-resolver"],
-      chore: ["fix", "documentation"],
-      docs: ["develop", "documentation", "repair"],
       epic: ["implement", "developer", "documentation", "cicd-developer", "cr-developer", "merge-resolver"],
     };
     const forbiddenCheckpointPhases = new Set([
@@ -1115,9 +1106,9 @@ describe("validateWorkflowConfig — epic mode", () => {
   });
 });
 
-// ── quick workflow (YAML-first replacement for --skip-explore/--skip-review) ──
+// ── removed bundled workflows ────────────────────────────────────────────────
 
-describe("quick bundled workflow", () => {
+describe("removed bundled workflows", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -1130,28 +1121,19 @@ describe("quick bundled workflow", () => {
     delete process.env["FOREMAN_HOME"];
   });
 
-  it("is registered as a bundled workflow", () => {
-    expect(BUNDLED_WORKFLOW_NAMES).toContain("quick");
+  it("does not register workflows that no longer exist in bundled defaults", () => {
+    expect(BUNDLED_WORKFLOW_NAMES).not.toContain("quick");
+    expect(BUNDLED_WORKFLOW_NAMES).not.toContain("chore");
+    expect(BUNDLED_WORKFLOW_NAMES).not.toContain("docs");
+    expect(BUNDLED_WORKFLOW_NAMES).not.toContain("question");
   });
 
-  it("loads from bundled defaults and omits explorer and reviewer phases", () => {
-    const config = loadWorkflowConfig("quick", tmpDir);
-    expect(config.name).toBe("quick");
-    const phaseNames = config.phases.map((p) => p.name);
-    expect(phaseNames).not.toContain("explorer");
-    expect(phaseNames).not.toContain("reviewer");
-    expect(phaseNames).toContain("developer");
-    expect(phaseNames).toContain("qa");
-    expect(phaseNames).toContain("documentation");
-    expect(phaseNames).toContain("finalize");
-  });
-
-  it("keeps QA verdict/retry wiring like the default workflow", () => {
-    const config = loadWorkflowConfig("quick", tmpDir);
-    const qaPhase = config.phases.find((p) => p.name === "qa");
-    expect(qaPhase?.verdict).toBe(true);
-    expect(qaPhase?.retryWith).toBe("developer");
-    expect(typeof qaPhase?.retryOnFail).toBe("number");
+  it("does not treat removed bundled workflows as missing install requirements", () => {
+    const missing = findMissingWorkflows(tmpDir);
+    expect(missing).not.toContain("quick");
+    expect(missing).not.toContain("chore");
+    expect(missing).not.toContain("docs");
+    expect(missing).not.toContain("question");
   });
 });
 
@@ -1171,13 +1153,13 @@ describe("resolveWorkflowName explicit override", () => {
   });
 
   it("explicit override takes priority over workflow:<name> labels", () => {
-    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, "quick")).toBe("quick");
+    expect(resolveWorkflowName("feature", ["workflow:smoke"], undefined, "custom")).toBe("custom");
   });
 
   it("explicit override takes priority over taskTypeWorkflowMap", () => {
     expect(
-      resolveWorkflowName("bug", undefined, { bug: "bug", default: "default" }, "quick"),
-    ).toBe("quick");
+      resolveWorkflowName("bug", undefined, { bug: "bug", default: "default" }, "custom"),
+    ).toBe("custom");
   });
 
   it("falls back to label resolution when override is undefined", () => {
@@ -1255,14 +1237,14 @@ describe("ensureBundledWorkflowsInstalled", () => {
     expect(after).toBe(customContent);
   });
 
-  it("installs newly added bundled workflows (e.g. quick) into existing installs", () => {
-    // Simulate an existing install that predates quick.yaml: install everything,
-    // then delete quick.yaml.
+  it("installs missing bundled workflows into existing installs", () => {
+    // Simulate an existing install that predates a bundled workflow: install
+    // everything, then delete one currently bundled workflow.
     installBundledWorkflows(tmpDir);
-    rmSync(join(tmpDir, "workflows", "quick.yaml"), { force: true });
+    rmSync(join(tmpDir, "workflows", "feature.yaml"), { force: true });
     const stillMissing = ensureBundledWorkflowsInstalled(tmpDir);
     expect(stillMissing).toHaveLength(0);
-    expect(existsSync(join(tmpDir, "workflows", "quick.yaml"))).toBe(true);
+    expect(existsSync(join(tmpDir, "workflows", "feature.yaml"))).toBe(true);
   });
 });
 
@@ -1288,16 +1270,16 @@ describe("workflow task_type routing", () => {
   });
 
   it("routes task type through workflow task_type before config fallback", () => {
-    expect(resolveWorkflowName("bug", [], { bug: "quick" })).toBe("bug");
+    expect(resolveWorkflowName("bug", [], { bug: "custom-bug-workflow" })).toBe("bug");
   });
 
   it("detects duplicate task_type declarations", () => {
-    const quickPath = join(tmpDir, "workflows", "quick.yaml");
-    const quick = readFileSync(quickPath, "utf-8").replace("task_type: quick", "task_type: bug");
-    writeFileSync(quickPath, quick);
+    const featurePath = join(tmpDir, "workflows", "feature.yaml");
+    const feature = readFileSync(featurePath, "utf-8").replace("task_type: feature", "task_type: bug");
+    writeFileSync(featurePath, feature);
 
     const result = validateTaskTypeUniqueness();
     expect(result.valid).toBe(false);
-    expect(result.duplicates).toContainEqual({ taskType: "bug", workflows: ["bug", "quick"] });
+    expect(result.duplicates).toContainEqual({ taskType: "bug", workflows: ["bug", "feature"] });
   });
 });

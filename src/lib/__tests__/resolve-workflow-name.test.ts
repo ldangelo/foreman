@@ -46,16 +46,10 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('feature')).toBe('feature');
     });
 
-    it('chore type maps to chore.yaml (workflows for all types)', () => {
-      expect(resolveWorkflowName('chore')).toBe('chore');
-    });
-
-    it('docs type maps to docs.yaml (workflows for all types)', () => {
-      expect(resolveWorkflowName('docs')).toBe('docs');
-    });
-
-    it('question type maps to question.yaml (workflows for all types)', () => {
-      expect(resolveWorkflowName('question')).toBe('question');
+    it('removed workflow task types fall back to default without a configured mapping', () => {
+      expect(resolveWorkflowName('chore')).toBe('default');
+      expect(resolveWorkflowName('docs')).toBe('default');
+      expect(resolveWorkflowName('question')).toBe('default');
     });
 
     it('task type maps to task.yaml (workflows for all types)', () => {
@@ -98,10 +92,9 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('feature', ['workflow:override'], map)).toBe('override');
     });
 
-    it('workflow task_type mapping takes priority over legacy config mapping', () => {
-      // docs declares task_type: docs in bundled workflows, so it wins over legacy config.
+    it('ignores stale workflow task_type declarations when the workflow file is absent', () => {
       const map = { docs: 'task' };
-      expect(resolveWorkflowName('docs', [], map, undefined, { docs: 'docs' })).toBe('docs');
+      expect(resolveWorkflowName('docs', [], map, undefined, { docs: 'docs' })).toBe('task');
     });
 
     it('config mapping "default" key used when type not explicitly mapped', () => {
@@ -136,7 +129,7 @@ describe('resolveWorkflowName (TRD-006)', () => {
 
     it('maps undeclared task type to different workflow via config', () => {
       const map = { docs: 'task', spike: 'feature' };
-      expect(resolveWorkflowName('docs', [], map, undefined, { docs: 'docs' })).toBe('docs');
+      expect(resolveWorkflowName('docs', [], map, undefined, { docs: 'docs' })).toBe('task');
       expect(resolveWorkflowName('spike', [], map)).toBe('feature');
     });
 
@@ -153,9 +146,8 @@ describe('resolveWorkflowName (TRD-006)', () => {
       expect(resolveWorkflowName('unknown', [], { default: 'nonexistent' })).toBe('default');
     });
 
-    it('unknown type without config default falls back to file-existence then default', () => {
-      // "question" has question.yaml in bundled workflows
-      expect(resolveWorkflowName('question', [])).toBe('question');
+    it('unknown type without config default falls back to default when no workflow file exists', () => {
+      expect(resolveWorkflowName('question', [])).toBe('default');
     });
   });
 });

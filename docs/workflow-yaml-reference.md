@@ -10,11 +10,10 @@ Workflow YAML files define the complete pipeline configuration for Foreman: whic
 | `src/defaults/workflows/{name}.yaml` | Bundled defaults (installed by `foreman init`) |
 
 Foreman ships with bundled workflows for common task types:
-- **`default`** — Standard pipeline with implementation, validation, PR creation, PR wait/review, and merge gates
-- **`quick`** — Fast variant of `default` without the explorer and reviewer phases (`developer ⇄ qa → finalize → PR gates → merge`). YAML-first replacement for the retired `--skip-explore`/`--skip-review` flags
-- **`task` / `feature` / `bug`** — Type-specific workflows with post-finalize PR phases (`create-pr → pr-wait → prepare-pr-review → pr-review → merge`); PR wait requires a short stable-ready window, and merge re-waits if a late GitHub check appears
-- **`epic`** — Planning + implementation workflow (`prd → trd → implement → developer → qa → finalize`) followed by the same PR wait/review/merge gates
-- **`smoke`** — Lightweight fast-validation pipeline using cheaper models
+- **`default`** — Standard pipeline with implementation, validation, PR creation, PR wait, and merge gates
+- **`task` / `feature` / `bug`** — Type-specific workflows with post-finalize PR phases (`create-pr → pr-wait → merge`); PR wait requires a short stable-ready window, and merge re-waits if a late GitHub check appears
+- **`epic`** — Planning + implementation workflow (`prd → trd → implement → developer → qa → finalize`) followed by the same PR wait/merge gates
+- **`smoke`** — Lightweight fast-validation pipeline using cheaper models and no PR/merge gates
 
 ## Workflow Selection
 
@@ -33,8 +32,8 @@ Startup/doctor validation fails if multiple workflows declare the same `task_typ
 native task store create --title="Add user auth" --type=feature
 foreman run
 
-# Dispatch everything with the quick workflow (no explorer/reviewer phases)
-foreman run --workflow quick
+# Dispatch everything with a custom workflow that omits phases you do not want
+foreman run --workflow my-fast-workflow
 
 # Dispatch with smoke workflow
 foreman task create --title "Smoke test" --type task --label workflow:smoke
@@ -350,7 +349,7 @@ Bundled merge-capable workflows express PR and merge behavior as phases, not top
 
 The `models` map supports priority-based model selection. Keys are `"default"` (required) or `"P0"` through `"P4"` (optional overrides). The task's priority determines which model is used.
 
-**Bundled workflow models:** Foreman's bundled workflows (`default`, `feature`, `bug`, `quick`, `smoke`) use `MiniMax` and `MiniMax-highspeed` models. The shorthands below are available for custom workflows.
+**Bundled workflow models:** Foreman's bundled workflows (`default`, `feature`, `bug`, `task`, `epic`, `smoke`) use the model names declared in their YAML. The shorthands below are available for custom workflows.
 
 **Model shorthands:**
 

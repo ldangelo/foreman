@@ -67,7 +67,6 @@ describe("smoke workflow: structural invariants", () => {
   const SMOKE_PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "smoke");
   const DEFAULT_PROMPTS_DIR = join(PROJECT_ROOT, "src", "defaults", "prompts", "default");
   const SMOKE_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "smoke.yaml");
-  const DOCS_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "docs.yaml");
   const TASK_WORKFLOW = join(PROJECT_ROOT, "src", "defaults", "workflows", "task.yaml");
 
   it("agent-worker.ts does NOT contain FOREMAN_SMOKE_TEST bypass (bypass was removed)", () => {
@@ -163,15 +162,6 @@ describe("smoke workflow: structural invariants", () => {
     }
   });
 
-  it("docs workflow routes verdict failures to a focused repair phase", () => {
-    const workflow = readFileSync(DOCS_WORKFLOW, "utf-8");
-    expect(workflow).toContain("- name: repair");
-    expect(workflow).toContain("retryOnly: true");
-    expect(workflow).toContain("prompt: repair.md");
-    expect(workflow).toContain("retryWith: repair");
-    expect(workflow).toContain("onFail: repair");
-    expect(workflow).not.toContain("retryWith: develop\n    retryOnFail");
-  });
 
   it("task workflow routes generic QA/review failures to focused repair, not developer", () => {
     const workflow = readFileSync(TASK_WORKFLOW, "utf-8");

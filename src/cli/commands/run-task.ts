@@ -75,8 +75,8 @@ export function skipFlagsDeprecationWarning(
   if (opts.skipReview) flags.push("--skip-review");
   if (flags.length === 0) return null;
   const suggestion = context === "task"
-    ? "pass `quick` (or a custom workflow YAML) as the workflow argument instead."
-    : "use --workflow quick (or a custom workflow YAML) instead.";
+    ? "pass a custom workflow YAML name as the workflow argument instead."
+    : "use --workflow <name> with a custom workflow YAML instead.";
   return (
     `${flags.join(" and ")} ${flags.length > 1 ? "are" : "is"} deprecated and ` +
     `${flags.length > 1 ? "have" : "has"} no effect on the pipeline — ${suggestion}`

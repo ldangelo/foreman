@@ -35,7 +35,7 @@ describe("TRD-2026-014 operator docs", () => {
     expect(combined).toContain("foreman purge-logs");
     expect(combined).toContain("foreman purge logs");
     expect(combined).toContain("--skip-explore");
-    expect(combined).toContain("--workflow quick");
+    expect(combined).toContain("custom workflow YAML");
     expect(combined).toContain("Legacy TypeScript delegation was removed");
   });
 

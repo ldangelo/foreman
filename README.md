@@ -778,7 +778,7 @@ Priority scale: 0 (critical) → 1 (high) → 2 (medium) → 3 (low) → 4 (back
 
 ### Workflow YAML
 
-Foreman pipelines are configured via workflow YAML files. The bundled workflows use lightweight `Grep`, `Glob`, and targeted `Read` discovery before implementation instead of maintaining a repository graph index. After editing bundled source workflows or prompts, run `foreman init --force` before dispatch; `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime copies are stale so agents cannot run with outdated prompts or workflows. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
+Foreman pipelines are configured via workflow YAML files. Bundled workflows are the YAML files currently present in `src/defaults/workflows/` (`default`, `smoke`, `epic`, `bug`, `task`, and `feature`). The bundled workflows use lightweight `Grep`, `Glob`, and targeted `Read` discovery before implementation instead of maintaining a repository graph index. After editing bundled source workflows or prompts, run `foreman init --force` before dispatch; `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime copies are stale so agents cannot run with outdated prompts or workflows. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See the **[Workflow YAML Reference](docs/workflow-yaml-reference.md)** for complete documentation with examples for Node.js, .NET, Go, Python, and Rust.
 
 Workflows define:
 - **Setup steps** — dependency installation, build commands (stack-agnostic)
@@ -830,7 +830,7 @@ Operator direct task execution was removed after the Elixir cutover; use schedul
 
 - **Bypasses state gating** — runs regardless of task status (ready, backlog, closed, failed, etc.)
 - **Preserves safety mechanisms** — worktree and run locking still apply
-- **Explicit workflow** — specify the workflow as a positional argument (e.g., `task`, `quick`, `~/.foreman/workflows/custom.yaml`)
+- **Explicit workflow** — specify the workflow as a positional argument (e.g., `task`, `~/.foreman/workflows/custom.yaml`)
 
 **When to use:**
 - Re-running a completed/closed task with a different workflow

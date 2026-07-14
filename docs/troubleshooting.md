@@ -66,7 +66,7 @@ Deprecated aliases are hidden from help and print replacements when used:
 | `foreman task` | Removed; use structured `foreman task create --title ...` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
-| `--skip-explore` / `--skip-review` | `--workflow quick` or a custom workflow |
+| `--skip-explore` / `--skip-review` | A custom workflow YAML selected with `--workflow <name>` |
 
 Legacy TypeScript delegation was removed after the Elixir cutover. Operator commands now either use Elixir-backed workflows or report removal with replacement guidance.
 
