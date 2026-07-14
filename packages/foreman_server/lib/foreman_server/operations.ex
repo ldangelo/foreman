@@ -124,7 +124,7 @@ defmodule ForemanServer.Operations do
     events
     |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
     |> Enum.reduce(0.0, fn event, acc ->
-      cost = Map.get(event.payload, :cost_usd, 0) || Map.get(event.payload, "cost_usd", 0)
+      cost = Map.get(event.payload, :cost_usd) || Map.get(event.payload, "cost_usd", 0)
       acc + cost
     end)
     |> then(fn total -> if total > 0, do: :erlang.float_to_binary(total, [{:decimals, 6}]), else: 0 end)
@@ -134,7 +134,7 @@ defmodule ForemanServer.Operations do
     events
     |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
     |> Enum.reduce(0, fn event, acc ->
-      turns = Map.get(event.payload, :turns, 0) || Map.get(event.payload, "turns", 0) || 0
+      turns = Map.get(event.payload, :turns) || Map.get(event.payload, "turns", 0) || 0
       acc + turns
     end)
   end

@@ -180,17 +180,26 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
         });
 
         // Fetch metrics from Elixir API and update project metrics
+        // Note: client.getMetrics() returns global totals across all projects
         try {
           const m = await client.getMetrics();
           const projectMetrics = metrics.get(project.id);
           if (projectMetrics && m) {
+            const parseMetric = (value: unknown): number | undefined => {
+              if (typeof value === 'number') return value;
+              if (typeof value === 'string' && value !== '') {
+                const parsed = parseFloat(value);
+                return isNaN(parsed) ? undefined : parsed;
+              }
+              return undefined;
+            };
             metrics.set(project.id, {
               ...projectMetrics,
               totalCost: typeof m.total_cost === 'number' ? m.total_cost : parseFloat(String(m.total_cost || '0')) || 0,
               totalTurns: m.total_turns,
-              costPerTurn: typeof m.cost_per_turn === 'number' ? m.cost_per_turn : parseFloat(String(m.cost_per_turn || '')) || undefined,
+              costPerTurn: parseMetric(m.cost_per_turn),
               totalTimeSeconds: m.total_time_seconds,
-              timePerTurnSeconds: typeof m.time_per_turn_seconds === 'number' ? m.time_per_turn_seconds : parseFloat(String(m.time_per_turn_seconds || '')) || undefined,
+              timePerTurnSeconds: parseMetric(m.time_per_turn_seconds),
             });
           }
         } catch {
