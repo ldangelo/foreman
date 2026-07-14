@@ -47,6 +47,8 @@ interface RunActivityInfo {
   runId: string | null;
   status: string;
   currentPhase: string | null;
+  /** Ordered list of workflow phase names (e.g., ["explorer", "developer", "pr-wait", "merge"]) */
+  workflowPhases: string[] | null;
   lastActivity: string | null;
   lastActivityElapsed: string | null;
   isStuck: boolean;
@@ -108,6 +110,7 @@ async function fetchRunActivity(
       runId: run.id,
       status: run.status,
       currentPhase: progress?.currentPhase ?? null,
+      workflowPhases: null,  // Node/Postgres store doesn't track workflow phase sequence
       lastActivity: progress?.lastActivity ?? null,
       lastActivityElapsed: progress?.lastActivity
         ? elapsed(progress.lastActivity)
@@ -153,17 +156,46 @@ export function renderRunStatusLine(activity: RunActivityInfo): string {
     parts.push(chalk.dim(activity.status.toUpperCase()));
   }
 
-  // Current phase
-  if (activity.currentPhase) {
-    const phaseColors: Record<string, (s: string) => string> = {
-      explorer:  chalk.cyan,
-      developer: chalk.green,
-      qa:        chalk.yellow,
-      reviewer:  chalk.magenta,
-      finalize:  chalk.blue,
-      "pr-wait": chalk.yellow,
-      merge:     chalk.green,
-    };
+  // Phase colors for workflow phase sequence
+  const phaseColors: Record<string, (s: string) => string> = {
+    explorer:  chalk.cyan,
+    developer: chalk.green,
+    qa:        chalk.yellow,
+    reviewer:  chalk.magenta,
+    finalize:  chalk.blue,
+    "pr-wait": chalk.yellow,
+    merge:     chalk.green,
+    "create-pr": chalk.cyan,
+    create_pr: chalk.cyan,
+    troubleshooter: chalk.red,
+  };
+
+  // Workflow phases sequence
+  if (activity.workflowPhases && activity.workflowPhases.length > 0) {
+    const currentPhaseIndex = activity.currentPhase
+      ? activity.workflowPhases.indexOf(activity.currentPhase)
+      : -1;
+
+    const phaseParts = activity.workflowPhases.map((phase, index) => {
+      const colorFn = phaseColors[phase] ?? chalk.white;
+      const isComplete = currentPhaseIndex >= 0 && index < currentPhaseIndex;
+      const isCurrent = phase === activity.currentPhase;
+
+      if (isCurrent) {
+        // Highlight current phase with brackets and bold
+        return chalk.bold(colorFn(`[${phase}]`));
+      } else if (isComplete) {
+        // Completed phases in dim
+        return chalk.dim(phase);
+      } else {
+        // Future phases in default color
+        return colorFn(phase);
+      }
+    });
+
+    parts.push(chalk.dim("│") + " " + phaseParts.join(chalk.dim(" → ")));
+  } else if (activity.currentPhase) {
+    // Fallback: show just current phase if workflow phases not available
     const colorFn = phaseColors[activity.currentPhase] ?? chalk.white;
     parts.push(chalk.dim("│") + " " + colorFn(activity.currentPhase));
   }
@@ -373,6 +405,11 @@ function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
   const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
   const isStuck = status === "in_progress" && lastActivityMs !== null && (now - lastActivityMs) > STUCK_THRESHOLD_MS;
 
+  // Extract workflow phase sequence from run projection
+  const workflowPhases = Array.isArray(run.phase_order)
+    ? run.phase_order.filter((p): p is string => typeof p === "string")
+    : null;
+
   const costUsd = typeof run.costUsd === "number" ? run.costUsd : 0;
   const turns = typeof run.turns === "number" ? run.turns : 0;
   const totalDurationMs = typeof run.totalDurationMs === "number" ? run.totalDurationMs : null;
@@ -383,6 +420,7 @@ function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
     runId,
     status,
     currentPhase,
+    workflowPhases,
     lastActivity,
     lastActivityElapsed: lastActivity ? elapsed(lastActivity) : null,
     isStuck,

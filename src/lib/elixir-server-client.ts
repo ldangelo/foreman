@@ -70,6 +70,8 @@ export type ElixirRun = Record<string, unknown> & {
   totalDurationMs?: number;
   costPerTurn?: number;
   timePerTurn?: number;
+  /** Ordered list of phase names from the workflow (e.g., ["explorer", "developer", "pr-wait", "merge"]) */
+  phase_order?: string[];
 };
 
 export type ElixirInboxMessage = Record<string, unknown> & {
