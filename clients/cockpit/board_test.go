@@ -9,6 +9,7 @@ func TestBoardColumnForTaskStatus(t *testing.T) {
 	}{
 		{"open", BoardColumnBacklog},
 		{"todo", BoardColumnBacklog},
+		{"backlog", BoardColumnBacklog},
 		{"ready", BoardColumnReady},
 		{"pending", BoardColumnReady},
 		{"running", BoardColumnInProgress},

@@ -358,7 +358,7 @@ func (b *Board) column(col BoardColumn) *BoardColumnState {
 func boardColumnForTaskStatus(status string) BoardColumn {
 	normalized := strings.TrimSpace(strings.ToLower(normalizeStatus(status)))
 	switch normalized {
-	case "open", "todo":
+	case "backlog", "open", "todo":
 		return BoardColumnBacklog
 	case "pending", "ready":
 		return BoardColumnReady
