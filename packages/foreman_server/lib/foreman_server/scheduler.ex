@@ -3,7 +3,7 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, ProjectionStore}
+  alias ForemanServer.{EventStore, ProjectionStore, WorkflowInterpreter}
 
   @default_phases []
   @default_tick_interval_ms 5_000
@@ -168,9 +168,10 @@ defmodule ForemanServer.Scheduler do
     }
   end
 
-  defp claim_task(task, phases, worker_launcher) do
+  defp claim_task(task, _phases, worker_launcher) do
     run_id = uuid()
-    effective_phases = Map.get(task, :phases, phases)
+    workflow_phases = workflow_phases_for_task(task)
+    effective_phases = Map.get(task, :phases, workflow_phases)
 
     with {:ok, _event} <-
            EventStore.append(%{
@@ -281,6 +282,37 @@ defmodule ForemanServer.Scheduler do
       limit when is_integer(limit) -> Map.get(counts, project_id, 0) >= limit
       _ -> false
     end
+  end
+
+  @spec workflow_phases_for_task(map()) :: [String.t()]
+  defp workflow_phases_for_task(task) do
+    task_type = Map.get(task, :task_type)
+
+    if task_type do
+      workflow_path = workflow_path_for_type(task_type)
+
+      case WorkflowInterpreter.load_file(workflow_path) do
+        {:ok, workflow} ->
+          Map.get(workflow, :phase_order, [])
+
+        {:error, _reason} ->
+          []
+      end
+    else
+      []
+    end
+  end
+
+  @spec workflow_path_for_type(String.t()) :: String.t()
+  defp workflow_path_for_type(task_type) do
+    workflows_dir = scheduler_env(:workflows_dir, default_workflows_dir())
+    Path.join(workflows_dir, "#{task_type}.yaml")
+  end
+
+  @spec default_workflows_dir() :: String.t()
+  defp default_workflows_dir do
+    home = System.get_env("FOREMAN_HOME") || Path.join(System.user_home!(), ".foreman")
+    Path.join(home, "workflows")
   end
 
   defp uuid do
