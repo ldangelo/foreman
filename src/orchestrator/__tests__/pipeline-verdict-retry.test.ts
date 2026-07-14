@@ -16,6 +16,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { executePipeline } from "../pipeline-executor.js";
+import type { AgentMailClient, AgentMailMessage } from "../../lib/agent-mail-client.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -24,7 +26,7 @@ function makeBasePipelineArgs(
   phases: object[],
   runPhase: ReturnType<typeof vi.fn>,
   log: ReturnType<typeof vi.fn>,
-  opts: { autoArtifacts?: boolean } = {},
+  opts: { autoArtifacts?: boolean; agentMailClient?: AgentMailClient | null } = {},
 ) {
   const mockStore = {
     updateRunProgress: vi.fn(),
@@ -61,7 +63,7 @@ function makeBasePipelineArgs(
     store: mockStore as never,
     logFile: join(tmpDir, "verdict.log"),
     notifyClient: null,
-    agentMailClient: null,
+    agentMailClient: opts.agentMailClient ?? null,
     runPhase: wrappedRunPhase,
     registerAgent: vi.fn().mockResolvedValue(undefined),
     sendMail: vi.fn(),
@@ -76,6 +78,22 @@ function makeBasePipelineArgs(
 
 function successResult() {
   return { success: true, costUsd: 0.01, turns: 5, tokensIn: 100, tokensOut: 50 };
+}
+
+function makeMailClient(messages: AgentMailMessage[]): AgentMailClient {
+  return {
+    agentName: null,
+    healthCheck: vi.fn().mockResolvedValue(true),
+    ensureProject: vi.fn().mockResolvedValue(undefined),
+    setRunId: vi.fn(),
+    ensureAgentRegistered: vi.fn().mockResolvedValue(null),
+    sendMessage: vi.fn().mockResolvedValue(undefined),
+    fetchInbox: vi.fn().mockResolvedValue(messages),
+    acknowledgeMessage: vi.fn().mockResolvedValue(undefined),
+    reserveFiles: vi.fn().mockResolvedValue(undefined),
+    releaseFiles: vi.fn().mockResolvedValue(undefined),
+    reportFileChanges: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -105,7 +123,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("reviewer FAIL loops back to developer (retryOnFail: 1)", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -141,7 +159,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("qa FAIL loops back to developer (retryOnFail: 2)", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -177,8 +195,81 @@ describe("verdict-triggered retry", () => {
     expect(qaCallCount).toBe(3);
   });
 
+  it("routes QA FAIL artifacts to developer even when QA also sends agent-error", async () => {
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+    const messages: AgentMailMessage[] = [];
+    const mailClient = makeMailClient(messages);
+    mailClient.fetchInbox = vi.fn().mockImplementation(async () => messages.splice(0));
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md", verdict: true, retryWith: "developer", retryOnFail: 1 },
+      { name: "finalize", artifact: "FINALIZE_REPORT.md" },
+    ];
+
+    let qaCallCount = 0;
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      if (phaseName === "qa") {
+        qaCallCount++;
+        if (qaCallCount === 1) {
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), [
+            "# QA",
+            "",
+            "## Verdict: FAIL",
+            "",
+            "## Test Results",
+            "- Command run: `npx vitest run src/cli/commands/__tests__/metrics.test.ts`",
+            "- Test suite: 0 passed, 1 failed",
+            "- Raw summary: command failed: missing metrics command",
+            "",
+            "## Issues Found",
+            "- Implementation incomplete: metrics command is missing.",
+            "",
+          ].join("\n"));
+          messages.push({
+            id: "agent-error-1",
+            from: "qa-task-verdict",
+            to: "foreman",
+            subject: "agent-error",
+            body: JSON.stringify({
+              phase: "qa",
+              taskId: "task-verdict",
+              error: "QA FAIL - Implementation incomplete. The metrics command is missing.",
+            }),
+            receivedAt: new Date().toISOString(),
+            acknowledged: false,
+          });
+        } else {
+          writeFileSync(join(tmpDir, "QA_REPORT.md"), [
+            "# QA",
+            "",
+            "## Verdict: PASS",
+            "",
+            "## Test Results",
+            "- Command run: `npx vitest run src/cli/commands/__tests__/metrics.test.ts`",
+            "- Test suite: 1 passed, 0 failed",
+            "- Raw summary: metrics command returned totals",
+            "",
+          ].join("\n"));
+        }
+      }
+      return successResult();
+    });
+
+    const ctx = makeBasePipelineArgs(tmpDir, phases, runPhase, log, { agentMailClient: mailClient });
+    await executePipeline(ctx as never);
+
+    expect(phaseOrder).toEqual(["developer", "qa", "developer", "qa", "finalize"]);
+    expect(qaCallCount).toBe(2);
+    expect(ctx.markStuck).not.toHaveBeenCalled();
+    expect(ctx.sendMailText).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("agent-error ignored because QA_REPORT.md contains FAIL"));
+  });
+
   it("skips retryOnly developer during normal task flow", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -204,7 +295,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("accepts a PASS verdict artifact when the SDK reports maxTurns after writing it", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
     const onPipelineComplete = vi.fn();
@@ -234,7 +325,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("routes a FAIL verdict artifact to retry even when the SDK reports termination after writing it", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -266,7 +357,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("runs retryOnly developer only after a verdict failure, then retries QA", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -299,7 +390,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("bash phase failure loops back to retryWith target before marking stuck", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
     const testArtifact = join(tmpDir, "TEST_RESULTS.md");
@@ -348,7 +439,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("after max retries (retryOnFail: 1) exhausted, pipeline continues to finalize", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -375,7 +466,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("PASS verdict does NOT trigger retry — moves to next phase", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -401,7 +492,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("treats QA report without test evidence as FAIL and retries developer", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -436,7 +527,7 @@ describe("verdict-triggered retry", () => {
     // false failures in test/deterministic modes where mocks don't create artifacts.
     // Phases continue regardless of artifact presence — the phase's success/failure is
     // determined by its return value, not by file existence.
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -466,7 +557,7 @@ describe("verdict-triggered retry", () => {
   it("phase completes successfully even without artifact (check removed)", async () => {
     // NOTE: The artifact existence check was removed. Phases complete based on their
     // return value, not on whether artifact files exist on disk.
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const log = vi.fn();
     const phases = [
       { name: "developer", artifact: "DEVELOPER_REPORT.md" },
@@ -483,7 +574,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("documentation phase fails when its configured report artifact is missing", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const log = vi.fn();
     const phases = [
       { name: "documentation", artifact: "reports/DOCUMENTATION_REPORT.md" },
@@ -501,7 +592,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("reviewer and qa retry counters are independent (separate retryOnFail budgets)", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const phaseOrder: string[] = [];
     const log = vi.fn();
 
@@ -553,7 +644,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("records QA target revision and skips finalize rerun when target is unchanged", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const prompts: Record<string, string> = {};
     const log = vi.fn();
     const runPhase = vi.fn().mockImplementation(async (phaseName: string, prompt: string) => {
@@ -625,7 +716,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("fails finalize when target is unchanged but validation was not skipped", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const log = vi.fn();
     const phaseOrder: string[] = [];
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
@@ -682,7 +773,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("does not retry finalize when no-drift contract fails but failure scope is classified as unrelated via analysis section", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const log = vi.fn();
     const phaseOrder: string[] = [];
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
@@ -737,7 +828,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("fails finalize when target drifted but integration was marked skipped", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const log = vi.fn();
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       if (phaseName === "qa") {
@@ -793,7 +884,7 @@ describe("verdict-triggered retry", () => {
   });
 
   it("fails finalize when drifted target revision is not actually contained in finalized head", async () => {
-    const { executePipeline } = await import("../pipeline-executor.js");
+    
     const log = vi.fn();
     const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
       if (phaseName === "qa") {

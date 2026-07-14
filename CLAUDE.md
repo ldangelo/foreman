@@ -118,7 +118,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 4. **cr-developer** — retry-only target for CodeRabbit findings
 5. **merge-resolver** — retry-only target for merge conflicts
 6. **documentation** — update required operator/developer docs or explain why no docs changed → DOCUMENTATION_REPORT.md
-7. **QA** — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL)
+7. **QA** — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL; product failures must stay report-driven, not `agent-error`)
 8. **Reviewer** — code review → REVIEW.md (verdict: PASS/FAIL)
 9. **cli-review** — CodeRabbit CLI review (builtin) → CR_CLI_REPORT.md
 10. **Finalize** (builtin) — rebase, validate, commit, push → FINALIZE_VALIDATION.md
@@ -126,7 +126,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 12. **pr-wait** (builtin) — wait for PR checks/review → PR_WAIT_REPORT.md
 13. **merge** (builtin) — merge to target branch → MERGE_REPORT.md
 
-Retry phases (cicd-developer, cr-developer, merge-resolver) are activated only when a later phase fails with a matching `retryWithByReason` pattern (e.g., `ci_failed:`, `coderabbit_`, `merge_conflict:`). The `onFailure` handler runs the troubleshooter prompt for unrecoverable errors.
+Retry phases (cicd-developer, cr-developer, merge-resolver) are activated only when a later phase fails with a matching `retryWithByReason` pattern (e.g., `ci_failed:`, `coderabbit_`, `merge_conflict:`). Verdict FAIL reports route through `retryWith`; `agent-error` is reserved for unrecoverable infrastructure/runtime failures. The `onFailure` handler runs the troubleshooter prompt for unrecoverable errors.
 
 After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
 

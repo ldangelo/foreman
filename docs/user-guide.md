@@ -25,7 +25,7 @@ Foreman has three runtime layers:
 1. **Task Lifecycle:** Task created → enters ready queue → dispatched to worktree → pipeline phases run → finalized → PR created/merged
 2. **Dispatch Flow:** `foreman run` sends scheduler tick to Elixir → ready tasks claimed by capacity → workers launched in git worktrees
 3. **Pipeline Phases:** Explorer → Developer → cicd-developer/cr-developer/merge-resolver (on failure) → QA → Reviewer → Documentation → Finalize → create-pr → pr-wait → merge
-4. **Retry Pattern:** Phase failures match `retryWithByReason` patterns to route to specialized recovery agents
+4. **Retry Pattern:** Verdict phase FAIL reports (`QA_REPORT.md`, `REVIEW.md`, etc.) route through `retryWith`; phase failures match `retryWithByReason` patterns for specialized recovery. QA must reserve `agent-error` for infrastructure failures that prevent writing a report.
 
 ### Skills and Prompts
 

@@ -6,9 +6,13 @@ You are a **QA Agent** — your job is to verify the implementation works correc
 Verify the implementation for: **{{taskId}} — {{taskTitle}}**
 
 ## Error Reporting
-If you hit an unrecoverable error, invoke:
+Use `agent-error` only for unrecoverable QA infrastructure failures that prevent writing `{{reportDir}}/QA_REPORT.md` at all (for example: worktree missing, report directory unwritable, required tools unavailable, or the agent runtime cannot continue).
+
+Do **not** send `agent-error` for product or implementation failures such as missing commands, failing tests, wrong output, incomplete features, type errors, or missing documentation. Those are normal QA failures: write `{{reportDir}}/QA_REPORT.md` with `## Verdict: FAIL` and evidence so Foreman can route the report back to the remediation phase.
+
+If an unrecoverable infrastructure error prevents writing the QA report, invoke:
 ```
-/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"qa","taskId":"{{taskId}}","error":"<brief description>"}'
+/send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"qa","taskId":"{{taskId}}","error":"<brief infrastructure failure>","retryable":false}'
 ```
 
 ## Pre-flight: Conflict marker check

@@ -121,6 +121,21 @@ async function phaseAgentError(
   }
 }
 
+function isInfrastructureAgentError(error: string): boolean {
+  return /\b(auth|connection refused|database|db|disk|environment-blocked|infrastructure|maxTurns|no space|permission denied|provider|rate limit|repository|repo unavailable|sandbox|stale prompt|stale workflow|terminated|timeout|tool unavailable|worktree|workspace)\b/i.test(error);
+}
+
+function shouldDeferAgentErrorToVerdictArtifact(input: {
+  explicitAgentError: { error: string; retryable: boolean } | null;
+  artifactVerdict: "pass" | "fail" | "unknown";
+}): boolean {
+  return Boolean(
+    input.explicitAgentError &&
+    input.artifactVerdict === "fail" &&
+    !isInfrastructureAgentError(input.explicitAgentError.error),
+  );
+}
+
 export interface PhaseObservabilityInput {
   phaseType?: "prompt" | "command" | "bash" | "builtin";
   expectedArtifact?: string;
@@ -2086,7 +2101,11 @@ async function runPhaseSequence(
       const verdictReport = readReport(worktreePath, interpolatedArtifact, projectReportsDir);
       const artifactVerdict = verdictReport ? parseVerdict(verdictReport) : "unknown";
       const interruptedAfterReport = /terminated|aborted|exceeded maxTurns/i.test(phaseError ?? "");
-      if (interruptedAfterReport && artifactVerdict !== "unknown") {
+      if (shouldDeferAgentErrorToVerdictArtifact({ explicitAgentError, artifactVerdict })) {
+        phaseSucceeded = true;
+        phaseError = undefined;
+        ctx.log(`[${phaseName.toUpperCase()}] agent-error ignored because ${basename(interpolatedArtifact)} contains FAIL; verdict retry will handle it`);
+      } else if (interruptedAfterReport && artifactVerdict !== "unknown") {
         phaseSucceeded = true;
         phaseError = undefined;
         ctx.log(`[${phaseName.toUpperCase()}] SDK interrupted after a ${artifactVerdict.toUpperCase()} artifact; accepting ${phaseName} evidence`);

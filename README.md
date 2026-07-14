@@ -67,7 +67,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 **Pipeline phases** (orchestrated by TypeScript, not AI):
 1. **Explorer** (Haiku, 12 turns, read-only) — concise handoff via `Grep`, `Glob`, and targeted `Read`; Graphify tools are disabled to avoid slow discovery/artifact churn → `EXPLORER_REPORT.md`
 2. **Developer** (Sonnet, 50 turns default / 60 turns feature, read+write) — implementation only; QA/finalize own tests
-3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only → `QA_REPORT.md`
+3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only; product failures are `QA_REPORT.md` FAIL verdicts that feed the retry loop
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
 5. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
 6. **Finalize** — git add/commit/push, native task merge/close update
@@ -240,7 +240,7 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 | `task-claimed` | foreman → foreman | Task dispatched to an agent |
 | `phase-started` | executor → foreman | Phase begins (YAML: `mail.onStart`) |
 | `phase-complete` | executor → foreman | Phase succeeds (YAML: `mail.onComplete`) |
-| `agent-error` | agent → foreman | Agent encounters an error |
+| `agent-error` | agent → foreman | Unrecoverable infrastructure/runtime failure; QA product failures must use `QA_REPORT.md` FAIL so retry routing remains report-driven |
 | `branch-ready` | foreman → refinery | Finalize complete, ready to merge |
 | `merge-complete` | refinery → foreman | Branch merged to target |
 | `merge-failed` | refinery → foreman | Merge failed (conflicts, tests) |
