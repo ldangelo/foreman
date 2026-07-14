@@ -264,6 +264,26 @@ export class ElixirServerClient {
     return body.debug;
   }
 
+  async getMetrics(): Promise<{
+    total_cost?: number | string;
+    total_turns?: number;
+    cost_per_turn?: number | string;
+    total_time_seconds?: number;
+    time_per_turn_seconds?: number | string;
+  }> {
+    const body = await this.getJson<{
+      ok: boolean;
+      metrics: {
+        total_cost?: number | string;
+        total_turns?: number;
+        cost_per_turn?: number | string;
+        total_time_seconds?: number;
+        time_per_turn_seconds?: number | string;
+      };
+    }>("/api/v1/metrics");
+    return body.metrics ?? {};
+  }
+
   private async getJson<T>(path: string): Promise<T> {
     const response = await fetch(new URL(path, this.baseUrl), {
       method: "GET",

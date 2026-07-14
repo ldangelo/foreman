@@ -111,8 +111,85 @@ defmodule ForemanServer.Operations do
       timers: %{phase_duration_ms: phase_durations(events)},
       gauges: %{projection_lag: projection_lag(events, snapshot)},
       projection_lag: projection_lag(events, snapshot),
+      total_cost: total_cost(events),
+      total_turns: total_turns(events),
+      cost_per_turn: cost_per_turn(events),
+      total_time_seconds: total_time_seconds(events, snapshot),
+      time_per_turn_seconds: time_per_turn_seconds(events, snapshot),
       emitted_at: DateTime.utc_now()
     }
+  end
+
+  defp total_cost(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
+    |> Enum.reduce(0.0, fn event, acc ->
+      cost = Map.get(event.payload, :cost_usd, 0) || Map.get(event.payload, "cost_usd", 0)
+      acc + cost
+    end)
+    |> then(fn total -> if total > 0, do: :erlang.float_to_binary(total, [{:decimals, 6}]), else: 0 end)
+  end
+
+  defp total_turns(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
+    |> Enum.reduce(0, fn event, acc ->
+      turns = Map.get(event.payload, :turns, 0) || Map.get(event.payload, "turns", 0) || 0
+      acc + turns
+    end)
+  end
+
+  defp cost_per_turn(events) do
+    turns = total_turns(events)
+    cost = total_cost(events)
+
+    cond do
+      is_binary(cost) -> cost_binary_div(cost, turns)
+      turns > 0 -> :erlang.float_to_binary(cost / turns, [{:decimals, 6}])
+      true -> nil
+    end
+  end
+
+  defp cost_binary_div(cost_str, turns) when is_binary(cost_str) and turns > 0 do
+    case Float.parse(cost_str) do
+      {cost, ""} -> :erlang.float_to_binary(cost / turns, [{:decimals, 6}])
+      _ -> nil
+    end
+  end
+
+  defp total_time_seconds(_events, snapshot) do
+    runs = Map.get(snapshot, :runs, %{})
+
+    completed_runs =
+      runs
+      |> Map.values()
+      |> Enum.filter(fn run ->
+        started = Map.get(run, :started_at)
+        completed = Map.get(run, :completed_at)
+        is_struct(started, DateTime) and is_struct(completed, DateTime)
+      end)
+
+    if Enum.empty?(completed_runs) do
+      0
+    else
+      Enum.reduce(completed_runs, 0, fn run, acc ->
+        started = Map.get(run, :started_at)
+        completed = Map.get(run, :completed_at)
+        duration_seconds = DateTime.diff(completed, started, :second)
+        acc + duration_seconds
+      end)
+    end
+  end
+
+  defp time_per_turn_seconds(events, snapshot) do
+    turns = total_turns(events)
+    total_time = total_time_seconds(events, snapshot)
+
+    if turns > 0 do
+      :erlang.float_to_binary(total_time / turns, [{:decimals, 2}])
+    else
+      nil
+    end
   end
 
   defp counters(events) do
