@@ -383,6 +383,7 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     now = occurred_at || DateTime.utc_now()
+
     run =
       %{
         run_id: run_id,
@@ -409,6 +410,7 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     now = occurred_at || DateTime.utc_now()
+
     update_run(projection, run_id, fn run ->
       run
       |> Map.merge(payload)
@@ -515,12 +517,15 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     now = occurred_at || DateTime.utc_now()
+
     projection
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, fn run ->
       run
+      |> put_terminal_phase_status(payload, "completed")
       |> Map.put(:current_phase, nil)
+      |> put_terminal_worker_status(payload, "completed")
       |> Map.put(:updated_at, now)
       |> Map.put(:completed_at, now)
     end)
@@ -533,12 +538,15 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     now = occurred_at || DateTime.utc_now()
+
     projection
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "failed")
     |> update_run(run_id, fn run ->
       run
-      |> Map.put(:current_phase, Map.get(payload, :phase_id, Map.get(run, :current_phase)))
+      |> put_terminal_current_phase(payload)
+      |> put_terminal_phase_status(payload, "failed")
+      |> put_terminal_worker_status(payload, "failed")
       |> Map.put(
         :retry_history,
         Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
@@ -555,6 +563,7 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     now = occurred_at || DateTime.utc_now()
+
     update_run(projection, run_id, fn run ->
       run
       |> Map.put(:status, "blocked")
@@ -573,9 +582,13 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
-      run
-      |> Map.put(:current_phase, phase_id)
-      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "in_progress"))
+      if terminal_run?(run) do
+        run
+      else
+        run
+        |> Map.put(:current_phase, phase_id)
+        |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "in_progress"))
+      end
     end)
   end
 
@@ -654,7 +667,7 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        ) do
     update_run(projection, run_id, fn run ->
-      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+      put_active_worker_status(run, worker_id, status)
     end)
   end
 
@@ -669,11 +682,15 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
-      run
-      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
-      |> Map.put(:current_phase, phase_id)
-      |> Map.put(:adapter, Map.get(payload, :adapter))
-      |> Map.put(:artifact_paths, Map.get(payload, :artifact_paths, []))
+      if terminal_run?(run) do
+        run
+      else
+        run
+        |> put_active_worker_status(worker_id, "running")
+        |> Map.put(:current_phase, phase_id)
+        |> Map.put(:adapter, Map.get(payload, :adapter))
+        |> Map.put(:artifact_paths, Map.get(payload, :artifact_paths, []))
+      end
     end)
   end
 
@@ -689,7 +706,7 @@ defmodule ForemanServer.ProjectionStore do
     |> put_worker_sequence(payload)
     |> put_in([:worker_heartbeats, "#{run_id}:#{worker_id}"], payload)
     |> update_run(run_id, fn run ->
-      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "heartbeat"))
+      put_active_worker_status(run, worker_id, "heartbeat")
     end)
   end
 
@@ -705,8 +722,9 @@ defmodule ForemanServer.ProjectionStore do
     |> put_worker_sequence(payload)
     |> put_log_entry("ToolCallFinished", payload)
     |> update_run(run_id, fn run ->
-      update_in(run, [:tool_events], &((&1 || []) ++ [payload]))
-      |> update_in([:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
+      run
+      |> update_in([:tool_events], &((&1 || []) ++ [payload]))
+      |> put_active_worker_status(worker_id, "running")
     end)
   end
 
@@ -723,7 +741,7 @@ defmodule ForemanServer.ProjectionStore do
     |> put_worker_sequence(payload)
     |> put_log_entry(type, payload)
     |> update_run(run_id, fn run ->
-      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "running"))
+      put_active_worker_status(run, worker_id, "running")
     end)
   end
 
@@ -1019,6 +1037,71 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(projection, _event, _mode), do: projection
+
+  defp terminal_run?(%{status: status}) when is_binary(status) do
+    MapSet.member?(@terminal_run_statuses, status)
+  end
+
+  defp terminal_run?(_run), do: false
+
+  defp put_active_worker_status(run, worker_id, status)
+       when is_binary(worker_id) and worker_id != "" do
+    if terminal_run?(run) do
+      run
+    else
+      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+    end
+  end
+
+  defp put_active_worker_status(run, _worker_id, _status), do: run
+
+  defp put_terminal_worker_status(run, payload, status) do
+    case payload_value(payload, :worker_id) do
+      worker_id when is_binary(worker_id) and worker_id != "" ->
+        update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+
+      _ ->
+        update_in(run, [:worker_status], fn worker_status ->
+          worker_status
+          |> Kernel.||(%{})
+          |> Map.new(fn {worker_id, worker_status} ->
+            if active_worker_status?(worker_status),
+              do: {worker_id, status},
+              else: {worker_id, worker_status}
+          end)
+        end)
+    end
+  end
+
+  defp active_worker_status?(status) when is_binary(status) do
+    status in ["running", "heartbeat", "active", "started", "in_progress"]
+  end
+
+  defp active_worker_status?(_status), do: false
+
+  defp put_terminal_current_phase(run, payload) do
+    case payload_value(payload, :phase_id) || Map.get(run, :current_phase) do
+      phase_id when is_binary(phase_id) and phase_id != "" ->
+        Map.put(run, :current_phase, phase_id)
+
+      _ ->
+        run
+    end
+  end
+
+  defp put_terminal_phase_status(run, payload, status) do
+    case payload_value(payload, :phase_id) || Map.get(run, :current_phase) do
+      phase_id when is_binary(phase_id) and phase_id != "" ->
+        update_in(run, [:phase_status], &Map.put(&1 || %{}, phase_id, status))
+
+      _ ->
+        run
+    end
+  end
+
+  defp payload_value(payload, key) when is_map(payload) and is_atom(key) do
+    Map.get(payload, key, Map.get(payload, Atom.to_string(key)))
+  end
 
   defp maybe_complete_worker(run, %{worker_id: worker_id})
        when is_binary(worker_id) and worker_id != "" do

@@ -126,6 +126,42 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert task.updated_at == "2026-07-01T20:10:23Z"
   end
 
+  test "terminal run projection is not made active by late worker events" do
+    append!("run:late-worker", "RunStarted", %{run_id: "late-worker", task_id: "task-1"})
+
+    append!("worker:late-worker:worker-1", "WorkerStarted", %{
+      run_id: "late-worker",
+      worker_id: "worker-1",
+      phase_id: "explorer"
+    })
+
+    append!("worker:late-worker:worker-1", "RunFailed", %{
+      run_id: "late-worker",
+      task_id: "task-1",
+      worker_id: "worker-1",
+      phase_id: "explorer",
+      reason: "worker_exited_without_terminal_event"
+    })
+
+    append!("worker:late-worker:worker-1", "PhaseStarted", %{
+      run_id: "late-worker",
+      worker_id: "worker-1",
+      phase_id: "explorer"
+    })
+
+    append!("worker:late-worker:worker-1", "ToolCallFinished", %{
+      run_id: "late-worker",
+      worker_id: "worker-1",
+      phase_id: "explorer",
+      status: "finished"
+    })
+
+    run = ProjectionStore.snapshot().runs["late-worker"]
+    assert run.status == "failed"
+    assert run.phase_status["explorer"] == "failed"
+    assert run.worker_status["worker-1"] == "failed"
+  end
+
   test "worker-sequenced events without specific projections still advance sequence" do
     append!("worker:run-1:worker-1", "PhaseNudged", %{
       run_id: "run-1",

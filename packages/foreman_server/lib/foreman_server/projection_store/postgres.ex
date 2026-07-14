@@ -274,6 +274,9 @@ defmodule ForemanServer.ProjectionStore.Postgres do
   end
 
   defp stringify_keys(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp stringify_keys(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp stringify_keys(%Date{} = value), do: Date.to_iso8601(value)
+  defp stringify_keys(%Time{} = value), do: Time.to_iso8601(value)
 
   defp stringify_keys(value) when is_map(value) do
     value
