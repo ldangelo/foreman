@@ -1581,9 +1581,11 @@ export async function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxSc
 
     // Try to load workflow phases for better status display
     let workflowPhases: InboxTaskSummary["workflowPhases"] = undefined;
-    if (workflowName && run?.worktree_path) {
+    if (workflowName) {
       try {
-        const projectPath = inferProjectPathFromWorkspacePath(run.worktree_path);
+        // projectPath can be empty if run.worktree_path is null — bundled workflows
+        // (feature, bug, etc.) can still be loaded without a project root.
+        const projectPath = run?.worktree_path ? inferProjectPathFromWorkspacePath(run.worktree_path) : "";
         const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
         const workflowConfig = loadWorkflowConfig(workflowName, projectPath);
         workflowPhases = {
