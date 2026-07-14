@@ -345,7 +345,7 @@ async function listAllTasks(client: any, projectId: string): Promise<TaskRow[]> 
 async function listAllElixirTasks(client: ElixirServerClient, projectId: string): Promise<TaskRow[]> {
   const tasks = await client.listTasks();
   return tasks
-    .filter((task) => (task.project_id ?? projectId) === projectId)
+    .filter((task) => task.project_id === projectId)
     .map(elixirTaskToTaskRow);
 }
 

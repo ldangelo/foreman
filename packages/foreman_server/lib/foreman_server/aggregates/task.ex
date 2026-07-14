@@ -202,7 +202,7 @@ defmodule ForemanServer.Aggregates.Task do
   defp reject_self_dependency(task_id, task_id), do: {:error, :self_dependency}
   defp reject_self_dependency(_task_id, _depends_on), do: :ok
 
-  defp validate_project_allows_tasks(nil), do: :ok
+  defp validate_project_allows_tasks(nil), do: {:error, {:missing_project_id, "project_id is required for task creation"}}
 
   defp validate_project_allows_tasks(project_id) do
     case ProjectionStore.project(project_id) do
