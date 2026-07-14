@@ -291,7 +291,7 @@ func TestHTTPClientKeepsActiveTaskWithoutRunVisible(t *testing.T) {
 	}
 }
 
-func TestHTTPClientReadyTasksComeFromCurrentProjectTaskState(t *testing.T) {
+func TestHTTPClientVisibleTasksComeFromCurrentProjectTaskState(t *testing.T) {
 	t.Setenv("COCKPIT_PROJECT_ID", "proj-live")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -305,8 +305,8 @@ func TestHTTPClientReadyTasksComeFromCurrentProjectTaskState(t *testing.T) {
 	defer server.Close()
 
 	tasks := NewHTTPClient(server.URL, "").Dispatchable()
-	if len(tasks) != 2 || tasks[0].TaskID != "backlog-task" || tasks[1].TaskID != "failed-task" {
-		t.Fatalf("expected current project backlog and failed tasks only, got %#v", tasks)
+	if len(tasks) != 3 || tasks[0].TaskID != "backlog-task" || tasks[1].TaskID != "closed-task" || tasks[2].TaskID != "failed-task" {
+		t.Fatalf("expected current project backlog, closed, and failed tasks only, got %#v", tasks)
 	}
 }
 

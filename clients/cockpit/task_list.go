@@ -495,8 +495,13 @@ func matchesTaskToken(it Item, field, value string) bool {
 				return isFailedState(it.Task.Status)
 			}
 			return runNeedsAttention(it.Run)
-		case "recent", "done", "closed":
+		case "recent":
 			return !it.IsTask && it.Run.Group == taskGroupRecent
+		case "done", "closed":
+			if it.IsTask {
+				return doneTaskStatus(it.Task.Status)
+			}
+			return it.Run.Group == taskGroupRecent && doneTaskStatus(it.Run.Status) && !runNeedsAttention(it.Run)
 		default:
 			return strings.Contains(fieldValue(it, "status"), value)
 		}

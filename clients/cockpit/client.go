@@ -1001,10 +1001,19 @@ func activeTaskStatus(status string) bool {
 
 func readyTaskStatus(status string) bool {
 	switch normalizeStatus(status) {
-	case "completed", "closed", "merged", "running", "in_progress", "pending", "cooldown":
+	case "completed", "closed", "merged", "done", "reset", "pr_created", "running", "in_progress", "pending", "cooldown":
 		return false
 	default:
 		return true
+	}
+}
+
+func doneTaskStatus(status string) bool {
+	switch normalizeStatus(status) {
+	case "completed", "closed", "merged", "done", "reset", "pr_created":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1202,7 +1211,7 @@ func (c *httpClient) Dispatchable() []Task {
 	tasks := c.taskIndex(projectID)
 	out := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
-		if readyTaskStatus(task.Status) || activeTaskStatus(task.Status) {
+		if readyTaskStatus(task.Status) || activeTaskStatus(task.Status) || doneTaskStatus(task.Status) {
 			out = append(out, task)
 		}
 	}
