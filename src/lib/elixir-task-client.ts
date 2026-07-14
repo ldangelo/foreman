@@ -86,6 +86,8 @@ export class ElixirTaskClient implements ITaskClient {
         project_id: this.projectId,
         task_id: id,
         ...(opts.status ? { status: opts.status === "in_progress" ? "in-progress" : opts.status } : {}),
+        ...(opts.runId !== undefined ? { run_id: opts.runId } : {}),
+        ...(opts.source !== undefined ? { source: opts.source } : {}),
         ...(opts.title !== undefined ? { title: opts.title } : {}),
         ...(opts.description !== undefined ? { description: opts.description } : {}),
       },

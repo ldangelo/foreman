@@ -113,6 +113,53 @@ defmodule ForemanServer.AggregateTest do
              })
   end
 
+  test "task aggregate rejects stale worker run status updates" do
+    state =
+      Aggregate.fold(Task, [
+        %{
+          event_type: "TaskCreated",
+          payload: %{task_id: "task-run-owned", status: "in_progress"}
+        },
+        %{
+          event_type: "TaskUpdated",
+          payload: %{task_id: "task-run-owned", status: "in_progress", run_id: "run-current"}
+        }
+      ])
+
+    assert {:error, {:stale_run_update, "run-current", "run-stale"}} =
+             Task.handle_command(state, %{
+               type: "task.update",
+               payload: %{
+                 task_id: "task-run-owned",
+                 status: "failed",
+                 run_id: "run-stale",
+                 source: "agent-worker"
+               }
+             })
+  end
+
+  test "task aggregate rejects passive phase progress from resurrecting blocked tasks" do
+    state =
+      Aggregate.fold(Task, [
+        %{event_type: "TaskCreated", payload: %{task_id: "task-blocked", status: "in_progress"}},
+        %{
+          event_type: "TaskUpdated",
+          payload: %{task_id: "task-blocked", status: "blocked", run_id: "run-current"}
+        }
+      ])
+
+    assert {:error, {:passive_phase_status_update_rejected, "blocked", "in-progress"}} =
+             Task.handle_command(state, %{
+               type: "task.update",
+               payload: %{
+                 task_id: "task-blocked",
+                 status: "in-progress",
+                 run_id: "run-current",
+                 source: "agent-worker-phase"
+               }
+             })
+  end
+
   test "aggregate decisions carry expected stream version for optimistic concurrency" do
     assert {:ok, spec} = AggregateRouter.route("task.create", %{task_id: "task-versioned"})
     assert spec.expected_stream_version == 0

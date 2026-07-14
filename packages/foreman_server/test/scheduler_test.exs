@@ -61,6 +61,69 @@ defmodule ForemanServer.SchedulerTest do
     assert snapshot.scheduler_skips["task-b"].reason == "global_capacity_exhausted"
   end
 
+  test "ready task with existing active run is skipped instead of duplicated" do
+    create_task("task-active", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:run-active",
+               event_type: "RunStarted",
+               payload: %{run_id: "run-active", task_id: "task-active", status: "in_progress"},
+               metadata: %{correlation_id: "test", idempotency_key: "run-active"}
+             })
+
+    assert {:ok, %{claimed: [], skipped: [%{task_id: "task-active"}], active_runs: 1}} =
+             Scheduler.tick(max_concurrent: 2)
+
+    assert ProjectionStore.snapshot().scheduler_skips["task-active"].reason ==
+             "task_already_has_active_run"
+  end
+
+  test "active run inspection accepts legacy naive timestamps" do
+    create_task("task-naive", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:run-naive",
+               event_type: "RunStarted",
+               payload: %{
+                 run_id: "run-naive",
+                 task_id: "task-naive",
+                 status: "in_progress",
+                 started_at: NaiveDateTime.utc_now()
+               },
+               metadata: %{correlation_id: "test", idempotency_key: "run-naive"}
+             })
+
+    assert {:ok, %{claimed: [], skipped: [%{task_id: "task-naive"}], active_runs: 1}} =
+             Scheduler.tick(max_concurrent: 2)
+  end
+
+  test "stale active runs do not exhaust dispatch capacity" do
+    create_task("task-stale", %{project_id: "alpha", status: "ready"})
+    create_task("task-new", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: "run:run-stale",
+               event_type: "RunStarted",
+               payload: %{
+                 run_id: "run-stale",
+                 task_id: "task-stale",
+                 status: "in_progress",
+                 updated_at: "2026-07-01T21:04:52Z"
+               },
+               metadata: %{correlation_id: "test", idempotency_key: "run-stale"}
+             })
+
+    assert {:ok, result} = Scheduler.tick(max_concurrent: 1)
+
+    assert result.active_runs == 0
+    assert [%{task_id: "task-stale"}] = result.stale_active_runs
+    assert [%{task_id: "task-stale", run_id: "run-stale"}] = result.active_run_details
+    assert [%{task_id: "task-new"}] = result.claimed
+  end
+
   test "project capacity limits are enforced across scheduler callers" do
     create_task("alpha-1", %{project_id: "alpha", status: "ready"})
     create_task("alpha-2", %{project_id: "alpha", status: "ready"})

@@ -114,57 +114,70 @@ defmodule ForemanServer.Scheduler do
 
   defp dispatch(state) do
     tasks = ProjectionStore.dispatchable_tasks()
-    active_runs = active_runs()
+    observed_active_runs = active_runs()
+    stale_active_runs = stale_active_runs(observed_active_runs)
+    capacity_active_runs = observed_active_runs -- stale_active_runs
 
     {claimed, skipped, _active_count, _project_counts} =
-      Enum.reduce(tasks, {[], [], length(active_runs), project_counts(active_runs)}, fn task,
-                                                                                        {claimed,
-                                                                                         skipped,
-                                                                                         active_count,
-                                                                                         project_counts} ->
-        project_id = Map.get(task, :project_id)
+      Enum.reduce(
+        tasks,
+        {[], [], length(capacity_active_runs), project_counts(capacity_active_runs)},
+        fn task, {claimed, skipped, active_count, project_counts} ->
+          project_id = Map.get(task, :project_id)
+          task_id = Map.get(task, :task_id)
 
-        cond do
-          active_count >= state.max_concurrent ->
-            skip(
-              task,
-              "global_capacity_exhausted",
-              skipped,
-              claimed,
-              active_count,
-              project_counts
-            )
+          cond do
+            active_count >= state.max_concurrent ->
+              skip(
+                task,
+                "global_capacity_exhausted",
+                skipped,
+                claimed,
+                active_count,
+                project_counts
+              )
 
-          project_at_capacity?(project_id, project_counts, state.project_limits) ->
-            skip(
-              task,
-              "project_capacity_exhausted",
-              skipped,
-              claimed,
-              active_count,
-              project_counts
-            )
+            project_at_capacity?(project_id, project_counts, state.project_limits) ->
+              skip(
+                task,
+                "project_capacity_exhausted",
+                skipped,
+                claimed,
+                active_count,
+                project_counts
+              )
 
-          true ->
-            case claim_task(task, state.default_phases, state.worker_launcher) do
-              {:ok, run_id} ->
-                next_project_counts = Map.update(project_counts, project_id, 1, &(&1 + 1))
+            task_has_active_run?(task_id, capacity_active_runs) ->
+              skip(
+                task,
+                "task_already_has_active_run",
+                skipped,
+                claimed,
+                active_count,
+                project_counts
+              )
 
-                {claimed ++ [%{task_id: task.task_id, run_id: run_id}], skipped, active_count + 1,
-                 next_project_counts}
+            true ->
+              case claim_task(task, state.default_phases, state.worker_launcher) do
+                {:ok, run_id} ->
+                  next_project_counts = Map.update(project_counts, project_id, 1, &(&1 + 1))
 
-              {:error, reason} ->
-                skip(task, inspect(reason), skipped, claimed, active_count, project_counts)
-            end
+                  {claimed ++ [%{task_id: task.task_id, run_id: run_id}], skipped,
+                   active_count + 1, next_project_counts}
+
+                {:error, reason} ->
+                  skip(task, inspect(reason), skipped, claimed, active_count, project_counts)
+              end
+          end
         end
-      end)
+      )
 
     %{
       claimed: claimed,
       skipped: skipped,
-      active_runs: length(active_runs),
-      active_run_details: active_runs,
-      stale_active_runs: stale_active_runs(active_runs)
+      active_runs: length(capacity_active_runs),
+      active_run_details: observed_active_runs,
+      stale_active_runs: stale_active_runs
     }
   end
 
@@ -226,10 +239,7 @@ defmodule ForemanServer.Scheduler do
     snapshot.runs
     |> Map.values()
     |> Enum.filter(fn run ->
-      task = Map.get(snapshot.tasks, Map.get(run, :task_id))
-
-      Map.get(run, :status) == "in_progress" and
-        Map.get(task || %{}, :status) in ["in_progress", "in-progress"]
+      Map.get(run, :status) == "in_progress"
     end)
     |> Enum.map(fn run ->
       task = Map.get(snapshot.tasks, Map.get(run, :task_id), %{})
@@ -248,6 +258,10 @@ defmodule ForemanServer.Scheduler do
     end)
   end
 
+  defp task_has_active_run?(task_id, active_runs) do
+    Enum.any?(active_runs, &(Map.get(&1, :task_id) == task_id))
+  end
+
   defp stale_active_runs(active_runs), do: Enum.filter(active_runs, &Map.get(&1, :stale))
 
   defp stale?(nil, _now), do: true
@@ -257,6 +271,9 @@ defmodule ForemanServer.Scheduler do
 
   defp age_seconds(nil, _now), do: nil
   defp age_seconds(%DateTime{} = updated_at, now), do: DateTime.diff(now, updated_at, :second)
+
+  defp age_seconds(%NaiveDateTime{} = updated_at, now),
+    do: updated_at |> DateTime.from_naive!("Etc/UTC") |> then(&DateTime.diff(now, &1, :second))
 
   defp age_seconds(updated_at, now) when is_binary(updated_at) do
     case DateTime.from_iso8601(updated_at) do

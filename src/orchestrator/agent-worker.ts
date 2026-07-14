@@ -307,13 +307,14 @@ async function updateTaskStatusViaElixir(
   taskId: string,
   status: string,
   source: string,
+  runId?: string | null,
 ): Promise<void> {
   try {
     const client = await createRuntimeTaskClient(projectPath, projectId);
     if (status === "closed") {
       await client.close(taskId, source);
     } else {
-      await client.update(taskId, { status });
+      await client.update(taskId, { status, runId, source });
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -584,7 +585,7 @@ async function main(): Promise<void> {
         phase: "startup",
         error: reason,
       });
-      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker-runtime-assets");
+      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker-runtime-assets", runId);
       await runAfterRunHook(config);
       store.close?.();
       return;
@@ -730,7 +731,7 @@ async function main(): Promise<void> {
       }, log);
       log(`FAILED: ${reason.slice(0, 300)}`);
       // Permanent failure — mark task as 'failed' so it is NOT auto-retried.
-      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker");
+      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker", runId);
     }
   } catch (err: unknown) {
     clearInterval(progressTimer);
@@ -763,11 +764,14 @@ async function main(): Promise<void> {
     log(`${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason.slice(0, 200)}`);
     await appendFile(logFile, `\n[foreman-worker] ${isRateLimit ? "RATE LIMITED" : "ERROR"}: ${reason}\n`);
     // Transient (rate limit) → reset to 'open' for retry; permanent → mark 'failed'.
-    if (isRateLimit) {
-      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "ready", "agent-worker");
-    } else {
-      await updateTaskStatusViaElixir(storeProjectPath, projectId, taskId, "failed", "agent-worker");
-    }
+    await updateTaskStatusViaElixir(
+      storeProjectPath,
+      projectId,
+      taskId,
+      isRateLimit ? "ready" : "failed",
+      "agent-worker",
+      runId,
+    );
   }
 
   await runAfterRunHook(config);
@@ -2407,7 +2411,7 @@ async function runPipeline(
         const nativeStatus = nativeTaskStatusForPhase(phaseName);
         if (!nativeStatus) return;
         try {
-          await runtimeTaskClient.update(taskId, { status: nativeStatus });
+          await runtimeTaskClient.update(taskId, { status: nativeStatus, runId: config.runId, source: "agent-worker-phase" });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[task-phase] native status update failed (non-fatal): ${msg}`);
@@ -2810,7 +2814,7 @@ async function runPipeline(
             if (changedAgainstTarget.length === 0) {
               skipMergeQueue = true;
               log(`[FINALIZE] Branch already matches ${completionTargetBranch} after troubleshooter recovery — skipping branch-ready/merge queue`);
-              await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");
+              await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize", runId);
             }
           } catch (alreadyMergedErr: unknown) {
             const alreadyMergedMsg = alreadyMergedErr instanceof Error ? alreadyMergedErr.message : String(alreadyMergedErr);
@@ -2837,7 +2841,7 @@ async function runPipeline(
                 updates: { status: "merged", completed_at: now },
               });
               notifyClient.send({ type: "status", runId, status: "merged", timestamp: now });
-              await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize");
+              await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "closed", "agent-worker-finalize", runId);
               log(`[FINALIZE] Pre-existing test failures but branch already matches ${completionTargetBranch} — treating task as merged`);
             }
           } catch (alreadyMergedErr: unknown) {
@@ -2861,10 +2865,15 @@ async function runPipeline(
             error: finalizeFailureReason || `${failedPhase} failed`,
             retryable: finalizeRetryable,
           });
-          if (finalizeRetryable) {
-            await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "ready", "agent-worker-finalize");
-          } else {
-            await updateTaskStatusViaElixir(pipelineProjectPath, registeredProjectId, taskId, "failed", "agent-worker-finalize");
+          await updateTaskStatusViaElixir(
+            pipelineProjectPath,
+            registeredProjectId,
+            taskId,
+            finalizeRetryable ? "ready" : "failed",
+            "agent-worker-finalize",
+            runId,
+          );
+          if (!finalizeRetryable) {
             log(`[PIPELINE] Deterministic finalize failure for ${taskId} — marking failed without retry`);
           }
         }
@@ -3007,13 +3016,12 @@ async function markStuck(
   // the ready queue for automatic retry.
   // For permanent failures, mark as 'failed' so the task is NOT auto-retried —
   // the operator must investigate and re-open it manually.
-  if (isRateLimit) {
-    await updateTaskStatusViaElixir(projectPath, projectId, taskId, "ready", "agent-worker-markStuck");
-    log(`Updated ${taskId} to ready via Elixir (rate limited — will retry on next dispatch)`);
-  } else {
-    await updateTaskStatusViaElixir(projectPath, projectId, taskId, "failed", "agent-worker-markStuck");
-    log(`Updated ${taskId} to failed via Elixir (permanent failure — manual intervention required)`);
-  }
+  await updateTaskStatusViaElixir(projectPath, projectId, taskId, isRateLimit ? "ready" : "failed", "agent-worker-markStuck", runId);
+  log(
+    isRateLimit
+      ? `Updated ${taskId} to ready via Elixir (rate limited — will retry on next dispatch)`
+      : `Updated ${taskId} to failed via Elixir (permanent failure — manual intervention required)`,
+  );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

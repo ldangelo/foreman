@@ -129,6 +129,8 @@ defmodule ForemanServer.Aggregates.Task do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
          :ok <- require_exists(state, task_id),
          :ok <- validate_status(Aggregate.get(payload, :status)),
+         :ok <- reject_stale_worker_run_update(state, payload),
+         :ok <- reject_passive_phase_resurrection(state, payload),
          :ok <- allow_transition(state, Aggregate.get(payload, :status)) do
       {:ok,
        %{
@@ -198,6 +200,40 @@ defmodule ForemanServer.Aggregates.Task do
        do: {:error, {:invalid_task_transition, status, new_status}}
 
   defp allow_transition(_state, _new_status), do: :ok
+
+  defp reject_stale_worker_run_update(state, payload) do
+    incoming_run_id = Aggregate.get(payload, :run_id)
+    current_run_id = Map.get(state, :run_id)
+
+    if worker_status_source?(payload) and is_binary(incoming_run_id) and is_binary(current_run_id) and
+         incoming_run_id != current_run_id do
+      {:error, {:stale_run_update, current_run_id, incoming_run_id}}
+    else
+      :ok
+    end
+  end
+
+  defp reject_passive_phase_resurrection(state, payload) do
+    status = Aggregate.get(payload, :status)
+
+    if passive_phase_source?(payload) and active_status?(status) and
+         not active_status?(Map.get(state, :status)) do
+      {:error, {:passive_phase_status_update_rejected, Map.get(state, :status), status}}
+    else
+      :ok
+    end
+  end
+
+  defp worker_status_source?(payload) do
+    case Aggregate.get(payload, :source) do
+      source when is_binary(source) -> String.starts_with?(source, "agent-worker")
+      _ -> false
+    end
+  end
+
+  defp passive_phase_source?(payload), do: Aggregate.get(payload, :source) == "agent-worker-phase"
+
+  defp active_status?(status), do: status in ["in_progress", "in-progress"]
 
   defp reject_self_dependency(task_id, task_id), do: {:error, :self_dependency}
   defp reject_self_dependency(_task_id, _depends_on), do: :ok

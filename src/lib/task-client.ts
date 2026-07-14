@@ -54,6 +54,8 @@ export interface UpdateOptions {
   claim?: boolean;
   title?: string;
   status?: string;
+  runId?: string | null;
+  source?: string;
   assignee?: string;
   description?: string;
   notes?: string;

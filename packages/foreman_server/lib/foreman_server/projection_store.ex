@@ -34,7 +34,7 @@ defmodule ForemanServer.ProjectionStore do
 
   @spec rebuild([map()]) :: {:ok, map()}
   def rebuild(events) when is_list(events) do
-    GenServer.call(__MODULE__, {:rebuild, events})
+    GenServer.call(__MODULE__, {:rebuild, events}, :infinity)
   end
 
   @spec snapshot() :: map()
