@@ -1,7 +1,7 @@
 import { Box, Text } from "ink";
 import { createElement, type ReactElement } from "react";
 import type { InboxTaskSummary } from "../../commands/inbox.js";
-import { buildWorkflowStatusSummary, type WorkflowPhaseNode } from "../status-model.js";
+import { buildWorkflowStatusSummary, type WorkflowPhaseNode, type WorkflowPhasesContext } from "../status-model.js";
 import { Pane, truncate } from "./TaskListPane.js";
 
 const h = createElement;
@@ -30,7 +30,12 @@ function phaseIcon(node: WorkflowPhaseNode): string {
 
 export function StatusPane({ summary, compact }: { summary: InboxTaskSummary | undefined; compact: boolean }): ReactElement {
   if (!summary) return h(Pane, { title: "Status workflow" }, h(Text, null, "No task selected."));
-  const workflow = buildWorkflowStatusSummary(summary);
+
+  // Build workflow phases context from summary if available
+  // The workflowPhases are populated by buildInboxTaskSummaries
+  const workflowPhases: WorkflowPhasesContext | undefined = summary.workflowPhases;
+
+  const workflow = buildWorkflowStatusSummary(summary, workflowPhases);
   const maxPhases = compact ? 6 : 10;
   const visiblePhases = workflow.phases.slice(0, maxPhases);
 

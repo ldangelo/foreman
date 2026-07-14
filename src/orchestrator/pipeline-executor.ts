@@ -1612,6 +1612,8 @@ async function runPhaseSequence(
       model: phaseModel,
       runId,
       targetBranch: config.targetBranch,
+      workflowName: workflowConfig.name,
+      workflowPath: workflowConfig.sourcePath,
     }, observabilityWriter);
     await writeTaskPhaseNote(phaseName, "progress", `${phaseName} started.`, {
       model: phaseModel,

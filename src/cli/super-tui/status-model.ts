@@ -74,13 +74,43 @@ const RUN_FAIL = new Set(["runfailed", "workerlaunchfailed"]);
 const RUN_COMPLETE = new Set(["runcompleted", "merge", "prcreated"]);
 const ACTIVITY_EVENT = new Set(["runprogress", "toolcallrequested", "toolcallapproved", "toolcalldenied", "toolcallfinished", "assistantmessage", "phasestarted", "phasecompleted", "phasefailed", "phaseretried", "phaseverdict"]);
 
-export function buildWorkflowStatusSummary(summary: InboxTaskSummary): WorkflowStatusSummary {
+/**
+ * Optional workflow phases to include in the status summary.
+ * When provided, phases from the workflow YAML will be used to fill in
+ * missing phases (those that haven't emitted events yet) as "pending".
+ */
+export interface WorkflowPhasesContext {
+  /** Phase names from the workflow YAML definition, in execution order. */
+  phaseNames: string[];
+  /** Workflow name for display purposes. */
+  workflowName: string;
+}
+
+/**
+ * Build a workflow status summary from an InboxTaskSummary.
+ *
+ * @param summary - The inbox task summary containing events and metadata
+ * @param workflowPhases - Optional workflow phases context; if provided, missing
+ *                        phases (not yet started) will be filled in as "pending"
+ */
+export function buildWorkflowStatusSummary(
+  summary: InboxTaskSummary,
+  workflowPhases?: WorkflowPhasesContext,
+): WorkflowStatusSummary {
   const nodes = new Map<string, WorkflowPhaseNode>();
   const retryEdges: WorkflowRetryEdge[] = [];
   const events = [...summary.events].sort((a, b) => timestampMs(eventCreatedAt(a)) - timestampMs(eventCreatedAt(b)));
   let failure: string | null = summary.attentionReason;
   let lastActivityAt = summary.lastActivityAt;
   let lastActivity = summary.statusText;
+
+  // Initialize nodes from workflow phases if provided (mark as pending)
+  // These will be updated by events below if those phases have started.
+  if (workflowPhases) {
+    for (const phaseName of workflowPhases.phaseNames) {
+      ensureNode(nodes, phaseName);
+    }
+  }
 
   for (const event of events) {
     const kind = normalizeWorkflowEventType(eventType(event));
@@ -147,7 +177,18 @@ export function buildWorkflowStatusSummary(summary: InboxTaskSummary): WorkflowS
     ensureNode(nodes, summary.phase).status = isActiveRunStatus(summary.runStatus) ? "running" : "pending";
   }
 
-  const phases = [...nodes.values()];
+  // When workflow phases are provided, return phases in workflow order
+  // (phases from events are merged into the workflow order)
+  let phases: WorkflowPhaseNode[];
+  if (workflowPhases) {
+    // Map of phase name to node for quick lookup
+    const nodeMap = new Map(nodes);
+    // Return phases in workflow order, using existing node data where available
+    phases = workflowPhases.phaseNames.map((phaseName) => nodeMap.get(phaseName) ?? ensureNode(nodes, phaseName));
+  } else {
+    phases = [...nodes.values()];
+  }
+
   const currentPhase = currentPhaseFromNodes(phases, summary.phase);
   const activeAgent = isActiveRunStatus(summary.runStatus)
     ? {

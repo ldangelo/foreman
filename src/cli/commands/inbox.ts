@@ -24,6 +24,7 @@ import type { Message, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
+import { inferProjectPathFromWorkspacePath } from "../../lib/workspace-paths.js";
 type AgentMessageRow = Message;
 type RunRow = Run;
 class BackendInboxAdapter {
@@ -1393,6 +1394,17 @@ export interface InboxTaskSummary {
   verdict: "pass" | "fail" | "retrying" | "blocked" | "unknown";
   projectId: string | null;
   worktreePath: string | null;
+  /** Resolved workflow name from phase-start events, if available. */
+  workflowName?: string | null;
+  /**
+   * Workflow phases context for the status view.
+   * When available, the status view will show all workflow phases
+   * (including pending ones) instead of just phases with events.
+   */
+  workflowPhases?: {
+    phaseNames: string[];
+    workflowName: string;
+  };
   messages: Message[];
   events: PipelineEvent[];
 }
@@ -1516,7 +1528,7 @@ function scopeIncludesSummary(scope: InboxScope, summary: InboxTaskSummary): boo
   return isTerminalRunStatus(summary.runStatus);
 }
 
-export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = "attention"): InboxTaskSummary[] {
+export async function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = "attention"): Promise<InboxTaskSummary[]> {
   const messagesByRun = new Map<string, Message[]>();
   for (const message of data.messages) {
     const list = messagesByRun.get(message.run_id) ?? [];
@@ -1561,6 +1573,29 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
     });
     const phase = phaseFromEvent(latestEvt) ?? (latestMsg ? messagePhase(latestMsg) : undefined) ?? "unknown";
     const taskId = run?.task_id ?? (latestMsg ? messageTask(latestMsg) : runId);
+    // Extract workflowName from the first event that has it
+    const workflowName = events.find((e) => {
+      const details = e.details && typeof e.details === "object" ? e.details as Record<string, unknown> : {};
+      return typeof details.workflowName === "string" && details.workflowName.length > 0;
+    })?.details?.workflowName as string | null ?? null;
+
+    // Try to load workflow phases for better status display
+    let workflowPhases: InboxTaskSummary["workflowPhases"] = undefined;
+    if (workflowName && run?.worktree_path) {
+      try {
+        const projectPath = inferProjectPathFromWorkspacePath(run.worktree_path);
+        const { loadWorkflowConfig } = await import("../../lib/workflow-loader.js");
+        const workflowConfig = loadWorkflowConfig(workflowName, projectPath);
+        workflowPhases = {
+          phaseNames: workflowConfig.phases.map((p) => p.name),
+          workflowName: workflowConfig.name,
+        };
+      } catch {
+        // If workflow can't be loaded, gracefully degrade
+        workflowPhases = undefined;
+      }
+    }
+
     const summary: InboxTaskSummary = {
       taskId,
       runId,
@@ -1574,6 +1609,8 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
       verdict: verdictFromActivity(runStatus, messages, events),
       projectId: run?.project_id ?? null,
       worktreePath: run?.worktree_path ?? null,
+      workflowName,
+      workflowPhases,
       messages,
       events,
     };
@@ -1867,7 +1904,7 @@ async function loadTaskDetailSummary(
   const boundedEvents = [...events]
     .sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt))
     .slice(0, options.eventsLimit);
-  const summaries = buildInboxTaskSummaries({ runs, messages: boundedMessages, events: boundedEvents }, "all");
+  const summaries = await buildInboxTaskSummaries({ runs, messages: boundedMessages, events: boundedEvents }, "all");
   return {
     runId,
     summary: findSummaryForRunOrTask(summaries, { run: runId }) ?? findSummaryForRunOrTask(summaries, { task: selector.task }) ?? summaries[0] ?? null,
@@ -2209,7 +2246,7 @@ async function loadInboxOverview(
         }
       }),
   );
-  return buildInboxTaskSummaries({
+  return await buildInboxTaskSummaries({
     runs,
     messages: [...messages, ...activeMessages.flat()],
     events: [...events, ...activeEvents.flat()],
