@@ -70,7 +70,7 @@ See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) 
 3. **QA** (Sonnet, 30 turns, read+bash) — targeted test verification only; product failures are `QA_REPORT.md` FAIL verdicts that feed the retry loop
 4. **Reviewer** (Sonnet, 20 turns, read-only) — code review → `REVIEW.md`
 5. **Documentation** — update required operator/developer docs or explain why no docs changed → `DOCUMENTATION_REPORT.md`
-6. **Finalize** — git add/commit/push, native task merge/close update
+6. **Finalize** — git add/commit/push plus scope and changed-domain validation before publication
 
 Dev ↔ QA retries up to 2x before proceeding to Review. Documentation runs before finalization so fixes/features do not merge without an explicit documentation decision.
 
@@ -792,6 +792,7 @@ Workflows define:
 - **Retry loops** — QA/Reviewer/merge failure → targeted retry with feedback
 - **PR gates** — explicit `create-pr`, `pr-wait`, and `merge` phases for review-aware workflows; PR readiness requires zero failed checks plus a brief stable window, and merge re-waits on late pending checks
 - **Targeted PR remediation** — PR check failures route to `cicd-developer`, CodeRabbit findings route to `cr-developer`, merge conflicts route to `merge-resolver`, and unknown failures fall back to `developer`
+- **Finalize guardrails** — finalized branches are checked against Explorer's `Edit First` scope, and Elixir/Go/workflow-prompt changes trigger matching domain validation even when QA already passed
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 Top-level `merge:` and `pr:` workflow tags are not supported; add or omit PR/merge phases to control behavior.

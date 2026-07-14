@@ -310,7 +310,7 @@ foreman debug bd-abc1 --run 14dd  # Analyze a specific run (not latest)
 **Artifacts collected:**
 - Run summary (status, cost, turns, tool breakdown)
 - All Agent Mail messages (chronological)
-- Pipeline reports (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, etc.)
+- Pipeline reports (EXPLORER_REPORT.md, QA_REPORT.md, REVIEW.md, PR_WAIT_REPORT.md with CodeRabbit finding details, etc.)
 - Agent worker logs (`~/.foreman/logs/<runId>.log`)
 - Task info from `native task store show`
 
@@ -677,6 +677,8 @@ foreman inbox send \
 | `--to <agent>` | *required* | Recipient agent role (e.g. `foreman`, `developer`) |
 | `--subject <subject>` | *required* | Message subject (e.g. `phase-started`, `phase-complete`, `agent-error`) |
 | `--body <json>` | `'{}'` | Message body (must be a valid JSON string) |
+
+Use `agent-error` only for unrecoverable infrastructure/runtime failures. QA/product failures should write a FAIL report so workflow retry routing can send feedback to the configured remediation phase.
 
 ---
 

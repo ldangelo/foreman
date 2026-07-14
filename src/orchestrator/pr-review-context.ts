@@ -335,8 +335,39 @@ export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean):
     `- Status: ${status.mergeConflict ? "CONFLICT" : "OK"}`,
     `- Reason: ${status.mergeConflictReason ?? "none"}`,
     ``,
-    `## Verdict: ${isPrWaitStatusReady(status) ? "PASS" : "FAIL"}`,
+    `## Blocking CodeRabbit Findings`,
   ];
+
+  if (status.blockingFindings.length === 0) {
+    lines.push("None.");
+  } else {
+    status.blockingFindings.forEach((finding, index) => {
+      lines.push(
+        ``,
+        `### ${index + 1}. ${finding.severity.toUpperCase()}${finding.path ? ` — ${finding.path}${finding.line ? `:${finding.line}` : ""}` : ""}`,
+      );
+      if (finding.url) lines.push(`- URL: ${finding.url}`);
+      lines.push(``, finding.body);
+    });
+  }
+
+  lines.push(
+    ``,
+    `## Failed Checks`,
+  );
+
+  if (status.failedChecks.length === 0) {
+    lines.push("None.");
+  } else {
+    status.failedChecks.forEach((check, index) => {
+      lines.push(`${index + 1}. ${check.name} - ${check.conclusion ?? check.status ?? "failed"}${check.url ? ` (${check.url})` : ""}`);
+    });
+  }
+
+  lines.push(
+    ``,
+    `## Verdict: ${isPrWaitStatusReady(status) ? "PASS" : "FAIL"}`,
+  );
   return lines.join("\n") + "\n";
 }
 

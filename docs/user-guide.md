@@ -271,7 +271,7 @@ foreman run --dry-run             # Check Elixir server availability without tic
 foreman run --no-watch            # Tick once and exit
 ```
 
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, retries non-fast-forward branch publication with `--force-with-lease`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
+Bundled workflows use a deterministic builtin finalize step: Foreman commits, checks the final diff against Explorer's `Edit First` scope, runs changed-domain validation for Elixir/Go/workflow-prompt files, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, retries non-fast-forward branch publication with `--force-with-lease`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
 ### 7. Monitor Progress
 
@@ -306,7 +306,7 @@ Avoid mass retrying unless failures are known transient and the root cause is ex
 
 ### 9. Review and Merge
 
-Merge-capable workflows checkpoint draft PRs after successful mutating phases, then wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The final `create-pr` phase refreshes the existing draft and marks it ready instead of creating a second PR. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
+Merge-capable workflows checkpoint draft PRs after successful mutating phases, then wait for PR checks/review, require zero failed checks plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The final `create-pr` phase refreshes the existing draft and marks it ready instead of creating a second PR. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; `PR_WAIT_REPORT.md` includes blocking CodeRabbit finding path/line/body details when available. Configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback.
 
 The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman records the run PR state as closed and closes the associated task.
 

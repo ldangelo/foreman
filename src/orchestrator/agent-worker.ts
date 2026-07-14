@@ -76,6 +76,7 @@ import { runWorkspaceHook } from "../lib/setup.js";
 import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-config.js";
 import { foremanBackendMode } from "../lib/backend-mode.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
+import { finalizeValidationCommands, findFinalizeScopeViolations } from "./finalize-guards.js";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { collectRuntimeAssetIssues, runtimeAssetIssueMessage } from "../lib/runtime-assets.js";
 
@@ -1831,6 +1832,16 @@ function isVerificationTask(config: WorkerConfig): boolean {
   return type === "test" || /\b(verify|validate|test)\b/.test(title);
 }
 
+async function runFinalizeValidationCommands(commands: string[], cwd: string): Promise<{ ok: boolean; output: string }> {
+  const output: string[] = [];
+  for (const command of commands) {
+    const result = await runShellForFinalize(command, cwd, 10 * 60_000);
+    output.push(`$ ${command}`, result.output || "(no output)");
+    if (!result.ok) return { ok: false, output: output.join("\n\n") };
+  }
+  return { ok: true, output: output.join("\n\n") };
+}
+
 async function writeFinalizeValidation(args: {
   config: WorkerConfig;
   baseBranch: string;
@@ -1953,6 +1964,23 @@ async function runFinalizeBuiltinPhase(args: {
     }
   }
 
+  const changedAgainstBase = await vcsBackend.getChangedFiles(config.worktreePath, `origin/${baseBranch}`, "HEAD").catch(() => []);
+  const scopeViolations = findFinalizeScopeViolations({ worktreePath: config.worktreePath, reportDir }, changedAgainstBase);
+  if (scopeViolations.length > 0) {
+    const details = [
+      "Changed files outside Explorer 'Edit First' scope require an explicit Developer justification.",
+      "",
+      "Unexpected files:",
+      ...scopeViolations.map((file) => `- ${file}`),
+      "",
+      "Add a concrete justification to DEVELOPER_REPORT.md or remove the out-of-scope changes.",
+    ].join("\n");
+    await writeFinalizeValidation({ config, baseBranch, integrationStatus: "SKIPPED", validationStatus: "FAIL", failureScope: "UNRELATED_FILES", verdict: "FAIL", output: details });
+    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `scope_guard_failed: ${scopeViolations.join(", ")}`, outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };
+  }
+
+  const domainValidationCommands = finalizeValidationCommands(changedAgainstBase);
+
   let currentTargetRef = "";
   for (const candidate of [`origin/${baseBranch}`, baseBranch]) {
     try { currentTargetRef = await vcsBackend.resolveRef(config.worktreePath, candidate); break; } catch { /* try next */ }
@@ -1974,16 +2002,23 @@ async function runFinalizeBuiltinPhase(args: {
       return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `rebase_conflict: ${details}`, outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };
     }
     integrationStatus = "SUCCESS";
-    const test = await runShellForFinalize("npm test -- --reporter=dot", config.worktreePath, 10 * 60_000);
+    const validationCommands = ["npm test -- --reporter=dot", ...domainValidationCommands];
+    const test = await runFinalizeValidationCommands(validationCommands, config.worktreePath);
     if (!test.ok) {
       await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "FAIL", failureScope: "UNKNOWN", verdict: "FAIL", qaRef, currentRef: currentTargetRef, output: test.output });
       return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: "finalize_validation_failed", outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };
     }
     await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "PASS", failureScope: "SKIPPED", verdict: "PASS", qaRef, currentRef: currentTargetRef, output: test.output });
+  } else if (domainValidationCommands.length > 0) {
+    const test = await runFinalizeValidationCommands(domainValidationCommands, config.worktreePath);
+    if (!test.ok) {
+      await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "FAIL", failureScope: "MODIFIED_FILES", verdict: "FAIL", qaRef, currentRef: currentTargetRef, output: test.output });
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: "finalize_domain_validation_failed", outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };
+    }
+    await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "PASS", failureScope: "MODIFIED_FILES", verdict: "PASS", qaRef, currentRef: currentTargetRef, output: test.output });
   } else {
     await writeFinalizeValidation({ config, baseBranch, integrationStatus, validationStatus: "SKIPPED", failureScope: "SKIPPED", verdict: "PASS", qaRef, currentRef: currentTargetRef, output: "QA already passed and target branch did not move after QA." });
   }
-
   try {
     await vcsBackend.push(config.worktreePath, branchName, { allowNew: true });
   } catch (err: unknown) {

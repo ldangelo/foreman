@@ -184,6 +184,31 @@ describe("pr-review-context", () => {
     expect(rendered).toContain("## Verdict: PASS");
   });
 
+  it("renders blocking CodeRabbit finding details in the PR wait report", () => {
+    const rendered = renderPrWaitReport({
+      prNumber: 325,
+      prUrl: "https://github.com/ldangelo/foreman/pull/325",
+      checks: [{ name: "unit", status: "COMPLETED", conclusion: "SUCCESS" }],
+      codeRabbitComments: 1,
+      codeRabbitReviews: 1,
+      blockingFindings: [{
+        severity: "major",
+        source: "review-comment",
+        author: "coderabbitai[bot]",
+        path: "packages/foreman_server/lib/foreman_server/overwatch.ex",
+        line: 271,
+        body: "Restore a durable source for run_phase_orders.",
+        url: "https://example.invalid/review/1",
+      }],
+    }, false);
+
+    expect(rendered).toContain("### 1. MAJOR — packages/foreman_server/lib/foreman_server/overwatch.ex:271");
+    expect(rendered).toContain("- URL: https://example.invalid/review/1");
+    expect(rendered).toContain("Restore a durable source for run_phase_orders.");
+    expect(rendered).toContain("## Verdict: FAIL");
+  });
+
+
   it("renders PR wait failed when terminal checks include failures", () => {
     const rendered = renderPrWaitReport({
       prNumber: 311,

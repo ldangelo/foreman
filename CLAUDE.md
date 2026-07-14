@@ -121,7 +121,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 7. **QA** — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL; product failures must stay report-driven, not `agent-error`)
 8. **Reviewer** — code review → REVIEW.md (verdict: PASS/FAIL)
 9. **cli-review** — CodeRabbit CLI review (builtin) → CR_CLI_REPORT.md
-10. **Finalize** (builtin) — rebase, validate, commit, push → FINALIZE_VALIDATION.md
+10. **Finalize** (builtin) — rebase, scope-check, changed-domain validate, commit, push → FINALIZE_VALIDATION.md
 11. **create-pr** (builtin) — create or update draft PR → PR_METADATA.json
 12. **pr-wait** (builtin) — wait for PR checks/review → PR_WAIT_REPORT.md
 13. **merge** (builtin) — merge to target branch → MERGE_REPORT.md
@@ -238,6 +238,7 @@ phases:
 - **Node workers do not connect to the database**: Elixir owns database access. Node/Pi workers and CLI clients use Elixir HTTP commands/projections for task/run/mail state; do not pass `DATABASE_URL` into workers or add Postgres-backed worker fallbacks.
 - **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, after `git add -A` to prevent polluted PRs and shared-state churn
 - **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
+- **Finalize is file-sensitive**: changed files outside Explorer's `Edit First` scope require a Developer justification, and Elixir/Go/workflow-prompt changes run matching validation even when QA already passed
 - **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
 - **PR merge state is source-of-truth reconciled**: the Elixir PR monitor treats GitHub `MERGED` as authoritative for recorded PR URLs and updates the run/task to `merged`; `CLOSED` without merge never marks the task merged.
 

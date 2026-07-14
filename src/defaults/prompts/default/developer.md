@@ -51,6 +51,12 @@ You must proactively fix:
 
 Do not label a valid finding “pre-existing” to avoid fixing it if this task touched the same file or behavior.
 
+If your phase is `cr-developer`, the retry feedback is a hard acceptance contract. Before reporting done:
+- Read every CodeRabbit finding URL/path/body in `PR_WAIT_REPORT.md` or `PR_REVIEW_FINDINGS.md`.
+- Touch the finding's path or explain, in `DEVELOPER_REPORT.md`, why a different file fully resolves that exact finding.
+- In `DEVELOPER_REPORT.md`, add a `## CodeRabbit Findings Addressed` section listing each blocking finding, its status, and the evidence file(s)/commands.
+- Do not report success after only changing adjacent UI, docs, or unrelated files when the cited finding path remains unchanged and unexplained.
+
 ## Instructions
 1. Read TASK.md for task context
 {{explorerInstruction}}
