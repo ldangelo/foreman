@@ -65,6 +65,11 @@ export type ElixirRun = Record<string, unknown> & {
   project_id?: string;
   task_id?: string;
   status?: string;
+  costUsd?: number;
+  turns?: number;
+  totalDurationMs?: number;
+  costPerTurn?: number;
+  timePerTurn?: number;
 };
 
 export type ElixirInboxMessage = Record<string, unknown> & {

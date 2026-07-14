@@ -8,7 +8,7 @@ const execFileAsync = promisify(execFile);
 
 const GH_JSON_TIMEOUT_MS = 30_000;
 
-export type BlockingSeverity = "critical" | "high" | "medium";
+export type BlockingSeverity = "critical" | "high" | "major" | "medium";
 
 export interface CodeRabbitFinding {
   severity: BlockingSeverity;
@@ -184,9 +184,10 @@ export function parseBlockingSeverity(text: string): BlockingSeverity | undefine
   const normalized = signalLine.toLowerCase();
   if (/\bcritical\b|🟣/.test(normalized)) return "critical";
   if (/\bhigh\b|🔴/.test(normalized)) return "high";
-  // CodeRabbit's current inline format uses "🟠 Major" rather than
-  // "medium"/"high". Treat Major as blocking so pr-review sees it.
-  if (/\bmajor\b|🟠|\bmedium\b/.test(normalized)) return "medium";
+  // CodeRabbit's current inline format uses "🟠 Major". Preserve that label
+  // while treating it as a blocking review signal.
+  if (/\bmajor\b|🟠/.test(normalized)) return "major";
+  if (/\bmedium\b/.test(normalized)) return "medium";
   return undefined;
 }
 

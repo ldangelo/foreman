@@ -15,7 +15,7 @@ describe("pr-review-context", () => {
     ], "review-comment");
 
     expect(findings).toHaveLength(3);
-    expect(findings.map((finding) => finding.severity)).toEqual(["high", "medium", "medium"]);
+    expect(findings.map((finding) => finding.severity)).toEqual(["high", "medium", "major"]);
     expect(findings[0]).toMatchObject({ path: "src/a.ts", line: 12, source: "review-comment" });
   });
 
@@ -31,7 +31,7 @@ describe("pr-review-context", () => {
     ], "review-comment");
 
     expect(findings).toEqual([
-      expect.objectContaining({ severity: "medium", path: "src/unaddressed-major.ts", line: 24, url: "https://example/major" }),
+      expect.objectContaining({ severity: "major", path: "src/unaddressed-major.ts", line: 24, url: "https://example/major" }),
       expect.objectContaining({ severity: "critical", path: "src/unaddressed-critical.ts", line: 29, url: "https://example/critical" }),
     ]);
   });
