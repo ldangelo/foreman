@@ -1996,7 +1996,8 @@ export class ForemanStore {
       costParams.push(projectId);
     }
     if (since) {
-      costConditions.push("c.recorded_at >= ?");
+      // Use run creation time to align with totalsRow's since filter (totalTurns/totalTimeSeconds)
+      costConditions.push("r.created_at >= ?");
       costParams.push(since);
     }
     const costWhere = costConditions.length
