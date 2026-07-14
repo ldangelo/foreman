@@ -4,6 +4,9 @@ defmodule ForemanServer.Overwatch do
 
   Watches worker events to steer stale phases with Agent Mail and owns the
   synchronous tool policy gate workers call before executing tools.
+
+  Phase transitions are dynamic based on the workflow's phase_order (from RunStarted),
+  not hardcoded phase names.
   """
 
   use GenServer
@@ -24,7 +27,7 @@ defmodule ForemanServer.Overwatch do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
-  def init(_opts), do: {:ok, %{phases: %{}, steering: %{}}}
+  def init(_opts), do: {:ok, %{phases: %{}, steering: %{}, run_phase_orders: %{}}}
 
   @spec handle_event(Event.t()) :: :ok
   def handle_event(%Event{} = event) do
@@ -54,6 +57,18 @@ defmodule ForemanServer.Overwatch do
     end
   end
 
+  # Track phase_order from RunStarted events for dynamic phase transitions
+  defp observe_event(%Event{event_type: "RunStarted", payload: payload}, state) do
+    run_id = fetch(payload, :run_id)
+    phase_order = fetch(payload, :phase_order) || []
+
+    if is_binary(run_id) and is_list(phase_order) do
+      update_in(state.run_phase_orders, &Map.put(&1, run_id, phase_order))
+    else
+      state
+    end
+  end
+
   defp observe_event(%Event{event_type: "PhaseStarted", payload: payload}, state) do
     key = phase_key(payload)
     put_phase(state, key, fresh_phase(payload))
@@ -73,9 +88,15 @@ defmodule ForemanServer.Overwatch do
     update_in(state.phases, &Map.delete(&1, phase_key(payload)))
   end
 
+  # Clean up run data when run terminates
   defp observe_event(%Event{event_type: terminal, payload: payload}, state)
        when terminal in ["RunCompleted", "RunFailed"] do
-    update_in(state.phases, &Map.delete(&1, phase_key(payload)))
+    run_id = fetch(payload, :run_id)
+    key = phase_key(payload)
+
+    state
+    |> update_in([:phases], &Map.delete(&1, key))
+    |> update_in([:run_phase_orders], &Map.delete(&1, run_id))
   end
 
   defp observe_event(%Event{event_type: "WorkerHeartbeat", payload: payload}, state) do
@@ -180,7 +201,7 @@ defmodule ForemanServer.Overwatch do
              fetch(report_payload, :phase_id) || fetch(report_payload, :phase),
              :phase_id
            ),
-         target when is_binary(target) <- steering_target(report_payload, phase_id) do
+         target when is_binary(target) <- steering_target(state, report_payload, run_id, phase_id) do
       outcome = fetch(report_payload, :outcome) || fetch(report_payload, :status) || "completed"
       key = {run_id, phase_id, target, outcome}
       count = Map.get(state.steering, key, 0) + 1
@@ -206,30 +227,79 @@ defmodule ForemanServer.Overwatch do
     if is_map(details), do: Map.merge(details, payload), else: payload
   end
 
-  defp steering_target(payload, phase_id) do
+  # Dynamic steering target based on workflow phase_order and explicit payload values
+  defp steering_target(state, payload, run_id, phase_id) do
     retry_target = fetch(payload, :retryTarget) || fetch(payload, :retry_target)
     next_phase = fetch(payload, :nextPhase) || fetch(payload, :next_phase)
     outcome = fetch(payload, :outcome) || fetch(payload, :status)
 
     cond do
-      is_binary(retry_target) and retry_target != "" -> retry_target
-      is_binary(next_phase) and next_phase != "" -> next_phase
-      outcome == "retry" -> default_retry_target(phase_id)
-      true -> default_next_phase(phase_id)
+      # Explicit retry target from payload takes precedence
+      is_binary(retry_target) and retry_target != "" ->
+        retry_target
+
+      # Explicit next phase from payload takes precedence
+      is_binary(next_phase) and next_phase != "" ->
+        next_phase
+
+      # For retry outcome, try to find a retry target in workflow or use generic fallback
+      outcome == "retry" ->
+        find_retry_target(state, run_id, phase_id)
+
+      # For pass/complete, use workflow's next phase
+      true ->
+        find_next_phase(state, run_id, phase_id)
     end
   end
 
-  defp default_retry_target("qa"), do: "developer"
-  defp default_retry_target("documentation"), do: "developer"
-  defp default_retry_target("finalize"), do: "developer"
-  defp default_retry_target(_phase_id), do: nil
+  # Find the next phase dynamically from the workflow's phase_order
+  defp find_next_phase(state, run_id, phase_id) do
+    phase_order = Map.get(state.run_phase_orders, run_id, [])
 
-  defp default_next_phase("explorer"), do: "fix"
-  defp default_next_phase("fix"), do: "documentation"
-  defp default_next_phase("developer"), do: "qa"
-  defp default_next_phase("documentation"), do: "qa"
-  defp default_next_phase("qa"), do: "finalize"
-  defp default_next_phase(_phase_id), do: nil
+    case Enum.find_index(phase_order, &(&1 == phase_id)) do
+      nil ->
+        # Phase not found in order, try generic fallback
+        nil
+
+      index when index + 1 < length(phase_order) ->
+        Enum.at(phase_order, index + 1)
+
+      _ ->
+        # This is the last phase
+        nil
+    end
+  end
+
+  # Find retry target: look for a non-retryOnly phase before current or use generic fallback
+  defp find_retry_target(state, run_id, phase_id) do
+    phase_order = Map.get(state.run_phase_orders, run_id, [])
+
+    current_index = Enum.find_index(phase_order, &(&1 == phase_id))
+
+    if is_nil(current_index) do
+      # Generic fallback: retry typically goes to development phase
+      generic_retry_target(phase_id)
+    else
+      # Find previous non-retryOnly phase (for now, just return previous phase if exists)
+      # In the future, this could check phase metadata for retryOnly flag
+      if current_index > 0 do
+        Enum.at(phase_order, current_index - 1)
+      else
+        generic_retry_target(phase_id)
+      end
+    end
+  end
+
+  # Generic retry target based on phase name patterns (fallback when workflow not available)
+  defp generic_retry_target(phase_id) do
+    cond do
+      String.contains?(phase_id, "qa") -> "developer"
+      String.contains?(phase_id, "review") -> "developer"
+      String.contains?(phase_id, "finalize") -> "developer"
+      String.contains?(phase_id, "documentation") -> "developer"
+      true -> nil
+    end
+  end
 
   defp send_report_steering(run_id, task_id, phase_id, target, outcome, payload, loop_count) do
     summary = fetch(payload, :summary) || %{}
@@ -268,21 +338,26 @@ defmodule ForemanServer.Overwatch do
   defp source_report_name([first | _]) when is_map(first), do: fetch(first, :name)
   defp source_report_name(_), do: nil
 
-  defp steering_instructions("qa", "developer", outcome) when outcome in ["retry", :retry],
-    do:
-      "Use QA failure evidence only. Patch the smallest target, avoid broad rewrites, then update DEVELOPER_REPORT.md for the next QA pass."
+  # Generic steering instructions - not tied to specific phase names
+  # Phase-specific behavior should be defined in workflow YAML, not here
+  defp steering_instructions(phase_id, target, outcome) do
+    cond do
+      # QA verification phase: retry outcome should reference QA failure evidence
+      String.contains?(phase_id, "qa") and outcome == "retry" ->
+        "Use QA failure evidence only. Patch the smallest target, avoid broad rewrites, then update the relevant report for the next pass."
 
-  defp steering_instructions(_phase, "qa", _outcome),
-    do:
-      "Use the prior phase report as handoff. Run focused verification and write QA_REPORT.md with concrete command evidence."
+      String.contains?(phase_id, "qa") ->
+        "Use the prior phase report as handoff. Run focused verification and write QA_REPORT.md with concrete command evidence."
 
-  defp steering_instructions(_phase, "documentation", _outcome),
-    do:
-      "Use the source report and current diff to verify documentation coverage. For documentation-focused tasks with existing doc edits, report instead of broadening scope unless acceptance criteria are clearly missing. Do not run tests."
+      # Documentation phase instructions apply when targeting documentation phase
+      String.contains?(target, "documentation") ->
+        "Use the source report and current diff to verify documentation coverage. For documentation-focused tasks with existing doc edits, report instead of broadening scope unless acceptance criteria are clearly missing. Do not run tests."
 
-  defp steering_instructions(_phase, _target, _outcome),
-    do:
-      "Use the source report as steering context. Avoid rediscovery unless the report conflicts with direct evidence."
+      # Default generic instructions
+      true ->
+        "Use the source report as steering context. Avoid rediscovery unless the report conflicts with direct evidence."
+    end
+  end
 
   defp decide_tool(_phase_id, "read", args) do
     path = fetch(args, :path) || fetch(args, :file_path) || fetch(args, :filePath)
@@ -307,10 +382,9 @@ defmodule ForemanServer.Overwatch do
     deny("Graphify tools are disabled; use Grep, Glob, and Read")
   end
 
-  defp decide_tool("explorer", tool_name, _args)
-       when tool_name in ["bash", "find", "ls"] do
-    deny("explorer must use Grep/Glob/Read discovery, not shell commands")
-  end
+  # Removed hardcoded explorer phase restrictions.
+  # Tool restrictions should be defined in workflow YAML (tools.allowed),
+  # not hardcoded in the backend.
 
   defp decide_tool(_phase_id, "bash", args) do
     command = fetch(args, :command) || ""
