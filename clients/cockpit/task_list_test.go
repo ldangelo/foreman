@@ -48,6 +48,39 @@ func TestTaskListSectionsBuildCountsAndExcludeActiveReady(t *testing.T) {
 	}
 }
 
+func TestTaskListPrefersCurrentTaskStatusOverRecentRuns(t *testing.T) {
+	list := NewTaskListWithSections([]TaskSection{
+		{Name: "Done", Filter: "state:done"},
+		{Name: "Failed", Filter: "state:failed"},
+		{Name: "All", Filter: "all"},
+	})
+	runs := []Run{
+		{Group: taskGroupRecent, TaskID: "closed-task", RunID: "run-failed", Status: "failed", Summary: "failed before close"},
+	}
+	tasks := []Task{
+		{TaskID: "closed-task", Status: "closed", Priority: "P1", Summary: "closed now"},
+	}
+
+	list.SetData(runs, tasks)
+	items := list.Items()
+	if len(items) != 1 || !items[0].IsTask || items[0].Task.Status != "closed" {
+		t.Fatalf("expected closed task in Done section only, got %#v", items)
+	}
+
+	list.MoveSection(1) // Failed
+	list.SetData(runs, tasks)
+	if items := list.Items(); len(items) != 0 {
+		t.Fatalf("expected stale failed run hidden from Failed section, got %#v", items)
+	}
+
+	list.MoveSection(1) // All
+	list.SetData(runs, tasks)
+	items = list.Items()
+	if len(items) != 1 || !items[0].IsTask || items[0].Task.TaskID != "closed-task" {
+		t.Fatalf("expected closed task to replace stale failed run, got %#v", items)
+	}
+}
+
 func TestTaskListTreatsAttentionRunsAsFailedAndSearchesVisibleMetadata(t *testing.T) {
 	list := NewTaskList()
 	runs := []Run{

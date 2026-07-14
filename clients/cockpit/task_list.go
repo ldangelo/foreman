@@ -386,6 +386,12 @@ func (l TaskList) matchesScope(it Item) bool {
 
 func buildTaskListItems(runs []Run, tasks []Task) []Item {
 	items := make([]Item, 0, len(runs)+len(tasks))
+	taskIDs := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		if t.TaskID != "" {
+			taskIDs[t.TaskID] = true
+		}
+	}
 	activeRuns := map[string]bool{}
 	recentRuns := make([]Run, 0, len(runs))
 	for _, r := range runs {
@@ -394,7 +400,9 @@ func buildTaskListItems(runs []Run, tasks []Task) []Item {
 			activeRuns[r.TaskID] = true
 			items = append(items, Item{Group: r.Group, Run: r})
 		case taskGroupRecent:
-			recentRuns = append(recentRuns, r)
+			if !taskIDs[r.TaskID] {
+				recentRuns = append(recentRuns, r)
+			}
 		}
 	}
 	for _, t := range tasks {
