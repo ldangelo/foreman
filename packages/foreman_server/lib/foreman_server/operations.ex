@@ -106,13 +106,86 @@ defmodule ForemanServer.Operations do
 
   @doc false
   def metrics(events, snapshot) when is_list(events) and is_map(snapshot) do
+    phase_durations_list = phase_durations(events)
+    total_time_ms = total_time_ms(phase_durations_list)
+    total_cost_usd = total_cost_usd(events)
+    total_turns = total_turns(events)
+
     %{
       counters: counters(events),
-      timers: %{phase_duration_ms: phase_durations(events)},
+      timers: %{phase_duration_ms: phase_durations_list},
       gauges: %{projection_lag: projection_lag(events, snapshot)},
       projection_lag: projection_lag(events, snapshot),
+      total_cost_usd: total_cost_usd,
+      total_turns: total_turns,
+      total_time_ms: total_time_ms,
+      cost_per_turn: cost_per_turn(total_cost_usd, total_turns),
+      time_per_turn_ms: time_per_turn_ms(total_time_ms, total_turns),
       emitted_at: DateTime.utc_now()
     }
+  end
+
+  defp total_cost_usd(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
+    |> Enum.map(&extract_cost/1)
+    |> Enum.sum()
+  end
+
+  defp extract_cost(%Event{} = event) do
+    payload = event.payload
+    details = Map.get(payload, :details, %{})
+
+    # Try atom key first, then string key for costUsd
+    cost =
+      Map.get(payload, :cost_usd) ||
+        Map.get(details, :cost_usd) ||
+        Map.get(details, "costUsd") ||
+        Map.get(details, :costUsd) ||
+        0
+
+    to_number(cost)
+  end
+
+  defp total_turns(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
+    |> Enum.map(&extract_turns/1)
+    |> Enum.sum()
+  end
+
+  defp extract_turns(%Event{} = event) do
+    payload = event.payload
+    details = Map.get(payload, :details, %{})
+
+    # Try atom key first, then string key
+    turns =
+      Map.get(payload, :turns) ||
+        Map.get(details, :turns) ||
+        Map.get(details, "turns") ||
+        0
+
+    to_number(turns)
+  end
+
+  defp to_number(value) when is_number(value), do: value
+  defp to_number(value) when is_binary(value), do: String.to_float(value)
+  defp to_number(_), do: 0
+
+  defp total_time_ms(phase_durations_list) when is_list(phase_durations_list) do
+    phase_durations_list
+    |> Enum.map(&Map.get(&1, :duration_ms, 0))
+    |> Enum.sum()
+  end
+
+  defp cost_per_turn(_total_cost, 0), do: 0
+  defp cost_per_turn(total_cost, total_turns) when total_turns > 0 do
+    total_cost / total_turns
+  end
+
+  defp time_per_turn_ms(_total_time, 0), do: 0
+  defp time_per_turn_ms(total_time, total_turns) when total_turns > 0 do
+    total_time / total_turns
   end
 
   defp counters(events) do

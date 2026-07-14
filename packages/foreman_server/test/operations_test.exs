@@ -96,6 +96,87 @@ defmodule ForemanServer.OperationsTest do
     assert metrics.projection_lag == 1
   end
 
+  test "metrics include total_cost_usd, total_turns, total_time_ms, cost_per_turn, and time_per_turn_ms" do
+    # Create a task run with cost and turns data
+    append_run_event(
+      "RunStarted",
+      %{run_id: "run-cost", phase_order: ["build", "test"]},
+      ~U[2026-01-01 00:00:00Z]
+    )
+
+    # Phase 1: build with cost and turns
+    append_run_event(
+      "PhaseStarted",
+      %{run_id: "run-cost", phase_id: "build"},
+      ~U[2026-01-01 00:00:01Z]
+    )
+
+    append_run_event(
+      "PhaseCompleted",
+      %{run_id: "run-cost", phase_id: "build", status: "completed", details: %{"costUsd" => 0.05, "turns" => 10}},
+      ~U[2026-01-01 00:00:05Z]
+    )
+
+    # Phase 2: test with cost and turns
+    append_run_event(
+      "PhaseStarted",
+      %{run_id: "run-cost", phase_id: "test"},
+      ~U[2026-01-01 00:00:06Z]
+    )
+
+    append_run_event(
+      "PhaseCompleted",
+      %{run_id: "run-cost", phase_id: "test", status: "completed", details: %{"costUsd" => 0.10, "turns" => 20}},
+      ~U[2026-01-01 00:00:11Z]
+    )
+
+    assert {:ok, metrics} = Operations.metrics()
+
+    # Verify total_cost_usd (0.05 + 0.10)
+    assert_in_delta metrics.total_cost_usd, 0.15, 0.001
+
+    # Verify total_turns (10 + 20)
+    assert metrics.total_turns == 30
+
+    # Verify total_time_ms: 4 seconds for build + 5 seconds for test = 9000ms
+    assert metrics.total_time_ms >= 9000
+
+    # Verify cost_per_turn: 0.15 / 30 = 0.005
+    assert_in_delta metrics.cost_per_turn, 0.005, 0.0001
+
+    # Verify time_per_turn_ms: 9000 / 30 = 300
+    assert_in_delta metrics.time_per_turn_ms, 300.0, 0.1
+  end
+
+  test "metrics handle zero turns gracefully" do
+    append_run_event(
+      "RunStarted",
+      %{run_id: "run-no-turns", phase_order: ["build"]},
+      ~U[2026-01-01 00:00:00Z]
+    )
+
+    append_run_event(
+      "PhaseStarted",
+      %{run_id: "run-no-turns", phase_id: "build"},
+      ~U[2026-01-01 00:00:01Z]
+    )
+
+    # Phase with no cost or turns data
+    append_run_event(
+      "PhaseCompleted",
+      %{run_id: "run-no-turns", phase_id: "build", status: "completed"},
+      ~U[2026-01-01 00:00:03Z]
+    )
+
+    assert {:ok, metrics} = Operations.metrics()
+
+    # Should default to 0 when no data
+    assert metrics.total_cost_usd == 0
+    assert metrics.total_turns == 0
+    assert metrics.cost_per_turn == 0
+    assert metrics.time_per_turn_ms == 0
+  end
+
   defp task_run_events(run_id) do
     append_run_event(
       "RunStarted",
