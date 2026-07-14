@@ -35,7 +35,21 @@ defmodule ForemanServer.Http.Router do
   get "/api/v1/metrics" do
     with :ok <- authorize(conn),
          {:ok, metrics} <- ForemanServer.Operations.metrics() do
-      send_json(conn, 200, %{ok: true, metrics: metrics})
+      # Transform field names to match TypeScript client expectations:
+      # - total_cost_usd -> total_cost
+      # - total_time_ms -> total_time_seconds (convert from ms to seconds)
+      # - time_per_turn_ms -> time_per_turn_seconds (convert from ms to seconds)
+      # Keep all other fields (counters, timers, gauges, etc.) unchanged
+      transformed_metrics =
+        metrics
+        |> Map.delete(:total_cost_usd)
+        |> Map.delete(:total_time_ms)
+        |> Map.delete(:time_per_turn_ms)
+        |> Map.put(:total_cost, Map.get(metrics, :total_cost_usd))
+        |> Map.put(:total_time_seconds, ms_to_seconds(Map.get(metrics, :total_time_ms)))
+        |> Map.put(:time_per_turn_seconds, ms_to_seconds(Map.get(metrics, :time_per_turn_ms)))
+
+      send_json(conn, 200, %{ok: true, metrics: transformed_metrics})
     else
       {:error, :unauthorized} ->
         send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
@@ -779,6 +793,16 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp event_timestamp_sort_value(_value), do: 0
+
+  # Convert milliseconds to seconds (float), handling nil values
+  defp ms_to_seconds(nil), do: nil
+  defp ms_to_seconds(ms) when is_number(ms), do: ms / 1000
+  defp ms_to_seconds(ms) when is_binary(ms) do
+    case Float.parse(ms) do
+      {value, _} -> value / 1000
+      :error -> nil
+    end
+  end
 
   defp send_json(conn, status, payload) do
     conn
