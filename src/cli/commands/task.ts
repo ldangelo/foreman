@@ -161,6 +161,8 @@ export function renderRunStatusLine(activity: RunActivityInfo): string {
       qa:        chalk.yellow,
       reviewer:  chalk.magenta,
       finalize:  chalk.blue,
+      "pr-wait": chalk.yellow,
+      merge:     chalk.green,
     };
     const colorFn = phaseColors[activity.currentPhase] ?? chalk.white;
     parts.push(chalk.dim("│") + " " + colorFn(activity.currentPhase));
