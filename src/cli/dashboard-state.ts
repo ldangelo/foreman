@@ -173,6 +173,10 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
           totalTokens: 0,
           tasksByStatus: deriveTaskMetrics(projectTasks),
           costByRuntime: [],
+          totalTurns: undefined,
+          costPerTurn: undefined,
+          totalTimeSeconds: undefined,
+          timePerTurnSeconds: undefined,
         });
       }
 

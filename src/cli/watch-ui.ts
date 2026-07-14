@@ -18,6 +18,14 @@ export function elapsed(since: string | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+export function formatDuration(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${Math.round(totalSeconds)}s`;
+  const m = Math.floor(totalSeconds / 60);
+  if (m < 60) return `${m}m ${Math.round(totalSeconds % 60)}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 export function shortModel(model: string): string {
   return model
     .replace("claude-", "")

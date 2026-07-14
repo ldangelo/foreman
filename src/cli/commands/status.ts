@@ -10,7 +10,7 @@ import { ElixirServerClient, type ElixirRun, type ElixirTask } from "../../lib/e
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 import { ForemanStore, type StatusReadStore } from "../../lib/store.js";
 import type { Metrics, Run, RunProgress } from "../../lib/store.js";
-import { renderAgentCard, formatSuccessRate, elapsed } from "../watch-ui.js";
+import { renderAgentCard, formatSuccessRate, elapsed, formatDuration } from "../watch-ui.js";
 import type { TaskBackend } from "../../lib/feature-flags.js";
 import { fetchTaskCounts } from "../../lib/task-client-factory.js";
 import { resolveRepoRootProjectPath, requireProjectOrAllInMultiMode } from "./project-task-support.js";
@@ -305,7 +305,16 @@ export async function renderActiveAgents(store: StatusReadStore, projectId: stri
     console.log();
     console.log(chalk.bold("Costs"));
     console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
+    if (metrics.costPerTurn !== undefined) {
+      console.log(`  Per Turn: ${chalk.yellow(`$${metrics.costPerTurn.toFixed(4)}`)}`);
+    }
     console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+    if (metrics.totalTimeSeconds !== undefined) {
+      console.log(`  Total Time: ${chalk.dim(formatDuration(metrics.totalTimeSeconds))}`);
+      if (metrics.timePerTurnSeconds !== undefined) {
+        console.log(`  Per Turn: ${chalk.dim(formatDuration(metrics.timePerTurnSeconds))}`);
+      }
+    }
   }
 }
 

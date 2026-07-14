@@ -232,6 +232,10 @@ export interface Metrics {
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
   costByPhase?: Record<string, number>;      // aggregated cost per pipeline phase
   agentCostBreakdown?: Record<string, number>; // aggregated cost per model/agent type
+  totalTurns?: number;             // sum of turns from all runs
+  costPerTurn?: number;            // totalCost / totalTurns
+  totalTimeSeconds?: number;       // sum of run durations
+  timePerTurnSeconds?: number;     // totalTimeSeconds / totalTurns
 }
 
 // ── Messaging interfaces ─────────────────────────────────────────────────
@@ -2052,6 +2056,34 @@ export class ForemanStore {
     // Phase & agent cost breakdown (aggregated from run progress JSON)
     const phaseMetrics = this.getPhaseMetrics(projectId, since);
 
+    // Total turns and total time from runs
+    const totalsRow = this.db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(
+             CASE
+               WHEN r.progress IS NOT NULL
+               THEN CAST(json_extract(r.progress, '$.turns') AS INTEGER)
+               ELSE 0
+             END
+           ), 0) as totalTurns,
+           COALESCE(SUM(
+             CASE
+               WHEN r.started_at IS NOT NULL AND r.completed_at IS NOT NULL
+               THEN CAST((julianday(r.completed_at) - julianday(r.started_at)) * 86400 AS INTEGER)
+               ELSE 0
+             END
+           ), 0) as totalTimeSeconds
+         FROM runs r
+         ${runWhere}`
+      )
+      .get(...runParams) as { totalTurns: number; totalTimeSeconds: number };
+
+    const totalTurns = totalsRow.totalTurns;
+    const totalTimeSeconds = totalsRow.totalTimeSeconds;
+    const costPerTurn = totalTurns > 0 ? totals.totalCost / totalTurns : undefined;
+    const timePerTurnSeconds = totalTurns > 0 ? totalTimeSeconds / totalTurns : undefined;
+
     return {
       totalCost: totals.totalCost,
       totalTokens: totals.totalTokens,
@@ -2063,6 +2095,10 @@ export class ForemanStore {
       agentCostBreakdown: Object.keys(phaseMetrics.totalByAgent).length > 0
         ? phaseMetrics.totalByAgent
         : undefined,
+      totalTurns: totalTurns > 0 ? totalTurns : undefined,
+      costPerTurn,
+      totalTimeSeconds: totalTimeSeconds > 0 ? totalTimeSeconds : undefined,
+      timePerTurnSeconds,
     };
   }
 
