@@ -20,10 +20,13 @@ import (
 )
 
 // defaultPhases is only a last-resort fallback when neither the run projection
-// nor the workflow definition can provide phase order.
+// nor the workflow definition can provide phase order. Includes all phases from
+// the feature workflow so task rails show complete phase lists even when the
+// workflow YAML cannot be located at runtime.
 var defaultPhases = []string{
-	"explorer", "developer", "documentation", "qa", "reviewer",
-	"cli-review", "finalize", "create-pr", "pr-wait", "merge",
+	"explorer", "developer", "cicd-developer", "cr-developer", "merge-resolver",
+	"documentation", "qa", "reviewer", "cli-review", "finalize",
+	"create-pr", "pr-wait", "merge",
 }
 
 // Phase is one step of a run's pipeline.
