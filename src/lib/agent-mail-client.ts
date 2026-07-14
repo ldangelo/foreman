@@ -19,6 +19,7 @@ export interface AgentMailClient {
   acknowledgeMessage(agent: string, messageId: number): Promise<void>;
   reserveFiles(paths: string[], agentName: string, leaseSecs?: number): Promise<void>;
   releaseFiles(paths: string[], agentName: string): Promise<void>;
+  reportFileChanges(paths: string[]): Promise<void>;
 }
 
 export class NullAgentMailClient implements AgentMailClient {
@@ -36,4 +37,5 @@ export class NullAgentMailClient implements AgentMailClient {
   async acknowledgeMessage(_agent: string, _messageId: number): Promise<void> { /* no-op */ }
   async reserveFiles(_paths: string[], _agentName: string, _leaseSecs?: number): Promise<void> { /* no-op */ }
   async releaseFiles(_paths: string[], _agentName: string): Promise<void> { /* no-op */ }
+  async reportFileChanges(_paths: string[]): Promise<void> { /* no-op */ }
 }

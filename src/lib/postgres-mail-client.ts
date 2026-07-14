@@ -46,4 +46,6 @@ export class PostgresMailClient implements AgentMailClient {
   async reserveFiles(_paths: string[], _agentName: string, _leaseSecs?: number): Promise<void> {}
 
   async releaseFiles(_paths: string[], _agentName: string): Promise<void> {}
+
+  async reportFileChanges(_paths: string[]): Promise<void> {}
 }
