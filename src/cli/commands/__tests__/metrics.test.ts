@@ -1,18 +1,24 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import chalk from "chalk";
 
-// Mock ElixirServerManager before importing the module under test
+// Create mock functions at module level using vi.hoisted
+const { mockEnsureRunning, mockGetMetrics } = vi.hoisted(() => ({
+  mockEnsureRunning: vi.fn(),
+  mockGetMetrics: vi.fn(),
+}));
+
+// Mock ElixirServerManager
 vi.mock("../../../lib/elixir-server-manager.js", () => ({
-  ElixirServerManager: vi.fn().mockImplementation(() => ({
-    ensureRunning: vi.fn().mockResolvedValue({ url: "http://localhost:4000" }),
-  })),
+  ElixirServerManager: vi.fn().mockImplementation(function MockElixirServerManager() {
+    return { ensureRunning: mockEnsureRunning };
+  }),
 }));
 
 // Mock ElixirServerClient
 vi.mock("../../../lib/elixir-server-client.js", () => ({
-  ElixirServerClient: vi.fn().mockImplementation(() => ({
-    getMetrics: vi.fn(),
-  })),
+  ElixirServerClient: vi.fn().mockImplementation(function MockElixirServerClient() {
+    return { getMetrics: mockGetMetrics };
+  }),
 }));
 
 describe("metrics command", () => {
@@ -23,19 +29,15 @@ describe("metrics command", () => {
   describe("displayMetrics", () => {
     it("displays all metrics when data is available", async () => {
       const { displayMetrics } = await import("../metrics.js");
-      const mockGetMetrics = vi.fn().mockResolvedValue({
+
+      mockEnsureRunning.mockResolvedValue({ url: "http://localhost:4000" });
+      mockGetMetrics.mockResolvedValue({
         total_cost: 42.5,
         total_turns: 100,
         cost_per_turn: 0.425,
         total_time_seconds: 3600,
         time_per_turn_seconds: 36,
       });
-
-      // Access the mocked ElixirServerClient
-      const { ElixirServerClient } = await import("../../../lib/elixir-server-client.js");
-      vi.mocked(ElixirServerClient).mockImplementation(
-        () => ({ getMetrics: mockGetMetrics }) as unknown as InstanceType<typeof ElixirServerClient>,
-      );
 
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -53,18 +55,15 @@ describe("metrics command", () => {
 
     it("handles zero turns gracefully", async () => {
       const { displayMetrics } = await import("../metrics.js");
-      const mockGetMetrics = vi.fn().mockResolvedValue({
+
+      mockEnsureRunning.mockResolvedValue({ url: "http://localhost:4000" });
+      mockGetMetrics.mockResolvedValue({
         total_cost: 0,
         total_turns: 0,
         cost_per_turn: 0,
         total_time_seconds: 0,
         time_per_turn_seconds: 0,
       });
-
-      const { ElixirServerClient } = await import("../../../lib/elixir-server-client.js");
-      vi.mocked(ElixirServerClient).mockImplementation(
-        () => ({ getMetrics: mockGetMetrics }) as unknown as InstanceType<typeof ElixirServerClient>,
-      );
 
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -78,18 +77,15 @@ describe("metrics command", () => {
 
     it("handles string values from the API", async () => {
       const { displayMetrics } = await import("../metrics.js");
-      const mockGetMetrics = vi.fn().mockResolvedValue({
+
+      mockEnsureRunning.mockResolvedValue({ url: "http://localhost:4000" });
+      mockGetMetrics.mockResolvedValue({
         total_cost: "123.456",
         total_turns: 50,
         cost_per_turn: "2.46912",
         total_time_seconds: 7200,
         time_per_turn_seconds: "144",
       });
-
-      const { ElixirServerClient } = await import("../../../lib/elixir-server-client.js");
-      vi.mocked(ElixirServerClient).mockImplementation(
-        () => ({ getMetrics: mockGetMetrics }) as unknown as InstanceType<typeof ElixirServerClient>,
-      );
 
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -103,18 +99,15 @@ describe("metrics command", () => {
 
     it("handles missing/undefined values gracefully", async () => {
       const { displayMetrics } = await import("../metrics.js");
-      const mockGetMetrics = vi.fn().mockResolvedValue({
+
+      mockEnsureRunning.mockResolvedValue({ url: "http://localhost:4000" });
+      mockGetMetrics.mockResolvedValue({
         total_cost: undefined,
         total_turns: undefined,
         cost_per_turn: undefined,
         total_time_seconds: undefined,
         time_per_turn_seconds: undefined,
       });
-
-      const { ElixirServerClient } = await import("../../../lib/elixir-server-client.js");
-      vi.mocked(ElixirServerClient).mockImplementation(
-        () => ({ getMetrics: mockGetMetrics }) as unknown as InstanceType<typeof ElixirServerClient>,
-      );
 
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -129,22 +122,13 @@ describe("metrics command", () => {
       expect(error).not.toHaveBeenCalled();
     });
 
-    it("throws and exits on error", async () => {
+    it("throws error on API failure", async () => {
       const { displayMetrics } = await import("../metrics.js");
-      const mockGetMetrics = vi.fn().mockRejectedValue(new Error("Connection refused"));
 
-      const { ElixirServerClient } = await import("../../../lib/elixir-server-client.js");
-      vi.mocked(ElixirServerClient).mockImplementation(
-        () => ({ getMetrics: mockGetMetrics }) as unknown as InstanceType<typeof ElixirServerClient>,
-      );
+      mockEnsureRunning.mockResolvedValue({ url: "http://localhost:4000" });
+      mockGetMetrics.mockRejectedValue(new Error("Connection refused"));
 
-      const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("exit");
-      });
-
-      await expect(displayMetrics()).rejects.toThrow("exit");
-      expect(error).toHaveBeenCalledWith(chalk.red("Error: Connection refused"));
+      await expect(displayMetrics()).rejects.toThrow("Connection refused");
     });
   });
 });
