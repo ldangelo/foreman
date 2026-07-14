@@ -371,8 +371,8 @@ function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
   const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
   const isStuck = status === "in_progress" && lastActivityMs !== null && (now - lastActivityMs) > STUCK_THRESHOLD_MS;
 
-  const costUsd = typeof run.costUsd === "number" ? run.costUsd : 0;
-  const turns = typeof run.turns === "number" ? run.turns : 0;
+  const costUsd = typeof run.totalCostUsd === "number" ? run.totalCostUsd : 0;
+  const turns = typeof run.totalTurns === "number" ? run.totalTurns : 0;
   const totalDurationMs = typeof run.totalDurationMs === "number" ? run.totalDurationMs : null;
   const costPerTurn = typeof run.costPerTurn === "number" ? run.costPerTurn : null;
   const timePerTurn = typeof run.timePerTurn === "number" ? run.timePerTurn : null;

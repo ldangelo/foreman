@@ -65,8 +65,8 @@ export type ElixirRun = Record<string, unknown> & {
   project_id?: string;
   task_id?: string;
   status?: string;
-  costUsd?: number;
-  turns?: number;
+  totalCostUsd?: number;
+  totalTurns?: number;
   totalDurationMs?: number;
   costPerTurn?: number;
   timePerTurn?: number;
