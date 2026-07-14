@@ -65,6 +65,7 @@ import { jiraCommand } from "./commands/jira.js";
 import { logsCommand } from "./commands/logs.js";
 import { serverCommand } from "./commands/server.js";
 import { mcpCommand } from "./commands/mcp.js";
+import { metricsCommand } from "./commands/metrics.js";
 function isCliEntrypoint(): boolean {
   try {
     const invokedPath = process.argv[1];
@@ -98,6 +99,7 @@ program.addCommand(initCommand);
 program.addCommand(planCommand);
 program.addCommand(runCommand);
 program.addCommand(statusCommand);
+program.addCommand(metricsCommand);
 program.addCommand(mergeCommand);
 program.addCommand(prCommand);
 program.addCommand(resetCommand);
@@ -135,7 +137,7 @@ Domain groups:
   Setup/health:     init, doctor, daemon, server
   Planning:         plan, sling
   Execution:        run, retry, reset, stop, recover
-  Tasks/views:      task, status, board, watch, logs
+  Tasks/views:      task, status, metrics, board, watch, logs
   Collaboration:    inbox, attach, debug, mcp
   Delivery/VCS:     worktree, merge, pr
 
