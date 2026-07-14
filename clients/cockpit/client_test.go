@@ -238,8 +238,8 @@ func TestHTTPClientDoesNotTreatStaleRunsAsRunningTasks(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("expected only the current project's linked run, got %#v", runs)
 	}
-	if runs[0].RunID != "stale-run" || runs[0].Group != "RECENT" {
-		t.Fatalf("expected stale in-progress run for closed task to be recent, got %#v", runs[0])
+	if runs[0].RunID != "stale-run" || runs[0].Group != "RECENT" || runs[0].Status != "closed" {
+		t.Fatalf("expected stale in-progress run for closed task to inherit closed task status and be recent, got %#v", runs[0])
 	}
 }
 

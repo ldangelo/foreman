@@ -1083,6 +1083,9 @@ func (c *httpClient) Runs() []Run {
 			continue
 		}
 		status := str(r, "status")
+		if hasTask && !activeTaskStatus(task.Status) && activeRunStatus(status) {
+			status = task.Status
+		}
 		group := "RECENT"
 		if hasTask && activeTaskStatus(task.Status) && activeRunStatus(status) {
 			group = "RUNNING"
