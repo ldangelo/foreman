@@ -48,6 +48,9 @@ func (m model) renderFrame() string {
 		return "starting cockpit…"
 	}
 	total := m.width
+	if m.boardMode() {
+		return m.renderBoardFrame()
+	}
 	leftW := m.leftPaneWidth()
 	rightW := total - leftW - 1
 	if rightW < 20 {
@@ -80,6 +83,30 @@ func (m model) renderFrame() string {
 	)
 	if os.Getenv("COCKPIT_DEBUG") != "" {
 		writeDebugDump(m, leftW, rightW, bodyH, rightRaw, out)
+	}
+	return out
+}
+
+func (m model) renderBoardFrame() string {
+	total := m.width
+	boardH, activitiesH := m.boardLayoutHeights()
+	boardVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	activitiesVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
+	boardRaw := m.renderBoard(total, boardH)
+	activitiesModel := m
+	activitiesModel.height = activitiesH + 3
+	activitiesRaw := activitiesModel.renderRight(max(20, total-2))
+	board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
+	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
+	out := lipgloss.JoinVertical(lipgloss.Left,
+		m.renderStatusBar(total),
+		board,
+		activities,
+		m.renderNotice(total),
+		m.renderKeyBar(total),
+	)
+	if os.Getenv("COCKPIT_DEBUG") != "" {
+		writeDebugDump(m, total, total, boardH+activitiesH, activitiesRaw, out)
 	}
 	return out
 }
@@ -250,7 +277,14 @@ func (m model) renderKeyBar(w int) string {
 	if !m.viewFocused {
 		focus = "focus: tasks"
 	}
-	hints := renderHelpLine(max(1, w-utf8.RuneCountInString(focus)-4), m.viewFocused)
+	boardMode := m.boardMode()
+	if boardMode {
+		focus = "focus: activities"
+		if !m.viewFocused {
+			focus = "focus: board"
+		}
+	}
+	hints := renderHelpLine(max(1, w-utf8.RuneCountInString(focus)-4), m.viewFocused, boardMode)
 	return keyBarStyle.Width(w).Render(clip(" "+focus+" · "+hints, w))
 }
 
@@ -306,6 +340,80 @@ func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
 		}
 	}
 	return clip(strings.Join(tabs, " "), w)
+}
+
+func (m model) renderBoard(w, h int) string {
+	columns := m.board.Columns()
+	if len(columns) == 0 {
+		return lipgloss.NewStyle().Foreground(cDim).Render("No tasks match the current filters.")
+	}
+	visual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	colW := max(10, w/len(columns))
+	remainder := w - colW*len(columns)
+	rendered := make([]string, 0, len(columns))
+	for i, col := range columns {
+		width := colW
+		if i == len(columns)-1 {
+			width += remainder
+		}
+		rendered = append(rendered, m.renderBoardColumn(col, max(8, width-1), max(1, h-1), visual))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+}
+
+func (m model) renderBoardColumn(col BoardColumnState, w, h int, visual paneVisual) string {
+	focusedColumn := col.Column == m.board.SelectedColumn()
+	headerStyle := lipgloss.NewStyle().Width(w).Bold(true).Foreground(visual.White)
+	if focusedColumn && !m.viewFocused {
+		headerStyle = headerStyle.Background(visual.ActiveBg)
+	}
+	header := headerStyle.Render(clip(col.Label+" "+itoa(len(col.Items)), w))
+	lines := []string{
+		header,
+		lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)),
+	}
+	for i, it := range col.VisibleItems {
+		selected := itemKey(it) == col.SelectedKey
+		lines = append(lines, renderBoardCard(it, w, selected, visual))
+		if i < len(col.VisibleItems)-1 {
+			lines = append(lines, "")
+		}
+	}
+	if col.OverflowCount > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(visual.Dim).Render(clip("… "+itoa(col.OverflowCount)+" more", w)))
+	}
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	return lipgloss.NewStyle().Width(w).Height(h).Render(strings.Join(lines, "\n"))
+}
+
+func renderBoardCard(it Item, w int, selected bool, visual paneVisual) string {
+	state, title, id, typ, pri, right := taskRowFields(it)
+	gl, glc := glyph(state)
+	line1 := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
+		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
+	if right != "" {
+		rightW := min(max(6, ansi.StringWidth(right)), max(6, w/2))
+		line1 = padRow(clip(line1, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
+	} else {
+		line1 = clip(line1, w)
+	}
+	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip(title, w))
+	meta := strings.Join(compactNonEmpty([]string{normalizePriorityLabel(pri), typ}), " · ")
+	if meta == "" {
+		meta = state
+	}
+	line3 := lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(meta, w))
+	card := strings.Join([]string{line1, line2, line3}, "\n")
+	st := lipgloss.NewStyle().Width(w)
+	if selected {
+		st = st.Background(visual.SelectedBg)
+	}
+	return st.Render(card)
 }
 
 func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
@@ -435,8 +543,6 @@ func formatAge(stamp string) string {
 		d = 0
 	}
 	switch {
-	case d >= 30*24*time.Hour:
-		return itoa(int(d/(30*24*time.Hour))) + "mo"
 	case d >= 7*24*time.Hour:
 		return itoa(int(d/(7*24*time.Hour))) + "w"
 	case d >= 24*time.Hour:
@@ -489,7 +595,7 @@ func (m model) renderRight(w int) string {
 	visual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
 	if m.helpVisible {
 		title := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render("Cockpit keys")
-		body := renderFullHelp(w, m.viewFocused)
+		body := renderFullHelp(w, m.viewFocused, m.boardMode())
 		return strings.Join([]string{title, dimStyle.Render("press ? or esc to close"), "", body}, "\n")
 	}
 	if m.taskForm != nil {
@@ -541,7 +647,7 @@ func (m model) renderRight(w int) string {
 	if ab := m.renderAction(w, visual); ab != "" {
 		action = strings.Split(ab, "\n")
 	}
-	bodyH := m.height - 3
+	bodyH := m.detailPaneHeight()
 	if bodyH < 4 {
 		bodyH = 4
 	}

@@ -28,6 +28,7 @@ type model struct {
 	runs     []Run
 	tasks    []Task
 	taskList TaskList
+	board    Board
 
 	// detail for the selected run
 	msgs           []Message
@@ -108,6 +109,7 @@ func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 		tools:          tools,
 		glam:           r,
 		taskList:       NewTaskListWithSections(cfg.Cockpit.TaskList.Sections),
+		board:          NewBoard(cfg.Cockpit.Board.CardCap),
 		metricsLoading: true,
 		liveSpinner:    newLiveSpinner(),
 		runClock:       stopwatch.New(stopwatch.WithInterval(time.Second)),
@@ -140,6 +142,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.buildItems()
 		if m.detailUsesViewer() {
 			m.refreshViewer(viewerPreserve)
 		}
@@ -453,6 +456,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		changed, cmd := m.taskList.HandleSearchKey(msg)
 		if changed {
 			m.buildItems()
+			m.syncBoardSelectionToTaskList()
 		}
 		return m, cmd
 	}
@@ -485,6 +489,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, m.saveVisibleViewer()
 			}
 		}
+	} else if m.boardMode() {
+		switch key {
+		case "left", "h":
+			return m, m.moveBoardColumn(-1)
+		case "right", "l":
+			return m, m.moveBoardColumn(1)
+		}
 	}
 
 	switch key {
@@ -509,20 +520,32 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.viewFocused {
 			return m, m.moveRow(-1)
 		}
+		if m.boardMode() {
+			return m, m.moveBoardCard(-1)
+		}
 		return m, m.moveSel(-1)
 	case "down":
 		if m.viewFocused {
 			return m, m.moveRow(1)
+		}
+		if m.boardMode() {
+			return m, m.moveBoardCard(1)
 		}
 		return m, m.moveSel(1)
 	case "k":
 		if m.viewFocused {
 			return m, m.moveRow(-1)
 		}
+		if m.boardMode() {
+			return m, m.moveBoardCard(-1)
+		}
 		return m, m.moveSel(-1)
 	case "j":
 		if m.viewFocused {
 			return m, m.moveRow(1)
+		}
+		if m.boardMode() {
+			return m, m.moveBoardCard(1)
 		}
 		return m, m.moveSel(1)
 	case "[", "H":
@@ -535,6 +558,18 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.moveTaskSection(1)
+	case " ", "space":
+		if m.viewFocused {
+			return m, nil
+		}
+		collapsed := m.taskList.ToggleActiveSectionCollapse()
+		m.buildItems()
+		if collapsed {
+			m.notice = "collapsed " + m.taskList.ActiveSection().Name
+		} else {
+			m.notice = "expanded " + m.taskList.ActiveSection().Name
+		}
+		return m, m.reloadSelectedDetail()
 	case "tab":
 		return m, m.selectTab((m.tab + 1) % len(tabNames))
 	case "shift+tab":
@@ -547,6 +582,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		m.notice = "scope: " + m.taskList.ToggleScope()
 		m.buildItems()
+		m.syncBoardSelectionToTaskList()
 		return m, m.reloadSelectedDetail()
 	case "o":
 		if tabNames[m.tab] == "pr" {
@@ -684,7 +720,54 @@ func (m *model) moveSel(delta int) tea.Cmd {
 	if !m.taskList.Move(delta) {
 		return nil
 	}
+	m.syncBoardSelectionToTaskList()
 	return m.reloadSelectedDetail()
+}
+
+func (m *model) moveBoardColumn(delta int) tea.Cmd {
+	key, ok := m.board.MoveColumn(delta)
+	if !ok {
+		return nil
+	}
+	return m.selectTaskListItemKey(key)
+}
+
+func (m *model) moveBoardCard(delta int) tea.Cmd {
+	key, ok := m.board.MoveCard(delta)
+	if !ok {
+		return nil
+	}
+	return m.selectTaskListItemKey(key)
+}
+
+func (m *model) selectTaskListItemKey(key string) tea.Cmd {
+	if key == "" {
+		return nil
+	}
+	if m.taskListSelectKey(key) {
+		m.board.SelectKey(key)
+		return m.reloadSelectedDetail()
+	}
+	return nil
+}
+
+func (m *model) syncBoardSelectionToTaskList() {
+	if it, ok := m.selectedItem(); ok {
+		m.board.SelectKey(itemKey(it))
+	}
+}
+
+func (m *model) taskListSelectKey(key string) bool {
+	for i, it := range m.taskList.items {
+		if itemKey(it) == key {
+			if m.taskList.selected == i {
+				return false
+			}
+			m.taskList.selected = i
+			return true
+		}
+	}
+	return false
 }
 
 func (m *model) moveTaskSection(delta int) tea.Cmd {
@@ -775,7 +858,7 @@ func viewerSelectionPrefix(tab string) string {
 }
 
 func (m *model) refreshViewer(policy viewerRefreshPolicy) {
-	w := m.rightPaneWidth()
+	w := m.detailPaneWidth()
 	h := m.viewerBodyWindowHeight()
 	m.viewer.SetSelectionPrefix(viewerSelectionPrefix(tabNames[m.tab]))
 	m.viewer.SetWrapText(tabNames[m.tab] != "logs")
@@ -797,7 +880,7 @@ func (m model) buildViewerLines(w int) []ViewerLine {
 }
 
 func (m model) viewerBodyWindowHeight() int {
-	w := m.rightPaneWidth()
+	w := m.detailPaneWidth()
 	_, ok := m.selectedItem()
 	if !ok {
 		return 1
@@ -818,7 +901,7 @@ func (m model) viewerBodyWindowHeight() int {
 		actionLines = len(strings.Split(action, "\n"))
 	}
 
-	bodyH := m.height - 3
+	bodyH := m.detailPaneHeight()
 	if bodyH < 4 {
 		bodyH = 4
 	}
@@ -836,12 +919,80 @@ func (m model) rightPaneWidth() int {
 	return max(20, max(80, m.width)-m.leftPaneWidth()-1)
 }
 
+func (m model) detailPaneWidth() int {
+	if m.boardMode() {
+		return max(20, max(80, m.width)-2)
+	}
+	return m.rightPaneWidth()
+}
+
+func (m model) detailPaneHeight() int {
+	if m.boardMode() {
+		_, activitiesH := m.boardLayoutHeights()
+		return activitiesH + 2
+	}
+	bodyH := m.height - 3
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	return bodyH
+}
+
+func (m model) boardLayoutHeights() (int, int) {
+	bodyH := m.height - 5
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	boardH := int(float64(bodyH) * m.layoutSplit())
+	if boardH < 4 {
+		boardH = 4
+	}
+	if boardH > bodyH-4 {
+		boardH = bodyH - 4
+	}
+	activitiesH := bodyH - boardH
+	if activitiesH < 4 {
+		activitiesH = 4
+		if bodyH > activitiesH {
+			boardH = bodyH - activitiesH
+		}
+	}
+	return boardH, activitiesH
+}
+
+func (m model) boardMode() bool {
+	mode := m.config.Cockpit.Layout.Mode
+	switch mode {
+	case layoutModeBoard:
+		return true
+	case layoutModeList:
+		return false
+	default:
+		threshold := m.config.Cockpit.Layout.NarrowThreshold
+		if threshold <= 0 {
+			threshold = defaultLayoutNarrowThreshold
+		}
+		return m.width >= threshold
+	}
+}
+
+func (m model) layoutSplit() float64 {
+	split := m.config.Cockpit.Layout.Split
+	if split <= 0 || split >= 1 {
+		return defaultLayoutSplit
+	}
+	return split
+}
+
 func (m model) mouseOverRightPane(msg tea.MouseMsg) bool {
 	mouse := msg.Mouse()
 	return mouse.X > m.leftPaneWidth()
 }
 
 func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
+	if m.boardMode() {
+		return m.handleBoardMouse(msg)
+	}
 	mouse := msg.Mouse()
 	if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
 		if mouse.X <= m.leftPaneWidth() && mouse.Y >= 1 && mouse.Y <= 3 {
@@ -856,6 +1007,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 		} else if mouse.X <= m.leftPaneWidth() {
 			if idx := m.taskRowIndexAt(mouse.Y); idx >= 0 {
 				m.taskList.selected = idx
+				m.syncBoardSelectionToTaskList()
 				m.viewFocused = false
 				m.loadDetail()
 				return m, nil
@@ -895,6 +1047,79 @@ func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 
 	m.viewFocused = false
 	return m, m.moveSel(delta)
+}
+
+func (m model) handleBoardMouse(msg tea.MouseMsg) (model, tea.Cmd) {
+	mouse := msg.Mouse()
+	boardH, _ := m.boardLayoutHeights()
+	boardTop := 1
+	boardBottom := boardTop + boardH - 1
+	activitiesTop := boardBottom + 1
+	activitiesBottom := m.height - 3
+
+	if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
+		if mouse.Y >= boardTop && mouse.Y <= boardBottom {
+			col, row := m.boardHit(mouse.X, mouse.Y, boardTop)
+			if key, ok := m.board.SelectAt(col, row); ok {
+				m.viewFocused = false
+				return m, m.selectTaskListItemKey(key)
+			}
+			m.viewFocused = false
+			return m, nil
+		}
+		if mouse.Y >= activitiesTop && mouse.Y <= activitiesBottom {
+			if mouse.Y == m.boardRightTabLineY() {
+				if idx := m.rightTabIndexAt(mouse.X); idx >= 0 {
+					return m, m.selectTab(idx)
+				}
+			}
+			if key := m.actionKeyAt(mouse.X, mouse.Y); key != "" {
+				updated, cmd := m.handleKey(actionKeyPress(key))
+				return updated.(model), cmd
+			}
+			if m.detailUsesViewer() {
+				m.viewFocused = true
+			}
+			return m, nil
+		}
+		m.viewFocused = false
+		return m, nil
+	}
+
+	_, ok := msg.(tea.MouseWheelMsg)
+	if !ok {
+		return m, nil
+	}
+	delta := mouseWheelStep
+	if mouse.Button == tea.MouseWheelUp {
+		delta = -mouseWheelStep
+	}
+	if mouse.Y >= activitiesTop && mouse.Y <= activitiesBottom && m.detailUsesViewer() {
+		m.viewFocused = true
+		return m, m.moveRow(delta)
+	}
+	if mouse.Y >= boardTop && mouse.Y <= boardBottom {
+		m.viewFocused = false
+		return m, m.moveBoardCard(delta)
+	}
+	return m, nil
+}
+
+func (m model) boardHit(x, y, boardTop int) (int, int) {
+	cols := len(m.board.Columns())
+	if cols == 0 {
+		return -1, -1
+	}
+	colW := max(1, m.width/cols)
+	col := x / colW
+	if col >= cols {
+		col = cols - 1
+	}
+	cardLine := y - boardTop - 3
+	if cardLine < 0 {
+		return col, -1
+	}
+	return col, cardLine / 3
 }
 
 func (m model) taskSectionIndexAt(x int) int {
@@ -968,8 +1193,22 @@ func (m model) rightTabLineY() int {
 	return 5 + railLines
 }
 
+func (m model) boardRightTabLineY() int {
+	run, ok := m.selectedRun()
+	if !ok {
+		return -1
+	}
+	boardH, _ := m.boardLayoutHeights()
+	w := m.detailPaneWidth()
+	railLines := len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
+	return 1 + boardH + 2 + railLines
+}
+
 func (m model) rightTabIndexAt(x int) int {
 	rel := x - m.leftPaneWidth() - 2
+	if m.boardMode() {
+		rel = x - 1
+	}
 	if rel < 0 {
 		return -1
 	}
@@ -1149,13 +1388,46 @@ func (m model) detailUsesViewer() bool {
 	return m.viewerTab()
 }
 
+func (m *model) buildItems() {
+	selectedKey := ""
+	if it, ok := m.selectedItem(); ok {
+		selectedKey = itemKey(it)
+	}
+	m.taskList.SetData(m.runs, m.tasks)
+	if m.boardMode() {
+		m.taskList.items = m.boardFilteredItems()
+		if selectedKey != "" {
+			m.taskListSelectKey(selectedKey)
+		}
+		m.taskList.keepSelectedVisible()
+	}
+	if selectedKey == "" {
+		if it, ok := m.selectedItem(); ok {
+			selectedKey = itemKey(it)
+		}
+	}
+	m.board.SetItems(m.taskList.Items(), selectedKey, m.config.Cockpit.Board.CardCap)
+	m.syncBoardSelectionToTaskList()
+}
+
+func (m model) boardFilteredItems() []Item {
+	all := buildTaskListItems(m.runs, m.tasks)
+	items := make([]Item, 0, len(all))
+	for _, it := range all {
+		if !m.taskList.matchesScope(it) {
+			continue
+		}
+		if !matchesTaskFilter(it, m.taskList.Search()) {
+			continue
+		}
+		items = append(items, it)
+	}
+	return items
+}
+
 func (m model) detailAllowsHorizontalPan() bool { return tabNameAt(m.tab) == "logs" }
 
 func (m model) openableTab() bool { return tabOpenable(tabNameAt(m.tab)) }
-
-func (m *model) buildItems() {
-	m.taskList.SetData(m.runs, m.tasks)
-}
 
 func (m model) selectedReportIndex() int {
 	if len(m.reports) == 0 {

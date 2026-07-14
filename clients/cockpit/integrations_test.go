@@ -118,6 +118,51 @@ func TestLoadConfigParsesCockpitFocus(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesCockpitLayoutAndBoard(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	data := []byte("cockpit:\n  layout:\n    mode: board\n    split: 0.62\n    narrowThreshold: 120\n  board:\n    cardCap: 8\n    order: priority\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cockpit.Layout.Mode != layoutModeBoard || cfg.Cockpit.Layout.Split != 0.62 || cfg.Cockpit.Layout.NarrowThreshold != 120 {
+		t.Fatalf("unexpected cockpit layout config: %+v", cfg.Cockpit.Layout)
+	}
+	if cfg.Cockpit.Board.CardCap != 8 || cfg.Cockpit.Board.Order != boardOrderPriority {
+		t.Fatalf("unexpected cockpit board config: %+v", cfg.Cockpit.Board)
+	}
+}
+
+func TestLoadConfigNormalizesCockpitLayoutAndBoard(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	data := []byte("cockpit:\n  layout:\n    mode: sideways\n    split: 0.95\n    narrowThreshold: 20\n  board:\n    cardCap: -5\n    order: random\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cockpit.Layout.Mode != layoutModeAuto {
+		t.Fatalf("expected invalid layout mode to normalize to auto, got %q", cfg.Cockpit.Layout.Mode)
+	}
+	if cfg.Cockpit.Layout.Split != maxLayoutSplit {
+		t.Fatalf("expected extreme layout split to clamp to %v, got %v", maxLayoutSplit, cfg.Cockpit.Layout.Split)
+	}
+	if cfg.Cockpit.Layout.NarrowThreshold != minLayoutNarrowThreshold {
+		t.Fatalf("expected narrow threshold minimum %d, got %d", minLayoutNarrowThreshold, cfg.Cockpit.Layout.NarrowThreshold)
+	}
+	if cfg.Cockpit.Board.CardCap != minBoardCardCap {
+		t.Fatalf("expected board card cap minimum %d, got %d", minBoardCardCap, cfg.Cockpit.Board.CardCap)
+	}
+	if cfg.Cockpit.Board.Order != boardOrderActivity {
+		t.Fatalf("expected invalid board order to normalize to activity, got %q", cfg.Cockpit.Board.Order)
+	}
+}
+
 func TestLoadConfigParsesTaskListSections(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("cockpit:\n  taskList:\n    width: 58%\n    sections:\n      - name: Hot\n        filter: priority:p0 state:running\n"), 0o600); err != nil {

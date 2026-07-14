@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,12 +57,24 @@ type TmuxConfig struct {
 	Split string `yaml:"split"`
 }
 
-
 type CockpitConfig struct {
 	ExportDir     string         `yaml:"exportDir"`
 	Focus         FocusConfig    `yaml:"focus"`
 	ReducedMotion bool           `yaml:"reducedMotion"`
+	Layout        LayoutConfig   `yaml:"layout"`
+	Board         BoardConfig    `yaml:"board"`
 	TaskList      TaskListConfig `yaml:"taskList"`
+}
+
+type LayoutConfig struct {
+	Mode            string  `yaml:"mode"`
+	Split           float64 `yaml:"split"`
+	NarrowThreshold int     `yaml:"narrowThreshold"`
+}
+
+type BoardConfig struct {
+	CardCap int    `yaml:"cardCap"`
+	Order   string `yaml:"order"`
 }
 
 type TaskListConfig struct {
@@ -80,6 +93,24 @@ const (
 	focusStyleDim    = "dim"
 )
 
+const (
+	layoutModeAuto  = "auto"
+	layoutModeBoard = "board"
+	layoutModeList  = "list"
+
+	defaultLayoutSplit           = 0.55
+	minLayoutSplit               = 0.30
+	maxLayoutSplit               = 0.80
+	defaultLayoutNarrowThreshold = 100
+	minLayoutNarrowThreshold     = 60
+
+	defaultBoardCardCap = 12
+	minBoardCardCap     = 1
+
+	boardOrderActivity = "activity"
+	boardOrderPriority = "priority"
+)
+
 func defaultConfig() Config {
 	return Config{
 		Editor: defaultEditorConfig(),
@@ -93,6 +124,8 @@ func defaultConfig() Config {
 		Cockpit: CockpitConfig{
 			ExportDir: defaultCockpitExportDir(),
 			Focus:     FocusConfig{DimInactive: true, Style: focusStyleBoth},
+			Layout:    LayoutConfig{Mode: layoutModeAuto, Split: defaultLayoutSplit, NarrowThreshold: defaultLayoutNarrowThreshold},
+			Board:     BoardConfig{CardCap: defaultBoardCardCap, Order: boardOrderActivity},
 			TaskList:  TaskListConfig{Width: "auto", Sections: defaultTaskListSections()},
 		},
 	}
@@ -152,6 +185,11 @@ func (c *Config) normalize() {
 	c.Cockpit.ExportDir = expandHome(c.Cockpit.ExportDir)
 	c.Cockpit.Focus.Style = normalizeFocusStyle(c.Cockpit.Focus.Style)
 	c.Cockpit.ReducedMotion = normalizeBool("", c.Cockpit.ReducedMotion)
+	c.Cockpit.Layout.Mode = normalizeLayoutMode(c.Cockpit.Layout.Mode)
+	c.Cockpit.Layout.Split = normalizeLayoutSplit(c.Cockpit.Layout.Split)
+	c.Cockpit.Layout.NarrowThreshold = normalizeLayoutNarrowThreshold(c.Cockpit.Layout.NarrowThreshold)
+	c.Cockpit.Board.CardCap = normalizeBoardCardCap(c.Cockpit.Board.CardCap)
+	c.Cockpit.Board.Order = normalizeBoardOrder(c.Cockpit.Board.Order)
 	if c.Cockpit.TaskList.Width == "" {
 		c.Cockpit.TaskList.Width = defaults.Cockpit.TaskList.Width
 	}
@@ -200,6 +238,61 @@ func normalizeBool(v string, fallback bool) bool {
 		return false
 	default:
 		return fallback
+	}
+}
+
+func normalizeLayoutMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case layoutModeAuto, layoutModeBoard, layoutModeList:
+		return strings.ToLower(strings.TrimSpace(v))
+	case "":
+		return layoutModeAuto
+	default:
+		return layoutModeAuto
+	}
+}
+
+func normalizeLayoutSplit(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return defaultLayoutSplit
+	}
+	if v < minLayoutSplit {
+		return minLayoutSplit
+	}
+	if v > maxLayoutSplit {
+		return maxLayoutSplit
+	}
+	return v
+}
+
+func normalizeLayoutNarrowThreshold(v int) int {
+	if v == 0 {
+		return defaultLayoutNarrowThreshold
+	}
+	if v < minLayoutNarrowThreshold {
+		return minLayoutNarrowThreshold
+	}
+	return v
+}
+
+func normalizeBoardCardCap(v int) int {
+	if v == 0 {
+		return defaultBoardCardCap
+	}
+	if v < minBoardCardCap {
+		return minBoardCardCap
+	}
+	return v
+}
+
+func normalizeBoardOrder(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case boardOrderActivity, boardOrderPriority:
+		return strings.ToLower(strings.TrimSpace(v))
+	case "":
+		return boardOrderActivity
+	default:
+		return boardOrderActivity
 	}
 }
 

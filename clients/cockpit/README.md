@@ -1,13 +1,14 @@
 # Foreman cockpit — Bubble Tea client
 
 The Go implementation of the single-pane Foreman cockpit is built with
-[Bubble Tea v2](https://github.com/charmbracelet/bubbletea) +
-[Lip Gloss v2](https://github.com/charmbracelet/lipgloss) +
-[Glamour](https://github.com/charmbracelet/glamour) +
-[`robinovitch61/viewport`](https://github.com/robinovitch61/viewport).
+`charm.land/bubbletea/v2 v2.0.8`, `charm.land/lipgloss/v2 v2.0.5`,
+`charm.land/bubbles/v2 v2.1.0`, [Glamour](https://github.com/charmbracelet/glamour),
+and [`robinovitch61/viewport`](https://github.com/robinovitch61/viewport).
 
 The nested Go module targets the Bubble Tea v2 `tea.View` API: alt-screen and
-mouse mode are requested from `View()` rather than program options.
+mouse mode are requested from `View()` rather than program options. Because this
+client is on Bubble Tea v2, Charm TUI imports use the `charm.land/.../v2` module
+paths rather than the pre-v2 GitHub import paths.
 
 It implements the redesign in `docs/design/cockpit-ui-spec.md` and the
 architecture direction in `docs/adr/0001-go-clients-elixir-core-runtime.md`:
@@ -16,15 +17,18 @@ authoritative state.
 
 ## What it shows
 
-- One screen, two navigation axes: pick an item (left), pick a drill-down (right).
-- Left column uses gh-dash-style section tabs (`Running`, `Ready`, `Failed`,
-  `Recent`, `All`) with per-section counts. `Ready` is derived from
+- Wide terminals default to a top/bottom Kanban cockpit: pick a task/run card
+  from the board (top), then inspect its activity drill-down (bottom). The board
+  columns are `Backlog`, `Ready`, `In Progress`, `Blocked`, and `Done`.
+- Narrow terminals, or `cockpit.layout.mode: list`, keep the existing left/right
+  task list. That fallback uses gh-dash-style section tabs (`Running`, `Ready`,
+  `Failed`, `Recent`, `All`) with per-section counts. `Ready` is derived from
   current-project task state (`backlog`, `ready`, `failed`, etc.), not just
   scheduler-dispatchable rows; `Failed` includes failed/stuck/conflict tasks and
   runs with any non-empty attention reason.
-- The status bar includes the active left-pane section and selected position
-  (for example `Ready 2/5`) so section navigation remains visible outside the
-  list header.
+- The status bar shows aggregate run counts and focus (`board` / `activities` in
+  board mode, `tasks` / `details` in list fallback). In list fallback it also
+  includes the active section and selected position (for example `Ready 2/5`).
 - Live runs default to the current project (or `COCKPIT_PROJECT_ID`) and are
   deduplicated by task. The `g` scope toggle filters any mixed-project
   projection data by project id in current scope and shows all supplied
@@ -42,11 +46,11 @@ authoritative state.
   edit task JSON via `task.update`, `n` to open an in-pane `textinput` /
   `textarea` create form that posts `task.create` with `ctrl+s`, and `N` for a
   one-line quick-add task title submitted with `enter`.
-- Right column: color-coded run header, live elapsed clock for selected running
-  runs, an animated workflow phase rail with per-phase retry counts that
-  collapses to a compact `4/10 · qa r2` badge on very narrow panes, and a
-  drill-down tab strip (`summary · messages · events · logs · reports · files ·
-  pr · metrics`). Log and report open targets prefer
+- Activities/detail region: color-coded run header, live elapsed clock for
+  selected running runs, and an animated workflow phase rail with per-phase retry
+  counts that collapses to a compact `4/10 · qa r2` badge on very narrow panes.
+  It includes a drill-down tab strip (`summary · messages · events · logs ·
+  reports · files · pr · metrics`). Log and report open targets prefer
   explicit paths returned by the live `/logs` and `/report` endpoints, falling
   back to the historical `.foreman/logs` and `docs/reports` paths when omitted.
   Message rows render newest-first as a table (local `date/time` in
@@ -58,29 +62,31 @@ authoritative state.
   (`o`/focused `enter`), selected-file nvim diff against the projected base
   (`d`), and full-run `diffnav` (`D`). The metrics tab reads `/api/v1/metrics`,
   while refresh data is in flight, counts counters, gauges, and phase durations
-  in the tab badge, and renders all three as bounded rows. The active pane is
-  called out with a focus label, accent frame, non-color active-tab brackets, and
-  a non-color `▶` task-list marker; the inactive pane can be dimmed via
-  `cockpit.focus`.
+  in the tab badge, and renders all three as bounded rows. In board mode the
+  active region is called out as `focus: board` or `focus: activities`; in list
+  fallback it remains `focus: tasks` or `focus: details`. Focus uses an accent
+  frame, non-color active-tab brackets, and non-color selection markers; inactive
+  regions can be dimmed via `cockpit.focus`.
   Set `cockpit.reducedMotion` (or
   `COCKPIT_REDUCED_MOTION=true`) to keep static live/loading indicators.
-- `/` searches the focused drill-down pane when the right side is focused; the
-  task-list search remains on `/` while the left side is focused. Task-list
-  search uses a `filterableviewport` input with case-insensitive substring
-  filtering over task/run ids and row text. Drill-down search uses
-  `filterableviewport` exact matching, `enter` applies, `esc` clears, `n` / `N`
-  jump between matches, and `o` toggles matches-only view while a filter is
-  active.
-- Mouse clicks can switch task-list sections, select visible task/run rows,
-  switch drill-down tabs, trigger visible action-bar actions, and open PR links;
-  keyboard behavior remains canonical.
+- `/` searches the activities drill-down when activities/details are focused;
+  board/list search remains on `/` while the board or fallback list is focused.
+  Task-list search uses a `filterableviewport` input with
+  case-insensitive substring filtering over task/run ids and row text.
+  Drill-down search uses `filterableviewport` exact matching, `enter` applies,
+  `esc` clears, `n` / `N` jump between matches, and `o` toggles matches-only view
+  while a filter is active.
+- Mouse clicks can select visible board cards or fallback list rows, switch
+  task-list sections and drill-down tabs, trigger visible action-bar actions, and
+  open PR links; keyboard behavior remains canonical.
 - The focused logs pane pans long unwrapped rows with `left` / `right`. Logs
   render line numbers. Any drill-down pane can save currently visible viewer
   rows with `s` under `cockpit.exportDir` (`COCKPIT_EXPORT_DIR` overrides it).
 - Panes are height-bounded to the current terminal; task detail wrapping is
-  ANSI/Unicode cell-width aware. The left list stays 40 columns on narrower
-  terminals to protect the detail pane, then expands at dash-like 58% proportions
-  on wide terminals.
+  ANSI/Unicode cell-width aware. Board mode splits the body vertically using
+  `cockpit.layout.split` (default 55% board / 45% activities). Auto mode falls
+  back to the left/right task list below `cockpit.layout.narrowThreshold`
+  columns so the existing section-tab list remains usable on narrow terminals.
 - `logs` / `reports` / `files` rows open in **nvim**: remote into a running
   session when `$NVIM` is set, otherwise suspend-and-launch inline. `files`
   offers a selected-file nvim diff (`d`), an inline selected-file side-by-side
@@ -148,25 +154,39 @@ FOREMAN_SERVER_URL=http://127.0.0.1:4766 COCKPIT_DUMP=1 ./foreman-cockpit
 
 ## Keys
 
+Board mode (default on wide terminals):
+
 ```
-[/]/H/L   move between task-list sections while the task list is focused
-↑↓ / j/k  move task selection inside the active section
-enter     enter/focus the selected drill-down view; focused files opens selected row
-esc       leave the drill-down view and return focus to the task list
-↑↓ / j/k  move the highlighted row; messages/events/logs mark selection with `▶`
-ctrl+d/u  half-page down/up in the focused drill-down view
-mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls that view
-          click section tabs, visible task/run rows, or drill-down tabs to select them
-⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab and focus it
-/         search focused pane                  n/N  next / previous match
+←/→ / h/l move board columns              ↑↓ / j/k  move card in column
+enter     focus activities for selected card
+esc       return focus from activities to board
+g         toggle current-project/global scope
+/         search board/list or focused activities
+mouse     click board cards/columns; wheel board columns or activities by pointer
+⇥ / ⇧⇥    next / previous drill-down tab and focus it; 1–8 jump to a tab
 o         open selected row in nvim; focused files enter opens the selected file
 d         selected file diff in nvim          D    full run diff in diffnav
 y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
 A         attach selected run                  r/R  retry / reset selected run
-←/→       pan focused logs                    s    save visible viewer rows
-?         show generated keymap help in the detail pane; esc or ? closes it
+←/→       pan focused logs while activities are focused
+s         save visible viewer rows            ?    generated keymap help
+```
+
+List fallback (`cockpit.layout.mode: list` or narrow `auto`) keeps the original
+left/right list keys:
+
+```
+[ / ]     previous / next task-list section (H/L also work)
+↑↓ / j/k  move task selection inside the active section
+space     collapse/expand the active task-list section
+enter     enter/focus the selected drill-down view; focused files opens selected row
+esc       leave the drill-down view and return focus to the task list
+↑↓ / j/k  move the highlighted row; messages/events/logs mark selection with `▶`
+ctrl+d/u  half-page down/up in the focused drill-down view
+mouse     wheel over task list moves tasks; wheel over drill-down tabs scrolls that view
+          click section tabs, visible task/run rows, or drill-down tabs to select them
 ```
 
 Opening a drill-down view with `enter`, `tab`, or `1`–`8` selects its newest
@@ -219,6 +239,13 @@ cockpit:
     style: both         # both | border | dim
     dimInactive: true
   reducedMotion: false
+  layout:
+    mode: auto            # auto | board | list
+    split: 0.55           # board height fraction; sanitized to a safe range
+    narrowThreshold: 100  # columns below which auto uses the list fallback
+  board:
+    cardCap: 12           # visible cards per column before "… N more"
+    order: activity       # activity | priority (activity ordering is wired in v1)
   taskList:
     width: auto          # auto | columns | percentage, e.g. 58%
     sections: []         # optional [{name, filter}] task/run section strip
@@ -309,10 +336,13 @@ suspends the cockpit. The editor binary comes from `editor.cmd` or `$EDITOR`
 The root Bubble Tea model orchestrates client refresh, layout, focus, active tab,
 notices, and actions. Component state lives in small cockpit-owned types:
 
-- `task_list.go` owns gh-dash-style `Running` / `Ready` / `Failed` / `Recent` /
-  `All` section tabs, configurable field-token filters (including `attention`,
-  `pr`, and `messages`), current/global project scope, selected-row identity, and
-  a `filterableviewport`-backed left pane with a sticky section/filter header and
+- `board.go` derives the five Kanban columns from the filtered `TaskList` item
+  set, tracks selected column/card identity, and applies the configured card cap.
+- `task_list.go` remains the source of truth for gh-dash-style `Running` /
+  `Ready` / `Failed` / `Recent` / `All` section tabs, active-section collapse,
+  configurable field-token filters (including `attention`, `pr`, and
+  `messages`), current/global project scope, selected-row identity, and the list
+  fallback's `filterableviewport` pane with a sticky section/filter header and
   case-insensitive substring search over rendered row metadata.
 - `viewer.go` maps keyed drill-down rows into `robinovitch61/viewport` and
   `filterableviewport` items, preserving selected-row identity across refreshes.
@@ -330,9 +360,10 @@ client.go        Client interface, types, mock + HTTP implementations
 config.go        cockpit config loading and env overrides
 tools.go         executable availability checks
 model.go         root Elm orchestration: refresh, focus, active tab, actions
-task_list.go     left-pane grouped task/run list state
+task_list.go     scope/search/filter, selected item, and fallback grouped list state
+board.go         Kanban column derivation, selection, caps, and board state
 viewer.go        drill-down row/cursor/viewport state
-view.go          Lip Gloss rendering (status bar, list, rail, tabs, body, action bar)
+view.go          Lip Gloss rendering (status bar, board/list, rail, tabs, body, action bar)
 nvim.go          open-in-nvim resolution (remote vs inline) + editor config
 diffnav.go       full-run diffnav handoff
 delta_preview.go selected-file inline diff preview

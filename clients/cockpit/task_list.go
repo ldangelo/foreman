@@ -98,6 +98,7 @@ type TaskList struct {
 	selected  int
 	section   int
 	sections  []TaskSection
+	collapsed map[string]bool
 	scope     string // current | global
 	projectID string
 	search    string
@@ -112,8 +113,9 @@ func NewTaskList() TaskList {
 
 func NewTaskListWithSections(sections []TaskSection) TaskList {
 	return TaskList{
-		scope:    "current",
-		sections: normalizeTaskSections(sections),
+		scope:     "current",
+		sections:  normalizeTaskSections(sections),
+		collapsed: map[string]bool{},
 	}
 }
 
@@ -205,6 +207,11 @@ func (l *TaskList) SetData(runs []Run, tasks []Task) {
 
 	all := buildTaskListItems(runs, tasks)
 	section := l.ActiveSection()
+	if l.collapsed[section.Name] {
+		l.items = nil
+		l.selected = 0
+		return
+	}
 	capRecent := sectionUsesRecentCap(section)
 	items := make([]Item, 0, len(all))
 	for _, it := range all {
@@ -254,6 +261,13 @@ func (l *TaskList) MoveSection(delta int) string {
 		l.selected = 0
 	}
 	return l.ActiveSection().Name
+}
+
+func (l *TaskList) ToggleActiveSectionCollapse() bool {
+	section := l.ActiveSection().Name
+	l.collapsed[section] = !l.collapsed[section]
+	l.selected = 0
+	return l.collapsed[section]
 }
 
 func (l *TaskList) ToggleScope() string {
@@ -314,9 +328,30 @@ func (l TaskList) SelectedItem() (Item, bool) {
 	}
 	return l.items[l.selected], true
 }
-func (l TaskList) Scope() string   { return l.scope }
-func (l TaskList) Search() string  { return l.search }
-func (l TaskList) Searching() bool { return l.searching }
+
+func (l TaskList) SelectedItemKey() string {
+	if it, ok := l.SelectedItem(); ok {
+		return itemKey(it)
+	}
+	return ""
+}
+
+func (l *TaskList) SelectItemByKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, it := range l.items {
+		if itemKey(it) == key {
+			l.selected = i
+			return true
+		}
+	}
+	return false
+}
+func (l TaskList) Collapsed(section string) bool { return l.collapsed[section] }
+func (l TaskList) Scope() string                 { return l.scope }
+func (l TaskList) Search() string                { return l.search }
+func (l TaskList) Searching() bool               { return l.searching }
 
 func (l TaskList) Counts(runs []Run, tasks []Task) map[string]int {
 	count := map[string]int{}

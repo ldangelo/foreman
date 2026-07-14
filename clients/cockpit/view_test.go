@@ -32,6 +32,12 @@ func shiftedKey(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: code, Mod: tea.ModShift})
 }
 
+func newListModel(c Client) model {
+	cfg := defaultConfig()
+	cfg.Cockpit.Layout.Mode = layoutModeList
+	return newModelWithConfig(c, cfg, defaultTools)
+}
+
 func TestIntegrationShortcutsAcceptShiftModifiedLetters(t *testing.T) {
 	cfg := defaultConfig()
 	tools := fakeTools{
@@ -466,7 +472,7 @@ func TestTaskListViewportShowsSectionTabsAndSelectedRow(t *testing.T) {
 }
 
 func TestStatusBarIncludesActiveTaskSectionPosition(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 140
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running"}}
 	m.tasks = []Task{
@@ -642,7 +648,7 @@ func TestActiveTabsUseStructuralMarkerWithoutColor(t *testing.T) {
 }
 
 func TestFocusLabelFollowsActivePane(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}}
@@ -723,7 +729,7 @@ func TestLeftPaneWidthKeepsRightPaneUsable(t *testing.T) {
 }
 
 func TestReadyTaskDetailShowsFullTaskFields(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = nil
@@ -743,7 +749,7 @@ func TestReadyTaskDetailShowsFullTaskFields(t *testing.T) {
 }
 
 func TestReadyTaskDetailRendersFieldsAsAlignedTable(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = nil
@@ -854,7 +860,7 @@ func TestQuickAddTaskSubmitsTitleOnEnter(t *testing.T) {
 
 func TestQuickAddTaskRoundTripsIntoReadyList(t *testing.T) {
 	client := NewMockClient()
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 24
 
@@ -937,7 +943,7 @@ func TestMessagesRenderAsTimestampedTableRows(t *testing.T) {
 }
 
 func TestEnterFocusesViewerAndScrollKeysMoveViewer(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{
@@ -1009,7 +1015,7 @@ func TestTaskNavigationDoesNotEagerLoadInactiveDetailTabs(t *testing.T) {
 			{Group: "RUNNING", TaskID: "task-2", RunID: "run-2", Status: "running", Summary: "second"},
 		},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 20
 	m.tab = 0
@@ -1042,7 +1048,7 @@ func TestTaskNavigationOnlyLoadsActiveDetailTab(t *testing.T) {
 			"run-2": {{At: "2", From: "qa", To: "developer", Subject: "second", Body: "second body"}},
 		},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 20
 	m.tab = 1
@@ -1115,7 +1121,7 @@ func TestEnterOnFocusedFilesOpensSelectedFile(t *testing.T) {
 	}
 }
 func TestMessageViewerShowsSelectedMessageDetail(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
@@ -1134,7 +1140,7 @@ func TestMessageViewerShowsSelectedMessageDetail(t *testing.T) {
 }
 
 func TestMovingFocusedMessageUpdatesVisibleDetail(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
@@ -1156,7 +1162,7 @@ func TestMovingFocusedMessageUpdatesVisibleDetail(t *testing.T) {
 }
 
 func TestEventViewerShowsSelectedEventDetail(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
@@ -1236,6 +1242,7 @@ func TestTaskSectionChangesReloadSelectedDetail(t *testing.T) {
 		},
 	}
 	cfg := defaultConfig()
+	cfg.Cockpit.Layout.Mode = layoutModeList
 	cfg.Cockpit.TaskList.Sections = []TaskSection{
 		{Name: taskSectionRunning, Filter: "state:running"},
 		{Name: taskSectionFailed, Filter: "state:failed"},
@@ -1281,7 +1288,7 @@ func TestMouseClickVisibleTaskRowSelectsAndReloadsDetail(t *testing.T) {
 			"run-second": {{From: "qa", To: "dev", Subject: "second-detail"}},
 		},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 20
 	m.tab = 1
@@ -1399,7 +1406,7 @@ func TestMouseWheelOverMessagesScrollsViewerNotTasks(t *testing.T) {
 }
 
 func TestMouseWheelOverTaskListMovesTasksNotViewer(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 12
 	m.runs = []Run{
@@ -1636,7 +1643,7 @@ func TestSelectedMessageHeaderAndBodyStayInViewport(t *testing.T) {
 			{At: "1", From: "qa", To: "developer", Subject: "first", Body: "first body"},
 		},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 12
 	m.tab = 1
@@ -1923,7 +1930,7 @@ func TestPRTabRendersProjectedStatusAndAction(t *testing.T) {
 			BaseBranch: "main",
 		}},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 20
 	m.tab = 6
@@ -2123,7 +2130,7 @@ func TestFilesTabRendersSelectedFilePreview(t *testing.T) {
 		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
 		files: []FileChange{{Change: "M", Path: "src/a.go", Stat: "+1 -1"}},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 20
 	m.tab = 5
@@ -2144,7 +2151,7 @@ func TestMotionStatusAndDiffLoadingRespectReducedMotion(t *testing.T) {
 		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
 		files: []FileChange{{Change: "M", Path: "src/a.go", Stat: "+1 -1"}},
 	}
-	m := newModel(client)
+	m := newListModel(client)
 	m.width = 120
 	m.height = 20
 	m.tab = 5
@@ -2162,6 +2169,7 @@ func TestMotionStatusAndDiffLoadingRespectReducedMotion(t *testing.T) {
 	}
 
 	cfg := defaultConfig()
+	cfg.Cockpit.Layout.Mode = layoutModeList
 	cfg.Cockpit.ReducedMotion = true
 	reduced := newModelWithConfig(client, cfg, defaultTools)
 	reduced.width = 120
@@ -2475,7 +2483,7 @@ func TestMetricsTabRendersOperationalCounters(t *testing.T) {
 }
 
 func TestMetricsTabCountIncludesPhaseDurations(t *testing.T) {
-	m := newModel(&mutableClient{})
+	m := newListModel(&mutableClient{})
 	m.width = 120
 	m.height = 20
 	m.tab = 7
@@ -2492,7 +2500,7 @@ func TestMetricsTabCountIncludesPhaseDurations(t *testing.T) {
 }
 
 func TestOpenableTabMarkerDrivesHitTesting(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", Pipeline: pipe(1, -1)}}
@@ -2511,7 +2519,7 @@ func TestOpenableTabMarkerDrivesHitTesting(t *testing.T) {
 }
 
 func TestMouseClickSelectsTaskSection(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}
@@ -2529,7 +2537,7 @@ func TestMouseClickSelectsTaskSection(t *testing.T) {
 }
 
 func TestMouseClickSelectsTaskRow(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{
@@ -2547,7 +2555,7 @@ func TestMouseClickSelectsTaskRow(t *testing.T) {
 }
 
 func TestMouseClickTaskRowAccountsForScrolledViewport(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 12
 	m.runs = nil
@@ -2570,7 +2578,7 @@ func TestMouseClickTaskRowAccountsForScrolledViewport(t *testing.T) {
 }
 
 func TestMouseClickSelectsRunDetailTab(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", Pipeline: pipe(1, -1)}}
@@ -2952,7 +2960,7 @@ func TestInactiveMetadataAdaptersUseMutedVisual(t *testing.T) {
 }
 
 func TestMouseClickMovesFocusBetweenTaskListAndDetailPane(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}}
@@ -2973,7 +2981,7 @@ func TestMouseClickMovesFocusBetweenTaskListAndDetailPane(t *testing.T) {
 
 func TestFocusLabelRendersWithoutANSI(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 120
 	m.height = 20
 	m.viewFocused = false
@@ -2988,7 +2996,7 @@ func TestFocusLabelRendersWithoutANSI(t *testing.T) {
 }
 
 func TestFocusLabelFollowsPaneFocus(t *testing.T) {
-	m := newModel(NewMockClient())
+	m := newListModel(NewMockClient())
 	m.width = 100
 	m.height = 16
 	m.runs = NewMockClient().Runs()
@@ -3002,6 +3010,132 @@ func TestFocusLabelFollowsPaneFocus(t *testing.T) {
 	m.viewFocused = true
 	if out := stripANSI(m.renderKeyBar(100)); !strings.Contains(out, "focus: details") {
 		t.Fatalf("expected details focus label, got %q", out)
+	}
+}
+
+func TestBoardStartupRendersWideTopBottomLayout(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 140
+	m.height = 24
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-run", RunID: "run-1", Status: "running", Title: "Running task"}}
+	m.tasks = []Task{{TaskID: "task-ready", Status: "ready", Title: "Ready task"}}
+	m.buildItems()
+	m.loadDetail()
+
+	out := stripANSI(m.renderFrame())
+	for _, want := range []string{"Backlog 0", "Ready 1", "In Progress 1", "Blocked 0", "Done 0", "focus: board"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected startup board layout to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestBoardColumnsUseAllFilteredItemsAndCounts(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 140
+	m.height = 24
+	m.runs = []Run{
+		{Group: taskGroupRecent, TaskID: "task-backlog", RunID: "run-backlog", Status: "open"},
+		{Group: taskGroupRunning, TaskID: "task-running", RunID: "run-running", Status: "running"},
+		{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-blocked", Status: "completed", Attention: "conflict"},
+		{Group: taskGroupRecent, TaskID: "task-done", RunID: "run-done", Status: "completed"},
+	}
+	m.tasks = []Task{{TaskID: "task-ready", Status: "ready"}}
+	m.buildItems()
+
+	counts := m.board.Counts()
+	if counts[BoardColumnBacklog] != 1 || counts[BoardColumnReady] != 1 || counts[BoardColumnInProgress] != 1 || counts[BoardColumnBlocked] != 1 || counts[BoardColumnDone] != 1 {
+		t.Fatalf("expected one card in each board column, got %#v", counts)
+	}
+}
+
+func TestBoardCardSelectionUpdatesActivitiesDetail(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: taskGroupRunning, TaskID: "task-first", RunID: "run-first", Status: "running"},
+			{Group: taskGroupRunning, TaskID: "task-second", RunID: "run-second", Status: "running"},
+		},
+		messagesByRun: map[string][]Message{
+			"run-first":  {{Subject: "first-detail"}},
+			"run-second": {{Subject: "second-detail"}},
+		},
+	}
+	m := newModel(client)
+	m.width = 140
+	m.height = 24
+	m.tab = 1
+	m.runs = client.runs
+	m.buildItems()
+	m.loadDetail()
+
+	updated, _ := m.handleKey(keyPress("j"))
+	m = updated.(model)
+	if it, ok := m.selectedItem(); !ok || it.Run.RunID != "run-second" {
+		t.Fatalf("expected board card movement to select second run, got ok=%v item=%#v", ok, it)
+	}
+	if len(m.msgs) != 1 || m.msgs[0].Subject != "second-detail" {
+		t.Fatalf("expected board selection to reload activities, got %#v", m.msgs)
+	}
+}
+
+func TestBoardActivitiesFocusTransitions(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 140
+	m.height = 24
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-run", RunID: "run-1", Status: "running"}}
+	m.buildItems()
+
+	if out := stripANSI(m.renderKeyBar(140)); !strings.Contains(out, "focus: board") {
+		t.Fatalf("expected board focus label, got %q", out)
+	}
+	updated, _ := m.handleKey(specialKey(tea.KeyEnter))
+	m = updated.(model)
+	if !m.viewFocused {
+		t.Fatal("expected enter to focus activities")
+	}
+	if out := stripANSI(m.renderKeyBar(140)); !strings.Contains(out, "focus: activities") {
+		t.Fatalf("expected activities focus label, got %q", out)
+	}
+	updated, _ = m.handleKey(specialKey(tea.KeyEsc))
+	m = updated.(model)
+	if m.viewFocused {
+		t.Fatal("expected escape to return to board")
+	}
+}
+
+func TestBoardAutoNarrowFallsBackToListLayout(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 80
+	m.height = 20
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-run", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{{TaskID: "task-ready", Status: "ready"}}
+	m.buildItems()
+
+	out := stripANSI(m.renderFrame())
+	if !strings.Contains(out, "Running 1") || !strings.Contains(out, "Ready 1") || !strings.Contains(out, "focus: tasks") {
+		t.Fatalf("expected narrow auto mode to keep list fallback, got:\n%s", out)
+	}
+}
+
+func TestBoardMouseClickCardSelectsTaskAndFocusesBoard(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 150
+	m.height = 24
+	m.runs = []Run{
+		{Group: taskGroupRunning, TaskID: "task-first", RunID: "run-first", Status: "running"},
+		{Group: taskGroupRunning, TaskID: "task-second", RunID: "run-second", Status: "running"},
+	}
+	m.buildItems()
+	m.viewFocused = true
+
+	colW := m.width / len(m.board.Columns())
+	updated, _ := m.Update(mouseClick(colW*2+2, 7))
+	m = updated.(model)
+	if m.viewFocused {
+		t.Fatal("expected board card click to focus board")
+	}
+	if it, ok := m.selectedItem(); !ok || it.Run.RunID != "run-second" {
+		t.Fatalf("expected board click to select second card, got ok=%v item=%#v", ok, it)
 	}
 }
 

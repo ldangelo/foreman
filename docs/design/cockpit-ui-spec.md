@@ -16,57 +16,76 @@ A single-pane cockpit that answers four operator questions without mode-hunting:
 The current `super-tui` answers these but forces the operator to choose across
 five independent navigation axes at once — view (overview/inbox/status/board),
 scope, filter, focus, and detail tab. This spec collapses navigation to **two
-axes**: which item (left), and which drill-down (right).
+axes**: which item (board/list), and which activity/detail tab.
 
 ## Layout
 
-One screen. No view switching. Three regions plus chrome.
+One screen. No view switching. Wide terminals default to a top/bottom board
+layout with status chrome:
 
 ```
 ┌ foreman watch — cockpit ─────────────────────────────────────────────────────┐
-│ foreman  3 running · 5 ready · 14 done      nvim ⇄ attached · dev · Ready 2/5 · ↻ 2s │  status bar
-├───────────────────────────┬───────────────────────────────────────────────────┤
-│ Running 3  Ready 5  Failed 1 │  TRD-2026-014   run a1b2c3d4…          running │  detail header
-│ filter: current project      │  ───────────────────────────────────────────── │
-│ ● TRD-2026-014 · task · P0   │  explorer ✓─developer ●─documentation ○─qa ○… │  phase rail
-│   implement auth middleware  │  ───────────────────────────────────────────── │
-│ ▸ TASK-338 · bug · P1    qa  │  [summary] messages 3 events 4 logs⧉ reports⧉ │  tab strip
-│   fix flaky retry handling   │  files⧉ pr 1 metrics 2                        │
-│ Ready  Failed  Recent  All   │                                                │
-│ ○ TASK-341 · feature · P0    │  Status: implementing auth middleware…         │  drill-down body
-│   add OAuth provider config  │  worktree ~/wt/TRD-2026-014                    │
-│ ✗ TASK-329 · bug · P2 failed │  branch   foreman/TRD-2026-014                 │
-│   rebase conflict in finalize│  last     12s ago · progress_update            │
-│                              │                                                │
-│                              │ ─────────────────────────────────────────────  │
-│                              │ ▸ open DEVELOPER_REPORT.md in nvim            │  action bar
-├───────────────────────────┴───────────────────────────────────────────────────┤
-│ ↑↓/j/k tasks  enter view  ctrl+d/u page  D diffnav  G gh dash  C enhance  ? help │  keybar
-└────────────────────────────────────────────────────────────────────────────────┘
+│ foreman  3 running · 5 ready · 2 blocked · 14 done  focus: board · ↻ 2s      │ status
+├────────────┬────────────┬────────────┬────────────┬──────────────────────────┤
+│ Backlog 12 │ Ready 5    │ In Prog 3  │ Blocked 2  │ Done 14                  │ board
+│ ─────────  │ ─────────  │ ─────────  │ ─────────  │ ─────────                │ top
+│ ▸TRD-…     │ TASK-341   │ ●TRD-…     │ ✗TASK-329  │ ✓TRD-…                   │
+│  auth      │ add OAuth  │ developer  │ conflict   │ merged #482              │
+│  P0 · task │ P0 · task  │ P1 · 4m12s │ P2 · bug   │ …11 more                 │
+├────────────┴────────────┴────────────┴────────────┴──────────────────────────┤
+│ TRD-2026-014   run a1b2c3d4…          running                                │ activities
+│ ───────────────────────────────────────────────────────────────────────────── │ bottom
+│ explorer ✓─developer ●─documentation ○─qa ○…                                  │ phase rail
+│ [summary] messages 3 events 4 logs⧉ reports⧉ files⧉ pr 1 metrics 2          │ tabs
+│ Status: implementing auth middleware…    worktree ~/wt/TRD-2026-014          │ body
+│ ▸ open DEVELOPER_REPORT.md in nvim                                           │ actions
+├───────────────────────────────────────────────────────────────────────────────┤
+│ ←→/h l board  ↑↓/j k card  enter activities  esc board  a approve  ? help    │ keybar
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Left column — the answer to Q1, Q2, Q3 at a glance
+`cockpit.layout.mode: auto` uses the board when the terminal is at least
+`cockpit.layout.narrowThreshold` columns wide (default 100). Below that threshold,
+or when `cockpit.layout.mode: list`, the cockpit keeps the existing left/right
+section-tab task list and detail pane. `cockpit.layout.mode: board` forces the
+top/bottom board. The board/detail height split comes from `cockpit.layout.split`
+(default `0.55`, sanitized to a safe range).
 
-The task list is organized as a gh-dash-style section strip with counts:
+### Top board — fleet overview
+
+The board columns are:
+
+- **Backlog** — `open`, `todo`.
+- **Ready** — `ready`, `pending`.
+- **In Progress** — `running`, `in_progress`, `cooldown`, plus live phase names
+  such as `explorer`, `developer`, `qa`, `reviewer`, and `finalize`.
+- **Blocked** — failed/stuck/conflict/blocked/review/test-failed statuses,
+  unknown statuses, any non-empty attention reason, or verdict `fail|blocked`.
+- **Done** — `merged`, `completed`, `done`, `closed`, `reset`, `pr_created`.
+
+Headers show true counts. Columns render at most `cockpit.board.cardCap` visible
+cards (default 12) before a `… N more` overflow row. v1 ordering is
+last-activity first; `cockpit.board.order` normalizes `activity|priority`, but
+priority-first ordering is not required unless the board core supports it.
+
+The selected card drives the entire activities region through the same selected
+`TaskList` item identity used by the list fallback, so approve/edit/create,
+attach/retry/reset, nvim/diffnav, PR, and OMP actions continue to target the
+selected item.
+
+### List fallback — narrow or explicit list mode
+
+The fallback task list is organized as a gh-dash-style section strip with counts:
 
 - **Running** — tasks and runs whose task/run status is active (`pending | running | in_progress | cooldown`).
-  Each row shows a state glyph, id/type/priority/phase metadata, and a second
-  title/summary line. (Q1)
-- **Ready** — current-project tasks that are not terminal/running. Each row
-  shows a state glyph, id/type/priority/status metadata, and a second
-  title/summary line; selecting one shows an aligned field table with id, status,
-  workflow, dependencies, project, and description, plus approve, edit, and create
-  actions. Wrapped detail text must respect terminal display cell width, including
-  ANSI styling and wide glyphs. (Q2)
+- **Ready** — current-project tasks that are not terminal/running.
 - **Failed** — failed/stuck/conflict/test-failed tasks or runs with any non-empty
   attention reason.
 - **Recent** — projected runs that are not currently active, most-recent first,
-  capped in the default Recent section (default 15) while counts keep the full total. (Q3 for finished work)
+  capped in the default Recent section while counts keep the full total.
 - **All** — the combined task/run list.
 
-The selected row drives the entire right side.
-
-### Right column — the answer to Q3 detail and Q4
+### Activities/detail region — Q3 detail and Q4
 
 - **Detail header** — task id, run id, and run status (color-coded). For
   attention runs, a second line states the reason (`failed: merge_conflict`,
@@ -97,7 +116,8 @@ live in small cockpit-owned components:
 
 | Component | Owns |
 |-----------|------|
-| `TaskList` | configurable section tabs mapped into a `filterableviewport` left pane, selected item, sticky section/filter header, case-insensitive substring search, and scope |
+| `Board` | five Kanban columns derived from filtered `TaskList` items, selected column/card identity, per-column card caps, and activity-first ordering |
+| `TaskList` | source of truth for scope, search/filter grammar, selected item identity, configurable section tabs, active-section collapse, and the narrow/list-mode `filterableviewport` fallback |
 | `Viewer` | keyed drill-down rows mapped into `robinovitch61/viewport` items, selected line identity, bottom-follow behavior, and packed unselectable child rows (message bodies / diff previews) |
 | Tab adapters | conversion of summary/messages/events/logs/reports/files/pr/metrics data into stable keyed viewer lines and nvim/browser targets where applicable |
 
@@ -111,11 +131,13 @@ frames and stopwatch display for accessibility / low-power terminals. The metric
 tab consumes `/api/v1/metrics` and renders counters, gauges, and phase-duration
 bars without client-side authoritative aggregation.
 
-The keybar includes an explicit `focus: tasks` / `focus: details` label. The
-focused pane uses the accent border; the inactive pane uses the blur border and,
-by default, a muted content palette controlled by `cockpit.focus`.
-Mouse input mirrors keyboard targets for visible task-list sections, task/run
-rows, and drill-down tabs; wheel routing remains pane-sensitive.
+The keybar includes an explicit focus label: `focus: board` / `focus:
+activities` in board mode and `focus: tasks` / `focus: details` in the list
+fallback. The focused region uses the accent border; inactive regions use the
+blur border and, by default, a muted content palette controlled by
+`cockpit.focus`. Mouse input mirrors keyboard targets for visible board cards,
+fallback task-list sections/rows, and drill-down tabs; wheel routing remains
+region-sensitive.
 
 
 ## Keymap
@@ -124,21 +146,20 @@ Global:
 
 | Key | Action |
 |-----|--------|
-| `↑`/`↓`, `j`/`k` | move task selection while the task list is focused |
-| `enter` | enter/focus the selected drill-down view; in focused files, open the selected file |
-| `esc` | leave the drill-down view and return focus to the task list; clears search while searching |
-| `↑`/`↓`, `j`/`k` | move the highlighted row in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
+| `←`/`→`, `h`/`l` | board focused: move between Kanban columns; activities focused on logs: pan long rows |
+| `↑`/`↓`, `j`/`k` | board/list focused: move card or fallback task selection; activities focused: move the highlighted row in messages/events/logs/reports/files/pr |
+| `enter` | board/list focused: focus activities/details for the selected item; in focused files, open the selected file |
+| `esc` | activities/details focused: return focus to board/list; clears search while searching |
 | message/event/log rows | messages render newest-first as selectable table rows with local `date/time` (`mm/dd hh:mm`), sender, receiver, and message columns; event/log rows select one signal row at a time with a visible `▶` marker; selected messages show metadata/body detail, selected events show time/type/detail, selected logs show line/text detail; message tabs also show `messages <current>/<total>` in both the tab and run header |
-| mouse wheel | scroll the pane under the pointer: task list on the left, active drill-down view on the right |
+| mouse wheel | scroll the region under the pointer: active board column/list fallback or activities/details |
 | `ctrl+d` / `ctrl+u` | half-page down/up in the focused drill-down view |
-| `←` / `→` | pan long focused log rows when horizontal overflow remains |
 | `s` | save the currently visible focused drill-down rows to `cockpit.exportDir` |
 | `⇥` / `⇧⇥` | next / previous drill-down tab and focus it |
 | `1`–`8` | jump directly to a tab and focus it |
-| `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused |
-| `/` | search the task list when the left side is focused; search the focused drill-down pane when the right side is focused |
+| `[`/`]`, `H`/`L` | move between task-list sections while the task list is focused; `space` collapses or expands the active section |
+| `/` | search the board/list when that region is focused; search the focused activities/details pane otherwise |
 | `g` | toggle current-project vs global scope |
-| `enter` | focus details; on PR, open the PR in a browser; in focused files, open the selected file |
+| `o` / focused `enter` | on PR, open the PR in a browser; in focused files, open the selected file |
 | `A` | attach the selected run through `GET /api/v1/runs/:id/attach` |
 | `p` | attach an `omp` session to the selected run worktree with a generated triage brief; refuses actively running workers |
 | `P` | attach plain `omp` to the selected run worktree without a brief |
@@ -146,7 +167,7 @@ Global:
 | `R` | reset the selected run through the command bus |
 | `G` | open `gh dash` when enabled and available |
 | `C` | open `gh enhance` for the selected run when enabled and available |
-| `?` | toggle generated keymap help in the right detail pane; `esc` closes it |
+| `?` | toggle generated keymap help in the activities/details pane; `esc` closes it |
 | `q` | quit |
 
 
@@ -289,6 +310,13 @@ cockpit:
   focus:
     style: both          # both | border | dim
     dimInactive: true
+  layout:
+    mode: auto            # auto | board | list
+    split: 0.55           # board height fraction; sanitized to a safe range
+    narrowThreshold: 100  # cols below which auto uses the list fallback
+  board:
+    cardCap: 12           # visible cards per column before "… N more"
+    order: activity       # activity | priority (activity ordering is wired in v1)
   taskList:
     width: auto          # auto | columns | percentage, e.g. 58%
     sections: []         # optional [{name, filter}] section strip

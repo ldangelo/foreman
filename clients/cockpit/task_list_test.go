@@ -150,6 +150,62 @@ func TestTaskListSectionSwitchKeepsSelectionVisible(t *testing.T) {
 	}
 }
 
+func TestTaskListActiveSectionCollapseKeepsSelectionVisible(t *testing.T) {
+	list := NewTaskList()
+	runs := []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}
+	list.SetData(runs, nil)
+	if got := len(list.Items()); got != 1 {
+		t.Fatalf("expected running row before collapse, got %d", got)
+	}
+
+	if collapsed := list.ToggleActiveSectionCollapse(); !collapsed {
+		t.Fatalf("expected active section to collapse")
+	}
+	list.SetData(runs, nil)
+	if !list.Collapsed(taskSectionRunning) {
+		t.Fatalf("expected Running section collapsed")
+	}
+	if got := len(list.Items()); got != 0 {
+		t.Fatalf("expected collapsed active section to hide rows, got %d", got)
+	}
+	if list.SelectedIndex() != 0 {
+		t.Fatalf("expected collapsed section to keep selection clamped at 0, got %d", list.SelectedIndex())
+	}
+
+	if collapsed := list.ToggleActiveSectionCollapse(); collapsed {
+		t.Fatalf("expected active section to expand")
+	}
+	list.SetData(runs, nil)
+	if got := len(list.Items()); got != 1 {
+		t.Fatalf("expected expanded section to restore row, got %d", got)
+	}
+}
+
+func TestTaskListSpaceKeyTogglesActiveSectionCollapse(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1"}}
+	m.tasks = nil
+	m.buildItems()
+
+	updated, _ := m.handleKey(keyPress(" "))
+	m = updated.(model)
+	if !m.taskList.Collapsed(taskSectionRunning) {
+		t.Fatalf("expected space to collapse active task section")
+	}
+	if got := len(m.taskList.Items()); got != 0 {
+		t.Fatalf("expected collapsed section to hide rows, got %d", got)
+	}
+
+	updated, _ = m.handleKey(keyPress(" "))
+	m = updated.(model)
+	if m.taskList.Collapsed(taskSectionRunning) {
+		t.Fatalf("expected second space to expand active task section")
+	}
+	if got := len(m.taskList.Items()); got != 1 {
+		t.Fatalf("expected expanded section to restore row, got %d", got)
+	}
+}
+
 func TestTaskListPreservesSelectionByStableIdentity(t *testing.T) {
 	list := NewTaskList()
 	list.MoveSection(4) // All
@@ -175,6 +231,7 @@ func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 	list := NewTaskList()
 	list.MoveSection(1) // Ready
 	list.SetData(nil, []Task{{TaskID: "alpha", Summary: "first"}, {TaskID: "beta", Summary: "second"}})
+
 	list.Move(1)
 
 	list.StartSearch(keyPress("/"))
@@ -212,6 +269,28 @@ func TestTaskListSearchFiltersAndClampsSelection(t *testing.T) {
 	}
 	if len(list.Items()) != 2 {
 		t.Fatalf("expected cleared search to restore both rows, got %#v", list.Items())
+	}
+}
+
+func TestTaskListSelectItemByKey(t *testing.T) {
+	list := NewTaskList()
+	list.MoveSection(4) // All
+	list.SetData([]Run{
+		{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a"},
+		{Group: taskGroupRecent, TaskID: "task-b", RunID: "run-b"},
+	}, nil)
+
+	if !list.SelectItemByKey("run:run-b") {
+		t.Fatalf("expected run-b key to be selectable")
+	}
+	if got := list.SelectedItemKey(); got != "run:run-b" {
+		t.Fatalf("expected selected key run:run-b, got %q", got)
+	}
+	if list.SelectItemByKey("run:missing") {
+		t.Fatalf("expected missing key selection to fail")
+	}
+	if got := list.SelectedItemKey(); got != "run:run-b" {
+		t.Fatalf("expected missing key lookup to preserve current selection, got %q", got)
 	}
 }
 
