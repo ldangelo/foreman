@@ -88,6 +88,7 @@ func (k cockpitKeyMap) FullHelp() [][]key.Binding {
 			binding("y", "copy task id"),
 			binding("a", "approve task"),
 			binding("e", "edit task"),
+			binding("c", "close task"),
 			binding("A", "attach run"),
 			binding("r/R", "retry/reset run"),
 		},

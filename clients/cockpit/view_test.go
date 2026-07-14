@@ -285,8 +285,8 @@ func TestReadyTaskViewShowsApproveEditAndCreateActions(t *testing.T) {
 	if !strings.Contains(out, "task actions task-ready") {
 		t.Fatalf("expected task action panel, got:\n%s", out)
 	}
-	if !strings.Contains(out, "y copy task id") || !strings.Contains(out, "a approve") || !strings.Contains(out, "e edit") || !strings.Contains(out, "n new task") {
-		t.Fatalf("expected copy, approve, edit, and create action hints, got:\n%s", out)
+	if !strings.Contains(out, "y copy task id") || !strings.Contains(out, "c close") || !strings.Contains(out, "a approve") || !strings.Contains(out, "e edit") || !strings.Contains(out, "n new task") {
+		t.Fatalf("expected copy, close, approve, edit, and create action hints, got:\n%s", out)
 	}
 }
 
@@ -300,14 +300,17 @@ func TestFailedTaskViewSuppressesReadyMutations(t *testing.T) {
 	m.buildItems()
 
 	out := stripANSI(m.renderFrame())
-	if !strings.Contains(out, "task actions task-failed") || !strings.Contains(out, "y copy task id") {
-		t.Fatalf("expected failed task to keep read-only task action panel, got:\n%s", out)
+	if !strings.Contains(out, "task actions task-failed") || !strings.Contains(out, "y copy task id") || !strings.Contains(out, "c close") {
+		t.Fatalf("expected failed task to keep copy and close task actions, got:\n%s", out)
 	}
 	if strings.Contains(out, "a approve") || strings.Contains(out, "e edit") {
 		t.Fatalf("expected failed task to suppress READY mutation actions, got:\n%s", out)
 	}
 	if _, cmd := m.handleKey(keyPress("a")); cmd != nil {
 		t.Fatal("expected approve key on failed task to refuse without command")
+	}
+	if _, cmd := m.handleKey(keyPress("c")); cmd == nil {
+		t.Fatal("expected close key on failed task to execute command")
 	}
 }
 
@@ -2609,6 +2612,9 @@ func TestMouseActionHitTestingCoversTaskActions(t *testing.T) {
 	copyX := x + len("▸ task actions task-ready  ")
 	if key := m.actionKeyAt(copyX, startY); key != "y" {
 		t.Fatalf("expected first task action segment to copy id, got %q", key)
+	}
+	if key := m.actionKeyAt(x+len("▸ task actions task-ready  y copy task id  "), startY); key != "c" {
+		t.Fatalf("expected first task action line to close task, got %q", key)
 	}
 	if key := m.actionKeyAt(x, startY+1); key != "a" {
 		t.Fatalf("expected second task action line to approve, got %q", key)

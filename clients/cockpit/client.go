@@ -147,6 +147,7 @@ type Client interface {
 	ApproveTask(task Task) error
 	UpdateTask(task Task) error
 	CreateTask(task Task) error
+	CloseTask(task Task) error
 	RetryRun(run Run) error
 	ResetRun(run Run) error
 	AttachRun(run Run) error
@@ -445,6 +446,18 @@ func (c *mockClient) CreateTask(task Task) error {
 	c.tasks = append(c.tasks, task)
 	return nil
 }
+func (c *mockClient) CloseTask(task Task) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.tasks {
+		if c.tasks[i].TaskID == task.TaskID {
+			c.tasks[i].Status = "closed"
+			return nil
+		}
+	}
+	return nil
+}
+
 func (c *mockClient) RetryRun(run Run) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1249,6 +1262,17 @@ func (c *httpClient) CreateTask(task Task) error {
 		"priority":    task.Priority,
 		"status":      task.Status,
 		"source":      "cockpit",
+	})
+}
+
+func (c *httpClient) CloseTask(task Task) error {
+	projectID := task.ProjectID
+	if projectID == "" {
+		projectID = c.projectID()
+	}
+	return c.postCommand("task.close", map[string]any{
+		"project_id": projectID,
+		"task_id":    task.TaskID,
 	})
 }
 

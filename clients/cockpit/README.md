@@ -41,11 +41,12 @@ authoritative state.
   phase/status, and available counts/checks/PR/diff/age columns) on the first
   line and the title/summary on the second.
   The selected task detail is scrollable and renders id, status, workflow,
-  dependencies, project, and description as an aligned field table. READY task
-  rows support `y` to copy the task id, `a` to approve via `task.approve`, `e` to
-  edit task JSON via `task.update`, `n` to open an in-pane `textinput` /
-  `textarea` create form that posts `task.create` with `ctrl+s`, and `N` for a
-  one-line quick-add task title submitted with `enter`.
+  dependencies, project, and description as an aligned field table. Task rows
+  support `y` to copy the task id and `c` to close via `task.close`. READY task
+  rows also support `a` to approve via `task.approve`, `e` to edit task JSON via
+  `task.update`, `n` to open an in-pane `textinput` / `textarea` create form
+  that posts `task.create` with `ctrl+s`, and `N` for a one-line quick-add task
+  title submitted with `enter`.
 - Activities/detail region: color-coded run header, live elapsed clock for
   selected running runs, and an animated workflow phase rail with per-phase retry
   counts that collapses to a compact `4/10 · qa r2` badge on very narrow panes.

@@ -191,11 +191,12 @@ Focused drill-down search:
 
 Entering a view selects its newest rendered line. Live updates preserve a moved viewer cursor by rendered line identity when possible instead of snapping back to the bottom.
 
-READY task rows add:
+Task rows add:
 
 | Key | Action |
 |-----|--------|
 | `y` | copy the selected task id |
+| `c` | close the selected task through the command bus (`task.close`) |
 | `a` | approve the selected READY task (`task.approve`) |
 | `e` | edit the selected READY task JSON in nvim and submit changed fields (`task.update`) |
 

@@ -2,6 +2,12 @@ package main
 
 import tea "charm.land/bubbletea/v2"
 
+func closeTask(c Client, task Task) tea.Cmd {
+	return func() tea.Msg {
+		return taskActionDoneMsg{action: "closed", taskID: task.TaskID, err: c.CloseTask(task)}
+	}
+}
+
 func retryRun(c Client, run Run) tea.Cmd {
 	return func() tea.Msg {
 		return runActionDoneMsg{action: "retry requested", runID: run.RunID, taskID: run.TaskID, err: c.RetryRun(run)}

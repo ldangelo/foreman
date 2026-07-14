@@ -1236,7 +1236,7 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
 	if task, ok := m.selectedTask(); ok {
 		lines := []string{
-			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id"), w),
+			clip(greenStyle.Render("▸ task actions ")+whiteStyle.Render(task.TaskID)+"  "+cyanStyle.Render("y")+dimStyle.Render(" copy task id")+"  "+cyanStyle.Render("c")+dimStyle.Render(" close"), w),
 		}
 		if _, ready := m.selectedReadyTask(); ready {
 			lines = append(lines, clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form")+"  "+cyanStyle.Render("N")+dimStyle.Render(" quick add"), w))

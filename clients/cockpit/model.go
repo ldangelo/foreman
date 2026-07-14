@@ -642,6 +642,11 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, editTaskInNvim(m.editor, m.client, task)
 		}
 		m.notice = "edit: select a READY task"
+	case "c":
+		if task, ok := m.selectedTask(); ok {
+			return m, closeTask(m.client, task)
+		}
+		m.notice = "close: select a task"
 	case "y":
 		if taskID, ok := m.selectedTaskID(); ok {
 			return m, copyTaskID(taskID)
@@ -1271,6 +1276,7 @@ func (m model) actionKeyAt(x, y int) string {
 			prefix := "▸ task actions " + task.TaskID + "  "
 			return actionSegmentKey(relX, prefix, []actionSegment{
 				{label: "y copy task id", key: "y"},
+				{label: "c close", key: "c"},
 			})
 		}
 		if _, ready := m.selectedReadyTask(); ready && line == 1 {
