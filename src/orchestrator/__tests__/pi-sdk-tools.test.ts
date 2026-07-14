@@ -9,9 +9,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createArtifactWriteTool, createDiffReadTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, type ForemanToolContext } from "../pi-sdk-tools.js";
+import { createArtifactWriteTool, createDiffReadTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, createTaskGetTool, createTaskNoteAddTool, createTaskRiskAddTool, createTaskStatusTool, type ForemanToolContext } from "../pi-sdk-tools.js";
 import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
+import type { ElixirServerClient } from "../../lib/elixir-server-client.js";
 
 
 const ghResponses = vi.hoisted<unknown[]>(() => []);
@@ -362,6 +363,161 @@ describe("VCS and PR review tools", () => {
         blockingFindings: [],
         mergeConflict: false,
       }));
+    });
+  });
+});
+
+describe("Task context tools", () => {
+  function makeMockElixirClient(): ElixirServerClient {
+    return {
+      getTask: vi.fn(),
+      sendCommand: vi.fn(),
+    } as unknown as ElixirServerClient;
+  }
+
+  describe("createTaskGetTool", () => {
+    it("returns full task context when task exists", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      const mockTask = {
+        id: "foreman-123",
+        title: "Test Task",
+        description: "A test task",
+        status: "in_progress",
+        annotations: [],
+        dependencies: [],
+      };
+      (client.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(mockTask);
+      const tool = createTaskGetTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "foreman-123" }, undefined, undefined, {} as never);
+      expect(client.getTask).toHaveBeenCalledWith("foreman-123");
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("foreman-123") }));
+      expect((result.details as Record<string, unknown>)._meta).toMatchObject({ runId: "run-1", taskId: "task-1" });
+      expect((result.details as Record<string, unknown>).title).toBe("Test Task");
+    });
+
+    it("returns error when task not found", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const tool = createTaskGetTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "missing" }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("not found") }));
+      expect(result.details).toMatchObject({ taskId: "missing", found: false });
+    });
+
+    it("returns error when getTask throws", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.getTask as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("server unavailable"));
+      const tool = createTaskGetTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "foreman-123" }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Failed to get task") }));
+    });
+  });
+
+  describe("createTaskStatusTool", () => {
+    it("returns only status field", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "foreman-123",
+        status: "completed",
+        updated_at: "2024-01-01T00:00:00Z",
+      });
+      const tool = createTaskStatusTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "foreman-123" }, undefined, undefined, {} as never);
+      expect(result.details).toEqual({
+        taskId: "foreman-123",
+        status: "completed",
+        updatedAt: "2024-01-01T00:00:00Z",
+      });
+    });
+
+    it("returns null status when task not found", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const tool = createTaskStatusTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "missing" }, undefined, undefined, {} as never);
+      expect(result.details).toMatchObject({ taskId: "missing", found: false, status: null });
+    });
+  });
+
+  describe("createTaskNoteAddTool", () => {
+    it("sends annotation with kind=note and run_id scoping", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.sendCommand as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, events: [], projection_version: 1, correlation_id: "corr-1" });
+      const tool = createTaskNoteAddTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "foreman-123", body: "Important finding" }, undefined, undefined, {} as never);
+      expect(client.sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+        command_type: "task.annotate",
+        payload: expect.objectContaining({
+          task_id: "foreman-123",
+          author: "agent",
+          kind: "note",
+          body: "Important finding",
+          run_id: "run-1",
+        }),
+      }));
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Note added") }));
+      expect((result.details as Record<string, unknown>).kind).toBe("note");
+    });
+
+    it("returns error when sendCommand fails", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.sendCommand as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: false,
+        error: { code: "VALIDATION_FAILED", message: "Invalid task ID", details: {}, retryable: false },
+      });
+      const tool = createTaskNoteAddTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "bad-id", body: "test" }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Failed to add note") }));
+    });
+  });
+
+  describe("createTaskRiskAddTool", () => {
+    it("sends annotation with kind=risk and run_id scoping", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.sendCommand as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, events: [], projection_version: 1, correlation_id: "corr-1" });
+      const tool = createTaskRiskAddTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "foreman-123", body: "Potential blocker" }, undefined, undefined, {} as never);
+      expect(client.sendCommand).toHaveBeenCalledWith(expect.objectContaining({
+        command_type: "task.annotate",
+        payload: expect.objectContaining({
+          task_id: "foreman-123",
+          author: "agent",
+          kind: "risk",
+          body: "Potential blocker",
+          run_id: "run-1",
+        }),
+      }));
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Risk added") }));
+      expect((result.details as Record<string, unknown>).kind).toBe("risk");
+    });
+
+    it("returns error when sendCommand fails", async () => {
+      const context = makeContext();
+      const client = makeMockElixirClient();
+      (client.sendCommand as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: false,
+        error: { code: "INTERNAL", message: "Server error", details: {}, retryable: false },
+      });
+      const tool = createTaskRiskAddTool(client, context);
+
+      const result = await tool.execute("call-1", { taskId: "foreman-123", body: "test" }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Failed to add risk") }));
     });
   });
 });
