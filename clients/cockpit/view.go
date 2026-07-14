@@ -630,9 +630,13 @@ func (m model) renderRight(w int) string {
 	}
 	s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
 
-	// phase rail (runs only)
+	// phase rail (runs and tasks)
 	if isRun {
 		s = append(s, m.renderRail(run, w, visual)...)
+	} else if len(it.Task.Pipeline) > 0 {
+		s = append(s, m.renderTaskRail(it.Task.Pipeline, w, visual)...)
+	}
+	if len(it.Task.Pipeline) > 0 {
 		s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
 	}
 
@@ -695,6 +699,52 @@ func (m model) renderRail(run Run, w int, visual paneVisual) []string {
 		chips = append(chips, st.Render(text))
 	}
 	// greedy wrap
+	var lines []string
+	cur := ""
+	curW := 0
+	sep := lipgloss.NewStyle().Foreground(visual.Dim).Render(" ─ ")
+	for _, c := range chips {
+		cw := lipgloss.Width(c)
+		add := cw
+		if cur != "" {
+			add += 3
+		}
+		if curW+add > w {
+			lines = append(lines, cur)
+			cur, curW = c, cw
+			continue
+		}
+		if cur == "" {
+			cur, curW = c, cw
+		} else {
+			cur += sep + c
+			curW += add
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// renderTaskRail renders the phase rail for a task (all phases shown as pending).
+func (m model) renderTaskRail(pipeline []Phase, w int, visual paneVisual) []string {
+	if w < 32 && len(pipeline) > 0 {
+		// compact view: show first phase with count
+		idx := 0
+		gl, glc := m.railGlyph(pipeline[idx].State)
+		label := fmt.Sprintf("%s %d/%d · %s", gl, idx+1, len(pipeline), pipeline[idx].Name)
+		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
+		return []string{clip(st.Render(label), w)}
+	}
+	var chips []string
+	for _, p := range pipeline {
+		gl, glc := m.railGlyph(p.State)
+		text := gl + " " + p.Name
+		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
+		chips = append(chips, st.Render(text))
+	}
+	// greedy wrap (same as renderRail)
 	var lines []string
 	cur := ""
 	curW := 0

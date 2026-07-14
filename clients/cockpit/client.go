@@ -80,6 +80,7 @@ type Task struct {
 	ProjectID   string
 	Created     string
 	Updated     string
+	Pipeline    []Phase // derived from workflow YAML on fetch
 }
 
 // Message is an Agent Mail message.
@@ -190,6 +191,30 @@ func pipelineForRun(raw map[string]any, task Task, status, currentPhase string) 
 		out[i] = Phase{Name: name, State: state, Retries: retries[name]}
 	}
 	return out
+}
+
+// pipelineForTask builds the phase pipeline for a task based on its workflow/type.
+// All phases start in "pending" state since tasks don't have run-specific status.
+func pipelineForTask(task Task) []Phase {
+	order := workflowPhaseOrder(workflowNameForTask(task))
+	if len(order) == 0 {
+		order = append([]string(nil), defaultPhases...)
+	}
+	out := make([]Phase, len(order))
+	for i, name := range order {
+		out[i] = Phase{Name: name, State: "pending", Retries: 0}
+	}
+	return out
+}
+
+func workflowNameForTask(task Task) string {
+	if workflow := cleanWorkflowName(task.Workflow); workflow != "" {
+		return workflow
+	}
+	if workflow := cleanWorkflowName(task.TaskType); workflow != "" {
+		return workflow
+	}
+	return ""
 }
 
 func phaseOrderForRun(raw map[string]any, task Task) []string {
@@ -580,6 +605,9 @@ func (c *mockClient) Dispatchable() []Task {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := append([]Task(nil), c.tasks...)
+	for i := range out {
+		out[i].Pipeline = pipelineForTask(out[i])
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Priority != out[j].Priority {
 			return out[i].Priority < out[j].Priority
@@ -1215,6 +1243,7 @@ func (c *httpClient) Dispatchable() []Task {
 	out := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
 		if readyTaskStatus(task.Status) || activeTaskStatus(task.Status) || doneTaskStatus(task.Status) {
+			task.Pipeline = pipelineForTask(task)
 			out = append(out, task)
 		}
 	}
