@@ -506,7 +506,16 @@ defmodule ForemanServer.ProjectionStore do
          _mode
        )
        when is_binary(run_id) and run_id != "" do
-    put_log_entry(projection, "CliEventLogged", payload)
+    projection
+    |> put_log_entry("CliEventLogged", payload)
+    |> update_run(run_id, fn run ->
+      cost_usd = Map.get(payload, :costUsd, 0) || 0
+      turns = Map.get(payload, :turns, 0) || 0
+
+      run
+      |> Map.update(:costUsd, cost_usd, &(&1 + cost_usd))
+      |> Map.update(:turns, turns, &(&1 + turns))
+    end)
   end
 
   defp apply_domain_event(projection, %{type: "CliEventLogged"}, _mode), do: projection
@@ -522,12 +531,16 @@ defmodule ForemanServer.ProjectionStore do
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, fn run ->
+      started_at = Map.get(run, :started_at) || now
+      total_duration_ms = DateTime.diff(now, started_at, :millisecond)
+
       run
       |> put_terminal_phase_status(payload, "completed")
       |> Map.put(:current_phase, nil)
       |> put_terminal_worker_status(payload, "completed")
       |> Map.put(:updated_at, now)
       |> Map.put(:completed_at, now)
+      |> Map.put(:totalDurationMs, total_duration_ms)
     end)
     |> maybe_update_task_from_run_terminal(payload, "completed")
   end
@@ -543,6 +556,9 @@ defmodule ForemanServer.ProjectionStore do
     |> put_worker_sequence(payload)
     |> update_run_status(run_id, "failed")
     |> update_run(run_id, fn run ->
+      started_at = Map.get(run, :started_at) || now
+      total_duration_ms = DateTime.diff(now, started_at, :millisecond)
+
       run
       |> put_terminal_current_phase(payload)
       |> put_terminal_phase_status(payload, "failed")
@@ -553,6 +569,7 @@ defmodule ForemanServer.ProjectionStore do
       )
       |> Map.put(:updated_at, now)
       |> Map.put(:failed_at, now)
+      |> Map.put(:totalDurationMs, total_duration_ms)
     end)
     |> maybe_update_task_from_run_terminal(payload, "failed")
   end

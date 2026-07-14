@@ -56,6 +56,9 @@ interface RunActivityInfo {
   turns: number;
   startedAt: string | null;
   completedAt: string | null;
+  totalDurationMs: number | null;
+  costPerTurn: number | null;
+  timePerTurn: number | null;
 }
 
 /**
@@ -116,6 +119,9 @@ async function fetchRunActivity(
       turns: progress?.turns ?? 0,
       startedAt: run.started_at,
       completedAt: run.completed_at,
+      totalDurationMs: null,
+      costPerTurn: null,
+      timePerTurn: null,
     };
   } finally {
     store.close();
@@ -365,6 +371,12 @@ function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
   const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
   const isStuck = status === "in_progress" && lastActivityMs !== null && (now - lastActivityMs) > STUCK_THRESHOLD_MS;
 
+  const costUsd = typeof run.costUsd === "number" ? run.costUsd : 0;
+  const turns = typeof run.turns === "number" ? run.turns : 0;
+  const totalDurationMs = typeof run.totalDurationMs === "number" ? run.totalDurationMs : null;
+  const costPerTurn = typeof run.costPerTurn === "number" ? run.costPerTurn : null;
+  const timePerTurn = typeof run.timePerTurn === "number" ? run.timePerTurn : null;
+
   return {
     runId,
     status,
@@ -374,10 +386,13 @@ function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
     isStuck,
     isStale: false,
     toolCalls: 0,
-    costUsd: 0,
-    turns: 0,
+    costUsd,
+    turns,
     startedAt,
     completedAt,
+    totalDurationMs,
+    costPerTurn,
+    timePerTurn,
   };
 }
 
@@ -1188,6 +1203,20 @@ const showCommand = new Command("show")
             }
             if (activity.costUsd > 0) {
               console.log(`    Cost:       $${activity.costUsd.toFixed(4)}`);
+            }
+            if (activity.totalDurationMs !== null && activity.totalDurationMs > 0) {
+              const totalSeconds = Math.round(activity.totalDurationMs / 1000);
+              const mins = Math.floor(totalSeconds / 60);
+              const secs = totalSeconds % 60;
+              const totalTimeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+              console.log(`    Total time: ${chalk.cyan(totalTimeStr)}`);
+            }
+            if (activity.costPerTurn !== null && activity.costPerTurn > 0) {
+              console.log(`    Cost/turn:  $${activity.costPerTurn.toFixed(4)}`);
+            }
+            if (activity.timePerTurn !== null && activity.timePerTurn > 0) {
+              const timePerTurnSecs = activity.timePerTurn / 1000;
+              console.log(`    Time/turn:  ${chalk.cyan(timePerTurnSecs.toFixed(1) + "s")}`);
             }
             if (activity.lastActivity) {
               console.log(`    Last activity: ${new Date(activity.lastActivity).toLocaleString()}`);

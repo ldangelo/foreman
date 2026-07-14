@@ -529,6 +529,26 @@ defmodule ForemanServer.Http.Router do
     |> put_present(:review_decision, Map.get(pr_gate, :review))
     |> put_present(:pr_mergeable, Map.get(pr_gate, :mergeable))
     |> put_present(:mergeable, Map.get(pr_gate, :mergeable))
+    |> add_run_metrics()
+  end
+
+  defp add_run_metrics(run) do
+    total_cost_usd = Map.get(run, :costUsd, 0) || 0
+    total_turns = Map.get(run, :turns, 0) || 0
+    total_duration_ms = Map.get(run, :totalDurationMs)
+
+    cost_per_turn =
+      if total_turns > 0, do: total_cost_usd / total_turns, else: nil
+
+    time_per_turn =
+      if total_turns > 0 and total_duration_ms, do: total_duration_ms / total_turns, else: nil
+
+    run
+    |> put_present(:totalCostUsd, total_cost_usd)
+    |> put_present(:totalTurns, total_turns)
+    |> put_present(:totalDurationMs, total_duration_ms)
+    |> put_present(:costPerTurn, cost_per_turn)
+    |> put_present(:timePerTurn, time_per_turn)
   end
 
   defp run_message_count(snapshot, run_id) do
