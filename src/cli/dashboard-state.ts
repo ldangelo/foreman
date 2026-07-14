@@ -114,6 +114,24 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
       const client = await createElixirDashboardClient();
       const [allTasks, allRuns] = await Promise.all([client.listTasks(), client.listRuns()]);
 
+      // Fetch global daemon metrics once (outside project loop)
+      // client.getMetrics() returns global totals across all projects, not project-scoped
+      let globalDaemonMetrics: Awaited<ReturnType<ElixirServerClient["getMetrics"]>> | null = null;
+      try {
+        globalDaemonMetrics = await client.getMetrics();
+      } catch {
+        // Fall back to empty metrics if API call fails
+      }
+
+      const parseMetric = (value: unknown): number | undefined => {
+        if (typeof value === 'number' && !isNaN(value)) return value;
+        if (typeof value === 'string' && value !== '') {
+          const parsed = parseFloat(value);
+          return isNaN(parsed) ? undefined : parsed;
+        }
+        return undefined;
+      };
+
       for (const project of visible as DaemonProjectRecord[]) {
         const projectTasks: NativeTask[] = allTasks
           .filter((task) => task.project_id === project.id)
@@ -168,43 +186,20 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
           projectPath: project.path,
         }));
         needsHumanTasks.push(...withProject);
+
+        // Apply global daemon metrics to all projects (metrics are global, not project-scoped)
+        const m = globalDaemonMetrics;
+        const totalCost = m ? (typeof m.total_cost === 'number' ? m.total_cost : parseMetric(m.total_cost) ?? 0) : 0;
         metrics.set(project.id, {
-          totalCost: 0,
+          totalCost,
           totalTokens: 0,
           tasksByStatus: deriveTaskMetrics(projectTasks),
           costByRuntime: [],
-          totalTurns: undefined,
-          costPerTurn: undefined,
-          totalTimeSeconds: undefined,
-          timePerTurnSeconds: undefined,
+          totalTurns: m?.total_turns,
+          costPerTurn: m ? parseMetric(m.cost_per_turn) : undefined,
+          totalTimeSeconds: m?.total_time_seconds,
+          timePerTurnSeconds: m ? parseMetric(m.time_per_turn_seconds) : undefined,
         });
-
-        // Fetch metrics from Elixir API and update project metrics
-        // Note: client.getMetrics() returns global totals across all projects
-        try {
-          const m = await client.getMetrics();
-          const projectMetrics = metrics.get(project.id);
-          if (projectMetrics && m) {
-            const parseMetric = (value: unknown): number | undefined => {
-              if (typeof value === 'number') return value;
-              if (typeof value === 'string' && value !== '') {
-                const parsed = parseFloat(value);
-                return isNaN(parsed) ? undefined : parsed;
-              }
-              return undefined;
-            };
-            metrics.set(project.id, {
-              ...projectMetrics,
-              totalCost: typeof m.total_cost === 'number' ? m.total_cost : parseFloat(String(m.total_cost || '0')) || 0,
-              totalTurns: m.total_turns,
-              costPerTurn: parseMetric(m.cost_per_turn),
-              totalTimeSeconds: m.total_time_seconds,
-              timePerTurnSeconds: parseMetric(m.time_per_turn_seconds),
-            });
-          }
-        } catch {
-          // Fall back to empty metrics if API call fails
-        }
       }
 
       return {
