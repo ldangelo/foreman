@@ -164,6 +164,23 @@ foreman status --json             # Machine-readable output
 
 The cockpit status view renders ordered phase nodes, retry arrows, current failure/error text, artifacts, last activity, and active phase summary. Use `m/e/l/r/f` to inspect messages, events, logs, reports, and files for the selected task/run.
 
+### `foreman metrics`
+
+Show detailed task metrics including cost and time statistics. This provides a focused view of accumulated metrics separate from the full status dashboard.
+
+```bash
+foreman metrics                  # Show all metrics
+```
+
+**Displayed metrics:**
+- **Total Cost** — Cumulative cost in USD across all turns
+- **Total Turns** — Total number of turns executed (denominator for per-turn metrics)
+- **Cost per Turn** — Average cost per turn in USD
+- **Total Time** — Cumulative elapsed time (formatted as hours/minutes/seconds)
+- **Time per Turn** — Average time per turn
+
+Per-turn metrics show `—` when total turns is zero.
+
 ### `foreman logs`
 
 Show run logs and debugging summary.
