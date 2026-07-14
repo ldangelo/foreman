@@ -128,7 +128,7 @@ Global:
 | `enter` | enter/focus the selected drill-down view; in focused files, open the selected file |
 | `esc` | leave the drill-down view and return focus to the task list; clears search while searching |
 | `↑`/`↓`, `j`/`k` | move the highlighted row in the focused messages/events/logs/reports/files/pr view; the viewport keeps the selection near the middle when possible and clamps at the edges |
-| message/event/log rows | messages render as selectable table rows with `date/time` (`mm/dd hh:mm`), sender, receiver, and message columns; event/log rows select one signal row at a time with a visible `▶` marker; selected messages show metadata/body detail, selected events show time/type/detail, selected logs show line/text detail; message tabs also show `messages <current>/<total>` in both the tab and run header |
+| message/event/log rows | messages render newest-first as selectable table rows with local `date/time` (`mm/dd hh:mm`), sender, receiver, and message columns; event/log rows select one signal row at a time with a visible `▶` marker; selected messages show metadata/body detail, selected events show time/type/detail, selected logs show line/text detail; message tabs also show `messages <current>/<total>` in both the tab and run header |
 | mouse wheel | scroll the pane under the pointer: task list on the left, active drill-down view on the right |
 | `ctrl+d` / `ctrl+u` | half-page down/up in the focused drill-down view |
 | `←` / `→` | pan long focused log rows when horizontal overflow remains |

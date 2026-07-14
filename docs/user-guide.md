@@ -330,7 +330,7 @@ Common cockpit keys:
 | `i` | Inbox timeline view |
 | `s` | Status/workflow view |
 | `b` | Board context view |
-| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; messages use `mm/dd hh:mm`, sender, receiver, and message columns |
+| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; messages render newest-first with local `mm/dd hh:mm`, sender, receiver, and message columns |
 | `/` | Search tasks, runs, messages, events, and report paths |
 | `1` / `2` / `3` | Active, attention, all scopes |
 | `!` / `p` / `d` | Failed, has PR, dirty worktree filters |

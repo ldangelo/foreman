@@ -200,7 +200,7 @@ defmodule ForemanServer.Http.Router do
         |> Enum.filter(fn message ->
           unread != "true" or Map.get(message, :read_at) in [nil, ""]
         end)
-        |> Enum.sort_by(&Map.get(&1, :created_at, ""), :desc)
+        |> Enum.sort_by(&message_timestamp_sort_value/1, :desc)
         |> Enum.take(limit)
 
       send_json(conn, 200, %{ok: true, inbox: inbox})
@@ -730,6 +730,12 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp normalize_command(_), do: {:error, :invalid_command}
+
+  defp message_timestamp_sort_value(message) when is_map(message) do
+    message
+    |> Map.get(:created_at, Map.get(message, "created_at"))
+    |> event_timestamp_sort_value()
+  end
 
   defp event_timestamp_sort_value(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
 

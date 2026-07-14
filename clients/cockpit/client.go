@@ -1311,7 +1311,18 @@ func (c *httpClient) Messages(runID string) []Message {
 			To: str(x, "recipient_agent_type"), Subject: str(x, "subject"), Body: str(x, "body"),
 		})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return messageSortValue(out[i].At).After(messageSortValue(out[j].At))
+	})
 	return out
+}
+
+func messageSortValue(stamp string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stamp))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func (c *httpClient) Events(runID string) []Event {

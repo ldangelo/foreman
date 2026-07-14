@@ -521,6 +521,55 @@ defmodule ForemanServer.Http.RouterTest do
     assert message["body"] == ~s({"message":"please inspect"})
   end
 
+  test "inbox endpoint sorts messages by timestamp newest first" do
+    append_event("ProjectRegistered", "project:proj-inbox-sort", %{
+      project_id: "proj-inbox-sort",
+      path: "/tmp/proj-inbox-sort"
+    })
+
+    append_event("TaskCreated", "task:task-inbox-sort", %{
+      task_id: "task-inbox-sort",
+      project_id: "proj-inbox-sort",
+      title: "Inbox Sort"
+    })
+
+    append_event("RunStarted", "run:run-inbox-sort", %{
+      run_id: "run-inbox-sort",
+      task_id: "task-inbox-sort",
+      phase_order: ["developer"]
+    })
+
+    append_event("InboxMessageAppended", "inbox:run-inbox-sort", %{
+      message_id: "msg-old",
+      run_id: "run-inbox-sort",
+      sender_agent_type: "developer",
+      recipient_agent_type: "qa",
+      subject: "old",
+      body: "old",
+      created_at: ~U[2026-01-01 00:00:00Z]
+    })
+
+    append_event("InboxMessageAppended", "inbox:run-inbox-sort", %{
+      message_id: "msg-new",
+      run_id: "run-inbox-sort",
+      sender_agent_type: "developer",
+      recipient_agent_type: "qa",
+      subject: "new",
+      body: "new",
+      created_at: ~U[2026-01-01 00:01:00Z]
+    })
+
+    conn =
+      :get
+      |> conn("/api/v1/inbox?project_id=proj-inbox-sort&run_id=run-inbox-sort")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    assert %{"ok" => true, "inbox" => messages} = Jason.decode!(conn.resp_body)
+    assert Enum.map(messages, & &1["message_id"]) == ["msg-new", "msg-old"]
+  end
+
   test "events endpoint sorts naive timestamps from postgres-compatible rows" do
     append_event("ProjectRegistered", "project:proj-events-http", %{
       project_id: "proj-events-http",

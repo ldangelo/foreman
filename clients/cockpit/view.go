@@ -695,7 +695,7 @@ func (m model) selectedMessageIndex() (int, bool) {
 	}
 	if line, ok := m.viewer.SelectedLine(); ok {
 		for i, message := range m.msgs {
-			if line.Key == messageKey(message)+":header" {
+			if line.Key == messageKey(message)+":row" {
 				return i, true
 			}
 		}
@@ -889,11 +889,11 @@ func messageKey(message Message) string {
 }
 
 func formatMessageTime(stamp string) string {
-	t, err := time.Parse(time.RFC3339, strings.TrimSpace(stamp))
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stamp))
 	if err != nil {
 		return stamp
 	}
-	return t.Format("01/02 15:04")
+	return t.Local().Format("01/02 15:04")
 }
 
 func messageColumnWidths(w int) (int, int, int, int) {

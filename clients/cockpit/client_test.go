@@ -86,6 +86,23 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	}
 }
 
+func TestHTTPClientSortsMessagesNewestFirst(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/v1/inbox" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"ok":true,"inbox":[{"run_id":"run-live","created_at":"2026-07-10T00:01:00Z","sender_agent_type":"developer","recipient_agent_type":"qa","subject":"old","body":"old"},{"run_id":"run-live","created_at":"2026-07-10T00:03:00Z","sender_agent_type":"qa","recipient_agent_type":"developer","subject":"new","body":"new"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "")
+	messages := client.Messages("run-live")
+	if len(messages) != 2 || messages[0].Subject != "new" || messages[1].Subject != "old" {
+		t.Fatalf("expected newest-first messages, got %#v", messages)
+	}
+}
+
 func TestPipelineUsesRunPhaseOrderAndRetryCounts(t *testing.T) {
 	pipeline := pipelineForRun(map[string]any{
 		"phase_order": []any{"fix", "qa", "merge"},

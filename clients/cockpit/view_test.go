@@ -910,6 +910,10 @@ func TestPRChecksRenderAsAlignedRows(t *testing.T) {
 }
 
 func TestMessagesRenderAsTimestampedTableRows(t *testing.T) {
+	oldLocal := time.Local
+	time.Local = time.FixedZone("test-local", -5*60*60)
+	t.Cleanup(func() { time.Local = oldLocal })
+
 	lines := renderMessageLines([]Message{{
 		At:      "2026-07-12T13:45:00Z",
 		From:    "developer",
@@ -922,7 +926,7 @@ func TestMessagesRenderAsTimestampedTableRows(t *testing.T) {
 		t.Fatalf("expected one message row, got %#v", lines)
 	}
 	out := stripANSI(strings.Join(linesText(lines), "\n"))
-	for _, want := range []string{"07/12 13:45", "developer", "qa", "handoff ready"} {
+	for _, want := range []string{"07/12 08:45", "developer", "qa", "handoff ready"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected message table to include %q, got:\n%s", want, out)
 		}

@@ -49,9 +49,9 @@ authoritative state.
   pr · metrics`). Log and report open targets prefer
   explicit paths returned by the live `/logs` and `/report` endpoints, falling
   back to the historical `.foreman/logs` and `docs/reports` paths when omitted.
-  Message rows render as a table (`date/time` in `mm/dd hh:mm`, sender,
-  receiver, message); event and log tabs use specialized selectable rows. The
-  selected row is marked with `▶` and expands with packed detail for message
+  Message rows render newest-first as a table (local `date/time` in
+  `mm/dd hh:mm`, sender, receiver, message); event and log tabs use specialized
+  selectable rows. The selected row is marked with `▶` and expands with packed
   metadata/body, event metadata/detail, or log line/text while preserving
   row-based navigation and search.
   The files tab exposes conflict-aware changed-file metadata, plain nvim open
