@@ -143,7 +143,7 @@ This command remains registered only so operator invocations receive an explicit
 
 ### `foreman status`
 
-Show project status: task counts, active agents, cost breakdown, and tool usage. `--live` opens the unified cockpit directly to the status/workflow view; `--watch` remains the compact refreshing status output; `--json` remains machine-readable.
+Show project status: task counts, active agents, costs (total and per-turn), tokens, elapsed time (total and per-turn), and tool usage. `--live` opens the unified cockpit directly to the status/workflow view; `--watch` remains the compact refreshing status output; `--json` remains machine-readable.
 
 ```bash
 foreman status                    # Snapshot of current state
