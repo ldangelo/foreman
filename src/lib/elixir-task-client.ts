@@ -44,7 +44,7 @@ export class ElixirTaskClient implements ITaskClient {
   async list(opts?: { status?: string; type?: string }): Promise<Issue[]> {
     const tasks = await (await this.clientPromise).listTasks();
     return tasks
-      .filter((task) => !task.project_id || task.project_id === this.projectId)
+      .filter((task) => task.project_id === this.projectId)
       .filter((task) => !opts?.status || task.status === opts.status)
       .filter((task) => !opts?.type || (task.task_type ?? task.type) === opts.type)
       .map((task) => toIssue(this.projectPath, task));

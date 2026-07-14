@@ -169,7 +169,7 @@ export async function fetchDaemonStatusSnapshot(projectPath: string): Promise<Da
         client.listTasks(),
         client.listRuns({ projectId: project.id }),
       ]);
-      const projectTasks = tasks.filter((task) => !task.project_id || task.project_id === project.id);
+      const projectTasks = tasks.filter((task) => task.project_id === project.id);
       const counts = computeStatusCountsFromElixirTasks(projectTasks);
       const activeRuns = runs
         .filter((run) => run.status === "pending" || run.status === "running" || run.status === "in_progress")
@@ -232,7 +232,7 @@ export async function fetchStatusCounts(projectPath: string): Promise<StatusCoun
         const status = await manager.ensureRunning();
         const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
         const tasks = await client.listTasks();
-        return computeStatusCountsFromElixirTasks(tasks.filter((task) => !task.project_id || task.project_id === project.id));
+        return computeStatusCountsFromElixirTasks(tasks.filter((task) => task.project_id === project.id));
       }
 
       const client = createTrpcClient();
@@ -483,7 +483,7 @@ export const statusCommand = new Command("status")
         const client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
         const [tasks, runs] = await Promise.all([client.listTasks(), client.listRuns()]);
         for (const proj of projects) {
-          const projectTasks = tasks.filter((task) => !task.project_id || task.project_id === proj.id);
+          const projectTasks = tasks.filter((task) => task.project_id === proj.id);
           const counts = computeStatusCountsFromElixirTasks(projectTasks);
           aggregated.total += counts.total;
           aggregated.ready += counts.ready;
