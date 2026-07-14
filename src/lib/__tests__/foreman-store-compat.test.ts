@@ -94,7 +94,7 @@ describe("ForemanStore disabled local-store compatibility", () => {
     expect(() => store.updateSentinelRun("sentinel-1", { status: "passed", failure_count: 0 })).not.toThrow();
     expect(store.getSentinelRuns()).toEqual([]);
     expect(store.getMergeAgentConfig()).toBeNull();
-    expect(() => store.getMetrics()).toThrow(/totalCost/);
+    expect(() => store.getMetrics()).toThrow(/totalCost|totalTurns/);
 
     expect(store.hasNativeTasks()).toBe(false);
     expect(store.getTaskById("task-1")).toBeNull();

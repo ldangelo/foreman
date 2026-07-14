@@ -225,7 +225,16 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
         base_branch: null,
       })));
       completedRuns.set(project.id, []);
-      metrics.set(project.id, { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] });
+      metrics.set(project.id, {
+        totalCost: 0,
+        totalTokens: 0,
+        tasksByStatus: {},
+        costByRuntime: [],
+        totalTurns: undefined,
+        costPerTurn: undefined,
+        totalTimeSeconds: undefined,
+        timePerTurnSeconds: undefined,
+      });
       events.set(project.id, []);
       successRates.set(project.id, { rate: null, merged: 0, failed: 0 });
 
@@ -247,6 +256,10 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
           closed: stats.tasks.closed,
         },
         costByRuntime: [],
+        totalTurns: undefined,
+        costPerTurn: undefined,
+        totalTimeSeconds: undefined,
+        timePerTurnSeconds: undefined,
       });
     }
 
@@ -505,7 +518,16 @@ function makeOfflineSnapshot(project: RegisteredProject): ProjectSnapshot {
     activeRuns: [],
     completedRuns: [],
     progresses: new Map(),
-    metrics: { totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [] },
+    metrics: {
+      totalCost: 0,
+      totalTokens: 0,
+      tasksByStatus: {},
+      costByRuntime: [],
+      totalTurns: undefined,
+      costPerTurn: undefined,
+      totalTimeSeconds: undefined,
+      timePerTurnSeconds: undefined,
+    },
     events: [],
     successRate: { rate: null, merged: 0, failed: 0 },
     needsHumanTasks: [],
@@ -824,7 +846,14 @@ export function renderDashboard(state: DashboardState): string {
     const activeRuns = state.activeRuns.get(project.id) ?? [];
     const completedRuns = state.completedRuns.get(project.id) ?? [];
     const projectMetrics = state.metrics.get(project.id) ?? {
-      totalCost: 0, totalTokens: 0, tasksByStatus: {}, costByRuntime: [],
+      totalCost: 0,
+      totalTokens: 0,
+      tasksByStatus: {},
+      costByRuntime: [],
+      totalTurns: undefined,
+      costPerTurn: undefined,
+      totalTimeSeconds: undefined,
+      timePerTurnSeconds: undefined,
     };
     const events = state.events.get(project.id) ?? [];
     const offline = state.offlineProjects?.has(project.id) ?? false;
