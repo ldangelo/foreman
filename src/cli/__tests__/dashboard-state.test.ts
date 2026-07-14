@@ -76,6 +76,10 @@ function makeMetrics(overrides?: Partial<Metrics>): Metrics {
     totalTokens: 45_000,
     tasksByStatus: { running: 2, completed: 3 },
     costByRuntime: [],
+    totalTurns: undefined,
+    costPerTurn: undefined,
+    totalTimeSeconds: undefined,
+    timePerTurnSeconds: undefined,
     ...overrides,
   };
 }

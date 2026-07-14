@@ -327,7 +327,7 @@ defmodule ForemanServer.Overwatch do
   defp approve(reason), do: %{allowed: true, action: "approve", reason: reason, message: nil}
   defp deny(reason), do: %{allowed: false, action: "deny", reason: reason, message: reason}
 
-  defp missing_read_path?(path), do: is_binary(path) and not File.exists?(path)
+  defp missing_read_path?(path), do: Path.type(path) == :absolute and not File.exists?(path)
 
   defp dangerous_command?(command) when is_binary(command) do
     normalized = command |> String.downcase() |> String.replace(~r/\s+/, " ")

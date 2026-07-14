@@ -423,7 +423,7 @@ func TestPhaseRailCollapsesOnVeryNarrowWidth(t *testing.T) {
 	run.Pipeline[3].Retries = 2
 
 	out := stripANSI(strings.Join(m.renderRail(run, 20, paneVisualFor(true, defaultConfig().Cockpit.Focus)), "\n"))
-	if !strings.Contains(out, "4/10 · qa r2") {
+	if !strings.Contains(out, "4/13 · qa r2") {
 		t.Fatalf("expected compact phase badge on narrow width, got:\n%s", out)
 	}
 	if strings.Contains(out, "explorer") || strings.Contains(out, "developer") {

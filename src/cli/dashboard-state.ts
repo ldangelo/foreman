@@ -173,7 +173,29 @@ export async function fetchDaemonDashboardState(projectPath: string, projectId?:
           totalTokens: 0,
           tasksByStatus: deriveTaskMetrics(projectTasks),
           costByRuntime: [],
+          totalTurns: undefined,
+          costPerTurn: undefined,
+          totalTimeSeconds: undefined,
+          timePerTurnSeconds: undefined,
         });
+
+        // Fetch metrics from Elixir API and update project metrics
+        try {
+          const m = await client.getMetrics();
+          const projectMetrics = metrics.get(project.id);
+          if (projectMetrics && m) {
+            metrics.set(project.id, {
+              ...projectMetrics,
+              totalCost: typeof m.total_cost === 'number' ? m.total_cost : parseFloat(String(m.total_cost || '0')) || 0,
+              totalTurns: m.total_turns,
+              costPerTurn: typeof m.cost_per_turn === 'number' ? m.cost_per_turn : parseFloat(String(m.cost_per_turn || '')) || undefined,
+              totalTimeSeconds: m.total_time_seconds,
+              timePerTurnSeconds: typeof m.time_per_turn_seconds === 'number' ? m.time_per_turn_seconds : parseFloat(String(m.time_per_turn_seconds || '')) || undefined,
+            });
+          }
+        } catch {
+          // Fall back to empty metrics if API call fails
+        }
       }
 
       return {

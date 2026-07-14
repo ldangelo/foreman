@@ -111,8 +111,59 @@ defmodule ForemanServer.Operations do
       timers: %{phase_duration_ms: phase_durations(events)},
       gauges: %{projection_lag: projection_lag(events, snapshot)},
       projection_lag: projection_lag(events, snapshot),
+      total_cost_usd: total_cost_usd(events),
+      total_turns: total_turns(events),
+      cost_per_turn: cost_per_turn(events),
+      total_time_ms: total_time_ms(events),
+      time_per_turn_ms: time_per_turn_ms(events),
       emitted_at: DateTime.utc_now()
     }
+  end
+
+  defp total_cost_usd(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
+    |> Enum.reduce(0.0, fn event, acc ->
+      cost = Map.get(event.payload, :cost_usd, 0) || Map.get(event.payload, "cost_usd", 0)
+      acc + cost
+    end)
+  end
+
+  defp total_turns(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "PhaseCompleted"))
+    |> Enum.reduce(0, fn event, acc ->
+      turns = Map.get(event.payload, :turns, 0) || Map.get(event.payload, "turns", 0) || 0
+      acc + turns
+    end)
+  end
+
+  defp cost_per_turn(events) do
+    turns = total_turns(events)
+
+    if turns > 0 do
+      cost = total_cost_usd(events)
+      :erlang.float_to_binary(cost / turns, [{:decimals, 6}])
+    else
+      0
+    end
+  end
+
+  defp total_time_ms(events) do
+    events
+    |> phase_durations()
+    |> Enum.reduce(0, fn phase, acc -> acc + Map.get(phase, :duration_ms, 0) end)
+  end
+
+  defp time_per_turn_ms(events) do
+    turns = total_turns(events)
+
+    if turns > 0 do
+      total_time = total_time_ms(events)
+      :erlang.float_to_binary(total_time / turns, [{:decimals, 2}])
+    else
+      0
+    end
   end
 
   defp counters(events) do

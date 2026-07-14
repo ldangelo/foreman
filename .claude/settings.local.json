@@ -15,5 +15,8 @@
       "WebFetch(domain:archon.diy)"
     ]
   },
-  "outputStyle": "default"
+  "outputStyle": "default",
+  "enabledMcpjsonServers": [
+    "foreman"
+  ]
 }

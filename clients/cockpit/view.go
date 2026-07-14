@@ -630,11 +630,13 @@ func (m model) renderRight(w int) string {
 	}
 	s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
 
-	// phase rail (runs only)
+	// phase rail (runs and tasks)
 	if isRun {
 		s = append(s, m.renderRail(run, w, visual)...)
-		s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
+	} else {
+		s = append(s, m.renderTaskRail(it.Task, w, visual)...)
 	}
+	s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
 
 	// tabs (runs only; tasks show summary)
 	if isRun {
@@ -749,6 +751,55 @@ func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
 	if state == "fail" {
 		st = st.Background(visual.FailBg)
 	}
+	return clip(st.Render(label), w)
+}
+
+// renderTaskRail renders the phase rail for a task (all phases shown as pending).
+func (m model) renderTaskRail(task Task, w int, visual paneVisual) []string {
+	if w < 32 && len(task.Pipeline) > 0 {
+		return []string{m.renderCompactTaskRail(task, w, visual)}
+	}
+	var chips []string
+	for _, p := range task.Pipeline {
+		gl, glc := m.railGlyph(p.State)
+		text := gl + " " + p.Name
+		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
+		chips = append(chips, st.Render(text))
+	}
+	// greedy wrap
+	var lines []string
+	cur := ""
+	curW := 0
+	sep := lipgloss.NewStyle().Foreground(visual.Dim).Render(" ─ ")
+	for _, c := range chips {
+		cw := lipgloss.Width(c)
+		add := cw
+		if cur != "" {
+			add += 3
+		}
+		if curW+add > w {
+			lines = append(lines, cur)
+			cur, curW = c, cw
+			continue
+		}
+		if cur == "" {
+			cur, curW = c, cw
+		} else {
+			cur += sep + c
+			curW += add
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// renderCompactTaskRail renders a compact single-line phase rail for a task.
+func (m model) renderCompactTaskRail(task Task, w int, visual paneVisual) string {
+	gl, glc := m.railGlyph("pending")
+	label := fmt.Sprintf("%s %d/%d · workflow", gl, 1, len(task.Pipeline))
+	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
 	return clip(st.Render(label), w)
 }
 

@@ -22,6 +22,7 @@ devbox run db:up     # start only shared pgvector Postgres
 foreman init           # Initialize project and register it with the Elixir backend
 foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents; --live opens cockpit status/workflow
+foreman metrics        # Show total cost, cost per turn, total time, time per turn, and total turns
 foreman watch          # Canonical live cockpit TUI; action palette reset asks y then runs reset ('dashboard' is deprecated)
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase

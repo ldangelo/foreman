@@ -345,7 +345,7 @@ async function listAllTasks(client: any, projectId: string): Promise<TaskRow[]> 
 async function listAllElixirTasks(client: ElixirServerClient, projectId: string): Promise<TaskRow[]> {
   const tasks = await client.listTasks();
   return tasks
-    .filter((task) => (task.project_id ?? projectId) === projectId)
+    .filter((task) => task.project_id === projectId)
     .map(elixirTaskToTaskRow);
 }
 
@@ -562,6 +562,8 @@ export function renderRunStatusBadge(activity: RunActivityInfo | null): string {
       qa:        (s: string) => chalk.yellow(s),
       reviewer:  (s: string) => chalk.magenta(s),
       finalize:  (s: string) => chalk.blue(s),
+      "pr-wait": (s: string) => chalk.yellow(s),
+      merge:     (s: string) => chalk.green(s),
     };
     const colorFn = phaseColors[activity.currentPhase] ?? ((s: string) => s);
     return colorFn(activity.currentPhase);

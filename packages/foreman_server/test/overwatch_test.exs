@@ -104,6 +104,35 @@ defmodule ForemanServer.OverwatchTest do
              })
   end
 
+  test "denies missing absolute file reads" do
+    missing =
+      Path.join(
+        System.tmp_dir!(),
+        "foreman-overwatch-missing-#{System.unique_integer([:positive])}.txt"
+      )
+
+    assert {:ok, decision} =
+             Overwatch.check_tool(%{
+               run_id: "run-1",
+               phase_id: "fix",
+               tool_name: "Read",
+               args: %{path: missing}
+             })
+
+    refute decision.allowed
+    assert decision.reason =~ "does not exist"
+  end
+
+  test "allows relative file reads for worker-local paths" do
+    assert {:ok, %{allowed: true, action: "approve"}} =
+             Overwatch.check_tool(%{
+               run_id: "run-1",
+               phase_id: "fix",
+               tool_name: "Read",
+               args: %{path: "docs/user-guide.md"}
+             })
+  end
+
   test "uses phase report events to send compact steering mail to next phase" do
     EventStore.append(%{
       stream_id: "run:run-1",

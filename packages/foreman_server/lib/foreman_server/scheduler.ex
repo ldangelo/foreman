@@ -3,10 +3,13 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, ProjectionStore}
+  alias ForemanServer.{EventStore, ProjectionStore, WorkflowInterpreter}
 
   @default_phases []
   @default_tick_interval_ms 5_000
+
+  # Path to bundled workflows relative to foreman_server app root
+  @bundled_workflows_path "../../../../../src/defaults/workflows"
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -170,7 +173,7 @@ defmodule ForemanServer.Scheduler do
 
   defp claim_task(task, phases, worker_launcher) do
     run_id = uuid()
-    effective_phases = Map.get(task, :phases, phases)
+    effective_phases = get_effective_phases(task, phases)
 
     with {:ok, _event} <-
            EventStore.append(%{
@@ -297,6 +300,63 @@ defmodule ForemanServer.Scheduler do
       ],
       "-"
     )
+  end
+
+  # Get effective phases for a task:
+  # 1. If task has explicit phases, use them
+  # 2. Otherwise, load phases from workflow YAML based on task_type
+  # 3. Fall back to default_phases if workflow loading fails
+  defp get_effective_phases(task, default_phases) do
+    if Map.has_key?(task, :phases) do
+      Map.get(task, :phases)
+    else
+      task_type = Map.get(task, :task_type)
+
+      case resolve_workflow_phases(task_type) do
+        {:ok, phases} -> phases
+        {:error, _reason} -> default_phases
+      end
+    end
+  end
+
+  defp resolve_workflow_phases(nil), do: {:error, :no_task_type}
+
+  defp resolve_workflow_phases(task_type) when is_binary(task_type) do
+    # Try global workflows first (~/.foreman/workflows/{task_type}.yaml)
+    global_path = Path.join(foreman_home_workflows_path(), "#{task_type}.yaml")
+
+    if File.exists?(global_path) do
+      load_workflow_phase_order(global_path)
+    else
+      # Fall back to bundled workflows
+      bundled_path = bundled_workflow_path(task_type)
+
+      if File.exists?(bundled_path) do
+        load_workflow_phase_order(bundled_path)
+      else
+        {:error, :workflow_not_found}
+      end
+    end
+  end
+
+  defp foreman_home_workflows_path do
+    Path.join([System.user_home!(), ".foreman", "workflows"])
+  end
+
+  defp bundled_workflow_path(task_type) do
+    # Resolve relative to the foreman_server application directory
+    app_path = Application.app_dir(:foreman_server)
+    Path.join([app_path, @bundled_workflows_path, "#{task_type}.yaml"])
+  end
+
+  defp load_workflow_phase_order(path) do
+    case WorkflowInterpreter.load_file(path) do
+      {:ok, workflow} ->
+        {:ok, Map.get(workflow, :phase_order, [])}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp scheduler_env(key, default) do

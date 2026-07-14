@@ -1,0 +1,3 @@
+advisors:
+  - name: default
+    model: minimax/MiniMax-M2.7:medium

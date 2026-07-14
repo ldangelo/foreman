@@ -1373,8 +1373,12 @@ async function runPhaseSequence(
   let feedbackContext: string | undefined;
   let qaVerdictForLog: "pass" | "fail" | "unknown" = "unknown";
   const retryCounts: Record<string, number> = {};
-  // P1: Explorer circuit breaker - track Explorer failures to fail fast after 3
-  const explorerFailures: string[] = [];
+  // P1: Circuit breaker for the first non-retryOnly phase.
+  // Track failures by phase name so custom workflows with different first-phase names work correctly.
+  // Falls back to "explorer" for backward compatibility.
+  const firstNonRetryOnlyPhase = phases.find((p) => !p.retryOnly);
+  const firstPhaseName = firstNonRetryOnlyPhase?.name ?? "explorer";
+  const firstPhaseFailures: string[] = [];
   // P1/P2: Rate limit tracking per phase
   const rateLimitRetries: Record<string, number> = {};
   const pipelineStartedAt = Date.now();
@@ -1436,7 +1440,12 @@ async function runPhaseSequence(
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: prePhaseBudgetReason };
     }
     const agentName = `${phaseName}-${taskId}`;
-    const hasExplorerReport = existsSync(join(worktreePath, "EXPLORER_REPORT.md"));
+    // Check if the first phase's artifact exists (for hasExplorerReport check).
+    // Falls back to EXPLORER_REPORT.md for backward compatibility.
+    const explorerArtifactPath = firstNonRetryOnlyPhase?.artifact
+      ? join(worktreePath, firstNonRetryOnlyPhase.artifact.replace(/^\{task\.projectReportsDir\}/, "").replace(/^\//, ""))
+      : join(worktreePath, "EXPLORER_REPORT.md");
+    const hasExplorerReport = existsSync(explorerArtifactPath);
     const phaseType = phase.bash
       ? "bash"
       : phase.command
@@ -1594,7 +1603,9 @@ async function runPhaseSequence(
           taskType: config.taskType,
           runId,
           hasExplorerReport,
-          requiresExplorerReport: workflowConfig.name === "default" && phaseName === "developer",
+          // requiresExplorerReport: true if this is a mutating phase (checkpointPr: true) and explorer report exists.
+          // This enables the pre-flight check for explorer report in developer-like phases.
+          requiresExplorerReport: hasExplorerReport && phase.checkpointPr === true,
           feedbackContext,
           worktreePath,
           reportDir: projectReportsDir,
@@ -1676,16 +1687,17 @@ async function runPhaseSequence(
       return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: promptArtifactError };
     }
 
-    // P1: Explorer circuit breaker - fail fast if Explorer has failed 3 times
-    // This prevents empty branch pollution when Explorer keeps failing
-    if (phaseName === "explorer") {
-      const recentExplorerFailures = explorerFailures.filter(
+    // P1: Circuit breaker for the first non-retryOnly phase (explorer-like phase).
+    // Fail fast if this phase has failed 3 times in the last hour.
+    // This prevents empty branch pollution when the first phase keeps failing.
+    if (phaseName === firstPhaseName) {
+      const recentFirstPhaseFailures = firstPhaseFailures.filter(
         (t) => Date.now() - new Date(t).getTime() < 60 * 60 * 1000, // Within last hour
       );
-      if (recentExplorerFailures.length >= 3) {
-        ctx.log(`[EXPLORER] CIRCUIT BREAKER: Explorer has failed ${recentExplorerFailures.length} times in the last hour — failing fast`);
-        await appendFile(logFile, `\n[PIPELINE] EXPLORER CIRCUIT BREAKER: ${recentExplorerFailures.length} failures detected, failing fast\n`);
-        const errorMsg = `Explorer circuit breaker: ${recentExplorerFailures.length} failures in the last hour`;
+      if (recentFirstPhaseFailures.length >= 3) {
+        ctx.log(`[${firstPhaseName.toUpperCase()}] CIRCUIT BREAKER: ${firstPhaseName} has failed ${recentFirstPhaseFailures.length} times in the last hour — failing fast`);
+        await appendFile(logFile, `\n[PIPELINE] ${firstPhaseName.toUpperCase()} CIRCUIT BREAKER: ${recentFirstPhaseFailures.length} failures detected, failing fast\n`);
+        const errorMsg = `${firstPhaseName} circuit breaker: ${recentFirstPhaseFailures.length} failures in the last hour`;
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
           taskId, phase: phaseName, error: errorMsg, retryable: false,
         });
@@ -2080,7 +2092,8 @@ async function runPhaseSequence(
       await appendFile(logFile, `\n[PIPELINE] ${phaseName} agent-error: ${explicitAgentError.error}\n`);
     }
 
-    if (phaseSucceeded && phaseName === "developer") {
+    // Check for debug artifacts left by mutating phases (checkpointPr: true).
+    if (phaseSucceeded && phase.checkpointPr === true) {
       const debugArtifacts = findDebugArtifacts(worktreePath);
       if (debugArtifacts.length > 0) {
         phaseSucceeded = false;
@@ -2211,9 +2224,9 @@ async function runPhaseSequence(
       const errorMsg = phaseError ?? `${phaseName} failed`;
       const isRateLimit = isRateLimitError(errorMsg);
 
-      // P1: Track Explorer failures for circuit breaker
-      if (phaseName === "explorer") {
-        explorerFailures.push(new Date().toISOString());
+      // P1: Track first-phase failures for circuit breaker
+      if (phaseName === firstPhaseName) {
+        firstPhaseFailures.push(new Date().toISOString());
       }
 
       if (explicitAgentError && !explicitAgentError.retryable) {

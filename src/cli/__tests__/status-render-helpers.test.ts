@@ -78,7 +78,7 @@ describe("status render helpers", () => {
       getActiveRuns: () => [run],
       getRunProgress: () => ({ currentPhase: "developer", toolCalls: 3, toolBreakdown: { Bash: 3 }, filesChanged: [], costUsd: 1.25, turns: 2, tokensIn: 10, tokensOut: 20, lastToolCall: "Bash", lastActivity: new Date().toISOString() }),
       getRunsForTask: () => [run, previousRun],
-      getMetrics: () => ({ totalCost: 4.5, totalTokens: 1500 }),
+      getMetrics: () => ({ totalCost: 4.5, totalTokens: 1500, costPerTurn: 0.1125, totalTurns: 40, totalTimeSeconds: 3600, timePerTurnSeconds: 90 }),
     } as any;
 
     await renderActiveAgents(store, "proj-1");

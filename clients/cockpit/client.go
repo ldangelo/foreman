@@ -22,8 +22,9 @@ import (
 // defaultPhases is only a last-resort fallback when neither the run projection
 // nor the workflow definition can provide phase order.
 var defaultPhases = []string{
-	"explorer", "developer", "documentation", "qa", "reviewer",
-	"cli-review", "finalize", "create-pr", "pr-wait", "merge",
+	"explorer", "developer", "cicd-developer", "cr-developer", "merge-resolver",
+	"documentation", "qa", "reviewer", "cli-review", "finalize",
+	"create-pr", "pr-wait", "merge",
 }
 
 // Phase is one step of a run's pipeline.
@@ -80,6 +81,7 @@ type Task struct {
 	ProjectID   string
 	Created     string
 	Updated     string
+	Pipeline    []Phase
 }
 
 // Message is an Agent Mail message.
@@ -188,6 +190,29 @@ func pipelineForRun(raw map[string]any, task Task, status, currentPhase string) 
 			state = inferredPhaseState(i, activeIdx, status)
 		}
 		out[i] = Phase{Name: name, State: state, Retries: retries[name]}
+	}
+	return out
+}
+
+// pipelineForTask returns the phase pipeline for a task based on its workflow/type.
+// All phases are "pending" since tasks don't have active runs with phase status.
+func pipelineForTask(task Task) []Phase {
+	workflow := cleanWorkflowName(task.Workflow)
+	if workflow == "" {
+		workflow = task.TaskType
+	}
+	if workflow == "" {
+		workflow = "feature"
+	}
+
+	order := workflowPhaseOrder(workflow)
+	if len(order) == 0 {
+		order = append([]string(nil), defaultPhases...)
+	}
+
+	out := make([]Phase, len(order))
+	for i, name := range order {
+		out[i] = Phase{Name: name, State: "pending", Retries: 0}
 	}
 	return out
 }
@@ -461,13 +486,17 @@ func (c *mockClient) CloseTask(task Task) error {
 func (c *mockClient) RetryRun(run Run) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.tasks = append(c.tasks, Task{TaskID: run.TaskID, Title: run.Title, TaskType: run.TaskType, Priority: run.Priority, Status: "ready", Summary: run.Summary})
+	task := Task{TaskID: run.TaskID, Title: run.Title, TaskType: run.TaskType, Priority: run.Priority, Status: "ready", Summary: run.Summary}
+	task.Pipeline = pipelineForTask(task)
+	c.tasks = append(c.tasks, task)
 	return nil
 }
 func (c *mockClient) ResetRun(run Run) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.tasks = append(c.tasks, Task{TaskID: run.TaskID, Title: run.Title, TaskType: run.TaskType, Priority: run.Priority, Status: "ready", Summary: run.Summary})
+	task := Task{TaskID: run.TaskID, Title: run.Title, TaskType: run.TaskType, Priority: run.Priority, Status: "ready", Summary: run.Summary}
+	task.Pipeline = pipelineForTask(task)
+	c.tasks = append(c.tasks, task)
 	return nil
 }
 func (*mockClient) AttachRun(run Run) error {
@@ -590,7 +619,7 @@ func (c *mockClient) Dispatchable() []Task {
 }
 
 func defaultMockTasks() []Task {
-	return []Task{
+	tasks := []Task{
 		{TaskID: "foreman-c3845", Title: "Wire PR status into cockpit", TaskType: "feature", Priority: "P0", Status: "ready", Depends: "blocked-by foreman-77aa1 ✓ merged",
 			Workflow: "default (10 phases)", Summary: "Unblocked — all dependencies merged. Dispatches next tick (opus, P0)."},
 		{TaskID: "foreman-0207c", Title: "Harden task reset confirmation", TaskType: "task", Priority: "P1", Status: "ready", Depends: "no blockers",
@@ -602,6 +631,10 @@ func defaultMockTasks() []Task {
 		{TaskID: "foreman-0ade6", Title: "Refine parent epic leftovers", TaskType: "chore", Priority: "P2", Status: "ready", Depends: "no blockers",
 			Workflow: "default", Summary: "Ready. Newly refined from a parent epic."},
 	}
+	for i := range tasks {
+		tasks[i].Pipeline = pipelineForTask(tasks[i])
+	}
+	return tasks
 }
 
 func (*mockClient) Messages(runID string) []Message {
@@ -967,7 +1000,7 @@ func (c *httpClient) taskIndex(projectID string) map[string]Task {
 }
 
 func taskFromMap(t map[string]any) Task {
-	return Task{
+	task := Task{
 		TaskID:      str(t, "task_id", "id"),
 		Title:       str(t, "title"),
 		Description: str(t, "description"),
@@ -981,6 +1014,8 @@ func taskFromMap(t map[string]any) Task {
 		Created:     str(t, "created_at"),
 		Updated:     str(t, "updated_at"),
 	}
+	task.Pipeline = pipelineForTask(task)
+	return task
 }
 
 func taskDepends(t map[string]any) string {

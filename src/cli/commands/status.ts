@@ -19,6 +19,17 @@ import { runInboxSuperTuiForProject } from "./inbox.js";
 
 // ── Pi log activity helper ────────────────────────────────────────────────
 
+/** Format seconds into a human-readable duration string (e.g., "1m 30s"). */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (minutes < 60) return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
 /**
  * Read the last `tool_call` event from a Pi JSONL `.out` log file.
  * Returns a short description string, or null if none can be found.
@@ -305,7 +316,12 @@ export async function renderActiveAgents(store: StatusReadStore, projectId: stri
     console.log();
     console.log(chalk.bold("Costs"));
     console.log(`  Total: ${chalk.yellow(`$${metrics.totalCost.toFixed(2)}`)}`);
+    console.log(`  Per Turn: ${chalk.yellow(`$${(metrics.costPerTurn ?? 0).toFixed(4)}`)}`);
     console.log(`  Tokens: ${chalk.dim(`${(metrics.totalTokens / 1000).toFixed(1)}k`)}`);
+    if (metrics.totalTimeSeconds) {
+      console.log(`  Total Time: ${chalk.dim(formatDuration(metrics.totalTimeSeconds))}`);
+      console.log(`  Per Turn: ${chalk.dim(formatDuration(metrics.timePerTurnSeconds ?? 0))}`);
+    }
   }
 }
 

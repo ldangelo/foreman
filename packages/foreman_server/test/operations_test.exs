@@ -64,6 +64,94 @@ defmodule ForemanServer.OperationsTest do
     assert duration >= 1_000
   end
 
+  test "metrics include cost and turn aggregations from PhaseCompleted events" do
+    # Start a run with timing
+    append_run_event(
+      "RunStarted",
+      %{run_id: "run-cost", phase_order: ["build"]},
+      ~U[2026-01-01 00:00:00Z]
+    )
+
+    append_run_event(
+      "PhaseStarted",
+      %{run_id: "run-cost", phase_id: "build"},
+      ~U[2026-01-01 00:00:01Z]
+    )
+
+    # PhaseCompleted with cost_usd and turns
+    append_run_event(
+      "PhaseCompleted",
+      %{run_id: "run-cost", phase_id: "build", status: "completed", cost_usd: 1.25, turns: 5},
+      ~U[2026-01-01 00:00:06Z]
+    )
+
+    # Another phase with different cost
+    append_run_event(
+      "PhaseStarted",
+      %{run_id: "run-cost", phase_id: "test"},
+      ~U[2026-01-01 00:00:07Z]
+    )
+
+    append_run_event(
+      "PhaseCompleted",
+      %{run_id: "run-cost", phase_id: "test", status: "completed", cost_usd: 0.75, turns: 3},
+      ~U[2026-01-01 00:00:12Z]
+    )
+
+    # Complete the run
+    append_run_event("RunCompleted", %{run_id: "run-cost"}, ~U[2026-01-01 00:00:13Z])
+
+    assert {:ok, metrics} = Operations.metrics()
+
+    # total_turns should be sum of turns from PhaseCompleted events
+    assert metrics.total_turns == 8
+
+    # total_cost_usd should be sum of cost_usd from PhaseCompleted events
+    assert metrics.total_cost_usd == 2.0
+
+    # cost_per_turn should be total_cost_usd / total_turns
+    assert metrics.cost_per_turn == "0.250000"
+
+    # total_time_ms should be sum of phase durations
+    # Build phase: 5s (6000-1000) = 5000ms, Test phase: 5s (12000-7000) = 5000ms
+    assert metrics.total_time_ms == 10_000
+
+    # time_per_turn_ms should be total_time_ms / total_turns (rounded to 2 decimals)
+    assert metrics.time_per_turn_ms == "1250.00"
+  end
+
+  test "metrics handle edge cases: zero turns returns nil for per-turn metrics" do
+    # Start a run
+    append_run_event(
+      "RunStarted",
+      %{run_id: "run-empty", phase_order: ["build"]},
+      ~U[2026-01-01 00:00:00Z]
+    )
+
+    append_run_event(
+      "PhaseStarted",
+      %{run_id: "run-empty", phase_id: "build"},
+      ~U[2026-01-01 00:00:01Z]
+    )
+
+    # PhaseCompleted with zero cost and turns
+    append_run_event(
+      "PhaseCompleted",
+      %{run_id: "run-empty", phase_id: "build", status: "completed", cost_usd: 0, turns: 0},
+      ~U[2026-01-01 00:00:03Z]
+    )
+
+    append_run_event("RunCompleted", %{run_id: "run-empty"}, ~U[2026-01-01 00:00:04Z])
+
+    assert {:ok, metrics} = Operations.metrics()
+
+    assert metrics.total_turns == 0
+    # cost_per_turn should be 0 when turns is 0
+    assert metrics.cost_per_turn == 0
+    # time_per_turn_ms should be 0 when turns is 0
+    assert metrics.time_per_turn_ms == 0
+  end
+
   test "debug timeline identifies first inconsistent transition" do
     append_run_event("RunStarted", %{run_id: "run-anomaly", phase_order: ["build"]})
 

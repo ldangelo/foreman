@@ -232,6 +232,10 @@ export interface Metrics {
   costByRuntime: Array<{ run_id: string; cost: number; duration_seconds: number | null }>;
   costByPhase?: Record<string, number>;      // aggregated cost per pipeline phase
   agentCostBreakdown?: Record<string, number>; // aggregated cost per model/agent type
+  totalTurns?: number;            // sum of turns from all runs
+  costPerTurn?: number;          // totalCost / totalTurns
+  totalTimeSeconds?: number;     // sum of run durations
+  timePerTurnSeconds?: number;    // totalTimeSeconds / totalTurns
 }
 
 // ── Messaging interfaces ─────────────────────────────────────────────────
@@ -2033,7 +2037,7 @@ export class ForemanStore {
       tasksByStatus[row.status] = row.count;
     }
 
-    // Cost by runtime
+    // Cost by runtime and turns from progress JSON
     const costByRuntime = this.db
       .prepare(
         `SELECT r.id as run_id,
@@ -2049,8 +2053,43 @@ export class ForemanStore {
       )
       .all(...runParams) as Metrics["costByRuntime"];
 
+    // Extract turns and total time from runs (using SQLite JSON extraction)
+    const runTimeData = this.db
+      .prepare(
+        `SELECT
+           r.id as run_id,
+           r.progress,
+           CASE WHEN r.started_at IS NOT NULL AND r.completed_at IS NOT NULL
+                THEN CAST((julianday(r.completed_at) - julianday(r.started_at)) * 86400 AS INTEGER)
+                ELSE NULL END as duration_seconds
+         FROM runs r
+         ${runWhere}`
+      )
+      .all(...runParams) as Array<{ run_id: string; progress: string | null; duration_seconds: number | null }>;
+
+    let totalTurns = 0;
+    let totalTimeSeconds = 0;
+    for (const row of runTimeData) {
+      if (row.progress) {
+        try {
+          const progress = JSON.parse(row.progress) as { turns?: number };
+          if (progress.turns && typeof progress.turns === "number") {
+            totalTurns += progress.turns;
+          }
+        } catch {
+          // ignore invalid JSON
+        }
+      }
+      if (row.duration_seconds) {
+        totalTimeSeconds += row.duration_seconds;
+      }
+    }
+
     // Phase & agent cost breakdown (aggregated from run progress JSON)
     const phaseMetrics = this.getPhaseMetrics(projectId, since);
+
+    const costPerTurn = totalTurns > 0 ? totals.totalCost / totalTurns : undefined;
+    const timePerTurnSeconds = totalTurns > 0 ? totalTimeSeconds / totalTurns : undefined;
 
     return {
       totalCost: totals.totalCost,
@@ -2063,6 +2102,10 @@ export class ForemanStore {
       agentCostBreakdown: Object.keys(phaseMetrics.totalByAgent).length > 0
         ? phaseMetrics.totalByAgent
         : undefined,
+      totalTurns: totalTurns > 0 ? totalTurns : undefined,
+      costPerTurn,
+      totalTimeSeconds: totalTimeSeconds > 0 ? totalTimeSeconds : undefined,
+      timePerTurnSeconds,
     };
   }
 

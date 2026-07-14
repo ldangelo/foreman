@@ -205,6 +205,8 @@ export function renderAgentCard(run: Run, progress: RunProgress | null, isExpand
       qa:        chalk.yellow,
       reviewer:  chalk.magenta,
       finalize:  chalk.blue,
+      "pr-wait": chalk.yellow,
+      merge:     chalk.green,
     };
     const colorFn = phaseColors[progress.currentPhase] ?? chalk.white;
     lines.push(`  ${chalk.dim("Phase     ")} ${colorFn(progress.currentPhase)}`);

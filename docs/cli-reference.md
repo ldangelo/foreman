@@ -143,7 +143,7 @@ This command remains registered only so operator invocations receive an explicit
 
 ### `foreman status`
 
-Show project status: task counts, active agents, cost breakdown, and tool usage. `--live` opens the unified cockpit directly to the status/workflow view; `--watch` remains the compact refreshing status output; `--json` remains machine-readable.
+Show project status: task counts, active agents, costs (total and per-turn), tokens, elapsed time (total and per-turn), and tool usage. `--live` opens the unified cockpit directly to the status/workflow view; `--watch` remains the compact refreshing status output; `--json` remains machine-readable.
 
 ```bash
 foreman status                    # Snapshot of current state
@@ -183,6 +183,23 @@ foreman logs bd-abc1 --raw         # Print raw JSON log only
 | `--tail <lines>` | `80` | Raw log lines to show |
 | `--follow` | — | Follow the raw JSON log after printing the summary |
 | `--raw` | — | Print only the raw JSON log tail |
+
+### `foreman metrics`
+
+Show detailed task metrics including cost and time statistics. This provides a focused view of accumulated metrics separate from the full status dashboard.
+
+```bash
+foreman metrics                  # Show all metrics
+```
+
+**Displayed metrics:**
+- **Total Cost** — Cumulative cost in USD across all turns
+- **Total Turns** — Total number of turns executed (denominator for per-turn metrics)
+- **Cost per Turn** — Average cost per turn in USD
+- **Total Time** — Cumulative elapsed time (formatted as hours/minutes/seconds)
+- **Time per Turn** — Average time per turn
+
+Per-turn metrics show `—` when total turns is zero.
 
 ### `foreman watch`
 
