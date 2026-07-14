@@ -90,11 +90,12 @@ The fallback task list is organized as a gh-dash-style section strip with counts
 - **Detail header** — task id, run id, and run status (color-coded). For
   attention runs, a second line states the reason (`failed: merge_conflict`,
   `retrying: coderabbit_findings (2)`).
-- **Phase rail** — the selected run's workflow phases as a horizontal sequence
-  with per-phase retry counts and glyphs: `✓` done, `●` active
-  (breathing/animated), `○` pending, `✗` failed, `↻` retrying. It wraps on normal
-  narrow panes and collapses to a compact `4/10 · qa r2` badge on very narrow
-  panes. This is the at-a-glance status. (Q3)
+- **Phase rail** — the selected run or task's workflow phases as a horizontal
+  sequence with per-phase retry counts and glyphs: `✓` done, `●` active
+  (breathing/animated), `○` pending, `✗` failed, `↻` retrying. Tasks without
+  active runs display phases from workflow YAML as pending (including `pr-wait`
+  and `merge`). It wraps on normal narrow panes and collapses to a compact
+  `4/10 · qa r2` badge on very narrow panes. This is the at-a-glance status. (Q3)
 - **Tab strip** — `summary · messages · events · logs · reports · files · pr ·
   metrics`. Tabs show counts; `logs`, `reports`, and `files` carry an `⧉` marker
   indicating their rows are openable in nvim. (Q4)
@@ -357,6 +358,8 @@ custom PR keybindings in `gh-dash.yml` when desired, using `{{.RepoPath}}` from
 
 - RECENT remains projection/count scoped; auth token refresh and RECENT
   pagination controls are explicit non-goals.
-- Resolved: the phase rail follows the selected run's workflow phase order,
-  includes retry counts, and collapses to a compact `4/10 · qa r2` badge on very
-  narrow terminals instead of consuming multiple wrapped rows.
+- Resolved: the phase rail follows the selected run or task's workflow phase
+  order, includes retry counts, and collapses to a compact `4/10 · qa r2` badge
+  on very narrow terminals instead of consuming multiple wrapped rows. Tasks
+  display workflow phases (including `pr-wait` and `merge`) as pending when no
+  run is active.
