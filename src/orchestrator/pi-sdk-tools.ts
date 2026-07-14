@@ -31,6 +31,12 @@ export interface ForemanToolContext {
   worktreePath: string;
   reportDir: string;
   logFile?: string;
+  /** Callback to report file changes. Adds files to progress.filesChanged. */
+  onFileChanges?: (files: string[]) => void;
+  /** Callback to reserve files for ownership. */
+  onFileReserve?: (files: string[], owner: string, leaseSecs?: number) => void;
+  /** Callback to release file reservations. */
+  onFileRelease?: (files: string[], owner: string) => void;
 }
 
 const execFileAsync = promisify(execFile);
@@ -837,6 +843,120 @@ export function createTaskRiskAddTool(client: ElixirServerClient, context: Forem
           details: { taskId: params.taskId, error: msg },
         };
       }
+    },
+  } as ToolDefinition;
+}
+
+// ── File ownership tools ───────────────────────────────────────────────────────
+
+const FileReserveParams = Type.Object({
+  files: Type.Array(Type.String({ description: "List of file paths to reserve for exclusive editing" })),
+  leaseSecs: Type.Optional(Type.Number({ description: "Lease duration in seconds (default: 300)" })),
+});
+
+/**
+ * Create a file_reserve ToolDefinition that claims exclusive edit ownership of files.
+ *
+ * Agents call this tool before editing files to coordinate ownership and prevent
+ * conflicting edits. The lease expires automatically if not released.
+ */
+export function createFileReserveTool(context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "file_reserve",
+    label: "File Reserve",
+    description: "Reserve files for exclusive editing ownership. Call before editing files to coordinate with other agents and prevent conflicting changes.",
+    promptSnippet: "Reserve files for edit ownership before making changes",
+    promptGuidelines: [
+      "Call file_reserve before editing files that other agents may be working on",
+      "Use file_release when done editing to allow other agents to edit the files",
+      "Optional leaseSecs parameter sets automatic expiration (default: 300 seconds)",
+    ],
+    parameters: FileReserveParams,
+    async execute(_toolCallId: string, params: Static<typeof FileReserveParams>) {
+      const owner = `${context.phase}-${context.taskId}`;
+      const leaseSecs = params.leaseSecs ?? 300;
+      if (context.onFileReserve) {
+        context.onFileReserve(params.files, owner, leaseSecs);
+      }
+      await appendToolLog(context, `file_reserve files=${params.files.length} owner=${owner} leaseSecs=${leaseSecs}`);
+      return {
+        content: [{ type: "text" as const, text: `Reserved ${params.files.length} file(s) for ${owner} (lease: ${leaseSecs}s)` }],
+        details: { files: params.files, owner, leaseSecs },
+      };
+    },
+  } as ToolDefinition;
+}
+
+const FileReleaseParams = Type.Object({
+  files: Type.Array(Type.String({ description: "List of file paths to release from exclusive editing" })),
+});
+
+/**
+ * Create a file_release ToolDefinition that releases edit ownership of reserved files.
+ *
+ * Agents call this tool when done editing to allow other agents to edit the files.
+ */
+export function createFileReleaseTool(context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "file_release",
+    label: "File Release",
+    description: "Release file edit reservations. Call when done editing to allow other agents to edit the reserved files.",
+    promptSnippet: "Release file edit ownership after completing changes",
+    promptGuidelines: [
+      "Call file_release when done editing to release reserved files",
+      "Releasing files allows other agents to reserve and edit them",
+    ],
+    parameters: FileReleaseParams,
+    async execute(_toolCallId: string, params: Static<typeof FileReleaseParams>) {
+      const owner = `${context.phase}-${context.taskId}`;
+      if (context.onFileRelease) {
+        context.onFileRelease(params.files, owner);
+      }
+      await appendToolLog(context, `file_release files=${params.files.length} owner=${owner}`);
+      return {
+        content: [{ type: "text" as const, text: `Released ${params.files.length} file(s) from ${owner}` }],
+        details: { files: params.files, owner },
+      };
+    },
+  } as ToolDefinition;
+}
+
+const FileChangesParams = Type.Object({
+  files: Type.Array(Type.String({ description: "List of file paths that were changed" })),
+  operation: Type.Optional(Type.Union([
+    Type.Literal("created", { description: "Files were created" }),
+    Type.Literal("modified", { description: "Files were modified" }),
+    Type.Literal("deleted", { description: "Files were deleted" }),
+  ], { description: "Type of change made to the files" })),
+});
+
+/**
+ * Create a file_changes ToolDefinition that reports files modified during the phase.
+ *
+ * Agents call this tool to report files they changed, which are tracked in
+ * progress.filesChanged for downstream phases and reporting.
+ */
+export function createFileChangesTool(context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "file_changes",
+    label: "File Changes",
+    description: "Report files that were changed during this phase. Tracks modifications in progress.filesChanged for downstream phases and reporting.",
+    promptSnippet: "Report changed files for progress tracking",
+    promptGuidelines: [
+      "Call file_changes to report files you created, modified, or deleted",
+      "Files are added to progress.filesChanged for QA and finalize verification",
+      "The operation parameter categorizes the type of change",
+    ],
+    parameters: FileChangesParams,
+    async execute(_toolCallId: string, params: Static<typeof FileChangesParams>) {
+      if (context.onFileChanges) {
+        context.onFileChanges(params.files);
+      }
+      await appendToolLog(context, `file_changes files=${params.files.length} operation=${params.operation ?? "modified"}`);
+      return {
+        content: [{ type: "text" as const, text: `Reported ${params.files.length} file change(s): ${params.operation ?? "modified"}` }],
+        details: { files: params.files, operation: params.operation ?? "modified" },
+      };
     },
   } as ToolDefinition;
 }

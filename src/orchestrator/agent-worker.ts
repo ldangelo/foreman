@@ -20,6 +20,9 @@ import type { StreamEvent } from "./pi-sdk-runner.js";
 import {
   createArtifactWriteTool,
   createDiffReadTool,
+  createFileChangesTool,
+  createFileReleaseTool,
+  createFileReserveTool,
   createGetRunStatusTool,
   createGitStatusTool,
   createMailReadTool,
@@ -837,6 +840,23 @@ async function runPhase(
     worktreePath: config.worktreePath,
     reportDir: resolveArtifactPath(config.worktreePath, workerReportDir(config)),
     logFile,
+    onFileChanges: (files: string[]) => {
+      for (const file of files) {
+        if (!progress.filesChanged.includes(file)) {
+          progress.filesChanged.push(file);
+        }
+      }
+    },
+    onFileReserve: (files: string[], owner: string, leaseSecs?: number) => {
+      if (agentMailClient) {
+        reserveFiles(agentMailClient, files, owner, leaseSecs);
+      }
+    },
+    onFileRelease: (files: string[], owner: string) => {
+      if (agentMailClient) {
+        releaseFiles(agentMailClient, files, owner);
+      }
+    },
   };
   if (agentMailClient) {
     customTools.push(createSendMailTool(agentMailClient, agentName));
@@ -848,6 +868,9 @@ async function runPhase(
   customTools.push(createValidationResultTool(foremanToolContext));
   customTools.push(createTaskBlockTool(agentMailClient ?? null, foremanToolContext));
   customTools.push(createProgressUpdateTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createFileReserveTool(foremanToolContext));
+  customTools.push(createFileReleaseTool(foremanToolContext));
+  customTools.push(createFileChangesTool(foremanToolContext));
   if (role !== "explorer") {
     customTools.push(createSafeCommandRunTool(foremanToolContext));
   }

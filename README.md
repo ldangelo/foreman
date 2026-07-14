@@ -295,6 +295,9 @@ The following tools may be registered as custom `ToolDefinition` for an agent se
 | `git_status` | Get the working tree status (equivalent to `git status --porcelain`) via VCS backend. |
 | `pr_review_finding` | Collect CodeRabbit blocking findings and failed checks for a pull request. |
 | `merge_gate_status` | Check PR merge readiness including checks, CodeRabbit completion, and conflicts. |
+| `file_reserve` | Reserve files for exclusive editing ownership. Call before editing files to coordinate with other agents. |
+| `file_release` | Release file edit reservations. Call when done editing to allow other agents to edit. |
+| `file_changes` | Report files that were changed during this phase. Tracks modifications in progress.filesChanged. |
 
 Standard Pi tools are also available per phase (configured in [workflow YAML](docs/workflow-yaml-reference.md)):
 - `read`, `write`, `edit` — file operations

@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createArtifactWriteTool, createDiffReadTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, createTaskGetTool, createTaskNoteAddTool, createTaskRiskAddTool, createTaskStatusTool, type ForemanToolContext } from "../pi-sdk-tools.js";
+import { createArtifactWriteTool, createDiffReadTool, createFileChangesTool, createFileReleaseTool, createFileReserveTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, createTaskGetTool, createTaskNoteAddTool, createTaskRiskAddTool, createTaskStatusTool, type ForemanToolContext } from "../pi-sdk-tools.js";
 import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import type { ElixirServerClient } from "../../lib/elixir-server-client.js";
@@ -518,6 +518,119 @@ describe("Task context tools", () => {
 
       const result = await tool.execute("call-1", { taskId: "foreman-123", body: "test" }, undefined, undefined, {} as never);
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Failed to add risk") }));
+    });
+  });
+});
+
+describe("File ownership tools", () => {
+  describe("createFileReserveTool", () => {
+    it("reserves files and calls onFileReserve callback", async () => {
+      const onFileReserve = vi.fn();
+      const context = makeContext();
+      context.onFileReserve = onFileReserve;
+      const tool = createFileReserveTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file1.ts", "src/file2.ts"] }, undefined, undefined, {} as never);
+      expect(onFileReserve).toHaveBeenCalledWith(["src/file1.ts", "src/file2.ts"], "qa-task-1", 300);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Reserved 2 file(s)") }));
+      expect((result.details as Record<string, unknown>).owner).toBe("qa-task-1");
+      expect((result.details as Record<string, unknown>).leaseSecs).toBe(300);
+    });
+
+    it("uses custom lease duration when provided", async () => {
+      const onFileReserve = vi.fn();
+      const context = makeContext();
+      context.onFileReserve = onFileReserve;
+      const tool = createFileReserveTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file.ts"], leaseSecs: 600 }, undefined, undefined, {} as never);
+      expect(onFileReserve).toHaveBeenCalledWith(["src/file.ts"], "qa-task-1", 600);
+      expect((result.details as Record<string, unknown>).leaseSecs).toBe(600);
+    });
+
+    it("works without callback (no-op)", async () => {
+      const context = makeContext();
+      const tool = createFileReserveTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file.ts"] }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Reserved 1 file(s)") }));
+    });
+  });
+
+  describe("createFileReleaseTool", () => {
+    it("releases files and calls onFileRelease callback", async () => {
+      const onFileRelease = vi.fn();
+      const context = makeContext();
+      context.onFileRelease = onFileRelease;
+      const tool = createFileReleaseTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file1.ts", "src/file2.ts"] }, undefined, undefined, {} as never);
+      expect(onFileRelease).toHaveBeenCalledWith(["src/file1.ts", "src/file2.ts"], "qa-task-1");
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Released 2 file(s)") }));
+      expect((result.details as Record<string, unknown>).owner).toBe("qa-task-1");
+    });
+
+    it("works without callback (no-op)", async () => {
+      const context = makeContext();
+      const tool = createFileReleaseTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file.ts"] }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Released 1 file(s)") }));
+    });
+  });
+
+  describe("createFileChangesTool", () => {
+    it("reports file changes and calls onFileChanges callback", async () => {
+      const onFileChanges = vi.fn();
+      const context = makeContext();
+      context.onFileChanges = onFileChanges;
+      const tool = createFileChangesTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/new.ts", "src/modified.ts"], operation: "modified" }, undefined, undefined, {} as never);
+      expect(onFileChanges).toHaveBeenCalledWith(["src/new.ts", "src/modified.ts"]);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Reported 2 file change(s)") }));
+      expect((result.details as Record<string, unknown>).operation).toBe("modified");
+    });
+
+    it("defaults to 'modified' operation when not specified", async () => {
+      const onFileChanges = vi.fn();
+      const context = makeContext();
+      context.onFileChanges = onFileChanges;
+      const tool = createFileChangesTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file.ts"] }, undefined, undefined, {} as never);
+      expect(onFileChanges).toHaveBeenCalledWith(["src/file.ts"]);
+      expect((result.details as Record<string, unknown>).operation).toBe("modified");
+    });
+
+    it("reports 'created' operation correctly", async () => {
+      const onFileChanges = vi.fn();
+      const context = makeContext();
+      context.onFileChanges = onFileChanges;
+      const tool = createFileChangesTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/new.ts"], operation: "created" }, undefined, undefined, {} as never);
+      expect(onFileChanges).toHaveBeenCalledWith(["src/new.ts"]);
+      expect((result.details as Record<string, unknown>).operation).toBe("created");
+    });
+
+    it("reports 'deleted' operation correctly", async () => {
+      const onFileChanges = vi.fn();
+      const context = makeContext();
+      context.onFileChanges = onFileChanges;
+      const tool = createFileChangesTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/deleted.ts"], operation: "deleted" }, undefined, undefined, {} as never);
+      expect(onFileChanges).toHaveBeenCalledWith(["src/deleted.ts"]);
+      expect((result.details as Record<string, unknown>).operation).toBe("deleted");
+    });
+
+    it("works without callback (no-op)", async () => {
+      const context = makeContext();
+      const tool = createFileChangesTool(context);
+
+      const result = await tool.execute("call-1", { files: ["src/file.ts"] }, undefined, undefined, {} as never);
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Reported 1 file change(s)") }));
     });
   });
 });

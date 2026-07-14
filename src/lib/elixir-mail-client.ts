@@ -86,6 +86,10 @@ export class ElixirMailClient implements AgentMailClient {
     // File reservations are handled by the worker process, not Elixir inbox.
   }
 
+  async reportFileChanges(_paths: string[]): Promise<void> {
+    // File changes are tracked via progress.filesChanged in the worker process.
+  }
+
   private sender(message: ElixirInboxMessage): string {
     return asString(message.from ?? message.sender ?? message.sender_agent_type, "foreman");
   }
