@@ -214,6 +214,8 @@ describe("inbox TUI render contracts", () => {
 
     expect(output).not.toContain("oldest message");
     expect(output).not.toContain("oldest-phase");
+    expect(output).toContain("old-phase");
+    expect(output).toContain("old message");
     expect(output.indexOf("old-phase")).toBeLessThan(output.indexOf("new-phase"));
     expect(output.indexOf("old message")).toBeLessThan(output.indexOf("new message"));
   });
