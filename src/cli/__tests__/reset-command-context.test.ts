@@ -334,7 +334,7 @@ describe("resetAction", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const code = await resetAction("task-1", { dryRun: true, reason: "RCA retry" });
+      const code = await resetAction("task-1", { dryRun: true, reason: "RCA retry", removeWorktree: true });
 
       expect(code).toBe(0);
       expect(mockRemoveWorkspace).not.toHaveBeenCalled();
@@ -395,7 +395,7 @@ describe("resetAction", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const code = await resetAction("task-1", { reason: "RCA retry" });
+      const code = await resetAction("task-1", { reason: "RCA retry", removeWorktree: true });
 
       expect(code).toBe(0);
       expect(mockRemoveWorkspace).toHaveBeenCalledWith(projectPath, "/tmp/wt/task-1");

@@ -82,7 +82,7 @@ If your phase is `cr-developer`, the retry feedback is a hard acceptance contrac
 - Do not write or modify tests; leave verification and test coverage changes to QA/finalize
 - For localized tasks, prefer the smallest viable diff in the fewest relevant files. Do not broaden scope unless the task truly requires it.
 - Treat the **Developer Handoff** / implementation plan in EXPLORER_REPORT.md as your execution contract. Start with those files and do not deviate unless the plan is demonstrably insufficient.
-- If you deviate from the explorer plan, write a one-sentence justification in SESSION_LOG.md before editing the additional file(s), then repeat that justification in DEVELOPER_REPORT.md.
+- If you deviate from the explorer plan (touch files outside the Explorer "Edit First" scope), write a one-sentence justification in SESSION_LOG.md before editing the additional file(s), then document every scope expansion in a dedicated `## Scope Expansions` section of DEVELOPER_REPORT.md. Each entry must state: (a) the file/path touched beyond scope, (b) why it was unavoidable for acceptance (e.g., prerequisite fix, blocker, regression test, or hard-acceptance finding injected by `cicd-developer` / `cr-developer`), and (c) the minimum viable change set applied. Finalize rejects out-of-scope edits that lack this justification.
 - For localized CLI/status/display tasks, prefer local command/render changes over widening shared task-client or backend interfaces when the explorer plan points to a local path.
 - Do NOT copy tests from the worktree into the main codebase. If tests appear necessary, document the gap for QA instead of implementing it here.
 - **DO NOT** commit, push, or close the task — the pipeline handles that
@@ -111,6 +111,10 @@ mkdir -p "{{reportDir}}"
 
 ## Decisions & Trade-offs
 - Any design decisions made and their rationale
+
+## Scope Expansions
+(If no files were touched beyond the Explorer scope, write: "- none")
+- `path/to/out-of-scope-file.ts` — reason it was unavoidable for acceptance; minimal change applied
 
 ## Known Limitations
 - Anything deferred or not fully addressed

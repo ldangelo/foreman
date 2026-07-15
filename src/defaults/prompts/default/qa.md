@@ -69,4 +69,5 @@ Do NOT run tests if conflict markers are found.
 - Use targeted verification only; do not run broad/full-suite commands in QA.
 - QA_REPORT.md MUST include the actual command(s) run and real pass/fail evidence; reports without real test evidence are invalid
 - **DO NOT** commit, push, or close the task
-- **Write SESSION_LOG.md** documenting your session work (required, not optional)
+- **Scope-breach check (BLOCKING):** After reviewing the diff, compare the changed files against the "Edit First" section of EXPLORER_REPORT.md. If the developer modified files outside the approved scope and DEVELOPER_REPORT.md lacks a `## Scope Expansions` section justifying each such file, raise an immediate QA FAIL with verdict `## Verdict: BLOCKING_SCOPE_BREACH` and a message listing the files missing justification. Do not proceed with test verification until the scope breach is acknowledged.
+

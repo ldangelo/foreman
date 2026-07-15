@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { extractExplorerScopedPaths, finalizeValidationCommands, findFinalizeScopeViolations } from "../finalize-guards.js";
+import { extractExplorerScopedPaths, finalizeValidationCommands, findFinalizeScopeViolations, reportJustifiesOutOfScope } from "../finalize-guards.js";
 
 describe("finalize guards", () => {
   const tmpDirs: string[] = [];
@@ -32,6 +32,36 @@ describe("finalize guards", () => {
       "packages/foreman_server/lib/foreman_server/overwatch.ex",
       "src/generated/types.ts",
     ])).toEqual(["packages/foreman_server/lib/foreman_server/overwatch.ex"]);
+  });
+
+  it("recognizes ## Scope Expansions section as explicit developer contract", () => {
+    const report = [
+      "# Developer Report",
+      "",
+      "## Files Changed",
+      "- src/cli/commands/inbox.ts — added backlog-only task support",
+      "",
+      "## Scope Expansions",
+      "- `src/cli/commands/inbox.ts` — CodeRabbit MAJOR remediation: `buildInboxTaskSummaries` dropped backlog-only tasks",
+      "- `src/cli/__tests__/inbox-tui-contracts.test.ts` — regression tests for the inbox expansion",
+      ""
+    ].join("\n");
+
+    expect(reportJustifiesOutOfScope(report, "src/cli/commands/inbox.ts")).toBe(true);
+    expect(reportJustifiesOutOfScope(report, "src/cli/__tests__/inbox-tui-contracts.test.ts")).toBe(true);
+    expect(reportJustifiesOutOfScope(report, "packages/foreman_server/lib/foreman_server/overwatch.ex")).toBe(false);
+  });
+
+  it("accepts Scope Expansions even when file appears under Edit First with line range", () => {
+    // The explorer lists BoardPane.ts with line numbers, so BoardPane.ts is explicitly
+    // in scope; the developer should be able to cite it in Scope Expansions for clarity
+    // without finalize flagging it as just "redundant" justification.
+    const report = [
+      "## Scope Expansions",
+      "- `src/cli/super-tui/panes/BoardPane.ts` — in Explorer scope (lines 17-37), listed for transparency"
+    ].join("\n");
+
+    expect(reportJustifiesOutOfScope(report, "src/cli/super-tui/panes/BoardPane.ts")).toBe(true);
   });
 
   it("selects domain validation for non-TypeScript changed files", () => {

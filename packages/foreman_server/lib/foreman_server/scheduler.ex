@@ -9,7 +9,8 @@ defmodule ForemanServer.Scheduler do
   @default_tick_interval_ms 5_000
 
   # Path to bundled workflows relative to foreman_server app root
-  @bundled_workflows_path "../../../../../src/defaults/workflows"
+  # _build/dev/lib/foreman_server/ + 6/../ + src/defaults/workflows = repo/src/defaults/workflows
+  @bundled_workflows_path "../../../../../../src/defaults/workflows"
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do

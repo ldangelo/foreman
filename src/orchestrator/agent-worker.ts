@@ -1980,12 +1980,16 @@ async function runFinalizeBuiltinPhase(args: {
   const scopeViolations = findFinalizeScopeViolations({ worktreePath: config.worktreePath, reportDir }, changedAgainstBase);
   if (scopeViolations.length > 0) {
     const details = [
-      "Changed files outside Explorer 'Edit First' scope require an explicit Developer justification.",
+      "Finalize scope check failed: some files were modified outside Explorer 'Edit First' scope without justification.",
       "",
-      "Unexpected files:",
+      "## Out-of-scope changes (requires justification)",
       ...scopeViolations.map((file) => `- ${file}`),
       "",
-      "Add a concrete justification to DEVELOPER_REPORT.md or remove the out-of-scope changes.",
+      "## Action required",
+      "- Add a `## Scope Expansions` section to DEVELOPER_REPORT.md listing each out-of-scope file with justification, OR",
+      "- Remove the out-of-scope changes from this worktree",
+      "",
+      "See EXPLORER_REPORT.md '### Edit First' for the approved scope.",
     ].join("\n");
     await writeFinalizeValidation({ config, baseBranch, integrationStatus: "SKIPPED", validationStatus: "FAIL", failureScope: "UNRELATED_FILES", verdict: "FAIL", output: details });
     return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: `scope_guard_failed: ${scopeViolations.join(", ")}`, outputText: readFileSync(resolveArtifactPath(config.worktreePath, join(reportDir, "FINALIZE_VALIDATION.md")), "utf8") };

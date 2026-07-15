@@ -23,7 +23,7 @@ export function extractExplorerScopedPaths(report: string): Set<string> {
     ].map((candidate) => candidate[1].trim());
     for (const candidate of candidates) {
       if (!candidate || candidate.includes(" ")) continue;
-      paths.add(candidate.replace(/^\.\//, ""));
+      paths.add(candidate.replace(/^\.\//, "").replace(/:\d+(?:-\d+)?$/, ""));
     }
   }
   return paths;
@@ -31,7 +31,23 @@ export function extractExplorerScopedPaths(report: string): Set<string> {
 
 export function reportJustifiesOutOfScope(report: string, file: string): boolean {
   const lower = report.toLowerCase();
-  return lower.includes(file.toLowerCase()) && /\b(out-of-scope|outside scope|deviat|additional file|broadened|changed because)\b/i.test(report);
+  // First, check if the developer added a dedicated Scope Expansions section.
+  // Accept the file as justified if it's listed under that heading, since that
+  // section is the explicit developer contract for out-of-scope edits and is
+  // documented in src/defaults/prompts/default/developer.md.
+  const scopeSection = report.match(/##\s*Scope Expansions\b([\s\S]*?)(?=\n##\s|$)/i);
+  if (scopeSection && scopeSection[1].toLowerCase().includes(file.toLowerCase())) {
+    return true;
+  }
+
+  // Fall back to keyword-based detection across the whole report. The regex
+  // captures common justification patterns agents use when explaining why an
+  // out-of-scope edit was unavoidable: explicit out-of-scope labels, scope
+  // expansions, necessity language, remediation of CI/CodeRabbit findings,
+  // prerequisite/dependency relationships, and CodeRabbit sections.
+  const keywordPattern = /\b(out-of-scope|outside scope|scope expansion|deviat|additional file|broadened|changed because|need(ed|s) to fix|required to fix|necessary to (make|fix)|prerequisit|unavoidable|to unblock|blocker|regression|CodeRabbit findings (addressed|remediation|resolved)|CI findings addressed|CodeRabbit remediation)\b/i;
+
+  return lower.includes(file.toLowerCase()) && keywordPattern.test(report);
 }
 
 export function findFinalizeScopeViolations(config: FinalizeGuardConfig, changedFiles: string[]): string[] {
