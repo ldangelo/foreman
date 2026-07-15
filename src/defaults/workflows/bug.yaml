@@ -1,12 +1,10 @@
-# Bug fix workflow: explicit exploration → fix prompt → developer remediation → QA validation → documentation → finalize → merge
+# Bug fix workflow: explicit exploration → fix prompt → QA validation → documentation → finalize → merge
 #
 # Lean bug-fix pipeline:
 #   - explorer prompt — read-only developer handoff, no nested delegation
 #   - fix prompt — workflow-scoped issue fixing prompt
-#   - developer prompt — validates EXPLORER_REPORT criteria, applies fix
 #   - qa phase — validates the fix and writes QA_REPORT.md
-#   - documentation phase — verifies fix docs the implementation
-#   - finalize — validates scope and pushes to origin
+#   - developer prompt — retry-only target for QA/finalize findings
 #
 # Auto-selected when a task has type "bug" (TRD-006 type-based dispatch).
 # Use `workflow:` label to override, e.g. `workflow:smoke` for smoke workflow.
@@ -59,29 +57,9 @@ phases:
       onStart: true
       onComplete: true
 
-  # ── Phase 3: developer (normal phase, not retry-only) ────────────────────
-  # Validates EXPLORER_REPORT criteria are met. Runs after fix to confirm the
-  # implementation is complete before QA and documentation run.
-  - name: developer
-    checkpointPr: true
-    prompt: developer.md
-    tools:
-      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
-    models:
-      default: MiniMax
-      P0: MiniMax
-      P4: MiniMax
-    maxTurns: 500
-    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
-    mail:
-      onStart: true
-      onComplete: true
-    files:
-      reserve: true
-      leaseSecs: 600
-
-  # ── Phase 4: qa ─────────────────────────────────────────────────────────
-  # Validates the fix and writes QA_REPORT.md. Retry target for finalize/merge findings.
+  # ── Phase 3: qa ─────────────────────────────────────────────────────────
+  # Validates the fix and writes QA_REPORT.md. Runs before documentation so real
+  # bugs are caught before spending time on docs. Retry target for finalize findings.
   - name: qa
     prompt: qa.md
     tools:
@@ -104,6 +82,29 @@ phases:
       onStart: true
       onComplete: true
       onFail: developer
+
+  # ── Retry-only: developer remediation ──────────────────────────────────
+  # Retry target for QA/finalize/PR-review findings. Skipped during normal
+  # sequential execution; activated only when a later phase fails and uses
+  # retryWith: developer.
+  - name: developer
+    checkpointPr: true
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
 
   # ── Retry-only: cicd-developer ───────────────────────────────────────────
   # Retry target for CI failures. Skipped during normal sequential execution;
@@ -172,7 +173,7 @@ phases:
       reserve: true
       leaseSecs: 600
 
-  # ── Phase 5: documentation ───────────────────────────────────────────────
+  # ── Phase 4: documentation ───────────────────────────────────────────────
   # Verifies the implementation is documented. Runs after QA so real bugs are
   # caught before spending time on documentation.
   - name: documentation
@@ -190,7 +191,7 @@ phases:
       onComplete: true
       forwardArtifactTo: foreman
 
-  # ── Phase 6: finalize (prompt phase) ───────────────────────────────────
+  # ── Phase 5: finalize (prompt phase) ───────────────────────────────────
   # Standard finalize with human-readable summary for auto-merge context.
   # artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md" is what the pipeline reads for the validation
   # contract check (Target Integration / Test Validation sections + Verdict).

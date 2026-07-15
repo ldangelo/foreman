@@ -400,22 +400,21 @@ phases:
     expect(explorerPhase?.tools?.allowed).not.toContain("GraphifyExplain");
   });
 
-  it("loads bundled bug workflow with scoped fix prompt and correct phase order", () => {
+  it("loads bundled bug workflow with scoped fix prompt and qa before documentation", () => {
     const config = loadWorkflowConfig("bug", tmpDir);
     const phaseNames = config.phases.map((p) => p.name);
     const fixPhase = config.phases.find((p) => p.name === "fix");
     const developerPhase = config.phases.find((p) => p.name === "developer");
     const qaPhase = config.phases.find((p) => p.name === "qa");
-    const documentationPhase = config.phases.find((p) => p.name === "documentation");
 
     // fix-issue.md scoped prompt
     expect(fixPhase?.prompt).toBe("fix-issue.md");
     expect(fixPhase?.command).toBeUndefined();
 
-    // developer runs as a normal phase (REC-2: not retry-only)
-    expect(developerPhase?.retryOnly).toBeUndefined();
+    // developer is retry-only (only runs on failure, not after fix)
+    expect(developerPhase?.retryOnly).toBe(true);
 
-    // qa runs before documentation (REC-3: swap phase order)
+    // qa runs before documentation (REC-3)
     expect(phaseNames.indexOf("qa")).toBeLessThan(phaseNames.indexOf("documentation"));
   });
 

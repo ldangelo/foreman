@@ -133,14 +133,14 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it("phases are in order: explorer → fix → developer → qa → documentation → cicd-developer (retryOnly) → finalize", () => {
+    it("phases are in order: explorer → fix → qa → cicd/cr/merge-resolver/developer (retryOnly) → documentation → finalize", () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      // New order: developer (normal), qa before documentation, retry-only devs after documentation
+      // REC-3: qa before documentation; developer is retry-only
       expect(names).toEqual([
         "explorer",
         "fix",
-        "developer",
         "qa",
+        "developer",
         "cicd-developer",
         "cr-developer",
         "merge-resolver",
@@ -150,8 +150,8 @@ describe('TRD-009 bug.yaml workflow integration', () => {
         "pr-wait",
         "merge",
       ]);
-      // developer is a normal phase (REC-2)
-      expect(bugWorkflow.phases.find((p) => p.name === "developer")?.retryOnly).toBeUndefined();
+      // developer is retry-only (only runs on failure)
+      expect(bugWorkflow.phases.find((p) => p.name === "developer")?.retryOnly).toBe(true);
       // qa runs before documentation (REC-3)
       expect(names.indexOf("qa")).toBeLessThan(names.indexOf("documentation"));
       // cicd-developer, cr-developer, merge-resolver remain retry-only
