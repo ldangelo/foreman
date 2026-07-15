@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Message } from "../../lib/store.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
-import { renderInboxTaskSummaryTable } from "../commands/inbox.js";
+import { renderInboxTaskSummaryTable, renderTaskDetail } from "../commands/inbox.js";
 import { buildInboxTimeline } from "../inbox/timeline.js";
 import { InboxDashboard, buildInboxDashboardActions, selectedIndexForRun, tabTimelineItems } from "../inbox/tui.js";
 
@@ -191,6 +191,33 @@ describe("inbox TUI render contracts", () => {
     expect(output).toContain("s/m/e/l/r/f tabs");
     expect(output).toMatch(/\brefresh\b/i);
     expect(output).toMatch(/\bactions?\b/i);
+  });
+
+  it("renders newest detail rows in chronological order after applying limits", () => {
+    const output = renderTaskDetail(summary({
+      messages: [
+        message({ id: "msg-oldest", subject: "oldest message", body: "oldest message", created_at: "2026-01-01T00:01:00.000Z" }),
+        message({ id: "msg-old", subject: "old message", body: "old message", created_at: "2026-01-01T00:02:00.000Z" }),
+        message({ id: "msg-new", subject: "new message", body: "new message", created_at: "2026-01-01T00:03:00.000Z" }),
+      ],
+      events: [
+        event({ id: "evt-oldest", eventType: "RunStarted", details: { phase_id: "oldest-phase" }, createdAt: "2026-01-01T00:01:30.000Z" }) as never,
+        event({ id: "evt-old", eventType: "PhaseStarted", details: { phase_id: "old-phase" }, createdAt: "2026-01-01T00:02:30.000Z" }) as never,
+        event({ id: "evt-new", eventType: "PhaseCompleted", details: { phase_id: "new-phase" }, createdAt: "2026-01-01T00:03:30.000Z" }) as never,
+      ],
+    }), {
+      messages: true,
+      events: true,
+      limit: 2,
+      eventsLimit: 2,
+    });
+
+    expect(output).not.toContain("oldest message");
+    expect(output).not.toContain("oldest-phase");
+    expect(output).toContain("old-phase");
+    expect(output).toContain("old message");
+    expect(output.indexOf("old-phase")).toBeLessThan(output.indexOf("new-phase"));
+    expect(output.indexOf("old message")).toBeLessThan(output.indexOf("new message"));
   });
 
   it("builds a safe action palette for the selected task and run", () => {

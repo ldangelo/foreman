@@ -86,7 +86,7 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	}
 }
 
-func TestHTTPClientSortsMessagesNewestFirst(t *testing.T) {
+func TestHTTPClientSortsMessagesOldestFirst(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/api/v1/inbox" {
@@ -98,8 +98,8 @@ func TestHTTPClientSortsMessagesNewestFirst(t *testing.T) {
 
 	client := NewHTTPClient(server.URL, "")
 	messages := client.Messages("run-live")
-	if len(messages) != 2 || messages[0].Subject != "new" || messages[1].Subject != "old" {
-		t.Fatalf("expected newest-first messages, got %#v", messages)
+	if len(messages) != 2 || messages[0].Subject != "old" || messages[1].Subject != "new" {
+		t.Fatalf("expected oldest-first messages, got %#v", messages)
 	}
 }
 
