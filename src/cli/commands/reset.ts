@@ -283,11 +283,8 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
   }
 
   const runs = (await client.listRuns({ projectId: registered.id })).filter((candidate) => candidate.task_id === taskId);
-  const run = runs.find((candidate) => resetActiveRunStatuses[runStatusOf(candidate)]) ??
-    runs.find((candidate) => runStatusOf(candidate) === "failed") ??
-    runs[0] ??
-    null;
-  const runId = run ? runIdOf(run) : null;
+  const displayActiveRun = runs.find((candidate) => resetActiveRunStatuses[runStatusOf(candidate)]) ?? null;
+  const displayActiveRunId = displayActiveRun ? runIdOf(displayActiveRun) : null;
   const runIds = runs.map(runIdOf).filter((id): id is string => Boolean(id));
   const reason = opts.reason ?? "reset by operator";
   const branchName = taskId.startsWith("foreman/") ? taskId : `foreman/${taskId}`;
@@ -295,7 +292,7 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
   console.log(chalk.bold(`${dryRun ? "Would reset" : "Resetting"} ${chalk.cyan(taskId)}`));
   console.log(`  project: ${registered.name}`);
   console.log(`  reason: ${reason}`);
-  if (runId) console.log(`  active run: ${chalk.dim(runId)} status=${runStatusOf(run!)}`);
+  if (displayActiveRunId) console.log(`  active run: ${chalk.dim(displayActiveRunId)} status=${runStatusOf(displayActiveRun!)}`);
   else console.log(`  active run: ${chalk.dim("(none)")}`);
 
   const activeRunIds = runs

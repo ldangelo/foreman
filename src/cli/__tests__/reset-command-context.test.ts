@@ -539,6 +539,28 @@ describe("resetAction", () => {
     }
   });
 
+
+  it("does not label failed historical runs as active", async () => {
+    runs = [
+      makeRun("run-failed", "failed"),
+      makeRun("run-completed", "completed"),
+    ];
+    mockListRuns.mockResolvedValue(runs);
+    createRunArtifacts(foremanHome, runs);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const code = await resetAction("task-1", { reason: "RCA retry" });
+
+      expect(code).toBe(0);
+      const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(output).toContain("active run: (none)");
+      expect(output).not.toContain("active run: run-failed");
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
   it("does not treat reset comment text as an already-merged PR error", async () => {
     runs = [
       {
