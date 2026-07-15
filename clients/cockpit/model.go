@@ -670,22 +670,22 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.notice = "gh enhance: no run selected"
 	case "p":
-		if run, ok := m.selectedRun(); ok {
+		if run, ok := m.selectedRunnableRun(); ok {
 			return m, attachOmp(m, run, false)
 		}
 		m.notice = "omp: no run selected"
 	case "P":
-		if run, ok := m.selectedRun(); ok {
+		if run, ok := m.selectedRunnableRun(); ok {
 			return m, attachOmp(m, run, true)
 		}
 		m.notice = "omp: no run selected"
 	case "A":
-		if run, ok := m.selectedRun(); ok {
+		if run, ok := m.selectedRunnableRun(); ok {
 			return m, attachRun(m.client, run)
 		}
 		m.notice = "attach: no run selected"
 	case "r":
-		if run, ok := m.selectedRun(); ok {
+		if run, ok := m.selectedRunnableRun(); ok {
 			return m, retryRun(m.client, run)
 		}
 		m.notice = "retry: no run selected"
@@ -1599,6 +1599,20 @@ func (m model) selectedRun() (Run, bool) {
 }
 
 func (m model) selectedResetRun() (Run, bool) {
+	if run, ok := m.selectedRun(); ok {
+		return run, true
+	}
+	task, ok := m.selectedTask()
+	if !ok {
+		return Run{}, false
+	}
+	return m.runForTask(task)
+}
+
+// selectedRunnableRun returns the currently selected run, or if a task is selected,
+// the latest run for that task. Used for actions like OMP, attach, retry that
+// can operate on either a run directly or a task's most recent run.
+func (m model) selectedRunnableRun() (Run, bool) {
 	if run, ok := m.selectedRun(); ok {
 		return run, true
 	}
