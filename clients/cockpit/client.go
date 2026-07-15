@@ -1383,7 +1383,7 @@ func (c *httpClient) Messages(runID string) []Message {
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return messageSortValue(out[i].At).After(messageSortValue(out[j].At))
+		return messageSortValue(out[i].At).Before(messageSortValue(out[j].At))
 	})
 	return out
 }
