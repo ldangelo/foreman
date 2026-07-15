@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -2819,6 +2820,69 @@ func TestRunActionKeysExecuteCockpitCommands(t *testing.T) {
 		t.Fatalf("expected reset to target selected task, got %#v", client.reset)
 	}
 }
+
+func TestResetKeyUsesLatestRunForSelectedTaskCard(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-old", Status: "failed", Last: "2026-07-14T10:00:00Z"},
+			{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-new", Status: "failed", Last: "2026-07-14T11:00:00Z", ProjectID: "project-a"},
+		},
+	}
+	m := newListModel(client)
+	m.width = 120
+	m.height = 20
+	m.runs = client.runs
+	m.tasks = []Task{{TaskID: "task-blocked", Title: "Blocked task", Status: "failed", ProjectID: "project-a"}}
+	m.taskList.MoveSection(2)
+	m.buildItems()
+
+	if run, ok := m.selectedRun(); ok {
+		t.Fatalf("expected failed task card selection, got run %#v", run)
+	}
+	action := stripANSI(m.renderAction(100, paneVisualFor(false, defaultConfig().Cockpit.Focus)))
+	if !strings.Contains(action, "R reset latest run run-new") {
+		t.Fatalf("expected task action to expose latest run reset, got:\n%s", action)
+	}
+	startY := m.height - 3 - m.actionLineCount()
+	x := m.leftPaneWidth() + 2 + utf8.RuneCountInString("▸ task actions task-blocked  y copy task id  c close  ")
+	if key := m.actionKeyAt(x, startY); key != "R" {
+		t.Fatalf("expected mouse hit on task reset action, got %q", key)
+	}
+	runIDHitX := m.leftPaneWidth() + 2 + utf8.RuneCountInString("▸ task actions task-blocked  y copy task id  c close  R reset latest run ")
+	if key := m.actionKeyAt(runIDHitX, startY); key != "R" {
+		t.Fatalf("expected mouse hit on rendered run id to reset, got %q", key)
+	}
+
+	_, cmd := m.handleKey(keyPress("R"))
+	if cmd == nil {
+		t.Fatal("expected reset command for selected task card")
+	}
+	if msg, ok := cmd().(runActionDoneMsg); !ok || msg.err != nil || msg.action != "reset requested" {
+		t.Fatalf("expected reset done message, got %#v", msg)
+	}
+	if len(client.reset) != 1 || client.reset[0].RunID != "run-new" || client.reset[0].TaskID != "task-blocked" || client.reset[0].Title != "Blocked task" {
+		t.Fatalf("expected reset to target latest run with task metadata, got %#v", client.reset)
+	}
+}
+
+func TestRunForTaskKeepsFirstMatchingRunWhenTimestampsAreNotSortable(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-first", Status: "failed", Last: "12s ago · progress_update"},
+			{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-second", Status: "failed", Last: "9s ago · progress_update"},
+		},
+	}
+	m := newListModel(client)
+	m.runs = client.runs
+	run, ok := m.runForTask(Task{TaskID: "task-blocked"})
+	if !ok {
+		t.Fatal("expected matching run")
+	}
+	if run.RunID != "run-first" {
+		t.Fatalf("expected first matching run as safe fallback, got %q", run.RunID)
+	}
+}
+
 func TestAutoTaskListWidthUsesDashLikeProportion(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.width = 160

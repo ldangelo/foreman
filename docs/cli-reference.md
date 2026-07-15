@@ -223,7 +223,7 @@ foreman watch --refresh 5000      # Refresh every 5 seconds
 | `--no-watch` | — | Print one deterministic snapshot and exit |
 | `--project <id>` | — | Filter to a specific project |
 
-Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; all other entries print copy/manual command text only.
+Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; the Go cockpit `R` key resets the selected run or a selected task card's latest known run. All other entries print copy/manual command text only.
 
 ### `foreman sentinel`
 
@@ -398,7 +398,7 @@ The Elixir server also includes a PR monitor. For runs with recorded GitHub PR U
 
 ### `foreman reset`
 
-Reset Elixir-backed task work. The command stops active worker processes when present, marks prior active runs failed with the reset reason, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
+Reset Elixir-backed task work. The command stops active worker processes when present, marks prior active runs failed with the reset reason, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged and continues branch/artifact cleanup. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
 
 ```bash
 foreman reset foreman-abc12

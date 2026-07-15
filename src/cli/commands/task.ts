@@ -47,6 +47,7 @@ interface RunActivityInfo {
   runId: string | null;
   status: string;
   currentPhase: string | null;
+  workflowPhases: string[] | undefined;
   lastActivity: string | null;
   lastActivityElapsed: string | null;
   isStuck: boolean;
@@ -108,6 +109,7 @@ async function fetchRunActivity(
       runId: run.id,
       status: run.status,
       currentPhase: progress?.currentPhase ?? null,
+      workflowPhases: undefined,
       lastActivity: progress?.lastActivity ?? null,
       lastActivityElapsed: progress?.lastActivity
         ? elapsed(progress.lastActivity)
@@ -164,6 +166,12 @@ export function renderRunStatusLine(activity: RunActivityInfo): string {
     };
     const colorFn = phaseColors[activity.currentPhase] ?? chalk.white;
     parts.push(chalk.dim("│") + " " + colorFn(activity.currentPhase));
+  }
+
+  // Workflow phases pipeline
+  if (activity.workflowPhases && activity.workflowPhases.length > 0) {
+    const phaseStr = activity.workflowPhases.join(" → ");
+    parts.push(chalk.dim("│") + " " + chalk.dim("phases:") + " " + chalk.white(phaseStr));
   }
 
   // Last activity time
@@ -360,10 +368,18 @@ async function getElixirTaskRow(client: ElixirServerClient, taskId: string): Pro
   return task ? elixirTaskToTaskRow(task) : null;
 }
 
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string")) {
+    return undefined;
+  }
+  return value;
+}
+
 function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
   const runId = String(run.run_id ?? run.id ?? "");
   const status = String(run.status ?? "unknown");
   const currentPhase = typeof run.current_phase === "string" ? run.current_phase : null;
+  const workflowPhases = stringArray(run.phase_order);
   const lastActivity = typeof run.updated_at === "string" ? run.updated_at : null;
   const startedAt = typeof run.started_at === "string" ? run.started_at : null;
   const completedAt = typeof run.completed_at === "string" ? run.completed_at : null;
@@ -381,6 +397,7 @@ function elixirRunToActivity(run: ElixirRun): RunActivityInfo {
     runId,
     status,
     currentPhase,
+    workflowPhases,
     lastActivity,
     lastActivityElapsed: lastActivity ? elapsed(lastActivity) : null,
     isStuck,

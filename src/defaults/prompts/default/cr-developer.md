@@ -14,6 +14,11 @@ If you hit an unrecoverable error, invoke:
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"cr-developer","taskId":"{{taskId}}","error":"<brief description>"}'
 ```
 
+## Worktree Discipline
+- Run commands from the current worktree root. Do not `cd` to the controller checkout, a sibling worktree, or an absolute project path unless the CodeRabbit finding explicitly requires inspecting an external checkout.
+- Before editing, use `pwd` and `git status --short --branch` if there is any uncertainty about where you are. The branch must be the task branch/worktree, not `main` or another task.
+- If the blocking finding is already fixed on the target branch and this retry has no task diff to repair, document the evidence in `{{reportDir}}/DEVELOPER_REPORT.md` and leave the working tree clean.
+
 ## Required Pre-flight
 1. Read the retry feedback first.
 2. Read `{{reportDir}}/PR_WAIT_REPORT.md` or `{{reportDir}}/PR_REVIEW_FINDINGS.md` when present.
