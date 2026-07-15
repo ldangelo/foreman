@@ -316,7 +316,7 @@ describe("VCS and PR review tools", () => {
         prNumber: 42,
         prUrl: "https://github.com/owner/repo/pull/42",
         headSha: "abc123",
-        blockingFindings: [expect.objectContaining({ severity: "medium", source: "review-comment", path: "src/file.ts", line: 12 })],
+        blockingFindings: [expect.objectContaining({ severity: "major", source: "review-comment", path: "src/file.ts", line: 12 })],
         failedChecks: [expect.objectContaining({ name: "Test", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci.test/failure" })],
       }));
     });
