@@ -541,8 +541,9 @@ export async function pollBoardTaskSnapshotUpdates(
   projectPath: string,
   currentTasks: Map<BoardStatus, BoardTask[]>,
   sortMode: SortMode,
+  filter?: string,
 ): Promise<BoardTaskSnapshotUpdateResult> {
-  const loaded = sortBoardColumns(await loadBoardTasks(projectPath), sortMode);
+  const loaded = sortBoardColumns(await loadBoardTasks(projectPath, { filter }), sortMode);
   return { taskIds: diffBoardTaskSnapshots(currentTasks, loaded), tasks: loaded };
 }
 
@@ -2125,7 +2126,7 @@ export async function runBoard(opts: BoardOptions): Promise<void> {
       let updatedTaskIds: string[] = [];
 
       if (foremanBackendMode() === "elixir") {
-        const update = await pollBoardTaskSnapshotUpdates(projectPath, tasks, sortMode);
+        const update = await pollBoardTaskSnapshotUpdates(projectPath, tasks, sortMode, filter);
         updatedTaskIds = update.taskIds;
         if (updatedTaskIds.length > 0) {
           tasks = update.tasks;
