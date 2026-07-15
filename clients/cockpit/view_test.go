@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -2843,11 +2844,11 @@ func TestResetKeyUsesLatestRunForSelectedTaskCard(t *testing.T) {
 		t.Fatalf("expected task action to expose latest run reset, got:\n%s", action)
 	}
 	startY := m.height - 3 - m.actionLineCount()
-	x := m.leftPaneWidth() + 2 + len("▸ task actions task-blocked  y copy task id  c close  ")
+	x := m.leftPaneWidth() + 2 + utf8.RuneCountInString("▸ task actions task-blocked  y copy task id  c close  ")
 	if key := m.actionKeyAt(x, startY); key != "R" {
 		t.Fatalf("expected mouse hit on task reset action, got %q", key)
 	}
-	runIDHitX := m.leftPaneWidth() + 2 + len("▸ task actions task-blocked  y copy task id  c close  R reset latest run ")
+	runIDHitX := m.leftPaneWidth() + 2 + utf8.RuneCountInString("▸ task actions task-blocked  y copy task id  c close  R reset latest run ")
 	if key := m.actionKeyAt(runIDHitX, startY); key != "R" {
 		t.Fatalf("expected mouse hit on rendered run id to reset, got %q", key)
 	}
