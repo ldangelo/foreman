@@ -1761,6 +1761,13 @@ function renderFilesSection(summary: InboxTaskSummary): string {
   return lines.join("\n");
 }
 
+function selectRecentChronological<T>(items: T[], limit: number, timestamp: (item: T) => string): T[] {
+  if (limit <= 0) return [];
+  return [...items]
+    .sort((a, b) => timestampMs(timestamp(a)) - timestampMs(timestamp(b)))
+    .slice(Math.max(0, items.length - limit));
+}
+
 export function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): string {
   const lines = [
     chalk.bold(`FOREMAN INBOX › ${summary.taskId}`),
@@ -1773,12 +1780,12 @@ export function renderTaskDetail(summary: InboxTaskSummary, options: { messages:
   ];
   if (options.events) {
     lines.push("", chalk.bold("Recent Events"));
-    const events = summary.events.slice(0, options.eventsLimit);
+    const events = selectRecentChronological(summary.events, options.eventsLimit, (event) => event.createdAt);
     lines.push(events.length > 0 ? renderPipelineEventsTable(events, 80) : "No events found.");
   }
   if (options.messages) {
     lines.push("", chalk.bold("Recent Messages"));
-    const messages = summary.messages.slice(0, options.limit);
+    const messages = selectRecentMessages(summary.messages, options.limit);
     lines.push(messages.length > 0 ? renderInboxMessagesTable(messages) : "No messages found.");
   }
   if (options.logs) lines.push("", renderLogSection(summary));
