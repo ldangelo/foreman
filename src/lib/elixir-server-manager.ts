@@ -83,7 +83,7 @@ export class ElixirServerManager {
     if (status.running && (await this.health()).ok) return status;
     const startError = this.start();
     await Promise.race([
-      waitFor(async () => (await this.health()).ok, 10_000),
+      waitFor(async () => (await this.health()).ok, 120_000),
       startError,
     ]);
     return this.status();
