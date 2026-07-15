@@ -86,9 +86,19 @@ function prTimestampOf(run: Record<string, unknown>): number {
   }
   return 0;
 }
+function hasField(value: unknown, key: string): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && key in value;
+}
+
+function stringField(value: unknown, key: string): string | undefined {
+  if (!hasField(value, key)) return undefined;
+  const field = value[key];
+  return typeof field === "string" ? field : undefined;
+}
+
 function isAlreadyMergedPrError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("already merged");
+  const stderr = stringField(error, "stderr");
+  return typeof stderr === "string" && stderr.includes("already merged");
 }
 
 

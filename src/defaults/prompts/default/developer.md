@@ -37,7 +37,7 @@ Rules for conflict feedback:
 ## Worktree Discipline
 - Run commands from the current worktree root. Do not `cd` to the controller checkout, a sibling worktree, or an absolute project path unless the task explicitly asks you to inspect that external checkout.
 - Before editing, use `pwd` and `git status --short --branch` if there is any uncertainty about where you are. The branch must be the task branch/worktree, not `main` or another task.
-- If the target branch already contains the requested behavior, do not invent an adjacent change. Document the evidence in `DEVELOPER_REPORT.md` and leave the working tree clean.
+- If the target branch already contains the requested behavior, do not invent an adjacent change. Document the evidence in `{{reportDir}}/DEVELOPER_REPORT.md` and leave the working tree clean.
 
 ## Fast-Path Triage
 - If retry feedback names a failing phase, report file, command, or exact source path, read that artifact first and fix that cited area before broad investigation.

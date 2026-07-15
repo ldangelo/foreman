@@ -47,6 +47,7 @@ describe("developer prompt guardrails", () => {
     expect(prompt).toContain("Run commands from the current worktree root");
     expect(prompt).toContain("Do not `cd` to the controller checkout");
     expect(prompt).toContain("target branch already contains the requested behavior");
+    expect(prompt).toContain("{{reportDir}}/DEVELOPER_REPORT.md");
   });
 
   it("biases localized tasks toward the smallest diff", () => {
@@ -70,6 +71,7 @@ describe("specialized remediation prompts", () => {
     expect(cicdPrompt).toContain("Run commands from the current worktree root");
     expect(cicdPrompt).toContain("Do not `cd` to the controller checkout");
     expect(cicdPrompt).toContain("failed check is already fixed on the target branch");
+    expect(cicdPrompt).toContain("{{reportDir}}/DEVELOPER_REPORT.md");
   });
 
   it("keeps CodeRabbit remediation scoped to cited findings", () => {
@@ -83,6 +85,7 @@ describe("specialized remediation prompts", () => {
     expect(crPrompt).toContain("Run commands from the current worktree root");
     expect(crPrompt).toContain("Do not `cd` to the controller checkout");
     expect(crPrompt).toContain("blocking finding is already fixed on the target branch");
+    expect(crPrompt).toContain("{{reportDir}}/DEVELOPER_REPORT.md");
   });
 });
 

@@ -377,6 +377,40 @@ describe("foreman task command Elixir context", () => {
     expect(rendered).toContain("Current phase: developer");
   });
 
+  it("drops malformed phase_order values before rendering run activity", async () => {
+    mockListTasks.mockResolvedValue([
+      { task_id: "task-1", project_id: "proj-1", title: "One", status: "backlog", priority: 2, task_type: "task", run_id: "run-1" },
+    ]);
+    mockGetTask.mockResolvedValue({
+      task_id: "task-1",
+      project_id: "proj-1",
+      title: "One",
+      status: "backlog",
+      priority: 2,
+      task_type: "task",
+      run_id: "run-1",
+      annotations: [],
+      dependencies: [],
+    });
+    mockListRuns.mockResolvedValue([{
+      run_id: "run-1",
+      project_id: "proj-1",
+      task_id: "task-1",
+      status: "in_progress",
+      current_phase: "developer",
+      phase_order: ["explorer", { bad: true }, "developer"],
+      updated_at: new Date().toISOString(),
+    }]);
+    const taskCommand = await freshTaskCommand();
+
+    await taskCommand.parseAsync(["show", "task-1", "--verbose", "--project-path", "/canonical/project"], { from: "user" });
+
+    const rendered = logSpy.mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
+    expect(rendered).toContain("Current phase: developer");
+    expect(rendered).not.toContain("phases:");
+    expect(rendered).not.toContain("[object Object]");
+  });
+
   it("prints non-ready approval output when Elixir approval does not yield ready status", async () => {
     mockGetTask.mockResolvedValue({
       task_id: "task-1",

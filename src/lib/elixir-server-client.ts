@@ -70,7 +70,7 @@ export type ElixirRun = Record<string, unknown> & {
   totalDurationMs?: number;
   costPerTurn?: number;
   timePerTurn?: number;
-  phase_order?: string[];
+  phase_order?: unknown[];
 };
 
 export type ElixirInboxMessage = Record<string, unknown> & {

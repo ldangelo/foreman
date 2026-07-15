@@ -2847,6 +2847,10 @@ func TestResetKeyUsesLatestRunForSelectedTaskCard(t *testing.T) {
 	if key := m.actionKeyAt(x, startY); key != "R" {
 		t.Fatalf("expected mouse hit on task reset action, got %q", key)
 	}
+	runIDHitX := m.leftPaneWidth() + 2 + len("▸ task actions task-blocked  y copy task id  c close  R reset latest run ")
+	if key := m.actionKeyAt(runIDHitX, startY); key != "R" {
+		t.Fatalf("expected mouse hit on rendered run id to reset, got %q", key)
+	}
 
 	_, cmd := m.handleKey(keyPress("R"))
 	if cmd == nil {
@@ -2857,6 +2861,24 @@ func TestResetKeyUsesLatestRunForSelectedTaskCard(t *testing.T) {
 	}
 	if len(client.reset) != 1 || client.reset[0].RunID != "run-new" || client.reset[0].TaskID != "task-blocked" || client.reset[0].Title != "Blocked task" {
 		t.Fatalf("expected reset to target latest run with task metadata, got %#v", client.reset)
+	}
+}
+
+func TestRunForTaskKeepsFirstMatchingRunWhenTimestampsAreNotSortable(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{
+			{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-first", Status: "failed", Last: "12s ago · progress_update"},
+			{Group: taskGroupRecent, TaskID: "task-blocked", RunID: "run-second", Status: "failed", Last: "9s ago · progress_update"},
+		},
+	}
+	m := newListModel(client)
+	m.runs = client.runs
+	run, ok := m.runForTask(Task{TaskID: "task-blocked"})
+	if !ok {
+		t.Fatal("expected matching run")
+	}
+	if run.RunID != "run-first" {
+		t.Fatalf("expected first matching run as safe fallback, got %q", run.RunID)
 	}
 }
 

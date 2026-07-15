@@ -1278,8 +1278,8 @@ func (m model) actionKeyAt(x, y int) string {
 				{label: "y copy task id", key: "y"},
 				{label: "c close", key: "c"},
 			}
-			if _, ok := m.runForTask(task); ok {
-				segments = append(segments, actionSegment{label: "R reset latest run", key: "R"})
+			if run, ok := m.runForTask(task); ok {
+				segments = append(segments, actionSegment{label: "R reset latest run " + run.RunID, key: "R"})
 			}
 			return actionSegmentKey(relX, prefix, segments)
 		}
@@ -1615,13 +1615,16 @@ func (m model) runForTask(task Task) (Run, bool) {
 		return Run{}, false
 	}
 	var selected Run
+	var selectedSort int64
 	found := false
 	for _, run := range m.runs {
 		if strings.TrimSpace(run.TaskID) != taskID || strings.TrimSpace(run.RunID) == "" {
 			continue
 		}
-		if !found || run.Last > selected.Last {
+		sortValue := runLastSortValue(run)
+		if !found || sortValue > selectedSort {
 			selected = run
+			selectedSort = sortValue
 			found = true
 		}
 	}
@@ -1630,6 +1633,18 @@ func (m model) runForTask(task Task) (Run, bool) {
 	}
 	selected = runWithTaskMetadata(selected, task)
 	return selected, true
+}
+
+func runLastSortValue(run Run) int64 {
+	last := strings.TrimSpace(run.Last)
+	if last == "" {
+		return 0
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, last)
+	if err != nil {
+		return 0
+	}
+	return parsed.UnixNano()
 }
 
 func runWithTaskMetadata(run Run, task Task) Run {

@@ -477,7 +477,11 @@ describe("resetAction", () => {
     ];
     mockListRuns.mockResolvedValue(runs);
     mockExecFileAsync.mockImplementation(async (command?: string) => {
-      if (command === "gh") throw new Error("Pull request org/repo#125 is already merged");
+      if (command === "gh") {
+        const error = new Error("gh pr close failed");
+        Object.assign(error, { stderr: "Pull request org/repo#125 is already merged" });
+        throw error;
+      }
       return { stdout: "", stderr: "" };
     });
     createRunArtifacts(foremanHome, runs);
@@ -502,5 +506,28 @@ describe("resetAction", () => {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
+  });
+
+  it("does not treat reset comment text as an already-merged PR error", async () => {
+    runs = [
+      {
+        ...makeRun("run-active", "running"),
+        pr_url: "https://github.com/org/repo/pull/126",
+        pr_state: "open",
+      },
+    ];
+    mockListRuns.mockResolvedValue(runs);
+    mockExecFileAsync.mockImplementation(async (command?: string) => {
+      if (command === "gh") {
+        const error = new Error("Command failed: gh pr close https://github.com/org/repo/pull/126 --comment Closed by foreman reset: already merged note");
+        Object.assign(error, { stderr: "GraphQL: viewer cannot close pull request" });
+        throw error;
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    await expect(resetAction("task-1", { reason: "already merged note" })).rejects.toThrow("Command failed");
+    expect(mockDeleteRemoteBranch).not.toHaveBeenCalled();
+    expect(findRunFailCommand("run-active")).toBeUndefined();
   });
 });
