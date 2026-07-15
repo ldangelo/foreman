@@ -1,0 +1,1436 @@
+package main
+
+import (
+	"fmt"
+	"image/color"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/reflow/truncate"
+	"github.com/muesli/reflow/wordwrap"
+)
+
+func clip(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= w {
+		return s
+	}
+	return truncate.StringWithTail(s, uint(w), "…")
+}
+
+func padRow(left, right string, w int) string {
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+func (m model) View() tea.View {
+	content := m.renderFrame()
+	v := tea.NewView(content)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m model) renderFrame() string {
+	if m.width == 0 || m.height == 0 {
+		return "starting cockpit…"
+	}
+	total := m.width
+	if m.boardMode() {
+		return m.renderBoardFrame()
+	}
+	leftW := m.leftPaneWidth()
+	rightW := total - leftW - 1
+	if rightW < 20 {
+		rightW = 20
+	}
+	rightContentW := rightW - 1
+	if rightContentW < 20 {
+		rightContentW = 20
+	}
+	bodyH := m.height - 5
+	if bodyH < 4 {
+		bodyH = 4
+	}
+
+	leftVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	rightVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
+	rightModel := m
+	rightModel.height = bodyH + 3
+	rightRaw := rightModel.renderRight(rightContentW)
+	leftRaw := m.renderLeft(leftW, bodyH)
+	left := leftPaneStyle.Width(leftW).Height(bodyH).MaxHeight(bodyH).MaxWidth(leftW + 1).BorderForeground(leftVisual.Border).Render(leftRaw)
+	right := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderLeft(true).BorderForeground(rightVisual.Border).Width(rightContentW).Height(bodyH).MaxHeight(bodyH).MaxWidth(rightW).Render(rightRaw)
+	row := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	out := lipgloss.JoinVertical(lipgloss.Left,
+		m.renderStatusBar(total),
+		row,
+		m.renderNotice(total),
+		m.renderKeyBar(total),
+	)
+	if os.Getenv("COCKPIT_DEBUG") != "" {
+		writeDebugDump(m, leftW, rightW, bodyH, rightRaw, out)
+	}
+	return out
+}
+
+func (m model) renderBoardFrame() string {
+	total := m.width
+	boardH, activitiesH := m.boardLayoutHeights()
+	boardVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	activitiesVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
+	boardRaw := m.renderBoard(total, boardH)
+	activitiesModel := m
+	activitiesModel.height = activitiesH + 3
+	activitiesRaw := activitiesModel.renderRight(max(20, total-2))
+	board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
+	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
+	out := lipgloss.JoinVertical(lipgloss.Left,
+		m.renderStatusBar(total),
+		board,
+		activities,
+		m.renderNotice(total),
+		m.renderKeyBar(total),
+	)
+	if os.Getenv("COCKPIT_DEBUG") != "" {
+		writeDebugDump(m, total, total, boardH+activitiesH, activitiesRaw, out)
+	}
+	return out
+}
+
+func leftPaneWidth(total int) int {
+	if total < 150 {
+		leftW := 40
+		if total-leftW-1 < 44 {
+			leftW = total - 45
+		}
+		if leftW < 32 {
+			leftW = 32
+		}
+		if leftW > 40 {
+			leftW = 40
+		}
+		return leftW
+	}
+	leftW := total * 58 / 100
+	if total-leftW-1 < 44 {
+		leftW = total - 45
+	}
+	if leftW < 40 {
+		leftW = 40
+	}
+	if leftW > 96 {
+		leftW = 96
+	}
+	return leftW
+}
+
+func configuredLeftPaneWidth(total int, cfg TaskListConfig) int {
+	defaultW := leftPaneWidth(total)
+	raw := strings.TrimSpace(cfg.Width)
+	if raw == "" || raw == "auto" {
+		return defaultW
+	}
+	leftW := defaultW
+	if strings.HasSuffix(raw, "%") {
+		pctText := strings.TrimSuffix(raw, "%")
+		if pct, ok := atoi(pctText); ok && pct > 0 {
+			leftW = total * pct / 100
+		}
+	} else if cols, ok := atoi(raw); ok && cols > 0 {
+		leftW = cols
+	}
+	minLeft := 32
+	if total < 80 {
+		minLeft = max(24, total-45)
+	}
+	maxLeft := total - 45
+	if maxLeft < minLeft {
+		maxLeft = minLeft
+	}
+	return max(minLeft, min(leftW, maxLeft))
+}
+
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func renderFieldTable(prefix string, rows [][2]string, w int, visual paneVisual) []ViewerLine {
+	t := table.New().
+		BorderTop(false).
+		BorderBottom(false).
+		BorderLeft(false).
+		BorderRight(false).
+		BorderHeader(false).
+		BorderColumn(false).
+		BorderRow(false).
+		Wrap(true).
+		Width(w).
+		StyleFunc(func(_, col int) lipgloss.Style {
+			if col == 0 {
+				return lipgloss.NewStyle().Foreground(visual.Dim)
+			}
+			return lipgloss.NewStyle().Foreground(visual.Text)
+		})
+	for _, row := range rows {
+		if row[1] == "" {
+			continue
+		}
+		t.Row(row[0], row[1])
+	}
+	rendered := strings.TrimRight(t.Render(), "\n")
+	if rendered == "" {
+		return nil
+	}
+	lines := strings.Split(rendered, "\n")
+	out := make([]ViewerLine, 0, len(lines))
+	for i, line := range lines {
+		out = append(out, ViewerLine{Key: prefix + ":" + itoa(i), Text: line})
+	}
+	return out
+}
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
+// writeDebugDump writes model state + the exact rendered frame (ANSI stripped)
+// to cockpit-debug.txt in the working dir, overwriting each render. Enabled by
+// COCKPIT_DEBUG=1. Used to diagnose rendering without a local Go toolchain.
+func writeDebugDump(m model, leftW, rightW, bodyH int, rightRaw, out string) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "termW=%d termH=%d leftW=%d rightW=%d bodyH=%d\n", m.width, m.height, leftW, rightW, bodyH)
+	fmt.Fprintf(&b, "runs=%d tasks=%d items=%d sel=%d tab=%s row=%d offset=%d searching=%v viewFocused=%v\n",
+		len(m.runs), len(m.tasks), len(m.taskList.Items()), m.taskList.SelectedIndex(), tabNames[m.tab], m.viewer.Cursor(), m.viewer.Offset(), m.taskList.Searching(), m.viewFocused)
+	if it, ok := m.selectedItem(); ok {
+		fmt.Fprintf(&b, "selected: isTask=%v taskID=%q runTaskID=%q runID=%q\n",
+			it.IsTask, it.Task.TaskID, it.Run.TaskID, it.Run.RunID)
+	} else {
+		b.WriteString("selected: NONE (out of range)\n")
+	}
+	rl := strings.Split(rightRaw, "\n")
+	fmt.Fprintf(&b, "\n=== renderRight raw: %d lines (ansi stripped) ===\n", len(rl))
+	b.WriteString(stripANSI(rightRaw))
+	b.WriteString("\n\n=== final frame (ansi stripped) ===\n")
+	b.WriteString(stripANSI(out))
+	_ = os.WriteFile("cockpit-debug.txt", []byte(b.String()), 0o644)
+}
+
+func (m model) renderStatusBar(w int) string {
+	counts := m.taskList.Counts(m.runs, m.tasks)
+	running := counts[taskSectionRunning]
+	ready := counts[taskSectionReady]
+	recent := counts[taskSectionRecent]
+	left := purpleStyle.Bold(true).Render("foreman") + "  " +
+		greenStyle.Render(itoa(running)+" running") + dimStyle.Render(" · ") +
+		yellowStyle.Render(itoa(ready)+" ready") + dimStyle.Render(" · ") +
+		dimStyle.Render(itoa(recent)+" recent")
+
+	nvim := "nvim: inline"
+	if m.editor.useRemote() {
+		nvim = "nvim ⇄ attached"
+	}
+	section := m.taskList.ActiveSection().Name
+	position := "0/0"
+	if total := len(m.taskList.Items()); total > 0 {
+		position = fmt.Sprintf("%d/%d", m.taskList.SelectedIndex()+1, total)
+	}
+	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
+		yellowStyle.Render(section+" "+position) + dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
+
+	return statusBarStyle.Width(w).Render(clip(padRow(left, right, w), w))
+}
+
+func (m model) renderNotice(w int) string {
+	if os.Getenv("COCKPIT_DEBUG") != "" {
+		sel := "none"
+		if it, ok := m.selectedItem(); ok {
+			if it.IsTask {
+				sel = it.Task.TaskID + "(task)"
+			} else {
+				sel = it.Run.TaskID + "/" + it.Run.RunID
+			}
+		}
+		dbg := fmt.Sprintf("dbg items=%d sel=%d tab=%s row=%d termW=%d termH=%d sel=%s",
+			len(m.taskList.Items()), m.taskList.SelectedIndex(), tabNames[m.tab], m.viewer.Cursor(), m.width, m.height, sel)
+		return lipgloss.NewStyle().Width(w).Foreground(cYellow).Render(clip(" "+dbg, w))
+	}
+	if m.taskList.Searching() {
+		return statusBarStyle.Width(w).Render(clip(cyanStyle.Render("/")+m.taskList.Search()+"▏", w))
+	}
+	if m.notice == "" {
+		return lipgloss.NewStyle().Width(w).Render("")
+	}
+	return lipgloss.NewStyle().Width(w).Foreground(cYellow).Render(clip("  "+m.notice, w))
+}
+
+func (m model) renderKeyBar(w int) string {
+	focus := "focus: details"
+	if !m.viewFocused {
+		focus = "focus: tasks"
+	}
+	boardMode := m.boardMode()
+	if boardMode {
+		focus = "focus: activities"
+		if !m.viewFocused {
+			focus = "focus: board"
+		}
+	}
+	hints := renderHelpLine(max(1, w-utf8.RuneCountInString(focus)-4), m.viewFocused, boardMode)
+	return keyBarStyle.Width(w).Render(clip(" "+focus+" · "+hints, w))
+}
+
+func (m model) renderLeft(w, h int) string {
+	visual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	rows := make([]string, 0, len(m.taskList.Items()))
+	selectedLine := m.taskList.SelectedIndex()
+	for i, it := range m.taskList.Items() {
+		rows = append(rows, m.renderRow(i, it, w, visual))
+	}
+
+	section := m.taskList.ActiveSection()
+	focus := focusMarker(!m.viewFocused)
+	headers := []string{
+		m.renderTaskSectionTabs(w, visual),
+		lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(focus+" filter "+section.Filter+taskQuerySuffix(m.taskList.Search()), w)),
+	}
+	m.taskList.SetViewportRows(headers, rows, selectedLine, w, h)
+	return m.taskList.View()
+}
+
+func taskQuerySuffix(search string) string {
+	if strings.TrimSpace(search) == "" {
+		return ""
+	}
+	return " · " + search
+}
+
+func focusMarker(focused bool) string {
+	if focused {
+		return "▶"
+	}
+	return " "
+}
+
+func activeTabLabel(label string) string {
+	if os.Getenv("NO_COLOR") != "" {
+		return "[" + label + "]"
+	}
+	return " " + label + " "
+}
+
+func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
+	counts := m.taskList.Counts(m.runs, m.tasks)
+	active := m.taskList.ActiveSectionIndex()
+	var tabs []string
+	for i, section := range m.taskList.Sections() {
+		label := section.Name + " " + itoa(counts[section.Name])
+		if i == active {
+			tabs = append(tabs, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(activeTabLabel(label)))
+		} else {
+			tabs = append(tabs, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
+		}
+	}
+	return clip(strings.Join(tabs, " "), w)
+}
+
+func (m model) renderBoard(w, h int) string {
+	columns := m.board.Columns()
+	if len(columns) == 0 {
+		return lipgloss.NewStyle().Foreground(cDim).Render("No tasks match the current filters.")
+	}
+	visual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
+	colW := max(10, w/len(columns))
+	remainder := w - colW*len(columns)
+	rendered := make([]string, 0, len(columns))
+	for i, col := range columns {
+		width := colW
+		if i == len(columns)-1 {
+			width += remainder
+		}
+		rendered = append(rendered, m.renderBoardColumn(col, max(8, width-1), max(1, h-1), visual))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+}
+
+func (m model) renderBoardColumn(col BoardColumnState, w, h int, visual paneVisual) string {
+	focusedColumn := col.Column == m.board.SelectedColumn()
+	headerStyle := lipgloss.NewStyle().Width(w).Bold(true).Foreground(visual.White)
+	if focusedColumn && !m.viewFocused {
+		headerStyle = headerStyle.Background(visual.ActiveBg)
+	}
+	header := headerStyle.Render(clip(col.Label+" "+itoa(len(col.Items)), w))
+	lines := []string{
+		header,
+		lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)),
+	}
+	for i, it := range col.VisibleItems {
+		selected := itemKey(it) == col.SelectedKey
+		lines = append(lines, renderBoardCard(it, w, selected, visual))
+		if i < len(col.VisibleItems)-1 {
+			lines = append(lines, "")
+		}
+	}
+	if col.OverflowCount > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(visual.Dim).Render(clip("… "+itoa(col.OverflowCount)+" more", w)))
+	}
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	return lipgloss.NewStyle().Width(w).Height(h).Render(strings.Join(lines, "\n"))
+}
+
+func renderBoardCard(it Item, w int, selected bool, visual paneVisual) string {
+	state, title, id, typ, pri, right := taskRowFields(it)
+	gl, glc := glyph(state)
+	line1 := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
+		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
+	if right != "" {
+		rightW := min(max(6, ansi.StringWidth(right)), max(6, w/2))
+		line1 = padRow(clip(line1, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
+	} else {
+		line1 = clip(line1, w)
+	}
+	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip(title, w))
+	meta := strings.Join(compactNonEmpty([]string{normalizePriorityLabel(pri), typ}), " · ")
+	if meta == "" {
+		meta = state
+	}
+	line3 := lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(meta, w))
+	card := strings.Join([]string{line1, line2, line3}, "\n")
+	st := lipgloss.NewStyle().Width(w)
+	if selected {
+		st = st.Background(visual.SelectedBg)
+	}
+	return st.Render(card)
+}
+
+func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
+	selected := i == m.taskList.SelectedIndex()
+	state, title, id, typ, pri, right := taskRowFields(it)
+	gl, glc := glyph(state)
+	line1Left := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
+		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
+	if project := rowProject(it); m.taskList.Scope() == "global" && project != "" {
+		line1Left += lipgloss.NewStyle().Foreground(visual.Dim).Render(" · " + project)
+	}
+	if typ != "" {
+		line1Left += lipgloss.NewStyle().Foreground(visual.Dim).Render(" · " + typ)
+	}
+	if pri != "" {
+		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + normalizePriorityLabel(pri))
+	}
+	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
+	line1 := padRow(clip(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
+	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip("  "+title, w))
+	row := line1 + "\n" + line2
+	st := lipgloss.NewStyle().Width(w)
+	if selected {
+		st = st.Background(visual.SelectedBg)
+	}
+	return st.Render(row)
+}
+
+func taskRowFields(it Item) (state, title, id, typ, pri, right string) {
+	if it.IsTask {
+		title = firstNonEmptyText(it.Task.Title, it.Task.Summary, it.Task.TaskID)
+		right = taskRightMetadata(it.Task)
+		return taskState(it.Task), title, it.Task.TaskID, it.Task.TaskType, it.Task.Priority, right
+	}
+	title = firstNonEmptyText(it.Run.Title, it.Run.Summary, it.Run.TaskID)
+	typ = it.Run.TaskType
+	pri = it.Run.Priority
+	right = runRightMetadata(it.Run)
+	return runState(it.Run), title, it.Run.TaskID, typ, pri, right
+}
+
+func taskRightMetadata(task Task) string {
+	parts := []string{task.Status}
+	if task.Updated != "" {
+		parts = append(parts, "u"+formatAge(task.Updated))
+	}
+	if task.Created != "" {
+		parts = append(parts, "c"+formatAge(task.Created))
+	}
+	return strings.Join(compactNonEmpty(parts), " ")
+}
+
+func runRightMetadata(run Run) string {
+	state := run.Status
+	if run.Group == taskGroupRunning && run.Phase != "" {
+		state = run.Phase
+	}
+	parts := []string{state}
+	if run.Messages > 0 {
+		parts = append(parts, "✉"+itoa(run.Messages))
+	}
+	if run.Events > 0 {
+		parts = append(parts, "◇"+itoa(run.Events))
+	}
+	if check := checkSummaryLabel(run.Checks); check != "" {
+		parts = append(parts, check)
+	}
+	if run.PRState != "" {
+		parts = append(parts, "pr:"+run.PRState)
+	}
+	if diff := diffStatLabel(run.DiffAdded, run.DiffRemoved); diff != "" {
+		parts = append(parts, diff)
+	}
+	if run.Verdict != "" {
+		parts = append(parts, run.Verdict)
+	}
+	if run.Last != "" {
+		parts = append(parts, "u"+formatAge(run.Last))
+	}
+	if run.Created != "" {
+		parts = append(parts, "c"+formatAge(run.Created))
+	}
+	return strings.Join(compactNonEmpty(parts), " ")
+}
+
+func compactNonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func checkSummaryLabel(checks CheckSummary) string {
+	if checks.Passed == 0 && checks.Failed == 0 && checks.Pending == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if checks.Passed > 0 {
+		parts = append(parts, "✓"+itoa(checks.Passed))
+	}
+	if checks.Failed > 0 {
+		parts = append(parts, "✗"+itoa(checks.Failed))
+	}
+	if checks.Pending > 0 {
+		parts = append(parts, "●"+itoa(checks.Pending))
+	}
+	return strings.Join(parts, "")
+}
+
+func diffStatLabel(added, removed int) string {
+	if added == 0 && removed == 0 {
+		return ""
+	}
+	return "+" + itoa(added) + " -" + itoa(removed)
+}
+
+func formatAge(stamp string) string {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(stamp))
+	if err != nil {
+		return stamp
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d >= 7*24*time.Hour:
+		return itoa(int(d/(7*24*time.Hour))) + "w"
+	case d >= 24*time.Hour:
+		return itoa(int(d/(24*time.Hour))) + "d"
+	case d >= time.Hour:
+		return itoa(int(d/time.Hour)) + "h"
+	default:
+		return itoa(max(1, int(d/time.Minute))) + "m"
+	}
+}
+
+func rowProject(it Item) string {
+	if it.IsTask {
+		return it.Task.ProjectID
+	}
+	return it.Run.ProjectID
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return "—"
+}
+
+func priorityColor(priority string, visual paneVisual) color.Color {
+	switch normalizePriorityLabel(priority) {
+	case "P0":
+		return visual.Red
+	case "P1":
+		return visual.Yellow
+	default:
+		return visual.Dim
+	}
+}
+
+func taskRowRightColor(it Item, visual paneVisual) color.Color {
+	if it.IsTask {
+		return visualForStatus(it.Task.Status, visual)
+	}
+	if it.Run.Group == taskGroupRunning {
+		return visual.Cyan
+	}
+	return visualForStatus(it.Run.Status, visual)
+}
+
+func (m model) renderRight(w int) string {
+	visual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
+	if m.helpVisible {
+		title := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render("Cockpit keys")
+		body := renderFullHelp(w, m.viewFocused, m.boardMode())
+		return strings.Join([]string{title, dimStyle.Render("press ? or esc to close"), "", body}, "\n")
+	}
+	if m.taskForm != nil {
+		form := *m.taskForm
+		return form.View(w, m.height-3)
+	}
+	var s []string
+	run, isRun := m.selectedRunnableRun()
+	it, ok := m.selectedItem()
+	if !ok {
+		return lipgloss.NewStyle().Foreground(visual.Dim).Render("No selection.")
+	}
+
+	// header
+	if isRun {
+		hdrLeft := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(run.TaskID) + "  " + lipgloss.NewStyle().Foreground(visual.Dim).Render("run "+run.RunID+"…")
+		status := run.Status
+		if pos, ok := m.selectedMessagePosition(); ok {
+			status += " · messages " + itoa(pos) + "/" + itoa(len(m.msgs))
+		}
+		hdrRight := lipgloss.NewStyle().Foreground(visualForStatus(run.Status, visual)).Render(joinStatusParts(status, m.selectedRunClock()))
+		s = append(s, padRow(hdrLeft, hdrRight, w))
+		if run.Attention != "" {
+			s = append(s, lipgloss.NewStyle().Foreground(visual.Red).Render(clip("⚠ "+run.Attention, w)))
+		}
+	} else {
+		title := it.Task.Title
+		if title == "" {
+			title = it.Task.TaskID
+		}
+		s = append(s, padRow(lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(title), lipgloss.NewStyle().Foreground(visual.Yellow).Render(it.Task.Status), w))
+	}
+	s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
+
+	// phase rail (runs and tasks)
+	if isRun {
+		s = append(s, m.renderRail(run, w, visual)...)
+	} else {
+		s = append(s, m.renderTaskRail(it.Task, w, visual)...)
+	}
+	s = append(s, lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)))
+
+	// tabs (runs only; tasks show summary)
+	if isRun {
+		s = append(s, m.renderTabs(w, visual))
+		s = append(s, "")
+	}
+
+	body := m.renderBody(run, it, isRun, w, visual)
+	var action []string
+	if ab := m.renderAction(w, visual); ab != "" {
+		action = strings.Split(ab, "\n")
+	}
+	bodyH := m.detailPaneHeight()
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	bodyWindowH := bodyH - len(s) - len(action)
+	if bodyWindowH < 1 {
+		bodyWindowH = 1
+	}
+	if (isRun && m.viewerTab()) || (!isRun && m.viewFocused) {
+		viewer := m.viewer
+		policy := viewerPreserve
+		if viewer.Len() == 0 {
+			policy = viewerBottom
+		}
+		viewer.SetBounds(w, bodyWindowH)
+		viewer.SetLines(m.renderViewerLines(run, it, isRun, w, visual), policy, bodyWindowH)
+		s = append(s, strings.Split(viewer.View(), "\n")...)
+	} else {
+		if len(body) > bodyWindowH {
+			body = body[:bodyWindowH]
+		}
+		s = append(s, body...)
+	}
+	s = append(s, action...)
+	return strings.Join(s, "\n")
+}
+
+func (m model) renderRail(run Run, w int, visual paneVisual) []string {
+	if w < 32 && len(run.Pipeline) > 0 {
+		return []string{m.renderCompactRail(run, w, visual)}
+	}
+	var chips []string
+	for i, p := range run.Pipeline {
+		gl, glc := m.railGlyph(p.State)
+		text := gl + " " + p.Name + " r" + itoa(p.Retries)
+		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
+		if p.State == "active" {
+			st = st.Background(visual.ActiveBg).Foreground(visual.White)
+			if m.config.Cockpit.ReducedMotion {
+				st = st.Bold(true)
+			}
+		} else if p.State == "fail" {
+			st = st.Background(visual.FailBg)
+		}
+		_ = i
+		chips = append(chips, st.Render(text))
+	}
+	// greedy wrap
+	var lines []string
+	cur := ""
+	curW := 0
+	sep := lipgloss.NewStyle().Foreground(visual.Dim).Render(" ─ ")
+	for _, c := range chips {
+		cw := lipgloss.Width(c)
+		add := cw
+		if cur != "" {
+			add += 3
+		}
+		if curW+add > w {
+			lines = append(lines, cur)
+			cur, curW = c, cw
+			continue
+		}
+		if cur == "" {
+			cur, curW = c, cw
+		} else {
+			cur += sep + c
+			curW += add
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
+	idx := 0
+	phase := strings.TrimSpace(run.Phase)
+	state := ""
+	for i, p := range run.Pipeline {
+		if p.State == "active" || p.State == "retry" || p.State == "fail" || (phase != "" && p.Name == phase) {
+			idx = i
+			phase = firstNonEmptyText(phase, p.Name)
+			state = p.State
+			if p.State == "active" || p.State == "retry" || p.State == "fail" {
+				break
+			}
+		}
+	}
+	if phase == "" && len(run.Pipeline) > 0 {
+		phase = run.Pipeline[idx].Name
+		state = run.Pipeline[idx].State
+	}
+	gl, glc := m.railGlyph(state)
+	label := fmt.Sprintf("%s %d/%d · %s r%d", gl, idx+1, len(run.Pipeline), phase, run.Pipeline[idx].Retries)
+	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
+	if state == "active" {
+		st = st.Background(visual.ActiveBg).Foreground(visual.White)
+	}
+	if state == "fail" {
+		st = st.Background(visual.FailBg)
+	}
+	return clip(st.Render(label), w)
+}
+
+// renderTaskRail renders the phase rail for a task (all phases shown as pending).
+func (m model) renderTaskRail(task Task, w int, visual paneVisual) []string {
+	if w < 32 && len(task.Pipeline) > 0 {
+		return []string{m.renderCompactTaskRail(task, w, visual)}
+	}
+	var chips []string
+	for _, p := range task.Pipeline {
+		gl, glc := m.railGlyph(p.State)
+		text := gl + " " + p.Name
+		st := lipgloss.NewStyle().Foreground(visualColor(glc, visual))
+		chips = append(chips, st.Render(text))
+	}
+	// greedy wrap
+	var lines []string
+	cur := ""
+	curW := 0
+	sep := lipgloss.NewStyle().Foreground(visual.Dim).Render(" ─ ")
+	for _, c := range chips {
+		cw := lipgloss.Width(c)
+		add := cw
+		if cur != "" {
+			add += 3
+		}
+		if curW+add > w {
+			lines = append(lines, cur)
+			cur, curW = c, cw
+			continue
+		}
+		if cur == "" {
+			cur, curW = c, cw
+		} else {
+			cur += sep + c
+			curW += add
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// renderCompactTaskRail renders a compact single-line phase rail for a task.
+func (m model) renderCompactTaskRail(task Task, w int, visual paneVisual) string {
+	gl, glc := m.railGlyph("pending")
+	label := fmt.Sprintf("%s %d/%d · workflow", gl, 1, len(task.Pipeline))
+	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
+	return clip(st.Render(label), w)
+}
+
+func (m model) renderTabs(w int, visual paneVisual) string {
+	var toks []string
+	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, metricsCount(m.metrics)}
+	if run, ok := m.selectedRunnableRun(); ok {
+		counts[1] = run.Messages
+		counts[2] = run.Events
+		if run.PRURL != "" || m.pr.URL != "" {
+			counts[6] = 1
+		}
+	} else if m.pr.URL != "" {
+		counts[6] = 1
+	}
+	for i, name := range tabNames {
+		label := name
+		if i == 1 && counts[i] > 0 {
+			if pos, ok := m.selectedMessagePosition(); ok {
+				label += " " + itoa(pos) + "/" + itoa(counts[i])
+			} else {
+				label += " " + itoa(counts[i])
+			}
+		} else if i > 0 && counts[i] > 0 {
+			label += " " + itoa(counts[i])
+		}
+		if tabOpenable(name) {
+			label += " " + openableTabMarker
+		}
+		if i == m.tab {
+			toks = append(toks, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(activeTabLabel(label)))
+		} else {
+			toks = append(toks, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
+		}
+	}
+	return clip(strings.Join(toks, ""), w)
+}
+
+func (m model) selectedMessagePosition() (int, bool) {
+	idx, ok := m.selectedMessageIndex()
+	if !ok {
+		return 0, false
+	}
+	return idx + 1, true
+}
+
+func (m model) selectedMessageIndex() (int, bool) {
+	if m.tab != 1 || len(m.msgs) == 0 {
+		return 0, false
+	}
+	if line, ok := m.viewer.SelectedLine(); ok {
+		for i, message := range m.msgs {
+			if line.Key == messageKey(message)+":row" {
+				return i, true
+			}
+		}
+	}
+	return min(m.viewer.Cursor(), len(m.msgs)-1), true
+}
+
+func (m model) selectedLogIndex() (int, bool) {
+	if tabNames[m.tab] != "logs" || len(m.logs) == 0 {
+		return 0, false
+	}
+	if line, ok := m.viewer.SelectedLine(); ok {
+		for i, logLine := range m.logs {
+			if line.Key == "log:"+itoa(i)+":"+logLine {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (m model) renderBody(run Run, it Item, isRun bool, w int, visual paneVisual) []string {
+	lines := m.renderViewerLines(run, it, isRun, w, visual)
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = line.Text
+	}
+	return out
+}
+
+func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual paneVisual) []ViewerLine {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
+	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
+	redStyle := lipgloss.NewStyle().Foreground(visual.Red)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	var s []ViewerLine
+	add := func(key, text string, t target) {
+		s = append(s, ViewerLine{Key: key, Text: text, Target: t})
+	}
+	kv := func(k, v string) string {
+		return dimStyle.Render(clip(k, 9)) + "  " + textStyle.Render(clip(v, w-11))
+	}
+
+	if !isRun {
+		desc := it.Task.Description
+		if desc == "" {
+			desc = it.Task.Summary
+		}
+		if desc == "" {
+			desc = "No description."
+		}
+		s = append(s, renderFieldTable("task:fields", [][2]string{
+			{"id", it.Task.TaskID},
+			{"title", it.Task.Title},
+			{"type", it.Task.TaskType},
+			{"priority", it.Task.Priority},
+			{"status", it.Task.Status},
+			{"workflow", it.Task.Workflow},
+			{"depends", it.Task.Depends},
+			{"project", it.Task.ProjectID},
+			{"description", desc},
+		}, w, visual)...)
+		s = append(s, ViewerLine{Key: "task:description:spacer", Text: ""})
+		s = append(s, ViewerLine{Key: "task:description:title", Text: whiteStyle.Render("Description")})
+		if m.glam != nil {
+			if out, err := m.glam.Render(desc); err == nil {
+				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+					s = append(s, ViewerLine{Key: "task:description:" + itoa(i), Text: clip(ln, w)})
+				}
+				return s
+			}
+		}
+		for i, ln := range wrap(desc, w) {
+			s = append(s, ViewerLine{Key: "task:description:" + itoa(i), Text: textStyle.Render(ln)})
+		}
+		return s
+	}
+	switch tabNames[m.tab] {
+	case "summary":
+		for i, ln := range wrap(run.Summary, w) {
+			add("summary:"+itoa(i), textStyle.Render(ln), target{})
+		}
+		add("summary:spacer", "", target{})
+		add("summary:worktree", kv("worktree", run.Worktree), target{})
+		add("summary:branch", kv("branch", run.Branch), target{})
+		add("summary:last", kv("last", run.Last), target{})
+	case "messages":
+		return renderMessageLines(m.msgs, w, visual)
+	case "events":
+		return renderEventLines(m.events, w, visual)
+	case "logs":
+		return renderLogLines(run, m.logs, m.logPath, w, visual)
+	case "reports":
+		if len(m.reports) == 0 {
+			return []ViewerLine{{Key: "reports:empty", Text: dimStyle.Render("No reports produced yet.")}}
+		}
+		idx := m.selectedReportIndex()
+		for _, r := range m.reports {
+			sc := visual.Green
+			if r.Status != "done" {
+				sc = visual.Yellow
+			}
+			t := reportTarget(run, r)
+			line := padRow(greenStyle.Render("⧉ ")+cyanStyle.Render(r.Name)+dimStyle.Render(" "+r.Size),
+				lipgloss.NewStyle().Foreground(sc).Render(r.Status), w)
+			add("report:"+r.Name, line, t)
+		}
+		if idx >= 0 && m.glam != nil {
+			r := m.reports[idx]
+			t := reportTarget(run, r)
+			if out, err := m.glam.Render(r.Preview); err == nil {
+				add("report-preview:"+r.Name+":spacer", "", t)
+				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+					add("report-preview:"+r.Name+":"+itoa(i), clip(ln, w), t)
+				}
+			}
+		}
+	case "files":
+		if len(m.files) == 0 {
+			return []ViewerLine{{Key: "files:empty", Text: dimStyle.Render("No file changes.")}}
+		}
+		for _, f := range m.files {
+			cc := visual.Yellow
+			switch f.Change {
+			case "A":
+				cc = visual.Green
+			case "D":
+				cc = visual.Red
+			}
+			stat := dimStyle.Render(f.Stat)
+			if f.Conflict {
+				stat = redStyle.Render("conflict")
+			}
+			t := fileTarget(run, f.Path, selectedDiffBase(run, m.config.Integrations), f.Conflict)
+			line := padRow(lipgloss.NewStyle().Foreground(cc).Render(f.Change)+" "+textStyle.Render(clip(f.Path, w-14)), stat, w)
+			add("file:"+f.Path, line, t)
+		}
+		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {
+			f := m.files[idx]
+			base := selectedDiffBase(run, m.config.Integrations)
+			key := diffPreviewKey(run, f.Path, base)
+			add("diff-preview:"+f.Path+":spacer", "", target{})
+			if m.diffLoading[key] {
+				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":loading", Text: dimStyle.Render(m.loadingLabel("diff preview")), Unselectable: true})
+			} else if preview, ok := m.diffPreviews[key]; ok {
+				if preview.Err != "" {
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":error", Text: yellowStyle.Render("diff preview: " + preview.Err), Unselectable: true})
+				}
+				if len(preview.Lines) == 0 && preview.Err == "" {
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":empty", Text: dimStyle.Render("No diff for selected file."), Unselectable: true})
+				}
+				for i, ln := range preview.Lines {
+					s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":" + itoa(i), Text: ln, Unselectable: true})
+				}
+			} else {
+				s = append(s, ViewerLine{Key: "diff-preview:" + f.Path + ":pending", Text: dimStyle.Render("diff preview pending…"), Unselectable: true})
+			}
+		}
+	case "pr":
+		return m.renderPRLines(w, visual)
+	case "metrics":
+		return m.renderMetricsLines(w, visual)
+	}
+	return s
+}
+
+func detailKV(key, value string, w int, visual paneVisual) string {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	return dimStyle.Render("  "+key+"  ") + textStyle.Render(clip(value, max(1, w-len(key)-4)))
+}
+
+func detailWrapped(label, value string, w int, visual paneVisual) []string {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	if strings.TrimSpace(value) == "" {
+		value = "(empty)"
+	}
+	lines := []string{dimStyle.Render("  " + label)}
+	for _, ln := range wrap(value, max(1, w-4)) {
+		lines = append(lines, "    "+textStyle.Render(ln))
+	}
+	return lines
+}
+
+func messageKey(message Message) string {
+	return "message:" + message.At + ":" + message.From + ":" + message.To + ":" + message.Subject
+}
+
+func formatMessageTime(stamp string) string {
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stamp))
+	if err != nil {
+		return stamp
+	}
+	return t.Local().Format("01/02 15:04")
+}
+
+func messageColumnWidths(w int) (int, int, int, int) {
+	timeW := 11
+	fromW := 14
+	toW := 14
+	msgW := w - timeW - fromW - toW - 6
+	if msgW >= 8 {
+		return timeW, fromW, toW, msgW
+	}
+	fromW = 10
+	toW = 10
+	msgW = w - timeW - fromW - toW - 6
+	if msgW >= 8 {
+		return timeW, fromW, toW, msgW
+	}
+	fromW = 8
+	toW = 8
+	msgW = max(1, w-timeW-fromW-toW-6)
+	return timeW, fromW, toW, msgW
+}
+
+func messageCell(value string, width int, style lipgloss.Style) string {
+	text := clip(value, width)
+	pad := width - ansi.StringWidth(text)
+	if pad < 0 {
+		pad = 0
+	}
+	return style.Render(text) + strings.Repeat(" ", pad)
+}
+
+func renderMessageRow(at, from, to, message string, w int, visual paneVisual, header bool) string {
+	timeW, fromW, toW, msgW := messageColumnWidths(w)
+	style := lipgloss.NewStyle().Foreground(visual.Text)
+	if header {
+		style = lipgloss.NewStyle().Foreground(visual.Dim).Bold(true)
+	}
+	timeStyle := style
+	fromStyle := style
+	toStyle := style
+	msgStyle := style
+	if !header {
+		timeStyle = lipgloss.NewStyle().Foreground(visual.Dim)
+		fromStyle = lipgloss.NewStyle().Foreground(visual.Purple)
+		toStyle = lipgloss.NewStyle().Foreground(visual.Purple)
+		msgStyle = lipgloss.NewStyle().Foreground(visual.Cyan)
+	}
+	return strings.TrimRight(messageCell(at, timeW, timeStyle)+"  "+messageCell(from, fromW, fromStyle)+"  "+messageCell(to, toW, toStyle)+"  "+messageCell(message, msgW, msgStyle), " ")
+}
+
+func messagePreview(message Message) string {
+	if strings.TrimSpace(message.Subject) != "" {
+		return message.Subject
+	}
+	return strings.TrimSpace(strings.ReplaceAll(message.Body, "\n", " "))
+}
+func renderMessageLines(messages []Message, w int, visual paneVisual) []ViewerLine {
+	if len(messages) == 0 {
+		return []ViewerLine{{Key: "messages:empty", Text: lipgloss.NewStyle().Foreground(visual.Dim).Render("No mail for this run.")}}
+	}
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	lines := make([]ViewerLine, 0, len(messages))
+	for _, mm := range messages {
+		base := messageKey(mm)
+		key := base + ":row"
+		message := mm
+		lines = append(lines, ViewerLine{
+			Key:  key,
+			Text: renderMessageRow(formatMessageTime(message.At), message.From, message.To, messagePreview(message), w, visual, false),
+			DetailFunc: func() []string {
+				detail := []string{
+					whiteStyle.Render("  Message detail"),
+					detailKV("at", formatMessageTime(message.At), w, visual),
+					detailKV("from", message.From, w, visual),
+					detailKV("to", message.To, w, visual),
+					detailKV("subject", message.Subject, w, visual),
+				}
+				return append(detail, detailWrapped("body", message.Body, w, visual)...)
+			},
+		})
+	}
+	return lines
+}
+
+func renderEventLines(events []Event, w int, visual paneVisual) []ViewerLine {
+	if len(events) == 0 {
+		return []ViewerLine{{Key: "events:empty", Text: lipgloss.NewStyle().Foreground(visual.Dim).Render("No events recorded.")}}
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	lines := make([]ViewerLine, 0, len(events))
+	for i, e := range events {
+		event := e
+		lines = append(lines, ViewerLine{
+			Key:  "event:" + itoa(i) + ":" + event.At + ":" + event.Type + ":" + event.Detail,
+			Text: clip(dimStyle.Render(event.At+" ")+yellowStyle.Render(event.Type)+" "+textStyle.Render(event.Detail), w),
+			DetailFunc: func() []string {
+				detail := []string{
+					whiteStyle.Render("  Event detail"),
+					detailKV("at", event.At, w, visual),
+					detailKV("type", event.Type, w, visual),
+				}
+				return append(detail, detailWrapped("detail", event.Detail, w, visual)...)
+			},
+		})
+	}
+	return lines
+}
+
+func renderLogLines(run Run, logs []string, logPath string, w int, visual paneVisual) []ViewerLine {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
+	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	t := logTarget(run, logPath)
+	lines := []ViewerLine{{Key: "log:target:" + run.RunID, Text: greenStyle.Render("⧉ ") + cyanStyle.Render(t.path), Target: t}}
+	for i, ln := range logs {
+		prefix := dimStyle.Render(fmt.Sprintf("%4d │ ", i+1))
+		lineNumber := i + 1
+		logLine := ln
+		lines = append(lines, ViewerLine{
+			Key:    "log:" + itoa(i) + ":" + logLine,
+			Text:   prefix + textStyle.Render(logLine),
+			Target: t,
+			DetailFunc: func() []string {
+				detail := []string{
+					whiteStyle.Render("  Log detail"),
+					detailKV("line", itoa(lineNumber), w, visual),
+				}
+				return append(detail, detailWrapped("text", logLine, w, visual)...)
+			},
+		})
+	}
+	return lines
+}
+
+func (m model) renderPRLines(w int, visual paneVisual) []ViewerLine {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
+	pr := m.pr
+	if pr.URL == "" {
+		return []ViewerLine{{Key: "pr:empty", Text: dimStyle.Render("No PR for this run yet.")}}
+	}
+	state := pr.State
+	if state == "" {
+		state = "unknown"
+	}
+	stateColor := visual.Cyan
+	switch strings.ToLower(state) {
+	case "merged":
+		stateColor = visual.Green
+	case "closed":
+		stateColor = visual.Red
+	case "draft":
+		stateColor = visual.Dim
+	}
+	title := "PR"
+	if pr.Number != "" {
+		title += " #" + pr.Number
+	}
+	branch := ""
+	if pr.BranchName != "" || pr.BaseBranch != "" {
+		branch = pr.BranchName + " → " + pr.BaseBranch
+	}
+	rows := [][2]string{
+		{"url", pr.URL},
+		{"branch", branch},
+		{"head", pr.HeadSHA},
+		{"merge", pr.Mergeable},
+		{"review", pr.ReviewDecision},
+		{"passed", itoa(pr.Checks.Passed)},
+		{"failed", itoa(pr.Checks.Failed)},
+		{"pending", itoa(pr.Checks.Pending)},
+	}
+	lines := []ViewerLine{
+		{Key: "pr:title", Text: padRow(cyanStyle.Render(title), lipgloss.NewStyle().Foreground(stateColor).Render(state), w)},
+		{Key: "pr:actions", Text: cyanStyle.Render("o/enter") + dimStyle.Render(" open PR in browser  ") + cyanStyle.Render("C") + dimStyle.Render(" inspect CI in gh enhance")},
+	}
+	lines = append(lines, renderFieldTable("pr:fields", rows, w, visual)...)
+	if pr.Err != "" {
+		lines = append(lines, ViewerLine{Key: "pr:error", Text: yellowStyle.Render("PR detail: " + pr.Err)})
+	}
+	return lines
+}
+func joinStatusParts(parts ...string) string {
+	var out []string
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, " · ")
+}
+
+func (m model) railGlyph(state string) (string, color.Color) {
+	if state == "active" && m.shouldAnimate() {
+		return m.liveSpinner.View(), cCyan
+	}
+	return glyph(state)
+}
+
+func (m model) renderMetricsLines(w int, visual paneVisual) []ViewerLine {
+	if !m.metricsLoading {
+		return renderMetricsLines(m.metrics, w, visual)
+	}
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	lines := []ViewerLine{{
+		Key:          "metrics:loading",
+		Text:         dimStyle.Render(m.loadingLabel("metrics")),
+		Unselectable: true,
+	}}
+	if len(m.metrics.Counters) > 0 || len(m.metrics.Gauges) > 0 || len(m.metrics.PhaseDuration) > 0 {
+		lines = append(lines, renderMetricsLines(m.metrics, w, visual)...)
+	}
+	return lines
+}
+
+func (m model) loadingLabel(label string) string {
+	if m.config.Cockpit.ReducedMotion {
+		return "loading " + label + "…"
+	}
+	return m.liveSpinner.View() + " loading " + label + "…"
+}
+
+func (m model) renderAction(w int, visual paneVisual) string {
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
+	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
+	redStyle := lipgloss.NewStyle().Foreground(visual.Red)
+	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	if task, ok := m.selectedTask(); ok {
+		action := greenStyle.Render("▸ task actions ") + whiteStyle.Render(task.TaskID) + "  " + cyanStyle.Render("y") + dimStyle.Render(" copy task id") + "  " + cyanStyle.Render("c") + dimStyle.Render(" close")
+		if run, ok := m.runForTask(task); ok {
+			action += "  " + cyanStyle.Render("R") + dimStyle.Render(" reset latest run ") + whiteStyle.Render(run.RunID)
+		}
+		lines := []string{
+			clip(action, w),
+		}
+		if _, ready := m.selectedReadyTask(); ready {
+			lines = append(lines, clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form")+"  "+cyanStyle.Render("N")+dimStyle.Render(" quick add"), w))
+		}
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
+	}
+	if tabNames[m.tab] == "pr" {
+		if m.pr.URL == "" {
+			return ""
+		}
+		lines := []string{
+			clip(greenStyle.Render("▸ PR actions ")+cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
+			clip(dimStyle.Render(m.pr.URL), w),
+		}
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
+	}
+	runActionLine := ""
+	if run, ok := m.selectedRun(); ok {
+		runActionLine = clip(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset")+"  "+cyanStyle.Render("p")+dimStyle.Render(" omp")+"  "+cyanStyle.Render("P")+dimStyle.Render(" plain omp")+"  "+cyanStyle.Render("G")+dimStyle.Render(" gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" enhance"), w)
+	}
+	t := resolveTarget(m)
+	if !t.ok {
+		if runActionLine != "" {
+			return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(runActionLine)
+		}
+		return ""
+	}
+	diffCmd, diffMode := describe(m.editor, t, true)
+	plainCmd, plainMode := describe(m.editor, t, false)
+	head := greenStyle.Render("▸ open ") + whiteStyle.Render(t.label) + greenStyle.Render(" in nvim")
+	if t.conflict {
+		head += redStyle.Render("  (conflict — 3-way)")
+	}
+	if tabNames[m.tab] == "files" {
+		lines := []string{
+			dimStyle.Render(strings.Repeat("┄", w)),
+			clip(head, w),
+			clip(dimStyle.Render("$ ")+cyanStyle.Render(diffCmd), w),
+			clip(dimStyle.Render("→ "+diffMode), w),
+			clip(cyanStyle.Render("o")+dimStyle.Render(" open plain  ")+cyanStyle.Render("d")+dimStyle.Render(" open selected diff  ")+cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
+		}
+		if runActionLine != "" {
+			lines = append(lines, runActionLine)
+		}
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
+	}
+	lines := []string{
+		dimStyle.Render(strings.Repeat("┄", w)),
+		clip(head, w),
+		clip(dimStyle.Render("$ ")+cyanStyle.Render(plainCmd), w),
+		clip(dimStyle.Render("→ "+plainMode), w),
+	}
+	if idx, ok := m.selectedLogIndex(); ok {
+		lines = append(lines, clip(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx]), w))
+	}
+	if runActionLine != "" {
+		lines = append(lines, runActionLine)
+	}
+	return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
+}
+
+// wrap splits text into display-cell-width-bounded lines.
+func wrap(s string, w int) []string {
+	if w <= 0 {
+		return []string{s}
+	}
+	out := strings.TrimRight(wordwrap.String(s, w), "\n")
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
+func taskState(t Task) string {
+	switch {
+	case isFailedState(t.Status):
+		return "fail"
+	case normalizeStatus(t.Status) == "cooldown":
+		return "retry"
+	case activeTaskStatus(t.Status):
+		return "active"
+	default:
+		return "ready"
+	}
+}
+
+func runState(r Run) string {
+	status := normalizeStatus(r.Status)
+	switch {
+	case isFailedState(r.Status) || isFailedState(status):
+		return "fail"
+	case strings.EqualFold(r.Verdict, "retrying") || status == "cooldown":
+		return "retry"
+	case status == "merged" || status == "completed" || status == "pr_created" || status == "reset" || status == "cancelled" || status == "closed" || status == "deleted":
+		return "done"
+	case r.Group == taskGroupRunning && activeTaskStatus(status):
+		return "active"
+	case r.Group == taskGroupRunning:
+		return "active"
+	default:
+		return "done"
+	}
+}
+
+func itoa(n int) string {
+
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+func atoi(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
+}

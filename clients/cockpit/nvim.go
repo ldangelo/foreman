@@ -40,7 +40,7 @@ type target struct {
 
 // resolveTarget computes the open target for the selected run + viewer line.
 func resolveTarget(m model) target {
-	run, ok := m.selectedRun()
+	run, ok := m.selectedRunnableRun()
 	if !ok || !m.openableTab() {
 		return target{}
 	}

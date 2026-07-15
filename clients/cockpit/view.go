@@ -603,7 +603,7 @@ func (m model) renderRight(w int) string {
 		return form.View(w, m.height-3)
 	}
 	var s []string
-	run, isRun := m.selectedRun()
+	run, isRun := m.selectedRunnableRun()
 	it, ok := m.selectedItem()
 	if !ok {
 		return lipgloss.NewStyle().Foreground(visual.Dim).Render("No selection.")
@@ -806,7 +806,7 @@ func (m model) renderCompactTaskRail(task Task, w int, visual paneVisual) string
 func (m model) renderTabs(w int, visual paneVisual) string {
 	var toks []string
 	counts := []int{0, len(m.msgs), len(m.events), len(m.logs), len(m.reports), len(m.files), 0, metricsCount(m.metrics)}
-	if run, ok := m.selectedRun(); ok {
+	if run, ok := m.selectedRunnableRun(); ok {
 		counts[1] = run.Messages
 		counts[2] = run.Events
 		if run.PRURL != "" || m.pr.URL != "" {
@@ -1309,7 +1309,7 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
 	runActionLine := ""
-	if run, ok := m.selectedRun(); ok {
+	if run, ok := m.selectedRunnableRun(); ok {
 		runActionLine = clip(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset")+"  "+cyanStyle.Render("p")+dimStyle.Render(" omp")+"  "+cyanStyle.Render("P")+dimStyle.Render(" plain omp")+"  "+cyanStyle.Render("G")+dimStyle.Render(" gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" enhance"), w)
 	}
 	t := resolveTarget(m)
