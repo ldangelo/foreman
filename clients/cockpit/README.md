@@ -54,7 +54,7 @@ authoritative state.
   reports · files · pr · metrics`). Log and report open targets prefer
   explicit paths returned by the live `/logs` and `/report` endpoints, falling
   back to the historical `.foreman/logs` and `docs/reports` paths when omitted.
-  Message rows render newest-first as a table (local `date/time` in
+  Message rows render oldest-first as a table (local `date/time` in
   `mm/dd hh:mm`, sender, receiver, message); event and log tabs use specialized
   selectable rows. The selected row is marked with `▶` and expands with packed
   metadata/body, event metadata/detail, or log line/text while preserving
