@@ -133,15 +133,33 @@ describe('TRD-009 bug.yaml workflow integration', () => {
   });
 
   describe('phase ordering and finalize', () => {
-    it('phases are in order: explorer → fix → developer remediation (retryOnly) → documentation → qa → finalize → PR wait → merge', () => {
+    it("phases are in order: explorer → fix → developer → qa → documentation → cicd-developer (retryOnly) → finalize", () => {
       const names = bugWorkflow.phases.map((p) => p.name);
-      expect(names).toEqual(['explorer', 'fix', 'developer', 'cicd-developer', 'cr-developer', 'merge-resolver', 'documentation', 'qa', 'finalize', 'create-pr', 'pr-wait', 'merge']);
-      expect(bugWorkflow.phases.find((p) => p.name === 'developer')?.retryOnly).toBe(true);
-      expect(bugWorkflow.phases.find((p) => p.name === 'cicd-developer')?.retryOnly).toBe(true);
-      expect(bugWorkflow.phases.find((p) => p.name === 'cr-developer')?.retryOnly).toBe(true);
-      expect(bugWorkflow.phases.find((p) => p.name === 'merge-resolver')?.retryOnly).toBe(true);
-      expect(bugWorkflow.phases.find((p) => p.name === 'cli-review')).toBeUndefined();
-      expect(bugWorkflow.phases.find((p) => p.name === 'pr-review')).toBeUndefined();
+      // New order: developer (normal), qa before documentation, retry-only devs after documentation
+      expect(names).toEqual([
+        "explorer",
+        "fix",
+        "developer",
+        "qa",
+        "cicd-developer",
+        "cr-developer",
+        "merge-resolver",
+        "documentation",
+        "finalize",
+        "create-pr",
+        "pr-wait",
+        "merge",
+      ]);
+      // developer is a normal phase (REC-2)
+      expect(bugWorkflow.phases.find((p) => p.name === "developer")?.retryOnly).toBeUndefined();
+      // qa runs before documentation (REC-3)
+      expect(names.indexOf("qa")).toBeLessThan(names.indexOf("documentation"));
+      // cicd-developer, cr-developer, merge-resolver remain retry-only
+      expect(bugWorkflow.phases.find((p) => p.name === "cicd-developer")?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === "cr-developer")?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === "merge-resolver")?.retryOnly).toBe(true);
+      expect(bugWorkflow.phases.find((p) => p.name === "cli-review")).toBeUndefined();
+      expect(bugWorkflow.phases.find((p) => p.name === "pr-review")).toBeUndefined();
     });
 
     it('finalize phase uses the deterministic builtin finalizer', () => {

@@ -400,14 +400,23 @@ phases:
     expect(explorerPhase?.tools?.allowed).not.toContain("GraphifyExplain");
   });
 
-  it("loads bundled bug workflow with scoped fix prompt", () => {
+  it("loads bundled bug workflow with scoped fix prompt and correct phase order", () => {
     const config = loadWorkflowConfig("bug", tmpDir);
+    const phaseNames = config.phases.map((p) => p.name);
     const fixPhase = config.phases.find((p) => p.name === "fix");
-    const validationPhase = config.phases.find((p) => p.name === "qa");
+    const developerPhase = config.phases.find((p) => p.name === "developer");
+    const qaPhase = config.phases.find((p) => p.name === "qa");
+    const documentationPhase = config.phases.find((p) => p.name === "documentation");
+
+    // fix-issue.md scoped prompt
     expect(fixPhase?.prompt).toBe("fix-issue.md");
     expect(fixPhase?.command).toBeUndefined();
-    expect(validationPhase?.prompt).toBe("qa.md");
-    expect(config.phases.find((p) => p.name === "developer")?.retryOnly).toBe(true);
+
+    // developer runs as a normal phase (REC-2: not retry-only)
+    expect(developerPhase?.retryOnly).toBeUndefined();
+
+    // qa runs before documentation (REC-3: swap phase order)
+    expect(phaseNames.indexOf("qa")).toBeLessThan(phaseNames.indexOf("documentation"));
   });
 
   it("feature workflow inserts cli-review, PR wait, and merge phases after reviewer", () => {
