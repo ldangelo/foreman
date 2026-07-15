@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const EXPLORER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "explorer.md");
+const BUG_FIX_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "bug", "fix-issue.md");
 const DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "developer.md");
 const CICD_DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "cicd-developer.md");
 const CR_DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "cr-developer.md");
@@ -17,6 +18,16 @@ describe("explorer prompt narrowing", () => {
     expect(prompt).toContain("1–3 most likely edit files");
     expect(prompt).toContain("Start narrow");
     expect(prompt).toContain("Stop after you can name likely edit files");
+  });
+});
+
+describe("bug fix prompt guardrails", () => {
+  const prompt = readFileSync(BUG_FIX_PROMPT, "utf-8");
+
+  it("keeps fixes on the active task branch", () => {
+    expect(prompt).toContain("Stay on the active task branch/worktree");
+    expect(prompt).toContain("Do **not** create, check out, or switch to another branch");
+    expect(prompt).toContain("branch management, commits, pushes, PRs, and task closure are owned by the pipeline");
   });
 });
 

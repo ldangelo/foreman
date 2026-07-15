@@ -12,6 +12,7 @@ You are running inside Foreman's `bug` workflow for bug **{{taskId}}**: **{{task
 - If retry feedback cites a specific report, failing phase, file, or command, read that artifact first and fix that cited area before broader investigation.
 - Start with one `git status --short` and one focused diff/list command; avoid repeated broad `ls`, `git log --all`, or directory walks unless they answer a specific question.
 - Do not edit workflow or prompt files unless the task explicitly targets workflow/prompt behavior.
+- Stay on the active task branch/worktree. Do **not** create, check out, or switch to another branch; branch management, commits, pushes, PRs, and task closure are owned by the pipeline.
 
 ## Instructions
 - Identify the root cause before editing.
