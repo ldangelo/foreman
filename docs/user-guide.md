@@ -105,7 +105,7 @@ foreman status --project my-project
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. Workflow phases are tracked separately from task status, so custom phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
+Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses map to Kanban board columns: Backlog, Ready, In Progress, Blocked, and Done. The cockpit's Go board groups tasks into these five columns; attention/failed tasks land in Blocked. Workflow phases are tracked separately from task status, so custom phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high
@@ -318,19 +318,23 @@ foreman pr
 
 ## Operating the Board
 
-`foreman board` on a TTY opens the unified cockpit in board view. Use it when you want board context beside inbox and status details. For legacy/scriptable board rendering, use non-TTY output, `--all`, or `--filter`.
+`foreman board` on a TTY opens the Go cockpit in Kanban board view. The cockpit renders a **top/bottom split**: the board (top ~55%) shows tasks grouped into five columns — Backlog, Ready, In Progress, Blocked, and Done — and the activities pane (bottom ~45%) shows the selected card's detail tabs (summary, messages, events, logs, reports, files). Configure the split ratio with `cockpit.layout.split` and the default layout mode with `cockpit.layout.mode` (`board` | `list` | `auto`; auto uses board on wide terminals and falls back to list on narrow ones).
 
-The legacy board interaction model still applies when Foreman uses the non-cockpit board path (`--filter`, `--all`, or non-TTY): `h/l` columns, status cycling, `R` ready, close/edit keys, and task creation remain there.
+The Go cockpit board exposes two focus regions: **board** (columns and cards, focused on startup) and **activities** (detail tabs). The legacy board interaction model still applies when Foreman uses the non-cockpit board path (`--filter`, `--all`, or non-TTY).
 
 Common cockpit keys:
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Move within the task/run selector |
+| `←` / `→` / `h` / `l` | Move between board columns |
+| `↑` / `↓` / `j` / `k` | Move within a column (board) or scroll/select (activities) |
+| `Enter` | Focus activities pane for the selected card |
+| `Esc` | Return to board from activities |
+| `j` / `k` | Move within the task/run selector (when not in board/activities) |
 | `i` | Inbox timeline view |
 | `s` | Status/workflow view |
 | `b` | Board context view |
-| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; messages render oldest-first (chronological) with local `mm/dd hh:mm`, sender, receiver, and message columns |
+| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs (activities pane) |
 | `/` | Search tasks, runs, messages, events, and report paths |
 | `1` / `2` / `3` | Active, attention, all scopes |
 | `!` / `p` / `d` | Failed, has PR, dirty worktree filters |

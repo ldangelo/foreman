@@ -223,7 +223,7 @@ foreman watch --refresh 5000      # Refresh every 5 seconds
 | `--no-watch` | — | Print one deterministic snapshot and exit |
 | `--project <id>` | — | Filter to a specific project |
 
-Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; the Go cockpit `R` key resets the selected run or a selected task card's latest known run. All other entries print copy/manual command text only.
+Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. In the Go cockpit Kanban board view, `←/→/h/l` navigate columns, `↑/↓/j/k` move cards or scroll activities, `Enter` focuses the activities pane for the selected card, and `Esc` returns to the board. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; the Go cockpit `R` key resets the selected run or a selected task card's latest known run. All other entries print copy/manual command text only.
 
 ### `foreman sentinel`
 
@@ -288,7 +288,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
-On a TTY, open the unified cockpit in board view. The board pane groups selected active/attention rows by lifecycle status, keeps workflow phase separate, and lets operators jump to inbox/status details without starting a second terminal loop. Non-TTY output, `--all`, and `--filter` keep the legacy/scriptable board path.
+On a TTY, open the Go cockpit in board view. The cockpit renders a top/bottom split: the board (top ~55%) shows tasks in five Kanban columns (Backlog, Ready, In Progress, Blocked, Done) with per-column scroll and card counts; the activities pane (bottom ~45%) shows the selected card's detail tabs. Configure `cockpit.layout.mode` (`board` | `list` | `auto`) and `cockpit.layout.split` (board height fraction) in the Foreman config file. Non-TTY output, `--all`, and `--filter` keep the legacy/scriptable board path.
 
 ```bash
 foreman board                     # TTY: unified cockpit opened to board view
