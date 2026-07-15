@@ -39,6 +39,8 @@ export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
     default: [
       "explorer",
       "developer",
+      "cicd-developer",
+      "cr-developer",
       "qa",
       "reviewer",
       "documentation",

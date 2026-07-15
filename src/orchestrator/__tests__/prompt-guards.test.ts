@@ -5,6 +5,8 @@ import { join } from "node:path";
 const PROJECT_ROOT = join(import.meta.dirname, "..", "..", "..");
 const EXPLORER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "explorer.md");
 const DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "developer.md");
+const CICD_DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "cicd-developer.md");
+const CR_DEVELOPER_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "cr-developer.md");
 const QA_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "qa.md");
 const FINALIZE_PROMPT = join(PROJECT_ROOT, "src", "defaults", "prompts", "default", "finalize.md");
 
@@ -44,6 +46,25 @@ describe("developer prompt guardrails", () => {
   it("biases localized tasks toward the smallest diff", () => {
     expect(prompt).toContain("smallest viable diff");
     expect(prompt).toContain("fewest relevant files");
+  });
+});
+
+describe("specialized remediation prompts", () => {
+  const cicdPrompt = readFileSync(CICD_DEVELOPER_PROMPT, "utf-8");
+  const crPrompt = readFileSync(CR_DEVELOPER_PROMPT, "utf-8");
+
+  it("keeps ci remediation scoped to failed checks", () => {
+    expect(cicdPrompt).toContain("CI/CD remediation developer");
+    expect(cicdPrompt).toContain("PR_WAIT_REPORT.md");
+    expect(cicdPrompt).toContain("Failed Checks Addressed");
+    expect(cicdPrompt).toContain("same failed check remains unexplained");
+  });
+
+  it("keeps CodeRabbit remediation scoped to cited findings", () => {
+    expect(crPrompt).toContain("CodeRabbit remediation developer");
+    expect(crPrompt).toContain("PR_REVIEW_FINDINGS.md");
+    expect(crPrompt).toContain("CodeRabbit Findings Addressed");
+    expect(crPrompt).toContain("cited path first");
   });
 });
 

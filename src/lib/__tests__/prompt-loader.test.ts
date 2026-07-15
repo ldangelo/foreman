@@ -109,6 +109,15 @@ describe("prompt loader", () => {
     expect(getBundledPromptContent("default", "documentation")).toContain("Do not write `DOCUMENTATION_REPORT.md` at the worktree root");
   });
 
+  it("requires and bundles specialized remediation prompts", () => {
+    expect(REQUIRED_PHASES.default).toContain("cicd-developer");
+    expect(REQUIRED_PHASES.default).toContain("cr-developer");
+    expect(getBundledPromptPath("default", "cicd-developer")).toContain(join("default", "cicd-developer.md"));
+    expect(getBundledPromptPath("default", "cr-developer")).toContain(join("default", "cr-developer.md"));
+    expect(getBundledPromptContent("default", "cicd-developer")).toContain("CI/CD remediation developer");
+    expect(getBundledPromptContent("default", "cr-developer")).toContain("CodeRabbit remediation developer");
+  });
+
   it("default explorer prompt directs lightweight discovery without mentioning Graphify", () => {
     const content = getBundledPromptContent("default", "explorer");
 

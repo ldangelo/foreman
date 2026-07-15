@@ -31,6 +31,8 @@ describe("task and bug workflow remediation routing", () => {
     expect(phasesByName.get("cicd-developer")?.retryOnly).toBe(true);
     expect(phasesByName.get("cr-developer")?.retryOnly).toBe(true);
     expect(phasesByName.get("merge-resolver")?.retryOnly).toBe(true);
+    expect(phasesByName.get("cicd-developer")?.prompt).toBe("cicd-developer.md");
+    expect(phasesByName.get("cr-developer")?.prompt).toBe("cr-developer.md");
 
     for (const phaseName of remediationPhases) {
       const phase = phasesByName.get(phaseName);
@@ -65,6 +67,8 @@ describe("task and bug workflow remediation routing", () => {
     expect(phasesByName.get("cicd-developer")?.retryOnly).toBe(true);
     expect(phasesByName.get("cr-developer")?.retryOnly).toBe(true);
     expect(phasesByName.get("merge-resolver")?.retryOnly).toBe(true);
+    expect(phasesByName.get("cicd-developer")?.prompt).toBe("cicd-developer.md");
+    expect(phasesByName.get("cr-developer")?.prompt).toBe("cr-developer.md");
 
     for (const phaseName of remediationPhases) {
       const phase = phasesByName.get(phaseName);

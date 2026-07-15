@@ -104,7 +104,7 @@ phases:
   - name: cicd-developer
     checkpointPr: true
     retryOnly: true
-    prompt: developer.md
+    prompt: cicd-developer.md
     tools:
       allowed:
         [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
@@ -124,7 +124,7 @@ phases:
   - name: cr-developer
     checkpointPr: true
     retryOnly: true
-    prompt: developer.md
+    prompt: cr-developer.md
     tools:
       allowed:
         [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
