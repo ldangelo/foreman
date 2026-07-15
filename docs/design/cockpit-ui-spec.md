@@ -151,7 +151,7 @@ Global:
 | `↑`/`↓`, `j`/`k` | board/list focused: move card or fallback task selection; activities focused: move the highlighted row in messages/events/logs/reports/files/pr |
 | `enter` | board/list focused: focus activities/details for the selected item; in focused files, open the selected file |
 | `esc` | activities/details focused: return focus to board/list; clears search while searching |
-| message/event/log rows | messages render newest-first as selectable table rows with local `date/time` (`mm/dd hh:mm`), sender, receiver, and message columns; event/log rows select one signal row at a time with a visible `▶` marker; selected messages show metadata/body detail, selected events show time/type/detail, selected logs show line/text detail; message tabs also show `messages <current>/<total>` in both the tab and run header |
+| message/event/log rows | messages render oldest-first (chronological) as selectable table rows with local `date/time` (`mm/dd hh:mm`), sender, receiver, and message columns; event/log rows select one signal row at a time with a visible `▶` marker; selected messages show metadata/body detail, selected events show time/type/detail, selected logs show line/text detail; message tabs also show `messages <current>/<total>` in both the tab and run header |
 | mouse wheel | scroll the region under the pointer: active board column/list fallback or activities/details |
 | `ctrl+d` / `ctrl+u` | half-page down/up in the focused drill-down view |
 | `s` | save the currently visible focused drill-down rows to `cockpit.exportDir` |

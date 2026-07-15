@@ -83,6 +83,19 @@ export interface PipelineEventEntry {
   isNew: boolean;  // true if arrived since last render
 }
 
+export function selectInboxMessages(allMessages: Message[], inboxLimit: number, lastSeenId: string | null): { messages: InboxEntry[]; totalCount: number; newestId: string | null } {
+  allMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const totalCount = allMessages.length;
+  const windowStart = inboxLimit > 0 ? Math.max(totalCount - inboxLimit, 0) : totalCount;
+  const recent = allMessages.slice(windowStart);
+  const newestId = recent[recent.length - 1]?.id ?? null;
+  const messages: InboxEntry[] = recent.map((msg, i) => ({
+    message: msg,
+    isNew: lastSeenId !== null && i === recent.length - 1 && msg.id !== lastSeenId,
+  }));
+  return { messages, totalCount, newestId };
+}
+
 export interface EventsState {
   events: PipelineEventEntry[];
   totalCount: number;
@@ -350,15 +363,7 @@ export async function pollInboxData(
                   deleted_at: null,
                 }));
 
-          allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-          const totalCount = allMessages.length;
-          const recent = allMessages.slice(0, inboxLimit);
-          const newestId = recent[0]?.id ?? null;
-          const messages: InboxEntry[] = recent.map((msg, i) => ({
-            message: msg,
-            isNew: lastSeenId !== null && i === 0 && msg.id !== lastSeenId,
-          }));
-          return { messages, totalCount, newestId };
+          return selectInboxMessages(allMessages, inboxLimit, lastSeenId);
         }
       } catch {
         // Fall through to legacy local-store inbox path.
@@ -371,19 +376,7 @@ export async function pollInboxData(
       allMessages.push(...msgs);
     }
 
-    // Sort by created_at descending
-    allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
-    const totalCount = allMessages.length;
-    const recent = allMessages.slice(0, inboxLimit);
-
-    const newestId = recent[0]?.id ?? null;
-    const messages: InboxEntry[] = recent.map((msg, i) => ({
-      message: msg,
-      isNew: lastSeenId !== null && i === 0 && msg.id !== lastSeenId,
-    }));
-
-    return { messages, totalCount, newestId };
+    return selectInboxMessages(allMessages, inboxLimit, lastSeenId);
   } catch {
     return { messages: [], totalCount: 0, newestId: null };
   }

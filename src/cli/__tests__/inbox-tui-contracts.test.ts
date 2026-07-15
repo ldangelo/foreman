@@ -6,7 +6,7 @@ import type { Message } from "../../lib/store.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
 import { renderInboxTaskSummaryTable } from "../commands/inbox.js";
 import { buildInboxTimeline } from "../inbox/timeline.js";
-import { InboxDashboard, buildInboxDashboardActions, selectedIndexForRun } from "../inbox/tui.js";
+import { InboxDashboard, buildInboxDashboardActions, selectedIndexForRun, tabTimelineItems } from "../inbox/tui.js";
 
 function message(overrides: Partial<Message> = {}): Message {
   return {
@@ -107,6 +107,58 @@ describe("inbox TUI timeline contracts", () => {
       "2026-01-01T00:03:00.000Z",
       "2026-01-01T00:04:00.000Z",
     ]);
+  });
+
+  it("messages tab shows newest messages in chronological order", () => {
+    const items = tabTimelineItems(summary({
+      messages: [
+        message({ id: "msg-oldest", subject: "oldest message", created_at: "2026-01-01T00:01:00.000Z" }),
+        message({ id: "msg-old", subject: "old message", created_at: "2026-01-01T00:02:00.000Z" }),
+        message({ id: "msg-new", subject: "new message", created_at: "2026-01-01T00:03:00.000Z" }),
+        message({ id: "msg-newest", subject: "newest message", created_at: "2026-01-01T00:04:00.000Z" }),
+      ],
+      events: [],
+    }), "messages", 3, 0);
+
+    // Should show the 3 newest messages in chronological order
+    expect(items).toHaveLength(3);
+    expect(items.map((item) => item.id)).toEqual([
+      "message:msg-old",
+      "message:msg-new",
+      "message:msg-newest",
+    ]);
+    expect(items[0].detail).toContain("old message");
+    expect(items[2].detail).toContain("newest message");
+  });
+
+  it("events tab shows newest events in chronological order", () => {
+    const items = tabTimelineItems(summary({
+      messages: [],
+      events: [
+        event({ id: "evt-oldest", eventType: "RunStarted", createdAt: "2026-01-01T00:01:00.000Z" }) as never,
+        event({ id: "evt-old", eventType: "PhaseStarted", createdAt: "2026-01-01T00:02:00.000Z" }) as never,
+        event({ id: "evt-new", eventType: "PhaseCompleted", createdAt: "2026-01-01T00:03:00.000Z" }) as never,
+        event({ id: "evt-newest", eventType: "RunCompleted", createdAt: "2026-01-01T00:04:00.000Z" }) as never,
+      ],
+    }), "events", 0, 3);
+
+    // Should show the 3 newest events in chronological order
+    expect(items).toHaveLength(3);
+    expect(items.map((item) => item.id)).toEqual([
+      "event:evt-old",
+      "event:evt-new",
+      "event:evt-newest",
+    ]);
+  });
+
+  it("messages and events tabs return empty lists for zero limits", () => {
+    const data = summary({
+      messages: [message({ id: "msg-zero" })],
+      events: [event({ id: "evt-zero" }) as never],
+    });
+
+    expect(tabTimelineItems(data, "messages", 0, 1)).toEqual([]);
+    expect(tabTimelineItems(data, "events", 1, 0)).toEqual([]);
   });
 });
 
