@@ -61,6 +61,16 @@ describe("board pure helpers", () => {
     expect(boardColumnForTaskStatus("unknown-status")).toBe("needs_attention");
   });
 
+  it("maps in_progress status variants to in_progress column", () => {
+    expect(boardColumnForTaskStatus("in_progress")).toBe("in_progress");
+    expect(boardColumnForTaskStatus("in-progress")).toBe("in_progress");
+  });
+
+  it("maps approved and merged to appropriate columns", () => {
+    expect(boardColumnForTaskStatus("approved")).toBe("ready");
+    expect(boardColumnForTaskStatus("merged")).toBe("closed");
+  });
+
   it("detects board snapshot additions, changes, and removals", () => {
     const before = createTasksMap({
       backlog: [createTask("task-1")],
