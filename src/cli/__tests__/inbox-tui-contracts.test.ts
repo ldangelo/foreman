@@ -102,7 +102,7 @@ describe("inbox TUI timeline contracts", () => {
     }), { limit: 2 });
 
     expect(items).toHaveLength(2);
-    expect(items.map((item) => item.kind)).toEqual(["event", "message"]);
+    expect(items.map((item) => item.kind)).toEqual(["event", "event"]);
     expect(items.map((item) => item.createdAt)).toEqual([
       "2026-01-01T00:02:00.000Z",
       "2026-01-01T00:03:00.000Z",

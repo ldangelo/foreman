@@ -1748,7 +1748,7 @@ export class ForemanStore {
         .prepare(
           `SELECT * FROM messages
            WHERE run_id = ? AND recipient_agent_type = ? AND read = 0 AND deleted_at IS NULL
-           ORDER BY created_at DESC, rowid DESC`
+           ORDER BY created_at ASC, rowid ASC`
         )
         .all(runId, agentType) as Message[];
     }
@@ -1756,7 +1756,7 @@ export class ForemanStore {
       .prepare(
         `SELECT * FROM messages
          WHERE run_id = ? AND recipient_agent_type = ? AND deleted_at IS NULL
-         ORDER BY created_at DESC, rowid DESC`
+         ORDER BY created_at ASC, rowid ASC`
       )
       .all(runId, agentType) as Message[];
   }
@@ -1769,7 +1769,7 @@ export class ForemanStore {
       .prepare(
         `SELECT * FROM messages
          WHERE run_id = ? AND deleted_at IS NULL
-         ORDER BY created_at DESC, rowid DESC`
+         ORDER BY created_at ASC, rowid ASC`
       )
       .all(runId) as Message[];
   }
