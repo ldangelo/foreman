@@ -1289,6 +1289,7 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		action := greenStyle.Render("▸ task actions ") + whiteStyle.Render(task.TaskID) + "  " + cyanStyle.Render("y") + dimStyle.Render(" copy task id") + "  " + cyanStyle.Render("c") + dimStyle.Render(" close")
 		if run, ok := m.runForTask(task); ok {
 			action += "  " + cyanStyle.Render("R") + dimStyle.Render(" reset latest run ") + whiteStyle.Render(run.RunID)
+			action += "  " + cyanStyle.Render("r") + dimStyle.Render(" retry") + "  " + cyanStyle.Render("A") + dimStyle.Render(" attach") + "  " + cyanStyle.Render("p") + dimStyle.Render(" omp") + "  " + cyanStyle.Render("P") + dimStyle.Render(" plain omp") + "  " + cyanStyle.Render("G") + dimStyle.Render(" gh dash") + "  " + cyanStyle.Render("C") + dimStyle.Render(" enhance")
 		}
 		lines := []string{
 			clip(action, w),
