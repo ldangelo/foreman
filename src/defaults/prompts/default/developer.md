@@ -51,6 +51,12 @@ You must proactively fix:
 
 Do not label a valid finding “pre-existing” to avoid fixing it if this task touched the same file or behavior.
 
+If your phase is `cicd-developer`, the retry feedback is a hard acceptance contract. Before reporting done:
+- Read `PR_WAIT_REPORT.md` and any named failed-check URLs or log paths before editing.
+- Fix the failed check named in the retry feedback, not adjacent product behavior.
+- In `DEVELOPER_REPORT.md`, add a `## CI Findings Addressed` section listing each failed check, its status, and the evidence file(s)/commands.
+- Do not report success while the same failed check remains unexplained.
+
 If your phase is `cr-developer`, the retry feedback is a hard acceptance contract. Before reporting done:
 - Read every CodeRabbit finding URL/path/body in `PR_WAIT_REPORT.md` or `PR_REVIEW_FINDINGS.md`.
 - Touch the finding's path or explain, in `DEVELOPER_REPORT.md`, why a different file fully resolves that exact finding.

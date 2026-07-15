@@ -768,6 +768,14 @@ export function extractIssues(reportContent: string): string {
   return issuesMatch[1].trim();
 }
 
+export function extractRepairFeedback(reportContent: string): string {
+  const issues = extractIssues(reportContent);
+  if (issues !== "(no specific issues listed)") return issues;
+
+  const report = reportContent.trim();
+  return report.length > 0 ? report : "(phase failed but no report content was written)";
+}
+
 /**
  * Check if a report has actionable issues (CRITICAL, WARNING, or NOTE).
  */

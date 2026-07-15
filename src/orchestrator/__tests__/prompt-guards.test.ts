@@ -34,6 +34,13 @@ describe("developer prompt guardrails", () => {
     expect(prompt).toContain("detached workers do not hang in an editor");
   });
 
+  it("requires ci remediation to address failed checks", () => {
+    expect(prompt).toContain("If your phase is `cicd-developer`");
+    expect(prompt).toContain("Read `PR_WAIT_REPORT.md`");
+    expect(prompt).toContain("## CI Findings Addressed");
+    expect(prompt).toContain("same failed check remains unexplained");
+  });
+
   it("biases localized tasks toward the smallest diff", () => {
     expect(prompt).toContain("smallest viable diff");
     expect(prompt).toContain("fewest relevant files");

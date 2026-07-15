@@ -20,6 +20,7 @@ import {
   parseFinalizeValidationStatus,
   qaReportHasTestEvidence,
   extractIssues,
+  extractRepairFeedback,
 } from "../roles.js";
 import type { RoleConfig } from "../roles.js";
 
@@ -375,6 +376,38 @@ Good structure`;
   it("returns fallback when no issues section", () => {
     expect(extractIssues("No issues section")).toContain("no specific issues");
   });
+});
+
+describe("extractRepairFeedback", () => {
+  it("preserves builtin reports without issues sections", () => {
+    const report = `# PR Wait Report
+## Checks
+- Status: COMPLETE
+- Failed: 1
+## Verdict: FAIL
+- ci_failed: Test (Node 20)`;
+
+    const feedback = extractRepairFeedback(report);
+
+    expect(feedback).toContain("PR Wait Report");
+    expect(feedback).toContain("Failed: 1");
+    expect(feedback).toContain("ci_failed: Test (Node 20)");
+  });
+
+  it("still narrows review reports to the issues section", () => {
+    const report = `# Review
+## Verdict: FAIL
+## Issues
+- **[CRITICAL]** auth.ts:42 — missing null check
+## Positive Notes
+Good structure`;
+
+    const feedback = extractRepairFeedback(report);
+
+    expect(feedback).toContain("auth.ts:42");
+    expect(feedback).not.toContain("Good structure");
+  });
+
 });
 
 describe("buildRoleConfigs — environment variable overrides", () => {

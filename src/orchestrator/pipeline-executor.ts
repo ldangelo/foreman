@@ -22,7 +22,7 @@ import { ROLE_CONFIGS } from "./roles.js";
 import {
   buildPhasePrompt,
   parseVerdict,
-  extractIssues,
+  extractRepairFeedback,
   parseFinalizeFailureScope,
   parseFinalizeIntegrationStatus,
   parseFinalizeValidationStatus,
@@ -2536,7 +2536,7 @@ async function runPhaseSequence(
             const feedbackTarget = `${retryTarget}-${taskId}`;
             ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, report);
           }
-          feedbackContext = feedbackContext ?? (report ? extractIssues(report) : `(${phaseName} failed but no report)`);
+          feedbackContext = feedbackContext ?? (report ? extractRepairFeedback(report) : `(${phaseName} failed but no report)`);
 
           ctx.log(`[${phaseName.toUpperCase()}] FAIL — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
           await appendFile(logFile, `\n[PIPELINE] ${phaseName} failed, retrying ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
