@@ -2,9 +2,9 @@ import { createElement } from "react";
 import { renderToString } from "ink";
 import { describe, expect, it } from "vitest";
 
-import type { Message } from "../../lib/store.js";
+import type { Message, NativeTask } from "../../lib/store.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
-import { renderInboxTaskSummaryTable, renderTaskDetail } from "../commands/inbox.js";
+import { buildInboxTaskSummaries, renderInboxTaskSummaryTable, renderTaskDetail } from "../commands/inbox.js";
 import { buildInboxTimeline } from "../inbox/timeline.js";
 import { InboxDashboard, buildInboxDashboardActions, selectedIndexForRun, tabTimelineItems } from "../inbox/tui.js";
 
@@ -285,5 +285,120 @@ describe("inbox TUI render contracts", () => {
     expect(output).not.toContain("Timeline");
     expect(output).not.toContain("q/Esc quit");
     expect(output).not.toContain("j/k select");
+  });
+});
+
+describe("buildInboxTaskSummaries regression", () => {
+  function mockRun(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      id: "run-1",
+      task_id: "task-1",
+      project_id: "proj-1",
+      status: "running",
+      agent_type: "developer",
+      session_key: null,
+      worktree_path: "/tmp/worktree",
+      created_at: "2026-01-01T00:00:00.000Z",
+      started_at: "2026-01-01T00:01:00.000Z",
+      completed_at: null,
+      progress: null,
+      ...overrides,
+    };
+  }
+
+  function mockTask(overrides: Partial<NativeTask> = {}): NativeTask {
+    return {
+      id: "task-backlog-1",
+      title: "Backlog Task",
+      description: null,
+      type: "task",
+      priority: 3,
+      status: "backlog",
+      run_id: null,
+      branch: null,
+      external_id: null,
+      labels: null,
+      parent: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+      approved_at: null,
+      closed_at: null,
+      ...overrides,
+    };
+  }
+
+  it("includes backlog-only tasks (no run, no messages, no events) in summaries", () => {
+    const backlogTask = mockTask({ id: "task-backlog-1", title: "Backlog Task", status: "backlog", run_id: null });
+    const summaries = buildInboxTaskSummaries({
+      runs: [],
+      messages: [],
+      events: [],
+      tasks: [backlogTask],
+    }, "all");
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      taskId: "task-backlog-1",
+      runId: "task-backlog-1", // Uses task.id as runId since there's no run
+      runStatus: "backlog",
+      phase: "unknown",
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+      lastActivitySource: "none",
+      verdict: "unknown",
+      run: undefined,
+    });
+  });
+
+  it("skips tasks that already have a run (covered by run summaries)", () => {
+    // When a task has a run_id, it should NOT be duplicated from the task list
+    // because it's already covered by the run's summary
+    const run = mockRun({ id: "run-1", task_id: "task-1" });
+    const taskWithRun = mockTask({ id: "task-1", title: "Task with Run", run_id: "run-1" });
+    const backlogTask = mockTask({ id: "task-backlog-1", title: "Backlog Task", run_id: null });
+
+    const summaries = buildInboxTaskSummaries({
+      runs: [run as never],
+      messages: [],
+      events: [],
+      tasks: [taskWithRun, backlogTask],
+    }, "all");
+
+    // Should only include the backlog task (task-1 is covered by the run)
+    expect(summaries.some((s) => s.taskId === "task-backlog-1")).toBe(true);
+    // task-1 should NOT appear twice (once from run, once from task)
+    const task1Summaries = summaries.filter((s) => s.taskId === "task-1");
+    expect(task1Summaries).toHaveLength(1); // Only from the run, not from the task
+  });
+
+  it("excludes backlog tasks from 'active' scope (they are not active runs)", () => {
+    const backlogTask = mockTask({ id: "task-backlog-1", status: "backlog", run_id: null });
+    const summaries = buildInboxTaskSummaries({
+      runs: [],
+      messages: [],
+      events: [],
+      tasks: [backlogTask],
+    }, "active");
+
+    // Backlog tasks have no run, so they are not "active" status
+    expect(summaries).toHaveLength(0);
+  });
+
+  it("includes backlog tasks in 'all' scope but not 'attention' scope (no attention needed)", () => {
+    const backlogTask = mockTask({ id: "task-backlog-1", status: "backlog", run_id: null });
+    const allSummaries = buildInboxTaskSummaries({
+      runs: [],
+      messages: [],
+      events: [],
+      tasks: [backlogTask],
+    }, "all");
+    const attentionSummaries = buildInboxTaskSummaries({
+      runs: [],
+      messages: [],
+      events: [],
+      tasks: [backlogTask],
+    }, "attention");
+
+    expect(allSummaries).toHaveLength(1);
+    expect(attentionSummaries).toHaveLength(0); // No attention needed for backlog
   });
 });

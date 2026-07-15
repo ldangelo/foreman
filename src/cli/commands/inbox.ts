@@ -20,7 +20,7 @@ import { runSuperTui } from "../super-tui/render.js";
 import type { SuperTuiDataAdapter } from "../super-tui/data.js";
 import type { SuperTuiView } from "../super-tui/model.js";
 import { ForemanStore } from "../../lib/store.js";
-import type { Message, Run } from "../../lib/store.js";
+import type { Message, NativeTask, Run } from "../../lib/store.js";
 import { createTrpcClient } from "../../lib/trpc-client.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
@@ -1403,6 +1403,8 @@ interface InboxDataSet {
   runs: Run[];
   messages: Message[];
   events: PipelineEvent[];
+  /** Tasks with no run, messages, or events — backlog-only entries. */
+  tasks?: NativeTask[];
 }
 
 export function timestampMs(value: unknown): number {
@@ -1541,6 +1543,12 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
     ...data.events.map((event) => event.runId).filter((runId): runId is string => Boolean(runId)),
   ]);
 
+  // Build a set of taskIds that already have a summary (from runs, messages, or events)
+  const coveredTaskIds = new Set<string>([
+    ...data.runs.map((run) => run.task_id).filter((taskId): taskId is string => Boolean(taskId)),
+    ...data.messages.map((message) => messageTask(message)).filter((taskId): taskId is string => Boolean(taskId)),
+  ]);
+
   const summaries: InboxTaskSummary[] = [];
   for (const runId of runIds) {
     const run = runById.get(runId);
@@ -1581,6 +1589,35 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
       run,
     };
     if (scopeIncludesSummary(scope, summary)) summaries.push(summary);
+  }
+
+  // Add summaries for tasks that have no run, messages, or events (backlog-only tasks)
+  if (data.tasks) {
+    for (const task of data.tasks) {
+      // Skip if this task already has a summary from runs or messages
+      if (coveredTaskIds.has(task.id)) continue;
+      // Skip if task has a run_id (it would be covered by the run's summary)
+      if (task.run_id) continue;
+
+      const summary: InboxTaskSummary = {
+        taskId: task.id,
+        runId: task.run_id ?? task.id, // Use task.id as runId since there's no run
+        runStatus: task.status ?? "backlog",
+        phase: "unknown",
+        lastActivityAt: task.created_at ?? null,
+        lastActivitySource: "none",
+        statusText: `backlog: ${task.title}`,
+        attention: false,
+        attentionReason: null,
+        verdict: "unknown",
+        projectId: null,
+        worktreePath: null,
+        messages: [],
+        events: [],
+        run: undefined,
+      };
+      if (scopeIncludesSummary(scope, summary)) summaries.push(summary);
+    }
   }
 
   return summaries.sort((a, b) => timestampMs(b.lastActivityAt) - timestampMs(a.lastActivityAt));
@@ -2179,6 +2216,19 @@ async function fetchEventsForSources(
   return options.runId ? fetchEventsFromStoreForRun(sources.store, options.runId, options.limit) : [];
 }
 
+/**
+ * Fetch tasks for inbox overview.
+ * Returns tasks that have no run (backlog-only) for inclusion in inbox summaries.
+ */
+async function fetchTasksForInbox(sources: InboxSources, limit = 200): Promise<NativeTask[]> {
+  // Tasks are only available via the local store (ForemanStore with native task store)
+  if (!sources.store) return [];
+  // Fetch backlog and ready tasks that have no run_id
+  // These are the tasks that won't be covered by runs/messages/events
+  return sources.store.listTasksByStatus(["backlog", "ready"], limit)
+    .filter((task) => !task.run_id);
+}
+
 async function loadInboxOverview(
   sources: InboxSources,
   options: { scope: InboxScope; agent?: string; unread?: boolean; limit: number; eventsLimit: number },
@@ -2219,10 +2269,15 @@ async function loadInboxOverview(
         }
       }),
   );
+
+  // Fetch backlog-only tasks (no run, no messages, no events) for inbox summary
+  const tasks = await fetchTasksForInbox(sources, Math.max(options.limit, 100));
+
   return buildInboxTaskSummaries({
     runs,
     messages: [...messages, ...activeMessages.flat()],
     events: [...events, ...activeEvents.flat()],
+    tasks,
   }, options.scope);
 }
 
