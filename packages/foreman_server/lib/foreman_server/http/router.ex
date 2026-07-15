@@ -200,7 +200,7 @@ defmodule ForemanServer.Http.Router do
         |> Enum.filter(fn message ->
           unread != "true" or Map.get(message, :read_at) in [nil, ""]
         end)
-        |> Enum.sort_by(&message_timestamp_sort_value/1, :desc)
+        |> Enum.sort_by(&message_timestamp_sort_value/1, :asc)
         |> Enum.take(limit)
 
       send_json(conn, 200, %{ok: true, inbox: inbox})
