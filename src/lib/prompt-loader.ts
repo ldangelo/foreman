@@ -26,35 +26,74 @@ import { execSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { load as yamlLoad } from "js-yaml";
 import { getForemanHomePath } from "./foreman-paths.js";
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Workflow-derived phase constants ─────────────────────────────────────────
+
+/** Bundled workflows directory (relative to this source file). */
+const BUNDLED_WORKFLOWS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "defaults",
+  "workflows",
+);
+
+/**
+ * Load phases from a bundled workflow YAML file.
+ * Only returns phases that have a `prompt` field (non-builtin phases).
+ */
+function loadPhasesFromWorkflow(workflowName: string): string[] {
+  const yamlPath = join(BUNDLED_WORKFLOWS_DIR, `${workflowName}.yaml`);
+  if (!existsSync(yamlPath)) return [];
+
+  try {
+    const raw = yamlLoad(readFileSync(yamlPath, "utf-8")) as Record<string, unknown>;
+    const phases = raw["phases"] as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(phases)) return [];
+
+    // Return only phases with a `prompt` field (non-builtin phases need prompt files)
+    return phases
+      .filter((phase) => typeof phase["prompt"] === "string")
+      .map((phase) => phase["name"] as string)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Derive REQUIRED_PHASES from bundled workflow YAML files.
+ * This replaces hardcoded phase lists with dynamic derivation from workflows.
+ */
+function deriveRequiredPhases(): Record<string, ReadonlyArray<string>> {
+  const result: Record<string, string[]> = {};
+
+  try {
+    const workflowFiles = readdirSync(BUNDLED_WORKFLOWS_DIR)
+      .filter((f) => f.endsWith(".yaml"))
+      .map((f) => f.replace(/\.yaml$/, ""));
+
+    for (const workflowName of workflowFiles) {
+      const phases = loadPhasesFromWorkflow(workflowName);
+      if (phases.length > 0) {
+        result[workflowName] = phases;
+      }
+    }
+  } catch {
+    // Bundled workflows directory missing — fall back to empty
+  }
+
+  return result;
+}
 
 /**
  * Required prompt phase files per workflow.
+ * Derives from bundled workflow YAML files — no hardcoded phase names.
  * Foreman init and doctor use these to validate / install prompts.
  */
 export const REQUIRED_PHASES: Readonly<Record<string, ReadonlyArray<string>>> =
-  {
-    default: [
-      "explorer",
-      "developer",
-      "cicd-developer",
-      "cr-developer",
-      "qa",
-      "reviewer",
-      "documentation",
-      "finalize",
-      "sentinel",
-      "lead",
-      "lead-explorer",
-      "lead-reviewer",
-    ],
-    task: ["fix-issue"],
-    bug: ["fix-issue"],
-    chore: ["fix-issue"],
-    smoke: ["explorer", "developer", "qa", "reviewer", "documentation", "finalize"],
-  };
+  deriveRequiredPhases();
 
 /**
  * Critical markers that project-local prompt overrides must preserve in order

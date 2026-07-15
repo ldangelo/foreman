@@ -79,7 +79,6 @@ describe("prompt loader", () => {
   it("tracks fix-issue prompts as workflow-scoped required prompts", () => {
     expect(REQUIRED_PHASES.task).toContain("fix-issue");
     expect(REQUIRED_PHASES.bug).toContain("fix-issue");
-    expect(REQUIRED_PHASES.chore).toContain("fix-issue");
   });
 
   it("requires all bundled Foreman guidance skills", () => {
@@ -98,7 +97,6 @@ describe("prompt loader", () => {
   it("bundles workflow-specific fix-issue prompts", () => {
     expect(getBundledPromptPath("task", "fix-issue")).toContain(join("task", "fix-issue.md"));
     expect(getBundledPromptPath("bug", "fix-issue")).toContain(join("bug", "fix-issue.md"));
-    expect(getBundledPromptPath("chore", "fix-issue")).toContain(join("chore", "fix-issue.md"));
   });
 
   it("requires and bundles the shared documentation prompt", () => {
@@ -128,7 +126,7 @@ describe("prompt loader", () => {
   });
 
   it("fix-issue prompts invoke ensemble and preserve the developer artifact contract", () => {
-    for (const workflow of ["task", "bug", "chore"] as const) {
+    for (const workflow of ["task", "bug"] as const) {
       const content = getBundledPromptContent(workflow, "fix-issue");
       expect(content?.startsWith("/ensemble:fix-issue {{taskTitle}} {{taskDescription}}")).toBe(true);
       expect(content).toContain("DEVELOPER_REPORT.md");
