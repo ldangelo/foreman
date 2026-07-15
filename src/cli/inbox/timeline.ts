@@ -82,10 +82,10 @@ export function buildInboxTimeline(
 ): InboxTimelineItem[] {
   const messages = summary.messages.map((message) => timelineItemFromMessage(summary, message));
   const events = summary.events.map((event) => timelineItemFromEvent(summary, event));
-  const items = [...messages, ...events].sort(compareTimelineItemsNewestFirst);
+  const items = [...messages, ...events].sort(compareTimelineItemsOldestFirst);
 
   return typeof options.limit === "number" && options.limit >= 0
-    ? items.slice(0, options.limit)
+    ? items.slice(Math.max(items.length - options.limit, 0))
     : items;
 }
 
@@ -175,8 +175,8 @@ function timelineItemFromEvent(summary: InboxTimelineSummary, event: SummaryEven
   };
 }
 
-function compareTimelineItemsNewestFirst(a: InboxTimelineItem, b: InboxTimelineItem): number {
-  const delta = timestampMs(b.createdAt) - timestampMs(a.createdAt);
+function compareTimelineItemsOldestFirst(a: InboxTimelineItem, b: InboxTimelineItem): number {
+  const delta = timestampMs(a.createdAt) - timestampMs(b.createdAt);
   if (delta !== 0) return delta;
   const kindOrder = a.kind.localeCompare(b.kind);
   if (kindOrder !== 0) return kindOrder;

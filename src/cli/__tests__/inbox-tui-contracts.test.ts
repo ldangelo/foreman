@@ -65,7 +65,7 @@ function contractText(value: unknown): string {
 }
 
 describe("inbox TUI timeline contracts", () => {
-  it("merges messages and events newest-first without dropping either source", () => {
+  it("merges messages and events oldest-first without dropping either source", () => {
     const items = buildInboxTimeline(summary({
       messages: [
         message({ id: "msg-old", subject: "old message", created_at: "2026-01-01T00:01:00.000Z" }),
@@ -77,12 +77,12 @@ describe("inbox TUI timeline contracts", () => {
       ],
     }));
 
-    expect(items.map((item) => item.kind)).toEqual(["message", "event", "message", "event"]);
+    expect(items.map((item) => item.kind)).toEqual(["event", "message", "event", "message"]);
     expect(items.map((item) => item.createdAt)).toEqual([
-      "2026-01-01T00:04:00.000Z",
-      "2026-01-01T00:03:00.000Z",
-      "2026-01-01T00:01:00.000Z",
       "2026-01-01T00:00:30.000Z",
+      "2026-01-01T00:01:00.000Z",
+      "2026-01-01T00:03:00.000Z",
+      "2026-01-01T00:04:00.000Z",
     ]);
     expect(items.map((item) => `${item.label} ${item.detail ?? ""}`).join("\n")).toContain("new message");
     expect(items.find((item) => item.id === "event:evt-middle")).toMatchObject({
@@ -102,10 +102,10 @@ describe("inbox TUI timeline contracts", () => {
     }), { limit: 2 });
 
     expect(items).toHaveLength(2);
-    expect(items.map((item) => item.kind)).toEqual(["message", "event"]);
+    expect(items.map((item) => item.kind)).toEqual(["event", "message"]);
     expect(items.map((item) => item.createdAt)).toEqual([
-      "2026-01-01T00:04:00.000Z",
       "2026-01-01T00:03:00.000Z",
+      "2026-01-01T00:04:00.000Z",
     ]);
   });
 });
