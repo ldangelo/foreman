@@ -40,6 +40,7 @@ defmodule ForemanServer.Inbox do
     |> Kernel.||([])
     |> Enum.map(&get_in(snapshot, [:inbox_messages, &1]))
     |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(&Map.get(&1, :created_at) || DateTime.utc_now(), {:asc, DateTime})
   end
 
   @spec append_phase_mail(String.t(), map(), map()) :: {:ok, [map()]} | {:error, term()}

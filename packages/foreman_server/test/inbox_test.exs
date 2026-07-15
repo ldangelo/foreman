@@ -159,6 +159,43 @@ defmodule ForemanServer.InboxTest do
              Inbox.list("run-command-inbox")
   end
 
+  test "inbox messages are returned in chronological order (oldest first)" do
+    start_run_event("run-order-test")
+
+    # Send messages sequentially - each should have a slightly later timestamp
+    assert {:ok, %{result: _msg1}} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-order-1",
+               run_id: "run-order-test",
+               body: "first message"
+             })
+
+    # Small delay to ensure different timestamps
+    :timer.sleep(10)
+
+    assert {:ok, %{result: _msg2}} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-order-2",
+               run_id: "run-order-test",
+               body: "second message"
+             })
+
+    :timer.sleep(10)
+
+    assert {:ok, %{result: _msg3}} =
+             Inbox.send_operator_message(%{
+               message_id: "msg-order-3",
+               run_id: "run-order-test",
+               body: "third message"
+             })
+
+    messages = Inbox.list("run-order-test")
+
+    # Verify messages are returned in chronological order (oldest first)
+    assert Enum.map(messages, & &1.message_id) == ["msg-order-1", "msg-order-2", "msg-order-3"]
+    assert Enum.map(messages, & &1.body) == ["first message", "second message", "third message"]
+  end
+
   test "inbox watch streams new messages without polling full history" do
     start_run_event("run-watch-1")
 

@@ -1542,7 +1542,7 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
   const summaries: InboxTaskSummary[] = [];
   for (const runId of runIds) {
     const run = runById.get(runId);
-    const messages = [...(messagesByRun.get(runId) ?? [])].sort((a, b) => timestampMs(b.created_at) - timestampMs(a.created_at));
+    const messages = [...(messagesByRun.get(runId) ?? [])].sort((a, b) => timestampMs(a.created_at) - timestampMs(b.created_at));
     const events = [...(eventsByRun.get(runId) ?? [])].sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt));
     const latestMsg = latestMessage(messages);
     const latestEvt = latestEvent(events);
