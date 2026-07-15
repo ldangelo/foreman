@@ -79,13 +79,16 @@ export function boardColumnForTaskStatus(status: string): BoardStatus {
   if (["open", "todo"].includes(normalized)) {
     return "backlog";
   }
-  if (["explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
+  if (["pending", "ready"].includes(normalized)) {
+    return "ready";
+  }
+  if (["running", "cooldown", "explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
     return "in_progress";
   }
-  if (["failed", "stuck", "conflict", "blocked", "review"].includes(normalized)) {
+  if (["failed", "fail", "stuck", "conflict", "blocked", "review", "test_failed"].includes(normalized)) {
     return "needs_attention";
   }
-  if (["merged", "completed", "done", "closed"].includes(normalized)) {
+  if (["merged", "completed", "done", "closed", "reset", "pr_created"].includes(normalized)) {
     return "closed";
   }
   return normalizeStatusForBoard(status) ?? "needs_attention";

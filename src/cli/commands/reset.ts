@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile);
 interface ResetOpts {
   reason?: string;
   dryRun?: boolean;
-  keepWorktree?: boolean;
+  removeWorktree?: boolean;
   project?: string;
   projectPath?: string;
 }
@@ -316,7 +316,7 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
       .filter((path): path is string => typeof path === "string" && path.length > 0),
   ];
   for (const worktreePath of [...new Set(worktreePaths)]) {
-    if (opts.keepWorktree) continue;
+    if (!opts.removeWorktree) continue;
     if (dryRun) {
       console.log(`  would remove worktree ${chalk.dim(worktreePath)}`);
     } else {
@@ -435,8 +435,7 @@ export const resetCommand = new Command("reset")
   .description("Reset a task to ready, remove its worker/worktree/branches, clean run logs, and re-dispatch")
   .argument("<task-id>", "Task ID to reset")
   .option("--reason <text>", "Reason recorded in run history")
-  .option("--dry-run", "Preview changes without applying them")
-  .option("--keep-worktree", "Do not remove the task worktree")
+  .option("--remove-worktree", "Remove the task worktree after reset (default: keep it)")
   .option("--project <name>", "Registered project name (default: current directory)")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .action(async (taskId: string, opts: ResetOpts) => {

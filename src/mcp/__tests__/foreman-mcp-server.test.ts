@@ -91,8 +91,7 @@ describe("ForemanMcpServer", () => {
           project: { type: "string" },
           project_path: { type: "string" },
           reason: { type: "string" },
-          dry_run: { type: "boolean" },
-          keep_worktree: { type: "boolean" },
+          remove_worktree: { type: "boolean" },
         },
         additionalProperties: false,
       },
@@ -297,7 +296,7 @@ describe("ForemanMcpServer", () => {
           project_id: "fallback-project",
           reason: "retry after stale worker",
           dry_run: true,
-          keep_worktree: true,
+          remove_worktree: true,
           project_path: "/repo/ops",
         },
       },
@@ -309,7 +308,7 @@ describe("ForemanMcpServer", () => {
       projectPath: "/repo/ops",
       reason: "retry after stale worker",
       dryRun: true,
-      keepWorktree: true,
+      removeWorktree: true,
     });
     expect(response).toEqual({
       jsonrpc: "2.0",
@@ -336,7 +335,7 @@ describe("ForemanMcpServer", () => {
           project_id: "project-456",
           reason: "operator retry",
           dry_run: false,
-          keep_worktree: false,
+          remove_worktree: false,
         },
       },
     });
@@ -347,7 +346,7 @@ describe("ForemanMcpServer", () => {
       projectPath: undefined,
       reason: "operator retry",
       dryRun: false,
-      keepWorktree: false,
+      removeWorktree: false,
     });
   });
 

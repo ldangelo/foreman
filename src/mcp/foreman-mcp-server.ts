@@ -410,8 +410,7 @@ export class ForemanMcpServer {
             project: { type: "string", description: "Registered project name/id/path." },
             project_path: { type: "string", description: "Absolute project path for advanced/scripted use." },
             reason: { type: "string" },
-            dry_run: { type: "boolean", default: false },
-            keep_worktree: { type: "boolean", default: false },
+            remove_worktree: { type: "boolean", default: false },
           },
           additionalProperties: false,
         },
@@ -422,7 +421,7 @@ export class ForemanMcpServer {
             projectPath: optionalString(args.project_path),
             reason: optionalString(args.reason),
             dryRun: args.dry_run === true,
-            keepWorktree: args.keep_worktree === true,
+            removeWorktree: args.remove_worktree === true,
           });
           return { ok: code === 0, exit_code: code };
         },
