@@ -24,6 +24,7 @@ If you hit an unrecoverable error, invoke:
 2. Read `{{reportDir}}/PR_WAIT_REPORT.md` or `{{reportDir}}/PR_REVIEW_FINDINGS.md` when present.
 3. For every blocking finding, record the cited path, line/body, severity, and URL before editing.
 4. Inspect the cited path first. Touch another path only when it fully resolves the cited finding.
+5. Before editing, write down the smallest observable acceptance check for each finding: a focused test, static check, or exact output invariant.
 
 ## Scope Rules
 - Fix valid critical/high/medium/major CodeRabbit findings.
@@ -35,7 +36,8 @@ If you hit an unrecoverable error, invoke:
 
 ## Verification Discipline
 - Run the narrowest command or static check that proves the finding is resolved.
-- If no command can prove it, cite the exact changed lines and invariant in `DEVELOPER_REPORT.md`.
+- For test-only CodeRabbit findings, make the assertion prove the behavior directly: include positive presence checks before ordering/position comparisons and keep negative exclusion checks for omitted rows.
+- Before reporting done, inspect the final diff against each cited finding and confirm the cited path changed or `DEVELOPER_REPORT.md` explains why another path fully resolves it.
 
 ## Developer Report
 After implementation, write **{{reportDir}}/DEVELOPER_REPORT.md**:

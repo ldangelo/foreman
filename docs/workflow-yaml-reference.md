@@ -458,7 +458,7 @@ Phases with `verdict: true` parse PASS/FAIL from their artifact. On FAIL, `retry
     onFail: repair
 ```
 
-QA and Reviewer have **independent retry budgets** — QA exhausting its retries does not affect Reviewer's ability to retry. Bundled `task` and `docs` workflows use `repair.md` for generic verdict retries while keeping specialized `retryWithByReason` targets for CI, CodeRabbit, and merge-conflict failures.
+QA and Reviewer have **independent retry budgets** — QA exhausting its retries does not affect Reviewer's ability to retry. Bundled `task` and `docs` workflows use `repair.md` for generic verdict retries while keeping specialized `retryWithByReason` targets for CI, CodeRabbit, and merge-conflict failures. The bundled `cicd-developer` and `cr-developer` prompts keep those retries narrow: they start from the failed check or cited review finding, run focused proving commands before broad reruns, and require report evidence for each addressed gate.
 
 ---
 

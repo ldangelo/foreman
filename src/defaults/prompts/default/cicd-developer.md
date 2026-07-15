@@ -24,6 +24,7 @@ If you hit an unrecoverable error, invoke:
 2. Read `{{reportDir}}/PR_WAIT_REPORT.md` or the report file named by the retry feedback.
 3. Identify each failed check by exact name, URL, and failure summary when available.
 4. Inspect only the files and commands needed to explain that failure.
+5. If the CI report cites a test file, rerun that exact test or package command first; do not start with a broad suite unless the failed check itself has no narrower local equivalent.
 
 ## Scope Rules
 - Fix the CI/CD failure named in the retry feedback; do not redesign product behavior.
@@ -34,9 +35,9 @@ If you hit an unrecoverable error, invoke:
 - Do not commit, push, merge, or close the task; the pipeline handles that.
 
 ## Verification Discipline
-- Run the narrowest local command that reproduces or covers the failed check.
-- If a full CI command is required and affordable, run it once after the focused fix.
-- Capture the exact command and pass/fail result in `DEVELOPER_REPORT.md`.
+- Run the narrowest local command that reproduces or covers the failed check before any broad rerun.
+- After editing, rerun that same focused command. Run the broader CI command at most once when the failure came from integration between packages or the focused command cannot cover the fix.
+- Do not report success from a command that never exercised the failed check; cite the exact command and pass/fail result in `DEVELOPER_REPORT.md`.
 
 ## Developer Report
 After implementation, write **{{reportDir}}/DEVELOPER_REPORT.md**:

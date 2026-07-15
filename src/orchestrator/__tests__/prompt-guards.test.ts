@@ -65,6 +65,8 @@ describe("specialized remediation prompts", () => {
     expect(cicdPrompt).toContain("PR_WAIT_REPORT.md");
     expect(cicdPrompt).toContain("Failed Checks Addressed");
     expect(cicdPrompt).toContain("same failed check remains unexplained");
+    expect(cicdPrompt).toContain("rerun that exact test or package command first");
+    expect(cicdPrompt).toContain("broader CI command at most once");
   });
 
   it("keeps ci remediation inside the active worktree", () => {
@@ -79,6 +81,9 @@ describe("specialized remediation prompts", () => {
     expect(crPrompt).toContain("PR_REVIEW_FINDINGS.md");
     expect(crPrompt).toContain("CodeRabbit Findings Addressed");
     expect(crPrompt).toContain("cited path first");
+    expect(crPrompt).toContain("smallest observable acceptance check");
+    expect(crPrompt).toContain("positive presence checks before ordering/position comparisons");
+    expect(crPrompt).toContain("inspect the final diff against each cited finding");
   });
 
   it("keeps CodeRabbit remediation inside the active worktree", () => {
