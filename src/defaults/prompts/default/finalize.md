@@ -56,9 +56,9 @@ Run:
 
 If git reports "nothing to commit", first check if the branch already has commits ahead of the target:
 ```
-git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranch}}..HEAD --oneline 2>/dev/null || git log origin/dev..HEAD --oneline
+git log origin/{{baseBranch}}..HEAD --oneline 2>/dev/null || git log {{baseBranch}}..HEAD --oneline 2>/dev/null
 ```
-(Try `origin/{{baseBranch}}` first; if that ref doesn't exist, fall back to the local branch or `origin/dev`.)
+(Try `origin/{{baseBranch}}` first; if that ref doesn't exist, fall back to the local `{{baseBranch}}`. Do **not** compare against `dev`, `origin/dev`, or any other branch — only `{{baseBranch}}` is the target.)
 
 **If there ARE commits ahead** (output is non-empty), the work was already committed in a previous run. This is normal for reused worktrees. Proceed to Step 5 (Verify branch) — no mail needed.
 

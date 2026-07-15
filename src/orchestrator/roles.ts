@@ -756,8 +756,38 @@ export function parseFinalizeIntegrationStatus(reportContent: string): FinalizeI
 }
 
 export function qaReportHasTestEvidence(reportContent: string): boolean {
-  const hasCommand = /(npm test|npx\s+vitest(?:\s+run)?|pnpm\s+vitest(?:\s+run)?|yarn\s+vitest(?:\s+run)?|vitest\s+run)/i.test(reportContent);
-  const hasCounts = /(\b\d+\s+passed\b|\b\d+\s+failed\b|\btests? failed out of\b|\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b)/i.test(reportContent);
+  const commandPatterns: RegExp[] = [
+    /npm\s+test/i,
+    /npx\s+vitest(?:\s+run)?/i,
+    /pnpm\s+vitest(?:\s+run)?/i,
+    /yarn\s+vitest(?:\s+run)?/i,
+    /vitest\s+run/i,
+    /mix\s+test/i,
+    /go\s+test(?:\s+\.{3})?/i,
+    /cargo\s+test/i,
+    /pytest\b/i,
+    /dotnet\s+test/i,
+    /rspec\b/i,
+    /mvn\s+test\b/i,
+    /gradle\s+test\b/i,
+    /xunit/i,
+  ];
+  const hasCommand = commandPatterns.some((pattern) => pattern.test(reportContent));
+
+  const countPatterns: RegExp[] = [
+    /\b\d+\s+passed\b/i,
+    /\b\d+\s+failed\b/i,
+    /\btests? failed out of\b/i,
+    /\btests?:\s*\d+\s+passed[, ]+\d+\s+failed\b/i,
+    /\b(\d+)\s+tests?,?\s+(\d+)\s+failures?\b/i, // mix: "6 tests, 0 failures"
+    /ok\b.*?\b(\d+)\s+passed\b/i,
+    /\b(\d+)\s+passed,?\s+(\d+)\s+failed\b/i,
+    /\bPASS\b.*\btests\b/i,
+    /\bFAIL\b.*\btests?\b/i,
+    /\b(\d+)\s+passed.*\b(\d+)\s+failed\b/i,
+  ];
+  const hasCounts = countPatterns.some((pattern) => pattern.test(reportContent));
+
   return hasCommand && hasCounts;
 }
 

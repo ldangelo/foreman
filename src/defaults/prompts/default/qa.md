@@ -21,6 +21,11 @@ If ANY output appears, IMMEDIATELY report QA FAIL with message:
   "CONFLICT MARKERS FOUND: unresolved git conflict markers in source files — branch needs manual fix before QA can proceed."
 Do NOT run tests if conflict markers are found.
 
+## Base Branch Discipline
+**Base branch for this task: `{{baseBranch}}`.**
+- Verify behavior only against `origin/{{baseBranch}}`. Do **not** fetch, diff against, or reference any other branch (e.g. `dev`, `origin/dev`, `staging`, `release/*`). `{{baseBranch}}` is the sole source of truth for what exists on the target.
+- If you notice a different branch contains additional implementation, report it as an observation; do not base your verdict on it.
+
 ## Instructions
 1. Read TASK.md and EXPLORER_REPORT.md (if exists) for context
 2. Review what the Developer changed (check git diff)
