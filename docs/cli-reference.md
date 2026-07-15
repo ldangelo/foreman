@@ -398,7 +398,7 @@ The Elixir server also includes a PR monitor. For runs with recorded GitHub PR U
 
 ### `foreman reset`
 
-Reset Elixir-backed task work. The command stops active worker processes when present, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged, continues branch/artifact cleanup, marks any still-active run completed, marks the task closed, and skips scheduler dispatch to avoid redundant reruns. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
+Reset Elixir-backed task work. The command stops active worker processes when present, removes stale task worktrees unless `--keep-worktree` is set, closes any open/draft PR recorded for the task before deleting its remote branch, deletes local/origin `foreman/<task>` branches, removes prior run logs/reports, clears run linkage and failure fields, sets the task back to `ready`, and requests scheduler dispatch. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged, preserves prior run artifacts for auditability, continues branch/worktree cleanup, marks any still-active run completed, marks the task closed, and skips scheduler dispatch to avoid redundant reruns. Closed/completed tasks can be reopened this way; merged tasks remain terminal.
 
 ```bash
 foreman reset foreman-abc12

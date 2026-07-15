@@ -361,8 +361,14 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
     console.log(`  deleted local/origin branch ${chalk.dim(branchName)} if present`);
   }
 
-  const artifactCount = await cleanupTaskRunArtifacts(registered.id, taskId, runIds, dryRun);
-  console.log(`  ${dryRun ? "would remove" : "removed"} ${artifactCount} prior run artifact${artifactCount === 1 ? "" : "s"}`);
+  const artifactCount = prReset.alreadyMerged
+    ? 0
+    : await cleanupTaskRunArtifacts(registered.id, taskId, runIds, dryRun);
+  if (prReset.alreadyMerged) {
+    console.log("  preserved prior run artifacts because the recorded PR is already merged");
+  } else {
+    console.log(`  ${dryRun ? "would remove" : "removed"} ${artifactCount} prior run artifact${artifactCount === 1 ? "" : "s"}`);
+  }
 
   if (prReset.alreadyMerged) {
     await completeActiveRunsForMergedPr(client, registered.id, taskId, activeRunIds, reason, dryRun);

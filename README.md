@@ -557,7 +557,7 @@ foreman reset task-abc --dry-run        # Preview PR closure, worker/worktree/br
 foreman reset task-abc --keep-worktree  # Preserve task worktree while resetting state
 ```
 
-Use this for stale active workers, reopening closed/completed tasks, or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed, keeps the task, closes any open/draft PR recorded for the task before deleting its remote branch, marks prior active runs failed with the reset reason, clears stale run linkage, removes prior run logs/reports and local/origin `foreman/<task>` branches, then returns the task to `ready`. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged, continues local cleanup, marks any still-active run completed, marks the task closed, and skips scheduler dispatch. Merged tasks remain terminal.
+Use this for stale active workers, reopening closed/completed tasks, or when a task needs to pick up new Foreman runtime behavior. The command is Elixir-backed, keeps the task, closes any open/draft PR recorded for the task before deleting its remote branch, marks prior active runs failed with the reset reason, clears stale run linkage, removes prior run logs/reports and local/origin `foreman/<task>` branches, then returns the task to `ready`. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged, preserves prior run artifacts for auditability, continues local branch/worktree cleanup, marks any still-active run completed, marks the task closed, and skips scheduler dispatch. Merged tasks remain terminal.
 
 Scheduler-launched task worktrees use the registered project default branch when configured, then fall back to VCS default-branch detection.
 

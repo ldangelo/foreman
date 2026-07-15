@@ -26,7 +26,7 @@ foreman metrics        # Show total cost, cost per turn, total time, time per tu
 foreman watch          # Canonical live cockpit TUI; action palette reset asks y then runs reset ('dashboard' is deprecated)
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
-foreman reset <task>   # Close open/draft PRs, clean stale artifacts, and re-dispatch unless the recorded PR is already merged
+foreman reset <task>   # Close open/draft PRs, clean stale artifacts, and re-dispatch unless the recorded PR is already merged; merged-PR resets preserve run artifacts
 foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy

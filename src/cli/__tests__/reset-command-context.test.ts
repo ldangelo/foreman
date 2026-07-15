@@ -529,6 +529,10 @@ describe("resetAction", () => {
       expect(output).toContain("active run:");
       expect(output).toContain("run-active");
       expect(output).toContain("status=running");
+      for (const run of runs) {
+        expectRunArtifactsPresent(foremanHome, run, true);
+      }
+      expect(output).toContain("preserved prior run artifacts");
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();
