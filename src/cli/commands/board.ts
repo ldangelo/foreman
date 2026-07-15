@@ -79,7 +79,7 @@ export function boardColumnForTaskStatus(status: string): BoardStatus {
   if (["open", "todo"].includes(normalized)) {
     return "backlog";
   }
-  if (["pending", "ready"].includes(normalized)) {
+  if (["pending", "ready", "approved"].includes(normalized)) {
     return "ready";
   }
   if (["running", "in_progress", "cooldown", "explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
