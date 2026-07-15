@@ -70,6 +70,7 @@ type Run struct {
 // Task is a current-project task shown in the READY bucket.
 type Task struct {
 	TaskID      string
+	RunID       string
 	Title       string
 	Description string
 	TaskType    string
@@ -1002,6 +1003,7 @@ func (c *httpClient) taskIndex(projectID string) map[string]Task {
 func taskFromMap(t map[string]any) Task {
 	task := Task{
 		TaskID:      str(t, "task_id", "id"),
+		RunID:       str(t, "run_id"),
 		Title:       str(t, "title"),
 		Description: str(t, "description"),
 		TaskType:    str(t, "task_type", "type"),
