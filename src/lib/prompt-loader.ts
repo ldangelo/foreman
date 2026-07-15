@@ -53,9 +53,11 @@ function loadPhasesFromWorkflow(workflowName: string): string[] {
     if (!Array.isArray(phases)) return [];
 
     // Return only phases with a `prompt` field (non-builtin phases need prompt files)
+    // Use prompt basename (e.g. "fix-issue" from "fix-issue.md") to match actual filenames
+    // consumed by findMissingPrompts(), not phase name (e.g. "fix" for bug workflow).
     return phases
       .filter((phase) => typeof phase["prompt"] === "string")
-      .map((phase) => phase["name"] as string)
+      .map((phase) => (phase["prompt"] as string).replace(/\.md$/, ""))
       .filter(Boolean);
   } catch {
     return [];

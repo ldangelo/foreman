@@ -77,8 +77,9 @@ describe("prompt loader", () => {
 
 
   it("tracks fix prompts as workflow-scoped required prompts", () => {
-    expect(REQUIRED_PHASES.task).toContain("fix");
-    expect(REQUIRED_PHASES.bug).toContain("fix");
+    // Phase "fix" uses prompt "fix-issue.md", so REQUIRED_PHASES contains "fix-issue"
+    expect(REQUIRED_PHASES.task).toContain("fix-issue");
+    expect(REQUIRED_PHASES.bug).toContain("fix-issue");
   });
 
   it("requires all bundled Foreman guidance skills", () => {
