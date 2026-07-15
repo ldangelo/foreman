@@ -36,11 +36,32 @@ function event(overrides: Record<string, unknown> = {}): Record<string, unknown>
 }
 
 function summary(overrides: Partial<InboxTaskSummary> = {}): InboxTaskSummary {
+  const taskId = overrides.taskId ?? "task-1";
+  const runId = overrides.runId ?? "run-1";
+  const phase = overrides.phase ?? "developer";
+  const runStatus = overrides.runStatus ?? "running";
+
+  // Create a mock run object for tasks with runs (unless explicitly set to undefined for backlog)
+  const hasExplicitRun = "run" in overrides;
+  const mockRun = hasExplicitRun ? overrides.run : {
+    id: runId,
+    task_id: taskId,
+    project_id: "proj-1",
+    status: runStatus as never,
+    agent_type: phase,
+    session_key: null,
+    worktree_path: "/tmp/worktree",
+    created_at: "2026-01-01T00:00:00.000Z",
+    started_at: null,
+    completed_at: null,
+    progress: null,
+  };
+
   return {
-    taskId: "task-1",
-    runId: "run-1",
-    runStatus: "running",
-    phase: "developer",
+    taskId,
+    runId,
+    runStatus,
+    phase,
     lastActivityAt: "2026-01-01T00:02:00.000Z",
     lastActivitySource: "message",
     statusText: "running",
@@ -51,6 +72,7 @@ function summary(overrides: Partial<InboxTaskSummary> = {}): InboxTaskSummary {
     worktreePath: "/tmp/worktree",
     messages: [message()],
     events: [event() as never],
+    run: mockRun,
     ...overrides,
   };
 }

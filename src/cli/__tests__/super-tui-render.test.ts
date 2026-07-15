@@ -40,11 +40,29 @@ function summary(overrides: Partial<InboxTaskSummary> = {}): InboxTaskSummary {
   const taskId = overrides.taskId ?? "task-alpha";
   const runId = overrides.runId ?? "run-alpha";
   const phase = overrides.phase ?? "developer";
+  const runStatus = overrides.runStatus ?? "running";
+
+  // Create a mock run object for tasks with runs (unless explicitly set to undefined for backlog)
+  // Check if 'run' is explicitly in overrides to preserve undefined for backlog tasks
+  const hasExplicitRun = "run" in overrides;
+  const mockRun = hasExplicitRun ? overrides.run : {
+    id: runId,
+    task_id: taskId,
+    project_id: "project-1",
+    status: runStatus as never,
+    agent_type: phase,
+    session_key: null,
+    worktree_path: `/tmp/foreman/${taskId}`,
+    created_at: "2026-01-01T00:00:00.000Z",
+    started_at: null,
+    completed_at: null,
+    progress: null,
+  };
 
   return {
     taskId,
     runId,
-    runStatus: "running",
+    runStatus,
     phase,
     lastActivityAt: "2026-01-01T00:05:00.000Z",
     lastActivitySource: "event",
@@ -56,6 +74,7 @@ function summary(overrides: Partial<InboxTaskSummary> = {}): InboxTaskSummary {
     worktreePath: `/tmp/foreman/${taskId}`,
     messages: [],
     events: [],
+    run: mockRun,
     ...overrides,
   };
 }
@@ -246,6 +265,53 @@ describe("super TUI render contracts", () => {
     expect(output).toContain("Selected board context: task-ready is in ready.");
     expect(output).toContain("Details · task-ready");
     expect(output).toContain("Run: run-ready");
+  });
+
+  it("places backlog tasks (without runs) in the Backlog column and cooldown runs in In Progress", () => {
+    // Create summaries with various run statuses
+    const backlogTask = summary({
+      taskId: "task-backlog",
+      runId: "run-backlog",
+      runStatus: "unknown", // No run = backlog
+      phase: "triage",
+      run: undefined, // Explicitly no run
+    });
+    const cooldownTask = summary({
+      taskId: "task-cooldown",
+      runId: "run-cooldown",
+      runStatus: "cooldown",
+      phase: "finalize",
+      run: { id: "run-cooldown", task_id: "task-cooldown", project_id: "project-1", status: "cooldown", agent_type: "developer", session_key: null, worktree_path: null, created_at: "2026-01-01T00:00:00.000Z", started_at: null, completed_at: null, progress: null } as never,
+    });
+    const readyTask = summary({
+      taskId: "task-pending",
+      runId: "run-pending",
+      runStatus: "pending",
+      phase: "triage",
+      run: { id: "run-pending", task_id: "task-pending", project_id: "project-1", status: "pending", agent_type: "developer", session_key: null, worktree_path: null, created_at: "2026-01-01T00:00:00.000Z", started_at: null, completed_at: null, progress: null } as never,
+    });
+
+    const output = renderToString(createElement(SuperTuiApp, {
+      summaries: [backlogTask, cooldownTask, readyTask],
+      projectLabel: "Fortium Foreman",
+      limit: 10,
+      eventsLimit: 10,
+      initialView: "board",
+      initialRunId: "run-backlog",
+    }), { columns: 160 });
+
+    // Backlog task should appear in Backlog column
+    expect(output).toContain("Backlog (1)");
+    expect(output).toContain("task-backlog");
+    expect(output).toContain("Selected board context: task-backlog is in backlog.");
+
+    // Cooldown task should appear in In Progress column
+    expect(output).toContain("In Progress (1)");
+    expect(output).toContain("task-cooldown");
+
+    // Pending task should appear in Ready column
+    expect(output).toContain("Ready (1)");
+    expect(output).toContain("task-pending");
   });
 
   it("marks reset as a confirmed destructive executable and Enter cues confirmation before execution", () => {

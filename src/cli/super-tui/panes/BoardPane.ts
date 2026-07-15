@@ -34,6 +34,8 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
 
 function boardColumn(summary: InboxTaskSummary): BoardStatus {
   if (summary.attention || summary.verdict === "fail" || summary.verdict === "blocked") return "needs_attention";
+  // Tasks without runs (backlog) should go to the backlog column
+  if (!summary.run) return "backlog";
   return boardColumnForTaskStatus(summary.runStatus);
 }
 

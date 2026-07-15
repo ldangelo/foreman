@@ -1395,6 +1395,8 @@ export interface InboxTaskSummary {
   worktreePath: string | null;
   messages: Message[];
   events: PipelineEvent[];
+  /** The run associated with this task, if any. Undefined means the task has no run yet (backlog). */
+  run: Run | undefined;
 }
 
 interface InboxDataSet {
@@ -1576,6 +1578,7 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
       worktreePath: run?.worktree_path ?? null,
       messages,
       events,
+      run,
     };
     if (scopeIncludesSummary(scope, summary)) summaries.push(summary);
   }
