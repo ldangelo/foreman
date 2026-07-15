@@ -109,7 +109,7 @@ describe("inbox TUI timeline contracts", () => {
     ]);
   });
 
-  it("messages tab shows newest messages first (not oldest)", () => {
+  it("messages tab shows newest messages in chronological order", () => {
     const items = tabTimelineItems(summary({
       messages: [
         message({ id: "msg-oldest", subject: "oldest message", created_at: "2026-01-01T00:01:00.000Z" }),
@@ -131,7 +131,7 @@ describe("inbox TUI timeline contracts", () => {
     expect(items[2].detail).toContain("newest message");
   });
 
-  it("events tab shows newest events first (not oldest)", () => {
+  it("events tab shows newest events in chronological order", () => {
     const items = tabTimelineItems(summary({
       messages: [],
       events: [
@@ -149,6 +149,16 @@ describe("inbox TUI timeline contracts", () => {
       "event:evt-new",
       "event:evt-newest",
     ]);
+  });
+
+  it("messages and events tabs return empty lists for zero limits", () => {
+    const data = summary({
+      messages: [message({ id: "msg-zero" })],
+      events: [event({ id: "evt-zero" }) as never],
+    });
+
+    expect(tabTimelineItems(data, "messages", 0, 1)).toEqual([]);
+    expect(tabTimelineItems(data, "events", 1, 0)).toEqual([]);
   });
 });
 

@@ -171,9 +171,11 @@ function dashboardTimeline(summary: InboxTaskSummary, limit: number, eventsLimit
 
 export function tabTimelineItems(summary: InboxTaskSummary, tab: InboxDashboardTab, limit: number, eventsLimit: number): InboxTimelineItem[] {
   if (tab === "messages") {
+    if (limit <= 0) return [];
     return buildInboxTimeline(summary).filter((item) => item.kind === "message").slice(-limit);
   }
   if (tab === "events") {
+    if (eventsLimit <= 0) return [];
     return buildInboxTimeline(summary).filter((item) => item.kind === "event").slice(-eventsLimit);
   }
   return dashboardTimeline(summary, limit, eventsLimit);
