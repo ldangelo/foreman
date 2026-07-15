@@ -1488,7 +1488,7 @@ func (m model) selectedFileIndex() int {
 }
 
 func (m *model) loadDetail() {
-	run, ok := m.selectedRun()
+	run, ok := m.selectedRunnableRun()
 	if !ok {
 		m.msgs, m.events, m.logs, m.logPath, m.reports, m.files = nil, nil, nil, "", nil, nil
 		m.pr = PRStatus{}
