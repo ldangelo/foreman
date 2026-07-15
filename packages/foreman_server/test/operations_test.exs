@@ -106,18 +106,18 @@ defmodule ForemanServer.OperationsTest do
     # total_turns should be sum of turns from PhaseCompleted events
     assert metrics.total_turns == 8
 
-    # total_cost_usd should be sum of cost_usd from PhaseCompleted events
-    assert metrics.total_cost_usd == 2.0
+    # total_cost should be sum of cost_usd from PhaseCompleted events
+    assert metrics.total_cost == 2.0
 
-    # cost_per_turn should be total_cost_usd / total_turns
+    # cost_per_turn should be total_cost / total_turns
     assert metrics.cost_per_turn == "0.250000"
 
-    # total_time_ms should be sum of phase durations
+    # total_time_seconds should be sum of phase durations in seconds
     # Build phase: 5s (6000-1000) = 5000ms, Test phase: 5s (12000-7000) = 5000ms
-    assert metrics.total_time_ms == 10_000
+    assert metrics.total_time_seconds == 10.0
 
-    # time_per_turn_ms should be total_time_ms / total_turns (rounded to 2 decimals)
-    assert metrics.time_per_turn_ms == "1250.00"
+    # time_per_turn_seconds should be total_time_seconds / total_turns (rounded to 2 decimals)
+    assert metrics.time_per_turn_seconds == "1.25"
   end
 
   test "metrics handle edge cases: zero turns returns nil for per-turn metrics" do
@@ -148,8 +148,8 @@ defmodule ForemanServer.OperationsTest do
     assert metrics.total_turns == 0
     # cost_per_turn should be 0 when turns is 0
     assert metrics.cost_per_turn == 0
-    # time_per_turn_ms should be 0 when turns is 0
-    assert metrics.time_per_turn_ms == 0
+    # time_per_turn_seconds should be 0 when turns is 0
+    assert metrics.time_per_turn_seconds == 0
   end
 
   test "debug timeline identifies first inconsistent transition" do

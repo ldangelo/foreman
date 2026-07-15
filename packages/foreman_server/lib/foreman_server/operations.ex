@@ -111,11 +111,11 @@ defmodule ForemanServer.Operations do
       timers: %{phase_duration_ms: phase_durations(events)},
       gauges: %{projection_lag: projection_lag(events, snapshot)},
       projection_lag: projection_lag(events, snapshot),
-      total_cost_usd: total_cost_usd(events),
+      total_cost: total_cost_usd(events),
       total_turns: total_turns(events),
       cost_per_turn: cost_per_turn(events),
-      total_time_ms: total_time_ms(events),
-      time_per_turn_ms: time_per_turn_ms(events),
+      total_time_seconds: total_time_ms(events) / 1000,
+      time_per_turn_seconds: time_per_turn_ms(events) / 1000,
       emitted_at: DateTime.utc_now()
     }
   end
