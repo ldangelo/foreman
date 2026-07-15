@@ -12,14 +12,24 @@ defmodule ForemanServer.ProjectionStore do
                    "approved",
                    "in_progress",
                    "in-progress",
+                   "pending",
+                   "open",
+                   "todo",
                    "review",
+                   "running",
                    "merged",
                    "closed",
+                   "completed",
+                   "done",
                    "conflict",
                    "failed",
+                   "fail",
                    "stuck",
                    "blocked",
-                   "cooldown"
+                   "test_failed",
+                   "cooldown",
+                   "reset",
+                   "pr_created"
                  ])
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -1314,7 +1324,9 @@ defmodule ForemanServer.ProjectionStore do
 
   defp coerce_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
-      {:ok, dt, _} -> dt
+      {:ok, dt, _} ->
+        dt
+
       _ ->
         case NaiveDateTime.from_iso8601(value) do
           {:ok, ndt} -> coerce_datetime(ndt)
@@ -1324,5 +1336,4 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp coerce_datetime(_), do: nil
-
 end

@@ -21,14 +21,24 @@ defmodule ForemanServer.CommandRouter do
                    "approved",
                    "in_progress",
                    "in-progress",
+                   "pending",
+                   "open",
+                   "todo",
                    "review",
+                   "running",
                    "merged",
                    "closed",
+                   "completed",
+                   "done",
                    "conflict",
                    "failed",
+                   "fail",
                    "stuck",
                    "blocked",
-                   "cooldown"
+                   "test_failed",
+                   "cooldown",
+                   "reset",
+                   "pr_created"
                  ])
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}

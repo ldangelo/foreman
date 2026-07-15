@@ -1,7 +1,14 @@
 defmodule ForemanServer.InboxTest do
   use ExUnit.Case
 
-  alias ForemanServer.{CommandRouter, EventStore, Inbox, ProjectionStore, RunActor, WorkflowInterpreter}
+  alias ForemanServer.{
+    CommandRouter,
+    EventStore,
+    Inbox,
+    ProjectionStore,
+    RunActor,
+    WorkflowInterpreter
+  }
 
   setup do
     tmp_dir =

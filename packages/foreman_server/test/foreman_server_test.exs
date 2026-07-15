@@ -15,7 +15,11 @@ defmodule ForemanServerTest do
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :project_store_path, project_store_path)
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
-    Application.put_env(:foreman_server, :scheduler, auto_tick: false, event_triggered_ticks: false)
+
+    Application.put_env(:foreman_server, :scheduler,
+      auto_tick: false,
+      event_triggered_ticks: false
+    )
 
     on_exit(fn ->
       Application.stop(:foreman_server)
