@@ -111,11 +111,11 @@ defmodule ForemanServer.Operations do
       timers: %{phase_duration_ms: phase_durations(events)},
       gauges: %{projection_lag: projection_lag(events, snapshot)},
       projection_lag: projection_lag(events, snapshot),
-      total_cost_usd: total_cost_usd(events),
+      total_cost: total_cost_usd(events),
       total_turns: total_turns(events),
       cost_per_turn: cost_per_turn(events),
-      total_time_ms: total_time_ms(events),
-      time_per_turn_ms: time_per_turn_ms(events),
+      total_time_seconds: total_time_ms(events) / 1000,
+      time_per_turn_seconds: time_per_turn_seconds(events),
       emitted_at: DateTime.utc_now()
     }
   end
@@ -155,12 +155,12 @@ defmodule ForemanServer.Operations do
     |> Enum.reduce(0, fn phase, acc -> acc + Map.get(phase, :duration_ms, 0) end)
   end
 
-  defp time_per_turn_ms(events) do
+  defp time_per_turn_seconds(events) do
     turns = total_turns(events)
 
     if turns > 0 do
       total_time = total_time_ms(events)
-      :erlang.float_to_binary(total_time / turns, [{:decimals, 2}])
+      :erlang.float_to_binary(total_time / turns / 1000, [{:decimals, 2}])
     else
       0
     end
