@@ -690,7 +690,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.notice = "retry: no run selected"
 	case "R":
-		if run, ok := m.selectedRun(); ok {
+		if run, ok := m.selectedResetRun(); ok {
 			return m, resetRun(m.client, run)
 		}
 		m.notice = "reset: no run selected"
@@ -1274,10 +1274,14 @@ func (m model) actionKeyAt(x, y int) string {
 	if task, ok := m.selectedTask(); ok {
 		if line == 0 {
 			prefix := "▸ task actions " + task.TaskID + "  "
-			return actionSegmentKey(relX, prefix, []actionSegment{
+			segments := []actionSegment{
 				{label: "y copy task id", key: "y"},
 				{label: "c close", key: "c"},
-			})
+			}
+			if _, ok := m.runForTask(task); ok {
+				segments = append(segments, actionSegment{label: "R reset latest run", key: "R"})
+			}
+			return actionSegmentKey(relX, prefix, segments)
 		}
 		if _, ready := m.selectedReadyTask(); ready && line == 1 {
 			return actionSegmentKey(relX, "", []actionSegment{
@@ -1592,6 +1596,59 @@ func (m model) selectedRun() (Run, bool) {
 		return Run{}, false
 	}
 	return it.Run, true
+}
+
+func (m model) selectedResetRun() (Run, bool) {
+	if run, ok := m.selectedRun(); ok {
+		return run, true
+	}
+	task, ok := m.selectedTask()
+	if !ok {
+		return Run{}, false
+	}
+	return m.runForTask(task)
+}
+
+func (m model) runForTask(task Task) (Run, bool) {
+	taskID := strings.TrimSpace(task.TaskID)
+	if taskID == "" {
+		return Run{}, false
+	}
+	var selected Run
+	found := false
+	for _, run := range m.runs {
+		if strings.TrimSpace(run.TaskID) != taskID || strings.TrimSpace(run.RunID) == "" {
+			continue
+		}
+		if !found || run.Last > selected.Last {
+			selected = run
+			found = true
+		}
+	}
+	if !found {
+		return Run{}, false
+	}
+	selected = runWithTaskMetadata(selected, task)
+	return selected, true
+}
+
+func runWithTaskMetadata(run Run, task Task) Run {
+	if run.ProjectID == "" {
+		run.ProjectID = task.ProjectID
+	}
+	if run.Title == "" {
+		run.Title = task.Title
+	}
+	if run.TaskType == "" {
+		run.TaskType = task.TaskType
+	}
+	if run.Priority == "" {
+		run.Priority = task.Priority
+	}
+	if run.Summary == "" {
+		run.Summary = task.Summary
+	}
+	return run
 }
 
 func max(a, b int) int {

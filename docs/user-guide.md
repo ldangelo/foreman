@@ -335,13 +335,14 @@ Common cockpit keys:
 | `1` / `2` / `3` | Active, attention, all scopes |
 | `!` / `p` / `d` | Failed, has PR, dirty worktree filters |
 | `a` / `:` | Action palette; reset asks for `y` confirmation and executes `foreman reset`; other entries print copy/manual commands |
+| `R` in Go cockpit | Reset the selected run; on a selected task card, reset its latest known run when one is available |
 | `q` / `Esc` | Quit |
 
 ## Retry and Cleanup Guidance
 
 Use retry and doctor cleanup surgically.
 
-- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops active workers when present, closes any open/draft PR recorded for the task before deleting the remote branch, marks prior active runs failed with the reset reason, removes stale task worktrees, local/origin `foreman/<task>` branches, and prior run logs/reports, clears run linkage, resets the task to ready, and dispatches it again. Merged tasks remain terminal.
+- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops active workers when present, closes any open/draft PR recorded for the task before deleting the remote branch, marks prior active runs failed with the reset reason, removes stale task worktrees, local/origin `foreman/<task>` branches, and prior run logs/reports, clears run linkage, resets the task to ready, and dispatches it again. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged and still continues local cleanup. Merged tasks remain terminal.
 - Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
 - Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
 - Use `foreman doctor --dry-run` to preview cleanup of zombie/stale runs and merged/orphaned worktrees.
@@ -373,7 +374,7 @@ If no docs need updating, `DOCUMENTATION_REPORT.md` must explain why.
 ## Safety Rules
 
 - Keep the controller workspace clean before rerunning important tasks.
-- Commit or patch-export important local changes before reset/cleanup; pushed draft PR checkpoints are safe to keep while local worktrees are removed, but reset closes the old PR before deleting its remote branch.
+- Commit or patch-export important local changes before reset/cleanup; pushed draft PR checkpoints are safe to keep while local worktrees are removed, but reset closes the old PR before deleting its remote branch unless GitHub reports that PR was already merged.
 - Prefer targeted retries over bulk retries.
 - Inspect reports before changing task state.
 - Do not manually mutate active worktrees unless you intend to take ownership of that run.

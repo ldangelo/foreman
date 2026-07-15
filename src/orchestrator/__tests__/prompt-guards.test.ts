@@ -43,6 +43,12 @@ describe("developer prompt guardrails", () => {
     expect(prompt).toContain("same failed check remains unexplained");
   });
 
+  it("keeps task implementation inside the active worktree", () => {
+    expect(prompt).toContain("Run commands from the current worktree root");
+    expect(prompt).toContain("Do not `cd` to the controller checkout");
+    expect(prompt).toContain("target branch already contains the requested behavior");
+  });
+
   it("biases localized tasks toward the smallest diff", () => {
     expect(prompt).toContain("smallest viable diff");
     expect(prompt).toContain("fewest relevant files");
@@ -60,11 +66,23 @@ describe("specialized remediation prompts", () => {
     expect(cicdPrompt).toContain("same failed check remains unexplained");
   });
 
+  it("keeps ci remediation inside the active worktree", () => {
+    expect(cicdPrompt).toContain("Run commands from the current worktree root");
+    expect(cicdPrompt).toContain("Do not `cd` to the controller checkout");
+    expect(cicdPrompt).toContain("failed check is already fixed on the target branch");
+  });
+
   it("keeps CodeRabbit remediation scoped to cited findings", () => {
     expect(crPrompt).toContain("CodeRabbit remediation developer");
     expect(crPrompt).toContain("PR_REVIEW_FINDINGS.md");
     expect(crPrompt).toContain("CodeRabbit Findings Addressed");
     expect(crPrompt).toContain("cited path first");
+  });
+
+  it("keeps CodeRabbit remediation inside the active worktree", () => {
+    expect(crPrompt).toContain("Run commands from the current worktree root");
+    expect(crPrompt).toContain("Do not `cd` to the controller checkout");
+    expect(crPrompt).toContain("blocking finding is already fixed on the target branch");
   });
 });
 

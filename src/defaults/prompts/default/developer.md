@@ -34,6 +34,11 @@ Rules for conflict feedback:
 - Do **not** abort the rebase unless you are truly unable to resolve the conflicts; if you abort, write `BLOCKED.md` and send an `agent-error` explaining the exact conflicted files.
 - This is the one allowed exception to the “do not commit” rule: `GIT_EDITOR=true git rebase --continue` may recreate the existing task commit after conflict resolution. Use the `GIT_EDITOR=true` prefix so detached workers do not hang in an editor. Still do **not** push; finalize handles pushing.
 
+## Worktree Discipline
+- Run commands from the current worktree root. Do not `cd` to the controller checkout, a sibling worktree, or an absolute project path unless the task explicitly asks you to inspect that external checkout.
+- Before editing, use `pwd` and `git status --short --branch` if there is any uncertainty about where you are. The branch must be the task branch/worktree, not `main` or another task.
+- If the target branch already contains the requested behavior, do not invent an adjacent change. Document the evidence in `DEVELOPER_REPORT.md` and leave the working tree clean.
+
 ## Fast-Path Triage
 - If retry feedback names a failing phase, report file, command, or exact source path, read that artifact first and fix that cited area before broad investigation.
 - Start with one `git status --short` and one focused diff/list command; avoid repeated broad `ls`, `git log --all`, or directory walks unless they answer a specific question.

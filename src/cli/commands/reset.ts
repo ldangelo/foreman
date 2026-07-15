@@ -86,6 +86,11 @@ function prTimestampOf(run: Record<string, unknown>): number {
   }
   return 0;
 }
+function isAlreadyMergedPrError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("already merged");
+}
+
 
 async function retireResetPr(args: {
   runs: Record<string, unknown>[];
@@ -111,14 +116,20 @@ async function retireResetPr(args: {
     return { retired: true, prUrl };
   }
 
-  await execFileAsync("gh", [
-    "pr",
-    "close",
-    prUrl,
-    "--comment",
-    `Closed by foreman reset: ${args.reason}. A fresh run will create a new PR.`,
-  ], { cwd: args.projectPath });
-  console.log(`  closed PR ${chalk.dim(prUrl)} as superseded by reset`);
+  try {
+    await execFileAsync("gh", [
+      "pr",
+      "close",
+      prUrl,
+      "--comment",
+      `Closed by foreman reset: ${args.reason}. A fresh run will create a new PR.`,
+    ], { cwd: args.projectPath });
+    console.log(`  closed PR ${chalk.dim(prUrl)} as superseded by reset`);
+  } catch (error) {
+    if (!isAlreadyMergedPrError(error)) throw error;
+    console.log(`  PR ${chalk.dim(prUrl)} is already merged; leaving it unchanged`);
+    return { retired: false, prUrl };
+  }
 
   const runId = runIdOf(run);
   if (args.client && args.projectId && args.taskId && runId) {

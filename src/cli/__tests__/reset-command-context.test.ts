@@ -465,4 +465,42 @@ describe("resetAction", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("continues reset cleanup when GitHub reports the PR was already merged", async () => {
+    runs = [
+      {
+        ...makeRun("run-active", "running"),
+        pr_url: "https://github.com/org/repo/pull/125",
+        pr_state: "open",
+      },
+      makeRun("run-completed", "completed"),
+    ];
+    mockListRuns.mockResolvedValue(runs);
+    mockExecFileAsync.mockImplementation(async (command?: string) => {
+      if (command === "gh") throw new Error("Pull request org/repo#125 is already merged");
+      return { stdout: "", stderr: "" };
+    });
+    createRunArtifacts(foremanHome, runs);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const code = await resetAction("task-1", { reason: "RCA retry" });
+
+      expect(code).toBe(0);
+      expect(mockDeleteBranch.mock.calls.some((call) => call[0] === projectPath && call[1] === "foreman/task-1")).toBe(true);
+      expect(mockDeleteRemoteBranch.mock.calls.some((call) => call[0] === projectPath && call[1] === "foreman/task-1")).toBe(true);
+      expect(findRunFailCommand("run-active")).toBeDefined();
+      expect(findReadyTaskUpdateCommand()).toBeDefined();
+      expect(
+        findSendCommandMatch(
+          (command, payload) => command.command_type === "run.pr.reset" && payload.run_id === "run-active",
+        ),
+      ).toBeUndefined();
+      const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(output).toContain("already merged");
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
 });

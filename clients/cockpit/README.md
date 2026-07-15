@@ -54,7 +54,7 @@ authoritative state.
   reports · files · pr · metrics`). Log and report open targets prefer
   explicit paths returned by the live `/logs` and `/report` endpoints, falling
   back to the historical `.foreman/logs` and `docs/reports` paths when omitted.
-  Message rows render newest-first as a table (local `date/time` in
+  Message rows render oldest-first (newest at bottom) as a table (local `date/time` in
   `mm/dd hh:mm`, sender, receiver, message); event and log tabs use specialized
   selectable rows. The selected row is marked with `▶` and expands with packed
   metadata/body, event metadata/detail, or log line/text while preserving
@@ -171,6 +171,7 @@ y         copy selected task ID               n/N  create task form / quick add
 a         approve READY task                  e    edit READY task JSON in nvim
 C         inspect CI in gh enhance            p/P  attach omp triage / plain omp
 A         attach selected run                  r/R  retry / reset selected run
+R         task cards reset their latest run when one is available
 ←/→       pan focused logs while activities are focused
 s         save visible viewer rows            ?    generated keymap help
 ```
@@ -314,8 +315,9 @@ suspends the cockpit. The editor binary comes from `editor.cmd` or `$EDITOR`
 - READY task approval/edit/create, selected-run attach, `omp`
   triage/plain handoffs, `gh dash`, `gh enhance`, and PR browser opens are live
   actions through the cockpit client, command bus, and tool handoffs. Selected-run
-  retry/reset post `run.retry`/`run.reset`; the server requeues the associated
-  task to `ready` without mutating the terminal run record.
+  retry/reset post `run.retry`/`run.reset`; selected task cards can also reset
+  their latest known run. The server requeues the associated task to `ready`
+  without mutating the terminal run record.
 - The `httpClient` field mapping accepts the current `/api/v1` wrapper shapes
   (`inbox`, `logs.entries`, `report`, `metrics`) and surfaces HTTP/JSON failures
   in the cockpit notice bar. If the aggregate `/api/v1/events` endpoint fails for
