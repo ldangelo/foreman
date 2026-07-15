@@ -34,7 +34,7 @@ defmodule ForemanServer.ProjectionStore do
 
   @spec rebuild([map()]) :: {:ok, map()}
   def rebuild(events) when is_list(events) do
-    GenServer.call(__MODULE__, {:rebuild, events})
+    GenServer.call(__MODULE__, {:rebuild, events}, :infinity)
   end
 
   @spec snapshot() :: map()
@@ -532,7 +532,7 @@ defmodule ForemanServer.ProjectionStore do
     |> update_run_status(run_id, "completed")
     |> update_run(run_id, fn run ->
       started_at = Map.get(run, :started_at) || now
-      total_duration_ms = DateTime.diff(now, started_at, :millisecond)
+      total_duration_ms = duration_ms(started_at, now)
 
       run
       |> put_terminal_phase_status(payload, "completed")
@@ -557,7 +557,7 @@ defmodule ForemanServer.ProjectionStore do
     |> update_run_status(run_id, "failed")
     |> update_run(run_id, fn run ->
       started_at = Map.get(run, :started_at) || now
-      total_duration_ms = DateTime.diff(now, started_at, :millisecond)
+      total_duration_ms = duration_ms(started_at, now)
 
       run
       |> put_terminal_current_phase(payload)
@@ -1284,4 +1284,45 @@ defmodule ForemanServer.ProjectionStore do
   defp normalize_event(%{type: type, payload: payload} = event) do
     %{type: type, payload: payload, occurred_at: Map.get(event, :occurred_at)}
   end
+
+  # ── datetime helpers ───────────────────────────────────────────────────
+
+  defp duration_ms(from, to) do
+    from = coerce_datetime(from)
+    to = coerce_datetime(to)
+
+    cond do
+      match?(%DateTime{}, from) && match?(%DateTime{}, to) ->
+        DateTime.diff(to, from, :millisecond)
+
+      match?(%NaiveDateTime{}, from) && match?(%NaiveDateTime{}, to) ->
+        NaiveDateTime.diff(to, from, :millisecond)
+
+      true ->
+        0
+    end
+  end
+
+  defp coerce_datetime(%DateTime{} = dt), do: dt
+
+  defp coerce_datetime(%NaiveDateTime{} = ndt) do
+    case DateTime.from_naive(ndt, "Etc/UTC") do
+      {:ok, dt} -> dt
+      _ -> ndt
+    end
+  end
+
+  defp coerce_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _} -> dt
+      _ ->
+        case NaiveDateTime.from_iso8601(value) do
+          {:ok, ndt} -> coerce_datetime(ndt)
+          _ -> nil
+        end
+    end
+  end
+
+  defp coerce_datetime(_), do: nil
+
 end
