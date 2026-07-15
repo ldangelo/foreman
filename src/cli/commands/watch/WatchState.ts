@@ -350,7 +350,7 @@ export async function pollInboxData(
                   deleted_at: null,
                 }));
 
-          allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          allMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
           const totalCount = allMessages.length;
           const recent = allMessages.slice(0, inboxLimit);
           const newestId = recent[0]?.id ?? null;
@@ -371,8 +371,8 @@ export async function pollInboxData(
       allMessages.push(...msgs);
     }
 
-    // Sort by created_at descending
-    allMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    // Sort by created_at ascending (oldest first)
+    allMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
     const totalCount = allMessages.length;
     const recent = allMessages.slice(0, inboxLimit);

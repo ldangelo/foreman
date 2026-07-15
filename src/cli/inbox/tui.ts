@@ -169,12 +169,12 @@ function dashboardTimeline(summary: InboxTaskSummary, limit: number, eventsLimit
   return buildInboxTimeline(summary, { limit: limit + eventsLimit });
 }
 
-function tabTimelineItems(summary: InboxTaskSummary, tab: InboxDashboardTab, limit: number, eventsLimit: number): InboxTimelineItem[] {
+export function tabTimelineItems(summary: InboxTaskSummary, tab: InboxDashboardTab, limit: number, eventsLimit: number): InboxTimelineItem[] {
   if (tab === "messages") {
-    return buildInboxTimeline(summary).filter((item) => item.kind === "message").slice(0, limit);
+    return buildInboxTimeline(summary).filter((item) => item.kind === "message").slice(-limit);
   }
   if (tab === "events") {
-    return buildInboxTimeline(summary).filter((item) => item.kind === "event").slice(0, eventsLimit);
+    return buildInboxTimeline(summary).filter((item) => item.kind === "event").slice(-eventsLimit);
   }
   return dashboardTimeline(summary, limit, eventsLimit);
 }
