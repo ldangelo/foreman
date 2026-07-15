@@ -111,7 +111,7 @@ async function retireResetPr(args: {
   client?: ElixirServerClient;
   projectId?: string;
   taskId?: string;
-}): Promise<{ retired: boolean; prUrl?: string }> {
+}): Promise<{ retired: boolean; prUrl?: string; alreadyMerged?: boolean }> {
   const run = [...args.runs]
     .filter((candidate) =>
       typeof candidate.pr_url === "string" &&
@@ -137,8 +137,8 @@ async function retireResetPr(args: {
     console.log(`  closed PR ${chalk.dim(prUrl)} as superseded by reset`);
   } catch (error) {
     if (!isAlreadyMergedPrError(error)) throw error;
-    console.log(`  PR ${chalk.dim(prUrl)} is already merged; leaving it unchanged`);
-    return { retired: false, prUrl };
+    console.log(`  PR ${chalk.dim(prUrl)} is already merged; completing reset without re-dispatch`);
+    return { retired: false, prUrl, alreadyMerged: true };
   }
 
   const runId = runIdOf(run);
@@ -200,6 +200,39 @@ async function failActiveRunsForReset(
   }
 }
 
+async function completeActiveRunsForMergedPr(
+  client: ElixirServerClient,
+  projectId: string,
+  taskId: string,
+  runIds: string[],
+  reason: string,
+  dryRun: boolean,
+): Promise<void> {
+  for (const runId of [...new Set(runIds)]) {
+    if (dryRun) {
+      console.log(`  would mark active run ${chalk.dim(runId)} completed`);
+      continue;
+    }
+
+    const now = new Date().toISOString();
+    const response = await client.sendCommand({
+      command_id: `reset-complete-merged-pr-run-${runId}-${Date.now()}`,
+      command_type: "run.complete",
+      payload: {
+        project_id: projectId,
+        task_id: taskId,
+        run_id: runId,
+        reason,
+        completed_at: now,
+        updated_at: now,
+      },
+      metadata: { source: "foreman-reset", reason },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    console.log(`  marked active run ${chalk.dim(runId)} completed`);
+  }
+}
+
 export async function cleanupTaskRunArtifacts(
   projectId: string,
   taskId: string,
@@ -250,7 +283,10 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
   }
 
   const runs = (await client.listRuns({ projectId: registered.id })).filter((candidate) => candidate.task_id === taskId);
-  const run = runs.find((candidate) => ["in_progress", "running", "pending", "conflict", "failed"].includes(runStatusOf(candidate))) ?? runs[0] ?? null;
+  const run = runs.find((candidate) => resetActiveRunStatuses[runStatusOf(candidate)]) ??
+    runs.find((candidate) => runStatusOf(candidate) === "failed") ??
+    runs[0] ??
+    null;
   const runId = run ? runIdOf(run) : null;
   const runIds = runs.map(runIdOf).filter((id): id is string => Boolean(id));
   const reason = opts.reason ?? "reset by operator";
@@ -304,7 +340,7 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
     }
     console.log(`  removed ${queueMatches.length} merge queue entr${queueMatches.length === 1 ? "y" : "ies"}`);
   }
-  await retireResetPr({
+  const prReset = await retireResetPr({
     runs,
     branchName,
     reason,
@@ -327,6 +363,37 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
 
   const artifactCount = await cleanupTaskRunArtifacts(registered.id, taskId, runIds, dryRun);
   console.log(`  ${dryRun ? "would remove" : "removed"} ${artifactCount} prior run artifact${artifactCount === 1 ? "" : "s"}`);
+
+  if (prReset.alreadyMerged) {
+    await completeActiveRunsForMergedPr(client, registered.id, taskId, activeRunIds, reason, dryRun);
+
+    if (dryRun) {
+      console.log(chalk.dim(`  would set task ${taskId} to closed`));
+      console.log(chalk.dim("  would skip scheduler dispatch because the recorded PR is already merged"));
+      console.log(chalk.yellow("Dry run complete — no changes were made."));
+      return 0;
+    }
+
+    const response = await client.sendCommand({
+      command_id: `reset-close-merged-task-${taskId}-${Date.now()}`,
+      command_type: "task.update",
+      payload: {
+        project_id: registered.id,
+        task_id: taskId,
+        status: "closed",
+        run_id: null,
+        phase_id: null,
+        branch: null,
+        failure_reason: null,
+        failure_output: null,
+      },
+      metadata: { source: "foreman-reset", reason },
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    console.log(`  reset task ${chalk.dim(taskId)} is already merged; marked closed without dispatch`);
+    console.log(chalk.green("Done."));
+    return 0;
+  }
 
   await failActiveRunsForReset(client, registered.id, taskId, activeRunIds, reason, dryRun);
 

@@ -14,6 +14,8 @@ If you hit an unrecoverable error, invoke:
 /send-mail --run-id "{{runId}}" --from "{{agentRole}}" --to foreman --subject agent-error --body '{"phase":"cr-developer","taskId":"{{taskId}}","error":"<brief description>"}'
 ```
 
+Do not send `agent-error` for a valid CodeRabbit finding, missing implementation, failing static check, stale branch, or no-op diff. Those are normal remediation outcomes: write `{{reportDir}}/DEVELOPER_REPORT.md` with the cited finding, root cause, fix or no-op evidence, and verification status. Reserve `agent-error` for infrastructure failures that prevent reading the finding or writing the report.
+
 ## Worktree Discipline
 - Run commands from the current worktree root. Do not `cd` to the controller checkout, a sibling worktree, or an absolute project path unless the CodeRabbit finding explicitly requires inspecting an external checkout.
 - Before editing, use `pwd` and `git status --short --branch` if there is any uncertainty about where you are. The branch must be the task branch/worktree, not `main` or another task.

@@ -251,6 +251,26 @@ function findReadyTaskUpdateCommand(): SendCommandMatch | undefined {
   );
 }
 
+function findClosedTaskUpdateCommand(): SendCommandMatch | undefined {
+  return findSendCommandMatch(
+    (command, payload) =>
+      command.command_type === "task.update" &&
+      payload.project_id === "proj-1" &&
+      payload.task_id === "task-1" &&
+      payload.status === "closed",
+  );
+}
+
+function findRunCompleteCommand(runId: string): SendCommandMatch | undefined {
+  return findSendCommandMatch(
+    (command, payload) =>
+      command.command_type === "run.complete" &&
+      payload.project_id === "proj-1" &&
+      payload.task_id === "task-1" &&
+      payload.run_id === runId,
+  );
+}
+
 function findRunFailCommand(runId: string): SendCommandMatch | undefined {
   return findSendCommandMatch(
     (command, payload) =>
@@ -466,8 +486,9 @@ describe("resetAction", () => {
     }
   });
 
-  it("continues reset cleanup when GitHub reports the PR was already merged", async () => {
+  it("stops reset dispatch when GitHub reports the recorded PR was already merged", async () => {
     runs = [
+      makeRun("run-failed", "failed"),
       {
         ...makeRun("run-active", "running"),
         pr_url: "https://github.com/org/repo/pull/125",
@@ -493,8 +514,11 @@ describe("resetAction", () => {
       expect(code).toBe(0);
       expect(mockDeleteBranch.mock.calls.some((call) => call[0] === projectPath && call[1] === "foreman/task-1")).toBe(true);
       expect(mockDeleteRemoteBranch.mock.calls.some((call) => call[0] === projectPath && call[1] === "foreman/task-1")).toBe(true);
-      expect(findRunFailCommand("run-active")).toBeDefined();
-      expect(findReadyTaskUpdateCommand()).toBeDefined();
+      expect(findRunFailCommand("run-active")).toBeUndefined();
+      expect(findRunCompleteCommand("run-active")).toBeDefined();
+      expect(findReadyTaskUpdateCommand()).toBeUndefined();
+      expect(findClosedTaskUpdateCommand()).toBeDefined();
+      expect(mockSchedulerTick).not.toHaveBeenCalled();
       expect(
         findSendCommandMatch(
           (command, payload) => command.command_type === "run.pr.reset" && payload.run_id === "run-active",
@@ -502,6 +526,9 @@ describe("resetAction", () => {
       ).toBeUndefined();
       const output = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
       expect(output).toContain("already merged");
+      expect(output).toContain("active run:");
+      expect(output).toContain("run-active");
+      expect(output).toContain("status=running");
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

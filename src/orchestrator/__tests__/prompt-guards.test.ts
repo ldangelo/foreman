@@ -29,6 +29,12 @@ describe("bug fix prompt guardrails", () => {
     expect(prompt).toContain("Do **not** create, check out, or switch to another branch");
     expect(prompt).toContain("branch management, commits, pushes, PRs, and task closure are owned by the pipeline");
   });
+
+  it("prevents no-op churn on already merged bug fixes", () => {
+    expect(prompt).toContain("recorded PR is already merged");
+    expect(prompt).toContain("do not create a compensating/no-op change");
+    expect(prompt).toContain("leave the worktree clean");
+  });
 });
 
 describe("developer prompt guardrails", () => {
@@ -78,6 +84,8 @@ describe("specialized remediation prompts", () => {
     expect(cicdPrompt).toContain("same failed check remains unexplained");
     expect(cicdPrompt).toContain("rerun that exact test or package command first");
     expect(cicdPrompt).toContain("broader CI command at most once");
+    expect(cicdPrompt).toContain("Do not send `agent-error` for a real CI failure");
+    expect(cicdPrompt).toContain("Reserve `agent-error` for infrastructure failures");
   });
 
   it("keeps ci remediation inside the active worktree", () => {
@@ -95,6 +103,8 @@ describe("specialized remediation prompts", () => {
     expect(crPrompt).toContain("smallest observable acceptance check");
     expect(crPrompt).toContain("positive presence checks before ordering/position comparisons");
     expect(crPrompt).toContain("inspect the final diff against each cited finding");
+    expect(crPrompt).toContain("Do not send `agent-error` for a valid CodeRabbit finding");
+    expect(crPrompt).toContain("Reserve `agent-error` for infrastructure failures");
   });
 
   it("keeps CodeRabbit remediation inside the active worktree", () => {
