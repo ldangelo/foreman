@@ -568,6 +568,16 @@ defmodule ForemanServer.Http.RouterTest do
     assert conn.status == 200
     assert %{"ok" => true, "inbox" => messages} = Jason.decode!(conn.resp_body)
     assert Enum.map(messages, & &1["message_id"]) == ["msg-old", "msg-new"]
+
+    limited_conn =
+      :get
+      |> conn("/api/v1/inbox?project_id=proj-inbox-sort&run_id=run-inbox-sort&limit=1")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert limited_conn.status == 200
+    assert %{"ok" => true, "inbox" => limited_messages} = Jason.decode!(limited_conn.resp_body)
+    assert Enum.map(limited_messages, & &1["message_id"]) == ["msg-new"]
   end
 
   test "events endpoint sorts naive timestamps from postgres-compatible rows" do

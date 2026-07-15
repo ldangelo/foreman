@@ -85,7 +85,7 @@ export function buildInboxTimeline(
   const items = [...messages, ...events].sort(compareTimelineItemsOldestFirst);
 
   return typeof options.limit === "number" && options.limit >= 0
-    ? items.slice(0, options.limit)
+    ? items.slice(Math.max(items.length - options.limit, 0))
     : items;
 }
 
