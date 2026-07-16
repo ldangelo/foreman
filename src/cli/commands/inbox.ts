@@ -1736,7 +1736,7 @@ function renderReportsSection(summary: InboxTaskSummary): string {
   return lines.join("\n");
 }
 
-async function selectReportInteractive(summary: InboxTaskSummary): Promise<void> {
+export async function selectReportInteractive(summary: InboxTaskSummary): Promise<void> {
   const candidates = reportDirectoryCandidates(summary);
   const reportDir = candidates.find((candidate) => existsSync(candidate));
   if (!reportDir) {
@@ -1795,7 +1795,6 @@ async function selectReportInteractive(summary: InboxTaskSummary): Promise<void>
     console.log(chalk.dim(`Opening ${selected.name} in ${resolveEditor()}...`));
     const exitCode = spawnSync(resolveEditor(), [selected.path], {
       stdio: "inherit",
-      shell: true,
     }).status ?? 0;
     if (exitCode !== 0) {
       console.log(chalk.yellow(`Editor exited with code ${exitCode}.`));
