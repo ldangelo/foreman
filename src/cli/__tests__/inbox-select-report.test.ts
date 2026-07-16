@@ -251,6 +251,30 @@ describe("selectReportInteractive", () => {
       consoleLogSpy.mockRestore();
     });
 
+    it("rejects partially numeric input with trailing letters (e.g., '1abc')", async () => {
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await importAndRunSelectReport(createSummary(), "1abc");
+
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Invalid selection"));
+      expect(mocks.mockSpawnSync).not.toHaveBeenCalled();
+      consoleLogSpy.mockRestore();
+    });
+
+    it("rejects fractional numeric input (e.g., '1.5')", async () => {
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await importAndRunSelectReport(createSummary(), "1.5");
+
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Invalid selection"));
+      expect(mocks.mockSpawnSync).not.toHaveBeenCalled();
+      consoleLogSpy.mockRestore();
+    });
+
     it("rejects zero and negative numbers", async () => {
       const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -302,6 +326,21 @@ describe("selectReportInteractive", () => {
       await new Promise((r) => setTimeout(r, 20));
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("exited with code 42"));
+      consoleLogSpy.mockRestore();
+    });
+
+    it("reports failure when editor cannot start (status null with error)", async () => {
+      mocks.mockSpawnSync.mockReturnValue({
+        status: null,
+        error: new Error("ENOENT: no such file or directory, access '/usr/bin/nonexistent-editor'"),
+      });
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await importAndRunSelectReport(createSummary(), "1");
+
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to launch editor"));
       consoleLogSpy.mockRestore();
     });
 

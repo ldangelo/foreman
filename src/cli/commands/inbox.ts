@@ -1786,16 +1786,27 @@ export async function selectReportInteractive(summary: InboxTaskSummary): Promis
       console.log(chalk.dim("Cancelled."));
       return;
     }
+    // Validate that the input is a valid positive integer (no trailing characters)
+    if (!/^[1-9]\d*$/.test(answer)) {
+      console.log(chalk.red(`Invalid selection. Must be a number between 1 and ${entries.length}.`));
+      return;
+    }
     const index = parseInt(answer, 10);
-    if (isNaN(index) || index < 1 || index > entries.length) {
+    if (index < 1 || index > entries.length) {
       console.log(chalk.red(`Invalid selection. Must be a number between 1 and ${entries.length}.`));
       return;
     }
     const selected = entries[index - 1];
     console.log(chalk.dim(`Opening ${selected.name} in ${resolveEditor()}...`));
-    const exitCode = spawnSync(resolveEditor(), [selected.path], {
+    const spawnResult = spawnSync(resolveEditor(), [selected.path], {
       stdio: "inherit",
-    }).status ?? 0;
+    });
+    // Handle spawn failures where status is null but error is present (e.g., ENOENT)
+    if (spawnResult.error) {
+      console.log(chalk.red(`Failed to launch editor: ${spawnResult.error.message}`));
+      return;
+    }
+    const exitCode = spawnResult.status ?? 0;
     if (exitCode !== 0) {
       console.log(chalk.yellow(`Editor exited with code ${exitCode}.`));
     }
