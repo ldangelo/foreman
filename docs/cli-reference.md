@@ -655,6 +655,8 @@ foreman inbox --unread            # Show only unread messages
 foreman inbox --limit 100         # Show more messages
 foreman inbox --compact           # Summarize task/run, phases, tools, denials, notable events
 foreman inbox task bd-abc1 --logs --reports --files
+foreman inbox task bd-abc1 --select-report   # Interactive report file picker → opens in $EDITOR
+foreman inbox run <run-id> --select-report      # Interactive run report file picker → opens in $EDITOR
 foreman inbox --ack               # Mark shown messages as read
 ```
 
@@ -673,6 +675,7 @@ foreman inbox --ack               # Mark shown messages as read
 | `--scope <scope>` | attention | Task summary scope: active, attention, all, terminal |
 | `--messages` / `--events` | — | Task/run drilldown sections |
 | `--logs` / `--reports` / `--files` | — | Task/run drilldown artifact sections |
+| `--select-report` | — | Task/run subcommands only: interactively select a report file to open in `$EDITOR` |
 
 ### `foreman inbox send`
 

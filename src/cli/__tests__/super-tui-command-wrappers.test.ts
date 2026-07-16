@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveBoardCommandRoute } from "../commands/board.js";
-import { resolveInboxDetailRoute, resolveInboxOverviewRoute } from "../commands/inbox.js";
+import { resolveInboxDetailRoute, resolveInboxOverviewRoute, validateInboxDetailOptions } from "../commands/inbox.js";
 import { shouldRouteStatusToSuperTui } from "../commands/status.js";
 
 describe("super TUI command wrapper route decisions", () => {
@@ -24,6 +24,12 @@ describe("super TUI command wrapper route decisions", () => {
       { subcommand: "run", options: { interactive: true }, expected: "cockpit" },
     ] as const)("routes inbox $subcommand detail through $expected for the selected id", ({ options, expected }) => {
       expect(resolveInboxDetailRoute(options)).toBe(expected);
+    });
+
+    it("rejects combining inbox report selection with follow mode", () => {
+      expect(validateInboxDetailOptions({ follow: true, selectReport: true })).toContain("--follow and --select-report");
+      expect(validateInboxDetailOptions({ follow: true })).toBeNull();
+      expect(validateInboxDetailOptions({ selectReport: true })).toBeNull();
     });
 
     it.each([

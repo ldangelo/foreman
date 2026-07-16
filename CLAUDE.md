@@ -265,6 +265,7 @@ foreman purge runs     # Remove stale failed run records
 # Mail inspection
 foreman inbox --all --watch  # Live task-first mail/events with LAST timestamps across runs
 foreman inbox task X --logs --reports --files  # Scriptable mail/events plus artifacts
+foreman inbox task X --select-report           # Interactively choose a report artifact to open in $EDITOR
 foreman inbox task X --interactive             # Unified cockpit with task selected
 
 # Worktree cleanup
