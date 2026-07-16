@@ -1510,11 +1510,10 @@ async function selectFromDropdown(
   render();
 
   return new Promise((resolve) => {
-    const cleanup = () => {
-      process.stdin.removeAllListeners("data");
-    };
-
     const onData = (chunk: Buffer) => {
+      const cleanup = () => {
+        process.stdin.removeListener("data", onData);
+      };
       const key = chunk.toString("utf8");
 
       if (key === KEY_ARROW_UP) {
