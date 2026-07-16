@@ -33,7 +33,7 @@ type model struct {
 	// detail for the selected run
 	msgs           []Message
 	events         []Event
-	logs           []string
+	logs           []LogEntry
 	logPath        string
 	reports        []Report
 	files          []FileChange

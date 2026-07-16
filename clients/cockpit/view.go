@@ -865,8 +865,8 @@ func (m model) selectedLogIndex() (int, bool) {
 		return 0, false
 	}
 	if line, ok := m.viewer.SelectedLine(); ok {
-		for i, logLine := range m.logs {
-			if line.Key == "log:"+itoa(i)+":"+logLine {
+		for i, entry := range m.logs {
+			if line.Key == "log:"+itoa(i)+":"+entry.Message {
 				return i, true
 			}
 		}
@@ -1162,32 +1162,81 @@ func renderEventLines(events []Event, w int, visual paneVisual) []ViewerLine {
 	return lines
 }
 
-func renderLogLines(run Run, logs []string, logPath string, w int, visual paneVisual) []ViewerLine {
+func renderLogLines(run Run, logs []LogEntry, logPath string, w int, visual paneVisual) []ViewerLine {
 	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
 	cyanStyle := lipgloss.NewStyle().Foreground(visual.Cyan)
 	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
-	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
 	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	redStyle := lipgloss.NewStyle().Foreground(visual.Red).Bold(true)
+	yellowStyle := lipgloss.NewStyle().Foreground(visual.Yellow)
 	t := logTarget(run, logPath)
 	lines := []ViewerLine{{Key: "log:target:" + run.RunID, Text: greenStyle.Render("⧉ ") + cyanStyle.Render(t.path), Target: t}}
-	for i, ln := range logs {
-		prefix := dimStyle.Render(fmt.Sprintf("%4d │ ", i+1))
+
+	streamGlyph := map[string]string{
+		"stderr":    "[E]",
+		"assistant": "[A]",
+		"tool":      "[T]",
+		"event":     "[~]",
+		"stdout":    "[O]",
+	}
+
+	for i, entry := range logs {
 		lineNumber := i + 1
-		logLine := ln
+		ts := formatTimestamp(entry.OccurredAt)
+		glyph := streamGlyph[entry.Stream]
+		if glyph == "" {
+			glyph = "[O]"
+		}
+		var color lipgloss.Style
+		switch entry.Stream {
+		case "stderr":
+			color = redStyle
+		case "assistant":
+			color = cyanStyle
+		case "tool":
+			color = greenStyle
+		case "event":
+			color = yellowStyle
+		case "stdout":
+			color = lipgloss.NewStyle().Foreground(visual.White)
+		default:
+			color = lipgloss.NewStyle().Foreground(visual.White)
+		}
+		streamIndicator := color.Render(glyph)
+		// Compact prefix: line number + timestamp + stream indicator
+		prefix := dimStyle.Render(fmt.Sprintf("%4d ", lineNumber)) + dimStyle.Render(ts) + streamIndicator + " "
+		// The message is scrollable
+		text := entry.Message
+
 		lines = append(lines, ViewerLine{
-			Key:    "log:" + itoa(i) + ":" + logLine,
-			Text:   prefix + textStyle.Render(logLine),
+			Key:    "log:" + itoa(i) + ":" + entry.Message,
+			Text:   prefix + text,
 			Target: t,
-			DetailFunc: func() []string {
-				detail := []string{
-					whiteStyle.Render("  Log detail"),
-					detailKV("line", itoa(lineNumber), w, visual),
+			DetailFunc: func(entry LogEntry, lineNum int) func() []string {
+				return func() []string {
+					detail := []string{
+						whiteStyle.Render("  Log detail"),
+						detailKV("line", itoa(lineNum), w, visual),
+						detailKV("type", entry.Type, w, visual),
+						detailKV("stream", entry.Stream, w, visual),
+					}
+					if entry.OccurredAt != "" {
+						detail = append(detail, detailKV("at", entry.OccurredAt, w, visual))
+					}
+					return append(detail, detailWrapped("text", entry.Message, w, visual)...)
 				}
-				return append(detail, detailWrapped("text", logLine, w, visual)...)
-			},
+			}(entry, lineNumber),
 		})
 	}
 	return lines
+}
+
+// formatTimestamp converts ISO timestamp to HH:MM:SS format
+func formatTimestamp(ts string) string {
+	if len(ts) < 19 {
+		return ts
+	}
+	return ts[11:19]
 }
 
 func (m model) renderPRLines(w int, visual paneVisual) []ViewerLine {
@@ -1346,7 +1395,7 @@ func (m model) renderAction(w int, visual paneVisual) string {
 		clip(dimStyle.Render("→ "+plainMode), w),
 	}
 	if idx, ok := m.selectedLogIndex(); ok {
-		lines = append(lines, clip(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx]), w))
+		lines = append(lines, clip(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx].Message), w))
 	}
 	if runActionLine != "" {
 		lines = append(lines, runActionLine)

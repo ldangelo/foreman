@@ -317,12 +317,12 @@ func appendBriefReports(b *strings.Builder, reports []Report) {
 	}
 }
 
-func appendBriefLogs(b *strings.Builder, logs []string) {
+func appendBriefLogs(b *strings.Builder, logs []LogEntry) {
 	var lines []string
-	for _, line := range logs {
-		lower := strings.ToLower(line)
+	for _, entry := range logs {
+		lower := strings.ToLower(entry.Message)
 		if strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "panic") || strings.Contains(lower, "exception") {
-			lines = append(lines, strings.TrimSpace(line))
+			lines = append(lines, strings.TrimSpace(entry.Message))
 		}
 		if len(lines) >= 8 {
 			break
