@@ -1814,7 +1814,7 @@ async function renderLogSection(summary: InboxTaskSummary, tailCount = 24): Prom
           const phase = entry.phase_id ? `[${entry.phase_id}]` : "";
           const colorFn = colorForStream(entry.stream);
           const prefix = `${ts} ${colorFn(stream)} ${type ? colorFn(type) : ""} ${phase ? colorFn(phase) : ""}`;
-          const msg = truncate(entry.message || "(empty)", Math.max(20, termWidth - prefix.length + 3));
+          const msg = truncate(entry.message || "(empty)", Math.max(20, Math.max(0, termWidth - prefix.length) + 3));
           lines.push(`${prefix} ${colorFn(msg)}`);
         }
         return lines.join("\n");

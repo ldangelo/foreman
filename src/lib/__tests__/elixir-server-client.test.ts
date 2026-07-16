@@ -91,7 +91,7 @@ describe("ElixirServerClient", () => {
     mockJsonResponse(200, { ok: true, scheduler: { launched: 1 } });
     mockJsonResponse(200, { ok: true, inbox: [{ message_id: "msg-1" }] });
     mockJsonResponse(200, { ok: true, events: [{ event_id: "evt-1" }] });
-    mockJsonResponse(200, { ok: true, logs: [{ line: "hello" }] });
+    mockJsonResponse(200, { ok: true, logs: {run_id: "run-1", mode: "raw", entries: [{line: "hello"}]} });
     mockJsonResponse(200, { ok: true, report: { verdict: "PASS" } });
     mockJsonResponse(200, { ok: true, debug: { phases: [] } });
     const client = new ElixirServerClient("http://server.test");
