@@ -123,10 +123,10 @@ describe("foreman logs command context", () => {
     expect(mockListRuns).toHaveBeenCalledWith({ projectId: "proj-1" });
   });
 
-  it("errors when the raw log file is missing", async () => {
+  it("errors when the raw log file is missing in --raw mode", async () => {
     unlinkSync(join(process.env.HOME!, ".foreman", "logs", "12345678-1234-1234-1234-123456789abc.log"));
 
-    await expect(logsCommand.parseAsync(["task-1"], { from: "user" })).rejects.toThrow("process.exit(1)");
+    await expect(logsCommand.parseAsync(["task-1", "--raw"], { from: "user" })).rejects.toThrow("process.exit(1)");
 
     const rendered = vi.mocked(console.error).mock.calls.map((args: unknown[]) => String(args[0] ?? "")).join("\n");
     expect(rendered).toContain("Raw log not found");

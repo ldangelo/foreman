@@ -281,8 +281,11 @@ export class ElixirServerClient {
     return body.events;
   }
 
-  async getRunLogs(runId: string, view: "compact" | "raw" = "compact"): Promise<LogEntry[]> {
-    const body = await this.getJson<{ ok: true; logs: { run_id: string; mode: string; entries: unknown[] } }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${view}`);
+  async getRunLogs(runId: string, view: "compact" | "raw" = "compact", limit?: number): Promise<LogEntry[]> {
+    const params = new URLSearchParams({ view });
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; logs: { run_id: string; mode: string; entries: unknown[] } }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?${query}`);
     return body.logs.entries.filter(isValidLogEntry);
   }
 

@@ -223,16 +223,15 @@ async function renderSummary(runId: string, tailCount: number, useElixir = false
 
     if (client) {
       try {
-        const entries = await client.getRunLogs(runId, "compact");
+        const entries = await client.getRunLogs(runId, "compact", tailCount);
         if (entries && entries.length > 0) {
           console.log(chalk.bold("\n  Structured log entries:"));
-          const shown = entries.slice(-tailCount);
-          for (const entry of shown) {
+          for (const entry of entries) {
             const ts = formatLogTimestamp(entry.occurred_at);
-            const stream = `[${entry.stream.padEnd(8)}]`;
+            const stream = `[${entry.stream?.padEnd(8) ?? "unknown "}]`;
             const type = entry.type ? `[${entry.type}]` : "";
             const phase = entry.phase_id ? `[${entry.phase_id}]` : "";
-            const colorFn = colorForStream(entry.stream);
+            const colorFn = colorForStream(entry.stream ?? "");
             const prefix = `${ts} ${colorFn(stream)} ${type ? colorFn(type) : ""} ${phase ? colorFn(phase) : ""}`;
             const msg = entry.message || "(empty)";
             console.log(`${prefix} ${colorFn(msg)}`);
