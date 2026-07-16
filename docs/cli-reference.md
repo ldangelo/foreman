@@ -674,7 +674,9 @@ foreman inbox --ack               # Mark shown messages as read
 | `--non-interactive` | — | Force scriptable output even when stdout is a TTY |
 | `--scope <scope>` | attention | Task summary scope: active, attention, all, terminal |
 | `--messages` / `--events` | — | Task/run drilldown sections |
-| `--logs` / `--reports` / `--files` | — | Task/run drilldown artifact sections |
+| `--logs` | — | Task/run subcommand: show last 24 structured log entries (timestamp, stream, type, phase, message) with color coding; falls back to raw log files if Elixir backend unavailable |
+| `--reports` | — | Task/run subcommand: show phase report files |
+| `--files` | — | Task/run subcommand: show file changes |
 | `--select-report` | — | Task/run subcommands only: interactively select a report file to open in `$EDITOR` |
 
 ### `foreman inbox send`
