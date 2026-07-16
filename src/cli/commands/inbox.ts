@@ -739,18 +739,28 @@ function formatMessage(msg: Message, fullPayload = false): string {
   const header = `[${ts}] ${msg.sender_agent_type} → ${msg.recipient_agent_type}  |  ${msg.subject}${readMark}`;
 
   if (fullPayload) {
-    // Show full body — try to pretty-print JSON, otherwise show raw
-    let bodyDisplay: string;
+    // Show full body — try to format as key-value pairs, otherwise show raw
+    let bodyLines: string[];
     try {
-      const parsed = JSON.parse(msg.body);
-      bodyDisplay = JSON.stringify(parsed, null, 2);
+      const parsed = JSON.parse(msg.body) as Record<string, unknown>;
+      const terminalWidth = getTerminalWidth();
+      bodyLines = Object.entries(parsed).map(([key, value]) => {
+        // Serialize nested objects as JSON strings within the value
+        const valueStr = typeof value === "object" && value !== null
+          ? JSON.stringify(value)
+          : String(value ?? "");
+        // Wrap long values at terminal width (accounting for "  key: " prefix)
+        const prefixLen = key.length + 4; // "  key: "
+        const wrappedValue = wrapText(valueStr, terminalWidth - prefixLen);
+        // Indent continuation lines to align after "key: "
+        return wrappedValue.split("\n").map((line, i) =>
+          i === 0 ? `  ${key}: ${line}` : `  ${" ".repeat(key.length + 2)}${line}`
+        ).join("\n");
+      });
     } catch {
-      bodyDisplay = msg.body;
+      bodyLines = msg.body.split("\n");
     }
-    // Wrap at terminal width to prevent line clipping on long JSON payloads
-    const terminalWidth = getTerminalWidth();
-    const wrappedBody = wrapText(bodyDisplay, terminalWidth - 2); // -2 for indentation
-    return `${header}\n${wrappedBody.split("\n").map((l) => `  ${l}`).join("\n")}`;
+    return `${header}\n${bodyLines.join("\n")}`;
   }
 
   // Default: try to parse JSON and show key fields for readability
