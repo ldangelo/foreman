@@ -39,6 +39,39 @@ interface RecentToolEvent {
   detail?: string;
 }
 
+interface LogEntry {
+  event_id: string;
+  sequence: number;
+  type: string;
+  phase_id: string | null;
+  worker_id: string | null;
+  stream: string;
+  message: string;
+  occurred_at: string;
+}
+
+function formatLogTimestamp(iso: string): string {
+  try {
+    const ms = Number(iso);
+    if (!isNaN(ms) && String(ms).length >= 10) {
+      return new Date(ms < 1e12 ? ms * 1000 : ms).toISOString().replace("T", " ").replace("Z", "");
+    }
+    return new Date(iso).toISOString().replace("T", " ").replace("Z", "");
+  } catch {
+    return iso;
+  }
+}
+
+function colorForStream(stream: string): (s: string) => string {
+  switch (stream) {
+    case "stderr": return chalk.red;
+    case "stdout": return chalk.dim;
+    case "tool": return chalk.cyan;
+    case "assistant": return chalk.green;
+    default: return (s: string) => s;
+  }
+}
+
 function logsDir(): string {
   return join(homedir(), ".foreman", "logs");
 }
@@ -167,13 +200,50 @@ function renderFileStats(runId: string): void {
   }
 }
 
-function renderSummary(runId: string, tailCount: number): void {
+async function renderSummary(runId: string, tailCount: number, useElixir = false): Promise<void> {
   const errPath = logPath(runId, "err");
   const jsonLogPath = logPath(runId, "log");
 
   console.log(chalk.bold("\n  Log files:"));
   renderFileStats(runId);
 
+  // Try structured rendering from Elixir backend first
+  if (useElixir) {
+    let client: ElixirServerClient | undefined;
+    try {
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    } catch {
+      // Elixir server not available — fall through to file-based fallback
+    }
+
+    if (client) {
+      try {
+        const entries = await client.getRunLogs(runId, "compact") as LogEntry[];
+        if (entries && entries.length > 0) {
+          console.log(chalk.bold("\n  Structured log entries:"));
+          const shown = entries.slice(-tailCount);
+          for (const entry of shown) {
+            const ts = formatLogTimestamp(entry.occurred_at);
+            const stream = `[${entry.stream.padEnd(8)}]`;
+            const type = entry.type ? `[${entry.type}]` : "";
+            const phase = entry.phase_id ? `[${entry.phase_id}]` : "";
+            const colorFn = colorForStream(entry.stream);
+            const prefix = `${ts} ${colorFn(stream)} ${type ? colorFn(type) : ""} ${phase ? colorFn(phase) : ""}`;
+            const msg = entry.message || "(empty)";
+            console.log(`${prefix} ${colorFn(msg)}`);
+          }
+          console.log(chalk.dim(`\n  Use --raw --tail ${tailCount} to print raw JSON lines.`));
+          return;
+        }
+      } catch {
+        // fall through to file-based fallback
+      }
+    }
+  }
+
+  // Fallback: parse from log files
   if (existsSync(errPath)) {
     const phases = extractPhaseEvents(tailFileLines(errPath, 5000).join("\n"));
     console.log(chalk.bold("\n  Phase/events:"));
@@ -410,7 +480,8 @@ export const logsCommand = new Command("logs")
       }
     } else {
       renderRunHeader(resolved);
-      renderSummary(resolved.run.id, tailCount);
+      const useElixir = foremanBackendMode() === "elixir";
+      await renderSummary(resolved.run.id, tailCount, useElixir);
       console.log();
     }
 
