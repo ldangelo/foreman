@@ -27,6 +27,9 @@ Implemented structured log rendering for `foreman inbox task <id> --logs`. The i
 - `src/cli/__tests__/inbox.test.ts` — Test coverage for the new async `renderLogSection()` path.
 - `src/cli/__tests__/inbox-tui-contracts.test.ts` — TUI contract tests for DetailPane async output unwrapping behavior.
 - `docs/cli-reference.md` — CLI documentation for the new `--logs` flag. Documentation was updated to match the implemented behavior.
+- `src/lib/elixir-server-client.ts` — Required fix: the Elixir backend API response for `getRunLogs` changed from an array to `{ run_id, mode, entries }` structure. The client code was updated to unwrap `body.logs.entries` correctly.
+- `src/lib/__tests__/elixir-server-client.test.ts` — Test coverage for the updated `getRunLogs` API response structure.
+- `reports/DEVELOPER_REPORT.md` — Developer phase report documenting implementation, scope expansions, and QA handoff.
 
 ## Known Limitations
 - None
