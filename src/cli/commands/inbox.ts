@@ -742,21 +742,33 @@ function formatMessage(msg: Message, fullPayload = false): string {
     // Show full body — try to format as key-value pairs, otherwise show raw
     let bodyLines: string[];
     try {
-      const parsed = JSON.parse(msg.body) as Record<string, unknown>;
+      const parsed = JSON.parse(msg.body);
       const terminalWidth = getTerminalWidth();
-      bodyLines = Object.entries(parsed).map(([key, value]) => {
-        // Serialize nested objects as JSON strings within the value
-        const valueStr = typeof value === "object" && value !== null
-          ? JSON.stringify(value)
-          : String(value ?? "");
-        // Wrap long values at terminal width (accounting for "  key: " prefix)
-        const prefixLen = key.length + 4; // "  key: "
-        const wrappedValue = wrapText(valueStr, terminalWidth - prefixLen);
-        // Indent continuation lines to align after "key: "
-        return wrappedValue.split("\n").map((line, i) =>
-          i === 0 ? `  ${key}: ${line}` : `  ${" ".repeat(key.length + 2)}${line}`
-        ).join("\n");
-      });
+      // Only render as key-value pairs for non-null, non-array objects with entries
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        Object.keys(parsed).length > 0
+      ) {
+        const entries = Object.entries(parsed as Record<string, unknown>);
+        bodyLines = entries.map(([key, value]) => {
+          // Serialize nested objects as JSON strings within the value
+          const valueStr = typeof value === "object" && value !== null
+            ? JSON.stringify(value)
+            : String(value ?? "");
+          // Wrap long values at terminal width (accounting for "  key: " prefix)
+          const prefixLen = key.length + 4; // "  key: "
+          const wrappedValue = wrapText(valueStr, Math.max(1, terminalWidth - prefixLen));
+          // Indent continuation lines to align after "key: "
+          return wrappedValue.split("\n").map((line, i) =>
+            i === 0 ? `  ${key}: ${line}` : `  ${" ".repeat(key.length + 2)}${line}`
+          ).join("\n");
+        });
+      } else {
+        // Fallback for empty objects, arrays, primitives, etc.: show serialized payload
+        bodyLines = JSON.stringify(parsed, null, 2).split("\n");
+      }
     } catch {
       bodyLines = msg.body.split("\n");
     }
