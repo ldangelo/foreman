@@ -139,6 +139,17 @@ type Project struct {
 	Path      string
 }
 
+// LogEntry represents a structured log entry from the API.
+type LogEntry struct {
+	Message    string
+	Type       string
+	Stream     string // stdout, stderr, assistant, tool, event
+	OccurredAt string // ISO timestamp
+	PhaseID    string
+	WorkerID   string
+	Sequence   int
+}
+
 type Client interface {
 	ProjectID() string
 	Projects() []Project
@@ -147,7 +158,7 @@ type Client interface {
 	Metrics() Metrics
 	Messages(runID string) []Message
 	Events(runID string) []Event
-	Logs(runID string) []string
+	Logs(runID string) []LogEntry
 	LogPath(runID string) string
 	Reports(runID string) []Report
 	Files(runID string) []FileChange
@@ -686,22 +697,22 @@ func (*mockClient) Events(runID string) []Event {
 	return nil
 }
 
-func (*mockClient) Logs(runID string) []string {
+func (*mockClient) Logs(runID string) []LogEntry {
 	switch runID {
 	case "a1b2c3d4":
-		return []string{
-			"[11:06:19] tool git_status → 3 modified",
-			"[11:06:20] tool artifact_write DEVELOPER_REPORT.md",
-			"[11:06:31] assistant: running type-check…",
-			"[11:06:44] tsc: no errors",
+		return []LogEntry{
+			{Message: "tool git_status → 3 modified", Stream: "tool", Type: "ToolCall", OccurredAt: "2026-07-16T11:06:19Z", Sequence: 1},
+			{Message: "tool artifact_write DEVELOPER_REPORT.md", Stream: "tool", Type: "ToolCall", OccurredAt: "2026-07-16T11:06:20Z", Sequence: 2},
+			{Message: "running type-check…", Stream: "assistant", Type: "AssistantMessage", OccurredAt: "2026-07-16T11:06:31Z", Sequence: 3},
+			{Message: "tsc: no errors", Stream: "stdout", Type: "CommandOutput", OccurredAt: "2026-07-16T11:06:44Z", Sequence: 4},
 		}
 	case "33cc44dd":
-		return []string{
-			"[09:40:05] git rebase origin/dev",
-			"[09:40:22] CONFLICT (content): src/orchestrator/dispatcher.ts",
+		return []LogEntry{
+			{Message: "git rebase origin/dev", Stream: "stdout", Type: "CommandOutput", OccurredAt: "2026-07-16T09:40:05Z", Sequence: 1},
+			{Message: "CONFLICT (content): src/orchestrator/dispatcher.ts", Stream: "stderr", Type: "Error", OccurredAt: "2026-07-16T09:40:22Z", Sequence: 2},
 		}
 	}
-	return []string{"(no log lines)"}
+	return []LogEntry{{Message: "(no log lines)", Stream: "stdout"}}
 }
 
 func (*mockClient) LogPath(string) string { return "" }
@@ -1472,10 +1483,10 @@ func (c *httpClient) debugTimelineEvents(runID string) []Event {
 	return out
 }
 
-func (c *httpClient) Logs(runID string) []string {
+func (c *httpClient) Logs(runID string) []LogEntry {
 	m, err := c.get("/api/v1/runs/" + url.PathEscape(runID) + "/logs")
 	if err != nil {
-		return []string{"(logs unavailable: " + err.Error() + ")"}
+		return []LogEntry{{Message: "(logs unavailable: " + err.Error() + ")", Stream: "stderr", Type: "error"}}
 	}
 	logs := obj(m, "logs")
 	c.setLogPath(runID, firstNonEmpty(str(logs, "path", "log_path"), str(m, "path", "log_path")))
@@ -1483,13 +1494,25 @@ func (c *httpClient) Logs(runID string) []string {
 	if len(entries) == 0 {
 		entries = arr(m, "logs")
 	}
-	var out []string
-	for _, x := range entries {
-		line := str(x, "line", "message")
-		if line == "" {
-			line = eventDetail(x)
+	var out []LogEntry
+	for i, x := range entries {
+		message := str(x, "line", "message")
+		if message == "" {
+			message = eventDetail(x)
 		}
-		out = append(out, line)
+		seq := i
+		if s, ok := x["sequence"].(float64); ok {
+			seq = int(s)
+		}
+		out = append(out, LogEntry{
+			Message:    message,
+			Type:       str(x, "type", "event_type"),
+			Stream:     str(x, "stream"),
+			OccurredAt: str(x, "occurred_at", "created_at"),
+			PhaseID:    str(x, "phase_id"),
+			WorkerID:   str(x, "worker_id"),
+			Sequence:   seq,
+		})
 	}
 	return out
 }

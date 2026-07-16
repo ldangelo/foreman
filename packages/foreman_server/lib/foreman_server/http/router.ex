@@ -253,7 +253,8 @@ defmodule ForemanServer.Http.Router do
 
     with :ok <- authorize(conn),
          {:ok, mode} <- log_view_mode(conn.query_params["view"]),
-         {:ok, logs} <- ForemanServer.DebugViews.logs(run_id, mode: mode) do
+         limit <- query_limit(conn.query_params["limit"], :unlimited),
+         {:ok, logs} <- ForemanServer.DebugViews.logs(run_id, mode: mode, limit: limit) do
       send_json(conn, 200, %{ok: true, logs: logs})
     else
       {:error, :unauthorized} ->

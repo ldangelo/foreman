@@ -1189,7 +1189,10 @@ func TestLogViewerShowsSelectedLogDetail(t *testing.T) {
 	m.width = 120
 	m.height = 20
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running"}}
-	m.logs = []string{"alpha", "ERROR: compile failed"}
+	m.logs = []LogEntry{
+		{Message: "alpha", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+		{Message: "ERROR: compile failed", Stream: "stderr", OccurredAt: "2026-07-16T10:00:01Z"},
+	}
 	m.logPath = "/tmp/run.log"
 	m.tab = 3
 	m.viewFocused = true
@@ -1441,7 +1444,7 @@ func TestFocusedViewerScrollChangesRenderedBody(t *testing.T) {
 	m.height = 12
 	m.runs = []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}}
 	for i := range 12 {
-		m.logs = append(m.logs, "log-line-"+itoa(i))
+		m.logs = append(m.logs, LogEntry{Message: "log-line-" + itoa(i), Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"})
 	}
 	m.tab = 3
 	m.viewFocused = true
@@ -1465,7 +1468,11 @@ func TestFocusedViewerScrollChangesRenderedBody(t *testing.T) {
 func TestFocusedViewerSlashStartsDrilldownSearch(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
-		logs: []string{"alpha", "needle target", "omega"},
+		logs: []LogEntry{
+			{Message: "alpha", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+			{Message: "needle target", Stream: "stdout", OccurredAt: "2026-07-16T10:00:01Z"},
+			{Message: "omega", Stream: "stdout", OccurredAt: "2026-07-16T10:00:02Z"},
+		},
 	}
 	m := newModel(client)
 	m.width = 100
@@ -1501,7 +1508,11 @@ func TestFocusedViewerSlashStartsDrilldownSearch(t *testing.T) {
 func TestFocusedViewerSearchSupportsCursorEditAndPaste(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer"}},
-		logs: []string{"alpha", "read target", "omega"},
+		logs: []LogEntry{
+			{Message: "alpha", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+			{Message: "read target", Stream: "stdout", OccurredAt: "2026-07-16T10:00:01Z"},
+			{Message: "omega", Stream: "stdout", OccurredAt: "2026-07-16T10:00:02Z"},
+		},
 	}
 	m := newModel(client)
 	m.width = 100
@@ -1806,7 +1817,10 @@ func TestMessageRefreshPreservesCursorWhenNewMessagesPrepend(t *testing.T) {
 func TestViewerAtBottomFollowsAppendedContent(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
-		logs: []string{"one", "two"},
+		logs: []LogEntry{
+			{Message: "one", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+			{Message: "two", Stream: "stdout", OccurredAt: "2026-07-16T10:00:01Z"},
+		},
 	}
 	m := newModel(client)
 	m.width = 120
@@ -1819,7 +1833,7 @@ func TestViewerAtBottomFollowsAppendedContent(t *testing.T) {
 		t.Fatalf("test setup expected bottom log selected, got key %q", got)
 	}
 
-	client.logs = append(client.logs, "three")
+	client.logs = append(client.logs, LogEntry{Message: "three", Stream: "stdout", OccurredAt: "2026-07-16T10:00:02Z"})
 	updated, _ = m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
 
@@ -1901,7 +1915,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 func TestLogOpenTargetUsesEndpointPathWhenPresent(t *testing.T) {
 	client := &mutableClient{
 		runs:    []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
-		logs:    []string{"custom log line"},
+		logs:    []LogEntry{{Message: "custom log line", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"}},
 		logPath: "/tmp/foreman/custom/run.log",
 	}
 	m := newModel(client)
@@ -2228,7 +2242,10 @@ func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	long := strings.Repeat("x", 80) + " TAIL"
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
-		logs: []string{"short", long},
+		logs: []LogEntry{
+			{Message: "short", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+			{Message: long, Stream: "stdout", OccurredAt: "2026-07-16T10:00:01Z"},
+		},
 	}
 	m := newModel(client)
 	m.width = 80
@@ -2239,14 +2256,16 @@ func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
 	before := stripANSI(m.renderRight(m.rightPaneWidth()))
-	if !strings.Contains(before, "   2 │ ") {
-		t.Fatalf("expected log rows to render line numbers, got:\n%s", before)
+	// Check that line number appears in the new format (with timestamp and stream indicator)
+	if !strings.Contains(before, "   2 ") || !strings.Contains(before, "10:00:01") {
+		t.Fatalf("expected log rows to render line numbers with timestamp, got:\n%s", before)
 	}
 	if strings.Contains(before, "TAIL") {
 		t.Fatalf("test setup expected long log tail to start out of view, got:\n%s", before)
 	}
 
-	for range 5 {
+	// Scroll further to reveal TAIL (need more presses due to added timestamp/stream prefix)
+	for range 7 {
 		updated, _ = m.handleKey(specialKey(tea.KeyRight))
 		m = updated.(model)
 	}
@@ -2278,7 +2297,10 @@ func TestHorizontalPanIsScopedToLogsTab(t *testing.T) {
 func TestFocusedViewerSavesVisibleContent(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
-		logs: []string{"alpha", "beta"},
+		logs: []LogEntry{
+			{Message: "alpha", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+			{Message: "beta", Stream: "stdout", OccurredAt: "2026-07-16T10:00:01Z"},
+		},
 	}
 	cfg := defaultConfig()
 	cfg.Cockpit.ExportDir = t.TempDir()
@@ -2315,7 +2337,7 @@ type mutableClient struct {
 	runs          []Run
 	messages      []Message
 	messagesByRun map[string][]Message
-	logs          []string
+	logs          []LogEntry
 	logPath       string
 	reports       []Report
 	files         []FileChange
@@ -2417,7 +2439,7 @@ func (c *mutableClient) Events(string) []Event {
 	return nil
 }
 
-func (c *mutableClient) Logs(string) []string {
+func (c *mutableClient) Logs(string) []LogEntry {
 	c.logsCalls++
 	return c.logs
 }
@@ -2509,7 +2531,7 @@ func TestOpenableTabMarkerDrivesHitTesting(t *testing.T) {
 	m.height = 20
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-a", RunID: "run-a", Pipeline: pipe(1, -1)}}
 	m.tasks = nil
-	m.logs = []string{"log line"}
+	m.logs = []LogEntry{{Message: "log line", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"}}
 	m.buildItems()
 
 	out := stripANSI(m.renderTabs(120, paneVisualFor(true, defaultConfig().Cockpit.Focus)))

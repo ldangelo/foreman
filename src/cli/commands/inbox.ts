@@ -1741,12 +1741,6 @@ function foremanHomePath(...parts: string[]): string {
   return join(homedir(), ".foreman", ...parts);
 }
 
-function fileStatLine(label: string, path: string): string {
-  if (!existsSync(path)) return `${label}: missing (${path})`;
-  const stat = statSync(path);
-  return `${label}: ${path} (${stat.size} bytes, updated ${relativeTime(stat.mtime.toISOString())})`;
-}
-
 function readTail(path: string, count: number): string[] {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8")
@@ -1755,20 +1749,35 @@ function readTail(path: string, count: number): string[] {
     .slice(-count);
 }
 
-function renderLogSection(summary: InboxTaskSummary, tailCount = 6): string {
-  const rawPath = foremanHomePath("logs", `${summary.runId}.log`);
-  const errPath = foremanHomePath("logs", `${summary.runId}.err`);
-  const outPath = foremanHomePath("logs", `${summary.runId}.out`);
+function fileStatLine(label: string, path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${chalk.dim(`[${label}]`)} ${chalk.gray(path)} ${chalk.dim(`(${formatBytes(stat.size)})`)}`;
+  } catch {
+    return `${chalk.dim(`[${label}]`)} ${chalk.gray(path)} ${chalk.dim("(stat failed)")}`;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function fallbackRawLogLines(runId: string, tailCount: number): string {
+  const rawPath = foremanHomePath("logs", `${runId}.log`);
+  const errPath = foremanHomePath("logs", `${runId}.err`);
+  const outPath = foremanHomePath("logs", `${runId}.out`);
   const logDir = foremanHomePath("logs");
   const files = [
-    { label: "raw", path: rawPath, name: `${summary.runId}.log` },
-    { label: "err", path: errPath, name: `${summary.runId}.err` },
-    { label: "out", path: outPath, name: `${summary.runId}.out` },
+    { label: "raw", path: rawPath, name: `${runId}.log` },
+    { label: "err", path: errPath, name: `${runId}.err` },
+    { label: "out", path: outPath, name: `${runId}.out` },
   ];
+  const lines: string[] = [chalk.bold("Logs")];
   const existing = files.filter((file) => existsSync(file.path));
-  const lines = [chalk.bold("Logs")];
   if (existing.length === 0) {
-    lines.push(`No log files found for run ${summary.runId} under ${logDir}.`);
+    lines.push(`No log files found for run ${runId} under ${logDir}.`);
     lines.push(`Expected: ${files.map((file) => file.name).join(", ")}`);
     lines.push("Logs may have been removed by reset, purge, or workspace cleanup.");
     return lines.join("\n");
@@ -1780,6 +1789,81 @@ function renderLogSection(summary: InboxTaskSummary, tailCount = 6): string {
     lines.push(...errTail.map((line) => truncate(line, getTerminalWidth())));
   }
   return lines.join("\n");
+}
+
+interface LogEntry {
+  event_id: string;
+  sequence: number;
+  type: string;
+  phase_id: string | null;
+  worker_id: string | null;
+  stream: string;
+  message: string;
+  occurred_at: string;
+}
+
+export function formatLogTimestamp(iso: string): string {
+  try {
+    // iso might be an Elixir ISO8601 string or unix epoch
+    const ms = Number(iso);
+    if (!isNaN(ms) && String(ms).length >= 10) {
+      return new Date(ms < 1e12 ? ms * 1000 : ms).toISOString().replace("T", " ").replace("Z", "");
+    }
+    return new Date(iso).toISOString().replace("T", " ").replace("Z", "");
+  } catch {
+    return iso;
+  }
+}
+
+export function colorForStream(stream: string): (s: string) => string {
+  switch (stream) {
+    case "stderr": return chalk.red;
+    case "stdout": return chalk.dim;
+    case "tool": return chalk.cyan;
+    case "assistant": return chalk.green;
+    default: return (s: string) => s;
+  }
+}
+
+async function renderLogSection(summary: InboxTaskSummary, tailCount = 24): Promise<string> {
+  let client: ElixirServerClient | undefined;
+  try {
+    const manager = new ElixirServerManager();
+    const status = manager.status();
+    if (!status.running) return fallbackRawLogLines(summary.runId, tailCount);
+    const health = await manager.health();
+    if (!health.ok) return fallbackRawLogLines(summary.runId, tailCount);
+    client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+  } catch {
+    // Elixir server not available — fall through to raw file display
+  }
+  const lines: string[] = [chalk.bold("Logs")];
+
+  if (client) {
+    try {
+      const entries = await client.getRunLogs(summary.runId, "compact");
+      if (entries && entries.length > 0) {
+        lines.push(`Showing last ${Math.min(entries.length, tailCount)} structured log entries from Elixir backend.`);
+        const shown = entries.slice(-tailCount);
+        const termWidth = getTerminalWidth();
+        for (const entry of shown) {
+          const ts = formatLogTimestamp(entry.occurred_at);
+          const stream = `[${entry.stream.padEnd(8)}]`;
+          const type = entry.type ? `[${entry.type}]` : "";
+          const phase = entry.phase_id ? `[${entry.phase_id}]` : "";
+          const colorFn = colorForStream(entry.stream);
+          const prefix = `${ts} ${colorFn(stream)} ${type ? colorFn(type) : ""} ${phase ? colorFn(phase) : ""}`;
+          const msg = truncate(entry.message || "(empty)", Math.max(20, Math.max(0, termWidth - prefix.length) + 3));
+          lines.push(`${prefix} ${colorFn(msg)}`);
+        }
+        return lines.join("\n");
+      }
+    } catch {
+      // fall through to raw file fallback
+    }
+  }
+
+  return fallbackRawLogLines(summary.runId, tailCount);
 }
 
 function reportDirectoryCandidates(summary: InboxTaskSummary): string[] {
@@ -1940,7 +2024,7 @@ function selectRecentChronological<T>(items: T[], limit: number, timestamp: (ite
     .slice(Math.max(0, items.length - limit));
 }
 
-export function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): string {
+export async function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): Promise<string> {
   const lines = [
     chalk.bold(`FOREMAN INBOX › ${summary.taskId}`),
     `Run:      ${summary.runId}`,
@@ -1960,7 +2044,7 @@ export function renderTaskDetail(summary: InboxTaskSummary, options: { messages:
     const messages = selectRecentMessages(summary.messages, options.limit);
     lines.push(messages.length > 0 ? renderInboxMessagesTable(messages) : "No messages found.");
   }
-  if (options.logs) lines.push("", renderLogSection(summary));
+  if (options.logs) lines.push("", await renderLogSection(summary));
   if (options.reports) lines.push("", renderReportsSection(summary));
   if (options.files) lines.push("", renderFilesSection(summary));
   return lines.join("\n");
@@ -2058,15 +2142,22 @@ async function followInboxTaskOrRunDetail(
   selector: { task?: string; run?: string },
   options: InboxTaskDetailOptions,
 ): Promise<void> {
+  let renderInFlight = false;
   const renderSnapshot = async (): Promise<void> => {
-    const { runId, summary } = await loadTaskDetailSummary(sources, selector, options);
-    if (!summary) {
-      console.log(`No messages or events found for run ${runId || selector.run || selector.task || "unknown"}.`);
-      return;
+    if (renderInFlight) return;
+    renderInFlight = true;
+    try {
+      const { runId, summary } = await loadTaskDetailSummary(sources, selector, options);
+      if (!summary) {
+        console.log(`No messages or events found for run ${runId || selector.run || selector.task || "unknown"}.`);
+        return;
+      }
+      console.log("");
+      console.log(chalk.dim(`── refresh ${new Date().toLocaleTimeString()} ──`));
+      console.log(await renderTaskDetail(summary, options));
+    } finally {
+      renderInFlight = false;
     }
-    console.log("");
-    console.log(chalk.dim(`── refresh ${new Date().toLocaleTimeString()} ──`));
-    console.log(renderTaskDetail(summary, options));
   };
   console.log(`Following inbox detail for ${selector.task ? `task ${selector.task}` : `run ${selector.run}`}... (Ctrl-C to stop)`);
   await renderSnapshot();
@@ -2106,7 +2197,7 @@ async function renderInboxTaskOrRunDetail(
     await selectReportInteractive(summary);
     return;
   }
-  console.log(renderTaskDetail(summary, options));
+  console.log(await renderTaskDetail(summary, options));
 }
 
 export function adaptDaemonRun(row: DaemonRunRow): Run {

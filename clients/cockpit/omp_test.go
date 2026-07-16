@@ -266,7 +266,11 @@ func TestBuildTriageBriefIncludesReportsLogsAndRedactsSecrets(t *testing.T) {
 		{Name: "CR_CLI_REPORT.md", Preview: "token=abc123\nReview finding: fix retry handling"},
 		{Name: "FINALIZE_VALIDATION.md", Preview: "Rebase conflict in src/app.ts"},
 	}
-	m.logs = []string{"ok", "ERROR: test failed", "authorization bearer secret"}
+	m.logs = []LogEntry{
+		{Message: "ok", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},
+		{Message: "ERROR: test failed", Stream: "stderr", OccurredAt: "2026-07-16T10:00:01Z"},
+		{Message: "authorization bearer secret", Stream: "stderr", OccurredAt: "2026-07-16T10:00:02Z"},
+	}
 	run := Run{TaskID: "task-1", RunID: "run-1", Phase: "qa", Status: "failed", Attention: "ci_failed", Worktree: "/tmp/wt"}
 
 	brief := buildTriageBrief(m, run, "/tmp/wt/.foreman/triage-run-1.md")

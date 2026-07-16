@@ -100,10 +100,9 @@ describe("logs command local fallback", () => {
     });
 
     const logsCommand = await freshLogsCommand();
-    await expect(logsCommand.parseAsync(["task-1"], { from: "user" })).rejects.toThrow("process.exit(1)");
+    // When raw log is missing but not in --raw mode, command succeeds with fallback
+    await expect(logsCommand.parseAsync(["task-1"], { from: "user" })).resolves.toBeDefined();
 
-    const rendered = vi.mocked(console.error).mock.calls.map((args) => String(args[0] ?? "")).join("\n");
-    expect(rendered).toContain("Raw log not found:");
     expect(mockForProject).toHaveBeenCalledWith("/tmp/project");
   });
 

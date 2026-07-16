@@ -72,7 +72,7 @@ func TestHTTPClientParsesLiveProjectionShapes(t *testing.T) {
 	}
 
 	logs := client.Logs("run-live")
-	if len(logs) != 1 || logs[0] != "developer started" || client.LogPath("run-live") != "/tmp/foreman/run-live/custom.log" {
+	if len(logs) != 1 || logs[0].Message != "developer started" || logs[0].Type != "PhaseStarted" || client.LogPath("run-live") != "/tmp/foreman/run-live/custom.log" {
 		t.Fatalf("unexpected logs/path: logs=%#v path=%q", logs, client.LogPath("run-live"))
 	}
 

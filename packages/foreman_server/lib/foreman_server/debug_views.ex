@@ -73,12 +73,20 @@ defmodule ForemanServer.DebugViews do
 
   def logs(run_id, opts) when is_binary(run_id) and run_id != "" do
     mode = Keyword.get(opts, :mode, :compact)
+    limit = Keyword.get(opts, :limit, :unlimited)
 
     entries =
       run_id
       |> run_events()
       |> Enum.filter(&MapSet.member?(@log_event_types, &1.event_type))
       |> Enum.map(&log_entry(&1, mode))
+      |> then(fn all_entries ->
+        if limit == :unlimited or is_nil(limit) do
+          all_entries
+        else
+          Enum.take(all_entries, -limit)
+        end
+      end)
 
     {:ok, %{run_id: run_id, mode: Atom.to_string(mode), entries: entries}}
   end

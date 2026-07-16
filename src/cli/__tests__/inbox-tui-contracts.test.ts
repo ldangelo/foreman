@@ -193,8 +193,8 @@ describe("inbox TUI render contracts", () => {
     expect(output).toMatch(/\bactions?\b/i);
   });
 
-  it("renders newest detail rows in chronological order after applying limits", () => {
-    const output = renderTaskDetail(summary({
+  it("renders newest detail rows in chronological order after applying limits", async () => {
+    const output = await renderTaskDetail(summary({
       messages: [
         message({ id: "msg-oldest", subject: "oldest message", body: "oldest message", created_at: "2026-01-01T00:01:00.000Z" }),
         message({ id: "msg-old", subject: "old message", body: "old message", created_at: "2026-01-01T00:02:00.000Z" }),

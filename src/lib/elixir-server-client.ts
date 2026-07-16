@@ -89,6 +89,32 @@ export type ElixirEvent = Record<string, unknown> & {
   event_type?: string;
 };
 
+export type LogEntry = {
+  event_id: string;
+  sequence: number;
+  type: string;
+  phase_id: string | null;
+  worker_id: string | null;
+  stream: string;
+  message: string;
+  occurred_at: string;
+};
+
+function isValidLogEntry(value: unknown): value is LogEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.event_id === "string" &&
+    typeof entry.sequence === "number" &&
+    typeof entry.type === "string" &&
+    (entry.phase_id === null || typeof entry.phase_id === "string") &&
+    (entry.worker_id === null || typeof entry.worker_id === "string") &&
+    typeof entry.stream === "string" &&
+    typeof entry.message === "string" &&
+    typeof entry.occurred_at === "string"
+  );
+}
+
 export class ElixirServerClient {
   constructor(
     private readonly baseUrl: string,
@@ -255,9 +281,12 @@ export class ElixirServerClient {
     return body.events;
   }
 
-  async getRunLogs(runId: string, view: "compact" | "raw" = "compact"): Promise<unknown[]> {
-    const body = await this.getJson<{ ok: true; logs: unknown[] }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?view=${view}`);
-    return body.logs;
+  async getRunLogs(runId: string, view: "compact" | "raw" = "compact", limit?: number): Promise<LogEntry[]> {
+    const params = new URLSearchParams({ view });
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.toString();
+    const body = await this.getJson<{ ok: true; logs: { run_id: string; mode: string; entries: unknown[] } }>(`/api/v1/runs/${encodeURIComponent(runId)}/logs?${query}`);
+    return body.logs.entries.filter(isValidLogEntry);
   }
 
   async getRunReport(runId: string): Promise<unknown> {

@@ -166,11 +166,11 @@ The cockpit status view renders ordered phase nodes, retry arrows, current failu
 
 ### `foreman logs`
 
-Show run logs and debugging summary.
+Show run logs with structured rendering. When the Elixir backend is available, entries are rendered as timestamped, color-coded lines with stream, type, and phase labels. Falls back to raw log file parsing when the backend is unavailable.
 
 ```bash
-foreman logs bd-abc1              # Show summary for a task
-foreman logs bd-abc1 --tail 200    # Show more raw log lines
+foreman logs bd-abc1              # Show structured log entries
+foreman logs bd-abc1 --tail 200    # Show more log lines
 foreman logs bd-abc1 --follow      # Follow logs in real-time
 foreman logs bd-abc1 --raw         # Print raw JSON log only
 ```
@@ -674,7 +674,9 @@ foreman inbox --ack               # Mark shown messages as read
 | `--non-interactive` | — | Force scriptable output even when stdout is a TTY |
 | `--scope <scope>` | attention | Task summary scope: active, attention, all, terminal |
 | `--messages` / `--events` | — | Task/run drilldown sections |
-| `--logs` / `--reports` / `--files` | — | Task/run drilldown artifact sections |
+| `--logs` | — | Task/run subcommand: show last 24 structured log entries (timestamp, stream, type, phase, message) with color coding; falls back to raw log files if Elixir backend unavailable |
+| `--reports` | — | Task/run subcommand: show phase report files |
+| `--files` | — | Task/run subcommand: show file changes |
 | `--select-report` | — | Task/run subcommands only: interactively select a report file to open in `$EDITOR` |
 
 ### `foreman inbox send`
