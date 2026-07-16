@@ -340,7 +340,9 @@ Common cockpit keys:
 | `!` / `p` / `d` | Failed, has PR, dirty worktree filters |
 | `a` / `:` | Action palette; reset asks for `y` confirmation and executes `foreman reset`; other entries print copy/manual commands |
 | `R` in Go cockpit | Reset the selected run; on a selected task card, reset its latest known run when one is available |
-| `q` / `Esc` | Quit |
+| `q` | Quit (any context) |
+| `Esc` in activities | Return to the board |
+| `Esc` on the board | Quit |
 
 ## Retry and Cleanup Guidance
 
