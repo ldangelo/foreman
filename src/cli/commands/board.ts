@@ -1545,6 +1545,7 @@ async function selectFromDropdown(
 export async function createTaskInEditor(
   onError: (msg: string) => void,
 ): Promise<{ id?: string; title: string; description: string | null; type: string; priority: number; status: string } | null> {
+  const wasRaw = process.stdin.isTTY && process.stdin.isRaw === true;
   // Suspend raw mode for interactive input
   if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
     try {
@@ -1574,6 +1575,10 @@ export async function createTaskInEditor(
     // Prompt for description
     const descriptionInput = await readLine("Description (optional, press Enter to skip): ");
     const description = descriptionInput.trim().length > 0 ? descriptionInput.trim() : null;
+
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      process.stdin.setRawMode!(true);
+    }
 
     // Prompt for type using dropdown
     process.stdout.write(chalk.bold("\nTask Type:\n"));
@@ -1623,10 +1628,10 @@ export async function createTaskInEditor(
     onError(`Failed to create task: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
-    // Restore raw mode
+    // Restore the raw-mode state this form entered with.
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
       try {
-        process.stdin.setRawMode!(true);
+        process.stdin.setRawMode!(wasRaw);
       } catch {
         // ignore
       }
@@ -2074,7 +2079,8 @@ export interface BoardOptions {
  * Read a line from stdin (for close reason prompt).
  */
 async function readLine(prompt: string): Promise<string> {
-  // Temporarily disable raw mode to read input
+  const wasRaw = process.stdin.isTTY && process.stdin.isRaw === true;
+  // Temporarily disable raw mode to read input.
   if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
     process.stdin.setRawMode!(false);
   }
@@ -2089,7 +2095,7 @@ async function readLine(prompt: string): Promise<string> {
   } finally {
     rl.close();
     if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
-      process.stdin.setRawMode!(true);
+      process.stdin.setRawMode!(wasRaw);
     }
   }
 }

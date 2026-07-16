@@ -105,12 +105,21 @@ function createTask(overrides: Partial<BoardTask> = {}): BoardTask {
   };
 }
 
+const setMockRawMode = (enabled: boolean): void => {
+  (process.stdin as typeof process.stdin & { isRaw: boolean }).isRaw = enabled;
+};
+
 describe("board editor and clipboard helpers", () => {
   const originalEditor = process.env.EDITOR;
   const originalVisual = process.env.VISUAL;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setMockRawMode(false);
+    mockSetRawMode.mockImplementation((enabled: boolean) => {
+      setMockRawMode(enabled);
+      return process.stdin;
+    });
     delete process.env.EDITOR;
     delete process.env.VISUAL;
   });
@@ -262,6 +271,9 @@ describe("board editor and clipboard helpers", () => {
 
     // Verify stdin listeners are cleaned up after dropdowns complete
     expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenCalledWith(true);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
   it("cancels task creation with Escape key on dropdown", async () => {
@@ -269,8 +281,8 @@ describe("board editor and clipboard helpers", () => {
 
     mockRlQuestion
       .mockResolvedValueOnce("") // ID
-      .mockResolvedValueOnce("New task"); // Title
-
+      .mockResolvedValueOnce("New task") // Title
+      .mockResolvedValueOnce(""); // Description
     // Start the editor and emit escape asynchronously
     const editorPromise = createTaskInEditor(onError);
 
@@ -283,6 +295,9 @@ describe("board editor and clipboard helpers", () => {
 
     // Verify stdin listeners are cleaned up after cancellation
     expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenCalledWith(true);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
   it("validates title presence in createTaskInEditor", async () => {
@@ -300,6 +315,8 @@ describe("board editor and clipboard helpers", () => {
 
     // No dropdown stdin listeners should exist since we never got to the dropdowns
     expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
   it("navigates dropdown with arrow keys and selects non-default options", async () => {
@@ -334,6 +351,9 @@ describe("board editor and clipboard helpers", () => {
 
     // Verify stdin listeners are cleaned up after dropdowns complete
     expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenCalledWith(true);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
   it("throws from legacy sync wrappers", () => {
