@@ -6,13 +6,41 @@ const {
   mockReadFileSync,
   mockWriteFileSync,
   mockUnlinkSync,
-} = vi.hoisted(() => ({
-  mockSpawnSync: vi.fn(),
-  mockExecFileSync: vi.fn(),
-  mockReadFileSync: vi.fn(),
-  mockWriteFileSync: vi.fn(),
-  mockUnlinkSync: vi.fn(),
-}));
+  mockSetRawMode,
+  mockStdoutWrite,
+  mockRlQuestion,
+  mockStdinEmitter,
+} = vi.hoisted(() => {
+  // Mock stdin event emitter for dropdown simulation
+  const listeners: Map<string, Set<(chunk: Buffer) => void>> = new Map();
+  return {
+    mockSpawnSync: vi.fn(),
+    mockExecFileSync: vi.fn(),
+    mockReadFileSync: vi.fn(),
+    mockWriteFileSync: vi.fn(),
+    mockUnlinkSync: vi.fn(),
+    mockSetRawMode: vi.fn(),
+    mockStdoutWrite: vi.fn(),
+    mockRlQuestion: vi.fn(),
+    mockStdinEmitter: {
+      on: (event: string, listener: (chunk: Buffer) => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(listener);
+        return mockStdinEmitter;
+      },
+      removeListener: (event: string, listener: (chunk: Buffer) => void) => {
+        listeners.get(event)?.delete(listener);
+        return mockStdinEmitter;
+      },
+      emit: (event: string, chunk: Buffer) => {
+        listeners.get(event)?.forEach((l) => l(chunk));
+        return true;
+      },
+      _getListeners: (event: string) => listeners.get(event)?.size ?? 0,
+      _clearListeners: (event: string) => listeners.delete(event),
+    },
+  };
+});
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -26,6 +54,28 @@ vi.mock("node:fs", async (importOriginal) => ({
   writeFileSync: mockWriteFileSync,
   unlinkSync: mockUnlinkSync,
 }));
+
+// Mock readline to return synchronous values for tests
+vi.mock("node:readline/promises", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  createInterface: vi.fn().mockReturnValue({
+    question: mockRlQuestion,
+    close: vi.fn(),
+  }),
+}));
+
+// Mock process.stdin for dropdown simulation
+Object.defineProperty(process, "stdin", {
+  value: {
+    isTTY: true,
+    setRawMode: mockSetRawMode,
+    isRaw: false,
+    on: mockStdinEmitter.on,
+    removeListener: mockStdinEmitter.removeListener,
+    removeAllListeners: (event: string) => mockStdinEmitter._clearListeners(event),
+  },
+  writable: true,
+});
 
 import {
   applyStatusChange,
@@ -55,12 +105,21 @@ function createTask(overrides: Partial<BoardTask> = {}): BoardTask {
   };
 }
 
+const setMockRawMode = (enabled: boolean): void => {
+  (process.stdin as typeof process.stdin & { isRaw: boolean }).isRaw = enabled;
+};
+
 describe("board editor and clipboard helpers", () => {
   const originalEditor = process.env.EDITOR;
   const originalVisual = process.env.VISUAL;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setMockRawMode(false);
+    mockSetRawMode.mockImplementation((enabled: boolean) => {
+      setMockRawMode(enabled);
+      return process.stdin;
+    });
     delete process.env.EDITOR;
     delete process.env.VISUAL;
   });
@@ -167,56 +226,134 @@ describe("board editor and clipboard helpers", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("surfaces createTaskInEditor parse failures and success cases", () => {
-    process.env.EDITOR = "nvim";
+  // stdin-driven Vitest coverage for createTaskInEditor dropdown flow
+  // Arrow key escape sequences for dropdown navigation
+  const KEY_ENTER = "\r";
+  const KEY_ESC = "\u001B";
+  const KEY_ARROW_UP = "\x1B[A";
+  const KEY_ARROW_DOWN = "\x1B[B";
+
+  beforeEach(() => {
+    // Clear any lingering listeners between tests
+    mockStdinEmitter._clearListeners("data");
+  });
+
+  // Helper to emit key after allowing event loop to register listener
+  const emitKey = async (key: string): Promise<void> => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    mockStdinEmitter.emit("data", Buffer.from(key));
+  };
+
+  it("creates task with defaults via Enter key on dropdowns", async () => {
     const onError = vi.fn();
-    mockWriteFileSync.mockImplementation(() => undefined);
-    mockSpawnSync.mockReturnValue({ status: 0 });
-    mockReadFileSync.mockReturnValueOnce("title: [broken\n");
 
-    expect(createTaskInEditor(onError)).toBeNull();
-    expect(onError).toHaveBeenCalledWith(expect.stringContaining("Failed to parse YAML:"));
+    mockRlQuestion
+      .mockResolvedValueOnce("") // ID (empty, optional)
+      .mockResolvedValueOnce("New task") // Title
+      .mockResolvedValueOnce(""); // Description
 
-    onError.mockClear();
-    mockReadFileSync.mockReturnValueOnce([
-      "id: custom-id",
-      "title: New task",
-      "description: Added from editor",
-      "type: urgent",
-      "priority: 0",
-      "status: backlog",
-    ].join("\n"));
+    // Start the editor and emit keys asynchronously
+    const editorPromise = createTaskInEditor(onError);
 
-    expect(createTaskInEditor(onError)).toEqual({
-      id: "custom-id",
+    // Simulate Enter for type dropdown (selects default "task")
+    await emitKey(KEY_ENTER);
+    // Simulate Enter for priority dropdown (selects default index 2 = "2 (medium)")
+    await emitKey(KEY_ENTER);
+
+    const result = await editorPromise;
+
+    expect(result).toMatchObject({
       title: "New task",
-      description: "Added from editor",
       type: "task",
-      priority: 0,
-      status: "backlog",
+      priority: 2,
     });
+    expect(onError).not.toHaveBeenCalled();
+
+    // Verify stdin listeners are cleaned up after dropdowns complete
+    expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenCalledWith(true);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
-  it("surfaces createTaskInEditor non-zero editor exits", () => {
-    process.env.EDITOR = "nvim";
+  it("cancels task creation with Escape key on dropdown", async () => {
     const onError = vi.fn();
-    mockWriteFileSync.mockImplementation(() => undefined);
-    mockSpawnSync.mockReturnValue({ status: 3 });
 
-    expect(createTaskInEditor(onError)).toBeNull();
-    expect(onError).toHaveBeenCalledWith("Editor exited with code 3 — task not created.");
-    expect(mockUnlinkSync).toHaveBeenCalled();
+    mockRlQuestion
+      .mockResolvedValueOnce("") // ID
+      .mockResolvedValueOnce("New task") // Title
+      .mockResolvedValueOnce(""); // Description
+    // Start the editor and emit escape asynchronously
+    const editorPromise = createTaskInEditor(onError);
+
+    // Simulate Escape for type dropdown to cancel
+    await emitKey(KEY_ESC);
+
+    const result = await editorPromise;
+
+    expect(result).toBeNull();
+
+    // Verify stdin listeners are cleaned up after cancellation
+    expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenCalledWith(true);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
-  it("validates title presence in createTaskInEditor", () => {
-    process.env.EDITOR = "nvim";
+  it("validates title presence in createTaskInEditor", async () => {
     const onError = vi.fn();
-    mockWriteFileSync.mockImplementation(() => undefined);
-    mockSpawnSync.mockReturnValue({ status: 0 });
-    mockReadFileSync.mockReturnValue("description: missing title\n");
 
-    expect(createTaskInEditor(onError)).toBeNull();
+    // Empty title - should trigger error before dropdown
+    mockRlQuestion
+      .mockResolvedValueOnce("") // ID
+      .mockResolvedValueOnce(""); // Title (empty - should trigger error)
+
+    const result = await createTaskInEditor(onError);
+
+    expect(result).toBeNull();
     expect(onError).toHaveBeenCalledWith("Title is required.");
+
+    // No dropdown stdin listeners should exist since we never got to the dropdowns
+    expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
+  });
+
+  it("navigates dropdown with arrow keys and selects non-default options", async () => {
+    const onError = vi.fn();
+
+    mockRlQuestion
+      .mockResolvedValueOnce("custom-id") // ID
+      .mockResolvedValueOnce("Bug task") // Title
+      .mockResolvedValueOnce("This is a bug"); // Description
+
+    // Start the editor
+    const editorPromise = createTaskInEditor(onError);
+
+    // For type dropdown: navigate to "bug" (index 1, default is "task" at index 0)
+    await emitKey(KEY_ARROW_DOWN); // Move to index 1 (bug)
+    await emitKey(KEY_ENTER); // Select "bug"
+
+    // For priority dropdown: navigate to "0 (critical)" (index 0, default is index 2)
+    await emitKey(KEY_ARROW_UP); // Move to index 1
+    await emitKey(KEY_ARROW_UP); // Move to index 0 (critical)
+    await emitKey(KEY_ENTER); // Select priority 0
+
+    const result = await editorPromise;
+
+    expect(result).toMatchObject({
+      id: "custom-id",
+      title: "Bug task",
+      type: "bug",
+      priority: 0,
+    });
+    expect(onError).not.toHaveBeenCalled();
+
+    // Verify stdin listeners are cleaned up after dropdowns complete
+    expect(mockStdinEmitter._getListeners("data")).toBe(0);
+    expect(mockSetRawMode).toHaveBeenCalledWith(true);
+    expect(mockSetRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.isRaw).toBe(false);
   });
 
   it("throws from legacy sync wrappers", () => {

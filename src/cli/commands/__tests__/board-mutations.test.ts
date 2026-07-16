@@ -496,7 +496,7 @@ describe("BoardMutations", () => {
 
   describe("Create New Task (n key)", () => {
     it("n key should trigger new task creation", async () => {
-      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+      vi.spyOn(boardApi, "createTaskInEditor").mockResolvedValue({
         id: "bd-new",
         title: "New Task",
         description: null,
@@ -625,7 +625,7 @@ describe("BoardMutations", () => {
     it("blank id should result in undefined (not UUID) so server allocates compact ID", async () => {
       // Track what createTaskAsync receives
       let capturedTaskData: { id?: string; title: string } = { title: "" };
-      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+      vi.spyOn(boardApi, "createTaskInEditor").mockResolvedValue({
         id: undefined, // blank id from YAML
         title: "New Task",
         description: null,
@@ -649,7 +649,7 @@ describe("BoardMutations", () => {
 
     it("provided id should be passed through to createTaskAsync", async () => {
       let capturedTaskData: { id?: string; title: string } = { title: "" };
-      vi.spyOn(boardApi, "createTaskInEditor").mockReturnValue({
+      vi.spyOn(boardApi, "createTaskInEditor").mockResolvedValue({
         id: "bd-custom-id",
         title: "Custom Task",
         description: null,
