@@ -1766,7 +1766,7 @@ interface LogEntry {
   occurred_at: string;
 }
 
-function formatLogTimestamp(iso: string): string {
+export function formatLogTimestamp(iso: string): string {
   try {
     // iso might be an Elixir ISO8601 string or unix epoch
     const ms = Number(iso);
@@ -1779,7 +1779,7 @@ function formatLogTimestamp(iso: string): string {
   }
 }
 
-function colorForStream(stream: string): (s: string) => string {
+export function colorForStream(stream: string): (s: string) => string {
   switch (stream) {
     case "stderr": return chalk.red;
     case "stdout": return chalk.dim;
