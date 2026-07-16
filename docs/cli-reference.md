@@ -223,7 +223,7 @@ foreman watch --refresh 5000      # Refresh every 5 seconds
 | `--no-watch` | — | Print one deterministic snapshot and exit |
 | `--project <id>` | — | Filter to a specific project |
 
-Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; the Go cockpit `R` key resets the selected run or a selected task card's latest known run. All other entries print copy/manual command text only.
+Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `n` create task (TTY form with type/priority dropdowns), `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; the Go cockpit `R` key resets the selected run or a selected task card's latest known run. All other entries print copy/manual command text only.
 
 ### `foreman sentinel`
 
