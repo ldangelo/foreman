@@ -8,9 +8,6 @@ defmodule ForemanServer.Scheduler do
   @default_phases []
   @default_tick_interval_ms 5_000
 
-  # Path to bundled workflows relative to foreman_server app root
-  # _build/dev/lib/foreman_server/ + 6/../ + src/defaults/workflows = repo/src/defaults/workflows
-  @bundled_workflows_path "../../../../../../src/defaults/workflows"
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -345,9 +342,10 @@ defmodule ForemanServer.Scheduler do
   end
 
   defp bundled_workflow_path(task_type) do
-    # Resolve relative to the foreman_server application directory
-    app_path = Application.app_dir(:foreman_server)
-    Path.join([app_path, @bundled_workflows_path, "#{task_type}.yaml"])
+    # Use Application.app_dir/2 to resolve to the compiled app's priv directory
+    # at RUNTIME. Workflows must be present in priv/defaults/workflows/ (copied during build).
+    app_priv_path = Application.app_dir(:foreman_server, "priv")
+    Path.join([app_priv_path, "defaults/workflows", "#{task_type}.yaml"])
   end
 
   defp load_workflow_phase_order(path) do

@@ -2198,7 +2198,6 @@ async function runMergeBuiltinPhase(args: {
     await writeMergeReport({ config, status: "FAIL", details, prNumber });
     return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
   }
-
   sendMail(agentMailClient, "refinery", "branch-ready", {
     taskId: config.taskId,
     runId: config.runId,
@@ -2206,25 +2205,79 @@ async function runMergeBuiltinPhase(args: {
     worktreePath: config.worktreePath,
   });
 
-  const now = new Date().toISOString();
-  await updateTerminalRunStatus({
-    runId: config.runId,
-    projectId: config.projectId,
-    projectPath: pipelineProjectPath,
-    updates: { status: "completed", completed_at: now },
-  });
+  // Poll for the PR to actually be merged before returning success.
+  // ElixirMergeQueue is currently a stub (does not process the queue), so without
+  // this poll the phase would return success immediately while the PR remains open.
+  // TODO (TRD-xxx): remove this poll once ElixirMergeQueue is fully implemented
+  // and the refinery/RefineryAgent processes it asynchronously.
+  const MERGE_POLL_INTERVAL_MS = 30_000;
+  const MERGE_POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  let mergeSucceeded = false;
+  let mergeFailed = false;
+  let mergeError = "unknown";
+  const mergePollStart = Date.now();
 
-  const details = "Merge queued for Elixir/refinery processing";
+  if (prNumber) {
+    log(`[MERGE] Waiting for PR #${prNumber} to merge (timeout ${MERGE_POLL_TIMEOUT_MS / 1000}s)…`);
+    while (Date.now() - mergePollStart < MERGE_POLL_TIMEOUT_MS && !mergeSucceeded && !mergeFailed) {
+      await new Promise((r) => setTimeout(r, MERGE_POLL_INTERVAL_MS));
+      try {
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNumber), "--json", "state,mergedAt"], { cwd: pipelineProjectPath, timeout: 30_000 });
+        const prInfo = JSON.parse(stdout) as { state?: string; mergedAt?: string };
+        if (prInfo.state === "MERGED") {
+          mergeSucceeded = true;
+          log(`[MERGE] PR #${prNumber} merged.`);
+        } else if (prInfo.state === "CLOSED") {
+          mergeFailed = true;
+          mergeError = `PR #${prNumber} was closed without merging`;
+          log(`[MERGE] PR #${prNumber} closed without merging.`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`[MERGE] PR #${prNumber} poll error (will retry): ${msg}`);
+      }
+    }
+  } else {
+    // No PR number — skip polling and accept the enqueue result.
+    // This preserves legacy behaviour for repos without a tracked PR.
+    log(`[MERGE] No PR number found; accepting enqueue result without polling.`);
+  }
+
+  if (!mergeSucceeded) {
+    const details = mergeFailed
+      ? mergeError
+      : mergeError !== "unknown"
+        ? mergeError
+        : "Merge did not complete within the polling timeout. Verify the refinery/merge queue is processing branches.";
+    await writeMergeReport({ config, status: "FAIL", details, prNumber });
+    await updateTerminalRunStatus({
+      runId: config.runId,
+      projectId: config.projectId,
+      projectPath: pipelineProjectPath,
+      updates: { status: "completed", completed_at: new Date().toISOString() },
+    });
+    return {
+      success: false,
+      costUsd: 0,
+      turns: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      error: details,
+      outputText: details,
+    };
+  }
+
   await writeMergeReport({
     config,
     status: "SUCCESS",
-    details,
-    merged: 0,
+    details: `PR #${prNumber} merged successfully`,
+    merged: 1,
     conflicts: 0,
     failed: 0,
     prNumber,
   });
-  log(`[MERGE] ${details}`);
+  log(`[MERGE] PR #${prNumber} merged successfully`);
 
   return {
     success: true,
@@ -2232,7 +2285,7 @@ async function runMergeBuiltinPhase(args: {
     turns: 0,
     tokensIn: 0,
     tokensOut: 0,
-    outputText: details,
+    outputText: `PR #${prNumber} merged successfully`,
   };
 }
 

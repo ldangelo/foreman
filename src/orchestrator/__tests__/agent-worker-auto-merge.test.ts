@@ -34,10 +34,14 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).not.toContain("createEpicTaskClient(");
   });
 
-  it("supports an explicit merge builtin that enqueues for Elixir/refinery processing", () => {
+  it("supports an explicit merge builtin that polls for actual PR merge after enqueueing", () => {
     expect(source).toContain("async function runMergeBuiltinPhase");
     expect(source).toContain('if (phase.name === "merge")');
-    expect(source).toContain("Merge queued for Elixir/refinery processing");
+    // Enqueues to the queue then polls for the PR to actually be merged before returning success.
+    expect(source).toContain("operation: \"auto_merge\"");
+    expect(source).toContain("PR #${prNumber} merged successfully");
+    // Does NOT return success immediately after enqueue — it waits for the merge.
+    expect(source).not.toContain("Merge queued for Elixir/refinery processing");
     expect(source).not.toContain("await autoMerge(");
     expect(source).not.toContain("Immediate merge drain result: merged=");
   });
