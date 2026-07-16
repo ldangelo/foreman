@@ -75,6 +75,7 @@ If your phase is `cr-developer`, the retry feedback is a hard acceptance contrac
 4. Do not add, update, or run tests during Developer; QA/finalize own verification
 5. If verification is needed, note the exact suggested command or test file in DEVELOPER_REPORT.md for QA
 6. Write **SESSION_LOG.md** in the worktree root documenting your session (see CLAUDE.md Session Logging section)
+7. Before writing DEVELOPER_REPORT.md, run `git diff --name-only origin/main` and compare against the Explorer "Edit First" scoped paths. If any changed file is outside that scope, fill in the `## Scope Expansions` section in DEVELOPER_REPORT.md with every such file and its justification. Finalize will reject your report if out-of-scope files are not documented here.
 
 ## Rules
 - Stay focused on THIS task only — do not refactor unrelated code
@@ -113,8 +114,9 @@ mkdir -p "{{reportDir}}"
 - Any design decisions made and their rationale
 
 ## Scope Expansions
-(If no files were touched beyond the Explorer scope, write: "- none")
-- `path/to/out-of-scope-file.ts` — reason it was unavoidable for acceptance; minimal change applied
+**Required if any changed file is outside the Explorer "Edit First" scope — Finalize blocks undocumented scope expansions.**
+- (If no files were touched beyond the Explorer scope, write: "none — all changes within Edit First scope")
+- `path/to/out-of-scope-file.ts` — why it was unavoidable (prerequisite fix, blocker, regression test, or hard-acceptance finding from `cicd-developer`/`cr-developer`); the minimum viable change applied
 
 ## Known Limitations
 - Anything deferred or not fully addressed

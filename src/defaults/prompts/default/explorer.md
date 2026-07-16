@@ -36,6 +36,8 @@ If you hit an unrecoverable error, invoke:
 ### Edit First
 - path/to/file.ts:line — exact function/type/block to change and why
 
+**Scope inclusivity rule**: Err on the side of a broader Edit First scope. Include the primary edit target, its direct callers, and any test file that covers the same behavior. An Edit First scope that is too narrow is worse than no scope — it forces the developer to choose between violating scope or omitting necessary changes. If the implementation will predictably require additional files (e.g., a DetailPane update for an async inbox change, or tests for new behavior), include them upfront.
+
 ### Read If Needed
 - path/to/file.ts:line — only if the edit target is insufficient
 
