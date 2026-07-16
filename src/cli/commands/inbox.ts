@@ -199,7 +199,9 @@ function eventTurns(details: Record<string, unknown> | null): string | undefined
 
 function eventProject(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
   // projectId is stored in the normalized details as project_id
-  return details ? detailString(details, ["project_id", "projectId"]) : undefined;
+  return details
+    ? detailString(details, ["project_id", "projectId"]) ?? event.projectId ?? undefined
+    : event.projectId ?? undefined;
 }
 
 function eventTask(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {

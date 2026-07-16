@@ -195,6 +195,21 @@ describe("inbox event helpers", () => {
     expect(table).toContain("error");
   });
 
+  it("falls back to event.projectId when details is null", () => {
+    const event = {
+      id: "evt-1",
+      runId: "run-1",
+      taskId: "foreman-1",
+      projectId: "proj-1",
+      eventType: "RunStarted",
+      details: null,
+      createdAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    const row = formatPipelineEventTableRow(event as any);
+    expect(row.project).toBe("proj-1");
+  });
+
   it("renders event detail with structured JSON payload", () => {
     const event = {
       id: "evt-1",
