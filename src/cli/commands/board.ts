@@ -1457,85 +1457,181 @@ const KEY_y = "y";
 
 // ── New task editor template ────────────────────────────────────────────────
 
-const NEW_TASK_TEMPLATE = `# Create a new Foreman task
-# Fields: id (optional, auto-generated if empty), title, description, type, priority, status
-# Lines starting with # are comments and will be ignored
-# Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
-# Status: backlog, ready, in_progress, needs_attention, closed
-# Type: task, bug, feature, epic, chore, docs, question
+const VALID_TASK_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"] as const;
+const TASK_TYPE_LABELS: Record<string, string> = {
+  task: "task",
+  bug: "bug",
+  feature: "feature",
+  epic: "epic",
+  chore: "chore",
+  docs: "docs",
+  question: "question",
+};
 
-id:
-title:
-description:
-type: task
-priority: 2
-status: backlog
-`;
+const VALID_PRIORITIES = [0, 1, 2, 3, 4] as const;
+const PRIORITY_LABELS: Record<number, string> = {
+  0: "0 (critical)",
+  1: "1 (high)",
+  2: "2 (medium)",
+  3: "3 (low)",
+  4: "4 (backlog)",
+};
+
+// Arrow key escape sequences (same mapping as board navigation)
+const KEY_ARROW_UP = "\x1B[A";
+const KEY_ARROW_DOWN = "\x1B[B";
 
 /**
- * Open the editor with a new task template and return the parsed content on success.
- * On error or non-zero exit, returns null and sets errorMessage.
+ * Interactive TTY dropdown selector using arrow keys and Enter.
+ * Returns null if user presses Escape.
  */
-export function createTaskInEditor(
+async function selectFromDropdown(
+  prompt: string,
+  options: readonly string[],
+  defaultIndex: number,
+): Promise<{ value: string; index: number } | null> {
+  if (options.length === 0) return null;
+
+  let selectedIndex = defaultIndex;
+
+  const render = () => {
+    process.stdout.write("\r" + prompt + " ");
+    for (let i = 0; i < options.length; i++) {
+      if (i === selectedIndex) {
+        process.stdout.write(chalk.inverse(` ${options[i]} `));
+      } else {
+        process.stdout.write(` ${options[i]} `);
+      }
+    }
+    process.stdout.write(" (↑↓ navigate, Enter select, Esc cancel)");
+  };
+
+  // Initial render
+  render();
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      process.stdin.removeAllListeners("data");
+    };
+
+    const onData = (chunk: Buffer) => {
+      const key = chunk.toString("utf8");
+
+      if (key === KEY_ARROW_UP) {
+        selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : options.length - 1;
+        render();
+      } else if (key === KEY_ARROW_DOWN) {
+        selectedIndex = selectedIndex < options.length - 1 ? selectedIndex + 1 : 0;
+        render();
+      } else if (key === KEY_ENTER) {
+        cleanup();
+        process.stdout.write("\n");
+        resolve({ value: options[selectedIndex], index: selectedIndex });
+      } else if (key === KEY_ESC) {
+        cleanup();
+        process.stdout.write("\n");
+        resolve(null);
+      }
+    };
+
+    process.stdin.on("data", onData);
+  });
+}
+
+/**
+ * Interactive TTY form for creating a new task.
+ * Prompts for title (text input), type (dropdown), and priority (dropdown).
+ * Returns the parsed task data on success, or null if cancelled/failed.
+ */
+export async function createTaskInEditor(
   onError: (msg: string) => void,
-): { id?: string; title: string; description: string | null; type: string; priority: number; status: string } | null {
-  const editor = resolveEditor();
-  const tmpFile = joinPath(tmpdir(), `foreman-task-new-${randomUUID()}.yaml`);
-
-  try {
-    writeFileSync(tmpFile, NEW_TASK_TEMPLATE.trim() + "\n", "utf8");
-  } catch (err) {
-    onError(`Failed to write temp file: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-
-  let exitCode = 0;
-  try {
-    exitCode = spawnSync(editor, [tmpFile], {
-      stdio: "inherit",
-      shell: true,
-    }).status ?? 0;
-  } catch (err) {
-    onError(`Failed to launch editor '${editor}': ${err instanceof Error ? err.message : String(err)}`);
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
-    return null;
-  }
-
-  if (exitCode !== 0) {
-    onError(`Editor exited with code ${exitCode} — task not created.`);
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
-    return null;
+): Promise<{ id?: string; title: string; description: string | null; type: string; priority: number; status: string } | null> {
+  // Suspend raw mode for interactive input
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+    try {
+      process.stdin.setRawMode!(false);
+    } catch {
+      // ignore
+    }
   }
 
   try {
-    const raw = readFileSync(tmpFile, "utf8");
-    const parsed = yaml.load(raw) as Record<string, unknown>;
+    // Print form header
+    process.stdout.write("\n" + chalk.bold("── Create New Task ──") + "\n");
+    process.stdout.write(chalk.dim("Press Esc at any dropdown to cancel\n\n"));
 
-    // Validate required field: title
-    if (!parsed.title || typeof parsed.title !== "string" || parsed.title.trim().length === 0) {
+    // Prompt for ID (optional)
+    const idInput = await readLine("ID (optional, auto-generated if empty): ");
+    const id = idInput.trim().length > 0 ? idInput.trim() : undefined;
+
+    // Prompt for title
+    const titleInput = await readLine("Title (required): ");
+    if (titleInput.trim().length === 0) {
       onError("Title is required.");
-      try { unlinkSync(tmpFile); } catch { /* ignore */ }
       return null;
     }
+    const title = titleInput.trim();
 
-    const VALID_TYPES = ["task", "bug", "feature", "epic", "chore", "docs", "question"];
-    const taskType = typeof parsed.type === "string" && VALID_TYPES.includes(parsed.type)
-      ? parsed.type
-      : "task";
+    // Prompt for description
+    const descriptionInput = await readLine("Description (optional, press Enter to skip): ");
+    const description = descriptionInput.trim().length > 0 ? descriptionInput.trim() : null;
 
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    // Prompt for type using dropdown
+    process.stdout.write(chalk.bold("\nTask Type:\n"));
+    const typeResult = await selectFromDropdown(
+      "Select type:",
+      VALID_TASK_TYPES,
+      0, // default: "task" at index 0
+    );
+    if (typeResult === null) {
+      onError("Task creation cancelled.");
+      return null;
+    }
+    const taskType = typeResult.value;
+
+    // Prompt for priority using dropdown
+    process.stdout.write(chalk.bold("\nTask Priority:\n"));
+    const priorityOptions = VALID_PRIORITIES.map((p) => `${p} (${["critical", "high", "medium", "low", "backlog"][p]})`);
+    const priorityResult = await selectFromDropdown(
+      "Select priority:",
+      priorityOptions,
+      2, // default: "2 (medium)" at index 2
+    );
+    if (priorityResult === null) {
+      onError("Task creation cancelled.");
+      return null;
+    }
+    const priority = VALID_PRIORITIES[priorityResult.index];
+
+    // Print summary
+    process.stdout.write("\n" + chalk.bold("── Summary ──") + "\n");
+    if (id) process.stdout.write(`  ID:          ${id}\n`);
+    process.stdout.write(`  Title:       ${title}\n`);
+    if (description) process.stdout.write(`  Description: ${description}\n`);
+    process.stdout.write(`  Type:        ${taskType}\n`);
+    process.stdout.write(`  Priority:    ${priority} (${["critical", "high", "medium", "low", "backlog"][priority]})\n`);
+    process.stdout.write(`  Status:      backlog\n`);
+
     return {
-      id: typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : undefined,
-      title: String(parsed.title).trim(),
-      description: typeof parsed.description === "string" ? parsed.description : null,
+      id,
+      title,
+      description,
       type: taskType,
-      priority: typeof parsed.priority === "number" ? clamp(parsed.priority, 0, 4) : 2,
-      status: typeof parsed.status === "string" ? String(parsed.status) : "backlog",
+      priority,
+      status: "backlog",
     };
   } catch (err) {
-    onError(`Failed to parse YAML: ${err instanceof Error ? err.message : String(err)}`);
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    onError(`Failed to create task: ${err instanceof Error ? err.message : String(err)}`);
     return null;
+  } finally {
+    // Restore raw mode
+    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode!(true);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
@@ -1788,7 +1884,7 @@ export function createKeyHandler(projectPath: string, callbacks: KeyHandlerCallb
       case KEY_n: {
         suspendRawMode();
         try {
-          const newTask = boardApi.createTaskInEditor((msg) => {
+          const newTask = await boardApi.createTaskInEditor((msg) => {
             result.errorMessage = msg;
           });
 

@@ -69,7 +69,7 @@ describe("board key handler", () => {
     boardApi.closeTaskAsync = vi.fn().mockResolvedValue(null);
     boardApi.editTaskInEditor = vi.fn().mockReturnValue(null);
     boardApi.saveEditedTaskAsync = vi.fn().mockResolvedValue(null);
-    boardApi.createTaskInEditor = vi.fn().mockReturnValue(null);
+    boardApi.createTaskInEditor = vi.fn().mockResolvedValue(null);
     boardApi.createTaskAsync = vi.fn().mockResolvedValue({ taskId: "task-new" });
   });
 
@@ -214,7 +214,7 @@ describe("board key handler", () => {
 
   it("creates tasks from the editor and reports create failures", async () => {
     const newTask = createTask("task-new");
-    vi.mocked(boardApi.createTaskInEditor).mockReturnValue(newTask);
+    vi.mocked(boardApi.createTaskInEditor).mockResolvedValue(newTask);
     const handleKey = createKeyHandler("/tmp/project");
 
     let result = await handleKey("n", createState({}), "/tmp/project");
