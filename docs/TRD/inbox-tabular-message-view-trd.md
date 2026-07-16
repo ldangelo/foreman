@@ -35,7 +35,7 @@ Users need a **tabular layout** that displays structured message data in aligned
 3. Ticket ID (run ID) visible per row for context
 4. Structured payload fields (`kind`, `tool`, `args`) extracted and displayed in dedicated columns
 5. Long `args` values truncated safely (with `…` indicator) to fit column width
-6. `--full` flag preserved for detailed payload inspection (no change)
+6. `--full` flag preserved for detailed payload inspection with improved formatting: JSON bodies rendered as key-value pairs (`  key: value`) with long values wrapped at terminal width; non-JSON bodies remain raw text
 
 ### Non-Goals
 - Do NOT change the underlying data model or Postgres schema
@@ -232,7 +232,7 @@ DATETIME            TICKET       SENDER     RECEIVER   KIND       TOOL       ARG
 - [ ] AC-3: TICKET column shows `run_id` and truncates with `…` if longer than 20 chars
 - [ ] AC-4: KIND, TOOL columns extract from JSON `body.kind` and `body.tool`; show `—` if absent
 - [ ] AC-5: ARGS column shows `body.argsPreview`, `body.message`, or raw body (in that priority); truncates at column boundary with `…`
-- [ ] AC-6: `foreman inbox --full` shows existing free-form JSON payload format (no changes)
+- [x] AC-6: `foreman inbox --full` shows JSON message bodies as formatted key-value pairs (e.g., `  key: value`); long values wrapped at terminal width; non-JSON bodies display as raw text
 - [ ] AC-7: `foreman inbox --watch` keeps existing live-update behavior (unchanged)
 - [ ] AC-8: All existing `inbox.test.ts` tests pass
 - [ ] AC-9: New `TableFormatter` unit tests pass (>80% coverage on new class)

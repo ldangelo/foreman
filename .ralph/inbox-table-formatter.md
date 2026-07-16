@@ -16,7 +16,7 @@
 - [x] AC-3: TICKET shows run_id, truncates with `…` if > 20 chars (middle-cut)
 - [x] AC-4: KIND, TOOL extract from JSON body, show `—` if absent
 - [x] AC-5: ARGS shows argsPreview > message > body, truncates with `…`
-- [x] AC-6: `foreman inbox --full` unchanged (free-form JSON)
+- [x] AC-6: `foreman inbox --full` unchanged (free-form JSON) — NOTE: Subsequent task foreman-81180 updated formatMessage() to render JSON bodies as key-value pairs instead of raw JSON
 - [x] AC-7: `foreman inbox --watch` unchanged (live output)
 - [x] AC-8: All existing inbox tests pass
 - [x] AC-9: New TableFormatter tests pass (>80% coverage)
