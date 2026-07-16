@@ -10,6 +10,7 @@ const {
   mockStdinOn,
   mockStdinRemoveAllListeners,
   mockStdoutWrite,
+  mockRlQuestion,
 } = vi.hoisted(() => ({
   mockSpawnSync: vi.fn(),
   mockExecFileSync: vi.fn(),
@@ -20,6 +21,7 @@ const {
   mockStdinOn: vi.fn(),
   mockStdinRemoveAllListeners: vi.fn(),
   mockStdoutWrite: vi.fn(),
+  mockRlQuestion: vi.fn(),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -52,7 +54,6 @@ vi.stubGlobal("process", {
 });
 
 // Mock readline to return synchronous values for tests
-const mockRlQuestion = vi.fn();
 vi.mock("node:readline/promises", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createInterface: vi.fn().mockReturnValue({
