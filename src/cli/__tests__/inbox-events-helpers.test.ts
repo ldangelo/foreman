@@ -34,6 +34,7 @@ import {
   formatPipelineEventTableRow,
   renderPipelineEventsTable,
   renderPipelineEventsTableRows,
+  renderEventDetail,
   resolvePostgresInboxProject,
   selectUnseenEvents,
   sortEventsChronologically,
@@ -150,6 +151,7 @@ describe("inbox event helpers", () => {
         id: "evt-2",
         runId: "run-1",
         taskId: "foreman-1",
+        projectId: "proj-1",
         eventType: "PhaseCompleted",
         details: { phase_id: "qa", turns: 12, status: "completed" },
         createdAt: "2026-01-01T00:02:00.000Z",
@@ -158,6 +160,7 @@ describe("inbox event helpers", () => {
         id: "evt-1",
         runId: "run-1",
         taskId: "foreman-1",
+        projectId: "proj-1",
         eventType: "PhaseStarted",
         details: { phase_id: "qa" },
         createdAt: "2026-01-01T00:01:00.000Z",
@@ -166,6 +169,7 @@ describe("inbox event helpers", () => {
         id: "evt-3",
         runId: "run-1",
         taskId: "foreman-1",
+        projectId: "proj-1",
         eventType: "RunFailed",
         details: { phase_id: "qa", reason: "bad" },
         createdAt: "2026-01-01T00:03:00.000Z",
@@ -176,6 +180,7 @@ describe("inbox event helpers", () => {
       task: "foreman-1",
       phase: "qa",
       turns: "12",
+      project: "proj-1",
       event: "stop",
     });
     const table = renderPipelineEventsTable(events as any, 60);
@@ -183,10 +188,50 @@ describe("inbox event helpers", () => {
     expect(table).toContain("TASK");
     expect(table).toContain("PHASE");
     expect(table).toContain("TURNS");
+    expect(table).toContain("PROJECT");
     expect(table).toContain("EVENT");
     expect(table).toContain("MESSAGE");
     expect(table.indexOf("Start qa")).toBeLessThan(table.indexOf("Complete qa"));
     expect(table).toContain("error");
+  });
+
+  it("renders event detail with structured JSON payload", () => {
+    const event = {
+      id: "evt-1",
+      runId: "run-1",
+      taskId: "foreman-1",
+      projectId: "proj-1",
+      eventType: "PhaseStarted",
+      details: { phase_id: "developer", turns: 5, status: "running" },
+      createdAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    const detail = renderEventDetail(event as any);
+    expect(detail).toContain("EVENT DETAIL");
+    expect(detail).toContain("id:");
+    expect(detail).toContain("runId:");
+    expect(detail).toContain("taskId:");
+    expect(detail).toContain("projectId:");
+    expect(detail).toContain("type:");
+    expect(detail).toContain("createdAt:");
+    expect(detail).toContain("PAYLOAD:");
+    expect(detail).toContain("phase_id");
+    expect(detail).toContain("developer");
+  });
+
+  it("renders event detail without payload when details are null", () => {
+    const event = {
+      id: "evt-1",
+      runId: "run-1",
+      taskId: "foreman-1",
+      eventType: "RunStarted",
+      details: null,
+      createdAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    const detail = renderEventDetail(event as any);
+    expect(detail).toContain("EVENT DETAIL");
+    expect(detail).toContain("No payload details available");
   });
 
   it("sortEventsChronologically returns a new oldest-to-newest array", () => {

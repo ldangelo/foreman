@@ -139,6 +139,47 @@ export function formatPipelineEvent(event: PipelineEvent): string {
   return `[${ts}]${taskPrefix} ${icon} ${event.eventType} — ${summary}`;
 }
 
+/**
+ * Render a structured detail view for a pipeline event, showing
+ * the event metadata and formatted JSON payload.
+ */
+export function renderEventDetail(event: PipelineEvent): string {
+  const lines: string[] = [];
+  const terminalWidth = getTerminalWidth();
+  const indentWidth = 2;
+  const keyWidth = 14;
+
+  // Event header
+  lines.push(chalk.bold("EVENT DETAIL"));
+  lines.push("─".repeat(Math.min(terminalWidth, 60)));
+
+  // Metadata
+  lines.push(`${pad("id:", keyWidth)} ${event.id}`);
+  lines.push(`${pad("runId:", keyWidth)} ${event.runId ?? "-"}`);
+  lines.push(`${pad("taskId:", keyWidth)} ${event.taskId ?? "-"}`);
+  lines.push(`${pad("projectId:", keyWidth)} ${event.projectId ?? "-"}`);
+  lines.push(`${pad("type:", keyWidth)} ${event.eventType}`);
+  lines.push(`${pad("createdAt:", keyWidth)} ${formatTimestamp(event.createdAt)}`);
+
+  // Structured JSON payload
+  const details = normalizedEventDetails(event);
+  if (details && Object.keys(details).length > 0) {
+    lines.push("");
+    lines.push(chalk.bold("PAYLOAD:"));
+    // Format JSON with indentation for readability
+    const jsonStr = JSON.stringify(details, null, 2);
+    const formattedJson = wrapText(jsonStr, Math.max(40, terminalWidth - indentWidth - 4));
+    formattedJson.split("\n").forEach((line) => {
+      lines.push(`${" ".repeat(indentWidth)}${line}`);
+    });
+  } else {
+    lines.push("");
+    lines.push(chalk.dim("No payload details available."));
+  }
+
+  return lines.join("\n");
+}
+
 function normalizedEventDetails(event: PipelineEvent): Record<string, unknown> | null {
   return event.details ? {
     ...event.details,
@@ -154,6 +195,11 @@ function eventPhase(details: Record<string, unknown> | null): string | undefined
 
 function eventTurns(details: Record<string, unknown> | null): string | undefined {
   return details ? detailString(details, ["numTurns", "num_turns", "turns", "totalTurns", "total_turns"]) : undefined;
+}
+
+function eventProject(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
+  // projectId is stored in the normalized details as project_id
+  return details ? detailString(details, ["project_id", "projectId"]) : undefined;
 }
 
 function eventTask(event: PipelineEvent, details: Record<string, unknown> | null): string | undefined {
@@ -218,6 +264,7 @@ interface PipelineEventTableRow {
   task: string;
   phase: string;
   turns: string;
+  project: string;
   event: string;
   message: string;
 }
@@ -229,6 +276,7 @@ export function formatPipelineEventTableRow(event: PipelineEvent, messageWidth =
     task: eventTask(event, details) ?? "-",
     phase: eventPhase(details) ?? "-",
     turns: eventTurns(details) ?? "-",
+    project: eventProject(event, details) ?? "-",
     event: eventKind(event.eventType),
     message: truncate(formatEventSummary(event.eventType, details), messageWidth),
   };
@@ -240,6 +288,7 @@ function pipelineEventTableWidths(rows: PipelineEventTableRow[], messageWidth = 
     task: Math.max(12, ...rows.map((row) => row.task.length)),
     phase: Math.max(10, ...rows.map((row) => row.phase.length)),
     turns: Math.max(5, ...rows.map((row) => row.turns.length)),
+    project: Math.max(10, ...rows.map((row) => row.project.length)),
     event: Math.max(5, ...rows.map((row) => row.event.length)),
     message: messageWidth,
   };
@@ -251,6 +300,7 @@ function renderPipelineEventTableRows(rows: PipelineEventTableRow[], widths: Ret
     pad(row.task, widths.task),
     pad(row.phase, widths.phase),
     pad(row.turns, widths.turns),
+    pad(row.project, widths.project),
     pad(row.event, widths.event),
     pad(row.message, widths.message),
   ].join(" │ "));
@@ -271,10 +321,11 @@ export function renderPipelineEventsTable(events: PipelineEvent[], messageWidth 
     pad("TASK", widths.task),
     pad("PHASE", widths.phase),
     pad("TURNS", widths.turns),
+    pad("PROJECT", widths.project),
     pad("EVENT", widths.event),
     pad("MESSAGE", widths.message),
   ].join(" │ ");
-  const totalWidth = widths.time + widths.task + widths.phase + widths.turns + widths.event + widths.message + 15;
+  const totalWidth = widths.time + widths.task + widths.phase + widths.turns + widths.project + widths.event + widths.message + 18;
   const hr = "─".repeat(totalWidth);
   const lines = renderPipelineEventTableRows(rows, widths);
   return [hr, header, hr, ...lines, hr].join("\n");
