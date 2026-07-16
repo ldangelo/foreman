@@ -146,7 +146,7 @@ describe("inbox event helpers", () => {
   });
 
   it("renders pipeline events as an operator-friendly table", () => {
-    const events = [
+    const events: Parameters<typeof renderPipelineEventsTable>[0] = [
       {
         id: "evt-2",
         runId: "run-1",
@@ -176,14 +176,14 @@ describe("inbox event helpers", () => {
       },
     ];
 
-    expect(formatPipelineEventTableRow(events[0] as any)).toMatchObject({
+    expect(formatPipelineEventTableRow(events[0]!)).toMatchObject({
       task: "foreman-1",
       phase: "qa",
       turns: "12",
       project: "proj-1",
       event: "stop",
     });
-    const table = renderPipelineEventsTable(events as any, 60);
+    const table = renderPipelineEventsTable(events, 60);
     expect(table).toContain("TIME");
     expect(table).toContain("TASK");
     expect(table).toContain("PHASE");
@@ -212,7 +212,7 @@ describe("inbox event helpers", () => {
   });
 
   it("renders event detail with structured JSON payload", () => {
-    const event = {
+    const event: Parameters<typeof renderEventDetail>[0] = {
       id: "evt-1",
       runId: "run-1",
       taskId: "foreman-1",
@@ -222,7 +222,7 @@ describe("inbox event helpers", () => {
       createdAt: "2026-01-01T00:01:00.000Z",
     };
 
-    const detail = renderEventDetail(event as any);
+    const detail = renderEventDetail(event);
     expect(detail).toContain("EVENT DETAIL");
     expect(detail).toContain("id:");
     expect(detail).toContain("runId:");
@@ -235,8 +235,25 @@ describe("inbox event helpers", () => {
     expect(detail).toContain("developer");
   });
 
+  it("renders event detail without payload when details are empty", () => {
+    const event: Parameters<typeof renderEventDetail>[0] = {
+      id: "evt-1",
+      runId: "run-1",
+      taskId: "foreman-1",
+      projectId: "proj-1",
+      eventType: "RunStarted",
+      details: {},
+      createdAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    const detail = renderEventDetail(event);
+    expect(detail).toContain("EVENT DETAIL");
+    expect(detail).toContain("No payload details available");
+    expect(detail).not.toContain("PAYLOAD:");
+  });
+
   it("renders event detail without payload when details are null", () => {
-    const event = {
+    const event: Parameters<typeof renderEventDetail>[0] = {
       id: "evt-1",
       runId: "run-1",
       taskId: "foreman-1",
@@ -245,7 +262,7 @@ describe("inbox event helpers", () => {
       createdAt: "2026-01-01T00:01:00.000Z",
     };
 
-    const detail = renderEventDetail(event as any);
+    const detail = renderEventDetail(event);
     expect(detail).toContain("EVENT DETAIL");
     expect(detail).toContain("No payload details available");
   });

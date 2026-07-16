@@ -163,7 +163,8 @@ export function renderEventDetail(event: PipelineEvent): string {
 
   // Structured JSON payload
   const details = normalizedEventDetails(event);
-  if (details && Object.keys(details).length > 0) {
+  const hasPayload = event.details != null && Object.keys(event.details).length > 0;
+  if (hasPayload && details) {
     lines.push("");
     lines.push(chalk.bold("PAYLOAD:"));
     // Format JSON with indentation for readability
