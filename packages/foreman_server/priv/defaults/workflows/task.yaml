@@ -1,0 +1,278 @@
+# Task workflow: fix prompt → QA/review validation → documentation → finalize → auto-merge
+#
+# Standard task pipeline. Slightly lighter than feature: skips dedicated
+# explorer/reviewer phases. Appropriate for well-scoped implementation tasks,
+# improvements, and non-feature work that still benefits from validation.
+#
+# Auto-selected when task type is "task".
+
+name: task
+task_type: task
+onError: stop
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+phases:
+  # ── Phase 1: fix ────────────────────────────────────────────────────────
+  # Uses the workflow-scoped fix-issue prompt so the artifact contract is
+  # explicit and isolated from other workflows.
+  - name: fix
+    checkpointPr: true
+    prompt: fix-issue.md
+    tools:
+      allowed:
+        [
+          Agent,
+          Bash,
+          Edit,
+          Glob,
+          Grep,
+          Read,
+          TaskOutput,
+          TaskStop,
+          TodoWrite,
+          WebFetch,
+          WebSearch,
+          Write,
+        ]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+
+  # ── Retry-only: focused repair ─────────────────────────────────────────
+  # Retry target for generic QA/review/finalize findings. Skipped during normal
+  # sequential execution; activated only when a later phase fails and uses
+  # retryWith: repair.
+  - name: repair
+    checkpointPr: true
+    retryOnly: true
+    prompt: repair.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 200
+    artifact: "{task.projectReportsDir}/FIX_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  # ── Phase 2: qa ─────────────────────────────────────────────────────────
+  # Validates the fix and writes QA_REPORT.md. Runs before documentation so real
+  # bugs are caught before spending time on docs.
+  - name: qa
+    prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
+    verdict: true
+    retryWith: repair
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+
+  # ── Phase 3: reviewer ────────────────────────────────────────────────────
+  # Read-only review of the implementation. Runs before documentation.
+  - name: reviewer
+    prompt: reviewer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/REVIEW.md"
+    verdict: true
+    retryWith: repair
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+      forwardArtifactTo: foreman
+
+  # ── Phase 4: documentation ────────────────────────────────────────────────
+  # Verifies the implementation is documented. Runs after QA and reviewer so
+  # real bugs are caught before spending time on documentation.
+  - name: documentation
+    checkpointPr: true
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
+  # ── Retry-only: cicd-developer ───────────────────────────────────────────
+  # Retry target for CI failures. Skipped during normal sequential execution;
+  # activated only when a later phase fails and uses retryWith: cicd-developer.
+  - name: cicd-developer
+    checkpointPr: true
+    retryOnly: true
+    prompt: cicd-developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  # ── Retry-only: cr-developer ─────────────────────────────────────────────
+  # Retry target for CodeRabbit review findings. Skipped during normal
+  # sequential execution; activated only when a later phase fails and uses
+  # retryWith: cr-developer.
+  - name: cr-developer
+    checkpointPr: true
+    retryOnly: true
+    prompt: cr-developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  # ── Retry-only: merge-resolver ───────────────────────────────────────────
+  # Retry target for merge conflicts. Skipped during normal sequential execution;
+  # activated only when a later phase fails and uses retryWith: merge-resolver.
+  - name: merge-resolver
+    checkpointPr: true
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  # ── Phase 5: cli-review (builtin) ────────────────────────────────────────
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: repair
+    retryOnFail: 3
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+
+  # ── Phase 6: finalize (prompt phase) ───────────────────────────────────
+  # Standard finalize with human-readable summary for auto-merge context.
+  - name: finalize
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 500
+    verdict: true
+    retryWith: repair
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+
+  - name: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: repair
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    retryWith: repair
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: repair
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: MiniMax
+    P0: MiniMax-highspeed
+  maxTurns: 500
+  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

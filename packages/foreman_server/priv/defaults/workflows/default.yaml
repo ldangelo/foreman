@@ -1,0 +1,262 @@
+# Default workflow: Explorer → Developer ⇄ QA → Reviewer → Finalize
+#
+# This is the standard Foreman pipeline. All task types except "smoke" use
+# this workflow unless overridden by a `workflow:<name>` label.
+#
+# Models map keys: "default" (required), "P0"–"P4" (optional priority overrides).
+# Priority P0 = critical, P4 = backlog. Shorthands: haiku, sonnet, opus.
+#
+# Optional: specify VCS backend for this workflow.
+# Overrides the global ~/.foreman/config.yaml setting if set.
+# Values: 'auto' (detect from repo), 'git', 'jujutsu'.
+# When absent, project config or auto-detection is used.
+#
+# vcs:
+#   backend: auto
+name: default
+onError: stop
+setup:
+  - command: npm install --prefer-offline --no-audit
+    description: Install Node.js dependencies
+    failFatal: true
+setupCache:
+  key: package-lock.json
+  path: node_modules
+phases:
+  - name: explorer
+    prompt: explorer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
+    skipIfArtifact: EXPLORER_REPORT.md
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: developer
+
+  - name: developer
+    checkpointPr: true
+    prompt: developer.md
+    tools:
+      allowed:
+        [
+          Agent,
+          Bash,
+          Edit,
+          Glob,
+          Grep,
+          Read,
+          TaskOutput,
+          TaskStop,
+          TodoWrite,
+          WebFetch,
+          WebSearch,
+          Write,
+        ]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: cicd-developer
+    checkpointPr: true
+    retryOnly: true
+    prompt: cicd-developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: cr-developer
+    checkpointPr: true
+    retryOnly: true
+    prompt: cr-developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: merge-resolver
+    checkpointPr: true
+    retryOnly: true
+    prompt: developer.md
+    tools:
+      allowed:
+        [Bash, Edit, Glob, Grep, Read, TodoWrite, WebFetch, WebSearch, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax
+      P4: MiniMax
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DEVELOPER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+    files:
+      reserve: true
+      leaseSecs: 600
+
+  - name: documentation
+    checkpointPr: true
+    prompt: documentation.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/DOCUMENTATION_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
+      forwardArtifactTo: foreman
+
+  - name: qa
+    prompt: qa.md
+    tools:
+      allowed: [Bash, Edit, Glob, Grep, Read, TodoWrite, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/QA_REPORT.md"
+    verdict: true
+    retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: reviewer
+    prompt: reviewer.md
+    tools:
+      allowed: [Glob, Grep, Read, Write]
+    models:
+      default: MiniMax
+      P0: MiniMax-highspeed
+    maxTurns: 500
+    artifact: "{task.projectReportsDir}/REVIEW.md"
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+      forwardArtifactTo: foreman
+
+  - name: cli-review
+    builtin: true
+    artifact: "{task.projectReportsDir}/CR_CLI_REPORT.md"
+    timeoutSecs: 600
+    verdict: true
+    retryWith: developer
+    retryOnFail: 2
+    # Enable cooldown retry: when cli-review fails with a rate limit (e.g. CodeRabbit CLI
+    # "Rate limit exceeded"), the task is placed in cooldown state instead of being marked
+    # failed. The dispatcher will not re-dispatch until the cooldown period (5 minutes) expires.
+    retryAfterCooldown: true
+    # Optional: customize cooldown duration (default is 300 seconds if not specified)
+    # cooldownSeconds: 600
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: finalize
+    builtin: true
+    artifact: "{task.projectReportsDir}/FINALIZE_VALIDATION.md"
+    maxTurns: 500
+    verdict: true
+    retryWith: developer
+    retryOnFail: 1
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: create-pr
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_METADATA.json"
+    mail:
+      onStart: true
+      onComplete: true
+
+
+  - name: pr-wait
+    builtin: true
+    artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
+    timeoutSecs: 1200
+    retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+
+  - name: merge
+    builtin: true
+    artifact: "{task.projectReportsDir}/MERGE_REPORT.md"
+    retryWith: developer
+    retryWithByReason:
+      "ci_failed:": cicd-developer
+      "pr_review_failed_checks:": cicd-developer
+      "coderabbit_": cr-developer
+      "merge_conflict:": merge-resolver
+    retryOnFail: 2
+    mail:
+      onStart: true
+      onComplete: true
+      onFail: developer
+onFailure:
+  name: troubleshooter
+  prompt: troubleshooter.md
+  models:
+    default: MiniMax
+    P0: MiniMax-highspeed
+  maxTurns: 500
+  artifact: "{task.projectReportsDir}/TROUBLESHOOT_REPORT.md"

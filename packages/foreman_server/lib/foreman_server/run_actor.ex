@@ -2,9 +2,9 @@ defmodule ForemanServer.RunActor do
   @moduledoc "OTP run state machine that records deterministic phase transitions as events."
 
   use GenServer
+  require Logger
 
   alias ForemanServer.{EventStore, Inbox, PhaseActor}
-
   @terminal [:completed, :failed]
 
   @spec start_link(map()) :: GenServer.on_start()
@@ -120,6 +120,14 @@ defmodule ForemanServer.RunActor do
   def handle_call({:timeout, details}, _from, state),
     do: fail_or_retry(state, "PhaseTimedOut", details)
 
+  # Catch-all for unknown messages — prevents CaseClauseError on unexpected system
+  # messages (e.g. OVERWATCH nudsges routed to the wrong pid, or monitor :DOWN).
+  # Logs and discards so the actor continues running.
+  @impl true
+  def handle_info(msg, state) do
+    Logger.warning("[RunActor/#{state.run_id}] unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
   defp advance_after_pass(%{phase_index: index, phase_order: phase_order} = state)
        when index + 1 < length(phase_order) do
     next_phase = Enum.at(phase_order, index + 1)
