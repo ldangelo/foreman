@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createArtifactWriteTool, createDiffReadTool, createFileChangesTool, createFileReleaseTool, createFileReserveTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, createTaskGetTool, createTaskNoteAddTool, createTaskRiskAddTool, createTaskStatusTool, type ForemanToolContext } from "../pi-sdk-tools.js";
+import { createAbortPhaseTool, createAskOperatorTool, createArtifactWriteTool, createDiffReadTool, createFileChangesTool, createFileReleaseTool, createFileReserveTool, createGitStatusTool, createMailReadTool, createMergeGateStatusTool, createNeedsRetryTool, createPrReviewFindingTool, createSafeCommandRunTool, createSendMailTool, createTaskGetTool, createTaskNoteAddTool, createTaskRiskAddTool, createTaskStatusTool, type ForemanToolContext } from "../pi-sdk-tools.js";
 import type { NullAgentMailClient } from "../../lib/agent-mail-client.js";
 import type { VcsBackend } from "../../lib/vcs/interface.js";
 import type { ElixirServerClient } from "../../lib/elixir-server-client.js";
@@ -631,6 +631,120 @@ describe("File ownership tools", () => {
 
       const result = await tool.execute("call-1", { files: ["src/file.ts"] }, undefined, undefined, {} as never);
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Reported 1 file change(s)") }));
+    });
+  });
+});
+
+describe("Phase control tools", () => {
+  describe("createAskOperatorTool", () => {
+    it("writes ASK_OPERATOR.md and sends ask-operator mail", async () => {
+      const context = makeContext();
+      const mailClient = makeMailClient();
+      const tool = createAskOperatorTool(mailClient, context);
+
+      const result = await tool.execute("call-1", { question: "Which approach should I take?", context: "Two viable approaches found" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).toContain("Which approach should I take?");
+      expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).toContain("Two viable approaches found");
+      expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "ask-operator", expect.stringContaining("Which approach should I take?"));
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Operator request sent") }));
+      expect((result.details as Record<string, unknown>).phase).toBe("qa");
+    });
+
+    it("works without optional context", async () => {
+      const context = makeContext();
+      const mailClient = makeMailClient();
+      const tool = createAskOperatorTool(mailClient, context);
+
+      const result = await tool.execute("call-1", { question: "Is this the right direction?" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).not.toContain("## Context");
+      expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "ask-operator", expect.any(String));
+      expect((result.details as Record<string, unknown>).context).toBeNull();
+    });
+
+    it("succeeds without mail client", async () => {
+      const context = makeContext();
+      const tool = createAskOperatorTool(null, context);
+
+      const result = await tool.execute("call-1", { question: "Help?" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).toContain("Help?");
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Operator request sent") }));
+    });
+  });
+
+  describe("createAbortPhaseTool", () => {
+    it("writes ABORTED.md and sends phase-abort mail", async () => {
+      const context = makeContext();
+      const mailClient = makeMailClient();
+      const tool = createAbortPhaseTool(mailClient, context);
+
+      const result = await tool.execute("call-1", { reason: "Approach is fundamentally flawed", suggestion: "Try a different algorithm" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "ABORTED.md"), "utf8")).toContain("Approach is fundamentally flawed");
+      expect(readFileSync(join(context.reportDir, "ABORTED.md"), "utf8")).toContain("Try a different algorithm");
+      expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "phase-abort", expect.stringContaining("Approach is fundamentally flawed"));
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Phase aborted") }));
+      expect((result.details as Record<string, unknown>).phase).toBe("qa");
+    });
+
+    it("works without optional suggestion", async () => {
+      const context = makeContext();
+      const mailClient = makeMailClient();
+      const tool = createAbortPhaseTool(mailClient, context);
+
+      const result = await tool.execute("call-1", { reason: "Cannot proceed" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "ABORTED.md"), "utf8")).not.toContain("## Suggested Remediation");
+      expect((result.details as Record<string, unknown>).suggestion).toBeNull();
+    });
+
+    it("succeeds without mail client", async () => {
+      const context = makeContext();
+      const tool = createAbortPhaseTool(null, context);
+
+      const result = await tool.execute("call-1", { reason: "Blocked" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "ABORTED.md"), "utf8")).toContain("Blocked");
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Phase aborted") }));
+    });
+  });
+
+  describe("createNeedsRetryTool", () => {
+    it("writes NEEDS_RETRY.md and sends needs-retry mail with all fields", async () => {
+      const context = makeContext();
+      const mailClient = makeMailClient();
+      const tool = createNeedsRetryTool(mailClient, context);
+
+      const result = await tool.execute("call-1", {
+        reason: "API rate limit hit",
+        attemptedApproach: "Called the API without backoff",
+        suggestedNextStep: "Add exponential backoff and retry",
+      }, undefined, undefined, {} as never);
+      const content = readFileSync(join(context.reportDir, "NEEDS_RETRY.md"), "utf8");
+      expect(content).toContain("API rate limit hit");
+      expect(content).toContain("Called the API without backoff");
+      expect(content).toContain("Add exponential backoff and retry");
+      expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "needs-retry", expect.stringContaining("API rate limit hit"));
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Retry requested") }));
+      expect((result.details as Record<string, unknown>).phase).toBe("qa");
+    });
+
+    it("works with only required reason field", async () => {
+      const context = makeContext();
+      const mailClient = makeMailClient();
+      const tool = createNeedsRetryTool(mailClient, context);
+
+      const result = await tool.execute("call-1", { reason: "Transient failure" }, undefined, undefined, {} as never);
+      const content = readFileSync(join(context.reportDir, "NEEDS_RETRY.md"), "utf8");
+      expect(content).not.toContain("## Attempted Approach");
+      expect(content).not.toContain("## Suggested Next Step");
+      expect((result.details as Record<string, unknown>).attemptedApproach).toBeNull();
+      expect((result.details as Record<string, unknown>).suggestedNextStep).toBeNull();
+    });
+
+    it("succeeds without mail client", async () => {
+      const context = makeContext();
+      const tool = createNeedsRetryTool(null, context);
+
+      const result = await tool.execute("call-1", { reason: "Network timeout" }, undefined, undefined, {} as never);
+      expect(readFileSync(join(context.reportDir, "NEEDS_RETRY.md"), "utf8")).toContain("Network timeout");
+      expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Retry requested") }));
     });
   });
 });

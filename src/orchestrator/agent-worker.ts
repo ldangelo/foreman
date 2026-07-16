@@ -25,6 +25,8 @@ import {
   createFileReserveTool,
   createGetRunStatusTool,
   createGitStatusTool,
+  createAbortPhaseTool,
+  createAskOperatorTool,
   createMailReadTool,
   createMailSendTool,
   createPhaseHandoffTool,
@@ -36,6 +38,7 @@ import {
   createTaskGetTool,
   createTaskNoteAddTool,
   createTaskRiskAddTool,
+  createNeedsRetryTool,
   createTaskStatusTool,
   createValidationResultTool,
   createMergeGateStatusTool,
@@ -878,6 +881,9 @@ async function runPhase(
   customTools.push(createValidationResultTool(foremanToolContext));
   customTools.push(createTaskBlockTool(agentMailClient ?? null, foremanToolContext));
   customTools.push(createProgressUpdateTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createAskOperatorTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createAbortPhaseTool(agentMailClient ?? null, foremanToolContext));
+  customTools.push(createNeedsRetryTool(agentMailClient ?? null, foremanToolContext));
   customTools.push(createFileReserveTool(foremanToolContext));
   customTools.push(createFileReleaseTool(foremanToolContext));
   customTools.push(createFileChangesTool(foremanToolContext));

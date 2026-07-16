@@ -321,6 +321,124 @@ export function createProgressUpdateTool(mailClient: AgentMailClient | null, con
   } as ToolDefinition;
 }
 
+// ── Phase control tools ────────────────────────────────────────────────────────
+
+const AskOperatorParams = Type.Object({
+  question: Type.String({ description: "The question or request to send to the operator" }),
+  context: Type.Optional(Type.String({ description: "Additional context about why operator input is needed" })),
+});
+
+/**
+ * Create an ask_operator ToolDefinition that sends a structured request to the operator.
+ *
+ * Use when an agent needs human judgment or decision-making that cannot be resolved
+ * through automated reasoning alone.
+ */
+export function createAskOperatorTool(mailClient: AgentMailClient | null, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "ask_operator",
+    label: "Ask Operator",
+    description: "Request operator guidance or a decision. Use when an agent needs human judgment that cannot be resolved through automated reasoning.",
+    promptSnippet: "Call ask_operator when progress requires operator input or a judgment call.",
+    promptGuidelines: ["Use ask_operator to pause and request operator guidance; do not guess or proceed without input."],
+    parameters: AskOperatorParams,
+    async execute(_toolCallId: string, params: Static<typeof AskOperatorParams>) {
+      await ensureReportDir(context);
+      const request = {
+        question: params.question,
+        context: params.context ?? null,
+        runId: context.runId,
+        taskId: context.taskId,
+        taskTitle: context.taskTitle,
+        phase: context.phase,
+        requestedAt: nowIso(),
+      };
+      await writeFile(safeArtifactPath(context, "ASK_OPERATOR.md"), `# Operator Request\n\n- Task: ${context.taskTitle}\n- Phase: ${context.phase}\n- Question: ${params.question}\n${params.context ? `\n## Context\n${params.context}\n` : ""}\n`);
+      if (mailClient) await mailClient.sendMessage("foreman", "ask-operator", safeJson(request));
+      await appendToolLog(context, `ask_operator question=${params.question}`);
+      return { content: [{ type: "text" as const, text: `Operator request sent: ${params.question}` }], details: request };
+    },
+  } as ToolDefinition;
+}
+
+const AbortPhaseParams = Type.Object({
+  reason: Type.String({ description: "Why the phase is being aborted" }),
+  suggestion: Type.Optional(Type.String({ description: "Suggested remediation or alternative approach" })),
+});
+
+/**
+ * Create an abort_phase ToolDefinition that stops the current phase with a structured abort.
+ *
+ * Use when the agent determines the current approach is fundamentally flawed and
+ * should not continue. This signals the executor to stop the phase cleanly.
+ */
+export function createAbortPhaseTool(mailClient: AgentMailClient | null, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "abort_phase",
+    label: "Abort Phase",
+    description: "Stop the current phase cleanly with a structured abort reason. Use when the current approach is fundamentally flawed and should not continue.",
+    promptSnippet: "Call abort_phase when the current approach cannot succeed and the phase should be stopped.",
+    promptGuidelines: ["Use abort_phase to stop cleanly; do not continue with a known-flawed approach."],
+    parameters: AbortPhaseParams,
+    async execute(_toolCallId: string, params: Static<typeof AbortPhaseParams>) {
+      await ensureReportDir(context);
+      const abort = {
+        reason: params.reason,
+        suggestion: params.suggestion ?? null,
+        runId: context.runId,
+        taskId: context.taskId,
+        taskTitle: context.taskTitle,
+        phase: context.phase,
+        abortedAt: nowIso(),
+      };
+      await writeFile(safeArtifactPath(context, "ABORTED.md"), `# Aborted: ${context.taskTitle}\n\n- Phase: ${context.phase}\n- Reason: ${params.reason}\n${params.suggestion ? `\n## Suggested Remediation\n${params.suggestion}\n` : ""}\n`);
+      if (mailClient) await mailClient.sendMessage("foreman", "phase-abort", safeJson(abort));
+      await appendToolLog(context, `abort_phase reason=${params.reason}`);
+      return { content: [{ type: "text" as const, text: `Phase aborted: ${params.reason}` }], details: abort };
+    },
+  } as ToolDefinition;
+}
+
+const NeedsRetryParams = Type.Object({
+  reason: Type.String({ description: "Why the current attempt failed and should be retried" }),
+  attemptedApproach: Type.Optional(Type.String({ description: "What was attempted that did not work" })),
+  suggestedNextStep: Type.Optional(Type.String({ description: "Suggested next step or approach for the retry" })),
+});
+
+/**
+ * Create a needs_retry ToolDefinition that signals the current attempt should be retried.
+ *
+ * Use when the agent determines the failure is transient or recoverable with a different
+ * approach. This signals the executor to re-queue the phase for retry.
+ */
+export function createNeedsRetryTool(mailClient: AgentMailClient | null, context: ForemanToolContext): ToolDefinition {
+  return {
+    name: "needs_retry",
+    label: "Needs Retry",
+    description: "Signal that the current attempt failed but should be retried. Use when the failure is transient or recoverable with a different approach.",
+    promptSnippet: "Call needs_retry when an attempt failed but recovery is possible with a different approach.",
+    promptGuidelines: ["Use needs_retry to request a retry; do not continue with a known-broken approach."],
+    parameters: NeedsRetryParams,
+    async execute(_toolCallId: string, params: Static<typeof NeedsRetryParams>) {
+      await ensureReportDir(context);
+      const retry = {
+        reason: params.reason,
+        attemptedApproach: params.attemptedApproach ?? null,
+        suggestedNextStep: params.suggestedNextStep ?? null,
+        runId: context.runId,
+        taskId: context.taskId,
+        taskTitle: context.taskTitle,
+        phase: context.phase,
+        requestedAt: nowIso(),
+      };
+      await writeFile(safeArtifactPath(context, "NEEDS_RETRY.md"), `# Retry Requested\n\n- Task: ${context.taskTitle}\n- Phase: ${context.phase}\n- Reason: ${params.reason}\n${params.attemptedApproach ? `\n## Attempted Approach\n${params.attemptedApproach}\n` : ""}${params.suggestedNextStep ? `\n## Suggested Next Step\n${params.suggestedNextStep}\n` : ""}\n`);
+      if (mailClient) await mailClient.sendMessage("foreman", "needs-retry", safeJson(retry));
+      await appendToolLog(context, `needs_retry reason=${params.reason}`);
+      return { content: [{ type: "text" as const, text: `Retry requested: ${params.reason}` }], details: retry };
+    },
+  } as ToolDefinition;
+}
+
 const SafeCommandRunParams = Type.Object({
   command: Type.String({ description: "Non-interactive validation command to run in the worktree" }),
   timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 120000, max 600000" })),
