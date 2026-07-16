@@ -206,7 +206,8 @@ describe("inbox event helpers", () => {
       createdAt: "2026-01-01T00:01:00.000Z",
     };
 
-    const row = formatPipelineEventTableRow(event as any);
+    const typedEvent: Parameters<typeof formatPipelineEventTableRow>[0] = event;
+    const row = formatPipelineEventTableRow(typedEvent);
     expect(row.project).toBe("proj-1");
   });
 
