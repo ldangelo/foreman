@@ -24,6 +24,7 @@ import {
   extractBodyFields,
   formatCompactInboxSummary,
   formatInboxMessageLine,
+  formatMessage,
   formatMessageTable,
   renderMessageTable,
   renderMessageTableRows,
@@ -47,6 +48,58 @@ function makeMockMessage(overrides: Partial<Message> = {}): Message {
 }
 
 // ── extractBodyFields ───────────────────────────────────────────────────────
+describe("formatMessage full payload", () => {
+  it("renders non-empty JSON objects as key-value lines and wraps long values", () => {
+    const originalColumns = process.stdout.columns;
+    Object.defineProperty(process.stdout, "columns", { value: 40, configurable: true });
+    try {
+      const output = formatMessage(makeMockMessage({
+        body: JSON.stringify({ status: "running", message: "a long message with enough words to wrap" }),
+      }), true);
+
+      expect(output).toContain("  status: running");
+      expect(output).toContain("  message: a long message");
+      expect(output).toContain("\n           words to wrap");
+    } finally {
+      Object.defineProperty(process.stdout, "columns", { value: originalColumns, configurable: true });
+    }
+  });
+
+  it("preserves malformed JSON as raw body lines", () => {
+    const output = formatMessage(makeMockMessage({ body: "not-json\nstill raw" }), true);
+
+    expect(output).toContain("not-json\nstill raw");
+  });
+
+  it("serializes empty objects and non-object JSON payloads", () => {
+    expect(formatMessage(makeMockMessage({ body: "{}" }), true)).toContain("\n{}");
+    expect(formatMessage(makeMockMessage({ body: "[1,2]" }), true)).toContain("\n[\n  1,\n  2\n]");
+    expect(formatMessage(makeMockMessage({ body: "false" }), true)).toContain("\nfalse");
+  });
+
+  it("renders JSON null field values as null", () => {
+    const output = formatMessage(makeMockMessage({ body: JSON.stringify({ result: null }) }), true);
+
+    expect(output).toContain("  result: null");
+  });
+
+  it("terminates when terminal width is smaller than the key prefix", () => {
+    const originalColumns = process.stdout.columns;
+    Object.defineProperty(process.stdout, "columns", { value: 4, configurable: true });
+    try {
+      const output = formatMessage(makeMockMessage({
+        body: JSON.stringify({ veryLongKeyName: "abcdef" }),
+      }), true);
+
+      expect(output).toContain("  veryLongKeyName: a\n");
+      expect(output).toContain("                   b\n");
+      expect(output).toContain("                   f");
+    } finally {
+      Object.defineProperty(process.stdout, "columns", { value: originalColumns, configurable: true });
+    }
+  });
+});
+
 
 describe("formatMessageTable", () => {
   it("prefers projected task_id over run_id for operator-facing identity", () => {

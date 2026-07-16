@@ -768,7 +768,7 @@ function formatMessage(msg: Message, fullPayload = false): string {
           // Serialize nested objects as JSON strings within the value
           const valueStr = typeof value === "object" && value !== null
             ? JSON.stringify(value)
-            : String(value ?? "");
+            : String(value);
           const safeValue = sanitizeForTerminal(valueStr);
           // Wrap long values at terminal width (accounting for "  key: " prefix)
           const prefixLen = safeKey.length + 4; // "  key: "
