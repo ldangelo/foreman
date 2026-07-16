@@ -18,7 +18,7 @@ Use this skill for changes in `src/orchestrator/dispatcher.ts`, `src/orchestrato
 ## Pi Session Boundary
 
 - `runPhaseSession()` builds guarded built-in tools, custom Foreman tools, tool policy, observability, and in-memory Pi sessions.
-- `allowedTools` controls built-in tools; custom Foreman tools (`send_mail`, `mail_read`, `mail_send`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`, VCS/PR helpers) have their own flow and policy checks.
+- `allowedTools` controls built-in tools; custom Foreman tools (`send_mail`, `mail_read`, `mail_send`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`, VCS/PR helpers) have their own flow and policy checks.
 - Tool policy denial is a tool result/error payload, not a thrown process exception.
 
 ## Sandboxed Resources
