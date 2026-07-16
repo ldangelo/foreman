@@ -16,6 +16,9 @@ import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createInterface } from "readline";
+import { resolveEditor } from "./board.js";
 import { runSuperTui } from "../super-tui/render.js";
 import type { SuperTuiDataAdapter } from "../super-tui/data.js";
 import type { SuperTuiView } from "../super-tui/model.js";
@@ -1640,6 +1643,7 @@ interface InboxTaskDetailOptions {
   events: boolean;
   logs?: boolean;
   reports?: boolean;
+  selectReport?: boolean;
   files?: boolean;
   follow?: boolean;
 }
@@ -1730,6 +1734,75 @@ function renderReportsSection(summary: InboxTaskSummary): string {
     lines.push(`${entry.name}: ${entry.stat.size} bytes, updated ${relativeTime(entry.stat.mtime.toISOString())}`);
   }
   return lines.join("\n");
+}
+
+async function selectReportInteractive(summary: InboxTaskSummary): Promise<void> {
+  const candidates = reportDirectoryCandidates(summary);
+  const reportDir = candidates.find((candidate) => existsSync(candidate));
+  if (!reportDir) {
+    console.log(chalk.yellow("No report directory found for this task/run."));
+    if (candidates.length > 0) {
+      console.log("Checked directories:");
+      for (const candidate of candidates) {
+        console.log(`  ${candidate}`);
+      }
+    }
+    return;
+  }
+  const entries = readdirSync(reportDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const path = join(reportDir, entry.name);
+      const stat = statSync(path);
+      return { name: entry.name, path, stat };
+    })
+    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  if (entries.length === 0) {
+    console.log(chalk.yellow("No report files found in directory:"));
+    console.log(`  ${reportDir}`);
+    return;
+  }
+  console.log(chalk.bold("\nAvailable report files in:"));
+  console.log(`  ${reportDir}\n`);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const sizeKB = (entry.stat.size / 1024).toFixed(1);
+    console.log(`  ${chalk.green(i + 1)}. ${entry.name} (${sizeKB} KB)`);
+  }
+  console.log();
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const prompt = (): Promise<string> =>
+    new Promise((resolve) => {
+      rl.question(chalk.cyan("Enter number to open (or press Enter to cancel): "), (answer) => {
+        resolve(answer.trim());
+      });
+    });
+  try {
+    const answer = await prompt();
+    if (!answer) {
+      console.log(chalk.dim("Cancelled."));
+      return;
+    }
+    const index = parseInt(answer, 10);
+    if (isNaN(index) || index < 1 || index > entries.length) {
+      console.log(chalk.red(`Invalid selection. Must be a number between 1 and ${entries.length}.`));
+      return;
+    }
+    const selected = entries[index - 1];
+    console.log(chalk.dim(`Opening ${selected.name} in ${resolveEditor()}...`));
+    const exitCode = spawnSync(resolveEditor(), [selected.path], {
+      stdio: "inherit",
+      shell: true,
+    }).status ?? 0;
+    if (exitCode !== 0) {
+      console.log(chalk.yellow(`Editor exited with code ${exitCode}.`));
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 function renderFilesSection(summary: InboxTaskSummary): string {
@@ -1922,6 +1995,10 @@ async function renderInboxTaskOrRunDetail(
   }
   if (!summary) {
     console.log(`No messages or events found for run ${runId}.`);
+    return;
+  }
+  if (options.selectReport) {
+    await selectReportInteractive(summary);
     return;
   }
   console.log(renderTaskDetail(summary, options));
@@ -2440,6 +2517,7 @@ export type InboxDetailCommandOptions = {
   events?: boolean;
   logs?: boolean;
   reports?: boolean;
+  selectReport?: boolean;
   files?: boolean;
   follow?: boolean;
   eventsLimit?: string;
@@ -2522,6 +2600,7 @@ const inboxTaskCommand = new Command("task")
   .option("--events-limit <n>", "Max pipeline events to show", "50")
   .option("--logs", "Show log file paths, stats, and recent error log lines")
   .option("--reports", "Show report artifact directory and files")
+  .option("--select-report", "Interactively select a report file to open in $EDITOR")
   .option("--files", "Show worktree path and changed files")
   .option("--follow", "Refresh task inbox detail every 2 seconds")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -2552,6 +2631,7 @@ const inboxTaskCommand = new Command("task")
       events: options.events ?? true,
       logs: options.logs ?? false,
       reports: options.reports ?? false,
+      selectReport: options.selectReport ?? false,
       files: options.files ?? false,
       follow: options.follow ?? false,
     });
@@ -2568,6 +2648,7 @@ const inboxRunCommand = new Command("run")
   .option("--events-limit <n>", "Max pipeline events to show", "50")
   .option("--logs", "Show log file paths, stats, and recent error log lines")
   .option("--reports", "Show report artifact directory and files")
+  .option("--select-report", "Interactively select a report file to open in $EDITOR")
   .option("--files", "Show worktree path and changed files")
   .option("--follow", "Refresh run inbox detail every 2 seconds")
   .option("--project <name>", "Registered project name (default: current directory)")
@@ -2598,6 +2679,7 @@ const inboxRunCommand = new Command("run")
       events: options.events ?? true,
       logs: options.logs ?? false,
       reports: options.reports ?? false,
+      selectReport: options.selectReport ?? false,
       files: options.files ?? false,
       follow: options.follow ?? false,
     });
