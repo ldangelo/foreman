@@ -2208,8 +2208,8 @@ async function runMergeBuiltinPhase(args: {
   // Poll for the PR to actually be merged before returning success.
   // ElixirMergeQueue is currently a stub (does not process the queue), so without
   // this poll the phase would return success immediately while the PR remains open.
-  // TODO (TRD-xxx): remove this poll once ElixirMergeQueue is fully implemented
-  // and the refinery/RefineryAgent processes it asynchronously.
+  // When config.projectId is set, ElixirMergeQueue is being used, so we fail fast
+  // instead of polling for 5 minutes.
   const MERGE_POLL_INTERVAL_MS = 30_000;
   const MERGE_POLL_TIMEOUT_MS = 5 * 60 * 1000;
   let mergeSucceeded = false;
@@ -2218,6 +2218,24 @@ async function runMergeBuiltinPhase(args: {
   const mergePollStart = Date.now();
 
   if (prNumber) {
+    // Fail fast when ElixirMergeQueue stub is in use — it cannot process the queue,
+    // so polling will never succeed. Fail immediately with a clear error.
+    if (config.projectId) {
+      const details =
+        `Merge phase cannot complete: ElixirMergeQueue is a stub implementation for registered project "${config.projectId}" ` +
+        `and does not process the merge queue. The refinery/RefineryAgent must be implemented to handle queued branches asynchronously. ` +
+        `Until then, use a local (non-registered) project or disable auto-merge for this project.`;
+      log(`[MERGE] ${details}`);
+      await writeMergeReport({ config, status: "FAIL", details, prNumber });
+      await updateTerminalRunStatus({
+        runId: config.runId,
+        projectId: config.projectId,
+        projectPath: pipelineProjectPath,
+        updates: { status: "completed", completed_at: new Date().toISOString() },
+      });
+      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
+    }
+
     log(`[MERGE] Waiting for PR #${prNumber} to merge (timeout ${MERGE_POLL_TIMEOUT_MS / 1000}s)…`);
     while (Date.now() - mergePollStart < MERGE_POLL_TIMEOUT_MS && !mergeSucceeded && !mergeFailed) {
       await new Promise((r) => setTimeout(r, MERGE_POLL_INTERVAL_MS));

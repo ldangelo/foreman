@@ -46,6 +46,16 @@ describe("agent-worker.ts — merge queue handoff", () => {
     expect(source).not.toContain("Immediate merge drain result: merged=");
   });
 
+  it("fails fast when ElixirMergeQueue stub is in use instead of polling for 5 minutes", () => {
+    // When config.projectId is set (indicating ElixirMergeQueue stub), the merge phase
+    // should fail immediately instead of polling for up to 5 minutes.
+    expect(source).toContain("if (config.projectId)");
+    expect(source).toContain("ElixirMergeQueue is a stub implementation");
+    expect(source).toContain("Merge phase cannot complete");
+    // Verify it does NOT poll when projectId is set
+    expect(source).toContain("// Fail fast when ElixirMergeQueue stub is in use");
+  });
+
   it("enqueues merge intent with an explicit operation", () => {
     expect(source).toContain("operation: \"auto_merge\"");
     expect(source).toContain("const pr = await refinery.ensurePullRequestForRun");
