@@ -733,6 +733,16 @@ function formatTimestamp(isoStr: string): string {
   }
 }
 
+/**
+ * Remove control characters that could manipulate terminal state.
+ * Allows printable characters, tabs, and standard line endings.
+ */
+function sanitizeForTerminal(str: string): string {
+  // Remove control characters except tab (\t), newline (\n), carriage return (\r)
+  // These can cause screen clearing, cursor movement, or text spoofing
+  return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "�");
+}
+
 function formatMessage(msg: Message, fullPayload = false): string {
   const ts = formatTimestamp(msg.created_at);
   const readMark = msg.read === 1 ? " [read]" : "";
@@ -753,16 +763,19 @@ function formatMessage(msg: Message, fullPayload = false): string {
       ) {
         const entries = Object.entries(parsed as Record<string, unknown>);
         bodyLines = entries.map(([key, value]) => {
+          // Sanitize key and serialize value before outputting to prevent terminal injection
+          const safeKey = sanitizeForTerminal(key);
           // Serialize nested objects as JSON strings within the value
           const valueStr = typeof value === "object" && value !== null
             ? JSON.stringify(value)
             : String(value ?? "");
+          const safeValue = sanitizeForTerminal(valueStr);
           // Wrap long values at terminal width (accounting for "  key: " prefix)
-          const prefixLen = key.length + 4; // "  key: "
-          const wrappedValue = wrapText(valueStr, Math.max(1, terminalWidth - prefixLen));
+          const prefixLen = safeKey.length + 4; // "  key: "
+          const wrappedValue = wrapText(safeValue, Math.max(1, terminalWidth - prefixLen));
           // Indent continuation lines to align after "key: "
           return wrappedValue.split("\n").map((line, i) =>
-            i === 0 ? `  ${key}: ${line}` : `  ${" ".repeat(key.length + 2)}${line}`
+            i === 0 ? `  ${safeKey}: ${line}` : `  ${" ".repeat(safeKey.length + 2)}${line}`
           ).join("\n");
         });
       } else {
