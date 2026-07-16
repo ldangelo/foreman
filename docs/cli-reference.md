@@ -166,11 +166,11 @@ The cockpit status view renders ordered phase nodes, retry arrows, current failu
 
 ### `foreman logs`
 
-Show run logs and debugging summary.
+Show run logs with structured rendering. When the Elixir backend is available, entries are rendered as timestamped, color-coded lines with stream, type, and phase labels. Falls back to raw log file parsing when the backend is unavailable.
 
 ```bash
-foreman logs bd-abc1              # Show summary for a task
-foreman logs bd-abc1 --tail 200    # Show more raw log lines
+foreman logs bd-abc1              # Show structured log entries
+foreman logs bd-abc1 --tail 200    # Show more log lines
 foreman logs bd-abc1 --follow      # Follow logs in real-time
 foreman logs bd-abc1 --raw         # Print raw JSON log only
 ```
