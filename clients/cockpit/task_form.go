@@ -11,22 +11,28 @@ import (
 const (
 	createFormTitle = iota
 	createFormDescription
+	createFormProject
 	createFormType
 	createFormPriority
 	createFormFieldCount
 )
 
 type taskCreateForm struct {
-	id          string
-	quick       bool
-	focus       int
-	title       textinput.Model
-	description textarea.Model
-	taskType    textinput.Model
-	priority    textinput.Model
+	id               string
+	quick            bool
+	focus            int
+	title            textinput.Model
+	description      textarea.Model
+	projectIndex     int
+	projectOpen      bool
+	projects         []Project
+	taskType         textinput.Model
+	priority         textinput.Model
+	status           string // initial status from draft
+	currentProjectID string // project to assign when none explicitly selected
 }
 
-func newTaskCreateForm() taskCreateForm {
+func newTaskCreateForm(projects []Project, currentProjectID string) taskCreateForm {
 	draft := draftFromNewTask()
 	title := textinput.New()
 	title.Prompt = ""
@@ -46,20 +52,35 @@ func newTaskCreateForm() taskCreateForm {
 	priority.Prompt = ""
 	priority.SetValue(draft.Priority)
 
+	// Default to current project if known
+	projectIndex := 0
+	if currentProjectID != "" {
+		for i, p := range projects {
+			if p.ProjectID == currentProjectID {
+				projectIndex = i
+				break
+			}
+		}
+	}
+
 	form := taskCreateForm{
-		id:          draft.ID,
-		focus:       createFormTitle,
-		title:       title,
-		description: description,
-		taskType:    taskType,
-		priority:    priority,
+		id:               draft.ID,
+		focus:            createFormTitle,
+		title:            title,
+		description:      description,
+		projects:         projects,
+		projectIndex:     projectIndex,
+		taskType:         taskType,
+		priority:         priority,
+		status:           draft.Status,
+		currentProjectID: currentProjectID,
 	}
 	_ = form.focusField(createFormTitle)
 	return form
 }
 
-func newTaskQuickAddForm() taskCreateForm {
-	form := newTaskCreateForm()
+func newTaskQuickAddForm(projects []Project, currentProjectID string) taskCreateForm {
+	form := newTaskCreateForm(projects, currentProjectID)
 	form.quick = true
 	return form
 }
@@ -72,6 +93,7 @@ func (f *taskCreateForm) focusField(next int) tea.Cmd {
 		next = 0
 	}
 	f.focus = next
+	f.projectOpen = false
 	f.title.Blur()
 	f.description.Blur()
 	f.taskType.Blur()
@@ -81,6 +103,8 @@ func (f *taskCreateForm) focusField(next int) tea.Cmd {
 		return f.title.Focus()
 	case createFormDescription:
 		return f.description.Focus()
+	case createFormProject:
+		return nil // not a textinput; handled via Enter in Update
 	case createFormType:
 		return f.taskType.Focus()
 	case createFormPriority:
@@ -95,12 +119,76 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 		f.title, cmd = f.title.Update(msg)
 		return cmd
 	}
+
+	// Project dropdown navigation: only active when project field is focused
+	if f.focus == createFormProject {
+		switch msg.String() {
+		case "tab":
+			// Tab always skips the project dropdown (it's optional/display-only)
+			f.focusField(f.focus + 1)
+			return nil
+		case "down":
+			if f.projectOpen {
+				f.projectIndex++
+				if f.projectIndex >= len(f.projects) {
+					f.projectIndex = 0
+				}
+				return nil
+			}
+			f.focusField(f.focus + 1)
+			return nil
+		case "up":
+			if f.projectOpen {
+				f.projectIndex--
+				if f.projectIndex < 0 {
+					f.projectIndex = len(f.projects) - 1
+				}
+				return nil
+			}
+			f.focusField(f.focus - 1)
+			return nil
+		case "enter":
+			if f.projectOpen {
+				f.projectOpen = false
+				return f.focusField(f.focus + 1)
+			}
+			// First Enter on project field opens the dropdown
+			f.projectOpen = true
+			return nil
+		case "esc":
+			if f.projectOpen {
+				f.projectOpen = false
+				return nil
+			}
+		default:
+			// Character key on project dropdown: skip to next field and forward the key
+			if !f.projectOpen && msg.String() != "shift+tab" {
+				f.focusField(f.focus + 1)
+				// Forward the key to the newly focused field so it processes immediately
+				var cmd tea.Cmd
+				switch f.focus {
+				case createFormType:
+					f.taskType, cmd = f.taskType.Update(msg)
+				case createFormPriority:
+					f.priority, cmd = f.priority.Update(msg)
+				}
+				return cmd
+			}
+		}
+		return nil
+	}
+
 	switch msg.String() {
 	case "tab":
 		return f.focusField(f.focus + 1)
 	case "shift+tab":
 		return f.focusField(f.focus - 1)
 	case "enter":
+		if f.focus == createFormProject {
+			// Open dropdown on project field
+			f.projectOpen = true
+			return nil
+		}
 		if f.focus != createFormDescription {
 			return f.focusField(f.focus + 1)
 		}
@@ -121,13 +209,24 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 func (f taskCreateForm) Task() (Task, error) {
+	var projectID string
+	if len(f.projects) > 0 && f.projectIndex >= 0 && f.projectIndex < len(f.projects) {
+		projectID = f.projects[f.projectIndex].ProjectID
+	}
+	// Fall back to currentProjectID when the dropdown is at index 0 (not been
+	// navigated) and the listed project doesn't match — i.e. the current project
+	// is not in the project list.
+	if projectID == "" || (f.projectIndex == 0 && projectID != f.currentProjectID && f.currentProjectID != "") {
+		projectID = f.currentProjectID
+	}
 	return taskFromCreateDraft(taskDraft{
 		ID:          f.id,
 		Title:       strings.TrimSpace(f.title.Value()),
 		Description: strings.TrimSpace(f.description.Value()),
 		Type:        strings.TrimSpace(f.taskType.Value()),
 		Priority:    strings.TrimSpace(f.priority.Value()),
-		Status:      "backlog",
+		Status:      f.status,
+		ProjectID:   projectID,
 	})
 }
 
@@ -146,7 +245,7 @@ func (f *taskCreateForm) SetBounds(w, h int) {
 		f.title.SetWidth(inputW)
 		return
 	}
-	descH := h - 11
+	descH := h - 11 - len(f.projects) - 1 // account for project dropdown options
 	if descH < 3 {
 		descH = 3
 	}
@@ -168,6 +267,15 @@ func (f taskCreateForm) View(w, h int) string {
 		}
 		return style.Render(prefix + name)
 	}
+
+	selectedProjectName := ""
+	if len(f.projects) > 0 && f.projectIndex >= 0 && f.projectIndex < len(f.projects) {
+		selectedProjectName = f.projects[f.projectIndex].Name
+	}
+	if selectedProjectName == "" {
+		selectedProjectName = "(no project)"
+	}
+
 	if f.quick {
 		return strings.Join([]string{
 			whiteStyle.Render("Quick add task") + dimStyle.Render("  "+f.id),
@@ -177,17 +285,51 @@ func (f taskCreateForm) View(w, h int) string {
 			f.title.View(),
 		}, "\n")
 	}
-	return strings.Join([]string{
+
+	// Build project dropdown display
+	projectLabel := label(createFormProject, "project")
+	projectValue := dimStyle.Render(selectedProjectName)
+	if f.focus == createFormProject {
+		projectValue = cyanStyle.Render(selectedProjectName)
+	}
+	indicator := " ▾"
+	if f.projectOpen {
+		indicator = " ▴"
+	}
+	projectField := projectLabel + " " + projectValue + dimStyle.Render(indicator)
+
+	// Build dropdown options when open
+	var dropdownLines []string
+	if f.projectOpen && len(f.projects) > 0 {
+		for i, p := range f.projects {
+			prefix := "  "
+			marker := "  "
+			if i == f.projectIndex {
+				prefix = "› "
+				marker = "▶"
+			}
+			line := dimStyle.Render(prefix+marker) + dimStyle.Render(" "+p.Name)
+			dropdownLines = append(dropdownLines, dimStyle.Render("   "+line))
+		}
+		dropdownLines = append(dropdownLines, dimStyle.Render("  ↑↓ navigate · enter select"))
+	}
+
+	lines := []string{
 		whiteStyle.Render("Create new task") + dimStyle.Render("  "+f.id),
-		dimStyle.Render("tab/shift+tab fields · enter next field · ctrl+s create · esc cancel"),
+		dimStyle.Render("tab/shift+tab fields · enter next field · ↑↓ project ▾ open · ctrl+s create · esc cancel"),
 		"",
 		label(createFormTitle, "title"),
 		f.title.View(),
 		label(createFormDescription, "description"),
 		f.description.View(),
+		projectField,
+	}
+	lines = append(lines, dropdownLines...)
+	lines = append(lines,
 		label(createFormType, "type"),
 		f.taskType.View(),
 		label(createFormPriority, "priority"),
 		f.priority.View(),
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }

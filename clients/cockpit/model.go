@@ -618,7 +618,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.viewFocused {
 			return m, nil
 		}
-		form := newTaskCreateForm()
+		form := newTaskCreateForm(m.client.Projects(), m.client.ProjectID())
 		m.taskForm = &form
 		m.viewFocused = true
 		m.notice = "new task: ctrl+s create · esc cancel"
@@ -627,7 +627,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.viewFocused {
 			return m, nil
 		}
-		form := newTaskQuickAddForm()
+		form := newTaskQuickAddForm(m.client.Projects(), m.client.ProjectID())
 		m.taskForm = &form
 		m.viewFocused = true
 		m.notice = "quick task: enter create · esc cancel"

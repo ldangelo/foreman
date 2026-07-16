@@ -73,7 +73,7 @@ func TestTaskFromCreateDraftRequiresTitle(t *testing.T) {
 }
 
 func TestTaskCreateFormTitleSupportsCursorEditAndPaste(t *testing.T) {
-	form := newTaskCreateForm()
+	form := newTaskCreateForm(nil, "")
 	form.Update(keyPress("Tsk"))
 	form.Update(specialKey(tea.KeyLeft))
 	form.Update(specialKey(tea.KeyBackspace))
@@ -89,7 +89,7 @@ func TestTaskCreateFormTitleSupportsCursorEditAndPaste(t *testing.T) {
 }
 
 func TestTaskCreateFormDescriptionTypeAndPriorityAreEditable(t *testing.T) {
-	form := newTaskCreateForm()
+	form := newTaskCreateForm(nil, "")
 	form.Update(keyPress("Task with fields"))
 	form.Update(specialKey(tea.KeyTab))
 	form.Update(keyPress("Bdy"))
@@ -97,6 +97,7 @@ func TestTaskCreateFormDescriptionTypeAndPriorityAreEditable(t *testing.T) {
 	form.Update(specialKey(tea.KeyBackspace))
 	form.Update(keyPress("od"))
 	form.Update(specialKey(tea.KeyTab))
+	// Tab skips project dropdown → focus lands on type field
 	form.Update(ctrlKey('u'))
 	form.Update(keyPress("bug"))
 	form.Update(specialKey(tea.KeyTab))
@@ -113,7 +114,7 @@ func TestTaskCreateFormDescriptionTypeAndPriorityAreEditable(t *testing.T) {
 }
 
 func TestTaskCreateFormFocusTraversalWrapsFields(t *testing.T) {
-	form := newTaskCreateForm()
+	form := newTaskCreateForm(nil, "")
 	for range createFormFieldCount - 1 {
 		form.Update(specialKey(tea.KeyTab))
 	}

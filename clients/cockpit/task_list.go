@@ -375,13 +375,22 @@ func sectionUsesRecentCap(section TaskSection) bool {
 }
 
 func (l TaskList) matchesScope(it Item) bool {
-	if l.scope != "current" || l.projectID == "" {
+	// Non-current scope always passes
+	if l.scope != "current" {
 		return true
 	}
-	if it.IsTask {
-		return it.Task.ProjectID == "" || it.Task.ProjectID == l.projectID
+	// Empty projectID means no project filter active → show all
+	if l.projectID == "" {
+		return true
 	}
-	return it.Run.ProjectID == "" || it.Run.ProjectID == l.projectID
+	// Filter: item must have matching projectID or be unscoped
+	itemProjectID := ""
+	if it.IsTask {
+		itemProjectID = it.Task.ProjectID
+	} else {
+		itemProjectID = it.Run.ProjectID
+	}
+	return itemProjectID == "" || itemProjectID == l.projectID
 }
 
 func buildTaskListItems(runs []Run, tasks []Task) []Item {

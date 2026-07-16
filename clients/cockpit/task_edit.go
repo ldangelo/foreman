@@ -18,6 +18,7 @@ type taskDraft struct {
 	Type        string `json:"type"`
 	Priority    string `json:"priority"`
 	Status      string `json:"status"`
+	ProjectID   string `json:"project_id"`
 }
 
 func draftFromTask(task Task) taskDraft {
@@ -62,7 +63,7 @@ func draftFromNewTask() taskDraft {
 		ID:       newTaskID(),
 		Type:     "task",
 		Priority: "P2",
-		Status:   "backlog",
+		Status:   "ready",
 	}
 }
 
@@ -87,6 +88,7 @@ func taskFromCreateDraft(draft taskDraft) (Task, error) {
 		TaskType:    draft.Type,
 		Priority:    draft.Priority,
 		Status:      draft.Status,
+		ProjectID:   draft.ProjectID,
 		Summary:     draft.Title,
 	}, nil
 }

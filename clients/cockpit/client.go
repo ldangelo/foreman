@@ -132,10 +132,16 @@ type Metrics struct {
 	EmittedAt     string
 }
 
-// Client is the read-model contract the cockpit consumes. Every method maps to
-// an existing Elixir endpoint; the cockpit holds no authoritative state.
+// Project is a registered Foreman project available for task creation.
+type Project struct {
+	ProjectID string
+	Name      string
+	Path      string
+}
+
 type Client interface {
 	ProjectID() string
+	Projects() []Project
 	Runs() []Run
 	Dispatchable() []Task
 	Metrics() Metrics
@@ -549,6 +555,14 @@ func (*mockClient) PR(runID string) PRStatus {
 		}
 	default:
 		return PRStatus{RunID: runID}
+	}
+}
+
+func (*mockClient) Projects() []Project {
+	return []Project{
+		{ProjectID: "proj-foreman", Name: "foreman", Path: "/Users/ldangelo/Development/Fortium/foreman"},
+		{ProjectID: "proj-dashboard", Name: "dashboard", Path: "/Users/ldangelo/Development/Sunstone/dashboard"},
+		{ProjectID: "proj-elixir-e2e", Name: "elixir-e2e", Path: "/tmp/foreman-elixir-e2e/project"},
 	}
 }
 
@@ -967,6 +981,30 @@ func (c *httpClient) projectPaths() map[string]string {
 		if projectID != "" && projectPath != "" {
 			out[projectID] = projectPath
 		}
+	}
+	return out
+}
+
+func (c *httpClient) Projects() []Project {
+	m, err := c.get("/api/v1/projects")
+	if err != nil {
+		return nil
+	}
+	out := []Project{}
+	for _, p := range arr(m, "projects") {
+		projectID := str(p, "project_id", "id")
+		if projectID == "" {
+			continue
+		}
+		name := str(p, "config", "name")
+		if name == "" {
+			name = projectID
+		}
+		out = append(out, Project{
+			ProjectID: projectID,
+			Name:      name,
+			Path:      str(p, "path", "root"),
+		})
 	}
 	return out
 }
