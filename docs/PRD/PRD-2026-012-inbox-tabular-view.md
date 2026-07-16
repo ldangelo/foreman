@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-The `foreman inbox` command currently renders messages in a free-form text style that makes it difficult to quickly scan multiple messages. This PRD defines a tabular view as the default output format, with columns for date/time, ticket ID, sender, receiver, kind, tool, and args. The existing `--full` raw/payload mode remains available for detailed inspection.
+The `foreman inbox` command currently renders messages in a free-form text style that makes it difficult to quickly scan multiple messages. This PRD defines a tabular view as the default output format, with columns for date/time, ticket ID, sender, receiver, kind, tool, and args. The existing `--full` mode remains available with improved formatting: non-empty JSON object bodies render as key-value pairs with terminal-width wrapping, while arrays, primitives, `null`, empty objects, and invalid JSON fall back to serialized or raw body output.
 
 **Goal:** Default `foreman inbox` output shows a readable table where agents can quickly assess message flow across runs.
 
@@ -181,7 +181,7 @@ Add `--raw` flag for minimal processing (shows raw body, no JSON parsing):
 | AC4 | kind, tool, and args are extracted from structured payloads when present | Send message with `{"kind":"update","tool":"bash","argsPreview":"cd /repo"}` → table shows `update`, `bash`, `cd /repo` |
 | AC5 | Degrades gracefully when fields are absent | Send message with plain text body → table shows `-` for missing fields |
 | AC6 | Long args are truncated safely for table display | Send message with args > 40 chars → visible portion ends with `…` |
-| AC7 | existing `--full` output mode remains available | Run `foreman inbox --full` → old free-form format shown |
+| AC7 | `--full` mode available with formatted key-value output | Run `foreman inbox --full` → non-empty JSON object bodies show key-value pairs (for example, `key: value`) with long values wrapped at terminal width; arrays, primitives, `null`, empty objects, and invalid JSON use serialized or raw fallback output |
 | AC8 | `--raw` flag shows minimal processing | Run `foreman inbox --raw` → raw body truncated at 200, no JSON parsing |
 
 ---

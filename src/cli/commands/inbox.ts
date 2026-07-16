@@ -790,24 +790,59 @@ function formatTimestamp(isoStr: string): string {
   }
 }
 
+/**
+ * Remove control characters that could manipulate terminal state.
+ * Allows printable characters, tabs, and standard line endings.
+ */
+function sanitizeForTerminal(str: string): string {
+  // Remove control characters except tab (\t), newline (\n), carriage return (\r)
+  // These can cause screen clearing, cursor movement, or text spoofing
+  return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "�");
+}
+
 function formatMessage(msg: Message, fullPayload = false): string {
   const ts = formatTimestamp(msg.created_at);
   const readMark = msg.read === 1 ? " [read]" : "";
   const header = `[${ts}] ${msg.sender_agent_type} → ${msg.recipient_agent_type}  |  ${msg.subject}${readMark}`;
 
   if (fullPayload) {
-    // Show full body — try to pretty-print JSON, otherwise show raw
-    let bodyDisplay: string;
+    // Show full body — try to format as key-value pairs, otherwise show raw
+    let bodyLines: string[];
     try {
       const parsed = JSON.parse(msg.body);
-      bodyDisplay = JSON.stringify(parsed, null, 2);
+      const terminalWidth = getTerminalWidth();
+      // Only render as key-value pairs for non-null, non-array objects with entries
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        Object.keys(parsed).length > 0
+      ) {
+        const entries = Object.entries(parsed as Record<string, unknown>);
+        bodyLines = entries.map(([key, value]) => {
+          // Sanitize key and serialize value before outputting to prevent terminal injection
+          const safeKey = sanitizeForTerminal(key);
+          // Serialize nested objects as JSON strings within the value
+          const valueStr = typeof value === "object" && value !== null
+            ? JSON.stringify(value)
+            : String(value);
+          const safeValue = sanitizeForTerminal(valueStr);
+          // Wrap long values at terminal width (accounting for "  key: " prefix)
+          const prefixLen = safeKey.length + 4; // "  key: "
+          const wrappedValue = wrapText(safeValue, Math.max(1, terminalWidth - prefixLen));
+          // Indent continuation lines to align after "key: "
+          return wrappedValue.split("\n").map((line, i) =>
+            i === 0 ? `  ${safeKey}: ${line}` : `  ${" ".repeat(safeKey.length + 2)}${line}`
+          ).join("\n");
+        });
+      } else {
+        // Fallback for empty objects, arrays, primitives, etc.: show serialized payload
+        bodyLines = JSON.stringify(parsed, null, 2).split("\n");
+      }
     } catch {
-      bodyDisplay = msg.body;
+      bodyLines = msg.body.split("\n");
     }
-    // Wrap at terminal width to prevent line clipping on long JSON payloads
-    const terminalWidth = getTerminalWidth();
-    const wrappedBody = wrapText(bodyDisplay, terminalWidth - 2); // -2 for indentation
-    return `${header}\n${wrappedBody.split("\n").map((l) => `  ${l}`).join("\n")}`;
+    return `${header}\n${bodyLines.join("\n")}`;
   }
 
   // Default: try to parse JSON and show key fields for readability
