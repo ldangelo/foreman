@@ -212,7 +212,10 @@ async function renderSummary(runId: string, tailCount: number, useElixir = false
     let client: ElixirServerClient | undefined;
     try {
       const manager = new ElixirServerManager();
-      const status = await manager.ensureRunning();
+      const status = manager.status();
+      if (!status.running) throw new Error("server not running");
+      const health = await manager.health();
+      if (!health.ok) throw new Error("server unhealthy");
       client = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
     } catch {
       // Elixir server not available — fall through to file-based fallback
@@ -220,7 +223,7 @@ async function renderSummary(runId: string, tailCount: number, useElixir = false
 
     if (client) {
       try {
-        const entries = await client.getRunLogs(runId, "compact") as LogEntry[];
+        const entries = await client.getRunLogs(runId, "compact");
         if (entries && entries.length > 0) {
           console.log(chalk.bold("\n  Structured log entries:"));
           const shown = entries.slice(-tailCount);
@@ -469,7 +472,7 @@ export const logsCommand = new Command("logs")
     }
 
     const rawPath = logPath(resolved.run.id, "log");
-    if (!existsSync(rawPath)) {
+    if (!existsSync(rawPath) && (opts.raw || opts.follow)) {
       console.error(chalk.red(`Error: Raw log not found: ${rawPath}`));
       process.exit(1);
     }

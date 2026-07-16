@@ -91,7 +91,7 @@ describe("ElixirServerClient", () => {
     mockJsonResponse(200, { ok: true, scheduler: { launched: 1 } });
     mockJsonResponse(200, { ok: true, inbox: [{ message_id: "msg-1" }] });
     mockJsonResponse(200, { ok: true, events: [{ event_id: "evt-1" }] });
-    mockJsonResponse(200, { ok: true, logs: {run_id: "run-1", mode: "raw", entries: [{line: "hello"}]} });
+    mockJsonResponse(200, { ok: true, logs: {run_id: "run-1", mode: "raw", entries: [{event_id: "e1", sequence: 1, type: "tool", phase_id: "dev", worker_id: "w1", stream: "stdout", message: "hello", occurred_at: "2024-01-01T00:00:00Z"}]} });
     mockJsonResponse(200, { ok: true, report: { verdict: "PASS" } });
     mockJsonResponse(200, { ok: true, debug: { phases: [] } });
     const client = new ElixirServerClient("http://server.test");
@@ -103,7 +103,7 @@ describe("ElixirServerClient", () => {
     await expect(client.schedulerTick()).resolves.toEqual({ launched: 1 });
     await expect(client.listInbox({ runId: "run-1", projectId: "proj-1", limit: 5, unread: true })).resolves.toEqual([{ message_id: "msg-1" }]);
     await expect(client.listEvents({ runId: "run-1", projectId: "proj-1", limit: 10 })).resolves.toEqual([{ event_id: "evt-1" }]);
-    await expect(client.getRunLogs("run/1", "raw")).resolves.toEqual([{ line: "hello" }]);
+    await expect(client.getRunLogs("run/1", "raw")).resolves.toEqual([{ event_id: "e1", sequence: 1, type: "tool", phase_id: "dev", worker_id: "w1", stream: "stdout", message: "hello", occurred_at: "2024-01-01T00:00:00Z" }]);
     await expect(client.getRunReport("run/1")).resolves.toEqual({ verdict: "PASS" });
     await expect(client.getDebugTimeline("run/1")).resolves.toEqual({ phases: [] });
 
@@ -125,5 +125,23 @@ describe("ElixirServerClient", () => {
     await expect(client.getTask("missing")).resolves.toBeNull();
     await expect(client.getTask("bad")).rejects.toThrow("boom");
     await expect(client.listProjects()).rejects.toThrow("boom");
+  });
+
+  it("filters malformed log entries and returns only valid LogEntry records", async () => {
+    globalThis.fetch = fetchMock;
+    const validEntry = { event_id: "e1", sequence: 1, type: "tool", phase_id: "dev", worker_id: "w1", stream: "stdout", message: "valid", occurred_at: "2024-01-01T00:00:00Z" };
+    const malformedEntries = [
+      { event_id: "e2" }, // missing required fields
+      { sequence: 2, type: "x" }, // missing event_id
+      { event_id: "e3", sequence: 3, type: "tool", stream: 123, message: "bad stream type" }, // stream not string
+      { event_id: "e4", sequence: 4, type: "tool", stream: "stderr", message: null }, // message is null
+      validEntry,
+    ];
+    mockJsonResponse(200, { ok: true, logs: { run_id: "run-1", mode: "compact", entries: malformedEntries } });
+    const client = new ElixirServerClient("http://server.test");
+
+    const result = await client.getRunLogs("run-1", "compact");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(validEntry);
   });
 });
