@@ -397,4 +397,34 @@ describe("selectReportInteractive", () => {
       consoleLogSpy.mockRestore();
     });
   });
+
+  describe("command option validation", () => {
+    async function expectFollowSelectReportRejection(args: string[]): Promise<void> {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+        throw new Error(`process.exit(${code ?? ""})`);
+      }) as never);
+
+      try {
+        // Dynamic import is required because these tests reset mocked modules before each case.
+        const { inboxCommand } = await import("../commands/inbox.js");
+        await expect(inboxCommand.parseAsync(args, { from: "user" })).rejects.toThrow("process.exit(1)");
+
+        expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("--follow and --select-report"));
+        expect(exitSpy).toHaveBeenCalledWith(1);
+        expect(mocks.mockSpawnSync).not.toHaveBeenCalled();
+      } finally {
+        consoleErrorSpy.mockRestore();
+        exitSpy.mockRestore();
+      }
+    }
+
+    it("rejects --follow with --select-report for task detail", async () => {
+      await expectFollowSelectReportRejection(["task", "task-123", "--follow", "--select-report"]);
+    });
+
+    it("rejects --follow with --select-report for run detail", async () => {
+      await expectFollowSelectReportRejection(["run", "run-456", "--follow", "--select-report"]);
+    });
+  });
 });

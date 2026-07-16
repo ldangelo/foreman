@@ -644,7 +644,7 @@ View the Agent Mail inbox — messages sent between agents and the foreman orche
 ```bash
 foreman inbox                     # TTY: unified cockpit opened to inbox view; non-TTY summary
 foreman inbox --non-interactive   # Scriptable active/attention summary
-foreman inbox task bd-abc1        # Scriptable task drilldown; add --logs --reports --files --select-report
+foreman inbox task bd-abc1        # Scriptable task drilldown; add --logs --reports --files
 foreman inbox task bd-abc1 --interactive # Cockpit with this task selected
 foreman inbox run <run-id> --interactive # Cockpit with this run selected
 foreman inbox --task bd-abc1      # Legacy task selector; still supported
@@ -656,6 +656,7 @@ foreman inbox --limit 100         # Show more messages
 foreman inbox --compact           # Summarize task/run, phases, tools, denials, notable events
 foreman inbox task bd-abc1 --logs --reports --files
 foreman inbox task bd-abc1 --select-report   # Interactive report file picker → opens in $EDITOR
+foreman inbox run <run-id> --select-report      # Interactive run report file picker → opens in $EDITOR
 foreman inbox --ack               # Mark shown messages as read
 ```
 
@@ -674,7 +675,7 @@ foreman inbox --ack               # Mark shown messages as read
 | `--scope <scope>` | attention | Task summary scope: active, attention, all, terminal |
 | `--messages` / `--events` | — | Task/run drilldown sections |
 | `--logs` / `--reports` / `--files` | — | Task/run drilldown artifact sections |
-| `--select-report` | — | Interactively select a report file to open in `$EDITOR` |
+| `--select-report` | — | Task/run subcommands only: interactively select a report file to open in `$EDITOR` |
 
 ### `foreman inbox send`
 

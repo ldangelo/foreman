@@ -1993,6 +1993,12 @@ async function renderInboxTaskOrRunDetail(
   selector: { task?: string; run?: string },
   options: InboxTaskDetailOptions,
 ): Promise<void> {
+  const optionError = validateInboxDetailOptions(options);
+  if (optionError) {
+    console.error(optionError);
+    process.exit(1);
+    return;
+  }
   if (options.follow) {
     await followInboxTaskOrRunDetail(sources, selector, options);
     return;
@@ -2537,6 +2543,12 @@ export type InboxDetailCommandOptions = {
 
 export type InboxDetailRoute = "cockpit" | "detail";
 
+export function validateInboxDetailOptions(options: Pick<InboxDetailCommandOptions, "follow" | "selectReport">): string | null {
+  const isReportSelectionFollowMode = options.follow === true && options.selectReport === true;
+  if (!isReportSelectionFollowMode) return null;
+  return "--follow and --select-report cannot be used together. Use --select-report without --follow to choose a report.";
+}
+
 export function resolveInboxDetailRoute(options: Pick<InboxDetailCommandOptions, "interactive">): InboxDetailRoute {
   return options.interactive === true ? "cockpit" : "detail";
 }
@@ -2617,6 +2629,12 @@ const inboxTaskCommand = new Command("task")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--interactive", "Open the unified cockpit with this task selected")
   .action(async (taskId: string, options: InboxDetailCommandOptions) => {
+    const optionError = validateInboxDetailOptions(options);
+    if (optionError) {
+      console.error(optionError);
+      process.exit(1);
+      return;
+    }
     if (resolveInboxDetailRoute(options) === "cockpit") {
       const projectPath = await resolveInboxProjectPath(options);
       await runInboxSuperTuiForProject(projectPath, options.project ?? projectPath, {
@@ -2665,6 +2683,12 @@ const inboxRunCommand = new Command("run")
   .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
   .option("--interactive", "Open the unified cockpit with this run selected")
   .action(async (runId: string, options: InboxDetailCommandOptions) => {
+    const optionError = validateInboxDetailOptions(options);
+    if (optionError) {
+      console.error(optionError);
+      process.exit(1);
+      return;
+    }
     if (resolveInboxDetailRoute(options) === "cockpit") {
       const projectPath = await resolveInboxProjectPath(options);
       await runInboxSuperTuiForProject(projectPath, options.project ?? projectPath, {
