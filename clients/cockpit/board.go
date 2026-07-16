@@ -373,9 +373,14 @@ func boardColumnForTaskStatus(status string) BoardColumn {
 	}
 }
 
-// boardColumn classifies an Item into a board column, applying the run attention
-// override and failed-task override before falling back to raw status mapping.
+// boardColumn classifies an Item into a board column. When OrigCol is set (server
+// board data), it is used directly so the server's column assignment is preserved.
+// Otherwise falls back to the run attention override and task-status mapping.
 func boardColumn(it Item) BoardColumn {
+	// Server-assigned column: use it directly so server grouping is preserved.
+	if it.OrigCol != "" {
+		return BoardColumn(it.OrigCol)
+	}
 	if it.IsTask {
 		if isFailedState(it.Task.Status) {
 			return BoardColumnBlocked

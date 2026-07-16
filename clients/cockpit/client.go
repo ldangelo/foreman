@@ -85,6 +85,20 @@ type Task struct {
 	Pipeline    []Phase
 }
 
+// BoardItem is a board column entry returned by GET /api/v1/board.
+type BoardItem struct {
+	TaskID    string `json:"task_id"`
+	RunID     string `json:"run_id,omitempty"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Priority  string `json:"priority"`
+	TaskType  string `json:"task_type"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	Group     string `json:"group"` // "RUNNING" | "RECENT"
+	Type      string `json:"type"`  // "task" | "run" | "attention"
+	Attention string `json:"attention,omitempty"`
+}
+
 // Message is an Agent Mail message.
 type Message struct {
 	At      string
@@ -156,6 +170,7 @@ type Client interface {
 	Runs() []Run
 	Dispatchable() []Task
 	Metrics() Metrics
+	BoardColumns() map[string][]BoardItem // column name → items; nil means use client-side grouping
 	Messages(runID string) []Message
 	Events(runID string) []Event
 	Logs(runID string) []LogEntry
@@ -644,6 +659,10 @@ func (c *mockClient) Dispatchable() []Task {
 	return out
 }
 
+// BoardColumns implements Client. Mock always returns nil so the client uses its
+// own computed groupings (via buildItems) instead of the server-provided ones.
+func (*mockClient) BoardColumns() map[string][]BoardItem { return nil }
+
 func defaultMockTasks() []Task {
 	tasks := []Task{
 		{TaskID: "foreman-c3845", Title: "Wire PR status into cockpit", TaskType: "feature", Priority: "P0", Status: "ready", Depends: "blocked-by foreman-77aa1 ✓ merged",
@@ -859,6 +878,50 @@ func (c *httpClient) DrainErrors() []string {
 	}
 	out := append([]string(nil), c.errors...)
 	c.errors = nil
+	return out
+}
+
+func (c *httpClient) BoardColumns() map[string][]BoardItem {
+	projectID := c.ProjectID()
+	if projectID == "" {
+		return nil
+	}
+	m, err := c.get("/api/v1/board?project_id=" + url.QueryEscape(projectID))
+	if err != nil {
+		return nil
+	}
+	colsRaw, ok := m["columns"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string][]BoardItem, len(colsRaw))
+	for col, itemsRaw := range colsRaw {
+		items, ok := itemsRaw.([]any)
+		if !ok {
+			continue
+		}
+		boardItems := make([]BoardItem, 0, len(items))
+		for _, item := range items {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			bi := BoardItem{
+				TaskID:    str(itemMap, "task_id", ""),
+				RunID:     str(itemMap, "run_id", ""),
+				Title:     str(itemMap, "title", ""),
+				Status:    str(itemMap, "status", ""),
+				Priority:  str(itemMap, "priority", ""),
+				TaskType:  str(itemMap, "task_type", ""),
+				UpdatedAt: str(itemMap, "updated_at", ""),
+				Group:     str(itemMap, "group", ""),
+				Type:      str(itemMap, "type", ""),
+				Attention: str(itemMap, "attention", ""),
+			}
+			boardItems = append(boardItems, bi)
+		}
+		out[col] = boardItems
+	}
 	return out
 }
 

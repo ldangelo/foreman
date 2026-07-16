@@ -708,7 +708,7 @@ defmodule ForemanServer.Http.RouterTest do
       "command_id" => "cmd-http",
       "command_type" => "task.create",
       "schema_version" => 1,
-      "payload" => %{"task_id" => "task-http"},
+      "payload" => %{"task_id" => "task-http", "project_id" => "test"},
       "metadata" => %{"correlation_id" => "corr-http", "idempotency_key" => "cmd-http"}
     }
   end
