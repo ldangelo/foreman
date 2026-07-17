@@ -334,7 +334,7 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 	m.buildItems()
 
 	out := stripANSI(m.renderLeft(90, 6))
-	for _, want := range []string{"task-run", "Fix failing CI", "qa", "✉2", "◇4", "✓3", "✗1", "pr:open", "+12 -5", "retrying", "u2h"} {
+	for _, want := range []string{"task-run", "Fix failing CI", "qa", "✉2", "◇4", "✓3", "✗1", "pr:open", "+12 -5", "retrying", "2h ago"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected rich run row metadata %q, got:\n%s", want, out)
 		}
@@ -343,7 +343,7 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 
 func TestActiveTaskOnlyRowRendersInRunningSection(t *testing.T) {
 	m := newModel(NewMockClient())
-	m.runs = nil
+ 	m.runs = nil
 	m.tasks = []Task{{TaskID: "task-pending", Title: "Waiting for worker", TaskType: "feature", Priority: "P0", Status: "pending"}}
 	m.buildItems()
 
@@ -411,7 +411,7 @@ func TestTaskRowAgeMetadataRendersUpdatedCreatedAndFallbacks(t *testing.T) {
 	m.buildItems()
 
 	out := stripANSI(m.renderLeft(96, 10))
-	for _, want := range []string{"task-both", "u2h", "c2d", "task-created", "c3h", "task-updated", "u4h"} {
+	for _, want := range []string{"task-both", "2h ago", "2d ago", "task-created", "3h ago", "task-updated", "4h ago"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected task age metadata %q, got:\n%s", want, out)
 		}
@@ -3261,4 +3261,47 @@ func manyRuns(n int) []Run {
 		}
 	}
 	return out
+}
+
+
+func TestFormatAgeRendersHoursDaysAndAgo(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name string
+		stamp time.Time
+		want string
+	}{
+		{"just now", now.Add(-30 * time.Second), "just now"},
+		{"minutes", now.Add(-3 * time.Minute), "3m ago"},
+		{"hours", now.Add(-5 * time.Hour), "5h ago"},
+		{"days", now.Add(-2 * 24 * time.Hour), "2d ago"},
+		{"weeks", now.Add(-3 * 7 * 24 * time.Hour), "3w ago"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatAge(tc.stamp.Format(time.RFC3339))
+			if got != tc.want {
+				t.Fatalf("formatAge(%s) = %q, want %q", tc.stamp, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoardCardRendersCreatedAndUpdatedAges(t *testing.T) {
+	now := time.Now()
+	updated := now.Add(-3 * time.Hour).Format(time.RFC3339)
+	created := now.Add(-2 * 24 * time.Hour).Format(time.RFC3339)
+	it := Item{
+		IsTask: true,
+		Task: Task{
+			TaskID: "task-1", Title: "with ages", Status: "backlog",
+			Updated: updated, Created: created,
+		},
+	}
+	out := stripANSI(renderBoardCard(it, 60, false, paneVisualFor(true, defaultConfig().Cockpit.Focus)))
+	for _, want := range []string{"3h ago", "2d ago"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected board card to show %q, got:\n%s", want, out)
+		}
+	}
 }

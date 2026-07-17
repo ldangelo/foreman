@@ -458,10 +458,10 @@ func taskRowFields(it Item) (state, title, id, typ, pri, right string) {
 func taskRightMetadata(task Task) string {
 	parts := []string{task.Status}
 	if task.Updated != "" {
-		parts = append(parts, "u"+formatAge(task.Updated))
+		parts = append(parts, formatAge(task.Updated))
 	}
 	if task.Created != "" {
-		parts = append(parts, "c"+formatAge(task.Created))
+		parts = append(parts, formatAge(task.Created))
 	}
 	return strings.Join(compactNonEmpty(parts), " ")
 }
@@ -491,10 +491,10 @@ func runRightMetadata(run Run) string {
 		parts = append(parts, run.Verdict)
 	}
 	if run.Last != "" {
-		parts = append(parts, "u"+formatAge(run.Last))
+		parts = append(parts, formatAge(run.Last))
 	}
 	if run.Created != "" {
-		parts = append(parts, "c"+formatAge(run.Created))
+		parts = append(parts, formatAge(run.Created))
 	}
 	return strings.Join(compactNonEmpty(parts), " ")
 }
@@ -544,13 +544,15 @@ func formatAge(stamp string) string {
 	}
 	switch {
 	case d >= 7*24*time.Hour:
-		return itoa(int(d/(7*24*time.Hour))) + "w"
+		return itoa(int(d/(7*24*time.Hour))) + "w ago"
 	case d >= 24*time.Hour:
-		return itoa(int(d/(24*time.Hour))) + "d"
+		return itoa(int(d/(24*time.Hour))) + "d ago"
 	case d >= time.Hour:
-		return itoa(int(d/time.Hour)) + "h"
+		return itoa(int(d/time.Hour)) + "h ago"
+	case d >= time.Minute:
+		return itoa(int(d/time.Minute)) + "m ago"
 	default:
-		return itoa(max(1, int(d/time.Minute))) + "m"
+		return "just now"
 	}
 }
 
