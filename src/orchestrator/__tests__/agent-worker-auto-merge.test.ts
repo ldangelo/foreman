@@ -308,11 +308,11 @@ describe("ElixirMergeQueue — stub vs real queue behavior", () => {
   });
 
   describe("ElixirMergeQueue dequeue FIFO ordering", () => {
-    it("dequeue returns null when no pending entries exist", async () => {
+    it("dequeue propagates an error when listing the queue fails", async () => {
       const mq = new ElixirMergeQueue("test-project", "/nonexistent/path");
 
-      // Even though gh will fail, dequeue should return null for empty queue
-      // (it calls list() which will throw, but that's expected error propagation)
+      // gh pr list fails on the bogus project path; dequeue forwards that error
+      // so callers know the queue state is unknown instead of silently returning null.
       await expect(mq.dequeue()).rejects.toThrow();
     });
   });
