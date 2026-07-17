@@ -126,3 +126,35 @@ describe("run.ts — still exports autoMerge (backwards compat)", () => {
     expect(runSource).not.toContain("async function syncTaskStatusAfterMerge(");
   });
 });
+
+describe("agent-worker.ts — stub queue fallback", () => {
+  const source = readFileSync(WORKER_SRC, "utf-8");
+
+  it("detects stub merge queue by checking for 'not implemented' in error field", () => {
+    expect(source).toContain('enqueueResult.entry.error.includes("not implemented")');
+  });
+
+  it("falls back to gh pr merge when stub queue is detected and PR number exists", () => {
+    expect(source).toContain("Queue is stubbed; using direct gh pr merge");
+    expect(source).toContain('"pr", "merge", String(prNumber), "--admin", "--squash"');
+  });
+
+  it("provides clear error message when stub queue has no PR number", () => {
+    expect(source).toContain('Merge queue is not implemented for this project');
+    expect(source).toContain("Register the project with 'foreman project register'");
+  });
+
+  it("polls for PR merge when queue is real (not stub)", () => {
+    expect(source).toContain("Waiting for PR #${prNumber} to merge");
+    expect(source).toContain("MERGE_POLL_INTERVAL_MS");
+    expect(source).toContain("MERGE_POLL_TIMEOUT_MS");
+  });
+
+  it("handles already-merged PR in stub fallback path", () => {
+    expect(source).toContain("PR #${prNumber} was already merged");
+  });
+
+  it("handles closed-without-merge PR in stub fallback path", () => {
+    expect(source).toContain("PR #${prNumber} was closed without merging");
+  });
+});
