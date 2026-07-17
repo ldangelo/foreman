@@ -23,7 +23,9 @@ export type RunStatus =
   | "conflict"
   | "test-failed"
   | "pr-created"
-  | "reset";
+  | "reset"
+  /** Paused waiting for operator input via the ask_operator phase control tool. */
+  | "waiting_for_operator";
 
 /** Per-run merge strategy selection. */
 export type MergeStrategy = "auto" | "pr" | "none";

@@ -42,8 +42,9 @@ import {
   createTaskStatusTool,
   createValidationResultTool,
   createMergeGateStatusTool,
+  type ControlOutcome,
   type ForemanToolContext,
-} from "./pi-sdk-tools.js";
+ } from "./pi-sdk-tools.js";
 import { executePipeline } from "./pipeline-executor.js";
 import type { EpicTask, PhaseObservabilityInput, PipelineObservabilityWriter, WorkerStoreCompat } from "./pipeline-executor.js";
 import type { Run, RunProgress } from "../lib/store.js";
@@ -802,12 +803,11 @@ interface PhaseResult {
   traceMarkdownFile?: string;
   traceWarnings?: string[];
   commandHonored?: boolean;
+  /** Stop remaining phases and treat the pipeline as successful. Used by builtins that complete work without a PR. */
   stopPipelineSuccess?: boolean;
-  controlOutcome?: {
-    type: "ASK_OPERATOR" | "ABORTED" | "NEEDS_RETRY";
-    [key: string]: unknown;
-  };
-}
+  /** Typed control signal from phase control tools (ask_operator, abort_phase, needs_retry). */
+  controlOutcome?: ControlOutcome;
+ }
 
 /**
  * Run a single pipeline phase as a separate SDK session.
@@ -2755,7 +2755,25 @@ async function runPipeline(
 
     // Pipeline post-processing: determine finalize push success, then enqueue merge after
     // any post-finalize phases (for example create-pr/pr-review) complete.
-    async onPipelineComplete({ progress, success, failedPhase: reportedFailedPhase, failureReason: reportedFailureReason }) {
+    async onPipelineComplete({ progress, success, failedPhase: reportedFailedPhase, failureReason: reportedFailureReason, waitingForOperator, waitingQuestion }) {
+      // ASK_OPERATOR control outcome: pause the pipeline for operator input.
+      // Persist the run as waiting (not failed) so finalize does not re-dispatch
+      // it. Subsequent phase runs will read the operator's response from mail.
+      if (waitingForOperator) {
+        const now = new Date().toISOString();
+        const { runId, projectId, taskId } = config;
+        log(`[PIPELINE] WAITING FOR OPERATOR (${taskId}): ${waitingQuestion ?? "(no question)"}`);
+        await appendFile(logFile, `\n[PIPELINE] WAITING FOR OPERATOR: ${waitingQuestion ?? "(no question)"}\n`);
+        await updateTerminalRunStatus({
+          runId,
+          projectId: config.projectId,
+          projectPath: pipelineProjectPath,
+          updates: { status: "waiting_for_operator", completed_at: now },
+        });
+        notifyClient.send({ type: "status", runId, status: "waiting_for_operator", timestamp: now, details: { question: waitingQuestion } });
+        return;
+      }
+
 
       const hasFinalizePhase = workflowConfig.phases.some((phase) => phase.name === "finalize");
       if (!hasFinalizePhase) {

@@ -687,7 +687,33 @@ describe("Phase control tools", () => {
         context: null,
       });
     });
-  });
+
+    it("returns control outcome when ask-operator mail delivery fails", async () => {
+      // Regression: a notify failure used to reject execute() and prevent
+      // controlOutcome from reaching the runner. Mail is best-effort, so
+      // the typed control signal must still come through.
+      const context = makeContext();
+      const mailClient = {
+        sendMessage: vi.fn().mockRejectedValue(new Error("smtp down")),
+      };
+      const tool = createAskOperatorTool(mailClient, context);
+
+      const result = await tool.execute("call-1", { question: "Need guidance" }, undefined, undefined, {} as never);
+      // Artifact is still written before the failing mail call.
+      expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).toContain("Need guidance");
+      // The typed control signal is still present so the runner can pause.
+      // Validate the shape at the test boundary via type guard instead of
+      // an unchecked cast, then assert on the typed value.
+      if (!("controlOutcome" in result) || !result.controlOutcome) {
+        throw new Error("expected controlOutcome in result");
+      }
+      expect(result.controlOutcome).toEqual({
+        type: "ASK_OPERATOR",
+        question: "Need guidance",
+        context: null,
+      });
+    });
+   });
 
   describe("createAbortPhaseTool", () => {
     it("writes ABORTED.md and sends phase-abort mail", async () => {

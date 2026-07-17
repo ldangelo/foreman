@@ -44,8 +44,9 @@ import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { loadProjectConfig, resolveSandboxConfig as resolveProjectSandboxConfig } from "../lib/project-config.js";
 import { SandboxProviderFactory } from "../lib/sandbox-providers/index.js";
 import type { SandboxProviderConfig } from "../lib/sandbox-provider.js";
+import type { ControlOutcome } from "./pi-sdk-tools.js";
 
-// ── Types ──────────────────────────────────────────────────────────────────
+ // ── Types ──────────────────────────────────────────────────────────────────
 
 type AnyMailClient = AgentMailClient;
 
@@ -92,13 +93,9 @@ export interface PhaseResult {
   traceWarnings?: string[];
   commandHonored?: boolean;
   filesChanged?: string[];
-  /** Stop remaining phases and treat the pipeline as successful. Used by builtins that complete work without a PR. */
   stopPipelineSuccess?: boolean;
-  /** Control outcome from phase control tools (ask_operator, abort_phase, needs_retry). */
-  controlOutcome?: {
-    type: "ASK_OPERATOR" | "ABORTED" | "NEEDS_RETRY";
-    [key: string]: unknown;
-  };
+  /** Typed control signal from phase control tools (ask_operator, abort_phase, needs_retry). */
+  controlOutcome?: ControlOutcome;
 }
 
 async function phaseAgentError(
@@ -313,6 +310,10 @@ export interface PipelineContext {
     success: boolean;
     failedPhase?: string;
     failureReason?: string;
+    /** Set when an ask_operator control outcome pauses the pipeline for operator input. */
+    waitingForOperator?: boolean;
+    /** The operator question when waitingForOperator is true. */
+    waitingQuestion?: string;
   }) => Promise<void>;
   /**
    * Task metadata for placeholder interpolation in bash/command phases (REQ-008).
@@ -675,7 +676,11 @@ interface PhaseSequenceResult {
   failedPhase?: string;
   /** Concrete failure reason for terminal events. */
   failureReason?: string;
-}
+  /** Set when an ask_operator control outcome pauses the pipeline for operator input. */
+  waitingForOperator?: boolean;
+  /** The operator question when waitingForOperator is true. */
+  waitingQuestion?: string;
+ }
 
 function isGeneratedWorkflowArtifact(filePath: string): boolean {
   const name = basename(filePath);
@@ -1350,6 +1355,8 @@ async function executeSingleTaskPipeline(ctx: PipelineContext): Promise<void> {
       success: result.success,
       failedPhase: result.failedPhase,
       failureReason: result.failureReason,
+      waitingForOperator: result.waitingForOperator,
+      waitingQuestion: result.waitingQuestion,
     });
   }
 }
@@ -2048,46 +2055,92 @@ async function runPhaseSequence(
       observabilityWriter,
     );
 
-    // 5b. Handle control outcomes from phase control tools (ask_operator, abort_phase, needs_retry)
-    if (result.controlOutcome) {
-      const { controlOutcome } = result;
-
+    // 5b. Handle control outcomes from phase control tools (ask_operator, abort_phase, needs_retry).
+    // Type narrowing uses the discriminated ControlOutcome union — no unchecked casts.
+    const controlOutcome = result.controlOutcome;
+    if (controlOutcome) {
       // Release files before handling control outcome
       if (phase.files?.reserve) {
         ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
       }
 
+      // Post-phase bookkeeping: stop heartbeat, apply cost/token totals, append
+      // PhaseRecord, and persist writeNormalPhaseProgress. Control outcomes
+      // short-circuit the normal completion path, so the same bookkeeping
+      // must run before any return to keep progress + observability consistent.
+      const finishControlOutcome = async (outcome: { phaseSucceeded: boolean; phaseError?: string }): Promise<void> => {
+        ctx.heartbeatManager?.stop();
+        phaseRecords.push({
+          name: feedbackContext ? `${phaseName} (retry)` : phaseName,
+          phaseType,
+          skipped: false,
+          success: outcome.phaseSucceeded,
+          costUsd: result.costUsd,
+          turns: result.turns,
+          error: outcome.phaseError,
+          commandsRun: phase.command ? [prompt] : undefined,
+          artifactExpected: interpolatedArtifact,
+          artifactPresent,
+          traceFile: result.traceFile,
+          traceMarkdownFile: result.traceMarkdownFile,
+          phaseWarnings: result.traceWarnings,
+          commandHonored: result.commandHonored,
+        });
+        progress.costUsd += result.costUsd;
+        progress.tokensIn += result.tokensIn;
+        progress.tokensOut += result.tokensOut;
+        progress.costByPhase ??= {};
+        progress.costByPhase[phaseName] = (progress.costByPhase[phaseName] ?? 0) + result.costUsd;
+        if (result.filesChanged?.length) {
+          for (const file of result.filesChanged) {
+            if (!progress.filesChanged.includes(file)) {
+              progress.filesChanged.push(file);
+            }
+          }
+        }
+        await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
+      };
+
       if (controlOutcome.type === "ASK_OPERATOR") {
-        // Agent requested operator guidance — mark as waiting for operator
-        const co = controlOutcome as { type: "ASK_OPERATOR"; question: string; context: string | null };
-        const question = co.question ?? "Operator guidance requested";
+        // Agent requested operator guidance — propagate a distinct waiting-state
+        // signal so finalize workflows pause for operator input and are not
+        // re-dispatched as failures.
+        const question = controlOutcome.question ?? "Operator guidance requested";
         ctx.log(`[${phaseName.toUpperCase()}] ASK_OPERATOR — ${question}`);
         await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] ASK_OPERATOR: ${question}\n`);
         await writeTaskPhaseNote(phaseName, "system", `Waiting for operator: ${question}`, { retryable: true, askOperator: true });
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: `ask_operator: ${question}` };
+        await finishControlOutcome({ phaseSucceeded: false, phaseError: `ask_operator: ${question}` });
+        return {
+          success: false,
+          phaseRecords,
+          retryCounts,
+          qaVerdictForLog,
+          progress,
+          waitingForOperator: true,
+          waitingQuestion: question,
+        };
       }
 
       if (controlOutcome.type === "ABORTED") {
         // Agent aborted the phase — treat as intentional failure
-        const co = controlOutcome as { type: "ABORTED"; reason: string; suggestion: string | null };
-        const reason = co.reason ?? "Phase aborted by agent";
-        const suggestion = co.suggestion;
+        const reason = controlOutcome.reason ?? "Phase aborted by agent";
+        const suggestion = controlOutcome.suggestion;
         ctx.log(`[${phaseName.toUpperCase()}] ABORTED — ${reason}`);
         await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] ABORTED: ${reason}\n`);
         ctx.sendMail(agentMailClient, "foreman", "agent-error", {
           taskId, phase: phaseName, error: reason, suggestion, retryable: false,
         });
         await writeTaskPhaseNote(phaseName, "failure", `Aborted: ${reason}${suggestion ? ` — Suggestion: ${suggestion}` : ""}`, { retryable: false });
+        await finishControlOutcome({ phaseSucceeded: false, phaseError: reason });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, reason, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: reason };
       }
 
       if (controlOutcome.type === "NEEDS_RETRY") {
         // Agent requested retry — treat as failure and check retryWith configuration
-        const co = controlOutcome as { type: "NEEDS_RETRY"; reason: string; attemptedApproach: string | null; suggestedNextStep: string | null };
-        const reason = co.reason ?? "Retry requested by agent";
-        const attemptedApproach = co.attemptedApproach;
-        const suggestedNextStep = co.suggestedNextStep;
+        const reason = controlOutcome.reason ?? "Retry requested by agent";
+        const attemptedApproach = controlOutcome.attemptedApproach;
+        const suggestedNextStep = controlOutcome.suggestedNextStep;
         const feedback = [reason, attemptedApproach ? `Attempted: ${attemptedApproach}` : "", suggestedNextStep ? `Next step: ${suggestedNextStep}` : ""].filter(Boolean).join("\n");
         ctx.log(`[${phaseName.toUpperCase()}] NEEDS_RETRY — ${reason}`);
         await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] NEEDS_RETRY: ${reason}\n`);
@@ -2106,7 +2159,21 @@ async function runPhaseSequence(
             ctx.log(`[${phaseName.toUpperCase()}] NEEDS_RETRY — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
             await appendFile(logFile, `\n[PIPELINE] ${phaseName} needs_retry, looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
             feedbackContext = feedback;
-            await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "retry", phases[i + 1]?.name, retryTarget);
+            // Bookkeeping for the retrying phase: stop heartbeat, persist
+            // progress, emit phase-retry event matching the builtin/bash paths.
+            await finishControlOutcome({ phaseSucceeded: false, phaseError: reason });
+            await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "retry", undefined, retryTarget);
+            await writeNormalPhaseEvent(store, config.projectId, runId, "phase-retry", {
+              taskId,
+              phase: phaseName,
+              retryTarget,
+              attempt: currentRetries + 1,
+              maxRetries,
+              reason,
+              artifact: interpolatedArtifact,
+              artifact_path: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).path : undefined,
+              artifact_present: interpolatedArtifact ? resolvePhaseArtifact(worktreePath, interpolatedArtifact, projectReportsDir).present : undefined,
+            }, observabilityWriter);
             const targetIdx = phaseIndex.get(retryTarget);
             if (targetIdx !== undefined) {
               retryOnlyActivations.add(retryTarget);
@@ -2122,6 +2189,7 @@ async function runPhaseSequence(
           taskId, phase: phaseName, error: reason, retryable: false,
         });
         await writeTaskPhaseNote(phaseName, "failure", `Needs retry exhausted: ${reason}`, { retryable: false });
+        await finishControlOutcome({ phaseSucceeded: false, phaseError: reason });
         await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, reason, config.projectPath, notifyClient);
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: reason };
       }

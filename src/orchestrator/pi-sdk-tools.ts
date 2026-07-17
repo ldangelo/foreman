@@ -372,7 +372,9 @@ export function createAskOperatorTool(mailClient: AgentMailClient | null, contex
         requestedAt: nowIso(),
       };
       await writeFile(safeArtifactPath(context, "ASK_OPERATOR.md"), `# Operator Request\n\n- Task: ${context.taskTitle}\n- Phase: ${context.phase}\n- Question: ${params.question}\n${params.context ? `\n## Context\n${params.context}\n` : ""}\n`);
-      if (mailClient) await mailClient.sendMessage("foreman", "ask-operator", safeJson(request));
+      // Mail delivery is best-effort: a notify failure must not suppress
+      // the typed control outcome the runner needs to pause the phase.
+      if (mailClient) await mailClient.sendMessage("foreman", "ask-operator", safeJson(request)).catch((err) => appendToolLog(context, `ask_operator mail failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
       await appendToolLog(context, `ask_operator question=${params.question}`);
       return {
         content: [{ type: "text" as const, text: `Operator request sent: ${params.question}` }],
@@ -414,7 +416,7 @@ export function createAbortPhaseTool(mailClient: AgentMailClient | null, context
         abortedAt: nowIso(),
       };
       await writeFile(safeArtifactPath(context, "ABORTED.md"), `# Aborted: ${context.taskTitle}\n\n- Phase: ${context.phase}\n- Reason: ${params.reason}\n${params.suggestion ? `\n## Suggested Remediation\n${params.suggestion}\n` : ""}\n`);
-      if (mailClient) await mailClient.sendMessage("foreman", "phase-abort", safeJson(abort));
+      if (mailClient) await mailClient.sendMessage("foreman", "phase-abort", safeJson(abort)).catch((err) => appendToolLog(context, `abort_phase mail failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
       await appendToolLog(context, `abort_phase reason=${params.reason}`);
       return {
         content: [{ type: "text" as const, text: `Phase aborted: ${params.reason}` }],
@@ -458,7 +460,7 @@ export function createNeedsRetryTool(mailClient: AgentMailClient | null, context
         requestedAt: nowIso(),
       };
       await writeFile(safeArtifactPath(context, "NEEDS_RETRY.md"), `# Retry Requested\n\n- Task: ${context.taskTitle}\n- Phase: ${context.phase}\n- Reason: ${params.reason}\n${params.attemptedApproach ? `\n## Attempted Approach\n${params.attemptedApproach}\n` : ""}${params.suggestedNextStep ? `\n## Suggested Next Step\n${params.suggestedNextStep}\n` : ""}\n`);
-      if (mailClient) await mailClient.sendMessage("foreman", "needs-retry", safeJson(retry));
+      if (mailClient) await mailClient.sendMessage("foreman", "needs-retry", safeJson(retry)).catch((err) => appendToolLog(context, `needs_retry mail failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`));
       await appendToolLog(context, `needs_retry reason=${params.reason}`);
       return {
         content: [{ type: "text" as const, text: `Retry requested: ${params.reason}` }],
