@@ -1424,9 +1424,17 @@ func (m *model) buildItems() {
 				if !matchesTaskFilter(it, m.taskList.Search()) {
 					continue
 				}
+				// Board items have no ProjectID set by boardItemToItem; set it now
+				// so that scope filtering works and run actions (retry/reset) can use it.
+				if !it.IsTask && it.Run.ProjectID == "" && m.taskList.projectID != "" {
+					it.Run.ProjectID = m.taskList.projectID
+				}
 				filtered = append(filtered, it)
 			}
 			boardItems = filtered
+			// Replace taskList.items with board items so that click/key selection
+			// in selectTaskListItemKey finds the board item.
+			m.taskList.items = boardItems
 		} else {
 			// Client-side derivation (fallback when server board endpoint unavailable).
 			derived := m.boardFilteredItems()
