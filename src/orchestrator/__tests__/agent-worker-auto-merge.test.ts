@@ -188,9 +188,12 @@ describe("ElixirMergeQueue — timeout configuration", () => {
   });
 });
 
-describe("agent-worker.ts — stub queue fallback (behavioral)", () => {
-  // These tests verify the actual execution paths of runMergeBuiltinPhase
-  // by checking observable behavior rather than source text presence
+describe("agent-worker.ts — stub queue fallback (source-level)", () => {
+  // Source-level because agent-worker.ts invokes main() at module import
+  // (process.exit(0) on the happy path), which makes the phase function
+  // impossible to unit-test in isolation without extracting it. Per
+  // AGENTS.md "Source-Level Preference", structural assertions verify the
+  // same code paths that downstream fixture tests rely on.
 
   it("detects stub queue by checking for 'not implemented' in error field", () => {
     const source = readFileSync(WORKER_SRC, "utf-8");
