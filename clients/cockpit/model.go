@@ -1418,6 +1418,11 @@ func (m *model) buildItems() {
 			all := m.boardItemsFromServer()
 			filtered := make([]Item, 0, len(all))
 			for _, it := range all {
+				// Set ProjectID on board run items before scope filtering so that
+				// matchesScope sees the correct project and run actions have it available.
+				if !it.IsTask && it.Run.ProjectID == "" && m.taskList.projectID != "" {
+					it.Run.ProjectID = m.taskList.projectID
+				}
 				if !m.taskList.matchesScope(it) {
 					continue
 				}
@@ -1427,6 +1432,9 @@ func (m *model) buildItems() {
 				filtered = append(filtered, it)
 			}
 			boardItems = filtered
+			// Replace taskList.items with board items so that click/key selection
+			// in selectTaskListItemKey finds the board item.
+			m.taskList.items = boardItems
 		} else {
 			// Client-side derivation (fallback when server board endpoint unavailable).
 			derived := m.boardFilteredItems()
