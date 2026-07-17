@@ -2261,10 +2261,11 @@ async function runMergeBuiltinPhase(args: {
     log(`[MERGE] No PR number found; accepting enqueue result without polling.`);
   }
 
-  // After polling: if not merged yet, try a direct admin merge before declaring failure.
-  // The agent-worker is itself the actor that can admin-merge, so a busy merge queue
-  // doesn't strand the run — we fall back and let gh pr merge bypass the queue.
-  if (!mergeSucceeded && prNumber) {
+  // After polling: only on a genuine timeout (mergeFailed is false). A CLOSED
+  // PR is already terminal — don't waste a direct merge attempt on it. The
+  // agent-worker is itself the actor that can admin-merge, so a busy merge
+  // queue doesn't strand the run — we fall back and let gh pr merge bypass it.
+  if (!mergeSucceeded && !mergeFailed && prNumber) {
     log(`[MERGE] Polling did not catch the merge in ${MERGE_POLL_TIMEOUT_MS / 1000}s; attempting direct gh pr merge --admin --squash.`);
     try {
       const execFileAsync = promisify(execFile);
