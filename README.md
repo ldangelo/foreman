@@ -39,7 +39,7 @@ Node CLI / frontend
   ├─ per task: agent-worker.ts (detached child process)
   │    └─ Pi SDK (in-process)
   │       createAgentSession() → session.prompt()
-  │       Tools: read, write, edit, bash, grep, find, ls, send_mail
+  │       Tools: read, write, edit, bash, grep, find, ls, send_mail, ask_operator, abort_phase, needs_retry
   │
   ├─ Pipeline Executor (workflow YAML-driven)
   │    Phases defined in ~/.foreman/workflows/*.yaml
@@ -220,6 +220,8 @@ Foreman includes a built-in messaging system for inter-agent communication and p
 
 Agents use the native **`send_mail`** tool, registered as a Pi SDK ToolDefinition. This is a structured tool call — agents don't run bash commands or invoke skills to send messages.
 
+Phase-control tools (`ask_operator`, `abort_phase`, `needs_retry`) also route through mail, allowing agents to request operator input, stop the pipeline with a structured reason, or signal a recoverable failure needing retry.
+
 Guidance skills are separate from native tools; they help agents choose correct Foreman conventions but do not replace structured tools.
 
 ```
@@ -241,6 +243,9 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 | `phase-started` | executor → foreman | Phase begins (YAML: `mail.onStart`) |
 | `phase-complete` | executor → foreman | Phase succeeds (YAML: `mail.onComplete`) |
 | `agent-error` | agent → foreman | Unrecoverable infrastructure/runtime failure; QA product failures must use `QA_REPORT.md` FAIL so retry routing remains report-driven |
+| `ask-operator` | agent → foreman | Agent requests operator guidance or a decision |
+| `abort-phase` | agent → foreman | Agent stops phase/pipeline with structured reason |
+| `needs-retry` | agent → foreman | Agent signals recoverable failure needing retry |
 | `branch-ready` | foreman → refinery | Finalize complete, ready to merge |
 | `merge-complete` | refinery → foreman | Branch merged to target |
 | `merge-failed` | refinery → foreman | Merge failed (conflicts, tests) |

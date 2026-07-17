@@ -109,7 +109,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
 - Retry loops: verdict failures route to focused repair phases when configured (`repair.md` in bundled `task`/`docs` workflows) so agents fix only reported QA/review/finalize assertions; specialized retry targets still handle CI, CodeRabbit, and merge-conflict failures.
 - Mutating phases with `checkpointPr: true` commit/push successful dirty work and maintain a draft PR before the final `create-pr` gate marks it ready.
-- `send_mail` registered as a native Pi SDK tool — agents call it directly, no bash commands
+- Phase-control tools (`ask_operator`, `abort_phase`, `needs_retry`) and `send_mail` registered as native Pi SDK tools — agents call them directly, no bash commands
 
 **Default pipeline phases:**
 
