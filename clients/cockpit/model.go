@@ -1435,10 +1435,12 @@ func (m *model) buildItems() {
 			// Replace taskList.items with board items so that click/key selection
 			// in selectTaskListItemKey finds the board item.
 			m.taskList.items = boardItems
-			// Set selected to last item: SetData leaves selected=0 (no prior selection
-			// to restore). taskListSelectKey below will update it if selectedKey
-			// is found in the new items.
-			if len(boardItems) > 0 {
+			// Restore prior selection by key; fall back to last item if not found.
+			if selectedKey != "" {
+				if !m.taskListSelectKey(selectedKey) && len(boardItems) > 0 {
+					m.taskList.selected = len(boardItems) - 1
+				}
+			} else if len(boardItems) > 0 {
 				m.taskList.selected = len(boardItems) - 1
 			}
 		} else {
@@ -1449,8 +1451,13 @@ func (m *model) buildItems() {
 			if len(derived) > 0 {
 				boardItems = derived
 				m.taskList.items = boardItems
-				if len(boardItems) > 0 {
-					m.taskList.selected = len(boardItems) - 1
+				// Restore prior selection by key; fall back to first item if not found.
+				if selectedKey != "" {
+					if !m.taskListSelectKey(selectedKey) && len(boardItems) > 0 {
+						m.taskList.selected = 0
+					}
+				} else if len(boardItems) > 0 {
+					m.taskList.selected = 0
 				}
 			}
 		}

@@ -299,6 +299,44 @@ defmodule ForemanServer.Http.RouterTest do
     assert run["pr_mergeable"] == false
     assert run["mergeable"] == false
   end
+  test "authorized runs endpoint falls back to run fields when worktree snapshot is blank" do
+    # Native runs use WorktreeManager.createWorktree which does not emit
+    # WorktreeCreated, so the worktrees snapshot entry is absent. The API should
+    # still return worktree_path/branch/base_ref from the run's own fields.
+    append_event("TaskCreated", "task:task-native-run", %{
+      task_id: "task-native-run",
+      project_id: "proj-native-run",
+      title: "Native Run Test",
+      status: "running"
+    })
+
+    # RunStarted carries worktree_path, branch, base_ref on the run itself.
+    append_run_event("RunStarted", %{
+      run_id: "run-native-run",
+      task_id: "task-native-run",
+      phase_order: ["developer"],
+      status: "running",
+      worktree_path: "/tmp/foreman/native-worktree",
+      branch: "native/feature",
+      base_ref: "main"
+    })
+
+    conn =
+      :get
+      |> conn("/api/v1/runs?project_id=proj-native-run")
+      |> put_req_header("authorization", "Bearer secret")
+      |> ForemanServer.Http.Router.call(@opts)
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert run = Enum.find(body["runs"], &(&1["run_id"] == "run-native-run"))
+    assert run["worktree_path"] == "/tmp/foreman/native-worktree"
+    assert run["worktree"] == "/tmp/foreman/native-worktree"
+    assert run["branch"] == "native/feature"
+    assert run["branch_name"] == "native/feature"
+    assert run["base_ref"] == "main"
+    assert run["base_branch"] == "main"
+  end
 
   test "authorized run report and debug endpoints return event-backed summaries" do
     task_debug_http_run()

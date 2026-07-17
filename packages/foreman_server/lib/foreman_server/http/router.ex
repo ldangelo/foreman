@@ -516,9 +516,34 @@ defmodule ForemanServer.Http.Router do
   defp add_worktree_metadata(run, snapshot) do
     run_id = Map.get(run, :run_id)
     worktree = get_in(snapshot, [:worktrees, run_id]) || %{}
-    worktree_path = Map.get(worktree, :worktree_path) || Map.get(worktree, :worktree)
-    branch = Map.get(worktree, :branch) || Map.get(worktree, :branch_name)
-    base = Map.get(worktree, :base_ref) || Map.get(worktree, :base_branch)
+    # Normalize blank strings so || chain falls through to the next value.
+    # put_present/3 also drops blanks, but being explicit here makes the intent
+    # clear and guards against future changes.
+    present? = fn v -> v != nil and v != "" end
+    # Fall back to run's own fields when worktree snapshot is empty (native runs
+    # use WorktreeManager.createWorktree which does not emit WorktreeCreated).
+    worktree_path = cond do
+      present?.(worktree[:worktree_path]) -> worktree[:worktree_path]
+      present?.(worktree[:worktree]) -> worktree[:worktree]
+      present?.(run[:worktree_path]) -> run[:worktree_path]
+      present?.(run[:worktree]) -> run[:worktree]
+      true -> nil
+    end
+    branch = cond do
+      present?.(worktree[:branch]) -> worktree[:branch]
+      present?.(worktree[:branch_name]) -> worktree[:branch_name]
+      present?.(run[:branch]) -> run[:branch]
+      present?.(run[:branch_name]) -> run[:branch_name]
+      true -> nil
+    end
+    base = cond do
+      present?.(worktree[:base_ref]) -> worktree[:base_ref]
+      present?.(worktree[:base_branch]) -> worktree[:base_branch]
+      present?.(run[:base_ref]) -> run[:base_ref]
+      present?.(run[:base_branch]) -> run[:base_branch]
+      true -> nil
+    end
+    revision = worktree[:revision]
 
     run
     |> put_present(:worktree_path, worktree_path)
@@ -527,7 +552,7 @@ defmodule ForemanServer.Http.Router do
     |> put_present(:branch_name, branch)
     |> put_present(:base_ref, base)
     |> put_present(:base_branch, base)
-    |> put_present(:revision, Map.get(worktree, :revision))
+    |> put_present(:revision, revision)
   end
 
   defp add_run_metadata(run, snapshot, event_summaries, pr_gates_by_run) do

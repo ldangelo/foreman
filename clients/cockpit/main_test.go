@@ -346,19 +346,21 @@ func TestBoardDerivedItemsSelectedPath(t *testing.T) {
 		t.Fatalf("expected at least 1 item in taskList.items from derived board items, got %d", len(m.taskList.items))
 	}
 
-	// selected must be set to last item (len-1).
-	expectedSelected := len(m.taskList.items) - 1
-	if m.taskList.selected != expectedSelected {
-		t.Fatalf("expected selected=%d (last derived item), got %d", expectedSelected, m.taskList.selected)
+	// When no server board data (boardItems=nil), buildItems uses boardFilteredItems.
+	// Without a prior selection key, selected defaults to 0 (first item) to avoid
+	// randomly jumping to the last item — unlike server-board path which intentionally
+	// selects the last item since the server's column order may deprioritize item 0.
+	if m.taskList.selected != 0 {
+		t.Fatalf("expected selected=0 (first item, no prior selection), got %d", m.taskList.selected)
 	}
 
-	// The last item must be a run item (not task) with correct ProjectID.
-	lastIt := m.taskList.items[expectedSelected]
-	if lastIt.IsTask {
-		t.Fatalf("expected last derived item to be a run, got task: %s", lastIt.Task.TaskID)
+	// The first item (selected=0) must be a run item with correct ProjectID.
+	firstIt := m.taskList.items[0]
+	if firstIt.IsTask {
+		t.Fatalf("expected first derived item to be a run, got task: %s", firstIt.Task.TaskID)
 	}
-	if lastIt.Run.ProjectID != "test-project" {
-		t.Fatalf("expected ProjectID test-project, got %q", lastIt.Run.ProjectID)
+	if firstIt.Run.ProjectID != "test-project" {
+		t.Fatalf("expected ProjectID test-project, got %q", firstIt.Run.ProjectID)
 	}
 }
 

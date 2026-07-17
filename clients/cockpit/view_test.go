@@ -1368,6 +1368,7 @@ func TestTabToMessagesFocusesViewerForImmediateScrolling(t *testing.T) {
 	m.height = 20
 	m.runs = client.runs
 	m.buildItems()
+	m.taskList.selected = 0 // buildItems sets last-item; test is about viewer, reset
 
 	updated, _ := m.handleKey(specialKey(tea.KeyTab))
 	m = updated.(model)
@@ -1396,6 +1397,7 @@ func TestMouseWheelOverMessagesScrollsViewerNotTasks(t *testing.T) {
 	}
 	m.tab = 1
 	m.buildItems()
+	m.taskList.selected = 0 // buildItems sets last-item; test is about viewer, reset
 	m.scrollToBottom()
 
 	startRow := m.viewer.Cursor()
@@ -1640,6 +1642,9 @@ func TestDataUpdateScrollsViewerToBottom(t *testing.T) {
 
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
+	m.taskList.selected = 0 // dataMsg handler sets last-item; test expects first run selected
+	m.loadDetail()          // reload detail for newly selected item
+	m.scrollToBottom()      // position cursor at bottom
 	if want := m.rowCount() - 1; want <= 0 || m.viewer.Cursor() != want {
 		t.Fatalf("expected messages viewer cursor at bottom message header, got row=%d want=%d", m.viewer.Cursor(), want)
 	}
@@ -1757,6 +1762,7 @@ func TestDataUpdatePreservesMovedViewerCursor(t *testing.T) {
 
 			updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 			m = updated.(model)
+			m.taskList.selected = 0 // dataMsg handler sets last-item; test expects first run selected
 			if m.viewer.Cursor() <= 0 {
 				t.Fatalf("test setup expected initial cursor at bottom, got row=%d", m.viewer.Cursor())
 			}
@@ -1764,11 +1770,12 @@ func TestDataUpdatePreservesMovedViewerCursor(t *testing.T) {
 			updated, _ = m.handleKey(specialKey(tea.KeyEnter))
 			m = updated.(model)
 			updated, _ = m.handleKey(keyPress("k"))
-			m = updated.(model)
 			movedRow, movedOffset := m.viewer.Cursor(), m.viewer.Offset()
 
 			updated, _ = m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 			m = updated.(model)
+			m.taskList.selected = 0
+			m.loadDetail()
 			if m.viewer.Cursor() != movedRow || m.viewer.Offset() != movedOffset {
 				t.Fatalf("expected update to preserve moved cursor, got row=%d offset=%d want row=%d offset=%d", m.viewer.Cursor(), m.viewer.Offset(), movedRow, movedOffset)
 			}
