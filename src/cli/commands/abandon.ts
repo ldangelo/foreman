@@ -143,7 +143,7 @@ export async function abandonAction(target: string | undefined, opts: AbandonOpt
 
   try {
     const queue = registered
-      ? new ElixirMergeQueue(registered.id)
+      ? new ElixirMergeQueue(registered.id, registered.path)
       : new MergeQueue(localStore.getDb());
     const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
     const deps = { projectPath, store, queue, vcs };

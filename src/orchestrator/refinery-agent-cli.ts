@@ -107,7 +107,7 @@ export async function runRefineCli(args: string[]): Promise<number> {
   const store = ForemanStore.forProject(projectPath);
   const registered = (await listRegisteredProjects()).find((project) => project.path === projectPath);
   const mergeQueue = registered
-    ? new ElixirMergeQueue(registered.id)
+    ? new ElixirMergeQueue(registered.id, projectPath)
     : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
   const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
   const runLookup = registered ? ElixirCliStore.forProject(registered) : undefined;

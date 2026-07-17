@@ -324,7 +324,7 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
       console.log(`  removed worktree ${chalk.dim(worktreePath)}`);
     }
   }
-  const mergeQueue = new ElixirMergeQueue(registered.id);
+  const mergeQueue = new ElixirMergeQueue(registered.id, registered.path);
   const mergeQueueEntries = await Promise.resolve(mergeQueue.list());
   const queueMatches = mergeQueueEntries.filter((entry) =>
     entry.task_id === taskId || entry.branch_name === branchName || runIds.includes(entry.run_id),

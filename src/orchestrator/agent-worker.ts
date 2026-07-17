@@ -2187,6 +2187,7 @@ async function runMergeBuiltinPhase(args: {
 
   const enqueueResult = await enqueueToMergeQueue({
     projectId: config.projectId,
+    projectPath: pipelineProjectPath,
     taskId: config.taskId,
     runId: config.runId,
     operation: "auto_merge",
