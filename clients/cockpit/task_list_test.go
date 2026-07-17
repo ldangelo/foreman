@@ -405,3 +405,32 @@ func TestTaskListCurrentScopeFiltersToProjectID(t *testing.T) {
 		t.Fatalf("expected global scope to include all projects, got %#v", items)
 	}
 }
+
+func TestModelSelectedTaskResolvesRunEvenWhenTaskNotInProjection(t *testing.T) {
+	// Regression: 'c' on a run row used to error with "close: select a task"
+	// because selectedTask() required IsTask=true. Cockpit's task list
+	// (Dispatchable()) filters out failed tasks, so a failed task only
+	// appears as a Run item. Synthesize a Task from the run so the close
+	// action carries task_id + project_id through.
+	m := newModel(NewMockClient())
+	m.tasks = nil
+	m.runs = []Run{{Group: taskGroupRecent, TaskID: "foreman-ff05f", RunID: "run-1", Status: "failed", ProjectID: "proj-1"}}
+	// Move to the Failed section first, then SetData so items get filtered for it.
+	for {
+		m.taskList.MoveSection(1)
+		if m.taskList.ActiveSection().Name == taskSectionFailed {
+			break
+		}
+	}
+	m.taskList.SetData(m.runs, m.tasks)
+	if !m.taskList.SelectItemByKey(itemKey(Item{Group: taskGroupRecent, Run: m.runs[0]})) {
+		t.Fatalf("expected to find the run row in Failed section")
+	}
+	got, ok := m.selectedTask()
+	if !ok {
+		t.Fatalf("expected selectedTask to synthesize a Task from the run")
+	}
+	if got.TaskID != "foreman-ff05f" || got.ProjectID != "proj-1" {
+		t.Fatalf("expected synthesized Task with task_id=foreman-ff05f project_id=proj-1, got %+v", got)
+	}
+}
