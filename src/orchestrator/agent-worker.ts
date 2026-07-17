@@ -2314,7 +2314,7 @@ async function runMergeBuiltinPhase(args: {
       runId: config.runId,
       projectId: config.projectId,
       projectPath: pipelineProjectPath,
-      updates: { status: "completed", completed_at: new Date().toISOString() },
+      updates: { status: "failed", completed_at: new Date().toISOString() },
     });
     return {
       success: false,
