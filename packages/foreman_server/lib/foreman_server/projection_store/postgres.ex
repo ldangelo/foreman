@@ -105,6 +105,42 @@ defmodule ForemanServer.ProjectionStore.Postgres do
   def task_list do
     read_many("SELECT data FROM foreman_task_projections ORDER BY task_id ASC", [])
   end
+  @spec board_data(String.t()) :: {map(), map()}
+  def board_data(project_id) do
+    # Use raw SQL to fetch multi-column results directly
+    # (read_many only handles single-column SELECTs)
+    {:ok, %{rows: task_rows}} =
+      SQL.query(
+        Repo,
+        "SELECT task_id, data FROM foreman_task_projections WHERE project_id = $1",
+        [project_id]
+      )
+
+    tasks_map =
+      Enum.reduce(task_rows, %{}, fn [task_id, data], acc ->
+        Map.put(acc, task_id, atomize_keys(data || %{}))
+      end)
+
+    task_ids = Map.keys(tasks_map)
+
+    runs_map =
+      if task_ids == [] do
+        %{}
+      else
+        {:ok, %{rows: run_rows}} =
+          SQL.query(
+            Repo,
+            "SELECT run_id, task_id, data FROM foreman_run_projections WHERE task_id = ANY($1::text[])",
+            [task_ids]
+          )
+
+        Enum.reduce(run_rows, %{}, fn [run_id, _task_id, data], acc ->
+          Map.put(acc, run_id, atomize_keys(data || %{}))
+        end)
+      end
+
+    {tasks_map, runs_map}
+  end
 
   defp persist_map_changes(old_map, new_map, event, upsert_fun, delete_fun) do
     old_keys = Map.keys(old_map) |> MapSet.new()

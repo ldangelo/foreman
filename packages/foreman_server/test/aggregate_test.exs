@@ -59,7 +59,7 @@ defmodule ForemanServer.AggregateTest do
              CommandRouter.handle(%{
                command_id: "task-create-1",
                command_type: "task.create",
-               payload: %{task_id: "task-agg", title: "Aggregate task"}
+               payload: %{task_id: "task-agg", title: "Aggregate task", project_id: "test"}
              })
 
     assert {:ok, %{event: %{event_type: "TaskUpdated"}, projection: projection}} =
@@ -114,7 +114,7 @@ defmodule ForemanServer.AggregateTest do
   end
 
   test "aggregate decisions carry expected stream version for optimistic concurrency" do
-    assert {:ok, spec} = AggregateRouter.route("task.create", %{task_id: "task-versioned"})
+    assert {:ok, spec} = AggregateRouter.route("task.create", %{task_id: "task-versioned", project_id: "test"})
     assert spec.expected_stream_version == 0
 
     assert {:ok, event} = EventStore.append(spec)

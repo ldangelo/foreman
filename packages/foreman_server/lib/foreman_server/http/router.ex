@@ -125,6 +125,21 @@ defmodule ForemanServer.Http.Router do
         send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
     end
   end
+  get "/api/v1/board" do
+    conn = fetch_query_params(conn)
+
+    with :ok <- authorize(conn),
+         project_id when not is_nil(project_id) and project_id != "" <- conn.query_params["project_id"] do
+      board = ForemanServer.ProjectionStore.board(project_id)
+      send_json(conn, 200, %{ok: true, project_id: project_id, columns: board})
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
+
+      nil ->
+        send_error(conn, 400, "BAD_REQUEST", "project_id query parameter is required", false)
+    end
+  end
 
   get "/api/v1/tasks/:task_id" do
     with :ok <- authorize(conn),

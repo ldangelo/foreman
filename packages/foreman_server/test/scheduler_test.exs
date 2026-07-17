@@ -50,8 +50,8 @@ defmodule ForemanServer.SchedulerTest do
   end
 
   test "global capacity leaves extra ready tasks queued and records skip reason" do
-    create_task("task-a", %{status: "ready"})
-    create_task("task-b", %{status: "ready"})
+    create_task("task-a", %{project_id: "test", status: "ready"})
+    create_task("task-b", %{project_id: "test", status: "ready"})
 
     assert {:ok, %{claimed: [%{task_id: "task-a"}], skipped: [%{task_id: "task-b"}]}} =
              ForemanServer.scheduler_tick(max_concurrent: 1)

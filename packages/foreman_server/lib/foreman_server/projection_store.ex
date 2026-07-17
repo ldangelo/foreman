@@ -151,6 +151,25 @@ defmodule ForemanServer.ProjectionStore do
 
     {:reply, tasks, projection}
   end
+  @spec board(String.t()) :: map()
+  def board(project_id) do
+    GenServer.call(__MODULE__, {:board, project_id})
+  end
+
+  @impl true
+  def handle_call({:board, project_id}, _from, projection) do
+    result =
+      if Postgres.enabled?() do
+        {tasks_map, runs_map} = Postgres.board_data(project_id)
+        build_board_from_maps(tasks_map, runs_map, project_id)
+      else
+        projection
+        |> build_board(project_id)
+      end
+      |> normalize_board_output()
+
+    {:reply, result, projection}
+  end
 
   defp persist_changes(old_projection, new_projection, event) do
     if Postgres.enabled?(), do: Postgres.persist_changes(old_projection, new_projection, event)
@@ -1325,4 +1344,245 @@ defmodule ForemanServer.ProjectionStore do
 
   defp coerce_datetime(_), do: nil
 
+  # ─── Board grouping ───────────────────────────────────────────────────────────
+
+  @active_task_statuses MapSet.new([
+                           "in_progress",
+                           "in-progress",
+                           "review",
+                           "cooldown",
+                           "running"
+                         ])
+
+  @blocked_task_statuses MapSet.new([
+                           "failed",
+                           "fail",
+                           "stuck",
+                           "conflict",
+                           "blocked",
+                           "review",
+                           "test-failed"
+                         ])
+
+  @done_task_statuses MapSet.new([
+                         "merged",
+                         "completed",
+                         "done",
+                         "closed",
+                         "reset",
+                         "pr_created"
+                       ])
+
+  @active_run_statuses MapSet.new(["running", "queued", "pending", "in_progress", "retrying", "cooldown"])
+  # (used when Postgres is the backing store and GenServer state may be cold)
+  defp build_board_from_maps(tasks_map, runs_map, project_id) do
+    tasks =
+      tasks_map
+      |> Map.values()
+      |> Enum.filter(fn task ->
+        Map.get(task, :project_id) == project_id
+      end)
+
+    task_ids = MapSet.new(Enum.map(tasks, & &1.task_id))
+
+    runs =
+      runs_map
+      |> Map.values()
+      |> Enum.filter(fn run ->
+        task_id = Map.get(run, :task_id)
+        MapSet.member?(task_ids, task_id)
+      end)
+      |> Enum.sort_by(&{Map.get(&1, :task_id), Map.get(&1, :run_id)})
+
+    # Build task_id -> active run mapping
+    run_by_task =
+      Enum.reduce(runs, %{}, fn run, acc ->
+        task_id = Map.get(run, :task_id)
+        case Map.get(acc, task_id) do
+          nil ->
+            Map.put(acc, task_id, run)
+          existing ->
+            existing_updated = Map.get(existing, :updated_at, "") || ""
+            run_updated = Map.get(run, :updated_at, "") || ""
+            if run_updated > existing_updated,
+              do: Map.put(acc, task_id, run),
+              else: acc
+        end
+      end)
+
+    # Group tasks
+    {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
+      Enum.reduce(tasks, {[], [], [], [], []}, fn task, acc ->
+        {in_prog, blocked, done, backlog, ready} = acc
+        task_id = Map.get(task, :task_id)
+        status = Map.get(task, :status, "backlog") |> String.downcase() |> String.trim()
+        run = Map.get(run_by_task, task_id)
+        run_status = if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
+        active_run = run && MapSet.member?(@active_run_statuses, run_status)
+
+        cond do
+          active_run ->
+            {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
+          MapSet.member?(@blocked_task_statuses, status) ->
+            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+          MapSet.member?(@done_task_statuses, status) ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+          MapSet.member?(@active_task_statuses, status) ->
+            {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
+          status in ["ready", "approved"] ->
+            {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
+          true ->
+            {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
+        end
+      end)
+
+    %{
+      in_progress: Enum.reverse(in_progress_tasks),
+      blocked: Enum.reverse(blocked_tasks),
+      done: Enum.reverse(done_tasks),
+      backlog: Enum.reverse(backlog_tasks),
+      ready: Enum.reverse(ready_tasks)
+    }
+  end
+  defp build_board(projection, project_id) do
+    # Filter tasks by project
+    tasks =
+      projection.tasks
+      |> Map.values()
+      |> Enum.filter(fn task ->
+        Map.get(task, :project_id) == project_id
+      end)
+
+    task_ids = MapSet.new(Enum.map(tasks, & &1.task_id))
+
+    # Filter runs to those belonging to project's tasks
+    runs =
+      projection.runs
+      |> Map.values()
+      |> Enum.filter(fn run ->
+        task_id = Map.get(run, :task_id)
+        MapSet.member?(task_ids, task_id)
+      end)
+      |> Enum.sort_by(&{Map.get(&1, :task_id), Map.get(&1, :run_id)})
+
+    # Build task_id -> active run mapping
+    run_by_task =
+      Enum.reduce(runs, %{}, fn run, acc ->
+        task_id = Map.get(run, :task_id)
+        # Prefer the most recently updated run for each task
+        case Map.get(acc, task_id) do
+          nil ->
+            Map.put(acc, task_id, run)
+
+          existing ->
+            existing_updated = Map.get(existing, :updated_at, "") || ""
+            run_updated = Map.get(run, :updated_at, "") || ""
+
+            if run_updated > existing_updated,
+              do: Map.put(acc, task_id, run),
+              else: acc
+        end
+      end)
+
+    # Group tasks
+    {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
+      Enum.reduce(tasks, {[], [], [], [], []}, fn task, acc ->
+        {in_prog, blocked, done, backlog, ready} = acc
+        task_id = Map.get(task, :task_id)
+        status = Map.get(task, :status, "backlog") |> String.downcase() |> String.trim()
+        run = Map.get(run_by_task, task_id)
+        run_status = if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
+        active_run = run && MapSet.member?(@active_run_statuses, run_status)
+
+        cond do
+          # Task has active run → in_progress
+          active_run ->
+            {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
+
+          # Blocked task statuses → blocked
+          MapSet.member?(@blocked_task_statuses, status) ->
+            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+
+          # Done task statuses → done
+          MapSet.member?(@done_task_statuses, status) ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+
+          # Active task statuses (no active run) → in_progress
+          MapSet.member?(@active_task_statuses, status) ->
+            {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
+
+          # Ready/approved → ready
+          status in ["ready", "approved"] ->
+            {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
+
+          # Backlog/open/default → backlog
+          true ->
+            {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
+        end
+      end)
+
+    %{
+      in_progress: Enum.reverse(in_progress_tasks),
+      blocked: Enum.reverse(blocked_tasks),
+      done: Enum.reverse(done_tasks),
+      backlog: Enum.reverse(backlog_tasks),
+      ready: Enum.reverse(ready_tasks)
+    }
+  end
+
+  defp normalize_board_output(board) do
+    transform = fn
+      {task, nil, group} ->
+        task
+        |> Map.take([:task_id, :title, :status, :priority, :task_type, :updated_at])
+        |> Map.merge(%{group: group, type: "task"})
+
+      {task, run, group} ->
+        run_status = Map.get(run, :status, "")
+        run_attention =
+          case {Map.get(run, :failure_reason, ""), Map.get(run, :attention, "")} do
+            {fr, _} when fr != "" -> fr
+            {"", att} -> att
+            _ -> ""
+          end
+
+        # Needs attention: failed run status OR explicit attention flag
+        needs_attention =
+          run_status in ["failed", "fail", "stuck", "conflict", "test-failed"] ||
+            run_attention != ""
+
+        base =
+          task
+          |> Map.take([:task_id, :title, :priority, :task_type, :updated_at])
+          |> Map.merge(%{
+            group: group,
+            type: if(needs_attention, do: "attention", else: "run"),
+            status: run_status,
+            run_id: Map.get(run, :run_id)
+          })
+
+        if run_attention != "",
+            do: Map.put(base, :attention, run_attention),
+            else: base
+    end
+
+    columns =
+      [:backlog, :ready, :in_progress, :blocked, :done]
+      |> Enum.map(fn col ->
+        items =
+          (board[col] || [])
+          |> Enum.map(transform)
+          |> Enum.sort_by(&{Map.get(&1, :group) == "RUNNING", Map.get(&1, :updated_at)}, :desc)
+
+        {col, items}
+      end)
+      |> Map.new()
+
+    counts =
+      columns
+      |> Enum.map(fn {col, items} -> {col, length(items)} end)
+      |> Map.new()
+
+    Map.merge(columns, %{counts: counts})
+  end
 end

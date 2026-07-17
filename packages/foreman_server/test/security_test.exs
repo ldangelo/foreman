@@ -152,7 +152,7 @@ defmodule ForemanServer.SecurityTest do
              CommandRouter.handle(%{
                command_id: "cmd-create-secure",
                command_type: "task.create",
-               payload: %{task_id: "task-secure"}
+               payload: %{task_id: "task-secure", project_id: "test"}
              })
 
     assert {:ok, %{event: event, audit_events: [authorization, audit]}} =

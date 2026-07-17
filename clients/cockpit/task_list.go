@@ -87,6 +87,10 @@ type Item struct {
 	IsTask bool
 	Run    Run
 	Task   Task
+	// OrigCol is the server-assigned column (e.g. "blocked", "done") when the
+	// Board data comes from GET /api/v1/board. boardColumn() uses OrigCol as
+	// the authoritative column so the server's grouping is preserved.
+	OrigCol string
 }
 
 // TaskList owns the left-pane sectioning, filtering, scope, and selected item

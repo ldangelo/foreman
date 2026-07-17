@@ -235,14 +235,14 @@ defmodule ForemanServerTest do
              ForemanServer.handle_command(%{
                command_id: "cmd-blocker",
                command_type: "task.create",
-               payload: %{task_id: "blocker", status: "ready"}
+               payload: %{task_id: "blocker", status: "ready", project_id: "test"}
              })
 
     assert {:ok, _} =
              ForemanServer.handle_command(%{
                command_id: "cmd-dependent",
                command_type: "task.create",
-               payload: %{task_id: "dependent", status: "ready", dependencies: ["blocker"]}
+               payload: %{task_id: "dependent", status: "ready", dependencies: ["blocker"], project_id: "test"}
              })
 
     assert Enum.map(ForemanServer.ProjectionStore.dispatchable_tasks(), & &1.task_id) == [

@@ -25,10 +25,11 @@ type model struct {
 	tools  ToolResolver
 	glam   *glamour.TermRenderer
 
-	runs     []Run
-	tasks    []Task
-	taskList TaskList
-	board    Board
+	runs       []Run
+	tasks      []Task
+	boardItems map[string][]Item // server-authoritative board items; nil means derive from runs/tasks
+	taskList   TaskList
+	board      Board
 
 	// detail for the selected run
 	msgs           []Message
@@ -62,11 +63,12 @@ type model struct {
 // messages
 type tickMsg time.Time
 type dataMsg struct {
-	projectID string
-	runs      []Run
-	tasks     []Task
-	metrics   Metrics
-	errors    []string
+	projectID    string
+	runs         []Run
+	tasks        []Task
+	metrics      Metrics
+	errors       []string
+	boardColumns map[string][]BoardItem // nil means derive from runs/tasks; non-nil is server-authoritative
 }
 type nvimDoneMsg struct {
 	err    error
@@ -132,7 +134,8 @@ func loadData(c Client) tea.Cmd {
 		runs := c.Runs()
 		tasks := c.Dispatchable()
 		metrics := c.Metrics()
-		return dataMsg{projectID: c.ProjectID(), runs: runs, tasks: tasks, metrics: metrics, errors: c.DrainErrors()}
+		boardColumns := c.BoardColumns()
+		return dataMsg{projectID: c.ProjectID(), runs: runs, tasks: tasks, metrics: metrics, boardColumns: boardColumns, errors: c.DrainErrors()}
 	}
 }
 
@@ -174,12 +177,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, cmd
-
 	case dataMsg:
 		hadViewerRows := m.detailUsesViewer() && m.rowCount() > 0
 		m.runs, m.tasks, m.metrics = msg.runs, msg.tasks, msg.metrics
 		m.metricsLoading = false
 		m.taskList.SetProjectID(msg.projectID)
+		m.boardItems = nil // clear until buildItems processes them
+		if msg.boardColumns != nil {
+			m.boardItems = boardItemsFromColumns(msg.boardColumns, m.tasks)
+		}
 		m.buildItems()
 		m.loadDetail()
 		var cmds []tea.Cmd
@@ -1404,8 +1410,32 @@ func (m *model) buildItems() {
 		selectedKey = itemKey(it)
 	}
 	m.taskList.SetData(m.runs, m.tasks)
+	var boardItems []Item
 	if m.boardMode() {
-		m.taskList.items = m.boardFilteredItems()
+		if m.boardItems != nil {
+			// Server provided authoritative board groupings; apply task-list scope/filter
+			// on top but preserve the server's column assignments.
+			all := m.boardItemsFromServer()
+			filtered := make([]Item, 0, len(all))
+			for _, it := range all {
+				if !m.taskList.matchesScope(it) {
+					continue
+				}
+				if !matchesTaskFilter(it, m.taskList.Search()) {
+					continue
+				}
+				filtered = append(filtered, it)
+			}
+			boardItems = filtered
+		} else {
+			// Client-side derivation (fallback when server board endpoint unavailable).
+			derived := m.boardFilteredItems()
+			// Only use derived items when board mode is off entirely.
+			// When server returns empty columns we intentionally show an empty board.
+			if len(derived) > 0 {
+				boardItems = derived
+			}
+		}
 		if selectedKey != "" {
 			m.taskListSelectKey(selectedKey)
 		}
@@ -1416,7 +1446,7 @@ func (m *model) buildItems() {
 			selectedKey = itemKey(it)
 		}
 	}
-	m.board.SetItems(m.taskList.Items(), selectedKey, m.config.Cockpit.Board.CardCap)
+	m.board.SetItems(boardItems, selectedKey, m.config.Cockpit.Board.CardCap)
 	m.syncBoardSelectionToTaskList()
 }
 
@@ -1692,4 +1722,84 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// boardItemsFromColumns converts server BoardItem columns into Item columns, using
+// the full task list for lookup so task-type items carry complete data.
+func boardItemsFromColumns(cols map[string][]BoardItem, tasks []Task) map[string][]Item {
+	taskMap := make(map[string]Task, len(tasks))
+	for _, t := range tasks {
+		taskMap[t.TaskID] = t
+	}
+	out := make(map[string][]Item, len(cols))
+	for col, items := range cols {
+		converted := make([]Item, 0, len(items))
+		for _, bi := range items {
+			item := boardItemToItem(bi, taskMap, col)
+			converted = append(converted, item)
+		}
+		out[col] = converted
+	}
+	return out
+}
+
+func boardItemToItem(bi BoardItem, taskMap map[string]Task, origCol string) Item {
+	item := Item{Group: bi.Group, OrigCol: origCol}
+	if bi.Type == "task" {
+		item.IsTask = true
+		if t, ok := taskMap[bi.TaskID]; ok {
+			item.Task = t
+		} else {
+			item.Task = Task{
+				TaskID:   bi.TaskID,
+				Title:    bi.Title,
+				Status:   bi.Status,
+				Priority: bi.Priority,
+				TaskType: bi.TaskType,
+				Updated:  bi.UpdatedAt,
+			}
+		}
+	} else {
+		item.IsTask = false
+		item.Run = Run{
+			TaskID:    bi.TaskID,
+			RunID:     bi.RunID,
+			Status:    bi.Status,
+			Priority:  bi.Priority,
+			TaskType:  bi.TaskType,
+			Group:     bi.Group,
+			Attention: bi.Attention,
+			Title:     bi.Title,
+		}
+	}
+	return item
+}
+
+// boardItemsFromServer flattens m.boardItems (a map of column → items) into a flat
+// []Item slice for passing to Board.SetItems. Items are returned in column order so
+// Board.SetItems sees a stable, grouped ordering.
+func (m model) boardItemsFromServer() []Item {
+	if m.boardItems == nil {
+		return nil
+	}
+	order := []string{"backlog", "ready", "in_progress", "blocked", "done"}
+	var out []Item
+	for _, col := range order {
+		if items, ok := m.boardItems[col]; ok {
+			out = append(out, items...)
+		}
+	}
+	for col, items := range m.boardItems {
+		found := false
+		for _, known := range order {
+			if col == known {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, items...)
+		}
+	}
+	return out
 }
