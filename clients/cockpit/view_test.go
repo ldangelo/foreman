@@ -2335,7 +2335,7 @@ func TestSelectedRunningRunShowsLiveClock(t *testing.T) {
 	}
 }
 
-func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
+func TestFocusedViewerClipsLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	long := strings.Repeat("x", 80) + " TAIL"
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
@@ -2357,18 +2357,12 @@ func TestFocusedViewerPansLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	if !strings.Contains(before, "   2 ") || !strings.Contains(before, "10:00:01") {
 		t.Fatalf("expected log rows to render line numbers with timestamp, got:\n%s", before)
 	}
+	// Long log lines should be clipped with "…" ellipsis; "TAIL" should not appear
 	if strings.Contains(before, "TAIL") {
-		t.Fatalf("test setup expected long log tail to start out of view, got:\n%s", before)
+		t.Fatalf("expected long log tail to be clipped with ellipsis, got:\n%s", before)
 	}
-
-	// Scroll further to reveal TAIL (need more presses due to added timestamp/stream prefix)
-	for range 7 {
-		updated, _ = m.handleKey(specialKey(tea.KeyRight))
-		m = updated.(model)
-	}
-	after := stripANSI(m.renderRight(m.rightPaneWidth()))
-	if !strings.Contains(after, "TAIL") || m.viewer.XOffset() == 0 {
-		t.Fatalf("expected right arrow to pan long log lines into view, offset=%d:\n%s", m.viewer.XOffset(), after)
+	if !strings.Contains(before, "…") {
+		t.Fatalf("expected clipped long log line to show ellipsis, got:\n%s", before)
 	}
 }
 
