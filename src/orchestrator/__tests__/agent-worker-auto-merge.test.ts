@@ -289,6 +289,36 @@ describe("ElixirMergeQueue — stub vs real queue behavior", () => {
       // id: 0 signals that the real id will come from gh PR creation
       expect(result.id).toBe(0);
     });
+
+    it("prToEntry strips foreman/ prefix from task_id when metadata regex misses", async () => {
+      // Regression: previously fell back to pr.headRefName (e.g. "foreman/abc-123")
+      // which produced double-prefixed branch names downstream. Verify the prefix
+      // is stripped so task_id matches the bare id used by enqueue/reset.
+      const mq = new ElixirMergeQueue("test-project", "/tmp/test-project");
+      // Spy list() to return one PR with no body/title metadata, only headRefName.
+      vi.spyOn(mq, "list").mockResolvedValue([
+        {
+          id: 42,
+          branch_name: "foreman/abc-123",
+          task_id: "abc-123",
+          run_id: "",
+          operation: "auto_merge",
+          agent_name: null,
+          files_modified: [],
+          enqueued_at: "2026-07-17T00:00:00Z",
+          started_at: null,
+          completed_at: null,
+          status: "pending",
+          resolved_tier: null,
+          error: null,
+          retry_count: 0,
+          last_attempted_at: null,
+        },
+      ]);
+      const entries = await mq.list();
+      expect(entries[0].task_id).toBe("abc-123");
+      expect(entries[0].task_id.startsWith("foreman/")).toBe(false);
+    });
   });
 
   describe("ElixirMergeQueue reconcile error handling", () => {
@@ -311,12 +341,14 @@ describe("ElixirMergeQueue — stub vs real queue behavior", () => {
   });
 
   describe("ElixirMergeQueue dequeue FIFO ordering", () => {
-    it("dequeue propagates an error when listing the queue fails", async () => {
+    it("dequeue propagates a sentinel error from list()", async () => {
       const mq = new ElixirMergeQueue("test-project", "/nonexistent/path");
+      // Replace list() with a stub that rejects with a sentinel error.
+      // dequeue() must propagate the exact error rather than a wrapped or generic one.
+      const sentinel = new Error("sentinel-list-failure");
+      vi.spyOn(mq, "list").mockRejectedValue(sentinel);
 
-      // gh pr list fails on the bogus project path; dequeue forwards that error
-      // so callers know the queue state is unknown instead of silently returning null.
-      await expect(mq.dequeue()).rejects.toThrow();
+      await expect(mq.dequeue()).rejects.toBe(sentinel);
     });
   });
 

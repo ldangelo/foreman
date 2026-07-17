@@ -386,7 +386,7 @@ export class ElixirMergeQueue {
     const RUN_ID_RE = /(?:run[_-]?id[:\s]*)([a-f0-9-]+)/i;
     const taskIdMatch = TASK_ID_RE.exec(pr.body) ?? TASK_ID_RE.exec(pr.title);
     const runIdMatch = RUN_ID_RE.exec(pr.body) ?? RUN_ID_RE.exec(pr.title);
-    const taskId = taskIdMatch?.[1] ?? pr.headRefName;
+    const taskId = taskIdMatch?.[1] ?? pr.headRefName.replace(/^foreman\//, "");
 
     // Parse status from labels (foreman/status:<status>)
     const statusLabel = pr.labels?.find((l) => l.name.startsWith(STATUS_LABEL_PREFIX));
