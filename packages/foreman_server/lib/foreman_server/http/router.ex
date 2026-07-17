@@ -516,9 +516,20 @@ defmodule ForemanServer.Http.Router do
   defp add_worktree_metadata(run, snapshot) do
     run_id = Map.get(run, :run_id)
     worktree = get_in(snapshot, [:worktrees, run_id]) || %{}
-    worktree_path = Map.get(worktree, :worktree_path) || Map.get(worktree, :worktree)
-    branch = Map.get(worktree, :branch) || Map.get(worktree, :branch_name)
-    base = Map.get(worktree, :base_ref) || Map.get(worktree, :base_branch)
+    # Fall back to run's own fields when worktree snapshot is empty (native runs
+    # use WorktreeManager.createWorktree which does not emit WorktreeCreated).
+    worktree_path = Map.get(worktree, :worktree_path)
+                   || Map.get(worktree, :worktree)
+                   || Map.get(run, :worktree_path)
+                   || Map.get(run, :worktree)
+    branch = Map.get(worktree, :branch)
+           || Map.get(worktree, :branch_name)
+           || Map.get(run, :branch)
+           || Map.get(run, :branch_name)
+    base = Map.get(worktree, :base_ref)
+         || Map.get(worktree, :base_branch)
+         || Map.get(run, :base_ref)
+         || Map.get(run, :base_branch)
 
     run
     |> put_present(:worktree_path, worktree_path)
