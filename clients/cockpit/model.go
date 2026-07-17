@@ -679,27 +679,47 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if run, ok := m.selectedRunnableRun(); ok {
 			return m, attachOmp(m, run, false)
 		}
-		m.notice = "omp: no run selected"
+		if _, ok := m.selectedTaskItem(); ok {
+			m.notice = "omp: task has no runs"
+		} else {
+			m.notice = "omp: no run selected"
+		}
 	case "P":
 		if run, ok := m.selectedRunnableRun(); ok {
 			return m, attachOmp(m, run, true)
 		}
-		m.notice = "omp: no run selected"
+		if _, ok := m.selectedTaskItem(); ok {
+			m.notice = "omp: task has no runs"
+		} else {
+			m.notice = "omp: no run selected"
+		}
 	case "A":
 		if run, ok := m.selectedRunnableRun(); ok {
 			return m, attachRun(m.client, run)
 		}
-		m.notice = "attach: no run selected"
+		if _, ok := m.selectedTaskItem(); ok {
+			m.notice = "attach: task has no runs"
+		} else {
+			m.notice = "attach: no run selected"
+		}
 	case "r":
 		if run, ok := m.selectedRunnableRun(); ok {
 			return m, retryRun(m.client, run)
 		}
-		m.notice = "retry: no run selected"
+		if _, ok := m.selectedTaskItem(); ok {
+			m.notice = "retry: task has no runs"
+		} else {
+			m.notice = "retry: no run selected"
+		}
 	case "R":
 		if run, ok := m.selectedResetRun(); ok {
 			return m, resetRun(m.client, run)
 		}
-		m.notice = "reset: no run selected"
+		if _, ok := m.selectedTaskItem(); ok {
+			m.notice = "reset: task has no runs"
+		} else {
+			m.notice = "reset: no run selected"
+		}
 	}
 	return m, nil
 }
@@ -1670,6 +1690,16 @@ func (m model) selectedRunnableRun() (Run, bool) {
 		return Run{}, false
 	}
 	return m.runForTask(task)
+}
+
+// selectedTaskItem returns the selected Item if it is a task-type card on the board.
+// Used to distinguish "task selected with no runs" from "no item selected".
+func (m model) selectedTaskItem() (Item, bool) {
+	it, ok := m.selectedItem()
+	if !ok || !it.IsTask {
+		return Item{}, false
+	}
+	return it, true
 }
 
 func (m model) runForTask(task Task) (Run, bool) {
