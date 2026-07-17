@@ -105,7 +105,9 @@ func newTaskQuickAddForm(projects []Project, currentProjectID string) taskCreate
 	return form
 }
 
-func (f *taskCreateForm) focusField(delta int) tea.Cmd {
+// moveFocus navigates to the next/previous form field by delta (+1 or -1).
+// It also closes any open dropdowns when leaving that field.
+func (f *taskCreateForm) moveFocus(delta int) tea.Cmd {
 	next := f.focus + delta
 	if next < 0 {
 		next = createFormFieldCount - 1
@@ -231,7 +233,7 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 	// Dropdown navigation for project field
 	if f.focus == createFormProject {
 		if delta := f.dropdownNav(msg, len(f.projects), &f.projectIndex, &f.projectOpen); delta != 0 {
-			f.focusField(delta)
+			f.moveFocus(delta)
 		}
 		return nil
 	}
@@ -239,7 +241,7 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 	// Dropdown navigation for type field
 	if f.focus == createFormType {
 		if delta := f.dropdownNav(msg, len(validTaskTypes), &f.typeIndex, &f.typeOpen); delta != 0 {
-			f.focusField(delta)
+			f.moveFocus(delta)
 		}
 		return nil
 	}
@@ -247,16 +249,16 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 	// Dropdown navigation for priority field
 	if f.focus == createFormPriority {
 		if delta := f.dropdownNav(msg, len(validPriorities), &f.priorityIndex, &f.priorityOpen); delta != 0 {
-			f.focusField(delta)
+			f.moveFocus(delta)
 		}
 		return nil
 	}
 
 	switch msg.String() {
 	case "tab":
-		return f.focusField(1)
+		return f.moveFocus(1)
 	case "shift+tab":
-		return f.focusField(-1)
+		return f.moveFocus(-1)
 	case "enter":
 		if f.focus == createFormProject {
 			f.projectOpen = true
@@ -271,7 +273,7 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		if f.focus != createFormDescription {
-			return f.focusField(1)
+			return f.moveFocus(1)
 		}
 	}
 
@@ -329,6 +331,8 @@ func (f *taskCreateForm) SetBounds(w, h int) {
 	case f.priorityOpen:
 		dropdownRows = len(validPriorities) + 1
 	}
+	// Fixed form rows: header(2) + title label + title input + desc label + desc input +
+	// project label + project display + type label + type display + priority label + priority display = 13
 	descH := h - 13 - dropdownRows
 	if descH < 3 {
 		descH = 3
