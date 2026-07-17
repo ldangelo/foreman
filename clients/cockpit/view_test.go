@@ -1248,6 +1248,7 @@ func TestRunSummaryTabRendersCriticalFields(t *testing.T) {
 		Status:      "running",
 		Phase:       "developer",
 		Summary:     "Test summary content",
+		Title:       "cockpit task summary is missing critical info",
 		Worktree:    "/tmp/worktree",
 		Branch:      "main",
 		Last:        "2h ago",
@@ -1316,6 +1317,7 @@ func TestRunSummaryTabRendersCriticalFields(t *testing.T) {
 		"main",           // Branch
 		"2h ago",         // Last activity
 		"Test summary content", // Summary text
+		"cockpit task summary is missing critical info", // Title
 	}
 
 	for _, want := range wantFields {

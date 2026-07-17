@@ -941,6 +941,10 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			add("summary:"+itoa(i), textStyle.Render(ln), target{})
 		}
 		add("summary:spacer", "", target{})
+		// Title
+		if run.Title != "" {
+			add("summary:title", kv("title", run.Title), target{})
+		}
 		// Status and phase - show current pipeline state
 		state := run.Status
 		if run.Phase != "" {
