@@ -225,21 +225,37 @@ export class ElixirMergeQueue {
       retryCount?: number;
     },
   ): Promise<void> {
-    // Get current labels to preserve operation label
+    // Get current labels. Compute stale foreman/status:* labels to remove
+    // (so prToEntry reads exactly one current lifecycle status), while
+    // preserving foreman/operation:*.
     const labels = await this._getPrLabels(id);
     const operationLabel = labels.find((l) => l.startsWith(OPERATION_LABEL_PREFIX));
     const currentOperation = operationLabel?.replace(OPERATION_LABEL_PREFIX, "") as "auto_merge" | "create_pr" | undefined;
+    const staleStatusLabels = labels.filter((l) => l.startsWith(STATUS_LABEL_PREFIX) && l !== `${STATUS_LABEL_PREFIX}${status}`);
 
-    // Build new labels: set foreman/status to new status, preserve operation
-    const newLabels: string[] = [`${STATUS_LABEL_PREFIX}${status}`];
+    // Build the labels to add: new status + preserved operation.
+    const addLabels: string[] = [`${STATUS_LABEL_PREFIX}${status}`];
     if (currentOperation) {
-      newLabels.push(`${OPERATION_LABEL_PREFIX}${currentOperation}`);
+      addLabels.push(`${OPERATION_LABEL_PREFIX}${currentOperation}`);
     }
 
     try {
+      // Remove stale status labels first. `gh pr edit --remove-label` exits
+      // non-zero if a label is absent, so per-label errors are swallowed.
+      for (const stale of staleStatusLabels) {
+        try {
+          await execFileAsync(
+            "gh",
+            ["pr", "edit", String(id), "--remove-label", stale],
+            { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
+          );
+        } catch {
+          // Label may not be present; that's fine.
+        }
+      }
       await execFileAsync(
         "gh",
-        ["pr", "edit", String(id), "--add-label", newLabels.join(",")],
+        ["pr", "edit", String(id), "--add-label", addLabels.join(",")],
         { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
       );
     } catch (err) {
@@ -271,37 +287,59 @@ export class ElixirMergeQueue {
   }
 
   /**
-   * Reset a failed entry for retry.
+   * Reset a failed or conflict entry for retry. Returns false when the entry
+   * is missing or not in a retryable state. On success, persists the
+   * status transition to "pending" so dequeue() picks it up again.
    */
   async resetForRetry(taskId: string): Promise<boolean> {
-    // For gh-backed queue, retry means re-triggering the merge via gh pr merge.
-    // This is handled by refinery.processOnce() calling gh pr merge.
-    void taskId;
+    const entry = await this._findEntry({ taskId });
+    if (!entry || (entry.status !== "failed" && entry.status !== "conflict")) {
+      return false;
+    }
+    await this.updateStatus(entry.id, "pending");
     return true;
   }
 
   /**
-   * Get entries eligible for retry.
+   * Get entries eligible for retry. Returns entries currently labeled
+   * "failed" or "conflict" so refinery can re-enqueue them.
    */
   async getRetryableEntries(): Promise<MergeQueueEntry[]> {
-    // gh doesn't expose retry state — entries are tracked by refinery
-    return [];
+    const entries = await this.list();
+    return entries.filter((e) => e.status === "failed" || e.status === "conflict");
   }
 
   /**
    * Find entries missing from the queue (tracked in gh but not in refinery state).
+   * For gh-backed queue, all foreman/* PRs are automatically in the queue.
    */
   async missingFromQueue(): Promise<Array<{ run_id: string; task_id: string }>> {
-    // For gh-backed queue, all foreman/* PRs are automatically in the queue
     return [];
   }
 
   /**
-   * Re-enqueue a previously dequeued entry.
+   * Re-enqueue a previously dequeued entry. Only succeeds for failed or
+   * conflict entries; persists the status transition to "pending".
    */
   async reEnqueue(id: number): Promise<boolean> {
-    void id;
+    const entry = await this._findEntry({ id });
+    if (!entry || (entry.status !== "failed" && entry.status !== "conflict")) {
+      return false;
+    }
+    await this.updateStatus(entry.id, "pending");
     return true;
+  }
+
+  /**
+   * Find a single entry by taskId or id. Returns null if not found.
+   */
+  private async _findEntry(filter: { taskId?: string; id?: number }): Promise<MergeQueueEntry | null> {
+    const entries = await this.list();
+    return entries.find((e) => {
+      if (filter.taskId !== undefined && e.task_id !== filter.taskId) return false;
+      if (filter.id !== undefined && e.id !== filter.id) return false;
+      return true;
+    }) ?? null;
   }
 
   /**
@@ -342,9 +380,12 @@ export class ElixirMergeQueue {
     updatedAt: string;
     labels: Array<{ name: string }>;
   }): MergeQueueEntry {
-    // Extract task_id and run_id from PR body or title
-    const taskIdMatch = /(?:task[_-]?id[:\s]*)([a-z]+-[a-z0-9]+)/i.exec(pr.body || pr.title);
-    const runIdMatch = /(?:run[_-]?id[:\s]*)([a-f0-9-]+)/i.exec(pr.body || pr.title);
+    // Extract task_id and run_id from PR body and title independently.
+    // A nonempty body must not suppress title-only metadata.
+    const TASK_ID_RE = /(?:task[_-]?id[:\s]*)([a-z]+-[a-z0-9]+)/i;
+    const RUN_ID_RE = /(?:run[_-]?id[:\s]*)([a-f0-9-]+)/i;
+    const taskIdMatch = TASK_ID_RE.exec(pr.body) ?? TASK_ID_RE.exec(pr.title);
+    const runIdMatch = RUN_ID_RE.exec(pr.body) ?? RUN_ID_RE.exec(pr.title);
     const taskId = taskIdMatch?.[1] ?? pr.headRefName;
 
     // Parse status from labels (foreman/status:<status>)
