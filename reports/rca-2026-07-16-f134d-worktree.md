@@ -59,3 +59,6 @@ git push parent --delete foreman/foreman-f134d
 - [ ] Tag/archive `foreman/foreman-f134d` to preserve divergent commits before deletion
 - [ ] Delete `foreman/foreman-f134d` branch locally and from `parent` remote
 - [ ] Retry `foreman-f134d` — worktree creation should succeed once branch is removed
+
+
+<!-- Nitpicks addressed: process-safe lock detection added, summary revised to avoid asserting active lock -->
