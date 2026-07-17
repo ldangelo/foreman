@@ -91,7 +91,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
 - `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
 - `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
-- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (`send_mail`, `mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`, `diff_read`, `git_status`, `pr_review_finding`, `merge_gate_status`, `task_get`, `task_status`, `task_note_add`, `task_risk_add`, `file_reserve`, `file_release`, `file_changes`)
+- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (`send_mail`, `mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`, `diff_read`, `git_status`, `pr_review_finding`, `merge_gate_status`, `task_get`, `task_status`, `task_note_add`, `task_risk_add`, `file_reserve`, `file_release`, `file_changes`)
 - `src/orchestrator/agent-worker.ts` — detached worker process, pipeline orchestration
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
@@ -109,7 +109,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
 - Retry loops: verdict failures route to focused repair phases when configured (`repair.md` in bundled `task`/`docs` workflows) so agents fix only reported QA/review/finalize assertions; specialized retry targets still handle CI, CodeRabbit, and merge-conflict failures.
 - Mutating phases with `checkpointPr: true` commit/push successful dirty work and maintain a draft PR before the final `create-pr` gate marks it ready.
-- `send_mail` registered as a native Pi SDK tool — agents call it directly, no bash commands
+- Phase-control tools (`ask_operator`, `abort_phase`, `needs_retry`) and `send_mail` registered as native Pi SDK tools — agents call them directly, no bash commands
 
 **Default pipeline phases:**
 

@@ -72,5 +72,7 @@ export function mapRunStatusToNativeTaskStatus(runStatus: RunStatus): NativeTask
       return "failed";
     case "reset":
       return "ready";
+    case "waiting_for_operator":
+      return "in-progress";
   }
 }

@@ -39,7 +39,7 @@ Node CLI / frontend
   ├─ per task: agent-worker.ts (detached child process)
   │    └─ Pi SDK (in-process)
   │       createAgentSession() → session.prompt()
-  │       Tools: read, write, edit, bash, grep, find, ls, send_mail
+  │       Tools: read, write, edit, bash, grep, find, ls, send_mail, ask_operator, abort_phase, needs_retry
   │
   ├─ Pipeline Executor (workflow YAML-driven)
   │    Phases defined in ~/.foreman/workflows/*.yaml
@@ -58,7 +58,7 @@ TRD-2026-014 adds an Elixir/OTP orchestration server alongside the existing Node
 
 - **Node CLI**: parses operator commands, starts or locates the Elixir server, sends authenticated JSON commands/reads, renders projection responses, and keeps deprecated aliases pointing at replacements.
 - **Elixir server**: owns durable commands, append-only events, CQRS projections, all database access, run/phase actors, scheduler capacity, automatic 5-second scheduler ticks that claim dispatchable `ready` tasks and launch the Node/Pi worker bridge, VCS/PR state machines, inbox/debug/attach views, recovery, doctor/metrics, and authorization audit events.
-- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/tool calls/assistant messages/artifacts back to Elixir, exposes Foreman-specific Pi tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `safe_command_run`) for typed workflow behavior, asks Elixir overwatch for tool policy decisions before execution, and emits authoritative terminal run/task events. Workers and Node clients use Elixir HTTP commands/projections for task/run/mail state and do not connect directly to the database or drain DB-backed merge queues; they enqueue/report and let Elixir/refinery processing continue. Raw worker log files are compatibility/debug projections of that stream; the Elixir launcher records process-exit facts and emits a diagnostic fallback failure only when the worker exits without an authoritative terminal event.
+- **Node/Pi worker layer**: executes Pi SDK-backed phases, receives worker protocol starts, streams ordered events/heartbeats/tool calls/assistant messages/artifacts back to Elixir, exposes Foreman-specific Pi tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`) for typed workflow behavior, asks Elixir overwatch for tool policy decisions before execution, and emits authoritative terminal run/task events. Workers and Node clients use Elixir HTTP commands/projections for task/run/mail state and do not connect directly to the database or drain DB-backed merge queues; they enqueue/report and let Elixir/refinery processing continue. Raw worker log files are compatibility/debug projections of that stream; the Elixir launcher records process-exit facts and emits a diagnostic fallback failure only when the worker exits without an authoritative terminal event.
 
 See [Elixir Backend Architecture](./docs/guides/elixir-backend-architecture.md) for the migration architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
 
@@ -220,6 +220,8 @@ Foreman includes a built-in messaging system for inter-agent communication and p
 
 Agents use the native **`send_mail`** tool, registered as a Pi SDK ToolDefinition. This is a structured tool call — agents don't run bash commands or invoke skills to send messages.
 
+Phase-control tools (`ask_operator`, `abort_phase`, `needs_retry`) also route through mail, allowing agents to request operator input, stop the pipeline with a structured reason, or signal a recoverable failure needing retry.
+
 Guidance skills are separate from native tools; they help agents choose correct Foreman conventions but do not replace structured tools.
 
 ```
@@ -241,6 +243,9 @@ The pipeline executor also sends lifecycle messages automatically (phase-started
 | `phase-started` | executor → foreman | Phase begins (YAML: `mail.onStart`) |
 | `phase-complete` | executor → foreman | Phase succeeds (YAML: `mail.onComplete`) |
 | `agent-error` | agent → foreman | Unrecoverable infrastructure/runtime failure; QA product failures must use `QA_REPORT.md` FAIL so retry routing remains report-driven |
+| `ask-operator` | agent → foreman | Agent requests operator guidance or a decision |
+| `abort-phase` | agent → foreman | Agent stops phase/pipeline with structured reason |
+| `needs-retry` | agent → foreman | Agent signals recoverable failure needing retry |
 | `branch-ready` | foreman → refinery | Finalize complete, ready to merge |
 | `merge-complete` | refinery → foreman | Branch merged to target |
 | `merge-failed` | refinery → foreman | Merge failed (conflicts, tests) |
@@ -298,6 +303,9 @@ The following tools may be registered as custom `ToolDefinition` for an agent se
 | `file_reserve` | Reserve files for exclusive editing ownership. Call before editing files to coordinate with other agents. |
 | `file_release` | Release file edit reservations. Call when done editing to allow other agents to edit. |
 | `file_changes` | Report files that were changed during this phase. Tracks modifications in progress.filesChanged. |
+| `ask_operator` | Request operator guidance or a decision. Use when an agent needs human judgment that cannot be resolved through automated reasoning. |
+| `abort_phase` | Stop the current phase cleanly with a structured abort reason. Use when the current approach is fundamentally flawed. |
+| `needs_retry` | Signal that the current attempt failed but should be retried. Use when the failure is transient or recoverable with a different approach. |
 
 Standard Pi tools are also available per phase (configured in [workflow YAML](docs/workflow-yaml-reference.md)):
 - `read`, `write`, `edit` — file operations

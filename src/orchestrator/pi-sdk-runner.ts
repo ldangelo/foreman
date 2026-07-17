@@ -46,6 +46,7 @@ import type { PhaseTraceLiveEvent, PhaseTraceMetadata } from "./pi-observability
 import { writePhaseTrace } from "./pi-observability-writer.js";
 import { REQUIRED_SKILLS } from "../lib/prompt-loader.js";
 import { z } from "zod";
+import type { ControlOutcome } from "./pi-sdk-tools.js";
 
 // ── Public interface (compatible with pi-runner.ts) ─────────────────────
 
@@ -86,6 +87,8 @@ export interface PiRunResult {
   commandHonored?: boolean;
   /** Relative or repo-root paths written during the phase when a custom runner can provide them. */
   filesChanged?: string[];
+  /** Control outcome from phase control tools (ask_operator, abort_phase, needs_retry). */
+  controlOutcome?: ControlOutcome;
 }
 
 /**
@@ -468,6 +471,8 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
   const textChunks: string[] = [];
   const pendingToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
   const phaseTrace = opts.observability ? createPhaseTrace(opts.observability) : undefined;
+  // Track control outcome from phase control tools (ask_operator, abort_phase, needs_retry)
+  let controlOutcome: import("./pi-sdk-tools.js").ControlOutcome | undefined;
 
   const writeLog = (line: string): void => {
     if (!opts.logFile) return;
@@ -619,6 +624,11 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
           if (toolCallId) pendingToolCalls.delete(toolCallId);
           const toolName = (rawEvent.toolName as string | undefined) ?? pending?.toolName;
           if (toolName) {
+            // Track control outcomes from phase control tools
+            const result = rawEvent.result as { controlOutcome?: import("./pi-sdk-tools.js").ControlOutcome } | undefined;
+            if (result?.controlOutcome && !controlOutcome) {
+              controlOutcome = result.controlOutcome;
+            }
             safeEmitStreamEvent({
               type: "toolCallFinished",
               iteration: totalTurns,
@@ -733,6 +743,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       traceMarkdownFile: tracePaths?.relativeMarkdownPath,
       traceWarnings: phaseTrace?.warnings,
       commandHonored: phaseTrace?.commandHonored,
+      controlOutcome,
     };
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -779,6 +790,7 @@ export async function runWithPiSdk(opts: PiRunOptions): Promise<PiRunResult> {
       traceMarkdownFile: tracePaths?.relativeMarkdownPath,
       traceWarnings: phaseTrace?.warnings,
       commandHonored: phaseTrace?.commandHonored,
+      controlOutcome,
     };
   }
 }

@@ -90,7 +90,7 @@ export interface Run {
   agent_type: string;
   session_key: string | null;
   worktree_path: string | null;
-  status: "pending" | "running" | "completed" | "failed" | "stuck" | "cooldown" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset";
+  status: "pending" | "running" | "completed" | "failed" | "stuck" | "cooldown" | "merged" | "conflict" | "test-failed" | "pr-created" | "reset" | "waiting_for_operator";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
