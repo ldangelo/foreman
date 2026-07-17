@@ -94,6 +94,11 @@ export interface PhaseResult {
   filesChanged?: string[];
   /** Stop remaining phases and treat the pipeline as successful. Used by builtins that complete work without a PR. */
   stopPipelineSuccess?: boolean;
+  /** Control outcome from phase control tools (ask_operator, abort_phase, needs_retry). */
+  controlOutcome?: {
+    type: "ASK_OPERATOR" | "ABORTED" | "NEEDS_RETRY";
+    [key: string]: unknown;
+  };
 }
 
 async function phaseAgentError(
@@ -2042,6 +2047,85 @@ async function runPhaseSequence(
       observabilityInput,
       observabilityWriter,
     );
+
+    // 5b. Handle control outcomes from phase control tools (ask_operator, abort_phase, needs_retry)
+    if (result.controlOutcome) {
+      const { controlOutcome } = result;
+
+      // Release files before handling control outcome
+      if (phase.files?.reserve) {
+        ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
+      }
+
+      if (controlOutcome.type === "ASK_OPERATOR") {
+        // Agent requested operator guidance — mark as waiting for operator
+        const co = controlOutcome as { type: "ASK_OPERATOR"; question: string; context: string | null };
+        const question = co.question ?? "Operator guidance requested";
+        ctx.log(`[${phaseName.toUpperCase()}] ASK_OPERATOR — ${question}`);
+        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] ASK_OPERATOR: ${question}\n`);
+        await writeTaskPhaseNote(phaseName, "system", `Waiting for operator: ${question}`, { retryable: true, askOperator: true });
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: `ask_operator: ${question}` };
+      }
+
+      if (controlOutcome.type === "ABORTED") {
+        // Agent aborted the phase — treat as intentional failure
+        const co = controlOutcome as { type: "ABORTED"; reason: string; suggestion: string | null };
+        const reason = co.reason ?? "Phase aborted by agent";
+        const suggestion = co.suggestion;
+        ctx.log(`[${phaseName.toUpperCase()}] ABORTED — ${reason}`);
+        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] ABORTED: ${reason}\n`);
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          taskId, phase: phaseName, error: reason, suggestion, retryable: false,
+        });
+        await writeTaskPhaseNote(phaseName, "failure", `Aborted: ${reason}${suggestion ? ` — Suggestion: ${suggestion}` : ""}`, { retryable: false });
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, reason, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: reason };
+      }
+
+      if (controlOutcome.type === "NEEDS_RETRY") {
+        // Agent requested retry — treat as failure and check retryWith configuration
+        const co = controlOutcome as { type: "NEEDS_RETRY"; reason: string; attemptedApproach: string | null; suggestedNextStep: string | null };
+        const reason = co.reason ?? "Retry requested by agent";
+        const attemptedApproach = co.attemptedApproach;
+        const suggestedNextStep = co.suggestedNextStep;
+        const feedback = [reason, attemptedApproach ? `Attempted: ${attemptedApproach}` : "", suggestedNextStep ? `Next step: ${suggestedNextStep}` : ""].filter(Boolean).join("\n");
+        ctx.log(`[${phaseName.toUpperCase()}] NEEDS_RETRY — ${reason}`);
+        await appendFile(logFile, `\n[PHASE: ${phaseName.toUpperCase()}] NEEDS_RETRY: ${reason}\n`);
+
+        const retryTarget = retryTargetForFailure(phase, reason);
+        if (retryTarget) {
+          const currentRetries = retryCounts[phaseName] ?? 0;
+          const maxRetries = phase.retryOnFail ?? 0;
+          if (currentRetries < maxRetries) {
+            retryCounts[phaseName] = currentRetries + 1;
+            const feedbackTarget = `${retryTarget}-${taskId}`;
+            ctx.sendMailText(agentMailClient, feedbackTarget, `${phaseName.charAt(0).toUpperCase() + phaseName.slice(1)} Feedback - Retry ${currentRetries + 1}`, feedback);
+            ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+              taskId, phase: phaseName, error: reason, retryable: true,
+            });
+            ctx.log(`[${phaseName.toUpperCase()}] NEEDS_RETRY — looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})`);
+            await appendFile(logFile, `\n[PIPELINE] ${phaseName} needs_retry, looping back to ${retryTarget} (retry ${currentRetries + 1}/${maxRetries})\n`);
+            feedbackContext = feedback;
+            await emitPhaseReportEvent(ctx, phaseName, interpolatedArtifact, "retry", phases[i + 1]?.name, retryTarget);
+            const targetIdx = phaseIndex.get(retryTarget);
+            if (targetIdx !== undefined) {
+              retryOnlyActivations.add(retryTarget);
+              i = targetIdx;
+              continue;
+            }
+            ctx.log(`[${phaseName.toUpperCase()}] retryWith target '${retryTarget}' not found in workflow — marking stuck`);
+          }
+        }
+
+        // No retryWith configured or max retries exhausted — treat as terminal failure
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          taskId, phase: phaseName, error: reason, retryable: false,
+        });
+        await writeTaskPhaseNote(phaseName, "failure", `Needs retry exhausted: ${reason}`, { retryable: false });
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, reason, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: reason };
+      }
+    }
 
     // 6. Release files
     if (phase.files?.reserve) {
