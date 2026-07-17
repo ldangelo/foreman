@@ -1237,6 +1237,94 @@ func TestRunSummaryUsesScrollableViewer(t *testing.T) {
 	}
 }
 
+func TestRunSummaryTabRendersCriticalFields(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 120
+	m.height = 20
+	run := Run{
+		Group:       taskGroupRunning,
+		TaskID:      "task-1",
+		RunID:       "run-1",
+		Status:      "running",
+		Phase:       "developer",
+		Summary:     "Test summary content",
+		Worktree:    "/tmp/worktree",
+		Branch:      "main",
+		Last:        "2h ago",
+		Verdict:     "pass",
+		Elapsed:     "45m",
+		Created:     "2024-01-15T10:00:00Z",
+		Messages:    10,
+		Events:      5,
+		PRState:     "open",
+		DiffAdded:   150,
+		DiffRemoved: 30,
+		Checks:      CheckSummary{Passed: 5, Failed: 1, Pending: 2},
+		Attention:   "",
+	}
+	m.runs = []Run{run}
+	m.tab = 0
+	m.viewFocused = true
+	m.buildItems()
+
+	// Verify the run is properly selected and has the correct data
+	selectedRun, ok := m.selectedRun()
+	if !ok {
+		t.Fatal("expected a run to be selected")
+	}
+	if selectedRun.Summary != "Test summary content" {
+		t.Errorf("expected run.Summary to be 'Test summary content', got %q", selectedRun.Summary)
+	}
+	if selectedRun.Phase != "developer" {
+		t.Errorf("expected run.Phase to be 'developer', got %q", selectedRun.Phase)
+	}
+	if selectedRun.Verdict != "pass" {
+		t.Errorf("expected run.Verdict to be 'pass', got %q", selectedRun.Verdict)
+	}
+
+	m.loadDetail()
+
+	// Get the viewer lines directly to debug
+	selectedIt, ok := m.selectedItem()
+	if !ok {
+		t.Fatal("expected an item to be selected")
+	}
+	lines := m.renderViewerLines(selectedRun, selectedIt, true, m.detailPaneWidth(), paneVisualFor(true, defaultConfig().Cockpit.Focus))
+
+	// Build a simple text output from the lines
+	var lineTexts []string
+	for _, line := range lines {
+		lineTexts = append(lineTexts, line.Text)
+	}
+	out := strings.Join(lineTexts, "\n")
+
+	// Verify critical fields are rendered
+	wantFields := []string{
+		"developer",      // Phase should be shown (takes precedence over status)
+		"pass",           // Verdict
+		"45m",            // Elapsed
+		"2024-01-15",     // Created
+		"10 msgs",        // Messages count
+		"5 events",      // Events count
+		"open",           // PR state
+		"+150",           // Diff added
+		"-30",            // Diff removed
+		"✓5",             // Checks passed (5 check marks)
+		"✗1",             // Checks failed (1 X mark)
+		"●2",             // Checks pending (2 dots)
+		"/tmp/worktree",  // Worktree
+		"main",           // Branch
+		"2h ago",         // Last activity
+		"Test summary content", // Summary text
+	}
+
+	for _, want := range wantFields {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected summary to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestTaskSectionChangesReloadSelectedDetail(t *testing.T) {
 	client := &mutableClient{
 		runs: []Run{

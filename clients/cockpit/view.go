@@ -941,6 +941,53 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			add("summary:"+itoa(i), textStyle.Render(ln), target{})
 		}
 		add("summary:spacer", "", target{})
+		// Status and phase - show current pipeline state
+		state := run.Status
+		if run.Phase != "" {
+			state = run.Phase
+		}
+		if state != "" {
+			add("summary:state", kv("status", state), target{})
+		}
+		// Verdict
+		if run.Verdict != "" {
+			add("summary:verdict", kv("verdict", run.Verdict), target{})
+		}
+		// Elapsed time
+		if run.Elapsed != "" {
+			add("summary:elapsed", kv("elapsed", run.Elapsed), target{})
+		}
+		// Created time
+		if run.Created != "" {
+			add("summary:created", kv("created", run.Created), target{})
+		}
+		// Messages and events counts
+		if run.Messages > 0 || run.Events > 0 {
+			counts := []string{}
+			if run.Messages > 0 {
+				counts = append(counts, itoa(run.Messages)+" msgs")
+			}
+			if run.Events > 0 {
+				counts = append(counts, itoa(run.Events)+" events")
+			}
+			add("summary:counts", kv("counts", strings.Join(counts, ", ")), target{})
+		}
+		// PR state
+		if run.PRState != "" {
+			add("summary:pr", kv("pr", run.PRState), target{})
+		}
+		// Diff stats
+		if diffLabel := diffStatLabel(run.DiffAdded, run.DiffRemoved); diffLabel != "" {
+			add("summary:diff", kv("diff", diffLabel), target{})
+		}
+		// Checks summary
+		if checksLabel := checkSummaryLabel(run.Checks); checksLabel != "" {
+			add("summary:checks", kv("checks", checksLabel), target{})
+		}
+		// Attention indicator
+		if run.Attention != "" {
+			add("summary:attention", kv("attention", run.Attention), target{})
+		}
 		add("summary:worktree", kv("worktree", run.Worktree), target{})
 		add("summary:branch", kv("branch", run.Branch), target{})
 		add("summary:last", kv("last", run.Last), target{})
