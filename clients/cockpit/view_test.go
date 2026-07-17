@@ -1774,6 +1774,8 @@ func TestDataUpdatePreservesMovedViewerCursor(t *testing.T) {
 
 			updated, _ = m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 			m = updated.(model)
+			m.taskList.selected = 0
+			m.loadDetail()
 			if m.viewer.Cursor() != movedRow || m.viewer.Offset() != movedOffset {
 				t.Fatalf("expected update to preserve moved cursor, got row=%d offset=%d want row=%d offset=%d", m.viewer.Cursor(), m.viewer.Offset(), movedRow, movedOffset)
 			}
