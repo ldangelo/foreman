@@ -96,13 +96,18 @@ func TestTaskCreateFormDescriptionTypeAndPriorityAreEditable(t *testing.T) {
 	form.Update(specialKey(tea.KeyLeft))
 	form.Update(specialKey(tea.KeyBackspace))
 	form.Update(keyPress("od"))
-	form.Update(specialKey(tea.KeyTab))
-	// Tab skips project dropdown → focus lands on type field
-	form.Update(ctrlKey('u'))
-	form.Update(keyPress("bug"))
-	form.Update(specialKey(tea.KeyTab))
-	form.Update(ctrlKey('u'))
-	form.Update(keyPress("0"))
+	// Tab to project dropdown, Tab again to skip it and reach type field
+	form.Update(specialKey(tea.KeyTab)) // to project dropdown
+	form.Update(specialKey(tea.KeyTab)) // skip project to type field
+	// Type field is now a dropdown: press Enter to open, up/down to navigate
+	form.Update(specialKey(tea.KeyEnter)) // open type dropdown
+	form.Update(specialKey(tea.KeyDown))  // select "bug" (index 1, default is "task" at index 0)
+	form.Update(specialKey(tea.KeyEnter))  // select and move to priority
+	// Priority field is now a dropdown: press Enter to open, up/up to navigate to P0
+	form.Update(specialKey(tea.KeyEnter)) // open priority dropdown
+	form.Update(specialKey(tea.KeyUp))    // move to P1
+	form.Update(specialKey(tea.KeyUp))    // move to P0
+	form.Update(specialKey(tea.KeyEnter)) // select and move to next field
 
 	task, err := form.Task()
 	if err != nil {
@@ -129,5 +134,72 @@ func TestTaskCreateFormFocusTraversalWrapsFields(t *testing.T) {
 	form.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	if form.focus != createFormPriority {
 		t.Fatalf("expected shift+tab to wrap to priority, got %d", form.focus)
+	}
+}
+
+func TestTaskCreateFormShiftTabFromTypeDropsBackToProject(t *testing.T) {
+	form := newTaskCreateForm(nil, "")
+	// Navigate to type field via Tab (title=0, desc=1, project=2, type=3)
+	form.Update(specialKey(tea.KeyTab)) // to description (1)
+	form.Update(specialKey(tea.KeyTab)) // to project (2)
+	form.Update(specialKey(tea.KeyTab)) // to type (3)
+	form.Update(specialKey(tea.KeyTab)) // to priority (4)
+
+	// Shift+Tab from priority goes to type
+	form.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift})) // priority -> type
+	if form.focus != createFormType {
+		t.Fatalf("expected type focus, got %d", form.focus)
+	}
+
+	// Open type dropdown and press Shift+Tab to move backward to project
+	form.Update(specialKey(tea.KeyEnter)) // open dropdown
+	if form.focus != createFormType || !form.typeOpen {
+		t.Fatalf("expected type focus with open dropdown, got focus=%d open=%v", form.focus, form.typeOpen)
+	}
+	form.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift})) // dropdown closes, backward to project
+	if form.focus != createFormProject {
+		t.Fatalf("expected shift+tab to move to project, got %d", form.focus)
+	}
+}
+
+func TestTaskCreateFormShiftTabFromPriorityDropsBackToType(t *testing.T) {
+	form := newTaskCreateForm(nil, "")
+	// Navigate to priority field via Tab (title=0, desc=1, project=2, type=3, priority=4)
+	form.Update(specialKey(tea.KeyTab)) // to description (1)
+	form.Update(specialKey(tea.KeyTab)) // to project (2)
+	form.Update(specialKey(tea.KeyTab)) // to type (3)
+	form.Update(specialKey(tea.KeyTab)) // to priority (4)
+	if form.focus != createFormPriority {
+		t.Fatalf("expected priority focus, got %d", form.focus)
+	}
+
+	// Open priority dropdown and press Shift+Tab to move backward to type
+	form.Update(specialKey(tea.KeyEnter)) // open dropdown
+	if form.focus != createFormPriority || !form.priorityOpen {
+		t.Fatalf("expected priority focus with open dropdown, got focus=%d open=%v", form.focus, form.priorityOpen)
+	}
+	form.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift})) // dropdown closes, backward to type
+	if form.focus != createFormType {
+		t.Fatalf("expected shift+tab to move to type, got %d", form.focus)
+	}
+}
+
+func TestTaskCreateFormShiftTabFromProjectDropsBackToDescription(t *testing.T) {
+	form := newTaskCreateForm(nil, "")
+	// Navigate to project field via Tab (title=0, desc=1, project=2)
+	form.Update(specialKey(tea.KeyTab)) // to description (1)
+	form.Update(specialKey(tea.KeyTab)) // to project (2)
+	if form.focus != createFormProject {
+		t.Fatalf("expected project focus, got %d", form.focus)
+	}
+
+	// Open project dropdown and press Shift+Tab to move backward to description
+	form.Update(specialKey(tea.KeyEnter)) // open dropdown
+	if form.focus != createFormProject || !form.projectOpen {
+		t.Fatalf("expected project focus with open dropdown, got focus=%d open=%v", form.focus, form.projectOpen)
+	}
+	form.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift})) // dropdown closes, backward to description
+	if form.focus != createFormDescription {
+		t.Fatalf("expected shift+tab to move to description, got %d", form.focus)
 	}
 }

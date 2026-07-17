@@ -8,6 +8,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// Valid task types matching the TypeScript board.ts implementation
+var validTaskTypes = []string{"task", "bug", "feature", "epic", "chore", "docs", "question"}
+
+// Valid priorities with P0=critical, P1=high, P2=medium, P3=low, P4=backlog
+var validPriorities = []string{"P0", "P1", "P2", "P3", "P4"}
+
 const (
 	createFormTitle = iota
 	createFormDescription
@@ -26,8 +32,10 @@ type taskCreateForm struct {
 	projectIndex     int
 	projectOpen      bool
 	projects         []Project
-	taskType         textinput.Model
-	priority         textinput.Model
+	typeIndex        int    // selected index in validTaskTypes
+	typeOpen         bool   // dropdown open state for type
+	priorityIndex    int    // selected index in validPriorities
+	priorityOpen     bool   // dropdown open state for priority
 	status           string // initial status from draft
 	currentProjectID string // project to assign when none explicitly selected
 }
@@ -44,13 +52,23 @@ func newTaskCreateForm(projects []Project, currentProjectID string) taskCreateFo
 	description.ShowLineNumbers = false
 	description.SetHeight(5)
 
-	taskType := textinput.New()
-	taskType.Prompt = ""
-	taskType.SetValue(draft.Type)
+	// Find the default type index (default: "task" at index 0)
+	typeIndex := 0
+	for i, t := range validTaskTypes {
+		if t == draft.Type {
+			typeIndex = i
+			break
+		}
+	}
 
-	priority := textinput.New()
-	priority.Prompt = ""
-	priority.SetValue(draft.Priority)
+	// Find the default priority index (default: "P2" at index 2)
+	priorityIndex := 2
+	for i, p := range validPriorities {
+		if p == draft.Priority {
+			priorityIndex = i
+			break
+		}
+	}
 
 	// Default to current project if known
 	projectIndex := 0
@@ -70,12 +88,14 @@ func newTaskCreateForm(projects []Project, currentProjectID string) taskCreateFo
 		description:      description,
 		projects:         projects,
 		projectIndex:     projectIndex,
-		taskType:         taskType,
-		priority:         priority,
+		typeIndex:        typeIndex,
+		priorityIndex:   priorityIndex,
 		status:           draft.Status,
 		currentProjectID: currentProjectID,
 	}
-	_ = form.focusField(createFormTitle)
+	// Initialize focus to title field
+	form.focus = createFormTitle
+	_ = form.title.Focus()
 	return form
 }
 
@@ -85,19 +105,36 @@ func newTaskQuickAddForm(projects []Project, currentProjectID string) taskCreate
 	return form
 }
 
-func (f *taskCreateForm) focusField(next int) tea.Cmd {
+// moveFocus navigates to the next/previous form field by delta (+1 or -1).
+// It also closes any open dropdowns when leaving that field.
+func (f *taskCreateForm) moveFocus(delta int) tea.Cmd {
+	next := f.focus + delta
 	if next < 0 {
 		next = createFormFieldCount - 1
 	}
 	if next >= createFormFieldCount {
 		next = 0
 	}
+	// Only close dropdowns that are currently open
+	// Don't reset dropdowns that were just opened in the same Update cycle
+	prevFocus := f.focus
 	f.focus = next
-	f.projectOpen = false
+
+	// Close project dropdown when leaving that field
+	if prevFocus == createFormProject {
+		f.projectOpen = false
+	}
+	// Close type dropdown when leaving that field
+	if prevFocus == createFormType {
+		f.typeOpen = false
+	}
+	// Close priority dropdown when leaving that field
+	if prevFocus == createFormPriority {
+		f.priorityOpen = false
+	}
+
 	f.title.Blur()
 	f.description.Blur()
-	f.taskType.Blur()
-	f.priority.Blur()
 	switch f.focus {
 	case createFormTitle:
 		return f.title.Focus()
@@ -106,11 +143,84 @@ func (f *taskCreateForm) focusField(next int) tea.Cmd {
 	case createFormProject:
 		return nil // not a textinput; handled via Enter in Update
 	case createFormType:
-		return f.taskType.Focus()
+		return nil // dropdown; handled via Enter in Update
 	case createFormPriority:
-		return f.priority.Focus()
+		return nil // dropdown; handled via Enter in Update
 	}
 	return nil
+}
+
+// dropdownNav handles navigation for dropdown fields (project, type, priority)
+// Returns focus delta: +1 for forward, -1 for backward, 0 to stay in field
+func (f *taskCreateForm) dropdownNav(msg tea.KeyPressMsg, optionsLen int, currentIndex *int, open *bool) int {
+	switch msg.String() {
+	case "tab":
+		// Tab always skips to next field; close any open dropdowns first
+		if *open {
+			*open = false
+		}
+		// Also close other dropdowns that might be stuck open
+		if f.typeOpen {
+			f.typeOpen = false
+		}
+		if f.priorityOpen {
+			f.priorityOpen = false
+		}
+		return 1
+	case "shift+tab":
+		// Shift+Tab moves to previous field; close any open dropdowns first
+		if *open {
+			*open = false
+		}
+		if f.typeOpen {
+			f.typeOpen = false
+		}
+		if f.priorityOpen {
+			f.priorityOpen = false
+		}
+		// Always move backward for Shift+Tab
+		return -1
+	case "down":
+		if *open {
+			*currentIndex++
+			if *currentIndex >= optionsLen {
+				*currentIndex = 0
+			}
+			return 0 // stay in dropdown
+		}
+		// When closed, do nothing (let other handlers move focus)
+		return 0
+	case "up":
+		if *open {
+			*currentIndex--
+			if *currentIndex < 0 {
+				*currentIndex = optionsLen - 1
+			}
+			return 0 // stay in dropdown
+		}
+		// When closed, do nothing (let other handlers move focus)
+		return 0
+	case "enter":
+		if *open {
+			*open = false
+			return 1 // select and move to next field
+		}
+		// First Enter opens the dropdown
+		*open = true
+		return 0
+	case "esc":
+		if *open {
+			*open = false
+			return 0
+		}
+	default:
+		// Any other key when dropdown is closed: skip to next field
+		if !*open {
+			*open = false
+			return 1
+		}
+	}
+	return 0
 }
 
 func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
@@ -120,77 +230,50 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 		return cmd
 	}
 
-	// Project dropdown navigation: only active when project field is focused
+	// Dropdown navigation for project field
 	if f.focus == createFormProject {
-		switch msg.String() {
-		case "tab":
-			// Tab always skips the project dropdown (it's optional/display-only)
-			f.focusField(f.focus + 1)
-			return nil
-		case "down":
-			if f.projectOpen {
-				f.projectIndex++
-				if f.projectIndex >= len(f.projects) {
-					f.projectIndex = 0
-				}
-				return nil
-			}
-			f.focusField(f.focus + 1)
-			return nil
-		case "up":
-			if f.projectOpen {
-				f.projectIndex--
-				if f.projectIndex < 0 {
-					f.projectIndex = len(f.projects) - 1
-				}
-				return nil
-			}
-			f.focusField(f.focus - 1)
-			return nil
-		case "enter":
-			if f.projectOpen {
-				f.projectOpen = false
-				return f.focusField(f.focus + 1)
-			}
-			// First Enter on project field opens the dropdown
-			f.projectOpen = true
-			return nil
-		case "esc":
-			if f.projectOpen {
-				f.projectOpen = false
-				return nil
-			}
-		default:
-			// Character key on project dropdown: skip to next field and forward the key
-			if !f.projectOpen && msg.String() != "shift+tab" {
-				f.focusField(f.focus + 1)
-				// Forward the key to the newly focused field so it processes immediately
-				var cmd tea.Cmd
-				switch f.focus {
-				case createFormType:
-					f.taskType, cmd = f.taskType.Update(msg)
-				case createFormPriority:
-					f.priority, cmd = f.priority.Update(msg)
-				}
-				return cmd
-			}
+		if delta := f.dropdownNav(msg, len(f.projects), &f.projectIndex, &f.projectOpen); delta != 0 {
+			f.moveFocus(delta)
+		}
+		return nil
+	}
+
+	// Dropdown navigation for type field
+	if f.focus == createFormType {
+		if delta := f.dropdownNav(msg, len(validTaskTypes), &f.typeIndex, &f.typeOpen); delta != 0 {
+			f.moveFocus(delta)
+		}
+		return nil
+	}
+
+	// Dropdown navigation for priority field
+	if f.focus == createFormPriority {
+		if delta := f.dropdownNav(msg, len(validPriorities), &f.priorityIndex, &f.priorityOpen); delta != 0 {
+			f.moveFocus(delta)
 		}
 		return nil
 	}
 
 	switch msg.String() {
 	case "tab":
-		return f.focusField(f.focus + 1)
+		return f.moveFocus(1)
 	case "shift+tab":
-		return f.focusField(f.focus - 1)
+		return f.moveFocus(-1)
 	case "enter":
 		if f.focus == createFormProject {
-			// Open dropdown on project field
 			f.projectOpen = true
 			return nil
 		}
+		if f.focus == createFormType {
+			f.typeOpen = true
+			return nil
+		}
+		if f.focus == createFormPriority {
+			f.priorityOpen = true
+			return nil
+		}
 		if f.focus != createFormDescription {
-			return f.focusField(f.focus + 1)
+			return f.moveFocus(1)
 		}
 	}
 
@@ -200,10 +283,6 @@ func (f *taskCreateForm) Update(msg tea.KeyPressMsg) tea.Cmd {
 		f.title, cmd = f.title.Update(msg)
 	case createFormDescription:
 		f.description, cmd = f.description.Update(msg)
-	case createFormType:
-		f.taskType, cmd = f.taskType.Update(msg)
-	case createFormPriority:
-		f.priority, cmd = f.priority.Update(msg)
 	}
 	return cmd
 }
@@ -223,8 +302,8 @@ func (f taskCreateForm) Task() (Task, error) {
 		ID:          f.id,
 		Title:       strings.TrimSpace(f.title.Value()),
 		Description: strings.TrimSpace(f.description.Value()),
-		Type:        strings.TrimSpace(f.taskType.Value()),
-		Priority:    strings.TrimSpace(f.priority.Value()),
+		Type:        validTaskTypes[f.typeIndex],
+		Priority:    validPriorities[f.priorityIndex],
 		Status:      f.status,
 		ProjectID:   projectID,
 	})
@@ -239,13 +318,22 @@ func (f *taskCreateForm) SetBounds(w, h int) {
 		inputW = 8
 	}
 	f.title.SetWidth(inputW)
-	f.taskType.SetWidth(inputW)
-	f.priority.SetWidth(inputW)
 	if f.quick {
 		f.title.SetWidth(inputW)
 		return
 	}
-	descH := h - 11 - len(f.projects) - 1 // account for project dropdown options
+	dropdownRows := 0
+	switch {
+	case f.projectOpen && len(f.projects) > 0:
+		dropdownRows = len(f.projects) + 1
+	case f.typeOpen:
+		dropdownRows = len(validTaskTypes) + 1
+	case f.priorityOpen:
+		dropdownRows = len(validPriorities) + 1
+	}
+	// Fixed form rows: header(2) + title label + title input + desc label + desc input +
+	// project label + project display + type label + type display + priority label + priority display = 13
+	descH := h - 13 - dropdownRows
 	if descH < 3 {
 		descH = 3
 	}
@@ -314,9 +402,63 @@ func (f taskCreateForm) View(w, h int) string {
 		dropdownLines = append(dropdownLines, dimStyle.Render("  ↑↓ navigate · enter select"))
 	}
 
+	// Build type dropdown display
+	typeLabel := label(createFormType, "type")
+	typeValue := dimStyle.Render(validTaskTypes[f.typeIndex])
+	if f.focus == createFormType {
+		typeValue = cyanStyle.Render(validTaskTypes[f.typeIndex])
+	}
+	typeIndicator := " ▾"
+	if f.typeOpen {
+		typeIndicator = " ▴"
+	}
+	typeField := typeLabel + " " + typeValue + dimStyle.Render(typeIndicator)
+
+	// Build type dropdown options when open
+	var typeDropdownLines []string
+	if f.typeOpen {
+		for i, t := range validTaskTypes {
+			prefix := "  "
+			marker := "  "
+			if i == f.typeIndex {
+				prefix = "› "
+				marker = "▶"
+			}
+			typeDropdownLines = append(typeDropdownLines, dimStyle.Render("   "+prefix+marker+" "+t))
+		}
+		typeDropdownLines = append(typeDropdownLines, dimStyle.Render("  ↑↓ navigate · enter select"))
+	}
+
+	// Build priority dropdown display
+	priorityLabel := label(createFormPriority, "priority")
+	priorityValue := dimStyle.Render(validPriorities[f.priorityIndex])
+	if f.focus == createFormPriority {
+		priorityValue = cyanStyle.Render(validPriorities[f.priorityIndex])
+	}
+	priorityIndicator := " ▾"
+	if f.priorityOpen {
+		priorityIndicator = " ▴"
+	}
+	priorityField := priorityLabel + " " + priorityValue + dimStyle.Render(priorityIndicator)
+
+	// Build priority dropdown options when open
+	var priorityDropdownLines []string
+	if f.priorityOpen {
+		for i, p := range validPriorities {
+			prefix := "  "
+			marker := "  "
+			if i == f.priorityIndex {
+				prefix = "› "
+				marker = "▶"
+			}
+			priorityDropdownLines = append(priorityDropdownLines, dimStyle.Render("   "+prefix+marker+" "+p))
+		}
+		priorityDropdownLines = append(priorityDropdownLines, dimStyle.Render("  ↑↓ navigate · enter select"))
+	}
+
 	lines := []string{
 		whiteStyle.Render("Create new task") + dimStyle.Render("  "+f.id),
-		dimStyle.Render("tab/shift+tab fields · enter next field · ↑↓ project ▾ open · ctrl+s create · esc cancel"),
+		dimStyle.Render("tab/shift+tab fields · enter next field · ↑↓ navigate ▾ open · ctrl+s create · esc cancel"),
 		"",
 		label(createFormTitle, "title"),
 		f.title.View(),
@@ -326,10 +468,12 @@ func (f taskCreateForm) View(w, h int) string {
 	}
 	lines = append(lines, dropdownLines...)
 	lines = append(lines,
-		label(createFormType, "type"),
-		f.taskType.View(),
-		label(createFormPriority, "priority"),
-		f.priority.View(),
+		typeField,
 	)
+	lines = append(lines, typeDropdownLines...)
+	lines = append(lines,
+		priorityField,
+	)
+	lines = append(lines, priorityDropdownLines...)
 	return strings.Join(lines, "\n")
 }
