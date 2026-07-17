@@ -67,8 +67,17 @@ export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<Enqu
       // getFilesModified failed (e.g. git diff error) — proceed with empty list
     }
 
+    // Registered-project (ElixirMergeQueue) path requires a projectPath so `gh` has a cwd.
+    // Fail fast when context is partial instead of passing undefined into the constructor.
+    if (projectId && !projectPath && !options.worktreePath) {
+      return {
+        success: false,
+        error: "projectPath is required when projectId is set (no worktreePath fallback available)",
+      };
+    }
+
     const entry = projectId
-      ? await new ElixirMergeQueue(projectId, projectPath ?? options.worktreePath).enqueue({
+      ? await new ElixirMergeQueue(projectId, projectPath ?? options.worktreePath ?? "").enqueue({
           branchName: `foreman/${taskId}`,
           taskId,
           runId,
