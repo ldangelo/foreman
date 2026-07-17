@@ -154,4 +154,26 @@ describe("agent-worker.ts — merge phase direct merge fallback", () => {
     expect(source).not.toContain("Merge queue is not implemented for this project");
     expect(source).not.toContain('error.includes("not implemented")');
   });
+
+  it("regression: on merge failure, updateTerminalRunStatus is called with status 'failed' (not 'completed')", () => {
+    // Bug guard: the failure branch used to write status:"completed" before
+    // returning success: false, masking a real merge failure as done.
+    // Find the failure-branch update block and ensure its status is "failed".
+    const start = source.indexOf("if (!mergeSucceeded)");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const slice = source.slice(start, start + 1500);
+    const updateIdx = slice.indexOf("updateTerminalRunStatus({");
+    expect(updateIdx).toBeGreaterThanOrEqual(0);
+    // Extract just the updateTerminalRunStatus({...}) block
+    const blockStart = start + updateIdx;
+    let depth = 0;
+    let blockEnd = blockStart;
+    for (let i = blockStart; i < source.length; i++) {
+      if (source[i] === "{") depth++;
+      else if (source[i] === "}") { depth--; if (depth === 0) { blockEnd = i + 1; break; } }
+    }
+    const block = source.slice(blockStart, blockEnd);
+    expect(block).toContain("status: \"failed\"");
+    expect(block).not.toContain("status: \"completed\"");
+  });
 });
