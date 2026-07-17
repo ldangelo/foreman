@@ -1617,13 +1617,34 @@ func (m model) openSelectedPR() tea.Cmd {
 		return prOpenDoneMsg{err: err}
 	})
 }
-
 func (m model) selectedTask() (Task, bool) {
 	it, ok := m.selectedItem()
-	if !ok || !it.IsTask {
+	if !ok {
 		return Task{}, false
 	}
-	return it.Task, true
+	if it.IsTask {
+		return it.Task, true
+	}
+	// A run item is still actionable for close/reset/approve — resolve to its
+	// matching task when the projection has it, otherwise synthesize a Task
+	// from the run so the action carries project_id + task_id through.
+	if it.Run.TaskID == "" {
+		return Task{}, false
+	}
+	for _, t := range m.tasks {
+		if t.TaskID == it.Run.TaskID {
+			return t, true
+		}
+	}
+	return Task{
+		TaskID:    it.Run.TaskID,
+		RunID:     it.Run.RunID,
+		ProjectID: it.Run.ProjectID,
+		Status:    it.Run.Status,
+		Title:     it.Run.Title,
+		Priority:  it.Run.Priority,
+		TaskType:  it.Run.TaskType,
+	}, true
 }
 
 func (m model) selectedReadyTask() (Task, bool) {
