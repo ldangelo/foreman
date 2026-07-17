@@ -2306,6 +2306,28 @@ async function runMergeBuiltinPhase(args: {
     log(`[MERGE] No PR number found; accepting enqueue result without polling.`);
   }
 
+  if (!mergeSucceeded && prNumber) {
+    // Final pre-failure check: the PR may have merged in the seconds after the
+    // polling loop gave up. One more check recovers the "just-after-timeout" case
+    // so the run isn't marked failed when the merge actually succeeded.
+    try {
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync(
+        "gh",
+        ["pr", "view", String(prNumber), "--json", "state,mergedAt"],
+        { cwd: pipelineProjectPath, timeout: 30_000 },
+      );
+      const prInfo = JSON.parse(stdout) as { state?: string; mergedAt?: string };
+      if (prInfo.state === "MERGED") {
+        log(`[MERGE] PR #${prNumber} merged (caught on final post-timeout check).`);
+        mergeSucceeded = true;
+        mergeError = "";
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[MERGE] Final post-timeout PR check failed: ${msg}`);
+    }
+  }
   if (!mergeSucceeded) {
     const details = mergeFailed
       ? mergeError
