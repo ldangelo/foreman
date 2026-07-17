@@ -1429,17 +1429,18 @@ func (m *model) buildItems() {
 				if !matchesTaskFilter(it, m.taskList.Search()) {
 					continue
 				}
-				// Board items have no ProjectID set by boardItemToItem; set it now
-				// so that scope filtering works and run actions (retry/reset) can use it.
-				if !it.IsTask && it.Run.ProjectID == "" && m.taskList.projectID != "" {
-					it.Run.ProjectID = m.taskList.projectID
-				}
 				filtered = append(filtered, it)
 			}
 			boardItems = filtered
 			// Replace taskList.items with board items so that click/key selection
 			// in selectTaskListItemKey finds the board item.
 			m.taskList.items = boardItems
+			// Set selected to last item: SetData leaves selected=0 (no prior selection
+			// to restore). taskListSelectKey below will update it if selectedKey
+			// is found in the new items.
+			if len(boardItems) > 0 {
+				m.taskList.selected = len(boardItems) - 1
+			}
 		} else {
 			// Client-side derivation (fallback when server board endpoint unavailable).
 			derived := m.boardFilteredItems()
@@ -1447,6 +1448,10 @@ func (m *model) buildItems() {
 			// When server returns empty columns we intentionally show an empty board.
 			if len(derived) > 0 {
 				boardItems = derived
+				m.taskList.items = boardItems
+				if len(boardItems) > 0 {
+					m.taskList.selected = len(boardItems) - 1
+				}
 			}
 		}
 		if selectedKey != "" {

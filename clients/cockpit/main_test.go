@@ -92,6 +92,7 @@ func TestClientForConfigCanForceMockBackend(t *testing.T) {
 		t.Fatalf("expected mock backend, got %T", client)
 	}
 }
+
 // TestBoardItemsInTaskList verifies that when the server provides board items,
 // taskList.items is populated with those board items so that click/key selection
 // finds the item and selectedRunnableRun can return the run for retry/reset.
@@ -154,3 +155,213 @@ func TestBoardItemsInTaskList(t *testing.T) {
 		t.Fatalf("expected run.ProjectID to be test-project, got %q", run.ProjectID)
 	}
 }
+
+// TestBoardClickSelectsItem tests the complete click-to-retry flow for board items,
+// using the real boardItemsFromColumns conversion path and verifying that a board
+// card click results in selectedRunnableRun finding the correct run with RunID and ProjectID.
+// TestBoardClickSelectsItem verifies the complete click-to-retry flow for board items:
+// after buildItems produces board items in taskList.items, clicking a board card (via
+// taskListSelectKey) must update the selection so that selectedRunnableRun() finds
+// the correct run for the 'r' (retry) action.
+// TestBoardClickSelectsItem verifies the complete click-to-retry flow for board items:
+// after buildItems produces board items in taskList.items, clicking a board card (via
+// taskListSelectKey) must update the selection so that selectedRunnableRun() finds
+// the correct run for the 'r' (retry) action.
+func TestBoardClickSelectsItem(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.taskList.SetProjectID("52ba0d80-913d-4880-871b-a81e308c34d4")
+
+	// Add runs for two board items (blocked + ready).
+	m.runs = []Run{
+		{
+			Group:     taskGroupRunning,
+			TaskID:    "foreman-abf48",
+			RunID:     "8776e630-7e9e-d311-c7a9-41a770c90147",
+			Status:    "blocked",
+			Phase:     "developer",
+			Priority:  "P1",
+			TaskType:  "feature",
+			ProjectID: "52ba0d80-913d-4880-871b-a81e308c34d4",
+		},
+		{
+			Group:     taskGroupRunning,
+			TaskID:    "foreman-xyz99",
+			RunID:     "9999e630-7e9e-d311-c7a9-41a770c90147",
+			Status:    "ready",
+			Phase:     "developer",
+			Priority:  "P2",
+			TaskType:  "feature",
+			ProjectID: "52ba0d80-913d-4880-871b-a81e308c34d4",
+		},
+	}
+
+	// Use boardItemsFromColumns (the real conversion path) with two board cards.
+	boardCols := map[string][]BoardItem{
+		"blocked": {
+			{
+				TaskID:    "foreman-abf48",
+				RunID:     "8776e630-7e9e-d311-c7a9-41a770c90147",
+				Title:     "Add phase control Pi tools",
+				Status:    "blocked",
+				Priority:  "P1",
+				TaskType:  "feature",
+				UpdatedAt: "2026-07-15T12:00:00Z",
+				Group:     "RUNNING",
+				Type:      "attention",
+				Attention: "blocked",
+			},
+		},
+		"ready": {
+			{
+				TaskID:    "foreman-xyz99",
+				RunID:     "9999e630-7e9e-d311-c7a9-41a770c90147",
+				Title:     "Another task",
+				Status:    "ready",
+				Priority:  "P2",
+				TaskType:  "feature",
+				UpdatedAt: "2026-07-15T12:00:00Z",
+				Group:     "RUNNING",
+				Type:      "attention",
+				Attention: "ready",
+			},
+		},
+	}
+	m.boardItems = boardItemsFromColumns(boardCols, m.tasks)
+
+	// Switch to board mode and build items.
+	origLayoutMode := m.config.Cockpit.Layout.Mode
+	m.config.Cockpit.Layout.Mode = layoutModeBoard
+	m.buildItems()
+	m.config.Cockpit.Layout.Mode = origLayoutMode
+
+	// After buildItems, taskList.items must contain both board items.
+	if len(m.taskList.items) != 2 {
+		t.Fatalf("expected 2 board items in taskList.items, got %d", len(m.taskList.items))
+	}
+
+	// buildItems sets selected = len(items)-1 = 1 (last item = ready item).
+	if m.taskList.selected != 1 {
+		t.Fatalf("expected buildItems to set selected=1 (last item), got %d", m.taskList.selected)
+	}
+
+	// Find the blocked item by RunID (boardCols map iteration order is random).
+	var blockedItem Item
+	var blockedIdx int
+	for i, it := range m.taskList.items {
+		if it.Run.RunID == "8776e630-7e9e-d311-c7a9-41a770c90147" {
+			blockedItem = it
+			blockedIdx = i
+			break
+		}
+	}
+	if blockedItem.Run.RunID == "" {
+		t.Fatal("blocked board item not found in taskList.items")
+	}
+	if blockedItem.IsTask {
+		t.Fatalf("expected run-type board item, got task-type: %s", blockedItem.Task.TaskID)
+	}
+	if blockedItem.Run.ProjectID != "52ba0d80-913d-4880-871b-a81e308c34d4" {
+		t.Fatalf("expected ProjectID 52ba0d80..., got %q", blockedItem.Run.ProjectID)
+	}
+
+	// Simulate clicking the blocked board card: taskListSelectKey finds it and updates selection.
+	key := itemKey(blockedItem)
+	if key == "" {
+		t.Fatal("itemKey returned empty for board item")
+	}
+
+	// buildItems sets selected = len(items)-1 = 1 (last item). We want to test a real
+	// click transition, not the no-op path (clicking the already-selected item).
+	// If blockedIdx == selected, force a prior selection to a different index first.
+	if blockedIdx == m.taskList.selected && len(m.taskList.items) > 1 {
+		otherIdx := (blockedIdx + 1) % len(m.taskList.items)
+		m.taskList.selected = otherIdx
+	}
+
+	// taskListSelectKey must find the key and return true (real selection change).
+	found := m.taskListSelectKey(key)
+	if !found {
+		t.Fatalf("taskListSelectKey(%q) returned false — board item not found in taskList.items", key)
+	}
+	if m.taskList.selected != blockedIdx {
+		t.Fatalf("expected taskList.selected=%d after selecting blocked item, got %d", blockedIdx, m.taskList.selected)
+	}
+
+	// selectedRunnableRun() is what the 'r' (retry) action calls.
+	// It must find the run for the selected board item.
+	run, ok := m.selectedRunnableRun()
+	if !ok {
+		t.Fatal("selectedRunnableRun returned false for selected board attention item — 'retry: no run selected'")
+	}
+	if run.RunID != "8776e630-7e9e-d311-c7a9-41a770c90147" {
+		t.Fatalf("expected run.RunID 8776e630..., got %s", run.RunID)
+	}
+	if run.ProjectID != "52ba0d80-913d-4880-871b-a81e308c34d4" {
+		t.Fatalf("expected run.ProjectID 52ba0d80..., got %q", run.ProjectID)
+	}
+}
+
+// TestBoardDerivedItemsSelectedPath verifies the m.boardItems == nil derivation path:
+// when board mode is on but m.boardItems is nil, buildItems uses boardFilteredItems()
+// (client-side grouping) and must also set selected = len(items)-1 so the last
+// derived board item is selected.
+func TestBoardDerivedItemsSelectedPath(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.taskList.SetProjectID("test-project")
+
+	// Add runs that will be grouped by boardFilteredItems (derived board items).
+	m.runs = []Run{
+		{
+			Group:     taskGroupRunning,
+			TaskID:    "foreman-run1",
+			RunID:     "run-id-1",
+			Status:    "blocked",
+			Phase:     "developer",
+			Priority:  "P1",
+			TaskType:  "feature",
+			ProjectID: "test-project",
+		},
+		{
+			Group:     taskGroupRunning,
+			TaskID:    "foreman-run2",
+			RunID:     "run-id-2",
+			Status:    "ready",
+			Phase:     "developer",
+			Priority:  "P2",
+			TaskType:  "feature",
+			ProjectID: "test-project",
+		},
+	}
+	// m.boardItems is nil (no server board data), so buildItems uses boardFilteredItems.
+	// Verify boardItemsFromServer returns the derived items.
+	origLayoutMode := m.config.Cockpit.Layout.Mode
+	m.config.Cockpit.Layout.Mode = layoutModeBoard
+	m.buildItems()
+	m.config.Cockpit.Layout.Mode = origLayoutMode
+
+	// boardFilteredItems produces run items from m.runs.
+	// With scope=global (projectID="" from newModel) and no search filter,
+	// both runs pass filtering, giving 2 items.
+	if len(m.taskList.items) < 1 {
+		t.Fatalf("expected at least 1 item in taskList.items from derived board items, got %d", len(m.taskList.items))
+	}
+
+	// selected must be set to last item (len-1).
+	expectedSelected := len(m.taskList.items) - 1
+	if m.taskList.selected != expectedSelected {
+		t.Fatalf("expected selected=%d (last derived item), got %d", expectedSelected, m.taskList.selected)
+	}
+
+	// The last item must be a run item (not task) with correct ProjectID.
+	lastIt := m.taskList.items[expectedSelected]
+	if lastIt.IsTask {
+		t.Fatalf("expected last derived item to be a run, got task: %s", lastIt.Task.TaskID)
+	}
+	if lastIt.Run.ProjectID != "test-project" {
+		t.Fatalf("expected ProjectID test-project, got %q", lastIt.Run.ProjectID)
+	}
+}
+
+
+
+
