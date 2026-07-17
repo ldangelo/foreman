@@ -101,7 +101,11 @@ The fallback task list is organized as a gh-dash-style section strip with counts
   indicating their rows are openable in nvim. (Q4)
 - **Drill-down body** — content for the active tab, scoped to the selected run
   (active or past). `summary` is default and needs no fetch beyond the run
-  projection.
+  projection. The summary tab renders all available run fields as key-value rows:
+  title, current phase/status, verdict, elapsed time, created time, message/event
+  counts, PR state, diff stats (+/-), checks summary (✓/✗/●), attention indicator,
+  and the pre-existing worktree/branch/last fields. Fields with empty values are
+  omitted. No additional API calls are required.
 - **Action bar** — shows the exact resolved command and open mode for openable
   rows, and also exposes run/task/PR action rows. Run actions include
   attach/retry/reset, `omp`, `gh dash`, and `gh enhance` for both keyboard and
