@@ -127,34 +127,31 @@ describe("run.ts — still exports autoMerge (backwards compat)", () => {
   });
 });
 
-describe("agent-worker.ts — stub queue fallback", () => {
+describe("agent-worker.ts — merge phase direct merge fallback", () => {
   const source = readFileSync(WORKER_SRC, "utf-8");
 
-  it("detects stub merge queue by checking for 'not implemented' in error field", () => {
-    expect(source).toContain('enqueueResult.entry.error.includes("not implemented")');
-  });
-
-  it("falls back to gh pr merge when stub queue is detected and PR number exists", () => {
-    expect(source).toContain("Queue is stubbed; using direct gh pr merge");
-    expect(source).toContain('"pr", "merge", String(prNumber), "--admin", "--squash"');
-  });
-
-  it("provides clear error message when stub queue has no PR number", () => {
-    expect(source).toContain('Merge queue is not implemented for this project');
-    expect(source).toContain("Register the project with 'foreman project register'");
-  });
-
-  it("polls for PR merge when queue is real (not stub)", () => {
+  it("polls for PR merge after enqueueing", () => {
     expect(source).toContain("Waiting for PR #${prNumber} to merge");
     expect(source).toContain("MERGE_POLL_INTERVAL_MS");
     expect(source).toContain("MERGE_POLL_TIMEOUT_MS");
   });
 
-  it("handles already-merged PR in stub fallback path", () => {
-    expect(source).toContain("PR #${prNumber} was already merged");
+  it("falls back to direct gh pr merge --admin --squash when polling times out", () => {
+    expect(source).toContain('"pr", "merge", String(prNumber), "--admin", "--squash"');
   });
 
-  it("handles closed-without-merge PR in stub fallback path", () => {
-    expect(source).toContain("PR #${prNumber} was closed without merging");
+  it("runs a final pre-failure state check after the post-timeout merge attempt", () => {
+    expect(source).toContain("caught on final post-timeout check");
+  });
+
+  it("marks the run failed only when polling times out AND the post-timeout merge fails AND the PR is not already merged", () => {
+    expect(source).toContain("Merge did not complete within the ${MERGE_POLL_TIMEOUT_MS / 1000}s polling timeout");
+  });
+
+  it("does not reference stub queue or 'not implemented' error (the stub path is gone)", () => {
+    expect(source).not.toContain("isStubQueue");
+    expect(source).not.toContain("Queue is stubbed");
+    expect(source).not.toContain("Merge queue is not implemented for this project");
+    expect(source).not.toContain('error.includes("not implemented")');
   });
 });

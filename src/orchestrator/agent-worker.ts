@@ -2211,57 +2211,12 @@ async function runMergeBuiltinPhase(args: {
     await writeMergeReport({ config, status: "FAIL", details, prNumber });
     return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
   }
-  const isStubQueue =
-    enqueueResult.entry?.error != null &&
-    enqueueResult.entry.error.includes("not implemented");
-
-  // When the merge queue is a stub (ElixirMergeQueue not wired to a real backend),
-  // fall back to a direct gh pr merge. This avoids the 5-min polling timeout.
-  if (isStubQueue && prNumber) {
-    log(`[MERGE] Queue is stubbed; using direct gh pr merge for PR #${prNumber}.`);
-    try {
-      const execFileAsync = promisify(execFile);
-      // Brief wait for any pending checks to settle
-      await new Promise((r) => setTimeout(r, 5_000));
-      const { stdout: mergeCheck } = await execFileAsync("gh", [
-        "pr", "view", String(prNumber), "--json", "state,mergeable", "--jq", ".state + \" \" + (.mergeable // \"unknown\")",
-      ], { cwd: pipelineProjectPath, timeout: 30_000 });
-      const [prState] = mergeCheck.trim().split(" ");
-      if (prState === "MERGED") {
-        log(`[MERGE] PR #${prNumber} was already merged.`);
-        await writeMergeReport({ config, status: "SUCCESS", details: `PR #${prNumber} already merged.`, prNumber });
-        return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0 };
-      }
-      if (prState === "CLOSED") {
-        const details = `PR #${prNumber} was closed without merging`;
-        await writeMergeReport({ config, status: "FAIL", details, prNumber });
-        return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
-      }
-      log(`[MERGE] Attempting gh pr merge #${prNumber}…`);
-      const { stdout: mergeResult } = await execFileAsync("gh", [
-        "pr", "merge", String(prNumber), "--admin", "--squash",
-      ], { cwd: pipelineProjectPath, timeout: 60_000 });
-      log(`[MERGE] gh pr merge: ${mergeResult.trim()}`);
-      await writeMergeReport({ config, status: "SUCCESS", details: `PR #${prNumber} merged via gh pr merge.`, prNumber });
-      return { success: true, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0 };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[MERGE] Direct merge failed: ${msg}`);
-      const details = `Merge queue stubbed; gh pr merge also failed: ${msg}`;
-      await writeMergeReport({ config, status: "FAIL", details, prNumber });
-      return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
-    }
-  }
-
-  // Stub queue with no PR number — nothing to merge and no queue to process.
-  if (isStubQueue) {
-    const details =
-      "Merge queue is not implemented for this project (ElixirMergeQueue is a stub). " +
-      "Register the project with 'foreman project register' or configure a merge queue in .foreman/config.yaml.";
-    log(`[MERGE] ${details}`);
-    await writeMergeReport({ config, status: "FAIL", details, prNumber });
-    return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0, error: details, outputText: details };
-  }
+  // Single merge path: poll for the queue to merge the PR. If the polling loop
+  // times out, fall back to a direct gh pr merge --admin --squash (the agent is
+  // itself the actor that can admin-merge). There is no separate "stub queue"
+  // branch — if ElixirMergeQueue is misconfigured, enqueue above returns
+  // success=false and we already exited with an error. The combination of
+  // polling + post-timeout direct merge is what makes this resilient.
 
   sendMail(agentMailClient, "refinery", "branch-ready", {
     taskId: config.taskId,
@@ -2306,7 +2261,25 @@ async function runMergeBuiltinPhase(args: {
     log(`[MERGE] No PR number found; accepting enqueue result without polling.`);
   }
 
-  if (!mergeSucceeded && prNumber) {
+  // After polling: only on a genuine timeout (mergeFailed is false). A CLOSED
+  // PR is already terminal — don't waste a direct merge attempt on it. The
+  // agent-worker is itself the actor that can admin-merge, so a busy merge
+  // queue doesn't strand the run — we fall back and let gh pr merge bypass it.
+  if (!mergeSucceeded && !mergeFailed && prNumber) {
+    log(`[MERGE] Polling did not catch the merge in ${MERGE_POLL_TIMEOUT_MS / 1000}s; attempting direct gh pr merge --admin --squash.`);
+    try {
+      const execFileAsync = promisify(execFile);
+      const { stdout: mergeResult } = await execFileAsync(
+        "gh",
+        ["pr", "merge", String(prNumber), "--admin", "--squash"],
+        { cwd: pipelineProjectPath, timeout: 60_000 },
+      );
+      log(`[MERGE] gh pr merge (post-timeout fallback): ${mergeResult.trim()}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[MERGE] Post-timeout gh pr merge failed (will check state): ${msg}`);
+    }
+
     // Final pre-failure check: the PR may have merged in the seconds after the
     // polling loop gave up. One more check recovers the "just-after-timeout" case
     // so the run isn't marked failed when the merge actually succeeded.
