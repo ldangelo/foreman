@@ -403,7 +403,7 @@ describe("foreman run startup refinery lookup", () => {
 
     await runCommand.parseAsync(["--project-path", projectPath, "--no-watch"], { from: "user" });
 
-    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1", "/mock/project");
     expect(MockMergeQueue).not.toHaveBeenCalled();
   });
 

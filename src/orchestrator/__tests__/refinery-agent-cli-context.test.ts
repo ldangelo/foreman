@@ -27,7 +27,7 @@ const { previousFeatureFlag, mockResolveRepoRootProjectPath, mockListRegisteredP
     this.db = db;
   });
 
-  const MockPostgresMergeQueue = vi.fn(function (this: Record<string, unknown>, projectId: string) {
+  const MockPostgresMergeQueue = vi.fn(function (this: Record<string, unknown>, projectId: string, _projectPath: string) {
     this.projectId = projectId;
   });
 
@@ -98,7 +98,7 @@ describe("runRefineCli bootstrap context", () => {
     expect(MockForemanStore.forProject).toHaveBeenCalledWith("/repo/canonical");
     expect(mockVcsCreate).toHaveBeenCalledWith({ backend: "auto" }, "/repo/canonical");
     expect(mockPostgresStoreForProject).toHaveBeenCalledWith({ id: "registered-id", path: "/repo/canonical", name: "test" });
-    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("registered-id");
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("registered-id", "/repo/canonical");
     expect(MockRefineryAgent).toHaveBeenCalledWith(
       expect.any(Object),
       expect.any(Object),

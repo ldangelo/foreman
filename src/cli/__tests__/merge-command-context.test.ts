@@ -214,7 +214,7 @@ describe("merge command registered context", () => {
         runLookup: MockPostgresStore.mock.results[0].value,
       }),
     );
-    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1", "/canonical/project");
     expect(MockMergeQueue).not.toHaveBeenCalled();
     expect(MockMergeCostTracker).not.toHaveBeenCalled();
     expect(MockPostgresMergeCostTracker).not.toHaveBeenCalled();
@@ -226,7 +226,7 @@ describe("merge command registered context", () => {
 
     await expect(runCommand([])).resolves.toBeUndefined();
 
-    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1", "/mock/project");
     expect(MockMergeQueue).not.toHaveBeenCalled();
     expect(MockRefinery).toHaveBeenCalled();
   });

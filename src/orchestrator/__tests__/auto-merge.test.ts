@@ -353,7 +353,7 @@ describe("autoMerge() — registered read seam", () => {
     }));
 
     expect(localProjectLookup).not.toHaveBeenCalled();
-    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1");
+    expect(MockPostgresMergeQueue).toHaveBeenCalledWith("proj-1", "/mock/project");
     expect(MockMergeQueue).not.toHaveBeenCalled();
     expect(MockRefinery).toHaveBeenCalledWith(
       expect.anything(),

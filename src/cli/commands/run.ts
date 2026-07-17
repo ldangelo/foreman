@@ -376,7 +376,7 @@ async function runRefineryMerge(
 
   try {
     const mergeQueue = registered
-      ? new ElixirMergeQueue(registered.id)
+      ? new ElixirMergeQueue(registered.id, projectPath)
       : wrapLocalRefineryQueue(new MergeQueue(store.getDb()));
     const vcsBackend = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
     const agent = new RefineryAgent(mergeQueue, vcsBackend, projectPath, {}, runLookup);

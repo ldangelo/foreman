@@ -118,7 +118,7 @@ export const doctorCommand = new Command("doctor")
       const registered = await findRegisteredProjectByPath(projectPath);
       const mq = new MergeQueue(store.getDb());
       const runLookup = registered ? ElixirCliStore.forProject(registered) : undefined;
-      const registeredMergeQueue = registered ? new ElixirMergeQueue(registered.id) : undefined;
+      const registeredMergeQueue = registered ? new ElixirMergeQueue(registered.id, projectPath) : undefined;
       const { taskClient, backendType } = await createTaskClient(projectPath);
       const doctor = new Doctor(store, projectPath, mq, taskClient, undefined, registeredMergeQueue, runLookup, backendType);
 

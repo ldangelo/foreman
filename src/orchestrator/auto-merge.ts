@@ -212,7 +212,7 @@ export async function autoMerge(opts: AutoMergeOpts): Promise<AutoMergeResult> {
   }
 
   const mq: MergeQueueLike = registeredProjectId
-    ? new ElixirMergeQueue(registeredProjectId)
+    ? new ElixirMergeQueue(registeredProjectId, projectPath)
     : wrapLocalMergeQueue(new MergeQueue(store.getDb()), store, projectPath);
   const refinery = new Refinery(store, taskClient, projectPath, vcs, {
     runLookup: readLookup,

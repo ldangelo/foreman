@@ -25,6 +25,8 @@ export interface EnqueueOptions {
   db?: SqlDbLike;
   /** Optional daemon/Postgres project id for queue writes. */
   projectId?: string;
+  /** The project path for gh commands (defaults to worktreePath if not provided). */
+  projectPath?: string;
   /** The task ID for this task. */
   taskId: string;
   /** The run ID for this pipeline execution. */
@@ -54,7 +56,7 @@ export interface EnqueueResult {
  * This ensures finalization is never blocked by merge queue failures.
  */
 export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<EnqueueResult> {
-  const { db, projectId, taskId, runId, operation = "auto_merge", getFilesModified } = options;
+  const { db, projectId, projectPath, taskId, runId, operation = "auto_merge", getFilesModified } = options;
 
   try {
     // Collect modified files — tolerate failures
@@ -66,7 +68,7 @@ export async function enqueueToMergeQueue(options: EnqueueOptions): Promise<Enqu
     }
 
     const entry = projectId
-      ? await new ElixirMergeQueue(projectId).enqueue({
+      ? await new ElixirMergeQueue(projectId, projectPath ?? options.worktreePath).enqueue({
           branchName: `foreman/${taskId}`,
           taskId,
           runId,

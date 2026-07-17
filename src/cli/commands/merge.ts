@@ -117,7 +117,7 @@ export const mergeCommand = new Command("merge")
         })
         : new Refinery(store, tasks, projectPath, vcs);
       const mq: MergeQueueLike = registered
-        ? new ElixirMergeQueue(registered.id)
+        ? new ElixirMergeQueue(registered.id, projectPath)
         : wrapLocalMergeQueue(new MergeQueue(store.getDb()), store, projectPath);
 
       const project = registered ?? store.getProjectByPath(projectPath);

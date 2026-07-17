@@ -250,6 +250,7 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
       const enqueueResult = await enqueueToMergeQueue({
         ...(enqueueStore ? { db: enqueueStore.getDb() } : {}),
         projectId: config.projectId,
+        projectPath: storeProjectPath,
         taskId,
         runId: config.runId,
         worktreePath,
