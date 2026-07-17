@@ -402,3 +402,40 @@ func TestUppercasePKeyOpensPlainOmpWithoutTriageBrief(t *testing.T) {
 		t.Fatalf("expected P not to write a triage brief, stat err=%v", err)
 	}
 }
+
+// Regression: "no worktree available for omp" when the run projection snapshot
+// had an empty worktree_path but the canonical worktree dir was still mounted
+// on disk. resolveRunWorktree should fall back to that location and the omp
+// command should run there.
+func TestOmpFallsBackToCanonicalWorktreeWhenProjectedPathEmpty(t *testing.T) {
+	worktree := t.TempDir()
+	t.Setenv("HOME", worktree) // used by expandHome via os.UserHomeDir in fallback path
+	projectID := "52ba0d80-913d-4880-871b-a81e308c34d4"
+	taskID := "foreman-ff05f"
+
+	// Create the canonical worktree dir the fallback expects.
+	canonical := filepath.Join(worktree, ".foreman", "worktrees", projectID, taskID)
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := defaultConfig().Integrations.Omp
+	run := Run{
+		TaskID: taskID, RunID: "run-1",
+		ProjectID: projectID,
+		// No Worktree field — projection snapshot had no worktree_path.
+		Status: "failed",
+	}
+
+	if _, err := resolveOmpMode(cfg, run, fakeTools{"omp": true}, nil); err != nil {
+		t.Fatalf("expected resolveOmpMode to fall back to canonical worktree, got: %v", err)
+	}
+
+	inline, err := ompInlineCommand(run, "", cfg)
+	if err != nil {
+		t.Fatalf("expected ompInlineCommand to use fallback, got: %v", err)
+	}
+	if inline.Dir != expandHome(canonical) {
+		t.Fatalf("expected ompInlineCommand dir=%q, got %q", expandHome(canonical), inline.Dir)
+	}
+}

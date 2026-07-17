@@ -18,6 +18,18 @@ type ompDoneMsg struct {
 	plain bool
 }
 
+// resolveRunWorktree returns the most usable path for the run, falling back to
+// the canonical worktree location on disk (which often exists long after the
+// projection snapshot has aged out — the user's complaint was "no worktree
+// available for omp" when /Users/ldangelo/.foreman/worktrees/<project>/<task>
+// was still mounted).
+func resolveRunWorktree(run Run) string {
+	if wt := strings.TrimSpace(run.Worktree); wt != "" && wt != "(cleaned)" {
+		return wt
+	}
+	return fallbackRunWorktree(run.ProjectID, run.TaskID)
+}
+
 func resolveOmpMode(cfg OmpConfig, run Run, tools ToolResolver, env []string) (string, error) {
 	if normalizeEnable(cfg.Enable) == "off" {
 		return "", errToolDisabled("omp")
@@ -29,9 +41,9 @@ func resolveOmpMode(cfg OmpConfig, run Run, tools ToolResolver, env []string) (s
 	if !tools.Available(cmd) {
 		return "", errToolMissing("omp", "omp.sh")
 	}
-	worktree := strings.TrimSpace(run.Worktree)
-	if worktree == "" || worktree == "(cleaned)" {
-		return "", errors.New("no worktree available for omp")
+	worktree := resolveRunWorktree(run)
+	if worktree == "" {
+		return "", fmt.Errorf("no worktree available for omp (task=%s, project=%s)", run.TaskID, run.ProjectID)
 	}
 	if runHasActiveWorker(run) {
 		return "", errors.New("run is active — reset/stop it before attaching omp")
@@ -98,9 +110,9 @@ func envHas(env []string, prefix string) bool {
 }
 
 func ompInlineCommand(run Run, brief string, cfg OmpConfig) (*exec.Cmd, error) {
-	wt := strings.TrimSpace(run.Worktree)
-	if wt == "" || wt == "(cleaned)" {
-		return nil, errors.New("no worktree available for omp")
+	wt := resolveRunWorktree(run)
+	if wt == "" {
+		return nil, fmt.Errorf("no worktree available for omp (task=%s, project=%s)", run.TaskID, run.ProjectID)
 	}
 	cmd := exec.Command("bash", "-lc", ompShellLine(run, brief, cfg, true))
 	cmd.Dir = expandHome(wt)
@@ -111,9 +123,9 @@ func ompInlineCommand(run Run, brief string, cfg OmpConfig) (*exec.Cmd, error) {
 }
 
 func ompTmuxCommand(run Run, brief string, cfg OmpConfig) (*exec.Cmd, error) {
-	wt := strings.TrimSpace(run.Worktree)
-	if wt == "" || wt == "(cleaned)" {
-		return nil, errors.New("no worktree available for omp")
+	wt := resolveRunWorktree(run)
+	if wt == "" {
+		return nil, fmt.Errorf("no worktree available for omp (task=%s, project=%s)", run.TaskID, run.ProjectID)
 	}
 	inner := ompShellLine(run, brief, cfg, !cfg.KeepShell)
 	if cfg.KeepShell {
