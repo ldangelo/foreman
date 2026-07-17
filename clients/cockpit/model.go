@@ -1417,24 +1417,20 @@ func (m *model) buildItems() {
 			// on top but preserve the server's column assignments.
 			all := m.boardItemsFromServer()
 			filtered := make([]Item, 0, len(all))
-			for _, it := range all {
+			for i := range all {
+				it := &all[i]
 				// Set ProjectID on board run items before scope filtering so that
 				// matchesScope sees the correct project and run actions have it available.
 				if !it.IsTask && it.Run.ProjectID == "" && m.taskList.projectID != "" {
 					it.Run.ProjectID = m.taskList.projectID
 				}
-				if !m.taskList.matchesScope(it) {
+				if !m.taskList.matchesScope(*it) {
 					continue
 				}
-				if !matchesTaskFilter(it, m.taskList.Search()) {
+				if !matchesTaskFilter(*it, m.taskList.Search()) {
 					continue
 				}
-				// Board items have no ProjectID set by boardItemToItem; set it now
-				// so that scope filtering works and run actions (retry/reset) can use it.
-				if !it.IsTask && it.Run.ProjectID == "" && m.taskList.projectID != "" {
-					it.Run.ProjectID = m.taskList.projectID
-				}
-				filtered = append(filtered, it)
+				filtered = append(filtered, *it)
 			}
 			boardItems = filtered
 			// Replace taskList.items with board items so that click/key selection
