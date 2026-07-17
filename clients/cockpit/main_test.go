@@ -367,3 +367,43 @@ func TestBoardDerivedItemsSelectedPath(t *testing.T) {
 
 
 
+func TestDataLoadingGuardPreventsOverlappingRefreshes(t *testing.T) {
+	// Bug guard: every tickMsg fires loadData. If we don't gate on a flag, a
+	// slow API backlogs one request per 2s tick and keypresses lag.
+	m := newModel(NewMockClient())
+
+	// 1. newModel must initialize dataLoading=true so the first tick (2s after
+	//    Init) doesn't double-dispatch while the initial loadData is still in flight.
+	if !m.dataLoading {
+		t.Fatalf("expected newModel to initialize dataLoading=true, got false")
+	}
+
+	// 2. startDataLoad(false) on an in-flight load returns nil (skip the tick's reload).
+	if cmd := m.startDataLoad(false); cmd != nil {
+		t.Fatalf("expected startDataLoad(false) to return nil while dataLoading=true, got %T", cmd)
+	}
+	if !m.dataLoading {
+		t.Fatalf("expected dataLoading to remain true after skipped reload")
+	}
+
+	// 3. startDataLoad(true) on an in-flight load still dispatches (force=true for
+	//    action reloads that must refresh).
+	if cmd := m.startDataLoad(true); cmd == nil {
+		t.Fatalf("expected startDataLoad(true) to return loadData even when dataLoading=true, got nil")
+	}
+	if !m.dataLoading {
+		t.Fatalf("expected dataLoading to remain true after force reload")
+	}
+
+	// 4. dataMsg clears the flag so subsequent ticks can refresh.
+	updated, _ := m.Update(dataMsg{runs: nil, tasks: nil, metrics: Metrics{}, boardColumns: nil, errors: nil})
+	updatedM := updated.(model)
+	if updatedM.dataLoading {
+		t.Fatalf("expected dataMsg to clear dataLoading, got true")
+	}
+
+	// 5. With the flag cleared, a non-force reload dispatches again.
+	if cmd := updatedM.startDataLoad(false); cmd == nil {
+		t.Fatalf("expected startDataLoad(false) to dispatch after dataLoading cleared, got nil")
+	}
+}

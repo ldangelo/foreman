@@ -41,7 +41,9 @@ type model struct {
 	pr             PRStatus
 	metrics        Metrics
 	metricsLoading bool
-
+	// dataLoading guards against overlapping 4-endpoint refreshes. Every tick
+	// fires loadData; if the API is slow, the queue grows and keypresses lag.
+	dataLoading    bool
 	diffPreviews   map[string]DiffPreview
 	diffLoading    map[string]bool
 	liveSpinner    spinner.Model
@@ -118,6 +120,9 @@ func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 		tab:            0,
 		diffPreviews:   map[string]DiffPreview{},
 		diffLoading:    map[string]bool{},
+		// Init() schedules the first loadData; mark in-flight so the 2s tick
+		// doesn't double-dispatch while it's running.
+		dataLoading: true,
 	}
 }
 
@@ -139,6 +144,17 @@ func loadData(c Client) tea.Cmd {
 	}
 }
 
+// startDataLoad returns the loadData Cmd, guarding against overlapping refreshes.
+// Pass force=true for paths that must refresh (action reloads). Tick uses
+// force=false so a slow API doesn't backlog a new request every 2s.
+func (m *model) startDataLoad(force bool) tea.Cmd {
+	if m.dataLoading && !force {
+		return nil
+	}
+	m.dataLoading = true
+	return loadData(m.client)
+}
+
 const mouseWheelStep = 3
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -154,7 +170,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 	case tickMsg:
 		m.metricsLoading = true
-		return m, tea.Batch(loadData(m.client), tick(), m.syncMotionCmd())
+		// Skip the refresh if a previous loadData is still in flight; just reschedule.
+		// The previous in-flight loadData will clear dataLoading on its dataMsg reply.
+		return m, tea.Batch(m.startDataLoad(false), tick(), m.syncMotionCmd())
 
 	case spinner.TickMsg:
 		if !m.shouldAnimate() {
@@ -181,6 +199,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		hadViewerRows := m.detailUsesViewer() && m.rowCount() > 0
 		m.runs, m.tasks, m.metrics = msg.runs, msg.tasks, msg.metrics
 		m.metricsLoading = false
+		// Mark the in-flight refresh complete so the next tick can fire.
+		m.dataLoading = false
 		m.taskList.SetProjectID(msg.projectID)
 		m.boardItems = nil // clear until buildItems processes them
 		if msg.boardColumns != nil {
@@ -223,7 +243,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.notice = label + " " + msg.action
-		return m, loadData(m.client)
+		return m, m.startDataLoad(true)
 	case runActionDoneMsg:
 		label := msg.taskID
 		if label == "" {
@@ -237,7 +257,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.notice = label + " " + msg.action
-		return m, loadData(m.client)
+		return m, m.startDataLoad(true)
 
 	case taskCopyDoneMsg:
 		if msg.err != nil {
