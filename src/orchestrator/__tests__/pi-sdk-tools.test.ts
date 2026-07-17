@@ -693,9 +693,7 @@ describe("Phase control tools", () => {
       // controlOutcome from reaching the runner. Mail is best-effort, so
       // the typed control signal must still come through.
       const context = makeContext();
-      const mailClient = {
-        sendMessage: vi.fn().mockRejectedValue(new Error("smtp down")),
-      };
+      const mailClient = makeMailClient(() => Promise.reject(new Error("smtp down")));
       const tool = createAskOperatorTool(mailClient, context);
 
       const result = await tool.execute("call-1", { question: "Need guidance" }, undefined, undefined, {} as never);
