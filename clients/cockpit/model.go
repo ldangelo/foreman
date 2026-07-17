@@ -1449,8 +1449,12 @@ func (m *model) buildItems() {
 			if len(derived) > 0 {
 				boardItems = derived
 				m.taskList.items = boardItems
-				if len(boardItems) > 0 {
-					m.taskList.selected = len(boardItems) - 1
+				// Restore prior selection by key when server has no board data
+				// (same pattern as SetData). Only default to 0 if no prior key.
+				if selectedKey != "" {
+					m.taskListSelectKey(selectedKey)
+				} else if len(boardItems) > 0 {
+					m.taskList.selected = 0
 				}
 			}
 		}
