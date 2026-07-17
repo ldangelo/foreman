@@ -803,6 +803,10 @@ interface PhaseResult {
   traceWarnings?: string[];
   commandHonored?: boolean;
   stopPipelineSuccess?: boolean;
+  controlOutcome?: {
+    type: "ASK_OPERATOR" | "ABORTED" | "NEEDS_RETRY";
+    [key: string]: unknown;
+  };
 }
 
 /**
@@ -1052,6 +1056,7 @@ async function runPhase(
         traceMarkdownFile: phaseResult.traceMarkdownFile,
         traceWarnings: phaseResult.traceWarnings,
         commandHonored: phaseResult.commandHonored,
+        controlOutcome: phaseResult.controlOutcome,
       };
     } else {
       const reason = phaseResult.errorMessage ?? "Pi agent ended without success";
@@ -1069,6 +1074,7 @@ async function runPhase(
         traceMarkdownFile: phaseResult.traceMarkdownFile,
         traceWarnings: phaseResult.traceWarnings,
         commandHonored: phaseResult.commandHonored,
+        controlOutcome: phaseResult.controlOutcome,
       };
     }
   } catch (err: unknown) {

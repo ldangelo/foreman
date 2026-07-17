@@ -21,6 +21,24 @@ import { collectPrReviewContext, collectPrWaitSnapshot, isPrWaitStatusReady, sum
 // Narrow interface for run status queries (getRun + getRunProgress)
 export type RunStatusReader = Pick<ForemanStore, "getRun" | "getRunProgress">;
 
+/**
+ * Control outcomes for phase control tools.
+ * These signal the executor to pause, abort, or requeue the phase.
+ */
+export type ControlOutcome = 
+  | { type: "ASK_OPERATOR"; question: string; context: string | null }
+  | { type: "ABORTED"; reason: string; suggestion: string | null }
+  | { type: "NEEDS_RETRY"; reason: string; attemptedApproach: string | null; suggestedNextStep: string | null };
+
+/**
+ * Extended tool result with optional control outcome for phase control tools.
+ */
+export interface ToolResultWithControl {
+  content: Array<{ type: "text"; text: string }>;
+  details: Record<string, unknown>;
+  controlOutcome?: ControlOutcome;
+}
+
 export interface ForemanToolContext {
   phase: string;
   runId: string;
@@ -342,7 +360,7 @@ export function createAskOperatorTool(mailClient: AgentMailClient | null, contex
     promptSnippet: "Call ask_operator when progress requires operator input or a judgment call.",
     promptGuidelines: ["Use ask_operator to pause and request operator guidance; do not guess or proceed without input."],
     parameters: AskOperatorParams,
-    async execute(_toolCallId: string, params: Static<typeof AskOperatorParams>) {
+    async execute(_toolCallId: string, params: Static<typeof AskOperatorParams>): Promise<ToolResultWithControl> {
       await ensureReportDir(context);
       const request = {
         question: params.question,
@@ -356,7 +374,11 @@ export function createAskOperatorTool(mailClient: AgentMailClient | null, contex
       await writeFile(safeArtifactPath(context, "ASK_OPERATOR.md"), `# Operator Request\n\n- Task: ${context.taskTitle}\n- Phase: ${context.phase}\n- Question: ${params.question}\n${params.context ? `\n## Context\n${params.context}\n` : ""}\n`);
       if (mailClient) await mailClient.sendMessage("foreman", "ask-operator", safeJson(request));
       await appendToolLog(context, `ask_operator question=${params.question}`);
-      return { content: [{ type: "text" as const, text: `Operator request sent: ${params.question}` }], details: request };
+      return {
+        content: [{ type: "text" as const, text: `Operator request sent: ${params.question}` }],
+        details: request,
+        controlOutcome: { type: "ASK_OPERATOR", question: params.question, context: params.context ?? null },
+      } as ToolResultWithControl;
     },
   } as ToolDefinition;
 }
@@ -394,7 +416,11 @@ export function createAbortPhaseTool(mailClient: AgentMailClient | null, context
       await writeFile(safeArtifactPath(context, "ABORTED.md"), `# Aborted: ${context.taskTitle}\n\n- Phase: ${context.phase}\n- Reason: ${params.reason}\n${params.suggestion ? `\n## Suggested Remediation\n${params.suggestion}\n` : ""}\n`);
       if (mailClient) await mailClient.sendMessage("foreman", "phase-abort", safeJson(abort));
       await appendToolLog(context, `abort_phase reason=${params.reason}`);
-      return { content: [{ type: "text" as const, text: `Phase aborted: ${params.reason}` }], details: abort };
+      return {
+        content: [{ type: "text" as const, text: `Phase aborted: ${params.reason}` }],
+        details: abort,
+        controlOutcome: { type: "ABORTED", reason: params.reason, suggestion: params.suggestion ?? null },
+      } as ToolResultWithControl;
     },
   } as ToolDefinition;
 }
@@ -434,7 +460,16 @@ export function createNeedsRetryTool(mailClient: AgentMailClient | null, context
       await writeFile(safeArtifactPath(context, "NEEDS_RETRY.md"), `# Retry Requested\n\n- Task: ${context.taskTitle}\n- Phase: ${context.phase}\n- Reason: ${params.reason}\n${params.attemptedApproach ? `\n## Attempted Approach\n${params.attemptedApproach}\n` : ""}${params.suggestedNextStep ? `\n## Suggested Next Step\n${params.suggestedNextStep}\n` : ""}\n`);
       if (mailClient) await mailClient.sendMessage("foreman", "needs-retry", safeJson(retry));
       await appendToolLog(context, `needs_retry reason=${params.reason}`);
-      return { content: [{ type: "text" as const, text: `Retry requested: ${params.reason}` }], details: retry };
+      return {
+        content: [{ type: "text" as const, text: `Retry requested: ${params.reason}` }],
+        details: retry,
+        controlOutcome: {
+          type: "NEEDS_RETRY",
+          reason: params.reason,
+          attemptedApproach: params.attemptedApproach ?? null,
+          suggestedNextStep: params.suggestedNextStep ?? null,
+        },
+      } as ToolResultWithControl;
     },
   } as ToolDefinition;
 }

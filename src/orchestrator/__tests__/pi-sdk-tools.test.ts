@@ -648,6 +648,12 @@ describe("Phase control tools", () => {
       expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "ask-operator", expect.stringContaining("Which approach should I take?"));
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Operator request sent") }));
       expect((result.details as Record<string, unknown>).phase).toBe("qa");
+      // Verify control outcome is present
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "ASK_OPERATOR",
+        question: "Which approach should I take?",
+        context: "Two viable approaches found",
+      });
     });
 
     it("works without optional context", async () => {
@@ -659,6 +665,12 @@ describe("Phase control tools", () => {
       expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).not.toContain("## Context");
       expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "ask-operator", expect.any(String));
       expect((result.details as Record<string, unknown>).context).toBeNull();
+      // Verify control outcome with null context
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "ASK_OPERATOR",
+        question: "Is this the right direction?",
+        context: null,
+      });
     });
 
     it("succeeds without mail client", async () => {
@@ -668,6 +680,12 @@ describe("Phase control tools", () => {
       const result = await tool.execute("call-1", { question: "Help?" }, undefined, undefined, {} as never);
       expect(readFileSync(join(context.reportDir, "ASK_OPERATOR.md"), "utf8")).toContain("Help?");
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Operator request sent") }));
+      // Verify control outcome is present even without mail client
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "ASK_OPERATOR",
+        question: "Help?",
+        context: null,
+      });
     });
   });
 
@@ -683,6 +701,12 @@ describe("Phase control tools", () => {
       expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "phase-abort", expect.stringContaining("Approach is fundamentally flawed"));
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Phase aborted") }));
       expect((result.details as Record<string, unknown>).phase).toBe("qa");
+      // Verify control outcome is present
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "ABORTED",
+        reason: "Approach is fundamentally flawed",
+        suggestion: "Try a different algorithm",
+      });
     });
 
     it("works without optional suggestion", async () => {
@@ -693,6 +717,12 @@ describe("Phase control tools", () => {
       const result = await tool.execute("call-1", { reason: "Cannot proceed" }, undefined, undefined, {} as never);
       expect(readFileSync(join(context.reportDir, "ABORTED.md"), "utf8")).not.toContain("## Suggested Remediation");
       expect((result.details as Record<string, unknown>).suggestion).toBeNull();
+      // Verify control outcome with null suggestion
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "ABORTED",
+        reason: "Cannot proceed",
+        suggestion: null,
+      });
     });
 
     it("succeeds without mail client", async () => {
@@ -702,6 +732,12 @@ describe("Phase control tools", () => {
       const result = await tool.execute("call-1", { reason: "Blocked" }, undefined, undefined, {} as never);
       expect(readFileSync(join(context.reportDir, "ABORTED.md"), "utf8")).toContain("Blocked");
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Phase aborted") }));
+      // Verify control outcome is present even without mail client
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "ABORTED",
+        reason: "Blocked",
+        suggestion: null,
+      });
     });
   });
 
@@ -723,6 +759,13 @@ describe("Phase control tools", () => {
       expect(mailClient.sendMessage).toHaveBeenCalledWith("foreman", "needs-retry", expect.stringContaining("API rate limit hit"));
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Retry requested") }));
       expect((result.details as Record<string, unknown>).phase).toBe("qa");
+      // Verify control outcome is present
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "NEEDS_RETRY",
+        reason: "API rate limit hit",
+        attemptedApproach: "Called the API without backoff",
+        suggestedNextStep: "Add exponential backoff and retry",
+      });
     });
 
     it("works with only required reason field", async () => {
@@ -736,6 +779,13 @@ describe("Phase control tools", () => {
       expect(content).not.toContain("## Suggested Next Step");
       expect((result.details as Record<string, unknown>).attemptedApproach).toBeNull();
       expect((result.details as Record<string, unknown>).suggestedNextStep).toBeNull();
+      // Verify control outcome with null optional fields
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "NEEDS_RETRY",
+        reason: "Transient failure",
+        attemptedApproach: null,
+        suggestedNextStep: null,
+      });
     });
 
     it("succeeds without mail client", async () => {
@@ -745,6 +795,13 @@ describe("Phase control tools", () => {
       const result = await tool.execute("call-1", { reason: "Network timeout" }, undefined, undefined, {} as never);
       expect(readFileSync(join(context.reportDir, "NEEDS_RETRY.md"), "utf8")).toContain("Network timeout");
       expect(result.content[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("Retry requested") }));
+      // Verify control outcome is present even without mail client
+      expect((result as unknown as { controlOutcome: unknown }).controlOutcome).toEqual({
+        type: "NEEDS_RETRY",
+        reason: "Network timeout",
+        attemptedApproach: null,
+        suggestedNextStep: null,
+      });
     });
   });
 });
