@@ -5,6 +5,14 @@ import { PIPELINE_BUFFERS } from "../lib/config.js";
 
 const execFileAsync = promisify(execFile);
 
+// Standard timeout for gh CLI operations (30 seconds)
+const GH_TIMEOUT_MS = 30_000;
+
+// Label prefix for foreman queue metadata
+const FOREMAN_LABEL_PREFIX = "foreman/";
+const STATUS_LABEL_PREFIX = `${FOREMAN_LABEL_PREFIX}status:`;
+const OPERATION_LABEL_PREFIX = `${FOREMAN_LABEL_PREFIX}operation:`;
+
 /**
  * GitHub-backed merge queue for registered projects.
  *
@@ -13,12 +21,19 @@ const execFileAsync = promisify(execFile);
  * operational trigger; projections are read model only and must not be polled
  * as the primary signal."
  *
- * Queue entries are synthesized from gh state rather than stored in SQLite,
- * eliminating the need for a disabled local store compatibility layer.
+ * Queue entries are synthesized from gh state. Status and operation are tracked
+ * via gh labels on the PRs:
+ *   - foreman/status:<status> — tracks queue lifecycle state
+ *   - foreman/operation:<operation> — preserves enqueue intent (auto_merge or create_pr)
+ *
+ * This ensures terminal entries (merged, conflict, failed) are not recreated
+ * as pending and that create_pr entries retain their operation for downstream handling.
  */
 export class ElixirMergeQueue {
   // Track enqueued taskIds to distinguish newly discovered entries from total open PRs
   private readonly _enqueuedTaskIds = new Set<string>();
+  // Track operation per taskId for entries enqueued before PR is created
+  private readonly _taskOperations = new Map<string, "auto_merge" | "create_pr">();
 
   constructor(
     private readonly _projectId: string,
@@ -41,8 +56,10 @@ export class ElixirMergeQueue {
     filesModified?: string[];
   }): Promise<MergeQueueEntry> {
     const now = new Date().toISOString();
-    // Track this taskId as enqueued for reconciliation bookkeeping
+    const operation = input.operation ?? "auto_merge";
+    // Track this taskId and its operation for later retrieval when the PR is discovered
     this._enqueuedTaskIds.add(input.taskId);
+    this._taskOperations.set(input.taskId, operation);
     // Return a pending entry. The caller (refinery) will query gh to get the actual PR number.
     // Using id: 0 signals that the real id will come from gh; this avoids the disjoint id space
     // problem where synthetic IDs couldn't be used with remove()/updateStatus().
@@ -51,7 +68,7 @@ export class ElixirMergeQueue {
       branch_name: input.branchName,
       task_id: input.taskId,
       run_id: input.runId,
-      operation: input.operation ?? "auto_merge",
+      operation,
       agent_name: input.agentName ?? "pipeline",
       files_modified: input.filesModified ?? [],
       enqueued_at: now,
@@ -76,7 +93,7 @@ export class ElixirMergeQueue {
       const result = await execFileAsync(
         "gh",
         ["pr", "list", "--state", "open", "--json", "number,title,headRefName,body", "--limit", "100"],
-        { cwd, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+        { cwd, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
       );
       stdout = result.stdout;
     } catch (err) {
@@ -122,6 +139,10 @@ export class ElixirMergeQueue {
 
       // Newly discovered entry
       this._enqueuedTaskIds.add(taskId);
+      // Copy operation from stored map if available, otherwise default to auto_merge
+      if (!this._taskOperations.has(taskId)) {
+        this._taskOperations.set(taskId, "auto_merge");
+      }
       newlyEnqueued++;
     }
 
@@ -141,8 +162,8 @@ export class ElixirMergeQueue {
     try {
       const result = await execFileAsync(
         "gh",
-        ["pr", "list", "--state", "open", "--json", "number,title,headRefName,body,createdAt,updatedAt", "--limit", "100"],
-        { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+        ["pr", "list", "--state", "open", "--json", "number,title,headRefName,body,createdAt,updatedAt,labels", "--limit", "100"],
+        { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
       );
       stdout = result.stdout;
     } catch (err) {
@@ -158,6 +179,7 @@ export class ElixirMergeQueue {
       body: string;
       createdAt: string;
       updatedAt: string;
+      labels: Array<{ name: string }>;
     }>;
     try {
       prs = JSON.parse(stdout);
@@ -190,13 +212,12 @@ export class ElixirMergeQueue {
 
   /**
    * Update entry status — updates gh PR labels to reflect queue state.
-   * Note: gh doesn't natively support queue status labels, so this is a no-op
-   * for registered projects. Status tracking is handled by refinery internally.
+   * Persists the authoritative lifecycle transition so list() can consume it.
    */
   async updateStatus(
     id: number,
     status: MergeQueueStatus,
-    _extra?: {
+    extra?: {
       resolvedTier?: number;
       error?: string;
       completedAt?: string;
@@ -204,10 +225,49 @@ export class ElixirMergeQueue {
       retryCount?: number;
     },
   ): Promise<void> {
-    // gh doesn't support custom labels for queue status tracking.
-    // Status transitions are handled by refinery via gh pr merge commands.
-    void id;
-    void status;
+    // Get current labels to preserve operation label
+    const labels = await this._getPrLabels(id);
+    const operationLabel = labels.find((l) => l.startsWith(OPERATION_LABEL_PREFIX));
+    const currentOperation = operationLabel?.replace(OPERATION_LABEL_PREFIX, "") as "auto_merge" | "create_pr" | undefined;
+
+    // Build new labels: set foreman/status to new status, preserve operation
+    const newLabels: string[] = [`${STATUS_LABEL_PREFIX}${status}`];
+    if (currentOperation) {
+      newLabels.push(`${OPERATION_LABEL_PREFIX}${currentOperation}`);
+    }
+
+    try {
+      await execFileAsync(
+        "gh",
+        ["pr", "edit", String(id), "--add-label", newLabels.join(",")],
+        { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
+      );
+    } catch (err) {
+      // Surface gh failures so callers know status update failed
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to update status for PR #${id}: ${message}`);
+    }
+
+    void extra; // Extra info is handled by refinery in the run store
+  }
+
+  /**
+   * Get current labels on a PR.
+   */
+  private async _getPrLabels(prNumber: number): Promise<string[]> {
+    try {
+      const result = await execFileAsync(
+        "gh",
+        ["pr", "view", String(prNumber), "--json", "labels", "--jq", ".labels[].name"],
+        { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
+      );
+      return result.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -256,10 +316,12 @@ export class ElixirMergeQueue {
         await execFileAsync(
           "gh",
           ["pr", "close", String(entry.id)],
-          { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes },
+          { cwd: this._projectPath, maxBuffer: PIPELINE_BUFFERS.maxBufferBytes, timeout: GH_TIMEOUT_MS },
         );
-      } catch {
-        // Non-fatal — entry will remain in gh but is removed from queue view
+      } catch (err) {
+        // Propagate failures so callers know the removal failed
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to close merge-queue PR #${entry.id}: ${message}`);
       }
     }
   }
@@ -269,6 +331,7 @@ export class ElixirMergeQueue {
   /**
    * Convert a gh PR to a MergeQueueEntry.
    * Uses the real PR number as id, ensuring consistency with gh state.
+   * Reads status and operation from gh labels to preserve authoritative state.
    */
   private prToEntry(pr: {
     number: number;
@@ -277,22 +340,48 @@ export class ElixirMergeQueue {
     body: string;
     createdAt: string;
     updatedAt: string;
+    labels: Array<{ name: string }>;
   }): MergeQueueEntry {
     // Extract task_id and run_id from PR body or title
     const taskIdMatch = /(?:task[_-]?id[:\s]*)([a-z]+-[a-z0-9]+)/i.exec(pr.body || pr.title);
     const runIdMatch = /(?:run[_-]?id[:\s]*)([a-f0-9-]+)/i.exec(pr.body || pr.title);
+    const taskId = taskIdMatch?.[1] ?? pr.headRefName;
+
+    // Parse status from labels (foreman/status:<status>)
+    const statusLabel = pr.labels?.find((l) => l.name.startsWith(STATUS_LABEL_PREFIX));
+    const labelStatus = statusLabel?.name.replace(STATUS_LABEL_PREFIX, "") as MergeQueueStatus | undefined;
+
+    // Parse operation from labels (foreman/operation:<operation>)
+    const operationLabel = pr.labels?.find((l) => l.name.startsWith(OPERATION_LABEL_PREFIX));
+    const labelOperation = operationLabel?.name.replace(OPERATION_LABEL_PREFIX, "") as "auto_merge" | "create_pr" | undefined;
+
+    // Priority: labels > stored map > default
+    const operation = labelOperation ?? this._taskOperations.get(taskId) ?? "auto_merge";
+
+    // Derive status: if label indicates terminal state, use it; otherwise default to pending
+    // Terminal states (merged, conflict, failed) won't appear in open PRs but we track them
+    // in labels for entries that were processed and still visible
+    let status: MergeQueueStatus = "pending";
+    if (labelStatus === "merging") {
+      status = "merging";
+    } else if (labelStatus === "merged" || labelStatus === "conflict" || labelStatus === "failed") {
+      // Terminal states — these entries should be excluded from dequeue but included in list()
+      // so callers can see the outcome
+      status = labelStatus;
+    }
+
     return {
       id: pr.number, // Real GitHub PR number
       branch_name: pr.headRefName,
-      task_id: taskIdMatch?.[1] ?? pr.headRefName,
+      task_id: taskId,
       run_id: runIdMatch?.[1] ?? "",
-      operation: "auto_merge",
+      operation,
       agent_name: null,
       files_modified: [],
       enqueued_at: pr.createdAt,
       started_at: null,
       completed_at: null,
-      status: "pending",
+      status,
       resolved_tier: null,
       error: null,
       retry_count: 0,
