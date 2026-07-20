@@ -89,24 +89,51 @@ func (m model) renderFrame() string {
 
 func (m model) renderBoardFrame() string {
 	total := m.width
+	// When the active tab is not summary (messages/events/logs/etc.), suppress
+	// the board cards so the right pane gets the full body height.
+	// detailPaneHeight returns bodyH+2 in that case, matching the layout below.
+	showBoard := tabNames[m.tab] == "summary" || !m.boardMode()
 	boardH, activitiesH := m.boardLayoutHeights()
 	boardVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
 	activitiesVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
-	boardRaw := m.renderBoard(total, boardH)
+	if showBoard {
+		// Summary tab path: split the body into board (top) + activities (bottom).
+		boardRaw := m.renderBoard(total, boardH)
+		activitiesModel := m
+		activitiesModel.height = activitiesH + 3
+		activitiesRaw := activitiesModel.renderRight(max(20, total-2))
+		board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
+		activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
+		out := lipgloss.JoinVertical(lipgloss.Left,
+			m.renderStatusBar(total),
+			board,
+			activities,
+			m.renderNotice(total),
+			m.renderKeyBar(total),
+		)
+		if os.Getenv("COCKPIT_DEBUG") != "" {
+			writeDebugDump(m, total, total, boardH+activitiesH, activitiesRaw, out)
+		}
+		return out
+	}
+	// Non-summary tab path: right pane uses the full body. No board cards.
+	bodyH := m.height - 5
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	activitiesH = bodyH
 	activitiesModel := m
 	activitiesModel.height = activitiesH + 3
 	activitiesRaw := activitiesModel.renderRight(max(20, total-2))
-	board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
-	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
+	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
 	out := lipgloss.JoinVertical(lipgloss.Left,
 		m.renderStatusBar(total),
-		board,
 		activities,
 		m.renderNotice(total),
 		m.renderKeyBar(total),
 	)
 	if os.Getenv("COCKPIT_DEBUG") != "" {
-		writeDebugDump(m, total, total, boardH+activitiesH, activitiesRaw, out)
+		writeDebugDump(m, total, total, activitiesH+5, activitiesRaw, out)
 	}
 	return out
 }
