@@ -64,10 +64,15 @@ type model struct {
 
 	width, height int
 	notice        string
+
+	// detailHeightOverride, when > 0, replaces the board-mode
+	// detailPaneHeight() computation. Used to render the activities pane
+	// without re-splitting the already-allocated activities height.
+	detailHeightOverride int
 }
 
-// messages
 type tickMsg time.Time
+
 type dataMsg struct {
 	projectID    string
 	runs         []Run
@@ -980,17 +985,12 @@ func (m model) detailPaneWidth() int {
 }
 
 func (m model) detailPaneHeight() int {
-	// Board mode splits the right pane into board cards (top) + activities
-	// (bottom). For non-summary tabs (messages, events, logs, etc.), the
-	// user is focused on tab content; the board cards are noise. Give the
-	// right pane the full body so messages/logs can use all the height.
-	// `renderBoardFrame` hides the board in that case so the layout works.
-	if m.boardMode() && tabNames[m.tab] != "summary" {
-		bodyH := m.height - 5
-		if bodyH < 4 {
-			bodyH = 4
-		}
-		return bodyH + 2
+	// detailHeightOverride stores the raw allocated activities pane height.
+	// We return it as-is so renderRight's viewerBodyWindowHeight uses the
+	// pane height (matching the lipgloss Height that renders it) instead of
+	// re-splitting the already-allocated bottom pane via boardLayoutHeights.
+	if m.boardMode() && m.detailHeightOverride > 0 {
+		return m.detailHeightOverride
 	}
 	if m.boardMode() {
 		_, activitiesH := m.boardLayoutHeights()
@@ -1008,6 +1008,9 @@ func (m model) boardLayoutHeights() (int, int) {
 	if bodyH < 4 {
 		bodyH = 4
 	}
+	// Hit testing and rendering both rely on this layout, so they must agree.
+	// In board mode, the body is split into board (top) + activities (bottom);
+	// the activities pane always shares the bottom half.
 	boardH := int(float64(bodyH) * m.layoutSplit())
 	if boardH < 4 {
 		boardH = 4
@@ -1018,9 +1021,6 @@ func (m model) boardLayoutHeights() (int, int) {
 	activitiesH := bodyH - boardH
 	if activitiesH < 4 {
 		activitiesH = 4
-		if bodyH > activitiesH {
-			boardH = bodyH - activitiesH
-		}
 	}
 	return boardH, activitiesH
 }
@@ -1263,8 +1263,12 @@ func (m model) boardRightTabLineY() int {
 	if !ok {
 		return -1
 	}
+	// Match the width renderBoardFrame passes to renderRight
+	// (max(20, m.width-2)); detailPaneWidth() clamps to 78 cols for narrow
+	// terminals, which causes rail wrap to differ between render and hit
+	// testing.
 	boardH, _ := m.boardLayoutHeights()
-	w := m.detailPaneWidth()
+	w := max(20, m.width-2)
 	railLines := len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
 	return 1 + boardH + 2 + railLines
 }

@@ -509,6 +509,46 @@ func TestStatusBarIncludesActiveTaskSectionPosition(t *testing.T) {
 	}
 }
 
+func TestStatusBarSurfacesSelectedTaskForNonSummaryBoardMode(t *testing.T) {
+	// Regression: the selected task marker must appear in the status bar
+	// for every board-mode tab (summary + non-summary) so the user can
+	// tell which task is selected regardless of color, contrast, or where
+	// the focus sits in the viewer.
+	m := newModelWithConfig(NewMockClient(), defaultConfig(), defaultTools)
+	m.width = 160
+	m.height = 40
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-board", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{{TaskID: "ready-1", Status: "ready", Title: "First ready"}}
+	updated, _ := m.Update(dataMsg{runs: m.runs, tasks: m.tasks})
+	m = updated.(model)
+	if !m.boardMode() {
+		t.Fatalf("expected board mode at width=160")
+	}
+	sel := ""
+	if it, ok := m.selectedItem(); ok {
+		if it.IsTask {
+			sel = it.Task.TaskID
+		} else {
+			sel = it.Run.TaskID + "/" + it.Run.RunID
+		}
+	}
+	if sel == "" {
+		t.Fatalf("setup expected a selected item")
+	}
+
+	// Verify the status bar carries the selection marker at every tab.
+	for _, tabIdx := range []int{1, 2, 3, 4, 5, 6} {
+		m.tab = tabIdx
+		out := stripANSI(m.renderStatusBar(160))
+		if !strings.Contains(out, "▶ ") {
+			t.Fatalf("tab=%d: expected ▶ marker in status bar, got %q", tabIdx, out)
+		}
+		if !strings.Contains(out, sel) && !strings.Contains(out, strings.SplitN(sel, "/", 2)[0]) {
+			t.Fatalf("tab=%d: expected selected id %q in status bar, got %q", tabIdx, sel, out)
+		}
+	}
+}
+
 func TestTaskListViewportUpdatesRowsAcrossSections(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa"}}
@@ -3295,24 +3335,22 @@ func assertViewHeight(t *testing.T, m model) {
 }
 
 
-func TestBoardRightPaneUsesFullHeightForNonSummaryTabs(t *testing.T) {
-	// Bug guard: in board mode the right pane used to be split into
-	// board cards (top) + activities (bottom), so non-summary tabs
-	// (messages, events, logs) only got the bottom half. When the active
-	// tab is not summary, the right pane should use the full body.
+// Board mode is always a vertical split: board (top) + activities (bottom).
+// detailPaneHeight must match the activities split so the viewer fits, and
+// the board columns + ▶ marker must stay visible on every tab.
+func TestBoardModeAlwaysSplitsBoardAndActivities(t *testing.T) {
 	cases := []struct {
 		name   string
 		tabIdx int
-		wantMin int // right pane must use at least this many lines
 	}{
-		{"summary", 0, 12},  // summary keeps the split; only need a few lines
-		{"messages", 1, 20}, // messages gets the full body
-		{"events", 2, 20},
-		{"logs", 3, 20},
-		{"reports", 4, 20},
-		{"files", 5, 20},
-		{"pr", 6, 20},
-		{"metrics", 7, 20},
+		{"summary", 0},
+		{"messages", 1},
+		{"events", 2},
+		{"logs", 3},
+		{"reports", 4},
+		{"files", 5},
+		{"pr", 6},
+		{"metrics", 7},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3324,31 +3362,135 @@ func TestBoardRightPaneUsesFullHeightForNonSummaryTabs(t *testing.T) {
 			m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
 			m.buildItems()
 
-			h := m.detailPaneHeight()
-			if h < tc.wantMin {
-				t.Fatalf("tab %q: expected detailPaneHeight >= %d, got %d (half the body should not be the limit)",
-					tc.name, tc.wantMin, h)
+			_, activitiesH := m.boardLayoutHeights()
+			got := m.detailPaneHeight()
+			if got != activitiesH+2 {
+				t.Fatalf("tab %q: detailPaneHeight = %d, want activitiesH+2 = %d (board must always split; activities gets the bottom half)",
+					tc.name, got, activitiesH+2)
+			}
+
+			out := stripANSI(m.renderFrame())
+			// Board columns must still appear even on non-summary tabs — the
+			// user wants the board on top, details on bottom, never full-
+			// screen details.
+			if !strings.Contains(out, "Backlog") {
+				t.Fatalf("tab %q: expected board columns in renderFrame, got:\n%s", tc.name, out)
+			}
+			// Status bar must surface the selected task so selection is
+			// visible regardless of active tab.
+			if !strings.Contains(out, "▶ ") {
+				t.Fatalf("tab %q: expected ▶ marker in status bar, got:\n%s", tc.name, out)
 			}
 		})
 	}
 }
 
-func TestRenderBoardFrameHidesBoardForNonSummaryTabs(t *testing.T) {
-	// Bug guard: when the active tab is not summary in board mode, the
-	// board cards should be hidden so the right pane (messages/etc.) gets
-	// the full body. Verify renderFrame output doesn't contain board columns
-	// (Backlog/Ready/In Progress/Blocked/Done) when on a non-summary tab.
+// Regression: renderBoardFrame sets detailHeightOverride on the copied
+// activities model so renderRight's viewerBodyWindowHeight uses the
+// allocated activitiesH instead of re-splitting the bottom pane via
+// boardLayoutHeights. Without the override, the viewer collapses to a
+// handful of lines inside the bottom half and the rest of the allocated
+// activities pane is empty.
+func TestActivitiesViewerUsesAllocatedPaneHeight(t *testing.T) {
+	// Copy the activities model as renderBoardFrame does (height reduced to
+	// activitiesH + 3, then detailHeightOverride = activitiesH), and assert
+	// the viewer body window grows vs the un-overridden copy.
 	m := newModel(NewMockClient())
-	m.width = 140
-	m.height = 24
+
+	m.width = 160
+	m.height = 60
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-1", RunID: "run-1", Status: "running"}}
 	m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
 	m.buildItems()
 	m.tab = 1 // messages
 
-	out := stripANSI(m.renderFrame())
-	if strings.Contains(out, "Backlog") || strings.Contains(out, "In Progress") {
-		t.Fatalf("expected board columns to be hidden on messages tab, got:\n%s", out)
+	_, activitiesH := m.boardLayoutHeights()
+
+	// Simulate the bug exactly: renderBoardFrame builds the activities
+	// model by setting activitiesModel.height = activitiesH + 3 and
+	// activitiesModel.detailHeightOverride = activitiesH (raw pane height,
+	// matching the lipgloss Height that renders the pane; +2 would push the
+	// action bar below the visible pane). Without the override,
+	// renderRight's viewerBodyWindowHeight calls detailPaneHeight which
+	// re-splits the already-smaller activities pane and the viewer sits in
+	// a much-too-small height. With the override, the viewer uses the
+	// allocated pane height and fills it.
+	plain := m
+	plain.height = activitiesH + 3
+	plainH := plain.viewerBodyWindowHeight()
+
+	overridden := m
+	overridden.height = activitiesH + 3
+	overridden.detailHeightOverride = activitiesH
+	overriddenH := overridden.viewerBodyWindowHeight()
+
+	if plainH >= overriddenH {
+		t.Fatalf("override should make the viewer larger than the re-split default; plain=%d overridden=%d (activitiesH=%d)",
+			plainH, overriddenH, activitiesH)
+	}
+	// With the raw activitiesH override, the viewer fits inside the pane
+	// (subtracting headerLines + actionLines). Plain's re-split produces a
+	// far smaller value because it splits the already-tiny pane height.
+	if overriddenH < plainH*2 {
+		t.Fatalf("overridden viewer body height (%d) should be at least 2x the re-split plain (%d)", overriddenH, plainH)
+	}
+}
+
+// Regression: boardRightTabLineY must compute rail line count at the
+// same width renderBoardFrame passes to renderRight
+// (max(20, m.width-2)) so clicks hit the visible tab line on narrow
+// terminals in forced board mode. Previously this used
+// detailPaneWidth() (78 cols for m.width < 80) which produced a
+// different rail height and missed clicks.
+func TestBoardRightTabLineYMatchesRenderBoardFrameWidth(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 60
+	m.height = 40
+	m.config.Cockpit.Layout.Mode = layoutModeBoard // force board mode
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-aaaaaaaaaaaaaaaaaa", RunID: "run-1", Status: "running", Phase: "developer"}}
+	m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
+	m.buildItems()
+
+	if !m.boardMode() {
+		t.Fatalf("test setup expected forced board mode")
+	}
+
+	w := m.detailPaneWidth()
+	if w == max(20, m.width-2) {
+		t.Skipf("test requires narrow terminal where detailPaneWidth() differs from renderBoardFrame width")
+	}
+
+	run, ok := m.selectedRun()
+	if !ok {
+		t.Fatalf("setup expected a selected run")
+	}
+	boardH, _ := m.boardLayoutHeights()
+	wanted := 1 + boardH + 2 + len(m.renderRail(run, max(20, m.width-2), paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
+	got := m.boardRightTabLineY()
+	if got != wanted {
+		t.Fatalf("boardRightTabLineY = %d, want %d (width-clamp mismatch makes clicks miss the tab line)",
+			got, wanted)
+	}
+}
+
+// Regression: renderStatusBar must stay on a single line, even when the
+// combined content overflows the width. Previously the overflow fallback
+// called wordwrap.String, which could spill the status bar onto a second
+// line and break the one-line frame-height math assumption.
+func TestStatusBarStaysSingleLineOnOverflow(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-aaaaaaaaaaaa", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{
+		{TaskID: "task-bbbbbbbbbbbb", Status: "backlog"},
+		{TaskID: "task-cccccccccccc", Status: "ready"},
+	}
+	updated, _ := m.Update(dataMsg{runs: m.runs, tasks: m.tasks})
+	m = updated.(model)
+
+	// Extremely narrow width forces the overflow branch.
+	out := stripANSI(m.renderStatusBar(20))
+	if strings.Contains(out, "\n") {
+		t.Fatalf("status bar spilled to multiple lines at w=20:\n%q", out)
 	}
 }
 

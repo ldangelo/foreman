@@ -86,51 +86,35 @@ func (m model) renderFrame() string {
 
 func (m model) renderBoardFrame() string {
 	total := m.width
-	// When the active tab is not summary (messages/events/logs/etc.), suppress
-	// the board cards so the right pane gets the full body height.
-	// detailPaneHeight returns bodyH+2 in that case, matching the layout below.
-	showBoard := tabNames[m.tab] == "summary" || !m.boardMode()
+	// Board mode is always a vertical split: board (top) + activities
+	// (bottom). Selection context lives in the status bar (▶ marker) so the
+	// user can always tell which task is selected regardless of the active
+	// tab.
 	boardH, activitiesH := m.boardLayoutHeights()
 	boardVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
 	activitiesVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
-	if showBoard {
-		// Summary tab path: split the body into board (top) + activities (bottom).
-		boardRaw := m.renderBoard(total, boardH)
-		activitiesModel := m
-		activitiesModel.height = activitiesH + 3
-		activitiesRaw := activitiesModel.renderRight(max(20, total-2))
-		board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
-		activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
-		out := lipgloss.JoinVertical(lipgloss.Left,
-			m.renderStatusBar(total),
-			board,
-			activities,
-			m.renderNotice(total),
-			m.renderKeyBar(total),
-		)
-		if os.Getenv("COCKPIT_DEBUG") != "" {
-			writeDebugDump(m, total, total, boardH+activitiesH, activitiesRaw, out)
-		}
-		return out
-	}
-	// Non-summary tab path: right pane uses the full body. No board cards.
-	bodyH := m.height - 5
-	if bodyH < 4 {
-		bodyH = 4
-	}
-	activitiesH = bodyH
+	boardRaw := m.renderBoard(total, boardH)
+	// Pass the allocated activities height through the copied model so
+	// renderRight's viewerBodyWindowHeight uses the allocated pane height
+	// instead of re-splitting the bottom pane via boardLayoutHeights.
+	// Without this, the viewer collapses to a small height and the rest of
+	// the activities pane is blank. Storing raw activitiesH (matching the
+	// lipgloss pane Height) keeps the action bar within the visible pane.
 	activitiesModel := m
 	activitiesModel.height = activitiesH + 3
+	activitiesModel.detailHeightOverride = activitiesH
 	activitiesRaw := activitiesModel.renderRight(max(20, total-2))
-	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
+	board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
+	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
 	out := lipgloss.JoinVertical(lipgloss.Left,
 		m.renderStatusBar(total),
+		board,
 		activities,
 		m.renderNotice(total),
 		m.renderKeyBar(total),
 	)
 	if os.Getenv("COCKPIT_DEBUG") != "" {
-		writeDebugDump(m, total, total, activitiesH+5, activitiesRaw, out)
+		writeDebugDump(m, total, total, boardH+activitiesH, activitiesRaw, out)
 	}
 	return out
 }
@@ -267,13 +251,50 @@ func (m model) renderStatusBar(w int) string {
 	if total := len(m.taskList.Items()); total > 0 {
 		position = fmt.Sprintf("%d/%d", m.taskList.SelectedIndex()+1, total)
 	}
+	// Surface the selected task ID inline so the user can always tell which
+	// task is selected regardless of layout mode or color/contrast (the
+	// status bar stays visible even when the focus scrolls inside the
+	// viewer). Truncate aggressively — the status bar is one line and the
+	// frame height math assumes so. ~20 chars fits any reasonable task ID.
+	const maxSelected = 20
+	selected := ""
+	if it, ok := m.selectedItem(); ok {
+		if it.IsTask {
+			selected = it.Task.TaskID
+		} else {
+			selected = it.Run.TaskID + "/" + it.Run.RunID
+		}
+	}
+	if ansi.StringWidth(selected) > maxSelected {
+		selected = ansi.Truncate(selected, maxSelected, "…")
+	}
 	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
-		yellowStyle.Render(section+" "+position) + dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
+		yellowStyle.Render(section+" "+position)
+	if selected != "" {
+		right += dimStyle.Render(" · ") + lipgloss.NewStyle().Bold(true).Foreground(cWhite).Render("▶ "+selected)
+	}
+	right += dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
 
 	row := padRow(left, right, w)
-	// Use wordwrap for status bar content to preserve full text
+	// Status bar must remain a single line; the frame height math depends
+	// on it. If overflow would force a wrap, drop the live indicator
+	// (leftmost truncable piece on the right) instead of wrapping. Recompute
+	// the padded row with left + stripped so the counts/left section is
+	// Status bar must remain a single line; the frame height math depends
+	// on it. If the row is too wide, pad to width and truncate the right
+	// side (rather than wrapping to a second line which would overflow the
+	// single-line budget). padRow + Render at Width(w) does the truncation.
 	if ansi.StringWidth(row) > w {
-		return statusBarStyle.Width(w).Render(wordwrap.String(row, w))
+		stripped := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
+			yellowStyle.Render(section+" "+position)
+		if selected != "" {
+			stripped += dimStyle.Render(" · ") + lipgloss.NewStyle().Bold(true).Foreground(cWhite).Render("▶ "+selected)
+		}
+		row = padRow(left, stripped, w)
+		if ansi.StringWidth(row) > w {
+			row = ansi.Truncate(row, w, "")
+		}
+		return statusBarStyle.Width(w).Render(row)
 	}
 	return statusBarStyle.Width(w).Render(row)
 }
@@ -482,6 +503,12 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 	selected := i == m.taskList.SelectedIndex()
 	state, title, id, typ, pri, right := taskRowFields(it)
 	gl, glc := glyph(state)
+	marker := "  "
+	if selected {
+		// Use an explicit glyph so selection is visible without color
+		// (background-only selection disappears on low-contrast terminals).
+		marker = "▶ "
+	}
 	line1Left := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
 		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
 	if project := rowProject(it); m.taskList.Scope() == "global" && project != "" {
@@ -494,12 +521,12 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + normalizePriorityLabel(pri))
 	}
 	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
-	line1 := padRow(wrapText(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
+	line1 := padRow(wrapText(marker+line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
 	line2 := wrapText("  "+title, w)
 	row := line1 + "\n" + line2
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
-		st = st.Background(visual.SelectedBg)
+		st = st.Background(visual.SelectedBg).Bold(true)
 	}
 	return st.Render(row)
 }

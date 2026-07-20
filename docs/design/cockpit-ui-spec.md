@@ -137,18 +137,17 @@ tab consumes `/api/v1/metrics` and renders counters, gauges, and phase-duration
 bars without client-side authoritative aggregation.
 
 The keybar includes an explicit focus label: `focus: board` / `focus:
-activities` in board mode and `focus: tasks` / `focus: details` in the list
-fallback. In board mode the right pane splits vertically into board cards
-(top) and tab content (bottom); on the **summary** tab this split is
-active. On **non-summary** tabs (messages, events, logs, reports,
-files, pr, metrics) the board cards are hidden and the right pane uses
-the full body height so the tab content gets all available lines. The
-focused region uses the accent border; inactive regions use the
-blur border and, by default, a muted content palette controlled by
-`cockpit.focus`. Mouse input mirrors keyboard targets for visible board cards,
+activities` in board mode and `focus: tasks` / `focus: details` in the
+list fallback. In board mode the right pane splits vertically into
+board cards (top) and tab content (bottom) on every tab; the board
+stays visible so the user always has task context, and the status
+bar surfaces the selected task ID with a `▶` marker so selection is
+visible regardless of which tab is active. The focused region uses
+the accent border; inactive regions use the blur border and, by
+default, a muted content palette controlled by `cockpit.focus`.
+Mouse input mirrors keyboard targets for visible board cards,
 fallback task-list sections/rows, and drill-down tabs; wheel routing remains
 region-sensitive.
-
 
 ## Keymap
 
