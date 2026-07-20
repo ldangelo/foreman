@@ -6,7 +6,7 @@
  * tune timeout / interval / backoff without forking the agent.
  */
 
-import { promisify } from "node:util";
+import { execFile as nodeExecFile } from "node:child_process";
 
 /**
  * Matches the callback-style signature of node:child_process.execFile.
@@ -20,12 +20,29 @@ export type ExecFileFn = (
   callback?: (error: any, stdout: any, stderr: any) => void,
 ) => unknown;
 
-/** Promisified execFile: what promisify(execFile) returns. */
+/** Promisified execFile: passes callback as 4th arg (matching real execFile API). */
 type ExecFileAsync = (
   command: string,
   args?: readonly string[] | null,
   options?: object,
 ) => Promise<{ stdout: string; stderr: string }>;
+
+/**
+ * Wrap a callback-style execFile in a Promise, always passing the callback
+ * as the 4th argument (the real node:child_process.execFile convention).
+ *
+ * NOTE: vi.fn() has length=0, so util.promisify misroutes a 3-arg call
+ * by treating the 3rd arg as the callback. This explicit wrapper always
+ * uses the 4th-slot convention regardless of the underlying fn.length.
+ */
+function makeExecAsync(execFile: ExecFileFn): ExecFileAsync {
+  return (command, args, options) =>
+    new Promise((resolve, reject) => {
+      nodeExecFile(command, args ?? undefined, options as object, (err, stdout, stderr) =>
+        err ? reject(err) : resolve({ stdout: stdout ?? "", stderr: stderr ?? "" }),
+      );
+    });
+}
 
 /** Callback invoked once per polling tick with the current PR state. */
 export type MergeResolver = (ctx: {
@@ -146,7 +163,7 @@ export async function pollForMerge(opts: MergePollOptions): Promise<MergePollRes
     onEvent,
   } = opts;
 
-  const execAsync: ExecFileAsync = opts.execAsync ?? promisify(execFile) as ExecFileAsync;
+  const execAsync: ExecFileAsync = opts.execAsync ?? makeExecAsync(execFile);
 
   onEvent?.({ type: "started", prNumber, at: isoNow() });
 
@@ -332,7 +349,7 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Used as the last-resort fallback when polling times out.
  */
 export const adminMergeResolver: MergeResolver = async ({ prNumber, cwd, execFile }) => {
-  const execAsync: ExecFileAsync = promisify(execFile) as ExecFileAsync;
+  const execAsync: ExecFileAsync = makeExecAsync(execFile);
   await execAsync(
     "gh",
     ["pr", "merge", String(prNumber), "--admin", "--squash"],

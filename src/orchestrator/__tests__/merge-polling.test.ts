@@ -52,17 +52,20 @@ type TimelineEntry =
 
 /**
  * Build a mock execFile implementation that follows a gh-pr-view timeline.
- * Callback-based so it works with promisify(execFile).
- * Non-gh-view calls succeed silently.
+ * Accepts 4 args: (cmd, args, opts, cb) — matching real node:child_process.execFile
+ * which always passes callback as the 4th argument.
  *
- * NOTE: promisify(execFile) passes 3 args: (cmd, args, cb) — NOT (cmd, args, opts, cb).
- * The callback is the THIRD argument, not fourth. This was the root cause of the 6-test hang.
+ * NOTE: makeExecAsync always calls execFile(cmd, args, options, cb), never 3-arg form.
+ * vi.fn() has length=0, so util.promisify would misroute 3-arg calls.
+ * We match the real 4-arg API so the explicit Promise wrapper works correctly.
  */
 function ghViewTimeline(entries: TimelineEntry[]) {
   let index = 0;
   return (
     cmd: string,
     args: readonly string[] | null | undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _opts: any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cb: (err: any, stdout: any, stderr: any) => void,
   ): void => {
@@ -191,7 +194,7 @@ describe("pollForMerge", () => {
     // Resolver is called and its merge call succeeds silently.
     let ghViewCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((cmd: string, args: any, cb: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         ghViewCount++;
         cb(null, JSON.stringify({ state: "OPEN" }), "");
@@ -290,7 +293,7 @@ describe("pollForMerge", () => {
   it("PollSurfacesGhErrorsAsErrorEvents", async () => {
     let tick = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((cmd: string, args: any, cb: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         tick++;
         if (tick <= 2) { cb(new Error(`gh error ${tick}`), null, ""); return; }
@@ -329,7 +332,7 @@ describe("pollForMerge", () => {
     // All poll checks return OPEN; timeout fires, resolver throws, final check returns MERGED.
     let ghViewCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((cmd: string, args: any, cb: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         ghViewCount++;
         // Final check (after resolver) is the 4th view call
@@ -365,9 +368,9 @@ describe("pollForMerge", () => {
   // ── AdminMergeResolverCallsGhPrMergeWithAdminSquash ────────────────────
 
   it("AdminMergeResolverCallsGhPrMergeWithAdminSquash", async () => {
-    // Callback-style mock so promisify(execFile) works correctly.
+    // Callback-style mock: accepts 4 args (cmd, args, opts, cb) matching real execFile API.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((_cmd: any, _args: any, cb: any) => {
+    execFileMock.mockImplementation(((_cmd: any, _args: any, _opts: any, cb: any) => {
       cb(null, "Merge successful.", "");
     }) as any);
 
