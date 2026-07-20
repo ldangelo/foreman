@@ -52,24 +52,32 @@ type TimelineEntry =
 
 /**
  * Build a mock execFile implementation that follows a gh-pr-view timeline.
- * Returns a Promise for all calls (mimics the promisified execFile used by
- * the polling code). Non-gh-view calls succeed silently.
+ * Callback-based so it works with promisify(execFile).
+ * Non-gh-view calls succeed silently.
  */
 function ghViewTimeline(entries: TimelineEntry[]) {
   let index = 0;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return async (cmd: string, args?: any, _opts?: any): Promise<{ stdout: string; stderr: string }> => {
+  return (
+    cmd: string,
+    args: readonly string[] | null | undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _opts: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cb: (err: any, stdout: any, stderr: any) => void,
+  ): void => {
     if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
       if (index >= entries.length) {
-        return { stdout: JSON.stringify({ state: "OPEN" }), stderr: "" };
+        cb(null, { stdout: JSON.stringify({ state: "OPEN" }), stderr: "" }, null);
+        return;
       }
       const entry = entries[index++];
-      if (entry.kind === "open") return { stdout: JSON.stringify({ state: "OPEN" }), stderr: "" };
-      if (entry.kind === "merged") return { stdout: JSON.stringify({ state: "MERGED", mergedAt: entry.mergedAt ?? null }), stderr: "" };
-      if (entry.kind === "closed") return { stdout: JSON.stringify({ state: "CLOSED" }), stderr: "" };
-      if (entry.kind === "error") throw new Error(entry.message);
+      if (entry.kind === "open") { cb(null, JSON.stringify({ state: "OPEN" }), ""); return; }
+      if (entry.kind === "merged") { cb(null, JSON.stringify({ state: "MERGED", mergedAt: entry.mergedAt ?? null }), ""); return; }
+      if (entry.kind === "closed") { cb(null, JSON.stringify({ state: "CLOSED" }), ""); return; }
+      if (entry.kind === "error") { cb(new Error(entry.message), null, ""); return; }
     }
-    return { stdout: "", stderr: "" };
+    // Non-gh calls: succeed silently
+    cb(null, "", "");
   };
 }
 
@@ -181,17 +189,18 @@ describe("pollForMerge", () => {
     // Resolver is called and its merge call succeeds silently.
     let ghViewCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation((async (cmd: string, args?: any, _opts?: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         ghViewCount++;
-        return { stdout: JSON.stringify({ state: "OPEN" }), stderr: "" };
+        cb(null, JSON.stringify({ state: "OPEN" }), "");
+        return;
       }
-      return { stdout: "Merge successful.", stderr: "" };
+      cb(null, "Merge successful.", "");
     }) as any);
 
     const resolver = vi.fn(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await execFile("gh", ["pr", "merge", "42", "--admin", "--squash"], { cwd: "/tmp/test-repo", timeout: 60_000 } as any);
+      await (execFile as any)("gh", ["pr", "merge", "42", "--admin", "--squash"], { cwd: "/tmp/test-repo", timeout: 60_000 });
     });
 
     const pollPromise = pollForMerge({
@@ -277,13 +286,14 @@ describe("pollForMerge", () => {
   it("PollSurfacesGhErrorsAsErrorEvents", async () => {
     let tick = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation((async (cmd: string, args?: any, _opts?: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         tick++;
-        if (tick <= 2) throw new Error(`gh error ${tick}`);
-        return { stdout: JSON.stringify({ state: "MERGED", mergedAt: "2024-01-01T00:00:00Z" }), stderr: "" };
+        if (tick <= 2) { cb(new Error(`gh error ${tick}`), null, ""); return; }
+        cb(null, JSON.stringify({ state: "MERGED", mergedAt: "2024-01-01T00:00:00Z" }), "");
+        return;
       }
-      return { stdout: "", stderr: "" };
+      cb(null, "", "");
     }) as any);
 
     const onEvent = vi.fn();
@@ -315,16 +325,18 @@ describe("pollForMerge", () => {
     // All poll checks return OPEN; timeout fires, resolver throws, final check returns MERGED.
     let ghViewCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation((async (cmd: string, args?: any, _opts?: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         ghViewCount++;
         // Final check (after resolver) is the 4th view call
         if (ghViewCount > 3) {
-          return { stdout: JSON.stringify({ state: "MERGED", mergedAt: "2024-01-01T00:00:00Z" }), stderr: "" };
+          cb(null, JSON.stringify({ state: "MERGED", mergedAt: "2024-01-01T00:00:00Z" }), "");
+          return;
         }
-        return { stdout: JSON.stringify({ state: "OPEN" }), stderr: "" };
+        cb(null, JSON.stringify({ state: "OPEN" }), "");
+        return;
       }
-      return { stdout: "", stderr: "" };
+      cb(null, "", "");
     }) as any);
 
     const resolver = vi.fn(async () => {
@@ -348,11 +360,11 @@ describe("pollForMerge", () => {
   // ── AdminMergeResolverCallsGhPrMergeWithAdminSquash ────────────────────
 
   it("AdminMergeResolverCallsGhPrMergeWithAdminSquash", async () => {
+    // Callback-style mock so promisify(execFile) works correctly.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockResolvedValue({
-      stdout: "Merge successful.",
-      stderr: "",
-    } as any);
+    execFileMock.mockImplementation(((_cmd: any, _args: any, _opts: any, cb: any) => {
+      cb(null, "Merge successful.", "");
+    }) as any);
 
     await adminMergeResolver({
       prNumber: 42,

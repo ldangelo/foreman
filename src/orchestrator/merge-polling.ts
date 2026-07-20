@@ -42,6 +42,12 @@ export interface MergePollOptions {
   projectId?: string;
   /** Injected execFile so tests can mock without touching node:child_process. */
   execFile: ExecFileFn;
+  /**
+   * Optional pre-promisified execFile for tests.
+   * When provided, this is used directly instead of calling promisify(execFile).
+   * This avoids the promisify+vi.fn() incompatibility in test environments.
+   */
+  execAsync?: ExecFileAsync;
   /** Working directory for gh commands. */
   cwd: string;
   /** PR number to poll. */
@@ -140,7 +146,7 @@ export async function pollForMerge(opts: MergePollOptions): Promise<MergePollRes
     onEvent,
   } = opts;
 
-  const execAsync: ExecFileAsync = promisify(execFile) as ExecFileAsync;
+  const execAsync: ExecFileAsync = opts.execAsync ?? promisify(execFile) as ExecFileAsync;
 
   onEvent?.({ type: "started", prNumber, at: isoNow() });
 
