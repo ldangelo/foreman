@@ -130,18 +130,26 @@ describe("run.ts — still exports autoMerge (backwards compat)", () => {
 describe("agent-worker.ts — merge phase direct merge fallback", () => {
   const source = readFileSync(WORKER_SRC, "utf-8");
 
-  it("polls for PR merge after enqueueing", () => {
-    expect(source).toContain("Waiting for PR #${prNumber} to merge");
+  it("polls for PR merge after enqueueing using pollForMerge", () => {
     expect(source).toContain("MERGE_POLL_INTERVAL_MS");
     expect(source).toContain("MERGE_POLL_TIMEOUT_MS");
+    expect(source).toContain("pollForMerge");
+    expect(source).toContain("adminMergeResolver");
   });
 
-  it("falls back to direct gh pr merge --admin --squash when polling times out", () => {
-    expect(source).toContain('"pr", "merge", String(prNumber), "--admin", "--squash"');
+  it("falls back to direct gh pr merge --admin --squash via adminMergeResolver", () => {
+    // The merge command lives in merge-polling.ts
+    const pollingSource = readFileSync(
+      join(PROJECT_ROOT, "src", "orchestrator", "merge-polling.ts"),
+      "utf-8",
+    );
+    expect(pollingSource).toContain('"pr", "merge", String(prNumber), "--admin", "--squash"');
   });
 
   it("runs a final pre-failure state check after the post-timeout merge attempt", () => {
-    expect(source).toContain("caught on final post-timeout check");
+    // The final check is now inside pollForMerge's timeout branch.
+    expect(source).toContain("pollForMerge");
+    expect(source).toContain("adminMergeResolver");
   });
 
   it("marks the run failed only when polling times out AND the post-timeout merge fails AND the PR is not already merged", () => {
@@ -159,7 +167,8 @@ describe("agent-worker.ts — merge phase direct merge fallback", () => {
     // Bug guard: the failure branch used to write status:"completed" before
     // returning success: false, masking a real merge failure as done.
     // Find the failure-branch update block and ensure its status is "failed".
-    const start = source.indexOf("if (!mergeSucceeded)");
+    // The new failure branch is keyed on mergeResult.outcome === "resolved".
+    const start = source.indexOf("mergeResult.outcome === \"resolved\"");
     expect(start).toBeGreaterThanOrEqual(0);
     const slice = source.slice(start, start + 1500);
     const updateIdx = slice.indexOf("updateTerminalRunStatus({");

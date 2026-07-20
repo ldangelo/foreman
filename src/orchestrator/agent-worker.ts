@@ -58,6 +58,7 @@ import {
 } from "./roles.js";
 import { enqueueToMergeQueue } from "./agent-worker-enqueue.js";
 import { updateFatalRunStatus } from "./agent-worker-fatal-path.js";
+import { pollForMerge, adminMergeResolver } from "./merge-polling.js";
 import { updateTerminalRunStatus } from "./agent-worker-run-status.js";
 import { writeMarkStuckEvent, writeMarkStuckProgress } from "./agent-worker-mark-stuck-observability.js";
 import { writeSingleAgentProgress, writeSingleAgentTerminalEvent } from "./agent-worker-single-agent-observability.js";
@@ -2229,83 +2230,42 @@ async function runMergeBuiltinPhase(args: {
   // The queue is real here (ElixirMergeQueue was wired); refinery will process it.
   const MERGE_POLL_INTERVAL_MS = 30_000;
   const MERGE_POLL_TIMEOUT_MS = 5 * 60 * 1000;
-  let mergeSucceeded = false;
-  let mergeFailed = false;
-  let mergeError = "unknown";
-  const mergePollStart = Date.now();
 
-  if (prNumber) {
-    log(`[MERGE] Waiting for PR #${prNumber} to merge (timeout ${MERGE_POLL_TIMEOUT_MS / 1000}s)…`);
-    while (Date.now() - mergePollStart < MERGE_POLL_TIMEOUT_MS && !mergeSucceeded && !mergeFailed) {
-      await new Promise((r) => setTimeout(r, MERGE_POLL_INTERVAL_MS));
-      try {
-        const execFileAsync = promisify(execFile);
-        const { stdout } = await execFileAsync("gh", ["pr", "view", String(prNumber), "--json", "state,mergedAt"], { cwd: pipelineProjectPath, timeout: 30_000 });
-        const prInfo = JSON.parse(stdout) as { state?: string; mergedAt?: string };
-        if (prInfo.state === "MERGED") {
-          mergeSucceeded = true;
-          log(`[MERGE] PR #${prNumber} merged.`);
-        } else if (prInfo.state === "CLOSED") {
-          mergeFailed = true;
-          mergeError = `PR #${prNumber} was closed without merging`;
-          log(`[MERGE] PR #${prNumber} closed without merging.`);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log(`[MERGE] PR #${prNumber} poll error (will retry): ${msg}`);
-      }
-    }
-  } else {
-    // No PR number — skip polling and accept the enqueue result.
-    // This preserves legacy behaviour for repos without a tracked PR.
-    log(`[MERGE] No PR number found; accepting enqueue result without polling.`);
-  }
+  const mergeResult =
+    prNumber
+      ? await pollForMerge({
+          runId: config.runId,
+          taskId: config.taskId,
+          projectId: config.projectId,
+          execFile,
+          cwd: pipelineProjectPath,
+          prNumber,
+          pollTimeoutMs: MERGE_POLL_TIMEOUT_MS,
+          pollIntervalMs: MERGE_POLL_INTERVAL_MS,
+          resolver: adminMergeResolver,
+          signal: undefined, // phase AbortController wiring is a follow-up PR
+          onEvent: (e) => {
+            switch (e.type) {
+              case "started":    log(`[MERGE] Polling PR #${e.prNumber}…`); break;
+              case "merged":     log(`[MERGE] PR #${e.prNumber} merged (${e.mergedAt}).`); break;
+              case "closed":     log(`[MERGE] PR #${e.prNumber} closed without merging.`); break;
+              case "timeout":    log(`[MERGE] Polling timed out after ${e.attempts} attempts.`); break;
+              case "error":      log(`[MERGE] PR #${e.prNumber} poll error: ${e.error}`); break;
+              case "resolver-done": log(`[MERGE] Resolver finished for PR #${e.prNumber}.`); break;
+              case "aborted":    log(`[MERGE] Polling aborted for PR #${e.prNumber}.`); break;
+              default: break;
+            }
+          },
+        })
+      : undefined;
 
-  // After polling: only on a genuine timeout (mergeFailed is false). A CLOSED
-  // PR is already terminal — don't waste a direct merge attempt on it. The
-  // agent-worker is itself the actor that can admin-merge, so a busy merge
-  // queue doesn't strand the run — we fall back and let gh pr merge bypass it.
-  if (!mergeSucceeded && !mergeFailed && prNumber) {
-    log(`[MERGE] Polling did not catch the merge in ${MERGE_POLL_TIMEOUT_MS / 1000}s; attempting direct gh pr merge --admin --squash.`);
-    try {
-      const execFileAsync = promisify(execFile);
-      const { stdout: mergeResult } = await execFileAsync(
-        "gh",
-        ["pr", "merge", String(prNumber), "--admin", "--squash"],
-        { cwd: pipelineProjectPath, timeout: 60_000 },
-      );
-      log(`[MERGE] gh pr merge (post-timeout fallback): ${mergeResult.trim()}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[MERGE] Post-timeout gh pr merge failed (will check state): ${msg}`);
-    }
-
-    // Final pre-failure check: the PR may have merged in the seconds after the
-    // polling loop gave up. One more check recovers the "just-after-timeout" case
-    // so the run isn't marked failed when the merge actually succeeded.
-    try {
-      const execFileAsync = promisify(execFile);
-      const { stdout } = await execFileAsync(
-        "gh",
-        ["pr", "view", String(prNumber), "--json", "state,mergedAt"],
-        { cwd: pipelineProjectPath, timeout: 30_000 },
-      );
-      const prInfo = JSON.parse(stdout) as { state?: string; mergedAt?: string };
-      if (prInfo.state === "MERGED") {
-        log(`[MERGE] PR #${prNumber} merged (caught on final post-timeout check).`);
-        mergeSucceeded = true;
-        mergeError = "";
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`[MERGE] Final post-timeout PR check failed: ${msg}`);
-    }
-  }
-  if (!mergeSucceeded) {
-    const details = mergeFailed
-      ? mergeError
-      : mergeError !== "unknown"
-        ? mergeError
+  // "merged" and "closed" are terminal — pollForMerge already handled them.
+  // "resolved" means timeout fired but the PR didn't merge (resolver may have
+  // been called; final state was checked). "aborted" is treated as resolved.
+  if (!mergeResult || mergeResult.outcome === "resolved" || mergeResult.outcome === "aborted") {
+    const details =
+      mergeResult?.outcome === "aborted"
+        ? "Merge polling was aborted."
         : `Merge did not complete within the ${MERGE_POLL_TIMEOUT_MS / 1000}s polling timeout. ` +
           `Verify refinery/RefineryAgent is running and processing the merge queue for project ${config.projectId ?? "(unregistered)"}; ` +
           `or register the project with 'foreman project register'.`;
