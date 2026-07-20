@@ -663,7 +663,7 @@ func (m model) renderRight(w int) string {
 
 	// header
 	if isRun {
-		hdrLeft := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(run.TaskID) + "  " + lipgloss.NewStyle().Foreground(visual.Dim).Render("run "+run.RunID+"…")
+		hdrLeft := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(run.TaskID) + "  " + lipgloss.NewStyle().Foreground(visual.Dim).Render("run " + run.RunID)
 		status := run.Status
 		if pos, ok := m.selectedMessagePosition(); ok {
 			status += " · messages " + itoa(pos) + "/" + itoa(len(m.msgs))

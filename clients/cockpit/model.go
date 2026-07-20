@@ -912,7 +912,9 @@ func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 	w := m.detailPaneWidth()
 	h := m.viewerBodyWindowHeight()
 	m.viewer.SetSelectionPrefix(viewerSelectionPrefix(tabNames[m.tab]))
-	m.viewer.SetWrapText(tabNames[m.tab] != "logs")
+	// Enable word wrap for all tabs including logs to preserve full content
+	// Long lines will wrap instead of being clipped with ellipsis
+	m.viewer.SetWrapText(true)
 	m.viewer.SetBounds(w, h)
 	if !m.detailUsesViewer() {
 		m.viewer.SetLines(nil, viewerReset, h)
