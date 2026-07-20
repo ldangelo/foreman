@@ -1258,8 +1258,8 @@ func renderLogLines(run Run, logs []LogEntry, logPath string, w int, visual pane
 		streamIndicator := color.Render(glyph)
 		// Compact prefix: line number + timestamp + stream indicator
 		prefix := dimStyle.Render(fmt.Sprintf("%4d ", lineNumber)) + dimStyle.Render(ts) + streamIndicator + " "
-		// The message is scrollable
-		text := entry.Message
+		// The message is scrollable, clip to terminal width
+		text := clip(entry.Message, w - lipgloss.Width(prefix))
 
 		lines = append(lines, ViewerLine{
 			Key:    "log:" + itoa(i) + ":" + entry.Message,
