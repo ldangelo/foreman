@@ -77,7 +77,7 @@ function ghViewTimeline(entries: TimelineEntry[]) {
 
 describe("pollForMerge", () => {
   beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
   });
 
