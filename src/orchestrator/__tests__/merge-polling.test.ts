@@ -14,7 +14,7 @@ vi.mock("node:child_process", () => ({
 
 // Must import after vi.mock
 import { execFile } from "node:child_process";
-import { pollForMerge, adminMergeResolver, type MergePollOptions } from "../merge-polling.js";
+import { pollForMerge, adminMergeResolver, _resetSleepDurations, _getSleepDurations, type MergePollOptions } from "../merge-polling.js";
 
 const execFileMock = vi.mocked(execFile);
 
@@ -77,7 +77,8 @@ function ghViewTimeline(entries: TimelineEntry[]) {
 
 describe("pollForMerge", () => {
   beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    _resetSleepDurations();
     vi.clearAllMocks();
   });
 
@@ -88,7 +89,7 @@ describe("pollForMerge", () => {
   // ── PollReturnsMergedWhenGhReportsMerged ──────────────────────────────
 
   it("PollReturnsMergedWhenGhReportsMerged", async () => {
-    // Tick 1: OPEN, tick 2: MERGED
+    // Tick 1: OPEN (immediate, no sleep), tick 2: MERGED (after 1 sleep)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execFileMock.mockImplementation(ghViewTimeline([
       { kind: "open" },
@@ -98,9 +99,8 @@ describe("pollForMerge", () => {
     const onEvent = vi.fn();
     const pollPromise = pollForMerge({ ...baseOpts(), onEvent });
 
-    // Resolve the sleeps so ticks proceed
-    await vi.advanceTimersByTimeAsync(30_000); // sleep before tick 1
-    await vi.advanceTimersByTimeAsync(30_000); // sleep before tick 2
+    // Only 1 sleep needed: tick 1 is immediate, tick 2 is after sleep
+    await vi.advanceTimersByTimeAsync(30_000); // sleep between tick 1 and tick 2
 
     const result = await pollPromise;
 
@@ -228,52 +228,41 @@ describe("pollForMerge", () => {
   // ── PollBacksOffWithJitter ─────────────────────────────────────────────
 
   it("PollBacksOffWithJitter", async () => {
-    // Record sleep durations via setTimeout interception.
-    const sleepDurations: number[] = [];
-    const origSetTimeout = globalThis.setTimeout.bind(globalThis);
-    vi.stubGlobal("setTimeout", (cb: () => void, ms: number) => {
-      sleepDurations.push(ms);
-      return origSetTimeout(cb, ms);
+    // gh always returns OPEN → polling continues indefinitely
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    execFileMock.mockImplementation(ghViewTimeline([
+      { kind: "open" },
+      { kind: "open" },
+      { kind: "open" },
+    ]) as any);
+
+    const abortController = new AbortController();
+
+    const pollPromise = pollForMerge({
+      ...baseOpts({
+        pollIntervalMs: 30_000,
+        jitter: 0.5, // ±50%
+        pollTimeoutMs: 300_000,
+        maxIntervalMs: 120_000,
+        signal: abortController.signal,
+      }),
     });
 
-    try {
-      // gh always returns OPEN → polling continues indefinitely
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      execFileMock.mockImplementation(ghViewTimeline([
-        { kind: "open" },
-        { kind: "open" },
-        { kind: "open" },
-      ]) as any);
+    // Advance past 3 sleeps, then abort to terminate the poll
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    setTimeout(() => abortController.abort(), 0);
+    await vi.advanceTimersByTimeAsync(0);
+    await pollPromise.catch(() => {/* aborted */});
 
-      const abortController = new AbortController();
+    // 3 sleeps should have been scheduled (tracked by _sleepDurations in production code).
+    const sleepDurations = _getSleepDurations();
+    expect(sleepDurations.length).toBeGreaterThanOrEqual(3);
 
-      const pollPromise = pollForMerge({
-        ...baseOpts({
-          pollIntervalMs: 30_000,
-          jitter: 0.5, // ±50%
-          pollTimeoutMs: 300_000,
-          maxIntervalMs: 120_000,
-          signal: abortController.signal,
-        }),
-      });
-
-      // Advance past 3 sleeps, then abort to terminate the poll
-      await vi.advanceTimersByTimeAsync(30_000);
-      await vi.advanceTimersByTimeAsync(30_000);
-      await vi.advanceTimersByTimeAsync(30_000);
-      setTimeout(() => abortController.abort(), 0);
-      await vi.advanceTimersByTimeAsync(0);
-      await pollPromise.catch(() => {/* aborted */});
-
-      // 3 sleeps should have been scheduled.
-      expect(sleepDurations.length).toBeGreaterThanOrEqual(3);
-
-      // Each interval is capped at maxIntervalMs (120 000)
-      for (const ms of sleepDurations.slice(0, 3)) {
-        expect(ms).toBeLessThanOrEqual(120_000);
-      }
-    } finally {
-      vi.restoreAllMocks();
+    // Each interval is capped at maxIntervalMs (120 000)
+    for (const ms of sleepDurations.slice(0, 3)) {
+      expect(ms).toBeLessThanOrEqual(120_000);
     }
   });
 
@@ -338,9 +327,16 @@ describe("pollForMerge", () => {
       throw new Error("resolver failed");
     });
 
-    const result = await pollForMerge({
+    const pollPromise = pollForMerge({
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
+
+    // Advance past 3 sleeps so timeout fires (90s elapsed) → final check returns MERGED
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    const result = await pollPromise;
 
     // Final check returned MERGED → "merged" even though resolver threw
     expect(result.outcome).toBe("merged");

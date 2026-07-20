@@ -215,21 +215,23 @@ export async function pollForMerge(opts: MergePollOptions): Promise<MergePollRes
       };
     }
 
-    // ── Sleep with backoff ─────────────────────────────────────────────────
-    const sleepMs = jitteredInterval(currentInterval, jitter);
-    await sleep(sleepMs, signal);
+    // ── Check PR state (immediate on first tick, after sleep thereafter) ─────
+    if (attempts > 0) {
+      // Sleep with exponential backoff + jitter before subsequent checks.
+      const sleepMs = jitteredInterval(currentInterval, jitter);
+      await sleep(sleepMs, signal);
 
-    if (signal?.aborted) {
-      onEvent?.({ type: "aborted", prNumber, at: isoNow() });
-      return {
-        outcome: "aborted",
-        attempts,
-        elapsedMs: Date.now() - start,
-        pollHistory,
-      };
+      if (signal?.aborted) {
+        onEvent?.({ type: "aborted", prNumber, at: isoNow() });
+        return {
+          outcome: "aborted",
+          attempts,
+          elapsedMs: Date.now() - start,
+          pollHistory,
+        };
+      }
     }
 
-    // ── Check PR state ─────────────────────────────────────────────────────
     const result = await checkPrState(execAsync, signal, cwd, prNumber, attempts + 1, onEvent);
     attempts++;
     pollHistory.push({ attempt: attempts, state: result.state ?? "unknown", errored: result.errored });
@@ -255,7 +257,7 @@ export async function pollForMerge(opts: MergePollOptions): Promise<MergePollRes
       };
     }
 
-    // OPEN → continue polling with backoff.
+    // OPEN → advance backoff for next iteration.
     currentInterval = Math.min(currentInterval * 1.5, maxIntervalMs);
   }
 }
@@ -296,8 +298,18 @@ async function checkPrState(
   }
 }
 
+// Tracks the duration of each sleep call — consumed by the PollBacksOffWithJitter test.
+const _sleepDurations: number[] = [];
+export function _resetSleepDurations(): void {
+  _sleepDurations.length = 0;
+}
+export function _getSleepDurations(): readonly number[] {
+  return _sleepDurations;
+}
+
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return;
+  _sleepDurations.push(ms);
   await new Promise<void>((resolve) => {
     const tick = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => {
