@@ -510,10 +510,10 @@ func TestStatusBarIncludesActiveTaskSectionPosition(t *testing.T) {
 }
 
 func TestStatusBarSurfacesSelectedTaskForNonSummaryBoardMode(t *testing.T) {
-	// Regression: in board mode + non-summary tab, the board cards (which
-	// carry the selection marker) are hidden, so the user must still see
-	// which task is selected. The status bar surfaces the selected task ID
-	// with a ▶ marker so selection is always visible regardless of color.
+	// Regression: the selected task marker must appear in the status bar
+	// for every board-mode tab (summary + non-summary) so the user can
+	// tell which task is selected regardless of color, contrast, or where
+	// the focus sits in the viewer.
 	m := newModelWithConfig(NewMockClient(), defaultConfig(), defaultTools)
 	m.width = 160
 	m.height = 40
@@ -3389,23 +3389,14 @@ func TestBoardModeAlwaysSplitsBoardAndActivities(t *testing.T) {
 // activities model so renderRight's viewerBodyWindowHeight uses the
 // allocated activitiesH instead of re-splitting the bottom pane via
 // boardLayoutHeights. Without the override, the viewer collapses to a
-// handful of lines inside the bottom half (or wherever the re-split
-// lands), and the rest of the allocated activities pane is empty.
-// We check the fix at two levels:
-//  1. With detailHeightOverride set on a copied model, the viewer body
-//     window grows to roughly activitiesH (much larger than the re-split
-//     default).
-//  2. renderBoardFrame itself produces an activities pane that fills
-//     its allocated vertical space, i.e. the line immediately preceding
-//     the keybar is within a couple of rows of the bottom edge instead
-//     of leaving a large gap of blank lines.
+// handful of lines inside the bottom half and the rest of the allocated
+// activities pane is empty.
 func TestActivitiesViewerUsesAllocatedPaneHeight(t *testing.T) {
-	// activities model so renderRight's viewerBodyWindowHeight uses the
-	// allocated activitiesH instead of re-splitting the bottom pane via
-	// boardLayoutHeights. Without the override, the viewer collapses to a
-	// handful of lines inside the bottom half, and the rest of the
-	// allocated activities pane is empty.
+	// Copy the activities model as renderBoardFrame does (height reduced to
+	// activitiesH + 3, then detailHeightOverride = activitiesH), and assert
+	// the viewer body window grows vs the un-overridden copy.
 	m := newModel(NewMockClient())
+
 	m.width = 160
 	m.height = 60
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-1", RunID: "run-1", Status: "running"}}
