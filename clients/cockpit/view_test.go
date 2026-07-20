@@ -3436,6 +3436,64 @@ func TestActivitiesViewerUsesAllocatedPaneHeight(t *testing.T) {
 	}
 }
 
+// Regression: boardRightTabLineY must compute rail line count at the
+// same width renderBoardFrame passes to renderRight
+// (max(20, m.width-2)) so clicks hit the visible tab line on narrow
+// terminals in forced board mode. Previously this used
+// detailPaneWidth() (78 cols for m.width < 80) which produced a
+// different rail height and missed clicks.
+func TestBoardRightTabLineYMatchesRenderBoardFrameWidth(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.width = 60
+	m.height = 40
+	m.config.Cockpit.Layout.Mode = layoutModeBoard // force board mode
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-aaaaaaaaaaaaaaaaaa", RunID: "run-1", Status: "running", Phase: "developer"}}
+	m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
+	m.buildItems()
+
+	if !m.boardMode() {
+		t.Fatalf("test setup expected forced board mode")
+	}
+
+	w := m.detailPaneWidth()
+	if w == max(20, m.width-2) {
+		t.Skipf("test requires narrow terminal where detailPaneWidth() differs from renderBoardFrame width")
+	}
+
+	run, ok := m.selectedRun()
+	if !ok {
+		t.Fatalf("setup expected a selected run")
+	}
+	boardH, _ := m.boardLayoutHeights()
+	wanted := 1 + boardH + 2 + len(m.renderRail(run, max(20, m.width-2), paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
+	got := m.boardRightTabLineY()
+	if got != wanted {
+		t.Fatalf("boardRightTabLineY = %d, want %d (width-clamp mismatch makes clicks miss the tab line)",
+			got, wanted)
+	}
+}
+
+// Regression: renderStatusBar must stay on a single line, even when the
+// combined content overflows the width. Previously the overflow fallback
+// called wordwrap.String, which could spill the status bar onto a second
+// line and break the one-line frame-height math assumption.
+func TestStatusBarStaysSingleLineOnOverflow(t *testing.T) {
+	m := newModel(NewMockClient())
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-aaaaaaaaaaaa", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{
+		{TaskID: "task-bbbbbbbbbbbb", Status: "backlog"},
+		{TaskID: "task-cccccccccccc", Status: "ready"},
+	}
+	updated, _ := m.Update(dataMsg{runs: m.runs, tasks: m.tasks})
+	m = updated.(model)
+
+	// Extremely narrow width forces the overflow branch.
+	out := stripANSI(m.renderStatusBar(20))
+	if strings.Contains(out, "\n") {
+		t.Fatalf("status bar spilled to multiple lines at w=20:\n%q", out)
+	}
+}
+
 func manyRuns(n int) []Run {
 	base := NewMockClient().Runs()
 	out := make([]Run, 0, n)

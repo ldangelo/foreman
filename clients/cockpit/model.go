@@ -1263,8 +1263,12 @@ func (m model) boardRightTabLineY() int {
 	if !ok {
 		return -1
 	}
+	// Match the width renderBoardFrame passes to renderRight
+	// (max(20, m.width-2)); detailPaneWidth() clamps to 78 cols for narrow
+	// terminals, which causes rail wrap to differ between render and hit
+	// testing.
 	boardH, _ := m.boardLayoutHeights()
-	w := m.detailPaneWidth()
+	w := max(20, m.width-2)
 	railLines := len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
 	return 1 + boardH + 2 + railLines
 }

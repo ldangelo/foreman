@@ -280,7 +280,10 @@ func (m model) renderStatusBar(w int) string {
 	// on it. If overflow would force a wrap, drop the live indicator
 	// (leftmost truncable piece on the right) instead of wrapping. Recompute
 	// the padded row with left + stripped so the counts/left section is
-	// preserved. Falls through to wordwrap only as a last resort.
+	// Status bar must remain a single line; the frame height math depends
+	// on it. If the row is too wide, pad to width and truncate the right
+	// side (rather than wrapping to a second line which would overflow the
+	// single-line budget). padRow + Render at Width(w) does the truncation.
 	if ansi.StringWidth(row) > w {
 		stripped := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
 			yellowStyle.Render(section+" "+position)
@@ -289,7 +292,7 @@ func (m model) renderStatusBar(w int) string {
 		}
 		row = padRow(left, stripped, w)
 		if ansi.StringWidth(row) > w {
-			return statusBarStyle.Width(w).Render(wordwrap.String(row, w))
+			row = ansi.Truncate(row, w, "")
 		}
 		return statusBarStyle.Width(w).Render(row)
 	}
