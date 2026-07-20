@@ -77,7 +77,7 @@ function ghViewTimeline(entries: TimelineEntry[]) {
 
 describe("pollForMerge", () => {
   beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     _resetSleepDurations();
     vi.clearAllMocks();
   });
@@ -99,8 +99,8 @@ describe("pollForMerge", () => {
     const onEvent = vi.fn();
     const pollPromise = pollForMerge({ ...baseOpts(), onEvent });
 
-    // Only 1 sleep needed: tick 1 is immediate, tick 2 is after sleep
-    await vi.advanceTimersByTimeAsync(30_000); // sleep between tick 1 and tick 2
+    // Advance past 1 sleep (30s) so tick 2 fires and returns MERGED
+    await vi.advanceTimersByTimeAsync(30_000);
 
     const result = await pollPromise;
 
@@ -153,6 +153,9 @@ describe("pollForMerge", () => {
     ]) as any);
 
     const resolver = vi.fn();
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s
+    await vi.advanceTimersByTimeAsync(135_000);
+
     const result = await pollForMerge({
       ...baseOpts({
         pollTimeoutMs: 90_000,
@@ -191,9 +194,14 @@ describe("pollForMerge", () => {
       await execFile("gh", ["pr", "merge", "42", "--admin", "--squash"], { cwd: "/tmp/test-repo", timeout: 60_000 } as any);
     });
 
-    const result = await pollForMerge({
+    const pollPromise = pollForMerge({
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
+
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s
+    await vi.advanceTimersByTimeAsync(135_000);
+
+    const result = await pollPromise;
 
     expect(result.outcome).toBe("resolved");
     expect(result.resolverFired).toBe(true);
@@ -248,10 +256,8 @@ describe("pollForMerge", () => {
       }),
     });
 
-    // Advance past 3 sleeps, then abort to terminate the poll
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so tick 4 fires, then abort
+    await vi.advanceTimersByTimeAsync(145_000);
     setTimeout(() => abortController.abort(), 0);
     await vi.advanceTimersByTimeAsync(0);
     await pollPromise.catch(() => {/* aborted */});
@@ -284,10 +290,10 @@ describe("pollForMerge", () => {
 
     const pollPromise = pollForMerge({ ...baseOpts({ onEvent }) });
 
-    // Advance past 3 sleeps to get 3 ticks
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s with jitter=0, capped at maxIntervalMs=120_000)
+    // First sleep = 30_000ms, second = 45_000ms, third = 67_500ms. Total = 75 000ms. Advance 80 000ms.
+    // Timeout at 90s fires after tick 3 → gh returns MERGED → loop exits.
+    await vi.advanceTimersByTimeAsync(80_000);
 
     const result = await pollPromise;
 
@@ -301,8 +307,6 @@ describe("pollForMerge", () => {
     expect(errorEvents).toHaveLength(2);
     expect((errorEvents[0][0] as { error: string }).error).toBe("gh error 1");
     expect((errorEvents[1][0] as { error: string }).error).toBe("gh error 2");
-
-    await pollPromise; // already resolved, but safe to await again
   });
 
   // ── PollFinalCheckRecoversFromLateMerge ────────────────────────────────
@@ -331,10 +335,8 @@ describe("pollForMerge", () => {
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
 
-    // Advance past 3 sleeps so timeout fires (90s elapsed) → final check returns MERGED
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s
+    await vi.advanceTimersByTimeAsync(135_000);
 
     const result = await pollPromise;
 
