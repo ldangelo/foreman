@@ -912,7 +912,9 @@ func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 	w := m.detailPaneWidth()
 	h := m.viewerBodyWindowHeight()
 	m.viewer.SetSelectionPrefix(viewerSelectionPrefix(tabNames[m.tab]))
-	m.viewer.SetWrapText(tabNames[m.tab] != "logs")
+	// Enable word wrap for all tabs including logs to preserve full content
+	// Long lines will wrap instead of being clipped with ellipsis
+	m.viewer.SetWrapText(true)
 	m.viewer.SetBounds(w, h)
 	if !m.detailUsesViewer() {
 		m.viewer.SetLines(nil, viewerReset, h)
@@ -1328,6 +1330,10 @@ func (m model) actionKeyAt(x, y int) string {
 				segments = append(segments, actionSegment{label: "R reset latest run " + run.RunID, key: "R"})
 			}
 			return actionSegmentKey(relX, prefix, segments)
+		}
+		// For files tab, line 1 is always the open action
+		if tabNameAt(m.tab) == "files" && line == 1 {
+			return "o"
 		}
 		if _, ready := m.selectedReadyTask(); ready && line == 1 {
 			return actionSegmentKey(relX, "", []actionSegment{

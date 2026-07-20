@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 func metricsCount(metrics Metrics) int {
@@ -95,7 +97,13 @@ func metricBar(label string, value, maxValue, w int, visual paneVisual) string {
 		fill = barW
 	}
 	bar := strings.Repeat("█", fill) + strings.Repeat("░", barW-fill)
-	left := lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(label, 18))
+	// Wrap long labels to preserve full text
+	left := lipgloss.NewStyle().Foreground(visual.Dim).Width(18).Render(wordwrap.String(label, 18))
 	right := lipgloss.NewStyle().Foreground(visual.Cyan).Render(bar) + " " + lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(itoa(value))
-	return clip(padRow(left, right, w), w)
+	row := padRow(left, right, w)
+	// Wrap the entire row if too wide
+	if ansi.StringWidth(row) > w {
+		return wordwrap.String(row, w)
+	}
+	return row
 }
