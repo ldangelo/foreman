@@ -165,17 +165,33 @@ describe("pollForMerge", () => {
     ]) as any);
 
     const resolver = vi.fn();
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s.
-    // Use 150_000ms to give enough headroom for execution overhead.
-    await vi.advanceTimersByTimeAsync(150_000);
 
-    const result = await pollForMerge({
+    // Set system time to 0 so Date.now() returns an advancing fake value.
+    // advanceTimersByTimeAsync only advances setTimeout/setInterval, not Date.now(),
+    // so we must manually advance system time after each sleep for the timeout
+    // check (elapsed >= pollTimeoutMs) to work correctly.
+    vi.setSystemTime(0);
+
+    const resultPromise = pollForMerge({
       ...baseOpts({
         pollTimeoutMs: 90_000,
         pollIntervalMs: 30_000,
         resolver,
       }),
     });
+
+    // Advance through 3 sleeps: 30s + 45s + 67.5s = 142.5s.
+    // After 3 sleeps, elapsed = 142.5s > 90s timeout.
+    await vi.advanceTimersByTimeAsync(30_000);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 30_000));
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 45_000));
+
+    await vi.advanceTimersByTimeAsync(67_500);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 67_500));
+
+    const result = await resultPromise;
 
     expect(result.outcome).toBe("resolved");
     expect(result.resolverFired).toBe(true);
@@ -208,13 +224,22 @@ describe("pollForMerge", () => {
       await (execFile as any)("gh", ["pr", "merge", "42", "--admin", "--squash"], { cwd: "/tmp/test-repo", timeout: 60_000 });
     });
 
+    vi.setSystemTime(0);
+
     const pollPromise = pollForMerge({
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
 
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s.
-    // Use 150_000ms to give enough headroom for execution overhead.
-    await vi.advanceTimersByTimeAsync(150_000);
+    // Advance through 3 sleeps: 30s + 45s + 67.5s = 142.5s.
+    // After 3 sleeps, elapsed = 142.5s > 90s timeout.
+    await vi.advanceTimersByTimeAsync(30_000);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 30_000));
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 45_000));
+
+    await vi.advanceTimersByTimeAsync(67_500);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 67_500));
 
     const result = await pollPromise;
 
@@ -350,13 +375,22 @@ describe("pollForMerge", () => {
       throw new Error("resolver failed");
     });
 
+    vi.setSystemTime(0);
+
     const pollPromise = pollForMerge({
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
 
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s.
-    // Use 150_000ms to give enough headroom for execution overhead.
-    await vi.advanceTimersByTimeAsync(150_000);
+    // Advance through 3 sleeps: 30s + 45s + 67.5s = 142.5s.
+    // After 3 sleeps, elapsed = 142.5s > 90s timeout.
+    await vi.advanceTimersByTimeAsync(30_000);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 30_000));
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 45_000));
+
+    await vi.advanceTimersByTimeAsync(67_500);
+    vi.setSystemTime(new Date(vi.getMockedSystemTime()!.getTime() + 67_500));
 
     const result = await pollPromise;
 
@@ -382,10 +416,13 @@ describe("pollForMerge", () => {
     });
 
     expect(execFile).toHaveBeenCalledTimes(1);
+    // makeExecAsync passes callback as 4th arg (matching real execFile API),
+    // so we must include expect.any(Function) for strict matching.
     expect(execFile).toHaveBeenCalledWith(
       "gh",
       ["pr", "merge", "42", "--admin", "--squash"],
       expect.objectContaining({ cwd: "/tmp/test-repo", timeout: 60_000 }),
+      expect.any(Function),
     );
   });
 });
