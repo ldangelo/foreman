@@ -367,3 +367,68 @@ func TestBoardDerivedItemsSelectedPath(t *testing.T) {
 
 
 
+func TestDataLoadingGuardPreventsOverlappingRefreshes(t *testing.T) {
+	// Bug guard: every tickMsg fires loadData. If we don't gate on a flag, a
+	// slow API backlogs one request per 2s tick and keypresses lag. Without
+	// generations, a faster in-flight response can clobber a slower newer one.
+	m := newModel(NewMockClient())
+
+	// 1. newModel must initialize dataLoading=true so the first tick (2s after
+	//    Init) doesn't double-dispatch while the initial loadData is in flight.
+	if !m.dataLoading {
+		t.Fatalf("expected newModel to initialize dataLoading=true, got false")
+	}
+
+	// 2. startDataLoad(false) on an in-flight load returns nil (skip the tick's reload).
+	if cmd := m.startDataLoad(false); cmd != nil {
+		t.Fatalf("expected startDataLoad(false) to return nil while dataLoading=true, got %T", cmd)
+	}
+	if !m.dataLoading {
+		t.Fatalf("expected dataLoading to remain true after skipped reload")
+	}
+
+	// 3. startDataLoad(true) on an in-flight load still dispatches (force=true for
+	//    action reloads that must refresh). It increments dataGeneration.
+	if cmd := m.startDataLoad(true); cmd == nil {
+		t.Fatalf("expected startDataLoad(true) to dispatch even when dataLoading=true, got nil")
+	}
+	if !m.dataLoading {
+		t.Fatalf("expected dataLoading to remain true after force reload")
+	}
+	if m.dataGeneration != 1 {
+		t.Fatalf("expected dataGeneration=1 after first startDataLoad, got %d", m.dataGeneration)
+	}
+
+	// 4. A dataMsg with a stale (older) generation must NOT clear dataLoading
+	//    or apply state. This is the "faster stale response clobbers newer"
+	//    bug: while two loads are in flight (gen 0 from Init, gen 1 from
+	//    forced reload), a slow gen-0 response must not stomp the gen-1
+	//    outcome.
+	// 4. A dataMsg with a stale (older) generation must NOT clear dataLoading
+	//    or apply state. Seed runs with a sentinel; a stale response carrying
+	//    different values must leave it untouched.
+	m.runs = []Run{{RunID: "sentinel", TaskID: "sentinel-task", Status: "completed"}}
+	updated, _ := m.Update(dataMsg{runs: []Run{{RunID: "stale", TaskID: "stale-task", Status: "failed"}}, tasks: nil, metrics: Metrics{}, boardColumns: nil, errors: nil, generation: 0})
+	updatedM := updated.(model)
+	if !updatedM.dataLoading {
+		t.Fatalf("expected stale dataMsg to leave dataLoading=true, got false")
+	}
+	if len(updatedM.runs) != 1 || updatedM.runs[0].RunID != "sentinel" {
+		t.Fatalf("expected stale dataMsg to leave runs untouched, got %+v", updatedM.runs)
+	}
+	// 5. The matching-generation dataMsg clears the flag and applies state.
+	updated, _ = m.Update(dataMsg{runs: nil, tasks: nil, metrics: Metrics{}, boardColumns: nil, errors: nil, generation: 1})
+	updatedM = updated.(model)
+	if updatedM.dataLoading {
+		t.Fatalf("expected matching dataMsg to clear dataLoading, got true")
+	}
+
+	// 6. With the flag cleared, a non-force reload dispatches again and increments.
+	prevGen := updatedM.dataGeneration
+	if cmd := updatedM.startDataLoad(false); cmd == nil {
+		t.Fatalf("expected startDataLoad(false) to dispatch after dataLoading cleared, got nil")
+	}
+	if updatedM.dataGeneration != prevGen+1 {
+		t.Fatalf("expected dataGeneration=%d after next dispatch, got %d", prevGen+1, updatedM.dataGeneration)
+	}
+}
