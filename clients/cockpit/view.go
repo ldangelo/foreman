@@ -114,6 +114,8 @@ func (m model) renderBoardFrame() string {
 		return out
 	}
 	// Non-summary tab path: right pane uses the full body. No board cards.
+	// Selection context is surfaced in the status bar via renderStatusBar so
+	// we don't need to carve out a strip from the activities pane.
 	bodyH := m.height - 5
 	if bodyH < 4 {
 		bodyH = 4
@@ -267,13 +269,46 @@ func (m model) renderStatusBar(w int) string {
 	if total := len(m.taskList.Items()); total > 0 {
 		position = fmt.Sprintf("%d/%d", m.taskList.SelectedIndex()+1, total)
 	}
+	// Surface the selected task ID inline so it's always visible regardless
+	// of layout mode (board mode hides the board cards for non-summary tabs).
+	// Truncate aggressively — the status bar is one line and the frame
+	// height math assumes so. ~20 chars fits any reasonable task ID.
+	const maxSelected = 20
+	selected := ""
+	if it, ok := m.selectedItem(); ok {
+		if it.IsTask {
+			selected = it.Task.TaskID
+		} else {
+			selected = it.Run.TaskID + "/" + it.Run.RunID
+		}
+	}
+	if ansi.StringWidth(selected) > maxSelected {
+		selected = ansi.Truncate(selected, maxSelected, "…")
+	}
 	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
-		yellowStyle.Render(section+" "+position) + dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
+		yellowStyle.Render(section+" "+position)
+	if selected != "" {
+		right += dimStyle.Render(" · ") + lipgloss.NewStyle().Bold(true).Foreground(cWhite).Render("▶ "+selected)
+	}
+	right += dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
 
 	row := padRow(left, right, w)
-	// Use wordwrap for status bar content to preserve full text
+	// Status bar must remain a single line; the frame height math depends
+	// on it. If overflow would force a wrap, drop the live indicator
+	// (leftmost truncable piece on the right) instead of wrapping. Recompute
+	// the padded row with left + stripped so the counts/left section is
+	// preserved. Falls through to wordwrap only as a last resort.
 	if ansi.StringWidth(row) > w {
-		return statusBarStyle.Width(w).Render(wordwrap.String(row, w))
+		stripped := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
+			yellowStyle.Render(section+" "+position)
+		if selected != "" {
+			stripped += dimStyle.Render(" · ") + lipgloss.NewStyle().Bold(true).Foreground(cWhite).Render("▶ "+selected)
+		}
+		row = padRow(left, stripped, w)
+		if ansi.StringWidth(row) > w {
+			return statusBarStyle.Width(w).Render(wordwrap.String(row, w))
+		}
+		return statusBarStyle.Width(w).Render(row)
 	}
 	return statusBarStyle.Width(w).Render(row)
 }
@@ -482,6 +517,12 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 	selected := i == m.taskList.SelectedIndex()
 	state, title, id, typ, pri, right := taskRowFields(it)
 	gl, glc := glyph(state)
+	marker := "  "
+	if selected {
+		// Use an explicit glyph so selection is visible without color
+		// (background-only selection disappears on low-contrast terminals).
+		marker = "▶ "
+	}
 	line1Left := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Render(gl) + " " +
 		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
 	if project := rowProject(it); m.taskList.Scope() == "global" && project != "" {
@@ -494,12 +535,12 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + normalizePriorityLabel(pri))
 	}
 	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
-	line1 := padRow(wrapText(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
+	line1 := padRow(wrapText(marker+line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
 	line2 := wrapText("  "+title, w)
 	row := line1 + "\n" + line2
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
-		st = st.Background(visual.SelectedBg)
+		st = st.Background(visual.SelectedBg).Bold(true)
 	}
 	return st.Render(row)
 }

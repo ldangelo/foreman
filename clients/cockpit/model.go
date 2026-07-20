@@ -980,10 +980,6 @@ func (m model) detailPaneWidth() int {
 }
 
 func (m model) detailPaneHeight() int {
-	// Board mode splits the right pane into board cards (top) + activities
-	// (bottom). For non-summary tabs (messages, events, logs, etc.), the
-	// user is focused on tab content; the board cards are noise. Give the
-	// right pane the full body so messages/logs can use all the height.
 	// `renderBoardFrame` hides the board in that case so the layout works.
 	if m.boardMode() && tabNames[m.tab] != "summary" {
 		bodyH := m.height - 5
@@ -1008,6 +1004,10 @@ func (m model) boardLayoutHeights() (int, int) {
 	if bodyH < 4 {
 		bodyH = 4
 	}
+	// Hit testing and rendering both rely on this layout, so they must agree.
+	// For non-summary tabs in board mode, renderBoardFrame suppresses the
+	// board area entirely; hit tests in that case should still treat the top
+	// of the right pane as the activities region.
 	boardH := int(float64(bodyH) * m.layoutSplit())
 	if boardH < 4 {
 		boardH = 4
@@ -1018,9 +1018,6 @@ func (m model) boardLayoutHeights() (int, int) {
 	activitiesH := bodyH - boardH
 	if activitiesH < 4 {
 		activitiesH = 4
-		if bodyH > activitiesH {
-			boardH = bodyH - activitiesH
-		}
 	}
 	return boardH, activitiesH
 }
@@ -1116,11 +1113,23 @@ func (m model) handleMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 
 func (m model) handleBoardMouse(msg tea.MouseMsg) (model, tea.Cmd) {
 	mouse := msg.Mouse()
-	boardH, _ := m.boardLayoutHeights()
+	boardH, activitiesH := m.boardLayoutHeights()
 	boardTop := 1
 	boardBottom := boardTop + boardH - 1
 	activitiesTop := boardBottom + 1
-	activitiesBottom := m.height - 3
+	activitiesBottom := activitiesTop + activitiesH - 1
+	if activitiesBottom > m.height-3 {
+		activitiesBottom = m.height - 3
+	}
+	// In board mode for non-summary tabs, renderBoardFrame hides the board
+	// entirely so the activities pane fills the body. Hit testing must match
+	// that layout: empty the board range so the first mouse.Y check below
+	// can't match and route clicks into the activities region instead.
+	if m.boardMode() && tabNames[m.tab] != "summary" {
+		boardBottom = boardTop - 1
+		activitiesTop = boardTop
+		activitiesBottom = m.height - 3
+	}
 
 	if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
 		if mouse.Y >= boardTop && mouse.Y <= boardBottom {
@@ -1263,12 +1272,23 @@ func (m model) boardRightTabLineY() int {
 	if !ok {
 		return -1
 	}
+	// In board mode for non-summary tabs the board area is hidden. The
+	// activities pane's internal layout (header + separator + rail +
+	// separator + tab line) is identical to list mode, so the tab line Y
+	// matches list-mode rightTabLineY (5 + railLines).
+	if m.boardMode() && tabNames[m.tab] != "summary" {
+		// renderBoardFrame passes full-width (total-2) to renderRight in the
+		// non-summary branch, so compute railLines at detailPaneWidth() to
+		// match what renderRight actually rendered.
+		w := m.detailPaneWidth()
+		railLines := len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
+		return 5 + railLines
+	}
 	boardH, _ := m.boardLayoutHeights()
 	w := m.detailPaneWidth()
 	railLines := len(m.renderRail(run, w, paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)))
 	return 1 + boardH + 2 + railLines
 }
-
 func (m model) rightTabIndexAt(x int) int {
 	rel := x - m.leftPaneWidth() - 2
 	if m.boardMode() {

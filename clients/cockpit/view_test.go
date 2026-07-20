@@ -509,6 +509,46 @@ func TestStatusBarIncludesActiveTaskSectionPosition(t *testing.T) {
 	}
 }
 
+func TestStatusBarSurfacesSelectedTaskForNonSummaryBoardMode(t *testing.T) {
+	// Regression: in board mode + non-summary tab, the board cards (which
+	// carry the selection marker) are hidden, so the user must still see
+	// which task is selected. The status bar surfaces the selected task ID
+	// with a ▶ marker so selection is always visible regardless of color.
+	m := newModelWithConfig(NewMockClient(), defaultConfig(), defaultTools)
+	m.width = 160
+	m.height = 40
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-board", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{{TaskID: "ready-1", Status: "ready", Title: "First ready"}}
+	updated, _ := m.Update(dataMsg{runs: m.runs, tasks: m.tasks})
+	m = updated.(model)
+	if !m.boardMode() {
+		t.Fatalf("expected board mode at width=160")
+	}
+	sel := ""
+	if it, ok := m.selectedItem(); ok {
+		if it.IsTask {
+			sel = it.Task.TaskID
+		} else {
+			sel = it.Run.TaskID + "/" + it.Run.RunID
+		}
+	}
+	if sel == "" {
+		t.Fatalf("setup expected a selected item")
+	}
+
+	// Verify the status bar carries the selection marker at every tab.
+	for _, tabIdx := range []int{1, 2, 3, 4, 5, 6} {
+		m.tab = tabIdx
+		out := stripANSI(m.renderStatusBar(160))
+		if !strings.Contains(out, "▶ ") {
+			t.Fatalf("tab=%d: expected ▶ marker in status bar, got %q", tabIdx, out)
+		}
+		if !strings.Contains(out, sel) && !strings.Contains(out, strings.SplitN(sel, "/", 2)[0]) {
+			t.Fatalf("tab=%d: expected selected id %q in status bar, got %q", tabIdx, sel, out)
+		}
+	}
+}
+
 func TestTaskListViewportUpdatesRowsAcrossSections(t *testing.T) {
 	m := newModel(NewMockClient())
 	m.runs = []Run{{Group: taskGroupRunning, TaskID: "run-task", RunID: "run-1", Status: "running", Phase: "qa"}}
