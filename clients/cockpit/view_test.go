@@ -3470,6 +3470,7 @@ func TestMessageRowUsesFullWidth(t *testing.T) {
 	// Body should not contain any ellipsis
 	if strings.Contains(lines[1], "…") {
 		t.Fatalf("body should not contain ellipsis, got: %s", lines[1])
+	}
 }
 
 // TestStatusBarPreservesFullText verifies status bar renders without ellipsis.

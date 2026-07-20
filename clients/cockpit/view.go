@@ -16,27 +16,12 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 )
 
-// clip truncates a string to fit within w columns (by visual width), without ellipsis.
-// Use wordwrap for content that should be preserved without truncation.
-func clip(s string, w int) string {
+// wrapText wraps content to fit within w columns, preserving all text.
+func wrapText(s string, w int) string {
 	if w <= 0 {
-		return ""
-	}
-	if ansi.StringWidth(s) <= w {
 		return s
 	}
-	// Truncate without ellipsis - let the extra content be hidden (viewport can pan)
-	result := []rune{}
-	width := 0
-	for _, r := range s {
-		rw := ansi.StringWidth(string(r))
-		if width+rw > w {
-			break
-		}
-		result = append(result, r)
-		width += rw
-	}
-	return string(result)
+	return lipgloss.NewStyle().Width(w).Render(wordwrap.String(s, w))
 }
 
 func padRow(left, right string, w int) string {
@@ -417,7 +402,7 @@ func (m model) renderBoardColumn(col BoardColumnState, w, h int, visual paneVisu
 	if focusedColumn && !m.viewFocused {
 		headerStyle = headerStyle.Background(visual.ActiveBg)
 	}
-	header := headerStyle.Render(clip(col.Label+" "+itoa(len(col.Items)), w))
+	header := wrapText(col.Label+" "+itoa(len(col.Items)), w)
 	lines := []string{
 		header,
 		lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)),
@@ -430,7 +415,7 @@ func (m model) renderBoardColumn(col BoardColumnState, w, h int, visual paneVisu
 		}
 	}
 	if col.OverflowCount > 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(visual.Dim).Render(clip("… "+itoa(col.OverflowCount)+" more", w)))
+		lines = append(lines, wrapText("… "+itoa(col.OverflowCount)+" more", w))
 	}
 	for len(lines) < h {
 		lines = append(lines, "")
@@ -448,16 +433,16 @@ func renderBoardCard(it Item, w int, selected bool, visual paneVisual) string {
 		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
 	if right != "" {
 		rightW := min(max(6, ansi.StringWidth(right)), max(6, w/2))
-		line1 = padRow(clip(line1, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
+		line1 = padRow(wrapText(line1, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
 	} else {
-		line1 = clip(line1, w)
+		line1 = wrapText(line1, w)
 	}
-	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip(title, w))
+	line2 := wrapText(title, w)
 	meta := strings.Join(compactNonEmpty([]string{normalizePriorityLabel(pri), typ}), " · ")
 	if meta == "" {
 		meta = state
 	}
-	line3 := lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(meta, w))
+	line3 := wrapText(meta, w)
 	card := strings.Join([]string{line1, line2, line3}, "\n")
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
@@ -482,8 +467,8 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + normalizePriorityLabel(pri))
 	}
 	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
-	line1 := padRow(clip(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(clip(right, rightW)), w)
-	line2 := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(clip("  "+title, w))
+	line1 := padRow(wrapText(line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
+	line2 := wrapText("  "+title, w)
 	row := line1 + "\n" + line2
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
@@ -671,7 +656,7 @@ func (m model) renderRight(w int) string {
 		hdrRight := lipgloss.NewStyle().Foreground(visualForStatus(run.Status, visual)).Render(joinStatusParts(status, m.selectedRunClock()))
 		s = append(s, padRow(hdrLeft, hdrRight, w))
 		if run.Attention != "" {
-			s = append(s, lipgloss.NewStyle().Foreground(visual.Red).Render(clip("⚠ "+run.Attention, w)))
+			s = append(s, lipgloss.NewStyle().Foreground(visual.Red).Render(wrapText("⚠ "+run.Attention, w)))
 		}
 	} else {
 		title := it.Task.Title
@@ -803,7 +788,7 @@ func (m model) renderCompactRail(run Run, w int, visual paneVisual) string {
 	if state == "fail" {
 		st = st.Background(visual.FailBg)
 	}
-	return clip(st.Render(label), w)
+	return wrapText(st.Render(label), w)
 }
 
 // renderTaskRail renders the phase rail for a task (all phases shown as pending).
@@ -852,7 +837,7 @@ func (m model) renderCompactTaskRail(task Task, w int, visual paneVisual) string
 	gl, glc := m.railGlyph("pending")
 	label := fmt.Sprintf("%s %d/%d · workflow", gl, 1, len(task.Pipeline))
 	st := lipgloss.NewStyle().Foreground(visualColor(glc, visual)).Bold(true)
-	return clip(st.Render(label), w)
+	return wrapText(st.Render(label), w)
 }
 
 func (m model) renderTabs(w int, visual paneVisual) string {
@@ -887,7 +872,7 @@ func (m model) renderTabs(w int, visual paneVisual) string {
 			toks = append(toks, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
 		}
 	}
-	return clip(strings.Join(toks, ""), w)
+	return wrapText(strings.Join(toks, ""), w)
 }
 
 func (m model) selectedMessagePosition() (int, bool) {
@@ -948,7 +933,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		s = append(s, ViewerLine{Key: key, Text: text, Target: t})
 	}
 	kv := func(k, v string) string {
-		return dimStyle.Render(clip(k, 9)) + "  " + textStyle.Render(clip(v, w-11))
+		return dimStyle.Render(wrapText(k, 9)) + "  " + textStyle.Render(wrapText(v, w-11))
 	}
 
 	if !isRun {
@@ -975,7 +960,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		if m.glam != nil {
 			if out, err := m.glam.Render(desc); err == nil {
 				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-					s = append(s, ViewerLine{Key: "task:description:" + itoa(i), Text: clip(ln, w)})
+					s = append(s, ViewerLine{Key: "task:description:" + itoa(i), Text: wrapText(ln, w)})
 				}
 				return s
 			}
@@ -1072,7 +1057,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			if out, err := m.glam.Render(r.Preview); err == nil {
 				add("report-preview:"+r.Name+":spacer", "", t)
 				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-					add("report-preview:"+r.Name+":"+itoa(i), clip(ln, w), t)
+					add("report-preview:"+r.Name+":"+itoa(i), wrapText(ln, w), t)
 				}
 			}
 		}
@@ -1093,7 +1078,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 				stat = redStyle.Render("conflict")
 			}
 			t := fileTarget(run, f.Path, selectedDiffBase(run, m.config.Integrations), f.Conflict)
-			line := padRow(lipgloss.NewStyle().Foreground(cc).Render(f.Change)+" "+textStyle.Render(clip(f.Path, w-14)), stat, w)
+			line := padRow(lipgloss.NewStyle().Foreground(cc).Render(f.Change)+" "+textStyle.Render(wrapText(f.Path, w-14)), stat, w)
 			add("file:"+f.Path, line, t)
 		}
 		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {
@@ -1128,7 +1113,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 func detailKV(key, value string, w int, visual paneVisual) string {
 	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
 	textStyle := lipgloss.NewStyle().Foreground(visual.Text)
-	return dimStyle.Render("  "+key+"  ") + textStyle.Render(clip(value, max(1, w-len(key)-4)))
+	return dimStyle.Render("  "+key+"  ") + textStyle.Render(wrapText(value, max(1, w-len(key)-4)))
 }
 
 func detailWrapped(label, value string, w int, visual paneVisual) []string {
@@ -1189,8 +1174,8 @@ func messageCell(value string, width int, style lipgloss.Style) string {
 	displayW := ansi.StringWidth(value)
 	var text string
 	if displayW > width {
-		// Cut at the display width boundary
-		text = truncate.String(value, uint(width))
+		// Cut at the display width boundary (no ellipsis)
+		text = truncateToWidth(value, width)
 	} else {
 		text = value
 	}
@@ -1200,6 +1185,24 @@ func messageCell(value string, width int, style lipgloss.Style) string {
 		pad = 0
 	}
 	return style.Render(text) + strings.Repeat(" ", pad)
+}
+
+// truncateToWidth truncates a string to fit within w columns by visual width without ellipsis.
+func truncateToWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	result := []rune{}
+	width := 0
+	for _, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if width+rw > w {
+			break
+		}
+		result = append(result, r)
+		width += rw
+	}
+	return string(result)
 }
 
 // renderMessageRow returns a multi-line string:
@@ -1292,7 +1295,7 @@ func renderEventLines(events []Event, w int, visual paneVisual) []ViewerLine {
 		event := e
 		lines = append(lines, ViewerLine{
 			Key:  "event:" + itoa(i) + ":" + event.At + ":" + event.Type + ":" + event.Detail,
-			Text: clip(dimStyle.Render(event.At+" ")+yellowStyle.Render(event.Type)+" "+textStyle.Render(event.Detail), w),
+			Text: wrapText(dimStyle.Render(event.At+" ")+yellowStyle.Render(event.Type)+" "+textStyle.Render(event.Detail), w),
 			DetailFunc: func() []string {
 				detail := []string{
 					whiteStyle.Render("  Event detail"),
@@ -1484,10 +1487,10 @@ func (m model) renderAction(w int, visual paneVisual) string {
 			action += "  " + cyanStyle.Render("r") + dimStyle.Render(" retry") + "  " + cyanStyle.Render("A") + dimStyle.Render(" attach") + "  " + cyanStyle.Render("p") + dimStyle.Render(" omp") + "  " + cyanStyle.Render("P") + dimStyle.Render(" plain omp") + "  " + cyanStyle.Render("G") + dimStyle.Render(" gh dash") + "  " + cyanStyle.Render("C") + dimStyle.Render(" enhance")
 		}
 		lines := []string{
-			clip(action, w),
+			wrapText(action, w),
 		}
 		if _, ready := m.selectedReadyTask(); ready {
-			lines = append(lines, clip(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form")+"  "+cyanStyle.Render("N")+dimStyle.Render(" quick add"), w))
+			lines = append(lines, wrapText(cyanStyle.Render("a")+dimStyle.Render(" approve")+"  "+cyanStyle.Render("e")+dimStyle.Render(" edit")+"  "+cyanStyle.Render("n")+dimStyle.Render(" new task form")+"  "+cyanStyle.Render("N")+dimStyle.Render(" quick add"), w))
 		}
 		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
@@ -1496,14 +1499,14 @@ func (m model) renderAction(w int, visual paneVisual) string {
 			return ""
 		}
 		lines := []string{
-			clip(greenStyle.Render("▸ PR actions ")+cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
-			clip(dimStyle.Render(m.pr.URL), w),
+			wrapText(greenStyle.Render("▸ PR actions ")+cyanStyle.Render("o/enter")+dimStyle.Render(" open PR in browser")+"  "+cyanStyle.Render("G")+dimStyle.Render(" open gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" inspect CI in gh enhance"), w),
+			wrapText(dimStyle.Render(m.pr.URL), w),
 		}
 		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).Render(strings.Join(lines, "\n"))
 	}
 	runActionLine := ""
 	if run, ok := m.selectedRunnableRun(); ok {
-		runActionLine = clip(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset")+"  "+cyanStyle.Render("p")+dimStyle.Render(" omp")+"  "+cyanStyle.Render("P")+dimStyle.Render(" plain omp")+"  "+cyanStyle.Render("G")+dimStyle.Render(" gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" enhance"), w)
+		runActionLine = wrapText(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset")+"  "+cyanStyle.Render("p")+dimStyle.Render(" omp")+"  "+cyanStyle.Render("P")+dimStyle.Render(" plain omp")+"  "+cyanStyle.Render("G")+dimStyle.Render(" gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" enhance"), w)
 	}
 	t := resolveTarget(m)
 	if !t.ok {
@@ -1521,10 +1524,10 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	if tabNames[m.tab] == "files" {
 		lines := []string{
 			dimStyle.Render(strings.Repeat("┄", w)),
-			clip(head, w),
-			clip(dimStyle.Render("$ ")+cyanStyle.Render(diffCmd), w),
-			clip(dimStyle.Render("→ "+diffMode), w),
-			clip(cyanStyle.Render("o")+dimStyle.Render(" open plain  ")+cyanStyle.Render("d")+dimStyle.Render(" open selected diff  ")+cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
+			wrapText(head, w),
+			wrapText(dimStyle.Render("$ ")+cyanStyle.Render(diffCmd), w),
+			wrapText(dimStyle.Render("→ "+diffMode), w),
+			wrapText(cyanStyle.Render("o")+dimStyle.Render(" open plain  ")+cyanStyle.Render("d")+dimStyle.Render(" open selected diff  ")+cyanStyle.Render("D")+dimStyle.Render(" open run diff in diffnav"), w),
 		}
 		if runActionLine != "" {
 			lines = append(lines, runActionLine)
@@ -1533,12 +1536,12 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	}
 	lines := []string{
 		dimStyle.Render(strings.Repeat("┄", w)),
-		clip(head, w),
-		clip(dimStyle.Render("$ ")+cyanStyle.Render(plainCmd), w),
-		clip(dimStyle.Render("→ "+plainMode), w),
+		wrapText(head, w),
+		wrapText(dimStyle.Render("$ ")+cyanStyle.Render(plainCmd), w),
+		wrapText(dimStyle.Render("→ "+plainMode), w),
 	}
 	if idx, ok := m.selectedLogIndex(); ok {
-		lines = append(lines, clip(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx].Message), w))
+		lines = append(lines, wrapText(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx].Message), w))
 	}
 	if runActionLine != "" {
 		lines = append(lines, runActionLine)
