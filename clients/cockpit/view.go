@@ -94,8 +94,15 @@ func (m model) renderBoardFrame() string {
 	boardVisual := paneVisualFor(!m.viewFocused, m.config.Cockpit.Focus)
 	activitiesVisual := paneVisualFor(m.viewFocused, m.config.Cockpit.Focus)
 	boardRaw := m.renderBoard(total, boardH)
+	// Pass the allocated activities height through the copied model so
+	// renderRight's viewerBodyWindowHeight uses the allocated pane height
+	// instead of re-splitting the bottom pane via boardLayoutHeights.
+	// Without this, the viewer collapses to a small height and the rest of
+	// the activities pane is blank. Storing raw activitiesH (matching the
+	// lipgloss pane Height) keeps the action bar within the visible pane.
 	activitiesModel := m
 	activitiesModel.height = activitiesH + 3
+	activitiesModel.detailHeightOverride = activitiesH
 	activitiesRaw := activitiesModel.renderRight(max(20, total-2))
 	board := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(boardVisual.Border).Width(total - 2).Height(boardH).MaxHeight(boardH).MaxWidth(total).Render(boardRaw)
 	activities := lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderTop(false).BorderForeground(activitiesVisual.Border).Width(total - 2).Height(activitiesH).MaxHeight(activitiesH).MaxWidth(total).Render(activitiesRaw)
@@ -244,10 +251,11 @@ func (m model) renderStatusBar(w int) string {
 	if total := len(m.taskList.Items()); total > 0 {
 		position = fmt.Sprintf("%d/%d", m.taskList.SelectedIndex()+1, total)
 	}
-	// Surface the selected task ID inline so it's always visible regardless
-	// of layout mode (board mode hides the board cards for non-summary tabs).
-	// Truncate aggressively — the status bar is one line and the frame
-	// height math assumes so. ~20 chars fits any reasonable task ID.
+	// Surface the selected task ID inline so the user can always tell which
+	// task is selected regardless of layout mode or color/contrast (the
+	// status bar stays visible even when the focus scrolls inside the
+	// viewer). Truncate aggressively — the status bar is one line and the
+	// frame height math assumes so. ~20 chars fits any reasonable task ID.
 	const maxSelected = 20
 	selected := ""
 	if it, ok := m.selectedItem(); ok {

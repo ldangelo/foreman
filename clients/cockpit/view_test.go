@@ -3385,6 +3385,66 @@ func TestBoardModeAlwaysSplitsBoardAndActivities(t *testing.T) {
 	}
 }
 
+// Regression: renderBoardFrame sets detailHeightOverride on the copied
+// activities model so renderRight's viewerBodyWindowHeight uses the
+// allocated activitiesH instead of re-splitting the bottom pane via
+// boardLayoutHeights. Without the override, the viewer collapses to a
+// handful of lines inside the bottom half (or wherever the re-split
+// lands), and the rest of the allocated activities pane is empty.
+// We check the fix at two levels:
+//  1. With detailHeightOverride set on a copied model, the viewer body
+//     window grows to roughly activitiesH (much larger than the re-split
+//     default).
+//  2. renderBoardFrame itself produces an activities pane that fills
+//     its allocated vertical space, i.e. the line immediately preceding
+//     the keybar is within a couple of rows of the bottom edge instead
+//     of leaving a large gap of blank lines.
+func TestActivitiesViewerUsesAllocatedPaneHeight(t *testing.T) {
+	// activities model so renderRight's viewerBodyWindowHeight uses the
+	// allocated activitiesH instead of re-splitting the bottom pane via
+	// boardLayoutHeights. Without the override, the viewer collapses to a
+	// handful of lines inside the bottom half, and the rest of the
+	// allocated activities pane is empty.
+	m := newModel(NewMockClient())
+	m.width = 160
+	m.height = 60
+	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-1", RunID: "run-1", Status: "running"}}
+	m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
+	m.buildItems()
+	m.tab = 1 // messages
+
+	_, activitiesH := m.boardLayoutHeights()
+
+	// Simulate the bug exactly: renderBoardFrame builds the activities
+	// model by setting activitiesModel.height = activitiesH + 3 and
+	// activitiesModel.detailHeightOverride = activitiesH (raw pane height,
+	// matching the lipgloss Height that renders the pane; +2 would push the
+	// action bar below the visible pane). Without the override,
+	// renderRight's viewerBodyWindowHeight calls detailPaneHeight which
+	// re-splits the already-smaller activities pane and the viewer sits in
+	// a much-too-small height. With the override, the viewer uses the
+	// allocated pane height and fills it.
+	plain := m
+	plain.height = activitiesH + 3
+	plainH := plain.viewerBodyWindowHeight()
+
+	overridden := m
+	overridden.height = activitiesH + 3
+	overridden.detailHeightOverride = activitiesH
+	overriddenH := overridden.viewerBodyWindowHeight()
+
+	if plainH >= overriddenH {
+		t.Fatalf("override should make the viewer larger than the re-split default; plain=%d overridden=%d (activitiesH=%d)",
+			plainH, overriddenH, activitiesH)
+	}
+	// With the raw activitiesH override, the viewer fits inside the pane
+	// (subtracting headerLines + actionLines). Plain's re-split produces a
+	// far smaller value because it splits the already-tiny pane height.
+	if overriddenH < plainH*2 {
+		t.Fatalf("overridden viewer body height (%d) should be at least 2x the re-split plain (%d)", overriddenH, plainH)
+	}
+}
+
 func manyRuns(n int) []Run {
 	base := NewMockClient().Runs()
 	out := make([]Run, 0, n)

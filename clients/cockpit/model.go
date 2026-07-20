@@ -64,10 +64,15 @@ type model struct {
 
 	width, height int
 	notice        string
+
+	// detailHeightOverride, when > 0, replaces the board-mode
+	// detailPaneHeight() computation. Used to render the activities pane
+	// without re-splitting the already-allocated activities height.
+	detailHeightOverride int
 }
 
-// messages
 type tickMsg time.Time
+
 type dataMsg struct {
 	projectID    string
 	runs         []Run
@@ -980,8 +985,13 @@ func (m model) detailPaneWidth() int {
 }
 
 func (m model) detailPaneHeight() int {
-	// Board mode splits the body into board (top) + activities (bottom).
-	// List mode uses the full body height for the right pane.
+	// detailHeightOverride stores the raw allocated activities pane height.
+	// We return it as-is so renderRight's viewerBodyWindowHeight uses the
+	// pane height (matching the lipgloss Height that renders it) instead of
+	// re-splitting the already-allocated bottom pane via boardLayoutHeights.
+	if m.boardMode() && m.detailHeightOverride > 0 {
+		return m.detailHeightOverride
+	}
 	if m.boardMode() {
 		_, activitiesH := m.boardLayoutHeights()
 		return activitiesH + 2
@@ -999,9 +1009,8 @@ func (m model) boardLayoutHeights() (int, int) {
 		bodyH = 4
 	}
 	// Hit testing and rendering both rely on this layout, so they must agree.
-	// For non-summary tabs in board mode, renderBoardFrame suppresses the
-	// board area entirely; hit tests in that case should still treat the top
-	// of the right pane as the activities region.
+	// In board mode, the body is split into board (top) + activities (bottom);
+	// the activities pane always shares the bottom half.
 	boardH := int(float64(bodyH) * m.layoutSplit())
 	if boardH < 4 {
 		boardH = 4
