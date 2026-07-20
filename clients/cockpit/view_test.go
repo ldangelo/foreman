@@ -3335,24 +3335,22 @@ func assertViewHeight(t *testing.T, m model) {
 }
 
 
-func TestBoardRightPaneUsesFullHeightForNonSummaryTabs(t *testing.T) {
-	// Bug guard: in board mode the right pane used to be split into
-	// board cards (top) + activities (bottom), so non-summary tabs
-	// (messages, events, logs) only got the bottom half. When the active
-	// tab is not summary, the right pane should use the full body.
+// Board mode is always a vertical split: board (top) + activities (bottom).
+// detailPaneHeight must match the activities split so the viewer fits, and
+// the board columns + ▶ marker must stay visible on every tab.
+func TestBoardModeAlwaysSplitsBoardAndActivities(t *testing.T) {
 	cases := []struct {
 		name   string
 		tabIdx int
-		wantMin int // right pane must use at least this many lines
 	}{
-		{"summary", 0, 12},  // summary keeps the split; only need a few lines
-		{"messages", 1, 20}, // messages gets the full body
-		{"events", 2, 20},
-		{"logs", 3, 20},
-		{"reports", 4, 20},
-		{"files", 5, 20},
-		{"pr", 6, 20},
-		{"metrics", 7, 20},
+		{"summary", 0},
+		{"messages", 1},
+		{"events", 2},
+		{"logs", 3},
+		{"reports", 4},
+		{"files", 5},
+		{"pr", 6},
+		{"metrics", 7},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3364,31 +3362,26 @@ func TestBoardRightPaneUsesFullHeightForNonSummaryTabs(t *testing.T) {
 			m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
 			m.buildItems()
 
-			h := m.detailPaneHeight()
-			if h < tc.wantMin {
-				t.Fatalf("tab %q: expected detailPaneHeight >= %d, got %d (half the body should not be the limit)",
-					tc.name, tc.wantMin, h)
+			_, activitiesH := m.boardLayoutHeights()
+			got := m.detailPaneHeight()
+			if got != activitiesH+2 {
+				t.Fatalf("tab %q: detailPaneHeight = %d, want activitiesH+2 = %d (board must always split; activities gets the bottom half)",
+					tc.name, got, activitiesH+2)
+			}
+
+			out := stripANSI(m.renderFrame())
+			// Board columns must still appear even on non-summary tabs — the
+			// user wants the board on top, details on bottom, never full-
+			// screen details.
+			if !strings.Contains(out, "Backlog") {
+				t.Fatalf("tab %q: expected board columns in renderFrame, got:\n%s", tc.name, out)
+			}
+			// Status bar must surface the selected task so selection is
+			// visible regardless of active tab.
+			if !strings.Contains(out, "▶ ") {
+				t.Fatalf("tab %q: expected ▶ marker in status bar, got:\n%s", tc.name, out)
 			}
 		})
-	}
-}
-
-func TestRenderBoardFrameHidesBoardForNonSummaryTabs(t *testing.T) {
-	// Bug guard: when the active tab is not summary in board mode, the
-	// board cards should be hidden so the right pane (messages/etc.) gets
-	// the full body. Verify renderFrame output doesn't contain board columns
-	// (Backlog/Ready/In Progress/Blocked/Done) when on a non-summary tab.
-	m := newModel(NewMockClient())
-	m.width = 140
-	m.height = 24
-	m.runs = []Run{{Group: taskGroupRunning, TaskID: "task-1", RunID: "run-1", Status: "running"}}
-	m.tasks = []Task{{TaskID: "task-1", Status: "running"}}
-	m.buildItems()
-	m.tab = 1 // messages
-
-	out := stripANSI(m.renderFrame())
-	if strings.Contains(out, "Backlog") || strings.Contains(out, "In Progress") {
-		t.Fatalf("expected board columns to be hidden on messages tab, got:\n%s", out)
 	}
 }
 

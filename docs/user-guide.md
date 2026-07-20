@@ -322,7 +322,7 @@ foreman pr
 
 The legacy board interaction model still applies when Foreman uses the non-cockpit board path (`--filter`, `--all`, or non-TTY): `h/l` columns, status cycling, `R` ready, close/edit keys, and task creation remain there.
 
-In board mode the right pane splits vertically into board cards (top) and tab content (bottom) when on the `summary` tab. On non-summary tabs (`messages`, `events`, `logs`, `reports`, `files`, `pr`, `metrics`), the board cards are hidden and the right pane uses the full body height so messages and other tab content aren't squeezed into the bottom half. Switch to the `summary` tab to see the board alongside a compact run summary; switch to `messages` to see the full message list with no board distraction.
+In board mode the pane splits vertically into board cards (top) and tab content (bottom) on every tab (`summary`, `messages`, `events`, `logs`, `reports`, `files`, `pr`, `metrics`). The status bar surfaces the selected task ID with a `▶` marker so you can always tell which task is selected, regardless of the active tab.
 
 Common cockpit keys:
 
