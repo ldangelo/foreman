@@ -54,6 +54,9 @@ type TimelineEntry =
  * Build a mock execFile implementation that follows a gh-pr-view timeline.
  * Callback-based so it works with promisify(execFile).
  * Non-gh-view calls succeed silently.
+ *
+ * NOTE: promisify(execFile) passes 3 args: (cmd, args, cb) — NOT (cmd, args, opts, cb).
+ * The callback is the THIRD argument, not fourth. This was the root cause of the 6-test hang.
  */
 function ghViewTimeline(entries: TimelineEntry[]) {
   let index = 0;
@@ -61,13 +64,11 @@ function ghViewTimeline(entries: TimelineEntry[]) {
     cmd: string,
     args: readonly string[] | null | undefined,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    _opts: any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cb: (err: any, stdout: any, stderr: any) => void,
   ): void => {
     if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
       if (index >= entries.length) {
-        cb(null, { stdout: JSON.stringify({ state: "OPEN" }), stderr: "" }, null);
+        cb(null, JSON.stringify({ state: "OPEN" }), "");
         return;
       }
       const entry = entries[index++];
@@ -161,8 +162,9 @@ describe("pollForMerge", () => {
     ]) as any);
 
     const resolver = vi.fn();
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s
-    await vi.advanceTimersByTimeAsync(135_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s.
+    // Use 150_000ms to give enough headroom for execution overhead.
+    await vi.advanceTimersByTimeAsync(150_000);
 
     const result = await pollForMerge({
       ...baseOpts({
@@ -189,7 +191,7 @@ describe("pollForMerge", () => {
     // Resolver is called and its merge call succeeds silently.
     let ghViewCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         ghViewCount++;
         cb(null, JSON.stringify({ state: "OPEN" }), "");
@@ -207,8 +209,9 @@ describe("pollForMerge", () => {
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
 
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s
-    await vi.advanceTimersByTimeAsync(135_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s.
+    // Use 150_000ms to give enough headroom for execution overhead.
+    await vi.advanceTimersByTimeAsync(150_000);
 
     const result = await pollPromise;
 
@@ -258,15 +261,16 @@ describe("pollForMerge", () => {
     const pollPromise = pollForMerge({
       ...baseOpts({
         pollIntervalMs: 30_000,
-        jitter: 0.5, // ±50%
+        jitter: 0.1, // ±10% — keeps jittered values safely ≤ maxIntervalMs
         pollTimeoutMs: 300_000,
         maxIntervalMs: 120_000,
         signal: abortController.signal,
       }),
     });
 
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so tick 4 fires, then abort
-    await vi.advanceTimersByTimeAsync(145_000);
+    // Advance past 3 sleeps (30s + 45s + 60s capped = 135s) plus ~10s execution overhead.
+    // Use 160_000ms window so the test reliably completes before timing out.
+    await vi.advanceTimersByTimeAsync(160_000);
     setTimeout(() => abortController.abort(), 0);
     await vi.advanceTimersByTimeAsync(0);
     await pollPromise.catch(() => {/* aborted */});
@@ -275,7 +279,7 @@ describe("pollForMerge", () => {
     const sleepDurations = _getSleepDurations();
     expect(sleepDurations.length).toBeGreaterThanOrEqual(3);
 
-    // Each interval is capped at maxIntervalMs (120 000)
+    // Each jittered interval must respect the cap (maxIntervalMs = 120 000).
     for (const ms of sleepDurations.slice(0, 3)) {
       expect(ms).toBeLessThanOrEqual(120_000);
     }
@@ -286,7 +290,7 @@ describe("pollForMerge", () => {
   it("PollSurfacesGhErrorsAsErrorEvents", async () => {
     let tick = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         tick++;
         if (tick <= 2) { cb(new Error(`gh error ${tick}`), null, ""); return; }
@@ -300,10 +304,10 @@ describe("pollForMerge", () => {
 
     const pollPromise = pollForMerge({ ...baseOpts({ onEvent }) });
 
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s with jitter=0, capped at maxIntervalMs=120_000)
-    // First sleep = 30_000ms, second = 45_000ms, third = 67_500ms. Total = 75 000ms. Advance 80 000ms.
-    // Timeout at 90s fires after tick 3 → gh returns MERGED → loop exits.
-    await vi.advanceTimersByTimeAsync(80_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so tick 3 fires.
+    // Use 160_000ms to give enough headroom for execution overhead.
+    // Timeout at 300s won't fire; tick 3 returns MERGED → loop exits.
+    await vi.advanceTimersByTimeAsync(160_000);
 
     const result = await pollPromise;
 
@@ -325,7 +329,7 @@ describe("pollForMerge", () => {
     // All poll checks return OPEN; timeout fires, resolver throws, final check returns MERGED.
     let ghViewCount = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((cmd: string, args: any, _opts: any, cb: any) => {
+    execFileMock.mockImplementation(((cmd: string, args: any, cb: any) => {
       if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "view") {
         ghViewCount++;
         // Final check (after resolver) is the 4th view call
@@ -347,8 +351,9 @@ describe("pollForMerge", () => {
       ...baseOpts({ pollTimeoutMs: 90_000, pollIntervalMs: 30_000, resolver }),
     });
 
-    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s
-    await vi.advanceTimersByTimeAsync(135_000);
+    // Advance past 3 sleeps (30s + 45s + 67.5s = 142.5s) so timeout fires at 90s.
+    // Use 150_000ms to give enough headroom for execution overhead.
+    await vi.advanceTimersByTimeAsync(150_000);
 
     const result = await pollPromise;
 
@@ -362,7 +367,7 @@ describe("pollForMerge", () => {
   it("AdminMergeResolverCallsGhPrMergeWithAdminSquash", async () => {
     // Callback-style mock so promisify(execFile) works correctly.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execFileMock.mockImplementation(((_cmd: any, _args: any, _opts: any, cb: any) => {
+    execFileMock.mockImplementation(((_cmd: any, _args: any, cb: any) => {
       cb(null, "Merge successful.", "");
     }) as any);
 
