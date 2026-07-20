@@ -93,6 +93,7 @@ See `docs/guides/elixir-backend-architecture.md` for the operator architecture, 
 - `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
 - `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (`send_mail`, `mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`, `diff_read`, `git_status`, `pr_review_finding`, `merge_gate_status`, `task_get`, `task_status`, `task_note_add`, `task_risk_add`, `file_reserve`, `file_release`, `file_changes`)
 - `src/orchestrator/agent-worker.ts` — detached worker process, pipeline orchestration
+- `src/orchestrator/merge-polling.ts` — composable polling interface for GitHub PR merge detection; replaces inline `while` loop in `runMergeBuiltinPhase` with configurable timeout/interval/backoff; exports `pollForMerge` and `adminMergeResolver`
 - `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
 - `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
 - `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
