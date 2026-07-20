@@ -138,7 +138,12 @@ bars without client-side authoritative aggregation.
 
 The keybar includes an explicit focus label: `focus: board` / `focus:
 activities` in board mode and `focus: tasks` / `focus: details` in the list
-fallback. The focused region uses the accent border; inactive regions use the
+fallback. In board mode the right pane splits vertically into board cards
+(top) and tab content (bottom); on the **summary** tab this split is
+active. On **non-summary** tabs (messages, events, logs, reports,
+files, pr, metrics) the board cards are hidden and the right pane uses
+the full body height so the tab content gets all available lines. The
+focused region uses the accent border; inactive regions use the
 blur border and, by default, a muted content palette controlled by
 `cockpit.focus`. Mouse input mirrors keyboard targets for visible board cards,
 fallback task-list sections/rows, and drill-down tabs; wheel routing remains

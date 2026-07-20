@@ -980,6 +980,18 @@ func (m model) detailPaneWidth() int {
 }
 
 func (m model) detailPaneHeight() int {
+	// Board mode splits the right pane into board cards (top) + activities
+	// (bottom). For non-summary tabs (messages, events, logs, etc.), the
+	// user is focused on tab content; the board cards are noise. Give the
+	// right pane the full body so messages/logs can use all the height.
+	// `renderBoardFrame` hides the board in that case so the layout works.
+	if m.boardMode() && tabNames[m.tab] != "summary" {
+		bodyH := m.height - 5
+		if bodyH < 4 {
+			bodyH = 4
+		}
+		return bodyH + 2
+	}
 	if m.boardMode() {
 		_, activitiesH := m.boardLayoutHeights()
 		return activitiesH + 2
