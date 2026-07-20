@@ -1129,8 +1129,22 @@ func messageColumnWidths(w int) (int, int, int, int) {
 	return timeW, fromW, toW, msgW
 }
 
+// messageCell renders a value at a fixed column width without ellipsis truncation.
+// For metadata columns (time/from/to) that need fixed-width alignment.
 func messageCell(value string, width int, style lipgloss.Style) string {
-	text := clip(value, width)
+	if width <= 0 {
+		return ""
+	}
+	// Truncate without ellipsis — just cut at display width
+	displayW := ansi.StringWidth(value)
+	var text string
+	if displayW > width {
+		// Cut at the display width boundary
+		text = truncate.String(value, uint(width))
+	} else {
+		text = value
+	}
+	// Pad to column width for alignment
 	pad := width - ansi.StringWidth(text)
 	if pad < 0 {
 		pad = 0
@@ -1138,8 +1152,11 @@ func messageCell(value string, width int, style lipgloss.Style) string {
 	return style.Render(text) + strings.Repeat(" ", pad)
 }
 
+// renderMessageRow returns a multi-line string:
+//   - Row 1: time/from/to at their column widths
+//   - Row 2+: message body word-wrapped at full pane width (no ellipsis)
 func renderMessageRow(at, from, to, message string, w int, visual paneVisual, header bool) string {
-	timeW, fromW, toW, msgW := messageColumnWidths(w)
+	timeW, fromW, toW, _ := messageColumnWidths(w)
 	style := lipgloss.NewStyle().Foreground(visual.Text)
 	if header {
 		style = lipgloss.NewStyle().Foreground(visual.Dim).Bold(true)
@@ -1154,7 +1171,28 @@ func renderMessageRow(at, from, to, message string, w int, visual paneVisual, he
 		toStyle = lipgloss.NewStyle().Foreground(visual.Purple)
 		msgStyle = lipgloss.NewStyle().Foreground(visual.Cyan)
 	}
-	return strings.TrimRight(messageCell(at, timeW, timeStyle)+"  "+messageCell(from, fromW, fromStyle)+"  "+messageCell(to, toW, toStyle)+"  "+messageCell(message, msgW, msgStyle), " ")
+
+	// Row 1: metadata columns (time, from, to)
+	row1 := strings.TrimRight(messageCell(at, timeW, timeStyle)+"  "+messageCell(from, fromW, fromStyle)+"  "+messageCell(to, toW, toStyle), " ")
+
+	if header {
+		// Header row: no body line
+		return row1
+	}
+
+	// Row 2+: message body at full pane width
+	var rows []string
+	if message != "" {
+		for _, line := range wrap(message, w) {
+			rows = append(rows, msgStyle.Render(line))
+		}
+	}
+
+	if len(rows) == 0 {
+		return row1
+	}
+
+	return row1 + "\n" + strings.Join(rows, "\n")
 }
 
 func messagePreview(message Message) string {

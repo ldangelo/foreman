@@ -3389,3 +3389,123 @@ func TestBoardCardRendersCreatedAndUpdatedAges(t *testing.T) {
 		}
 	}
 }
+
+// TestMessageRowOmitsEllipsisFromBody verifies that renderMessageRow does not
+// insert ellipsis (…) characters anywhere in the output, including the body.
+func TestMessageRowOmitsEllipsisFromBody(t *testing.T) {
+	visual := paneVisualFor(true, defaultConfig().Cockpit.Focus)
+	longBody := "This is a very long message body that should not be truncated with an ellipsis character because we want the full text to be visible in the viewport"
+	out := renderMessageRow("2026-07-12T13:45:00Z", "very-long-sender-name-here", "very-long-recipient-name-here", longBody, 103, visual, false)
+
+	// Check that no ellipsis character appears anywhere in the output
+	if strings.Contains(out, "…") {
+		t.Fatalf("renderMessageRow should not contain ellipsis character, got:\n%s", out)
+	}
+}
+
+// TestMessageBodyUsesFullPaneWidth verifies that the message body uses the
+// full available pane width rather than being squeezed into a narrower column.
+func TestMessageBodyUsesFullPaneWidth(t *testing.T) {
+	visual := paneVisualFor(true, defaultConfig().Cockpit.Focus)
+	// Body that is long enough to fill most of a 103-col pane
+	longBody := "The user interface should display the message body using the full available width of the viewport so that users can read more content without unnecessary horizontal scrolling"
+	out := renderMessageRow("2026-07-12T13:45:00Z", "sender@example.com", "recipient@example.com", longBody, 103, visual, false)
+
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines (header + body), got %d lines:\n%s", len(lines), out)
+	}
+
+	// Find body lines (all lines after the first)
+	bodyLines := lines[1:]
+	if len(bodyLines) == 0 {
+		t.Fatalf("expected body lines, got none in:\n%s", out)
+	}
+
+	// Check that at least one body line uses close to full pane width (within 2 cols)
+	maxBodyWidth := 0
+	for _, line := range bodyLines {
+		w := ansi.StringWidth(stripANSI(line))
+		if w > maxBodyWidth {
+			maxBodyWidth = w
+		}
+	}
+
+	// Body should use at least 80% of the pane width to be considered "full width"
+	minExpected := 80
+	if maxBodyWidth < minExpected {
+		t.Fatalf("body should use at least %d cols of the %d-col pane, got max %d:\n%s", minExpected, 103, maxBodyWidth, out)
+	}
+}
+
+// TestMessageColumnWidthsAllocatesAllSpace verifies that messageColumnWidths
+// correctly allocates all available space and preserves the gap widths.
+func TestMessageColumnWidthsAllocatesAllSpace(t *testing.T) {
+	w := 103
+	timeW, fromW, toW, msgW := messageColumnWidths(w)
+	gapWidth := 6 // 2 spaces between each of 3 gaps
+
+	total := timeW + fromW + toW + msgW + gapWidth
+	if total != w {
+		t.Fatalf("timeW(%d) + fromW(%d) + toW(%d) + msgW(%d) + gap(%d) = %d, want %d",
+			timeW, fromW, toW, msgW, gapWidth, total, w)
+	}
+
+	// Each cell should be at least a minimum width
+	if timeW < 1 || fromW < 1 || toW < 1 || msgW < 1 {
+		t.Fatalf("each cell should have at least width 1, got timeW=%d fromW=%d toW=%d msgW=%d",
+			timeW, fromW, toW, msgW)
+	}
+}
+
+// TestMessageRowWrapsLongBody verifies that a body longer than the column width
+// wraps onto multiple visual lines without losing any words.
+func TestMessageRowWrapsLongBody(t *testing.T) {
+	visual := paneVisualFor(true, defaultConfig().Cockpit.Focus)
+	// A body with multiple distinct words that should all appear in the output
+	body := "The quick brown fox jumps over the lazy dog complete sentence here"
+	out := renderMessageRow("2026-07-12T13:45:00Z", "from", "to", body, 40, visual, false)
+
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected body to wrap to multiple lines, got %d lines:\n%s", len(lines), out)
+	}
+
+	// Join all body lines (everything after row 1)
+	bodyText := strings.Join(lines[1:], " ")
+
+	// Every word should appear in the output (no words lost to truncation)
+	for _, word := range strings.Fields(body) {
+		if !strings.Contains(bodyText, word) {
+			t.Fatalf("expected word %q to appear in wrapped body, got:\n%s", word, out)
+		}
+	}
+}
+
+// TestMessageRowUsesFullWidth verifies that renderMessageRow places the body
+// on a second row that uses the full pane width.
+func TestMessageRowUsesFullWidth(t *testing.T) {
+	visual := paneVisualFor(true, defaultConfig().Cockpit.Focus)
+	body := "Short subject line for testing"
+	out := renderMessageRow("2026-07-12T13:45:00Z", "sender@short.com", "recipient@short.com", body, 103, visual, false)
+
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected exactly 2 lines (metadata + body), got %d lines:\n%s", len(lines), out)
+	}
+
+	// Row 1 should contain metadata (time, from, to)
+	if !strings.Contains(lines[0], "2026-07-12") {
+		t.Fatalf("row 1 should contain time metadata, got: %s", lines[0])
+	}
+
+	// Row 2 should be the body
+	if lines[1] == "" {
+		t.Fatalf("body row should not be empty, got: %s", out)
+	}
+
+	// Body should not contain any ellipsis
+	if strings.Contains(lines[1], "…") {
+		t.Fatalf("body should not contain ellipsis, got: %s", lines[1])
+	}
+}
