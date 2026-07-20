@@ -41,9 +41,13 @@ type model struct {
 	pr             PRStatus
 	metrics        Metrics
 	metricsLoading bool
-	// dataLoading guards against overlapping 4-endpoint refreshes. Every tick
-	// fires loadData; if the API is slow, the queue grows and keypresses lag.
+	// dataLoading is true while a loadData is in flight; guards the 2s tick from
+	// backlogging a new request when the API is slow. dataGeneration is the
+	// generation of the most recent dispatched loadData; a dataMsg with a
+	// different generation is stale (dropped). Init uses gen=0; subsequent
+	// startDataLoad calls increment.
 	dataLoading    bool
+	dataGeneration int
 	diffPreviews   map[string]DiffPreview
 	diffLoading    map[string]bool
 	liveSpinner    spinner.Model
@@ -70,7 +74,12 @@ type dataMsg struct {
 	tasks        []Task
 	metrics      Metrics
 	errors       []string
-	boardColumns map[string][]BoardItem // nil means derive from runs/tasks; non-nil is server-authoritative
+	boardColumns map[string][]BoardItem
+	// generation identifies which loadData dispatch this is responding to.
+	// A dataMsg whose generation does not match m.dataGeneration is stale and
+	// is dropped, so a faster in-flight response can't clobber a slower
+	// newer one.
+	generation int
 }
 type nvimDoneMsg struct {
 	err    error
@@ -127,32 +136,39 @@ func newModelWithConfig(c Client, cfg Config, tools ToolResolver) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(loadData(m.client), tick(), m.syncMotionCmd())
+	// Pass 0 to match the constructor's dataGeneration=0; the first dataMsg
+	// (gen=0) will be the one that updates state.
+	return tea.Batch(loadData(m.client, 0), tick(), m.syncMotionCmd())
 }
 
 func tick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-func loadData(c Client) tea.Cmd {
+func loadData(c Client, gen int) tea.Cmd {
 	return func() tea.Msg {
 		runs := c.Runs()
 		tasks := c.Dispatchable()
 		metrics := c.Metrics()
 		boardColumns := c.BoardColumns()
-		return dataMsg{projectID: c.ProjectID(), runs: runs, tasks: tasks, metrics: metrics, boardColumns: boardColumns, errors: c.DrainErrors()}
+		return dataMsg{projectID: c.ProjectID(), runs: runs, tasks: tasks, metrics: metrics, boardColumns: boardColumns, errors: c.DrainErrors(), generation: gen}
 	}
 }
 
-// startDataLoad returns the loadData Cmd, guarding against overlapping refreshes.
-// Pass force=true for paths that must refresh (action reloads). Tick uses
-// force=false so a slow API doesn't backlog a new request every 2s.
+// startDataLoad returns the loadData Cmd, guarding against overlapping refreshes
+// and tagging the dispatch with a monotonically-incrementing generation. Tick
+// uses force=false so a slow API doesn't backlog a new request every 2s;
+// action reloads use force=true to bypass the guard. If two loads are in
+// flight, only the response matching the latest generation updates state; older
+// responses are dropped to prevent a faster stale load from clobbering the
+// newer one.
 func (m *model) startDataLoad(force bool) tea.Cmd {
 	if m.dataLoading && !force {
 		return nil
 	}
 	m.dataLoading = true
-	return loadData(m.client)
+	m.dataGeneration++
+	return loadData(m.client, m.dataGeneration)
 }
 
 const mouseWheelStep = 3
@@ -196,12 +212,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case dataMsg:
+		// Drop stale responses from older dispatches; a slow in-flight load
+		// must not be clobbered by a faster subsequent one.
+		if msg.generation != m.dataGeneration {
+			return m, nil
+		}
 		hadViewerRows := m.detailUsesViewer() && m.rowCount() > 0
 		m.runs, m.tasks, m.metrics = msg.runs, msg.tasks, msg.metrics
 		m.metricsLoading = false
 		// Mark the in-flight refresh complete so the next tick can fire.
 		m.dataLoading = false
-		m.taskList.SetProjectID(msg.projectID)
 		m.boardItems = nil // clear until buildItems processes them
 		if msg.boardColumns != nil {
 			m.boardItems = boardItemsFromColumns(msg.boardColumns, m.tasks)
