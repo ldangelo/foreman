@@ -3,6 +3,7 @@ package main
 import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"strings"
 	"testing"
@@ -1739,8 +1740,13 @@ func TestDataUpdateScrollsViewerToBottom(t *testing.T) {
 		t.Fatalf("expected messages viewer cursor at bottom message header, got row=%d want=%d", m.viewer.Cursor(), want)
 	}
 	selected, ok := m.viewer.SelectedLine()
-	if !ok || !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(selected.Text)) {
-		t.Fatalf("expected bottom message header visible, got cursor=%d offset=%d selected=%#v", m.viewer.Cursor(), m.viewer.Offset(), selected)
+	if !ok {
+		t.Fatalf("expected a selected line")
+	}
+	// Check the header line (first line of the multi-line text)
+	headerLine := strings.SplitN(selected.Text, "\n", 2)[0]
+	if !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(headerLine)) {
+		t.Fatalf("expected bottom message header visible, got cursor=%d offset=%d header=%q", m.viewer.Cursor(), m.viewer.Offset(), headerLine)
 	}
 }
 
@@ -1798,8 +1804,14 @@ func TestSelectedMessageHeaderStaysVisibleInTinyViewport(t *testing.T) {
 		updated, _ = m.handleKey(keyPress("j"))
 		m = updated.(model)
 		selected, ok := m.viewer.SelectedLine()
-		if !ok || !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(selected.Text)) {
-			t.Fatalf("expected tiny viewport to show selected header while moving down, got cursor=%d offset=%d selected=%#v", m.viewer.Cursor(), m.viewer.Offset(), selected)
+		if !ok {
+			t.Fatalf("expected a selected line")
+		}
+		// Check the header line (first line of the multi-line selected text)
+		headerLine := strings.SplitN(selected.Text, "\n", 2)[0]
+		rendered := stripANSI(m.renderRight(m.rightPaneWidth()))
+		if !strings.Contains(rendered, stripANSI(headerLine)) {
+			t.Fatalf("expected tiny viewport to show selected header while moving down, got cursor=%d offset=%d header=%q", m.viewer.Cursor(), m.viewer.Offset(), headerLine)
 		}
 	}
 }
@@ -1827,7 +1839,8 @@ func TestBottomMessageHeaderAndPositionRenderInTinyViewport(t *testing.T) {
 	if !strings.Contains(rendered, "running · messages 3/3") {
 		t.Fatalf("expected header to show selected message position, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "▶ 1") || !strings.Contains(rendered, "qa") || !strings.Contains(rendered, "developer") || !strings.Contains(rendered, "first") {
+	// Note: "first" (body) may be clipped in tiny viewport since body is on a second row
+	if !strings.Contains(rendered, "▶ 1") || !strings.Contains(rendered, "qa") || !strings.Contains(rendered, "developer") {
 		t.Fatalf("expected bottom selected message header to render in tiny viewport, got:\n%s", rendered)
 	}
 }
@@ -1964,8 +1977,13 @@ func TestViewerRefreshClampsWhenContentShrinks(t *testing.T) {
 	m = updated.(model)
 
 	selected, ok := m.viewer.SelectedLine()
-	if m.viewer.Cursor() != 0 || !ok || !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(selected.Text)) {
-		t.Fatalf("expected shrink to clamp to visible remaining message header, got row=%d offset=%d selected=%#v", m.viewer.Cursor(), m.viewer.Offset(), selected)
+	if m.viewer.Cursor() != 0 || !ok {
+		t.Fatalf("expected cursor clamped to 0 with one remaining message, got row=%d offset=%d", m.viewer.Cursor(), m.viewer.Offset())
+	}
+	// Check the header line (first line of the multi-line selected text)
+	headerLine := strings.SplitN(selected.Text, "\n", 2)[0]
+	if !strings.Contains(stripANSI(m.renderRight(m.rightPaneWidth())), stripANSI(headerLine)) {
+		t.Fatalf("expected clamped message header visible, got header=%q", headerLine)
 	}
 }
 
