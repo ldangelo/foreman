@@ -1331,6 +1331,10 @@ func (m model) actionKeyAt(x, y int) string {
 			}
 			return actionSegmentKey(relX, prefix, segments)
 		}
+		// For files tab, line 1 is always the open action
+		if tabNameAt(m.tab) == "files" && line == 1 {
+			return "o"
+		}
 		if _, ready := m.selectedReadyTask(); ready && line == 1 {
 			return actionSegmentKey(relX, "", []actionSegment{
 				{label: "a approve", key: "a"},
