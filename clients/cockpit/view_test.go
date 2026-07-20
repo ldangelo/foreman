@@ -2353,7 +2353,7 @@ func TestSelectedRunningRunShowsLiveClock(t *testing.T) {
 	}
 }
 
-func TestFocusedViewerClipsLongLogLinesAndShowsLineNumbers(t *testing.T) {
+func TestFocusedViewerPreservesFullLogMessages(t *testing.T) {
 	long := strings.Repeat("x", 80) + " TAIL"
 	client := &mutableClient{
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
@@ -2375,12 +2375,12 @@ func TestFocusedViewerClipsLongLogLinesAndShowsLineNumbers(t *testing.T) {
 	if !strings.Contains(before, "   2 ") || !strings.Contains(before, "10:00:01") {
 		t.Fatalf("expected log rows to render line numbers with timestamp, got:\n%s", before)
 	}
-	// Long log lines should be clipped with "…" ellipsis; "TAIL" should not appear
-	if strings.Contains(before, "TAIL") {
-		t.Fatalf("expected long log tail to be clipped with ellipsis, got:\n%s", before)
+	// Long log lines should preserve full message (no ellipsis, "TAIL" visible)
+	if !strings.Contains(before, "TAIL") {
+		t.Fatalf("expected long log message to be preserved without truncation, got:\n%s", before)
 	}
-	if !strings.Contains(before, "…") {
-		t.Fatalf("expected clipped long log line to show ellipsis, got:\n%s", before)
+	if strings.Contains(before, "…") {
+		t.Fatalf("expected no ellipsis in log messages, got:\n%s", before)
 	}
 }
 
@@ -3525,5 +3525,52 @@ func TestMessageRowUsesFullWidth(t *testing.T) {
 	// Body should not contain any ellipsis
 	if strings.Contains(lines[1], "…") {
 		t.Fatalf("body should not contain ellipsis, got: %s", lines[1])
+}
+
+// TestStatusBarPreservesFullText verifies status bar renders without ellipsis.
+func TestStatusBarPreservesFullText(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+	}
+	m := newModel(client)
+	m.width = 80
+	m.height = 12
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	rendered := stripANSI(m.renderStatusBar(40))
+	// Status bar should not contain ellipsis
+	if strings.Contains(rendered, "…") {
+		t.Fatalf("expected no ellipsis in status bar, got:\n%s", rendered)
+	}
+}
+
+// TestSearchBarPreservesQueryText verifies search bar renders without ellipsis.
+func TestSearchBarPreservesQueryText(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Summary: "first"}},
+	}
+	m := newModel(client)
+	m.width = 80
+	m.height = 12
+
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	// Set a long search query by simulating keypresses
+	m.taskList.StartSearch(keyPress("/"))
+	search := "this is a very long search query that exceeds typical width"
+	for _, ch := range search {
+		m.taskList.HandleSearchKey(keyPress(string(ch)))
+	}
+	updated, _ = m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+	rendered := stripANSI(m.renderNotice(30))
+	// Search notice should not contain ellipsis
+	if strings.Contains(rendered, "…") {
+		t.Fatalf("expected no ellipsis in search bar, got:\n%s", rendered)
+	}
+	// The word "query" should be present (from the search)
+	if !strings.Contains(rendered, "query") {
+		t.Fatalf("expected search query text to be preserved, got:\n%s", rendered)
 	}
 }

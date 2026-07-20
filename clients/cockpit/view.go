@@ -13,10 +13,11 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/reflow/truncate"
 	"github.com/muesli/reflow/wordwrap"
 )
 
+// clip truncates a string to fit within w columns (by visual width), without ellipsis.
+// Use wordwrap for content that should be preserved without truncation.
 func clip(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -24,7 +25,18 @@ func clip(s string, w int) string {
 	if ansi.StringWidth(s) <= w {
 		return s
 	}
-	return truncate.StringWithTail(s, uint(w), "…")
+	// Truncate without ellipsis - let the extra content be hidden (viewport can pan)
+	result := []rune{}
+	width := 0
+	for _, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if width+rw > w {
+			break
+		}
+		result = append(result, r)
+		width += rw
+	}
+	return string(result)
 }
 
 func padRow(left, right string, w int) string {
@@ -246,7 +258,12 @@ func (m model) renderStatusBar(w int) string {
 	right := greenStyle.Render(nvim) + dimStyle.Render(" · "+m.taskList.Scope()+" · ") +
 		yellowStyle.Render(section+" "+position) + dimStyle.Render(" · ") + cyanStyle.Render(m.liveIndicator())
 
-	return statusBarStyle.Width(w).Render(clip(padRow(left, right, w), w))
+	row := padRow(left, right, w)
+	// Use wordwrap for status bar content to preserve full text
+	if ansi.StringWidth(row) > w {
+		return statusBarStyle.Width(w).Render(wordwrap.String(row, w))
+	}
+	return statusBarStyle.Width(w).Render(row)
 }
 
 func (m model) renderNotice(w int) string {
@@ -261,15 +278,23 @@ func (m model) renderNotice(w int) string {
 		}
 		dbg := fmt.Sprintf("dbg items=%d sel=%d tab=%s row=%d termW=%d termH=%d sel=%s",
 			len(m.taskList.Items()), m.taskList.SelectedIndex(), tabNames[m.tab], m.viewer.Cursor(), m.width, m.height, sel)
-		return lipgloss.NewStyle().Width(w).Foreground(cYellow).Render(clip(" "+dbg, w))
+		// Debug overlay: use wordwrap to preserve full text
+		return lipgloss.NewStyle().Width(w).Foreground(cYellow).Render(wordwrap.String(" "+dbg, w))
 	}
 	if m.taskList.Searching() {
-		return statusBarStyle.Width(w).Render(clip(cyanStyle.Render("/")+m.taskList.Search()+"▏", w))
+		search := m.taskList.Search()
+		// Use wordwrap to preserve full search query text
+		rendered := cyanStyle.Render("/") + search + "▏"
+		if ansi.StringWidth(rendered) > w {
+			rendered = wordwrap.String(rendered, w)
+		}
+		return statusBarStyle.Width(w).Render(rendered)
 	}
 	if m.notice == "" {
 		return lipgloss.NewStyle().Width(w).Render("")
 	}
-	return lipgloss.NewStyle().Width(w).Foreground(cYellow).Render(clip("  "+m.notice, w))
+	// Notice: use wordwrap to preserve full text
+	return lipgloss.NewStyle().Width(w).Foreground(cYellow).Render(wordwrap.String("  "+m.notice, w))
 }
 
 func (m model) renderKeyBar(w int) string {
@@ -285,7 +310,9 @@ func (m model) renderKeyBar(w int) string {
 		}
 	}
 	hints := renderHelpLine(max(1, w-utf8.RuneCountInString(focus)-4), m.viewFocused, boardMode)
-	return keyBarStyle.Width(w).Render(clip(" "+focus+" · "+hints, w))
+	// Use wordwrap for key bar to preserve full text
+	content := " " + focus + " · " + hints
+	return keyBarStyle.Width(w).Render(wordwrap.String(content, w))
 }
 
 func (m model) renderLeft(w, h int) string {
@@ -298,9 +325,11 @@ func (m model) renderLeft(w, h int) string {
 
 	section := m.taskList.ActiveSection()
 	focus := focusMarker(!m.viewFocused)
+	// Filter bar: use wordwrap to preserve full text
+	filterContent := focus + " filter " + section.Filter + taskQuerySuffix(m.taskList.Search())
 	headers := []string{
 		m.renderTaskSectionTabs(w, visual),
-		lipgloss.NewStyle().Foreground(visual.Dim).Render(clip(focus+" filter "+section.Filter+taskQuerySuffix(m.taskList.Search()), w)),
+		lipgloss.NewStyle().Foreground(visual.Dim).Render(wordwrap.String(filterContent, w)),
 	}
 	m.taskList.SetViewportRows(headers, rows, selectedLine, w, h)
 	return m.taskList.View()
@@ -330,8 +359,9 @@ func activeTabLabel(label string) string {
 func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
 	counts := m.taskList.Counts(m.runs, m.tasks)
 	active := m.taskList.ActiveSectionIndex()
+	sections := m.taskList.Sections()
 	var tabs []string
-	for i, section := range m.taskList.Sections() {
+	for i, section := range sections {
 		label := section.Name + " " + itoa(counts[section.Name])
 		if i == active {
 			tabs = append(tabs, lipgloss.NewStyle().Background(visual.ActiveBg).Foreground(visual.White).Render(activeTabLabel(label)))
@@ -339,7 +369,27 @@ func (m model) renderTaskSectionTabs(w int, visual paneVisual) string {
 			tabs = append(tabs, lipgloss.NewStyle().Foreground(visual.Dim).Render(" "+label+" "))
 		}
 	}
-	return clip(strings.Join(tabs, " "), w)
+	joined := strings.Join(tabs, " ")
+	// Drop leading tabs that don't fit, preserving the active tab if possible
+	if ansi.StringWidth(joined) > w {
+		// Calculate how many tabs we need to drop
+		for i := 0; i < len(tabs); i++ {
+			if i == active {
+				continue // Always try to include active tab
+			}
+			// Check if dropping this tab helps
+			joined = strings.Join(tabs[i:], " ")
+			if ansi.StringWidth(joined) <= w {
+				break
+			}
+		}
+		// If still too wide, show "N/M" indicator
+		if ansi.StringWidth(joined) > w {
+			indicator := fmt.Sprintf("%d/%d", active+1, len(sections))
+			joined = lipgloss.NewStyle().Foreground(visual.Dim).Render(indicator)
+		}
+	}
+	return joined
 }
 
 func (m model) renderBoard(w, h int) string {
@@ -1299,12 +1349,11 @@ func renderLogLines(run Run, logs []LogEntry, logPath string, w int, visual pane
 		streamIndicator := color.Render(glyph)
 		// Compact prefix: line number + timestamp + stream indicator
 		prefix := dimStyle.Render(fmt.Sprintf("%4d ", lineNumber)) + dimStyle.Render(ts) + streamIndicator + " "
-		// The message is scrollable, clip to terminal width
-		text := clip(entry.Message, w - lipgloss.Width(prefix))
+		// Preserve full message; viewport horizontal pan handles overflow
 
 		lines = append(lines, ViewerLine{
 			Key:    "log:" + itoa(i) + ":" + entry.Message,
-			Text:   prefix + text,
+			Text:   prefix + entry.Message,
 			Target: t,
 			DetailFunc: func(entry LogEntry, lineNum int) func() []string {
 				return func() []string {
