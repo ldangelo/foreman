@@ -6,8 +6,6 @@
  * tune timeout / interval / backoff without forking the agent.
  */
 
-import { execFile as nodeExecFile } from "node:child_process";
-
 /**
  * Matches the callback-style signature of node:child_process.execFile.
  * This is the shape that `promisify()` wraps into the Promise-based form.
@@ -38,7 +36,7 @@ type ExecFileAsync = (
 function makeExecAsync(execFile: ExecFileFn): ExecFileAsync {
   return (command, args, options) =>
     new Promise((resolve, reject) => {
-      nodeExecFile(command, args ?? undefined, options as object, (err, stdout, stderr) =>
+      execFile(command, args ?? undefined, options as object, (err, stdout, stderr) =>
         err ? reject(err) : resolve({ stdout: stdout ?? "", stderr: stderr ?? "" }),
       );
     });
