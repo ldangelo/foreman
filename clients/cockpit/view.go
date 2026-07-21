@@ -451,25 +451,49 @@ func (m model) renderBoardColumn(col BoardColumnState, w, h int, visual paneVisu
 		headerStyle = headerStyle.Background(visual.ActiveBg)
 	}
 	header := wrapText(col.Label+" "+itoa(len(col.Items)), w)
-	lines := []string{
-		header,
-		lipgloss.NewStyle().Foreground(visual.Dim).Render(strings.Repeat("─", w)),
-	}
-	for i, it := range col.VisibleItems {
-		selected := itemKey(it) == col.SelectedKey
-		lines = append(lines, renderBoardCard(it, w, selected, visual))
-		if i < len(col.VisibleItems)-1 {
-			lines = append(lines, "")
+	dimStyle := lipgloss.NewStyle().Foreground(visual.Dim)
+	divider := dimStyle.Render(strings.Repeat("─", w))
+
+	// Flatten each card into its physical lines so we never show a
+	// partial card with its age-bearing line3 clipped. Build the column
+	// by appending whole cards (line1 + line2 + line3) only while they
+	// fit, leave a row for the overflow marker if hidden items exist,
+	// then pad with blanks.
+	visible := col.VisibleItems
+	overflow := col.OverflowCount
+
+	lines := []string{header, divider}
+	shown := 0
+	for _, it := range visible {
+		cardLines := strings.Split(renderBoardCard(it, w, itemKey(it) == col.SelectedKey, visual), "\n")
+		// Always reserve a row for the overflow marker when hidden items
+		// (col.OverflowCount or unshown visible cards) exist. Without the
+		// reserve, the len(lines)+len(cardLines) > h check greedily fits a
+		// partial column and the ...N more marker silently drops when the
+		// budget cuts off mid-visible (e.g. OverflowCount==0, 6 visible
+		// items, h=8).
+		reserve := 1
+		if overflow == 0 && shown+1 >= len(visible) {
+			// This is the last visible item; no overflow marker needed.
+			reserve = 0
 		}
+		if len(lines)+len(cardLines) > h-reserve {
+			break
+		}
+		lines = append(lines, cardLines...)
+		shown++
 	}
-	if col.OverflowCount > 0 {
-		lines = append(lines, wrapText("… "+itoa(col.OverflowCount)+" more", w))
+
+	// Overflow count = items past visibleEnd (col.OverflowCount) PLUS
+	// visible items we couldn't fit at the column's budget. Show a
+	// "... N more" marker when there's anything hidden.
+	hidden := overflow + (len(visible) - shown)
+	if hidden > 0 && len(lines) < h {
+		lines = append(lines, dimStyle.Render("… "+itoa(hidden)+" more"))
 	}
+
 	for len(lines) < h {
 		lines = append(lines, "")
-	}
-	if len(lines) > h {
-		lines = lines[:h]
 	}
 	return lipgloss.NewStyle().Width(w).Height(h).Render(strings.Join(lines, "\n"))
 }
@@ -481,11 +505,16 @@ func renderBoardCard(it Item, w int, selected bool, visual paneVisual) string {
 		lipgloss.NewStyle().Foreground(visual.Text).Render(id)
 	if right != "" {
 		rightW := min(max(6, ansi.StringWidth(right)), max(6, w/2))
-		line1 = padRow(wrapText(line1, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
+		// Bound the card to exactly 3 physical lines (line1 state/id/right-meta,
+		// line2 title, line3 meta with age). Truncate (don't wrap) line1
+		// left/right and line2 title and line3 meta so a Done card never
+		// grows taller than 3 lines, which would push line3 (the age) below
+		// the column's height clip.
+		line1 = padRow(ansi.Truncate(line1, max(1, w-rightW-1), "…"), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(ansi.Truncate(right, rightW, "…")), w)
 	} else {
-		line1 = wrapText(line1, w)
+		line1 = ansi.Truncate(line1, w, "…")
 	}
-	line2 := wrapText(title, w)
+	line2 := ansi.Truncate(title, w, "…")
 	// Surface the activity age on its own always-visible meta line (line3)
 	// so it is not squeezed/clipped by line1's right column in narrow
 	// columns like Done. Use the same Updated/Last -> Created fallback as
@@ -502,7 +531,7 @@ func renderBoardCard(it Item, w int, selected bool, visual paneVisual) string {
 	if meta == "" {
 		meta = state
 	}
-	line3 := wrapText(meta, w)
+	line3 := ansi.Truncate(meta, w, "…")
 	card := strings.Join([]string{line1, line2, line3}, "\n")
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
