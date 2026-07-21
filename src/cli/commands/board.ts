@@ -702,6 +702,16 @@ function renderEmptyTaskSlot(): ReturnType<typeof h> {
   );
 }
 
+/**
+ * Returns the number of physical lines a task card occupies when rendered
+ * at the given column width. Uses renderToString to measure actual height.
+ */
+function getCardLineCount(task: BoardTask, columnWidth: number): number {
+  const card = renderTaskCardView(task, false, false);
+  const rendered = renderToString(card, { columns: columnWidth });
+  return rendered.split("\n").length;
+}
+
 function renderTaskCardView(
   task: BoardTask,
   isSelected: boolean,
@@ -768,7 +778,14 @@ function renderBoardColumn(
   const isSelectedColumn = absoluteIndex === state.nav.colIndex;
   const visibleLimit = getVisibleTaskCapacity(columnHeight, tasks.length, userVisibleLimit);
   const taskWindow = getVisibleTaskWindow(tasks, isSelectedColumn ? state.nav.rowIndex : 0, visibleLimit);
+
+  // Calculate line budget for cards (column height minus border top, border bottom, and header)
+  const reservedLines = 3;
+  const lineBudget = Math.max(0, columnHeight - reservedLines);
+
   const slots: Array<ReturnType<typeof h>> = [];
+  let usedLines = 0;
+  let tasksShown = 0;
 
   if (taskWindow.hiddenBefore > 0) {
     slots.push(
@@ -778,13 +795,26 @@ function renderBoardColumn(
         `↑ ${taskWindow.hiddenBefore} earlier`,
       ),
     );
+    usedLines += 1;
   }
 
   for (let index = 0; index < visibleLimit; index += 1) {
     const task = taskWindow.visibleTasks[index];
     if (!task) {
-      slots.push(renderEmptyTaskSlot());
+      // Only add empty slot if it fits in budget
+      if (usedLines + 2 <= lineBudget) {
+        slots.push(renderEmptyTaskSlot());
+        usedLines += 2;
+        tasksShown += 1;
+      }
       continue;
+    }
+
+    const cardLineCount = getCardLineCount(task, columnWidth);
+
+    // Stop if adding this card would exceed line budget
+    if (usedLines + cardLineCount > lineBudget) {
+      break;
     }
 
     slots.push(
@@ -794,10 +824,16 @@ function renderBoardColumn(
         task.id === state.flashTaskId,
       ),
     );
+    usedLines += cardLineCount;
+    tasksShown += 1;
   }
 
-  if (taskWindow.hiddenAfter > 0) {
-    slots.push(h(Text, { dimColor: true, wrap: "truncate-end" }, `↓ ${taskWindow.hiddenAfter} more`));
+  // Calculate actual hiddenAfter based on how many tasks we actually showed
+  const visibleTasksNotShown = taskWindow.visibleTasks.length - tasksShown;
+  const actualHiddenAfter = taskWindow.hiddenAfter + visibleTasksNotShown;
+
+  if (actualHiddenAfter > 0) {
+    slots.push(h(Text, { dimColor: true, wrap: "truncate-end" }, `↓ ${actualHiddenAfter} more`));
   }
 
   return h(
@@ -807,6 +843,7 @@ function renderBoardColumn(
       borderColor: isSelectedColumn ? "cyan" : "gray",
       flexDirection: "column",
       height: columnHeight,
+      overflow: "hidden",
       paddingX: 1,
       width: columnWidth,
     },
