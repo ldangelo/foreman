@@ -357,8 +357,6 @@ Use retry and doctor cleanup surgically.
 
 Transient failures include provider rate limits, provider overloads (`529 overloaded_error`), temporary network failures, and unavailable external CLIs. Max-turn failures are treated as expensive human-review signals; inspect the diff/log before retrying.
 
-Transient failures include provider rate limits, provider overloads (`529 overloaded_error`), temporary network failures, and unavailable external CLIs. Max-turn failures are treated as expensive human-review signals; inspect the diff/log before retrying.
-
 ### Direct Task Execution with `foreman run task`
 
 Operator use of `foreman run task` was removed after the Elixir cutover. Use scheduler-backed `foreman run` for ready work or `foreman retry` for retry flows instead.
