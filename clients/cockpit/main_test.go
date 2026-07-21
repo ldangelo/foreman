@@ -257,11 +257,17 @@ func TestBoardClickSelectsItem(t *testing.T) {
 	if blockedItem.Run.RunID == "" {
 		t.Fatal("blocked board item not found in taskList.items")
 	}
-	if blockedItem.IsTask {
-		t.Fatalf("expected run-type board item, got task-type: %s", blockedItem.Task.TaskID)
+	// Every board entry is now a task (boardItemToItem is task-first).
+	// The attached run is surfaced on Task.RunID and as a shadow Run
+	// for selection identity / run-action navigation.
+	if !blockedItem.IsTask {
+		t.Fatalf("expected task-type board item with shadow Run, got non-task")
 	}
-	if blockedItem.Run.ProjectID != "52ba0d80-913d-4880-871b-a81e308c34d4" {
-		t.Fatalf("expected ProjectID 52ba0d80..., got %q", blockedItem.Run.ProjectID)
+	if blockedItem.Task.RunID != "8776e630-7e9e-d311-c7a9-41a770c90147" {
+		t.Fatalf("expected Task.RunID to carry the attached run, got %q", blockedItem.Task.RunID)
+	}
+	if blockedItem.Run.RunID != "8776e630-7e9e-d311-c7a9-41a770c90147" {
+		t.Fatalf("expected shadow Run.RunID to match attached run, got %q", blockedItem.Run.RunID)
 	}
 
 	// Simulate clicking the blocked board card: taskListSelectKey finds it and updates selection.
@@ -430,5 +436,92 @@ func TestDataLoadingGuardPreventsOverlappingRefreshes(t *testing.T) {
 	}
 	if updatedM.dataGeneration != prevGen+1 {
 		t.Fatalf("expected dataGeneration=%d after next dispatch, got %d", prevGen+1, updatedM.dataGeneration)
+	}
+}
+
+// TestBoardItemToItemRunAndAttentionCarriesAge asserts the live /api/v1/board
+// payload (where every Done card has Type="run" or "attention" with an
+// attached run, NOT Type="task") still produces an Item whose age stamp
+// is populated from BoardItem.UpdatedAt. Regression for the Done-column
+// age bug: boardItemToItem previously routed non-task board entries to
+// Item.Run without setting Run.Last, so renderBoardCard's age lookup
+// returned "" and line3 rendered as "P? \u00b7 type \u00b7" with no age.
+// After the task-first refactor, every board item is an Item.Task; the
+// run-derived status / run id are overlays (Task.RunID + shadow Run),
+// and Task.Updated carries the activity stamp.
+func TestBoardItemToItemRunAndAttentionCarriesAge(t *testing.T) {
+	const updated = "2026-07-15T12:00:00Z"
+	cases := []struct {
+		name string
+		bi   BoardItem
+	}{
+		{
+			name: "run",
+			bi: BoardItem{
+				TaskID: "foreman-d72b", RunID: "run-d72b-1",
+				Title: "Add phase control", Status: "closed",
+				Priority: "P2", TaskType: "feature",
+				UpdatedAt: updated, Group: "RECENT", Type: "run",
+			},
+		},
+		{
+			name: "attention",
+			bi: BoardItem{
+				TaskID: "foreman-cb7b", RunID: "run-cb7b-1",
+				Title: "Merge polling", Status: "failed",
+				Priority: "P1", TaskType: "bug",
+				UpdatedAt: updated, Group: "RUNNING",
+				Type: "attention", Attention: "merge_conflict",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := boardItemToItem(tc.bi, map[string]Task{}, "done")
+			if !item.IsTask {
+				t.Fatalf("expected IsTask=true for board entry (task-first model), got false")
+			}
+			if item.Task.Updated != updated {
+				t.Fatalf("expected Task.Updated=%q (age stamp), got %q", updated, item.Task.Updated)
+			}
+			if item.Task.TaskID != tc.bi.TaskID {
+				t.Fatalf("expected Task.TaskID=%q, got %q", tc.bi.TaskID, item.Task.TaskID)
+			}
+			if item.Task.RunID != tc.bi.RunID {
+				t.Fatalf("expected Task.RunID=%q, got %q", tc.bi.RunID, item.Task.RunID)
+			}
+			if item.Task.Title != tc.bi.Title {
+				t.Fatalf("expected Task.Title=%q, got %q", tc.bi.Title, item.Task.Title)
+			}
+			// Shadow Run must carry the same fields the legacy non-task
+			// branch produced, so selection identity / drill-down
+			// navigation don't degrade.
+			if item.Run.RunID != tc.bi.RunID {
+				t.Fatalf("expected shadow Run.RunID=%q, got %q", tc.bi.RunID, item.Run.RunID)
+			}
+			if item.Run.Status != tc.bi.Status {
+				t.Fatalf("expected shadow Run.Status=%q, got %q", tc.bi.Status, item.Run.Status)
+			}
+			if item.Run.Last != updated {
+				t.Fatalf("expected shadow Run.Last=%q (mirrors Task.Updated), got %q", updated, item.Run.Last)
+			}
+			// Verify the age path: boardActivityTime(it) must parse to a
+			// non-zero time so renderBoardCard formats "Xh ago".
+			if at := boardActivityTime(item); at.IsZero() {
+				t.Fatalf("expected non-zero activity time from Task.Updated=%q, got zero", updated)
+			}
+			// Exercise the user-visible path: renderBoardCard on the
+			// converted item must emit "ago" on line3 at narrow Done-column
+			// widths. This is the exact invariant the Done-column bug
+			// violated (line3 rendered as "P? \u00b7 type \u00b7" with no age).
+			out := stripANSI(renderBoardCard(item, 24, false, paneVisualFor(false, defaultConfig().Cockpit.Focus)))
+			lines := strings.Split(out, "\n")
+			if len(lines) < 3 {
+				t.Fatalf("expected 3-line card, got %d lines:\n%s", len(lines), out)
+			}
+			if !strings.Contains(lines[2], "ago") {
+				t.Fatalf("expected line3 to contain age (\"ago\"), got %q\nfull:\n%s", lines[2], out)
+			}
+		})
 	}
 }

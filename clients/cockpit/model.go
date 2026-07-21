@@ -1758,10 +1758,37 @@ func (m model) selectedTaskID() (string, bool) {
 
 func (m model) selectedRun() (Run, bool) {
 	it, ok := m.selectedItem()
-	if !ok || it.IsTask {
+	if !ok {
 		return Run{}, false
 	}
-	return it.Run, true
+	// Board items are always tasks (boardItemToItem is task-first).
+	// Run-attached ones carry the run id on Task.RunID and as a
+	// shadow on Item.Run. Prefer the full run from m.runs (which has
+	// ProjectID, worktree, etc.) so run actions see complete metadata.
+	// Fall back to the shadow only when the full run isn't loaded.
+	runID := ""
+	if !it.IsTask {
+		return it.Run, true
+	}
+	runID = it.Task.RunID
+	if runID == "" {
+		runID = it.Run.RunID
+	}
+	if runID == "" {
+		return Run{}, false
+	}
+	for _, r := range m.runs {
+		if r.RunID == runID {
+			return r, true
+		}
+	}
+	// Full run not loaded yet; surface the shadow so callers don't
+	// crash. Metadata may be sparse; callers that need ProjectID /
+	// worktree should wait for the next refresh.
+	if it.Run.RunID != "" {
+		return it.Run, true
+	}
+	return Run{TaskID: it.Task.TaskID, RunID: runID}, false
 }
 
 func (m model) selectedResetRun() (Run, bool) {
@@ -1890,32 +1917,58 @@ func boardItemsFromColumns(cols map[string][]BoardItem, tasks []Task) map[string
 }
 
 func boardItemToItem(bi BoardItem, taskMap map[string]Task, origCol string) Item {
-	item := Item{Group: bi.Group, OrigCol: origCol}
-	if bi.Type == "task" {
-		item.IsTask = true
-		if t, ok := taskMap[bi.TaskID]; ok {
-			item.Task = t
-		} else {
-			item.Task = Task{
-				TaskID:   bi.TaskID,
-				Title:    bi.Title,
-				Status:   bi.Status,
-				Priority: bi.Priority,
-				TaskType: bi.TaskType,
-				Updated:  bi.UpdatedAt,
-			}
+	// Every board entry on the server starts as a task
+	// (see foreman_server ProjectionStore.normalize_board_output /
+	// build_board_from_maps). The `type` field is a display discriminator
+	// ("task" | "run" | "attention"), not a model distinction. Always
+	// surface the entry as a Task; carry the optional run attachment on
+	// Task.RunID. A shadow Run keeps selection/identity sites
+	// (it.Run.TaskID, it.Run.RunID) working without forcing every caller
+	// to branch on bi.Type.
+	item := Item{Group: bi.Group, OrigCol: origCol, IsTask: true}
+	task := Task{
+		TaskID:   bi.TaskID,
+		RunID:    bi.RunID,
+		Title:    bi.Title,
+		Status:   bi.Status,
+		Priority: bi.Priority,
+		TaskType: bi.TaskType,
+		Updated:  bi.UpdatedAt,
+	}
+	if t, ok := taskMap[bi.TaskID]; ok {
+		// Prefer the cached task's full data; overlay board-supplied
+		// run-derived status / updated_at when present.
+		task.Created = t.Created
+		task.Description = t.Description
+		task.Depends = t.Depends
+		task.Workflow = t.Workflow
+		task.Summary = t.Summary
+		task.ProjectID = t.ProjectID
+		task.Pipeline = t.Pipeline
+		if bi.RunID != "" {
+			task.Status = bi.Status
 		}
-	} else {
-		item.IsTask = false
+		if bi.UpdatedAt != "" {
+			task.Updated = bi.UpdatedAt
+		}
+	}
+	item.Task = task
+	if bi.RunID != "" {
+		// Shadow for selection identity / drill-down run navigation. The
+		// Run carries the same fields the legacy non-task branch produced
+		// (model.go before boardItemToItem was task-first) so detail
+		// headers and run actions don't degrade. The Task remains the
+		// canonical model for age, title, etc.
 		item.Run = Run{
-			TaskID:    bi.TaskID,
-			RunID:     bi.RunID,
-			Status:    bi.Status,
-			Priority:  bi.Priority,
-			TaskType:  bi.TaskType,
-			Group:     bi.Group,
+			TaskID:   bi.TaskID,
+			RunID:    bi.RunID,
+			Status:   bi.Status,
+			Priority: bi.Priority,
+			TaskType: bi.TaskType,
+			Group:    bi.Group,
 			Attention: bi.Attention,
-			Title:     bi.Title,
+			Title:    bi.Title,
+			Last:     bi.UpdatedAt,
 		}
 	}
 	return item
