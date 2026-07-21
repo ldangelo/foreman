@@ -2529,6 +2529,16 @@ describe("Dispatcher.dispatch — per-state concurrency limits (Backlog-006)", (
 
 import { killSwitchRun, type KillSwitchOptions } from "../dispatcher.js";
 
+// Mock VcsBackendFactory to prevent real git/jj calls in tests
+vi.mock("../../lib/vcs/index.js", () => ({
+  VcsBackendFactory: {
+    create: vi.fn().mockResolvedValue({
+      name: "git",
+      removeWorkspace: vi.fn().mockResolvedValue(undefined),
+    }),
+  },
+}));
+
 function makeKillSwitchStore(overrides?: Partial<ForemanStore>) {
   return {
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/proj" }),
@@ -2621,7 +2631,8 @@ describe("killSwitchRun", () => {
     const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
     const tasks = makeKillSwitchTasks();
 
-    const result = await killSwitchRun("run-abc123", {}, {
+    // Use dryRun: true to get "Would preserve PR" message (preserve messages only appear in dry-run mode)
+    const result = await killSwitchRun("run-abc123", { dryRun: true }, {
       tasks,
       store,
       projectPath: "/tmp/proj",
@@ -2723,7 +2734,8 @@ describe("killSwitchRun", () => {
     const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
     const tasks = makeKillSwitchTasks();
 
-    const result = await killSwitchRun("run-abc123", {}, {
+    // Use dryRun: true to get "Would preserve reports" message (preserve messages only appear in dry-run mode)
+    const result = await killSwitchRun("run-abc123", { dryRun: true }, {
       tasks,
       store,
       projectPath: "/tmp/proj",
@@ -2760,7 +2772,8 @@ describe("killSwitchRun", () => {
     });
 
     expect(result.success).toBe(true);
-    // Worktree deletion attempts to use VcsBackend (may fail in test env), but the flag is respected
+    // VcsBackendFactory is mocked above, so worktree deletion succeeds
+    expect(result.worktreeDeleted).toBe(true);
     expect(result.message).toContain("deleted worktree");
   });
 
@@ -2798,6 +2811,7 @@ describe("killSwitchRun", () => {
     const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
     const tasks = makeKillSwitchTasks();
 
+    // Provide externalProjectId override since closePr requires it
     const result = await killSwitchRun("run-abc123", {
       resetTask: true,
       closePr: true,
@@ -2806,6 +2820,7 @@ describe("killSwitchRun", () => {
       tasks,
       store,
       projectPath: "/tmp/proj",
+      overrides: { externalProjectId: "proj-1" },
     });
 
     expect(result.success).toBe(true);
