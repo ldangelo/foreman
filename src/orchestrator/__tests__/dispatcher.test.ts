@@ -2539,6 +2539,22 @@ vi.mock("../../lib/vcs/index.js", () => ({
   },
 }));
 
+// Mock elixir-event-bridge to prevent real Elixir calls in tests
+const mockWriteElixirOrchestrationEvent = vi.fn().mockResolvedValue(undefined);
+vi.mock("../elixir-event-bridge.js", () => ({
+  writeElixirOrchestrationEvent: (...args: unknown[]) => mockWriteElixirOrchestrationEvent(...args),
+}));
+
+// Mock node:fs/promises rm for testing report discard failures
+const mockRm = vi.fn().mockResolvedValue(undefined);
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual("node:fs/promises");
+  return {
+    ...actual,
+    rm: (...args: unknown[]) => mockRm(...args),
+  };
+});
+
 function makeKillSwitchStore(overrides?: Partial<ForemanStore>) {
   return {
     getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/proj" }),
@@ -2808,6 +2824,8 @@ describe("killSwitchRun", () => {
   });
 
   it("combines multiple destructive flags correctly", async () => {
+    // Reset mock to ensure clean state
+    mockWriteElixirOrchestrationEvent.mockResolvedValue(undefined);
     const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
     const tasks = makeKillSwitchTasks();
 
@@ -2827,5 +2845,56 @@ describe("killSwitchRun", () => {
     expect(result.taskReset).toBe(true);
     expect(result.prClosed).toBe(true);
     expect(result.reportsDiscarded).toBe(true);
+    // Verify success messages are present
+    expect(result.message).toContain("closed PR (handled by Elixir backend)");
+    expect(result.message).toContain("reset task to backlog");
+    expect(result.message).toContain("discarded reports");
+  });
+
+  it("sets prClosed to false when close-PR fails", async () => {
+    // Make logEvent succeed (first call at line 2369) but writeElixirOrchestrationEvent fail
+    mockWriteElixirOrchestrationEvent.mockRejectedValue(new Error("Elixir unavailable"));
+    const store = makeKillSwitchStore({
+      getRun: vi.fn().mockResolvedValue(baseRun),
+    });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {
+      closePr: true,
+    }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+      overrides: { externalProjectId: "proj-1" },
+    });
+
+    expect(result.success).toBe(true); // Overall success still true
+    expect(result.prClosed).toBe(false); // But PR close flag is false on failure
+    expect(result.message).toContain("failed to close PR");
+  });
+
+  it("sets reportsDiscarded to false when rm fails", async () => {
+    // Reset mocks to ensure clean state
+    mockWriteElixirOrchestrationEvent.mockResolvedValue(undefined);
+    mockRm.mockRejectedValue(new Error("Permission denied"));
+
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {
+      discardReports: true,
+    }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+      overrides: { externalProjectId: "proj-1" },
+    });
+
+    expect(result.success).toBe(true); // Overall success still true
+    expect(result.reportsDiscarded).toBe(false); // But reports discard flag is false on failure
+    expect(result.message).toContain("failed to discard reports");
+
+    // Reset mock for other tests
+    mockRm.mockResolvedValue(undefined);
   });
 });

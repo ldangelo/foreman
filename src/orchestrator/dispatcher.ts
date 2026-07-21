@@ -1,4 +1,4 @@
-import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { writeFile, mkdir, open, readdir, unlink, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -2398,18 +2398,20 @@ export async function killSwitchRun(
     // 4. Close PR if --close-pr
     let prClosed = false;
     if (wantClosePr && overrides?.externalProjectId) {
-      // Emit a close-pr event for Elixir to handle (PR close is managed by the backend)
-      await Promise.resolve(store.logEvent(projectId, "kill-switch-close-pr" as EventType, { taskId, runId }, runId)).catch(() => {});
-      if (overrides.externalProjectId) {
+      try {
+        // Emit a close-pr event for Elixir to handle (PR close is managed by the backend)
+        await store.logEvent(projectId, "kill-switch-close-pr" as EventType, { taskId, runId }, runId);
         await writeElixirOrchestrationEvent({
           runId,
           projectId,
           eventType: "kill-switch-close-pr",
           payload: { taskId, runId },
-        }).catch(() => {});
+        });
+        prClosed = true;
+        results.push("closed PR (handled by Elixir backend)");
+      } catch {
+        results.push("failed to close PR");
       }
-      prClosed = true;
-      results.push("closed PR (handled by Elixir backend)");
     }
 
     // 5. Discard reports if --discard-reports
@@ -2417,7 +2419,7 @@ export async function killSwitchRun(
     if (wantDiscardReports) {
       const reportsDir = getRunReportsDir(projectId, taskId, runId);
       try {
-        await unlink(reportsDir).catch(() => {});
+        await rm(reportsDir, { recursive: true, force: true });
         reportsDiscarded = true;
         results.push(`discarded reports ${reportsDir}`);
       } catch {
