@@ -41,8 +41,12 @@ authoritative state.
   right-aligned metadata column (status and other counts); `line2` is the
   title; `line3` is a compact meta line of `priority · type · age` where `age`
   is the activity stamp (`Updated` for tasks, `Last` for runs, falling back to
-  `Created`). The age on `line3` is always visible — narrow columns like
+  `Created`). The age-bearing `line3` is always rendered — narrow columns like
   `Done` no longer squeeze it out of the squeezed `line1` right column.
+  Long fields are truncated with an ellipsis (`…`), never word-wrapped,
+  so each card is exactly 3 physical lines and `line3` stays visible.
+  Within `line3`, priority and type come first; the trailing age is
+  itself truncated with an ellipsis if the column is extremely narrow.
 - Task/run rows are richer two-line entries: metadata (id, type, priority,
   phase/status, and available counts/checks/PR/diff/age columns) on the first
   line and the title/summary on the second.

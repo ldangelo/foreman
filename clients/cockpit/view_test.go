@@ -4,6 +4,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -3587,6 +3588,111 @@ func TestBoardCardShowsAgeInNarrowColumns(t *testing.T) {
 	}
 	if !foundOnLine3 {
 		t.Fatalf("expected '3h ago' on line3 (or later) of narrow-column card, got:\n%s", out)
+	}
+}
+
+// TestBoardColumnEveryVisibleDoneCardShowsAge asserts that for a Done column
+// the rendered output never includes a visible card whose age line is clipped.
+// The previous renderBoardColumn appended each multi-line card as a single
+// lines entry, then Height(h) clipped physical rows, so a card whose line3
+// sat below h could be drawn without its age. The fix flattens cards into
+// physical lines and only appends whole cards that fit, then pads blanks;
+// renderBoardCard now also truncates line1 right, line2 title, and line3 meta
+// (not wraps) so a Done card is exactly 3 physical lines. Regression for the
+// 2026-07-21 Done-column-age bug.
+func TestBoardColumnEveryVisibleDoneCardShowsAge(t *testing.T) {
+	now := time.Now()
+	many := make([]Item, 0, 6)
+	for i := 0; i < 6; i++ {
+		many = append(many, Item{
+			IsTask: false,
+			Run: Run{
+				TaskID: fmt.Sprintf("foreman-task-%02d", i),
+				RunID:  fmt.Sprintf("run-%02d", i),
+				Status: "closed", Title: fmt.Sprintf("task-%02d", i),
+				Last: now.Add(-time.Duration(45+i) * time.Minute).Format(time.RFC3339),
+			},
+		})
+	}
+	b := NewBoard(20)
+	b.SetItems(many, "", 20)
+	cols := b.Columns()
+	if len(cols) <= 4 {
+		t.Fatalf("expected at least 5 columns, got %d", len(cols))
+	}
+	// Use a tight column height: 2 (header + divider) + 6 (two 3-line cards)
+	// + 1 (overflow marker) = 9 rows. Anything above this would clip a
+	// visible card's line3 (the age line) without the fix.
+	m := newModel(NewMockClient())
+	m.board = b
+	out := stripANSI(m.renderBoardColumn(cols[4], 24, 9, paneVisualFor(true, defaultConfig().Cockpit.Focus)))
+	lines := strings.Split(out, "\n")
+	// Exact shape: [Done 6] [divider] [card1:3 lines] [card2:3 lines] [... 4 more]
+	if len(lines) != 9 {
+		t.Fatalf("expected exactly 9 rendered lines, got %d:\n%s", len(lines), out)
+	}
+	if !strings.HasPrefix(lines[0], "Done 6") {
+		t.Fatalf("line 0 must be Done 6 header, got %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "─") {
+		t.Fatalf("line 1 must be the divider, got %q", lines[1])
+	}
+	// line3 of each card must carry the full age (no ellipsis truncation),
+	// because line3 is the canonical "since last update" source. line1
+	// right-meta is allowed to show a truncated preview. The 9-line total
+	// shape already asserts no card was clipped to a partial line.
+	for _, cardLines := range [][]string{lines[2:5], lines[5:8]} {
+		if strings.Contains(cardLines[2], "…") {
+			t.Fatalf("line3 should hold the full age (no ellipsis), got %q\nfull:\n%s", cardLines[2], out)
+		}
+		if !strings.Contains(cardLines[2], "ago") {
+			t.Fatalf("expected age in line3, got %q\nfull:\n%s", cardLines[2], out)
+		}
+	}
+	if !strings.Contains(lines[8], "4 more") {
+		t.Fatalf("line 8 must be the overflow marker showing 4 more, got %q", lines[8])
+	}
+}
+
+// TestBoardColumnOverflowShownWhenBudgetCutsOffMidVisible guards against
+// the regression where renderBoardColumn only reserved an overflow marker
+// when col.OverflowCount > 0. With OverflowCount == 0 but budget tight
+// enough to cut off mid-visible cards (e.g. 6 visible items, h=8 fits 2
+// cards), the "... N more" marker was silently dropped and the user had
+// no signal that more cards existed.
+func TestBoardColumnOverflowShownWhenBudgetCutsOffMidVisible(t *testing.T) {
+	now := time.Now()
+	many := make([]Item, 0, 6)
+	for i := 0; i < 6; i++ {
+		many = append(many, Item{
+			IsTask: false,
+			Run: Run{
+				TaskID: fmt.Sprintf("foreman-task-%02d", i),
+				RunID:  fmt.Sprintf("run-%02d", i),
+				Status: "closed", Title: fmt.Sprintf("task-%02d", i),
+				Last: now.Add(-time.Duration(45+i) * time.Minute).Format(time.RFC3339),
+			},
+		})
+	}
+	// cap=20 so col.OverflowCount == 0; the budget cuts off mid-visible
+	// at h=8 (header+divider+marker reserve 3 lines, leaving 5 for cards;
+	// only 1 of the 3-line cards fits). The overflow marker must still appear.
+	b := NewBoard(20)
+	b.SetItems(many, "", 20)
+	cols := b.Columns()
+	if len(cols) <= 4 {
+		t.Fatalf("expected at least 5 columns, got %d", len(cols))
+	}
+	m := newModel(NewMockClient())
+	m.board = b
+	out := stripANSI(m.renderBoardColumn(cols[4], 24, 8, paneVisualFor(true, defaultConfig().Cockpit.Focus)))
+	if !strings.Contains(out, "more") {
+		t.Fatalf("expected overflow marker (containing %q) when budget cuts off mid-visible, got:\n%s", "more", out)
+	}
+	// header(1)+divider(1) + 1 card(3) + marker(1) = 6 lines of 8; remaining
+	// 5 visible cards are hidden under the marker.
+	if !strings.Contains(out, "5 more") {
+		t.Fatalf("expected %q in overflow marker (6 visible - 1 shown = 5 more), got:\n%s", "5 more", out)
 	}
 }
 
