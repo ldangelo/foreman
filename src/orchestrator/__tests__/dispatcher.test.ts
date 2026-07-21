@@ -2619,6 +2619,8 @@ describe("killSwitchRun", () => {
     expect(store.updateRun).toHaveBeenCalledWith("run-abc123", {
       status: "failed",
       completed_at: expect.any(String),
+      session_key: null,
+      route_to: "developer",
     });
     expect(store.logEvent).toHaveBeenCalledWith(
       "proj-1",
