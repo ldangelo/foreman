@@ -913,6 +913,13 @@ func viewerSelectionPrefix(tab string) string {
 	}
 }
 
+// viewerSelectionCellWidth is the display cell width of viewerSelectionPrefix
+// for the given tab. Subtract this from the rendered-line width so detail
+// rows padded to the line width don't push past the viewport.
+func viewerSelectionCellWidth(tab string) int {
+	return utf8.RuneCountInString(viewerSelectionPrefix(tab))
+}
+
 func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 	w := m.detailPaneWidth()
 	h := m.viewerBodyWindowHeight()
@@ -925,7 +932,7 @@ func (m *model) refreshViewer(policy viewerRefreshPolicy) {
 		m.viewer.SetLines(nil, viewerReset, h)
 		return
 	}
-	m.viewer.SetLines(m.buildViewerLines(w), policy, h)
+	m.viewer.SetLines(m.buildViewerLines(max(1, w-viewerSelectionCellWidth(tabNames[m.tab]))), policy, h)
 }
 
 func (m model) buildViewerLines(w int) []ViewerLine {
