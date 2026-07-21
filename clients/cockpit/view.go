@@ -486,7 +486,19 @@ func renderBoardCard(it Item, w int, selected bool, visual paneVisual) string {
 		line1 = wrapText(line1, w)
 	}
 	line2 := wrapText(title, w)
-	meta := strings.Join(compactNonEmpty([]string{normalizePriorityLabel(pri), typ}), " · ")
+	// Surface the activity age on its own always-visible meta line (line3)
+	// so it is not squeezed/clipped by line1's right column in narrow
+	// columns like Done. Use the same Updated/Last -> Created fallback as
+	// boardActivityTime (board.go) so the displayed age matches the sort
+	// order. firstNonBlank is package-level in main.
+	var activityStamp string
+	if it.IsTask {
+		activityStamp = firstNonBlank(it.Task.Updated, it.Task.Created)
+	} else {
+		activityStamp = firstNonBlank(it.Run.Last, it.Run.Created)
+	}
+	age := formatAge(activityStamp)
+	meta := strings.Join(compactNonEmpty([]string{normalizePriorityLabel(pri), typ, age}), " · ")
 	if meta == "" {
 		meta = state
 	}

@@ -67,6 +67,12 @@ Headers show true counts. Columns render at most `cockpit.board.cardCap` visible
 cards (default 12) before a `… N more` overflow row. v1 ordering is
 last-activity first; `cockpit.board.order` normalizes `activity|priority`, but
 priority-first ordering is not required unless the board core supports it.
+Board cards are three-line entries: `line1` is the state glyph + id plus a
+right-aligned metadata column (status, counts, etc.); `line2` is the title;
+`line3` is a compact meta line of `priority · type · age` where `age` is the
+activity stamp (`Updated` for tasks, `Last` for runs, falling back to
+`Created`). The `line3` age is always visible — narrow columns like `Done`
+no longer squeeze it out of the squeezed `line1` right column.
 
 The selected card drives the entire activities region through the same selected
 `TaskList` item identity used by the list fallback, so approve/edit/create,
