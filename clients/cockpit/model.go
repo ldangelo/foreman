@@ -1926,31 +1926,27 @@ func boardItemToItem(bi BoardItem, taskMap map[string]Task, origCol string) Item
 	// (it.Run.TaskID, it.Run.RunID) working without forcing every caller
 	// to branch on bi.Type.
 	item := Item{Group: bi.Group, OrigCol: origCol, IsTask: true}
-	task := Task{
-		TaskID:   bi.TaskID,
-		RunID:    bi.RunID,
-		Title:    bi.Title,
-		Status:   bi.Status,
-		Priority: bi.Priority,
-		TaskType: bi.TaskType,
-		Updated:  bi.UpdatedAt,
-	}
+	// Base on the cached task's full data (including Status / Updated)
+	// when present, so a board payload with empty run-derived fields
+	// still carries the cached stamp through. Overlay board-supplied
+	// fields afterwards; board-derived values win only when non-empty.
+	task := Task{TaskID: bi.TaskID}
 	if t, ok := taskMap[bi.TaskID]; ok {
-		// Prefer the cached task's full data; overlay board-supplied
-		// run-derived status / updated_at when present.
-		task.Created = t.Created
-		task.Description = t.Description
-		task.Depends = t.Depends
-		task.Workflow = t.Workflow
-		task.Summary = t.Summary
-		task.ProjectID = t.ProjectID
-		task.Pipeline = t.Pipeline
-		if bi.RunID != "" {
-			task.Status = bi.Status
-		}
-		if bi.UpdatedAt != "" {
-			task.Updated = bi.UpdatedAt
-		}
+		task = t
+	}
+	// Always board-derived (board payload is authoritative for what's on
+	// the board).
+	task.RunID = bi.RunID
+	task.Title = bi.Title
+	task.Priority = bi.Priority
+	task.TaskType = bi.TaskType
+	// Run-derived overlays: only apply when the board payload actually
+	// carries the value, otherwise fall back to the cached task fields.
+	if bi.RunID != "" && bi.Status != "" {
+		task.Status = bi.Status
+	}
+	if bi.UpdatedAt != "" {
+		task.Updated = bi.UpdatedAt
 	}
 	item.Task = task
 	if bi.RunID != "" {

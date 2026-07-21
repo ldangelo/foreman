@@ -525,3 +525,80 @@ func TestBoardItemToItemRunAndAttentionCarriesAge(t *testing.T) {
 		})
 	}
 }
+
+// TestBoardItemToItemCachedTaskFallback asserts that when the cached
+// taskMap carries fields (Status, Updated) and the BoardItem omits
+// them, boardItemToItem falls back to the cached values rather than
+// dropping them. Regression for the CodeRabbit review on PR #378
+// (model.go:1938-1953): the previous implementation initialized
+// task.Status / task.Updated from bi before the cache lookup, then
+// only re-overlaid them when bi.RunID / bi.UpdatedAt were non-empty,
+// so a board payload with empty run-derived fields left the cached
+// stamp stranded in taskMap and never reached the rendered line3.
+func TestBoardItemToItemCachedTaskFallback(t *testing.T) {
+	const cachedUpdated = "2026-07-10T08:00:00Z"
+	cached := map[string]Task{
+		"foreman-d72b": {
+			TaskID:    "foreman-d72b",
+			Title:     "cached title",
+			Status:    "cached-status",
+			Updated:   cachedUpdated,
+			Created:   "2026-07-01T08:00:00Z",
+			ProjectID: "test-project",
+		},
+	}
+	bi := BoardItem{
+		TaskID: "foreman-d72b",
+		RunID:  "run-d72b-1",
+		// Title / Priority / TaskType are always board-derived.
+		Title: "board title", Priority: "P2", TaskType: "feature",
+		// Status omitted on purpose (run-derived but absent on this row).
+		// UpdatedAt omitted on purpose (board payload didn't carry it).
+		Group: "RECENT", Type: "run",
+	}
+	item := boardItemToItem(bi, cached, "done")
+	if !item.IsTask {
+		t.Fatalf("expected IsTask=true (task-first model)")
+	}
+	// Always-board-derived fields must come from bi.
+	if item.Task.Title != "board title" {
+		t.Fatalf("expected Task.Title=board title, got %q", item.Task.Title)
+	}
+	if item.Task.Priority != "P2" {
+		t.Fatalf("expected Task.Priority=P2, got %q", item.Task.Priority)
+	}
+	if item.Task.RunID != "run-d72b-1" {
+		t.Fatalf("expected Task.RunID=run-d72b-1, got %q", item.Task.RunID)
+	}
+	// Cached Status must come through when bi.Status is empty.
+	if item.Task.Status != "cached-status" {
+		t.Fatalf("expected fallback to cached Status=cached-status, got %q", item.Task.Status)
+	}
+	// Cached Updated must come through when bi.UpdatedAt is empty.
+	if item.Task.Updated != cachedUpdated {
+		t.Fatalf("expected fallback to cached Updated=%q, got %q", cachedUpdated, item.Task.Updated)
+	}
+	// Cached ProjectID must come through (not on the board payload).
+	if item.Task.ProjectID != "test-project" {
+		t.Fatalf("expected fallback to cached ProjectID=test-project, got %q", item.Task.ProjectID)
+	}
+	// And the age-render path must produce "ago".
+	out := stripANSI(renderBoardCard(item, 24, false, paneVisualFor(false, defaultConfig().Cockpit.Focus)))
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[2], "ago") {
+		t.Fatalf("expected line3 to contain age, got %q\nfull:\n%s", lines[2], out)
+	}
+
+	// Board-derived overrides must win over the cached values when
+	// present.
+	biWithOverlay := bi
+	biWithOverlay.Status = "closed"
+	biWithOverlay.UpdatedAt = "2026-07-15T12:00:00Z"
+	itemOverlay := boardItemToItem(biWithOverlay, cached, "done")
+	if itemOverlay.Task.Status != "closed" {
+		t.Fatalf("expected overlay Status=closed, got %q", itemOverlay.Task.Status)
+	}
+	if itemOverlay.Task.Updated != "2026-07-15T12:00:00Z" {
+		t.Fatalf("expected overlay Updated=2026-07-15..., got %q", itemOverlay.Task.Updated)
+	}
+}
