@@ -2524,3 +2524,293 @@ describe("Dispatcher.dispatch — per-state concurrency limits (Backlog-006)", (
     expect(tasksClient.ready).not.toHaveBeenCalled();
   });
 });
+
+// ── killSwitchRun tests ────────────────────────────────────────────────────────
+
+import { killSwitchRun, type KillSwitchOptions } from "../dispatcher.js";
+
+function makeKillSwitchStore(overrides?: Partial<ForemanStore>) {
+  return {
+    getProjectByPath: vi.fn().mockReturnValue({ id: "proj-1", path: "/tmp/proj" }),
+    getRun: vi.fn(),
+    updateRun: vi.fn(),
+    logEvent: vi.fn(),
+    ...overrides,
+  } as unknown as ForemanStore;
+}
+
+function makeKillSwitchTasks() {
+  return {
+    update: vi.fn(),
+  } as unknown as ITaskClient;
+}
+
+describe("killSwitchRun", () => {
+  const baseRun = {
+    id: "run-abc123",
+    task_id: "foreman-001",
+    status: "running",
+    agent_type: "developer",
+    branch_name: "foreman/foreman-001",
+    worktree_path: "/Users/user/.foreman/worktrees/proj-1/foreman-001",
+    merge_strategy: null,
+    session_key: null,
+    started_at: new Date().toISOString(),
+    completed_at: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    project_id: "proj-1",
+    base_branch: null,
+    last_phase: "developer",
+  };
+
+  it("returns failure when run is not found", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(null) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-missing", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("No run found");
+  });
+
+  it("marks run as failed by default (safe-by-default)", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.runStatus).toBe("failed");
+    expect(store.updateRun).toHaveBeenCalledWith("run-abc123", {
+      status: "failed",
+      completed_at: expect.any(String),
+    });
+    expect(store.logEvent).toHaveBeenCalledWith(
+      "proj-1",
+      "kill-switch",
+      expect.objectContaining({ taskId: "foreman-001", routeTo: "developer" }),
+      "run-abc123",
+    );
+  });
+
+  it("preserves worktree by default", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.worktreeDeleted).toBe(false);
+    expect(result.message).toContain("preserved worktree");
+  });
+
+  it("preserves PR by default", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.prClosed).toBe(false);
+    expect(result.message).toContain("Would preserve PR");
+  });
+
+  it("routes to custom phase when --route-to is specified", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", { routeTo: "qa" }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.routeTo).toBe("qa");
+    expect(store.logEvent).toHaveBeenCalledWith(
+      "proj-1",
+      "kill-switch",
+      expect.objectContaining({ routeTo: "qa" }),
+      "run-abc123",
+    );
+  });
+
+  it("records custom reason when --reason is specified", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", { reason: "pr-wait blocking review" }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe("pr-wait blocking review");
+    expect(store.logEvent).toHaveBeenCalledWith(
+      "proj-1",
+      "kill-switch",
+      expect.objectContaining({ reason: "pr-wait blocking review" }),
+      "run-abc123",
+    );
+  });
+
+  it("dry-run: does not update run or emit events", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", { dryRun: true }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(store.updateRun).not.toHaveBeenCalled();
+    expect(store.logEvent).not.toHaveBeenCalled();
+    expect(result.message).toContain("Would kill run");
+  });
+
+  it("refuses to reset task without explicit --reset flag", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.taskReset).toBe(false);
+    expect(tasks.update).not.toHaveBeenCalled();
+  });
+
+  it("resets task when --reset is specified", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", { resetTask: true }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.taskReset).toBe(true);
+    expect(tasks.update).toHaveBeenCalledWith("foreman-001", { status: "backlog" });
+    expect(result.message).toContain("reset task to backlog");
+  });
+
+  it("preserves reports by default", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.reportsDiscarded).toBe(false);
+    expect(result.message).toContain("Would preserve reports");
+  });
+
+  it("refuses to delete worktree without --force flag", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.worktreeDeleted).toBe(false);
+    expect(result.message).not.toContain("Would delete worktree");
+  });
+
+  it("respects --force flag for worktree deletion", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", { deleteWorktree: true }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    // Worktree deletion attempts to use VcsBackend (may fail in test env), but the flag is respected
+    expect(result.message).toContain("deleted worktree");
+  });
+
+  it("uses registered project overrides when externalProjectId is set", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+      overrides: { externalProjectId: "proj-1", defaultBranch: "main" },
+    });
+
+    expect(result.success).toBe(true);
+    // External project path: getProjectByPath is skipped, store.getRun is used directly
+    expect(store.getProjectByPath).not.toHaveBeenCalled();
+  });
+
+  it("returns failure when no project is registered (unregistered path)", async () => {
+    const store = makeKillSwitchStore({ getProjectByPath: vi.fn().mockResolvedValue(null) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/unregistered",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("No project registered");
+  });
+
+  it("combines multiple destructive flags correctly", async () => {
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {
+      resetTask: true,
+      closePr: true,
+      discardReports: true,
+    }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.taskReset).toBe(true);
+    expect(result.prClosed).toBe(true);
+    expect(result.reportsDiscarded).toBe(true);
+  });
+});
