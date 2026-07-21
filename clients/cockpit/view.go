@@ -520,9 +520,21 @@ func (m model) renderRow(i int, it Item, w int, visual paneVisual) string {
 	if pri != "" {
 		line1Left += lipgloss.NewStyle().Foreground(priorityColor(pri, visual)).Render(" · " + normalizePriorityLabel(pri))
 	}
-	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
-	line1 := padRow(wrapText(marker+line1Left, max(1, w-rightW-1)), lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(wrapText(right, rightW)), w)
+	// Below the narrow threshold, drop the right column entirely so line1
+	// stays single-line and the title (line2) stays in the visible pane.
 	line2 := wrapText("  "+title, w)
+	if w < 50 {
+		line1 := wrapText(marker+line1Left, w)
+		row := line1 + "\n" + line2
+		st := lipgloss.NewStyle().Width(w)
+		if selected {
+			st = st.Background(visual.SelectedBg).Bold(true)
+		}
+		return st.Render(row)
+	}
+	rightW := min(max(8, ansi.StringWidth(right)), max(8, w/2))
+	rightText := lipgloss.NewStyle().Foreground(taskRowRightColor(it, visual)).Render(ansi.Truncate(right, rightW, "…"))
+	line1 := padRow(wrapText(marker+line1Left, max(1, w-rightW-1)), rightText, w)
 	row := line1 + "\n" + line2
 	st := lipgloss.NewStyle().Width(w)
 	if selected {
@@ -702,7 +714,7 @@ func (m model) renderRight(w int) string {
 
 	// header
 	if isRun {
-		hdrLeft := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(run.TaskID) + "  " + lipgloss.NewStyle().Foreground(visual.Dim).Render("run " + run.RunID)
+		hdrLeft := lipgloss.NewStyle().Foreground(visual.White).Bold(true).Render(run.TaskID) + "  " + lipgloss.NewStyle().Foreground(visual.Dim).Render("run "+run.RunID)
 		status := run.Status
 		if pos, ok := m.selectedMessagePosition(); ok {
 			status += " · messages " + itoa(pos) + "/" + itoa(len(m.msgs))
@@ -755,7 +767,7 @@ func (m model) renderRight(w int) string {
 			policy = viewerBottom
 		}
 		viewer.SetBounds(w, bodyWindowH)
-		viewer.SetLines(m.renderViewerLines(run, it, isRun, w, visual), policy, bodyWindowH)
+		viewer.SetLines(m.renderViewerLines(run, it, isRun, max(1, w-viewerSelectionCellWidth(tabNames[m.tab])), visual), policy, bodyWindowH)
 		s = append(s, strings.Split(viewer.View(), "\n")...)
 	} else {
 		if len(body) > bodyWindowH {
@@ -1534,6 +1546,29 @@ func (m model) renderAction(w int, visual paneVisual) string {
 	greenStyle := lipgloss.NewStyle().Foreground(visual.Green)
 	redStyle := lipgloss.NewStyle().Foreground(visual.Red)
 	whiteStyle := lipgloss.NewStyle().Foreground(visual.White).Bold(true)
+	// Logs tab: surface the selected log's detail. Placed before the
+	// selectedTask() early return so log-selected runs can still see
+	// their detail (the synthesized task path would otherwise return
+	// task actions and hide the log detail).
+	// Messages/events tabs: the body already carries the selected message/event
+	// detail. Skip the action bar here so the body keeps enough room for the
+	// detail in narrow panes.
+	if tabNames[m.tab] == "messages" || tabNames[m.tab] == "events" {
+		return ""
+	}
+	if tabNames[m.tab] == "logs" {
+		lines := []string{}
+		if idx, ok := m.selectedLogIndex(); ok {
+			lines = append(lines, wrapText(whiteStyle.Render("Log detail")+" "+dimStyle.Render("line ")+cyanStyle.Render(itoa(idx+1))+" "+lipgloss.NewStyle().Foreground(visual.Text).Render(m.logs[idx].Message), w))
+		}
+		if run, ok := m.selectedRunnableRun(); ok {
+			lines = append(lines, wrapText(greenStyle.Render("▸ run actions ")+whiteStyle.Render(run.RunID)+"  "+cyanStyle.Render("A")+dimStyle.Render(" attach")+"  "+cyanStyle.Render("r")+dimStyle.Render(" retry")+"  "+cyanStyle.Render("R")+dimStyle.Render(" reset")+"  "+cyanStyle.Render("p")+dimStyle.Render(" omp")+"  "+cyanStyle.Render("P")+dimStyle.Render(" plain omp")+"  "+cyanStyle.Render("G")+dimStyle.Render(" gh dash")+"  "+cyanStyle.Render("C")+dimStyle.Render(" enhance"), w))
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return lipgloss.NewStyle().Background(visual.ActionBg).Width(w).MaxWidth(w).Render(strings.Join(lines, "\n"))
+	}
 	if task, ok := m.selectedTask(); ok {
 		action := greenStyle.Render("▸ task actions ") + whiteStyle.Render(task.TaskID) + "  " + cyanStyle.Render("y") + dimStyle.Render(" copy task id") + "  " + cyanStyle.Render("c") + dimStyle.Render(" close")
 		if run, ok := m.runForTask(task); ok {

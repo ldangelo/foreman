@@ -161,7 +161,12 @@ func (l *TaskList) SetViewportRows(headers []string, rows []string, selectedRow,
 	}
 	selectedRow = max(0, min(selectedRow, len(objects)-1))
 	l.filter.SetSelectedItemIdx(selectedRow)
-	l.viewport.EnsureItemInView(selectedRow, 0, width, max(0, height/2), 0)
+	// For multi-line items, EnsureItemInView only guarantees visibility of
+	// the first `endWidth` cells; pass the full item width so the title
+	// line stays in view (otherwise only line1 is considered visible and
+	// line2 gets clipped in small panes).
+	itemWidth := objects[selectedRow].GetItem().Width()
+	l.viewport.EnsureItemInView(selectedRow, 0, max(itemWidth, width), 0, 0)
 }
 
 func (l TaskList) View() string {
@@ -192,6 +197,10 @@ func (l *TaskList) ensureViewport(width, height int) {
 		fvpkg.WithCanToggleMatchingItemsOnly[taskListObject](false),
 		fvpkg.WithFilterModes[taskListObject]([]fvpkg.FilterMode{taskListFilterMode()}),
 		fvpkg.WithFilterLinePosition[taskListObject](fvpkg.FilterLineBottom),
+		// Empty text "" suppresses the idle "No Filter" pre-footer row
+		// that would otherwise steal a line of the pane and clip the
+		// selected item's title.
+		fvpkg.WithEmptyText[taskListObject](""),
 		fvpkg.WithItemDescriptor[taskListObject]("tasks"),
 	)
 	if l.search != "" {

@@ -348,7 +348,10 @@ func (v *Viewer) syncViewportSelection() {
 		return
 	}
 	v.filter.SetSelectedItemIdx(v.selectedObject)
-	v.viewport.EnsureItemInView(v.selectedObject, 0, 1, 0, 0)
+	// Pass the full item width so expanded detail lines (body, etc.)
+	// stay in viewport; passing width 1 only keeps the first cell visible.
+	itemWidth := v.objects[v.selectedObject].item.Width()
+	v.viewport.EnsureItemInView(v.selectedObject, 0, max(1, itemWidth), 0, 0)
 }
 
 func (v *Viewer) setObjects(objects []viewerObject) {
@@ -387,7 +390,8 @@ func (v *Viewer) syncFromFilterSelection() {
 		v.followBottom = idx == len(v.objects)-1
 		v.updateSelectedKey()
 		v.rebuildObjectsForSelection()
-		v.viewport.EnsureItemInView(v.selectedObject, 0, 1, 0, 0)
+		itemWidth := v.objects[v.selectedObject].item.Width()
+		v.viewport.EnsureItemInView(v.selectedObject, 0, max(1, itemWidth), 0, 0)
 		v.updateOffset()
 	}
 }
