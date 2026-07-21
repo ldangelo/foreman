@@ -1716,9 +1716,12 @@ async function checkpointWorktreeAndEnsureDraftPrAfterPhase(args: {
   }
 }
 
-const PR_WAIT_POLL_MS = positiveIntEnv("FOREMAN_PR_WAIT_POLL_MS", 60_000);
-const PR_READY_STABILITY_MS = positiveIntEnv("FOREMAN_PR_READY_STABILITY_MS", 60_000);
-const MERGE_GATE_POLL_MS = positiveIntEnv("FOREMAN_MERGE_GATE_POLL_MS", 30_000);
+// Poll interval for PR wait checks. Lower values = faster response but more API calls.
+const PR_WAIT_POLL_MS = positiveIntEnv("FOREMAN_PR_WAIT_POLL_MS", 10_000);
+// Stability window: PR must remain ready for this duration before pr-wait exits.
+// Short window avoids unnecessary delay when review is already complete.
+const PR_READY_STABILITY_MS = positiveIntEnv("FOREMAN_PR_READY_STABILITY_MS", 5_000);
+const MERGE_GATE_POLL_MS = positiveIntEnv("FOREMAN_MERGE_GATE_POLL_MS", 10_000);
 const MERGE_GATE_TIMEOUT_MS = positiveIntEnv("FOREMAN_MERGE_GATE_TIMEOUT_MS", 10 * 60_000);
 
 
@@ -1746,6 +1749,20 @@ async function runPrWaitBuiltinPhase(args: {
   let readySince: number | undefined;
   let lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   let timedOut = false;
+
+  // Short-circuit: if PR has terminal review state or is already ready on entry, exit immediately without waiting
+  const entryStatus = summarizePrWaitStatus(lastSnapshot);
+  if (entryStatus.prReviewTerminal || isPrWaitStatusReady(entryStatus)) {
+    args.log(`[PR-WAIT] PR #${prNumber} has terminal review state or is already ready on entry: prReviewTerminal=${String(entryStatus.prReviewTerminal)} checksTerminal=${String(entryStatus.checksTerminal)} codeRabbitComplete=${String(entryStatus.codeRabbitComplete)} mergeConflict=${String(entryStatus.mergeConflict)} latestReviewState=${lastSnapshot.latestReviewState ?? "none"}`);
+    await writePrWaitReport(args.config.worktreePath, lastSnapshot, false, workerReportDir(args.config));
+    return {
+      success: true,
+      costUsd: 0,
+      turns: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    };
+  }
 
   while (true) {
     const status = summarizePrWaitStatus(lastSnapshot);
