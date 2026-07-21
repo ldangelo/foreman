@@ -204,7 +204,7 @@ export class Dispatcher {
 
   private async updateRunRecord(
     runId: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "route_to">>,
   ): Promise<void> {
     return this.runLifecycleService.updateRunRecord(runId, updates);
   }
@@ -1183,6 +1183,7 @@ export class Dispatcher {
       await this.updateNativeTaskStatus(run.task_id, "in-progress");
 
       // Spawn the resumed agent
+      // Pass route_to from kill-switch so pipeline starts at the target phase
       const { sessionKey } = await this.resumeAgent(
         model,
         run.worktree_path,
@@ -1192,12 +1193,14 @@ export class Dispatcher {
         opts?.telemetry,
         opts?.notifyUrl,
         opts?.runtimeMode,
+        run.route_to ?? undefined,
       );
 
       await this.updateRunRecord(newRun.id, {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
+        route_to: run.route_to ?? undefined,
       });
 
       resumed.push({
@@ -1485,11 +1488,12 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
     runtimeMode?: RuntimeMode,
+    startPhase?: string,
   ): Promise<{ sessionKey: string }> {
     const resumePrompt = this.buildResumePrompt(task.id, task.title);
 
     const env = buildWorkerEnv(telemetry, task.id, runId, model, notifyUrl, undefined, runtimeMode);
-    log(`Resuming worker for ${task.id} [${model}] session=${sdkSessionId}`);
+    log(`Resuming worker for ${task.id} [${model}] session=${sdkSessionId}${startPhase ? ` (routing to phase: ${startPhase})` : ""}`);
 
     const projectId = await this.resolveProjectId();
     const { pid } = await spawnWorkerProcess({
@@ -1503,6 +1507,7 @@ export class Dispatcher {
       env,
       resume: sdkSessionId,
       nativeTaskId: task.id,
+      startPhase,
     });
 
     const sessionKey = buildSdkSessionKey(model, runId, pid, sdkSessionId);
@@ -1929,6 +1934,14 @@ export interface WorkerConfig {
    * Loaded from project config and passed to the agent worker.
    */
   hooks?: import("../lib/project-config.js").ProjectHooksConfig;
+  /**
+   * Target phase to start execution from (kill-switch routing).
+   * When set, the pipeline executor skips all phases before this target and
+   * starts execution at the specified phase. This enables the kill-switch
+   * to route a failed run to a specific recovery phase without re-running
+   * completed phases.
+   */
+  startPhase?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -2222,7 +2235,7 @@ export interface KillSwitchStoreDeps {
   getRun(runId: string): Awaitable<Run | null>;
   updateRun(
     runId: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "route_to">>,
   ): Awaitable<void>;
   logEvent(
     projectId: string,
@@ -2353,9 +2366,13 @@ export async function killSwitchRun(
 
   if (!dryRun) {
     // 1. Update run status → failed with kill-switch event
+    // Clear session_key to invalidate the worker (active termination signal)
+    // Store route_to so resumeRuns() knows where to route the pipeline
     await store.updateRun(runId, {
       status: "failed",
       completed_at: new Date().toISOString(),
+      session_key: null,  // Invalidate the worker session
+      route_to: routeTo,  // Persist routing target for resume
     });
 
     // 2. Emit kill-switch event to Elixir (for registered projects)

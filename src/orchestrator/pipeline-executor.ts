@@ -213,6 +213,14 @@ export interface PipelineRunConfig {
   };
   /** Workspace lifecycle hooks for afterRun (passed through from WorkerConfig). */
   hooks?: ProjectHooksConfig;
+  /**
+   * Target phase to start execution from (kill-switch routing).
+   * When set, the pipeline executor skips all phases before this target and
+   * starts execution at the specified phase. This enables the kill-switch
+   * to route a failed run to a specific recovery phase without re-running
+   * completed phases.
+   */
+  startPhase?: string;
 }
 
 export interface PipelineContext {
@@ -1439,7 +1447,21 @@ async function runPhaseSequence(
     phaseIndex.set(phases[idx].name, idx);
   }
 
+  // Kill-switch routing: skip phases before startPhase target
   let i = 0;
+  if (config.startPhase) {
+    const startIdx = phaseIndex.get(config.startPhase);
+    if (startIdx !== undefined) {
+      ctx.log(`[PIPELINE] Kill-switch routing: starting from phase '${config.startPhase}' (skipping ${startIdx} phases before it)`);
+      // Mark skipped phases so they appear in the log
+      for (let skippedIdx = 0; skippedIdx < startIdx; skippedIdx++) {
+        phaseRecords.push({ name: phases[skippedIdx].name, skipped: true });
+      }
+      i = startIdx;
+    } else {
+      ctx.log(`[PIPELINE] WARNING: startPhase '${config.startPhase}' not found in workflow — starting from beginning`);
+    }
+  }
   const retryOnlyActivations = new Set<string>();
   while (i < phases.length) {
     const phase = phases[i];

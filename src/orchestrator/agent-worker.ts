@@ -421,6 +421,14 @@ interface WorkerConfig {
    * Loaded from project config and passed through to the pipeline executor.
    */
   hooks?: ProjectHooksConfig;
+  /**
+   * Target phase to start execution from (kill-switch routing).
+   * When set, the pipeline executor skips all phases before this target and
+   * starts execution at the specified phase. This enables the kill-switch
+   * to route a failed run to a specific recovery phase without re-running
+   * completed phases.
+   */
+  startPhase?: string;
 }
 
 // ── Structured Logging Context ───────────────────────────────────────────────

@@ -221,7 +221,7 @@ export class RunLifecycleService {
    */
   async updateRunRecord(
     runId: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "route_to">>,
   ): Promise<void> {
     if (this.config?.externalProjectId) {
       const currentRun = this.config.getRun
