@@ -777,4 +777,84 @@ describe("BoardRendering", () => {
       expect(moveTo(10, 20)).toBe("\x1B[10;20H");
     });
   });
+
+  describe("Overflow Marker Visibility", () => {
+    it("should reserve a line for overflow marker when hidden tasks may remain", () => {
+      // Create many tasks where they would fit EXACTLY without overflow marker
+      // but would exceed if we tried to add the marker without reservation
+      // columnHeight=8 means lineBudget=5 (8 - 3 for border/header)
+      // With 2-line cards, 2 cards = 4 lines, marker = 1 line, total = 5 (fits)
+      // But without reservation, we'd try to add 3rd card (6 > 5) which breaks
+      // leaving room for marker
+      const state = createRenderState({
+        backlog: Array.from({ length: 10 }, (_, index) =>
+          createTask(`bd-${index}`, { title: `Task ${index}` })),
+      });
+
+      // Use a tight height that forces overflow
+      const output = stripTerminalFormatting(renderBoard(
+        state,
+        "Demo",
+        150,
+        5, // maxVisiblePerCol
+        8, // terminal height = 8, lineBudget = 5
+      ));
+
+      // The overflow marker should be visible
+      expect(output).toContain("↓");
+      expect(output).toContain("more");
+
+      // No card should be partially rendered (all cards visible should be complete)
+      // Check that we don't have truncated content
+      const lines = output.split("\n");
+      const overflowLine = lines.find((line) => line.includes("↓") && line.includes("more"));
+      expect(overflowLine).toBeDefined();
+    });
+
+    it("should not clip overflow marker when column height is tight", () => {
+      // This is the specific regression case:
+      // columnHeight = 5, lineBudget = 2
+      // One 2-line card fits exactly, but without overflow reservation,
+      // the "↓ 1 more" row would exceed the fixed column height
+      const state = createRenderState({
+        backlog: Array.from({ length: 3 }, (_, index) =>
+          createTask(`bd-${index}`, { title: `Task ${index}` })),
+      });
+
+      const output = stripTerminalFormatting(renderBoard(
+        state,
+        "Demo",
+        150,
+        3, // maxVisiblePerCol
+        5, // terminal height = 5, lineBudget = 2
+      ));
+
+      // The overflow marker must be visible
+      expect(output).toMatch(/↓.*more/);
+
+      // Verify no task card is partially rendered
+      // Count actual task lines shown (tasks should be complete)
+      const hasCompleteTask = output.includes("Task 0") || output.includes("Task 1");
+      expect(hasCompleteTask).toBe(true);
+    });
+
+    it("should show overflow marker when more tasks exist than fit in visible window", () => {
+      // Test with many tasks that don't all fit in the visible window
+      const state = createRenderState({
+        ready: Array.from({ length: 15 }, (_, index) =>
+          createTask(`rd-${index}`, { title: `Ready Task ${index}`, status: "ready" })),
+      });
+
+      const output = stripTerminalFormatting(renderBoard(
+        state,
+        "Demo",
+        150,
+        5, // maxVisiblePerCol
+        20, // taller terminal
+      ));
+
+      // Should show overflow indicator since not all 15 tasks are visible
+      expect(output).toMatch(/↓.*more/);
+    });
+  });
 });

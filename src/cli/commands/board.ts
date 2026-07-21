@@ -812,8 +812,13 @@ function renderBoardColumn(
 
     const cardLineCount = getCardLineCount(task, columnWidth);
 
+    // Reserve one row for the overflow marker when hidden tasks may remain
+    const hasPotentialOverflow =
+      taskWindow.hiddenAfter > 0 || index < taskWindow.visibleTasks.length - 1;
+    const overflowReserve = hasPotentialOverflow ? 1 : 0;
+
     // Stop if adding this card would exceed line budget
-    if (usedLines + cardLineCount > lineBudget) {
+    if (usedLines + cardLineCount + overflowReserve > lineBudget) {
       break;
     }
 
