@@ -37,6 +37,12 @@ authoritative state.
   when an active task projection has no run row yet. Stale in-progress run
   projections for closed/failed tasks are shown as
   recent, not running.
+- Board cards are three-line entries: `line1` is the state glyph + id plus a
+  right-aligned metadata column (status and other counts); `line2` is the
+  title; `line3` is a compact meta line of `priority · type · age` where `age`
+  is the activity stamp (`Updated` for tasks, `Last` for runs, falling back to
+  `Created`). The age on `line3` is always visible — narrow columns like
+  `Done` no longer squeeze it out of the squeezed `line1` right column.
 - Task/run rows are richer two-line entries: metadata (id, type, priority,
   phase/status, and available counts/checks/PR/diff/age columns) on the first
   line and the title/summary on the second.

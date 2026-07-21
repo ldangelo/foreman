@@ -3553,6 +3553,43 @@ func TestBoardCardRendersCreatedAndUpdatedAges(t *testing.T) {
 	}
 }
 
+// TestBoardCardShowsAgeInNarrowColumns ensures the activity age is rendered on
+// the always-visible line3 of the board card and is not squeezed out of the
+// right-metadata line1 in narrow columns like Done. Reported via screenshot:
+// Backlog column showed age, but Done column (28 tasks) did not.
+func TestBoardCardShowsAgeInNarrowColumns(t *testing.T) {
+	updated := time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
+	it := Item{
+		IsTask: true,
+		Task: Task{
+			TaskID: "task-1", Title: "with ages", Status: "done",
+			Updated: updated,
+		},
+	}
+	// 16 cols is representative of a narrow Done column when the cockpit
+	// board has split the width across 5 columns.
+	out := stripANSI(renderBoardCard(it, 16, false, paneVisualFor(true, defaultConfig().Cockpit.Focus)))
+	if !strings.Contains(out, "3h ago") {
+		t.Fatalf("expected narrow-column card to still show %q on line3, got:\n%s", "3h ago", out)
+	}
+	// Also confirm the age is reachable on its own line (line3), not just
+	// buried in the right metadata where narrow columns can clip it.
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected card to have at least 3 lines, got %d:\n%s", len(lines), out)
+	}
+	foundOnLine3 := false
+	for _, l := range lines[2:] {
+		if strings.Contains(l, "3h ago") {
+			foundOnLine3 = true
+			break
+		}
+	}
+	if !foundOnLine3 {
+		t.Fatalf("expected '3h ago' on line3 (or later) of narrow-column card, got:\n%s", out)
+	}
+}
+
 // TestMessageRowOmitsEllipsisFromBody verifies that renderMessageRow does not
 // insert ellipsis (…) characters anywhere in the output, including the body.
 func TestMessageRowOmitsEllipsisFromBody(t *testing.T) {
