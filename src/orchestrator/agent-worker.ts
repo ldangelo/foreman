@@ -1750,10 +1750,10 @@ async function runPrWaitBuiltinPhase(args: {
   let lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   let timedOut = false;
 
-  // Short-circuit: if PR is already ready on entry, exit immediately without waiting
+  // Short-circuit: if PR has terminal review state or is already ready on entry, exit immediately without waiting
   const entryStatus = summarizePrWaitStatus(lastSnapshot);
-  if (isPrWaitStatusReady(entryStatus)) {
-    args.log(`[PR-WAIT] PR #${prNumber} already ready on entry: checksTerminal=${String(entryStatus.checksTerminal)} codeRabbitComplete=${String(entryStatus.codeRabbitComplete)} mergeConflict=${String(entryStatus.mergeConflict)}`);
+  if (entryStatus.prReviewTerminal || isPrWaitStatusReady(entryStatus)) {
+    args.log(`[PR-WAIT] PR #${prNumber} has terminal review state or is already ready on entry: prReviewTerminal=${String(entryStatus.prReviewTerminal)} checksTerminal=${String(entryStatus.checksTerminal)} codeRabbitComplete=${String(entryStatus.codeRabbitComplete)} mergeConflict=${String(entryStatus.mergeConflict)} latestReviewState=${lastSnapshot.latestReviewState ?? "none"}`);
     await writePrWaitReport(args.config.worktreePath, lastSnapshot, false, workerReportDir(args.config));
     return {
       success: true,

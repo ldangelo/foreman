@@ -2,6 +2,71 @@ import { describe, expect, it } from "vitest";
 import { isPrWaitStatusReady, parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus, updatePrReadyStability } from "../pr-review-context.js";
 
 describe("pr-review-context", () => {
+  it("detects terminal review state APPROVED as prReviewTerminal", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 200,
+      latestReviewState: "APPROVED",
+      checks: [{ name: "unit", status: "QUEUED" }],
+      codeRabbitComments: 0,
+    });
+
+    expect(status.prReviewTerminal).toBe(true);
+  });
+
+  it("detects terminal review state CHANGES_REQUESTED as prReviewTerminal", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 201,
+      latestReviewState: "CHANGES_REQUESTED",
+      checks: [{ name: "unit", status: "QUEUED" }],
+      codeRabbitComments: 0,
+    });
+
+    expect(status.prReviewTerminal).toBe(true);
+  });
+
+  it("detects terminal review state DISMISSED as prReviewTerminal", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 202,
+      latestReviewState: "DISMISSED",
+      checks: [{ name: "unit", status: "QUEUED" }],
+      codeRabbitComments: 0,
+    });
+
+    expect(status.prReviewTerminal).toBe(true);
+  });
+
+  it("detects MERGED mergeStateStatus as prReviewTerminal", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 203,
+      mergeStateStatus: "MERGED",
+      checks: [{ name: "unit", status: "QUEUED" }],
+      codeRabbitComments: 0,
+    });
+
+    expect(status.prReviewTerminal).toBe(true);
+  });
+
+  it("detects non-terminal review state as prReviewTerminal false", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 204,
+      latestReviewState: "PENDING",
+      checks: [{ name: "unit", status: "QUEUED" }],
+      codeRabbitComments: 0,
+    });
+
+    expect(status.prReviewTerminal).toBe(false);
+  });
+
+  it("detects missing review state as prReviewTerminal false", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 205,
+      checks: [{ name: "unit", status: "QUEUED" }],
+      codeRabbitComments: 0,
+    });
+
+    expect(status.prReviewTerminal).toBe(false);
+  });
+
   it("extracts only CodeRabbit critical/high/medium/major findings", () => {
     const findings = parseCodeRabbitFindings([
       { user: { login: "coderabbitai[bot]" }, body: "**High**: fix this", path: "src/a.ts", line: 12, html_url: "https://example/1" },

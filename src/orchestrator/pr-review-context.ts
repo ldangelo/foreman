@@ -45,6 +45,7 @@ export interface PrWaitSnapshot {
   codeRabbitComments: number;
   codeRabbitReviews?: number;
   blockingFindings?: CodeRabbitFinding[];
+  latestReviewState?: string;
 }
 
 export interface PrWaitStatus {
@@ -56,6 +57,7 @@ export interface PrWaitStatus {
   blockingFindings: CodeRabbitFinding[];
   mergeConflict: boolean;
   mergeConflictReason?: string;
+  prReviewTerminal: boolean;
 }
 
 export interface PrReadyStability {
@@ -147,6 +149,10 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
   const mergeConflictReason = mergeConflict
     ? `mergeable=${snapshot.mergeable ?? "unknown"} mergeStateStatus=${snapshot.mergeStateStatus ?? "unknown"}`
     : undefined;
+  // Terminal review states: APPROVED, CHANGES_REQUESTED, DISMISSED
+  // Also consider MERGED as terminal (merge queue completion)
+  const latestReviewState = snapshot.latestReviewState?.toUpperCase();
+  const prReviewTerminal = (latestReviewState === "APPROVED" || latestReviewState === "CHANGES_REQUESTED" || latestReviewState === "DISMISSED") || mergeStateStatus === "MERGED";
   return {
     checksTerminal: pendingChecks.length === 0,
     pendingChecks,
@@ -156,6 +162,7 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     blockingFindings,
     mergeConflict,
     mergeConflictReason,
+    prReviewTerminal,
   };
 }
 
@@ -281,6 +288,9 @@ export async function collectPrWaitSnapshot(projectPath: string, prNumber: numbe
     .filter((comment) => isCodeRabbitAuthor(comment.user?.login)).length;
   const codeRabbitReviews = reviews
     .filter((review) => isCodeRabbitAuthor(review.user?.login ?? review.author?.login)).length;
+  // Extract the latest review state from the reviews array
+  // Reviews are ordered by most recent first when fetched from GitHub API
+  const latestReviewState = reviews.length > 0 ? reviews[0].state : undefined;
   return {
     prNumber,
     prUrl: pr.url,
@@ -290,6 +300,7 @@ export async function collectPrWaitSnapshot(projectPath: string, prNumber: numbe
     checks: pr.statusCheckRollup ?? [],
     codeRabbitComments,
     codeRabbitReviews,
+    latestReviewState,
     blockingFindings: [
       ...parseCodeRabbitFindings(reviewComments, "review-comment"),
       ...parseCodeRabbitFindings(issueComments, "issue-comment"),

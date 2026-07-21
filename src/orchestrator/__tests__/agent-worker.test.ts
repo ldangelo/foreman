@@ -337,3 +337,37 @@ describe("bundled prompts: no branch creation instructions", () => {
     expect(finalizeBugPrompt).toContain("retryable\":false");
   });
 });
+
+describe("agent-worker.ts: pr-wait builtin phase early exit", () => {
+  const WORKER_SRC = join(PROJECT_ROOT, "src", "orchestrator", "agent-worker.ts");
+
+  it("runPrWaitBuiltinPhase has early exit for terminal review states", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // Should check for prReviewTerminal in the early exit condition
+    expect(source).toContain("entryStatus.prReviewTerminal");
+    // Should exit early when terminal state is detected
+    expect(source).toContain("if (entryStatus.prReviewTerminal || isPrWaitStatusReady(entryStatus))");
+    // Should log the terminal state detection
+    expect(source).toContain("[PR-WAIT] PR #${prNumber} has terminal review state");
+    // Should write the PR wait report before returning
+    expect(source).toContain("await writePrWaitReport(args.config.worktreePath, lastSnapshot, false");
+  });
+
+  it("pr-review-context exports prReviewTerminal in PrWaitStatus", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // Should import summarizePrWaitStatus from pr-review-context
+    expect(source).toContain("summarizePrWaitStatus");
+    // Should use prReviewTerminal in the status summary
+    expect(source).toContain("prReviewTerminal");
+  });
+
+  it("collectPrWaitSnapshot captures latestReviewState", () => {
+    const source = readFileSync(WORKER_SRC, "utf-8");
+    // Should import collectPrWaitSnapshot which captures latestReviewState
+    expect(source).toContain("collectPrWaitSnapshot");
+    // Should use lastSnapshot which contains latestReviewState
+    expect(source).toContain("lastSnapshot");
+    // Should use the entryStatus which includes prReviewTerminal from summarizePrWaitStatus
+    expect(source).toContain("entryStatus.prReviewTerminal");
+  });
+});
