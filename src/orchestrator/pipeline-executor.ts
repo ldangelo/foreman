@@ -1889,6 +1889,19 @@ async function runPhaseSequence(
         return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: errorMsg };
       }
 
+      // AC-001: rebaseAfterPhase — run VCS rebase before builtin completion events
+      const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+      if (rebaseErr) {
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          taskId, phase: phaseName, error: rebaseErr, retryable: false,
+        });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+        if (phase.files?.reserve) {
+          ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
+        }
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+      }
       if (phase.mail?.onComplete !== false) {
         ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
           taskId, phase: phaseName, status: "completed", cost: 0, turns: 0,
@@ -1908,16 +1921,6 @@ async function runPhaseSequence(
       });
       await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
       await notifyWorktreeUpdated(phase);
-      // AC-001: rebaseAfterPhase — run VCS rebase after builtin phase success
-      const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
-      if (rebaseErr) {
-        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          taskId, phase: phaseName, error: rebaseErr, retryable: false,
-        });
-        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
-      }
       if (result.stopPipelineSuccess) {
         ctx.log(`[${phaseName.toUpperCase()}] Completed and requested successful pipeline stop`);
         return { success: true, phaseRecords, retryCounts, qaVerdictForLog, progress };
@@ -2039,6 +2042,19 @@ async function runPhaseSequence(
           }
         }
 
+        // AC-001: rebaseAfterPhase — run VCS rebase before bash completion bookkeeping
+        const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+        if (rebaseErr) {
+          ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+            taskId, phase: phaseName, error: rebaseErr, retryable: false,
+          });
+          await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+          await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+          if (phase.files?.reserve) {
+            ctx.releaseFiles(agentMailClient, [worktreePath], agentName);
+          }
+          return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+        }
         if (phase.mail?.onComplete !== false) {
           ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
             taskId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
@@ -2073,16 +2089,6 @@ async function runPhaseSequence(
         }
       }
       await notifyWorktreeUpdated(phase);
-      // AC-001: rebaseAfterPhase — run VCS rebase after bash phase success
-      const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
-      if (rebaseErr) {
-        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-          taskId, phase: phaseName, error: rebaseErr, retryable: false,
-        });
-        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
-        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
-        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
-      }
       i++;
       continue;
     }
@@ -2505,6 +2511,16 @@ async function runPhaseSequence(
               await writeNormalPhaseProgress(store, runId, progress, observabilityWriter);
 
               // Handle success: send phase-complete, labels, forward artifact.
+              // AC-001: rebaseAfterPhase — run VCS rebase before haiku fallback completion
+              const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+              if (rebaseErr) {
+                ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+                  taskId, phase: phaseName, error: rebaseErr, retryable: false,
+                });
+                await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+                await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+                return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+              }
               if (phase.mail?.onComplete !== false) {
                 ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
                   taskId, phase: phaseName, status: "completed", cost: fallbackResult.costUsd, turns: fallbackResult.turns,
@@ -2534,16 +2550,6 @@ async function runPhaseSequence(
                 }
               }
               await notifyWorktreeUpdated(phase);
-              // AC-001: rebaseAfterPhase — run VCS rebase after haiku fallback success
-              const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
-              if (rebaseErr) {
-                ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-                  taskId, phase: phaseName, error: rebaseErr, retryable: false,
-                });
-                await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
-                await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
-                return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
-              }
               i++;
               continue;
             }
@@ -2786,6 +2792,16 @@ async function runPhaseSequence(
     }
 
     // 9. Handle success: send phase-complete, labels, forward artifact.
+    // AC-001: rebaseAfterPhase — run VCS rebase before normal completion events
+    const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+    if (rebaseErr) {
+      ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+        taskId, phase: phaseName, error: rebaseErr, retryable: false,
+      });
+      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+    }
     if (phase.mail?.onComplete !== false) {
       ctx.sendMail(agentMailClient, "foreman", "phase-complete", {
         taskId, phase: phaseName, status: "completed", cost: result.costUsd, turns: result.turns,
@@ -2821,16 +2837,6 @@ async function runPhaseSequence(
     }
 
     await notifyWorktreeUpdated(phase);
-    // AC-001: rebaseAfterPhase — run VCS rebase after normal phase success
-    const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
-    if (rebaseErr) {
-      ctx.sendMail(agentMailClient, "foreman", "agent-error", {
-        taskId, phase: phaseName, error: rebaseErr, retryable: false,
-      });
-      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
-      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
-      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
-    }
     i++;
   }
 
