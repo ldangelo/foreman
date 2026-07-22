@@ -52,11 +52,13 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    Application.put_env(:foreman_server, :pr_monitor_test_pid, self())
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
       Application.stop(:foreman_server)
       Application.delete_env(:foreman_server, :event_log_path)
+      Application.delete_env(:foreman_server, :pr_monitor_test_pid)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
