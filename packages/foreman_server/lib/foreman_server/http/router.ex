@@ -550,11 +550,20 @@ defmodule ForemanServer.Http.Router do
 
     # Verify HMAC-SHA256 signature when secret is configured.
     # If no secret is configured, skip verification (development mode).
-    if secret != "" and secret != nil do
-      unless ForemanServer.PrMonitor.GhWebhookHandler.verify_signature(raw_body, signature, secret) do
-        send_error(conn, 401, "UNAUTHORIZED", "invalid webhook signature", false)
+    # When secret is configured, signature header must be present and valid.
+    cond do
+      secret != "" and secret != nil and signature == "" ->
+        send_error(conn, 401, "UNAUTHORIZED", "missing webhook signature header", false)
         |> halt()
-      end
+
+      secret != "" and secret != nil ->
+        unless ForemanServer.PrMonitor.GhWebhookHandler.verify_signature(raw_body, signature, secret) do
+          send_error(conn, 401, "UNAUTHORIZED", "invalid webhook signature", false)
+          |> halt()
+        end
+
+      true ->
+        :ok
     end
 
     # Only handle pull_request events.
