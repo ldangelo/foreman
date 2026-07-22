@@ -97,6 +97,24 @@ describe("validateWorkflowConfig", () => {
     expect(config.phases.find((phase) => phase.name === "finalize")?.checkpointPr).toBeUndefined();
   });
 
+  it("parses rebaseAfterPhase from string and ignores non-string values", () => {
+    const raw = {
+      name: "default",
+      phases: [
+        { name: "developer", prompt: "developer.md", rebaseAfterPhase: "origin/dev" },
+        { name: "qa", prompt: "qa.md", rebaseAfterPhase: "origin/main" },
+        { name: "reviewer", prompt: "reviewer.md", rebaseAfterPhase: 123 },
+        { name: "finalize", builtin: true, rebaseAfterPhase: false },
+      ],
+    };
+    const config = validateWorkflowConfig(raw, "default");
+
+    expect(config.phases.find((phase) => phase.name === "developer")?.rebaseAfterPhase).toBe("origin/dev");
+    expect(config.phases.find((phase) => phase.name === "qa")?.rebaseAfterPhase).toBe("origin/main");
+    expect(config.phases.find((phase) => phase.name === "reviewer")?.rebaseAfterPhase).toBeUndefined();
+    expect(config.phases.find((phase) => phase.name === "finalize")?.rebaseAfterPhase).toBeUndefined();
+  });
+
   it("treats retryAfterCooldown as optional (defaults to undefined when not set)", () => {
     const raw = {
       name: "default",

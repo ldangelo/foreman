@@ -1433,6 +1433,33 @@ async function runPhaseSequence(
     }
   };
 
+  /**
+   * AC-001: Run VCS rebase after a phase completes successfully.
+   * Returns an error message if rebase fails, or undefined on success.
+   */
+  const rebaseAfterPhaseIfConfigured = async (phase: WorkflowPhaseConfig, phaseName: string): Promise<string | undefined> => {
+    if (!phase.rebaseAfterPhase) return undefined;
+    if (!config.vcsBackend) {
+      ctx.log(`[${phaseName.toUpperCase()}] rebaseAfterPhase: '${phase.rebaseAfterPhase}' ignored — no vcsBackend configured`);
+      return undefined;
+    }
+    try {
+      ctx.log(`[${phaseName.toUpperCase()}] Rebasing onto ${phase.rebaseAfterPhase}`);
+      const rebaseResult = await config.vcsBackend.rebase(worktreePath, phase.rebaseAfterPhase);
+      if (!rebaseResult.success) {
+        const conflictFiles = rebaseResult.conflictingFiles?.join(", ") ?? "unknown";
+        ctx.log(`[${phaseName.toUpperCase()}] Rebase failed: ${conflictFiles}`);
+        return `Rebase onto ${phase.rebaseAfterPhase} failed: ${conflictFiles}`;
+      }
+      ctx.log(`[${phaseName.toUpperCase()}] Rebase succeeded`);
+      return undefined;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.log(`[${phaseName.toUpperCase()}] Rebase error: ${msg}`);
+      return `Rebase error: ${msg}`;
+    }
+  };
+
   // Build a phase index for retryWith lookups
   const phaseIndex = new Map<string, number>();
   for (let idx = 0; idx < phases.length; idx++) {
@@ -1881,6 +1908,16 @@ async function runPhaseSequence(
       });
       await ctx.onTaskPhaseChange?.(config.nativeTaskId ?? null, phaseName);
       await notifyWorktreeUpdated(phase);
+      // AC-001: rebaseAfterPhase — run VCS rebase after builtin phase success
+      const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+      if (rebaseErr) {
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          taskId, phase: phaseName, error: rebaseErr, retryable: false,
+        });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+      }
       if (result.stopPipelineSuccess) {
         ctx.log(`[${phaseName.toUpperCase()}] Completed and requested successful pipeline stop`);
         return { success: true, phaseRecords, retryCounts, qaVerdictForLog, progress };
@@ -2036,6 +2073,16 @@ async function runPhaseSequence(
         }
       }
       await notifyWorktreeUpdated(phase);
+      // AC-001: rebaseAfterPhase — run VCS rebase after bash phase success
+      const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+      if (rebaseErr) {
+        ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+          taskId, phase: phaseName, error: rebaseErr, retryable: false,
+        });
+        await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+        await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+        return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+      }
       i++;
       continue;
     }
@@ -2487,6 +2534,16 @@ async function runPhaseSequence(
                 }
               }
               await notifyWorktreeUpdated(phase);
+              // AC-001: rebaseAfterPhase — run VCS rebase after haiku fallback success
+              const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+              if (rebaseErr) {
+                ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+                  taskId, phase: phaseName, error: rebaseErr, retryable: false,
+                });
+                await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+                await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+                return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+              }
               i++;
               continue;
             }
@@ -2764,6 +2821,16 @@ async function runPhaseSequence(
     }
 
     await notifyWorktreeUpdated(phase);
+    // AC-001: rebaseAfterPhase — run VCS rebase after normal phase success
+    const rebaseErr = await rebaseAfterPhaseIfConfigured(phase, phaseName);
+    if (rebaseErr) {
+      ctx.sendMail(agentMailClient, "foreman", "agent-error", {
+        taskId, phase: phaseName, error: rebaseErr, retryable: false,
+      });
+      await writeTaskPhaseNote(phaseName, "failure", `${phaseName} failed: ${rebaseErr}`, { retryable: false });
+      await ctx.markStuck(store, runId, projectId, taskId, taskTitle, progress, phaseName, rebaseErr, config.projectPath, notifyClient);
+      return { success: false, phaseRecords, retryCounts, qaVerdictForLog, progress, failedPhase: phaseName, failureReason: rebaseErr };
+    }
     i++;
   }
 
