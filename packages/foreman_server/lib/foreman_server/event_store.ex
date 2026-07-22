@@ -18,7 +18,7 @@ defmodule ForemanServer.EventStore do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__, timeout: rebuild_timeout_ms())
   end
 
   @spec append(map()) :: {:ok, event()} | {:error, term()}
@@ -50,17 +50,23 @@ defmodule ForemanServer.EventStore do
     GenServer.call(__MODULE__, {:stream, stream_id})
   end
 
-  @spec rebuild_projections() :: {:ok, map()}
+  @spec rebuild_projections() :: {:ok, map()} | {:error, term()}
   def rebuild_projections do
-    GenServer.call(__MODULE__, :rebuild_projections)
+    GenServer.call(__MODULE__, :rebuild_projections, rebuild_timeout_ms())
   end
 
   @impl true
   def init(_opts) do
     adapter = adapter()
     events = load_events(adapter)
-    {:ok, _projection} = ProjectionStore.rebuild(events)
-    {:ok, %{adapter: adapter, events: events}}
+
+    case ProjectionStore.rebuild(events, rebuild_timeout_ms()) do
+      {:ok, _projection} ->
+        {:ok, %{adapter: adapter, events: events}}
+
+      {:error, reason} ->
+        raise "projection rebuild failed during init: #{inspect(reason)}"
+    end
   end
 
   @impl true
@@ -93,7 +99,7 @@ defmodule ForemanServer.EventStore do
   end
 
   def handle_call(:rebuild_projections, _from, state) do
-    {:reply, ProjectionStore.rebuild(state.events), state}
+    {:reply, ProjectionStore.rebuild(state.events, rebuild_timeout_ms()), state}
   end
 
   defp adapter do
@@ -265,4 +271,8 @@ defmodule ForemanServer.EventStore do
 
   defp safe_atom(key) when is_atom(key), do: key
   defp safe_atom(key) when is_binary(key), do: String.to_atom(key)
+  # Delegate to ForemanServer.RuntimeInfo so the env/app-config/default
+  # resolution (and the strict-parse invalid-value fallback) lives in
+  # one place and is unit-tested there.
+  defp rebuild_timeout_ms, do: ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms()
 end

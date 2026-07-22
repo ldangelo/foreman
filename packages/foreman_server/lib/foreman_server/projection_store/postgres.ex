@@ -52,38 +52,39 @@ defmodule ForemanServer.ProjectionStore.Postgres do
     :ok
   end
 
-  @spec replace_all(map()) :: :ok
+  @spec replace_all(map()) :: {:ok, term()} | {:error, term()}
   def replace_all(projection) do
-    Repo.transaction(fn ->
-      SQL.query!(Repo, "DELETE FROM foreman_inbox_message_projections", [])
-      SQL.query!(Repo, "DELETE FROM foreman_run_projections", [])
-      SQL.query!(Repo, "DELETE FROM foreman_task_projections", [])
-      SQL.query!(Repo, "DELETE FROM foreman_project_projections", [])
+    Repo.transaction(
+      fn ->
+        SQL.query!(Repo, "DELETE FROM foreman_inbox_message_projections", [])
+        SQL.query!(Repo, "DELETE FROM foreman_run_projections", [])
+        SQL.query!(Repo, "DELETE FROM foreman_task_projections", [])
+        SQL.query!(Repo, "DELETE FROM foreman_project_projections", [])
 
-      projection
-      |> Map.get(:projects, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_project(&1, nil))
+        projection
+        |> Map.get(:projects, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_project(&1, nil))
 
-      projection
-      |> Map.get(:tasks, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_task(&1, nil))
+        projection
+        |> Map.get(:tasks, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_task(&1, nil))
 
-      projection
-      |> Map.get(:runs, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_run(&1, nil))
+        projection
+        |> Map.get(:runs, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_run(&1, nil))
 
-      projection
-      |> Map.get(:inbox_messages, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_inbox_message(&1, nil))
+        projection
+        |> Map.get(:inbox_messages, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_inbox_message(&1, nil))
 
-      upsert_checkpoint(projection, nil)
-    end)
-
-    :ok
+        upsert_checkpoint(projection, nil)
+      end,
+      timeout: rebuild_timeout_ms()
+    )
   end
 
   @spec project(String.t()) :: map() | nil
@@ -339,4 +340,9 @@ defmodule ForemanServer.ProjectionStore.Postgres do
   rescue
     ArgumentError -> key
   end
+
+  # Delegate to ForemanServer.RuntimeInfo so the env/app-config/default
+  # resolution (and the strict-parse invalid-value fallback) lives in
+  # one place and is unit-tested there.
+  defp rebuild_timeout_ms, do: ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms()
 end

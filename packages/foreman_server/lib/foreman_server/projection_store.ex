@@ -32,9 +32,25 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:apply_event, event})
   end
 
-  @spec rebuild([map()]) :: {:ok, map()}
+  @spec rebuild([map()], timeout()) :: {:ok, map()} | {:error, term()}
+  def rebuild(events, timeout) when is_list(events) do
+    # Give the outer GenServer.call a small cushion over the internal
+    # Task.yield timeout. At the deadline, both fire near-simultaneously;
+    # the cushion lets the handler's internal nil branch fire first and
+    # reply with {:error, :rebuild_timeout} so the caller gets a clean
+    # structured error rather than a GenServer.call :exit timeout. For
+    # non-integer timeouts (e.g. :infinity) no cushion is added.
+    call_timeout = with_timeout_cushion(timeout)
+    GenServer.call(__MODULE__, {:rebuild, events, timeout}, call_timeout)
+  end
+
+  # Backward-compatible 1-arg wrapper. New code should call rebuild/2 with an
+  # explicit finite timeout. This wrapper exists so the existing tests and
+  # internal callers (handle_call(:rebuild_projections, ...)) keep working
+  # during the transition; new callers should pass a timeout.
+  @spec rebuild([map()]) :: {:ok, map()} | {:error, term()}
   def rebuild(events) when is_list(events) do
-    GenServer.call(__MODULE__, {:rebuild, events}, :infinity)
+    rebuild(events, ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms())
   end
 
   @spec snapshot() :: map()
@@ -84,11 +100,53 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, :ok, updated}
   end
 
-  def handle_call({:rebuild, events}, _from, _projection) do
-    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
-    persist_all(rebuilt)
-    {:reply, {:ok, rebuilt}, rebuilt}
+  def handle_call({:rebuild, events, timeout}, _from, projection) do
+    # Run the rebuild + persist on a linked task so we can enforce an
+    # internal deadline matching the caller's timeout. GenServer.call/3's
+    # timeout only bounds the caller; without this, a slow rebuild would
+    # still block subsequent requests even after the caller gives up.
+    # Task.yield returns {:ok, task_result}, {:exit, reason} on completed,
+    # or nil on timeout; Task.shutdown brutally kills the linked task on
+    # timeout so the GenServer stays responsive. The case arms unwrap the
+    # inner {:ok, _} | {:error, _} returned by do_rebuild/1 and only set
+    # the GenServer state to the new projection on success; errors keep
+    # the prior projection.
+    task = Task.async(fn -> do_rebuild(events) end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, rebuilt}} ->
+        {:reply, {:ok, rebuilt}, rebuilt}
+
+      {:ok, {:error, reason}} ->
+        {:reply, {:error, reason}, projection}
+
+      {:exit, reason} ->
+        {:reply, {:error, {:rebuild_crashed, reason}}, projection}
+
+      nil ->
+        {:reply, {:error, :rebuild_timeout}, projection}
+    end
   end
+
+  defp do_rebuild(events) do
+    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
+
+    case persist_all(rebuilt) do
+      :ok -> {:ok, rebuilt}
+      {:ok, _result} -> {:ok, rebuilt}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_persist_result, other}}
+    end
+  end
+
+  # Give the outer GenServer.call a small cushion over the internal
+  # Task.yield timeout. At the deadline, both fire near-simultaneously;
+  # the cushion lets the handler's internal nil branch fire first and
+  # reply with {:error, :rebuild_timeout} so the caller gets a clean
+  # structured error rather than a GenServer.call :exit timeout. For
+  # non-integer timeouts (e.g. :infinity) no cushion is added.
+  defp with_timeout_cushion(timeout) when is_integer(timeout) and timeout > 0, do: timeout + 1_000
+  defp with_timeout_cushion(timeout), do: timeout
 
   def handle_call(:snapshot, _from, projection) do
     {:reply, projection, projection}
@@ -176,7 +234,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp persist_all(projection) do
-    if Postgres.enabled?(), do: Postgres.replace_all(projection)
+    if Postgres.enabled?() do
+      Postgres.replace_all(projection)
+    else
+      :ok
+    end
   end
 
   defp empty_projection do
