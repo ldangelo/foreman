@@ -275,6 +275,75 @@ describe("HeartbeatManager", () => {
       );
     });
 
+    it("does not send overwatch nudge for polling phases (merge, pr-wait)", async () => {
+      const heartbeatWriter = {
+        logEvent: vi.fn().mockResolvedValue(undefined),
+      };
+      const sendNudge = vi.fn().mockResolvedValue(undefined);
+
+      // Test merge phase
+      const mergeManager = new HeartbeatManager(
+        { enabled: true, intervalSeconds: 60, overwatchStaleIntervals: 1, overwatchMaxNudges: 3 },
+        mockStoreInstance,
+        "proj-123",
+        "run-456",
+        mockVcsInstance,
+        "/worktrees/project/task-abc",
+        heartbeatWriter,
+        { sendNudge },
+      );
+
+      await mergeManager.start("merge");
+      mergeManager.setTaskId("task-123");
+      mergeManager.update({
+        turns: 1,
+        toolCalls: 1,
+        toolBreakdown: {},
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        lastFileEdited: null,
+        lastActivity: new Date().toISOString(),
+      });
+
+      await mergeManager.fireHeartbeat();
+      await mergeManager.fireHeartbeat();
+      await mergeManager.fireHeartbeat();
+
+      expect(sendNudge).not.toHaveBeenCalled();
+
+      // Test pr-wait phase
+      const prWaitManager = new HeartbeatManager(
+        { enabled: true, intervalSeconds: 60, overwatchStaleIntervals: 1, overwatchMaxNudges: 3 },
+        mockStoreInstance,
+        "proj-123",
+        "run-789",
+        mockVcsInstance,
+        "/worktrees/project/task-def",
+        heartbeatWriter,
+        { sendNudge },
+      );
+
+      await prWaitManager.start("pr-wait");
+      prWaitManager.setTaskId("task-456");
+      prWaitManager.update({
+        turns: 1,
+        toolCalls: 1,
+        toolBreakdown: {},
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        lastFileEdited: null,
+        lastActivity: new Date().toISOString(),
+      });
+
+      await prWaitManager.fireHeartbeat();
+      await prWaitManager.fireHeartbeat();
+      await prWaitManager.fireHeartbeat();
+
+      expect(sendNudge).not.toHaveBeenCalled();
+    });
+
     it("should fall back to local store.logEvent when no writer is provided", async () => {
       const manager = new HeartbeatManager(
         { enabled: true },
