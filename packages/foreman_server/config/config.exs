@@ -13,8 +13,7 @@ config :foreman_server, ForemanServer.Repo,
 # - ProjectionStore.Postgres.replace_all/1 Repo.transaction/3
 # Default 10 minutes (600_000 ms) covers the observed ~30s rebuild of a
 # 157K-event log while still letting the supervisor recover from a stalled
-# init/transaction. Override via env: FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS
-# (or set :projection_rebuild_timeout_ms in your runtime.exs).
+# init/transaction. Override via env: FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS.
 config :foreman_server, :projection_rebuild_timeout_ms,
   String.to_integer(System.get_env("FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS") || "600000")
 

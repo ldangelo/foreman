@@ -194,6 +194,8 @@ Troubleshooting sequence for Elixir-backed state:
 2. Check projection lag in `foreman server doctor` or `/api/v1/metrics`; rebuild/restart projections if lag does not catch up.
 3. For recovery, read the observation event first (`ExternalWorkerObserved`), then the resolution event (`WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
 
+Projection rebuild timeouts: the foreman server's startup calls `EventStore.init/1` which loads all events and rebuilds the four projection tables in a single `Repo.transaction`. The default rebuild timeout is `600_000` ms (10 minutes), covering the observed ~30s rebuild of a 157K-event log while still letting the supervisor recover from a genuinely stalled init/transaction. The timeout is shared across `EventStore.start_link/1` init, `EventStore.rebuild_projections/0` GenServer.call/3 (used by `POST /rebuild_projections`), and `ProjectionStore.Postgres.replace_all/1` Repo.transaction/3. Override via `FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS` when running a server with a much larger event log or when a stall needs to fail faster. Symptoms of the default being too short: the server fails to start with `shutdown: failed to start child: ForemanServer.EventStore` and `connection is closed because of an error, disconnect or timeout` in `projection_store/postgres.ex`.
+
 Security behavior:
 - Worker environments are scoped to the project/run. Explicit project and run secret maps are merged after host environment filtering, and forbidden variables such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped.
 - Exposing the Elixir HTTP server beyond loopback requires `FOREMAN_SERVER_AUTH_TOKEN`; clients must send `Authorization: Bearer <token>`.
