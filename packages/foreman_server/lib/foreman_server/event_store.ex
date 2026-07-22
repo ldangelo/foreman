@@ -18,7 +18,7 @@ defmodule ForemanServer.EventStore do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__, timeout: rebuild_timeout_ms())
   end
 
   @spec append(map()) :: {:ok, event()} | {:error, term()}
@@ -52,7 +52,7 @@ defmodule ForemanServer.EventStore do
 
   @spec rebuild_projections() :: {:ok, map()}
   def rebuild_projections do
-    GenServer.call(__MODULE__, :rebuild_projections)
+    GenServer.call(__MODULE__, :rebuild_projections, rebuild_timeout_ms())
   end
 
   @impl true
@@ -265,4 +265,11 @@ defmodule ForemanServer.EventStore do
 
   defp safe_atom(key) when is_atom(key), do: key
   defp safe_atom(key) when is_binary(key), do: String.to_atom(key)
+  # Finite, configurable timeout for the projection rebuild path. Defaults
+  # to 10 minutes, which comfortably covers the rebuild of a 157K-event log
+  # (observed ~30s in this session) while still letting the supervisor
+  # recover from a genuinely stalled initialization or transaction.
+  defp rebuild_timeout_ms do
+    Application.get_env(:foreman_server, :projection_rebuild_timeout_ms, 600_000)
+  end
 end

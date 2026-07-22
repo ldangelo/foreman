@@ -54,34 +54,37 @@ defmodule ForemanServer.ProjectionStore.Postgres do
 
   @spec replace_all(map()) :: :ok
   def replace_all(projection) do
-    Repo.transaction(fn ->
-      SQL.query!(Repo, "DELETE FROM foreman_inbox_message_projections", [])
-      SQL.query!(Repo, "DELETE FROM foreman_run_projections", [])
-      SQL.query!(Repo, "DELETE FROM foreman_task_projections", [])
-      SQL.query!(Repo, "DELETE FROM foreman_project_projections", [])
+    Repo.transaction(
+      fn ->
+        SQL.query!(Repo, "DELETE FROM foreman_inbox_message_projections", [])
+        SQL.query!(Repo, "DELETE FROM foreman_run_projections", [])
+        SQL.query!(Repo, "DELETE FROM foreman_task_projections", [])
+        SQL.query!(Repo, "DELETE FROM foreman_project_projections", [])
 
-      projection
-      |> Map.get(:projects, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_project(&1, nil))
+        projection
+        |> Map.get(:projects, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_project(&1, nil))
 
-      projection
-      |> Map.get(:tasks, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_task(&1, nil))
+        projection
+        |> Map.get(:tasks, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_task(&1, nil))
 
-      projection
-      |> Map.get(:runs, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_run(&1, nil))
+        projection
+        |> Map.get(:runs, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_run(&1, nil))
 
-      projection
-      |> Map.get(:inbox_messages, %{})
-      |> Map.values()
-      |> Enum.each(&upsert_inbox_message(&1, nil))
+        projection
+        |> Map.get(:inbox_messages, %{})
+        |> Map.values()
+        |> Enum.each(&upsert_inbox_message(&1, nil))
 
-      upsert_checkpoint(projection, nil)
-    end)
+        upsert_checkpoint(projection, nil)
+      end,
+      timeout: rebuild_timeout_ms()
+    )
 
     :ok
   end
@@ -338,5 +341,13 @@ defmodule ForemanServer.ProjectionStore.Postgres do
     String.to_existing_atom(key)
   rescue
     ArgumentError -> key
+  end
+
+  # Finite, configurable timeout for the projection rebuild transaction.
+  # Shared with ForemanServer.EventStore.rebuild_projections/0 so the
+  # same default (10 min) governs both the GenServer call and the Repo
+  # transaction. Application env key: :projection_rebuild_timeout_ms.
+  defp rebuild_timeout_ms do
+    Application.get_env(:foreman_server, :projection_rebuild_timeout_ms, 600_000)
   end
 end
