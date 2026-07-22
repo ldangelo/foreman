@@ -3,9 +3,24 @@ defmodule ForemanServer.Http.Router do
 
   use Plug.Router
 
+  # NOTE: Plug.Parsers is conditionally applied below to preserve the raw body
+  # for /webhooks/github HMAC verification.
   plug(:match)
-  plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
+  plug(:maybe_parse_body)
   plug(:dispatch)
+
+  # Conditionally apply Plug.Parsers for all routes EXCEPT /webhooks/github.
+  # The webhook route needs the raw request body for HMAC-SHA256 verification.
+  defp maybe_parse_body(%Plug.Conn{path_info: ["webhooks", "github" | _]} = conn, _opts),
+    do: conn
+
+  defp maybe_parse_body(conn, _opts) do
+    Plug.Parsers.call(conn, Plug.Parsers.init(
+      parsers: [:json],
+      pass: ["application/json"],
+      json_decoder: Jason
+    ))
+  end
 
   get "/api/v1/health" do
     payload = %{
@@ -499,8 +514,84 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  post "/webhooks/github" do
+    # Read raw body for HMAC-SHA256 verification before any parsing.
+    # Plug.Parsers is skipped for this route (see maybe_parse_body/2).
+    case read_raw_body(conn) do
+      {:ok, raw_body, _conn} ->
+        handle_github_webhook(conn, raw_body)
+
+      {:error, reason} ->
+        send_error(conn, 400, "BAD_REQUEST", "could not read request body: #{inspect(reason)}", false)
+    end
+  end
+
   match _ do
     send_error(conn, 404, "UNSUPPORTED", "route not found", false)
+  end
+
+  # Read the raw body from the connection for webhook HMAC verification.
+  # Uses the adapter's read_body when available, with fallback to Plug.Conn.read_body/1.
+  defp read_raw_body(conn) do
+    case get_in(conn.private, [:raw_body]) do
+      nil ->
+        Plug.Conn.read_body(conn)
+
+      raw_body when is_binary(raw_body) ->
+        {:ok, raw_body, conn}
+    end
+  end
+
+  defp handle_github_webhook(conn, raw_body) do
+    secret = Application.get_env(:foreman_server, :github_webhook_secret, "")
+    signature = List.first(get_req_header(conn, "x-hub-signature-256")) || ""
+    event = List.first(get_req_header(conn, "x-github-event")) || ""
+    delivery_id = List.first(get_req_header(conn, "x-github-delivery")) || ""
+
+    # Verify HMAC-SHA256 signature when secret is configured.
+    # If no secret is configured, skip verification (development mode).
+    if secret != "" and secret != nil do
+      unless ForemanServer.PrMonitor.GhWebhookHandler.verify_signature(raw_body, signature, secret) do
+        send_error(conn, 401, "UNAUTHORIZED", "invalid webhook signature", false)
+        |> halt()
+      end
+    end
+
+    # Only handle pull_request events.
+    unless event == "pull_request" do
+      send_json(conn, 200, %{ok: true, handled: false, reason: "event type not supported"})
+      |> halt()
+    end
+
+    # Parse JSON payload.
+    case Jason.decode(raw_body) do
+      {:ok, payload} ->
+        payload_with_delivery = Map.put(payload, "delivery_id", delivery_id)
+
+        case ForemanServer.PrMonitor.GhWebhookHandler.handle(payload_with_delivery) do
+          {:ok, %{commands_issued: count}} ->
+            send_json(conn, 200, %{ok: true, handled: true, commands_issued: count})
+            |> halt()
+
+          {:error, :duplicate} ->
+            # Idempotent — webhook was already processed.
+            send_json(conn, 200, %{ok: true, handled: false, reason: "duplicate delivery"})
+            |> halt()
+
+          {:error, :no_matching_run} ->
+            # PR doesn't match any known run — that's fine, just acknowledge.
+            send_json(conn, 200, %{ok: true, handled: false, reason: "no matching run"})
+            |> halt()
+
+          {:error, reason} ->
+            send_error(conn, 500, "INTERNAL", "webhook processing failed: #{inspect(reason)}", true)
+            |> halt()
+        end
+
+      {:error, %Jason.DecodeError{}} ->
+        send_error(conn, 400, "BAD_REQUEST", "invalid JSON payload", false)
+        |> halt()
+    end
   end
 
   defp query_limit(nil, fallback), do: fallback
