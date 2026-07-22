@@ -649,7 +649,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
 
   defp get_single_field(nil, _key), do: nil
   defp get_single_field(%{} = map, key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    Map.get(map, key) || Map.get(map, to_string(key))
   end
   defp get_single_field(_not_map, _key), do: nil
 
