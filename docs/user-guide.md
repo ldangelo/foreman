@@ -114,6 +114,13 @@ foreman task show <task-id>
 foreman task list
 ```
 
+**Epic task dispatch behavior:** Tasks with `type: epic` are handled differently based on child task count:
+- **3+ child tasks:** Spawns one Epic Runner that executes all children sequentially in a single worktree, with one developer→QA cycle per task and a single finalize at the end
+- **1-2 child tasks:** Falls back to single-agent dispatch (standard pipeline)
+- **0 child tasks:** Auto-closes the epic and skips dispatch
+
+Use `foreman sling trd <path>` to create epics with child tasks from a TRD document.
+
 ### Workflows
 
 A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: mutating phases can opt into draft PR checkpoints with `checkpointPr: true`, and final PR gates remain explicit `create-pr`, `pr-wait`, and `merge` phases. Top-level `merge:` and `pr:` tags are rejected.
