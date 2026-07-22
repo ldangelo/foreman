@@ -1095,7 +1095,8 @@ export class NativeTaskStore {
       .prepare(
         `SELECT from_task_id
            FROM task_dependencies
-          WHERE to_task_id = ? AND type = 'parent-child'`,
+          WHERE to_task_id = ? AND type = 'parent-child'
+          ORDER BY rowid ASC`,
       )
       .all(parentId) as Array<{ from_task_id: string }>;
     return rows.map((row) => row.from_task_id);
