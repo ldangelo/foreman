@@ -521,7 +521,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   defp try_record_dedupe_event(dedupe_key, task_id) do
     alias ForemanServer.EventStore
 
-    EventStore.append(%{
+    {:ok, _event} = EventStore.append(%{
       stream_id: "integration:#{dedupe_key}",
       event_type: "IntegrationCommandIngested",
       payload: %{
@@ -543,6 +543,8 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
         idempotency_key: dedupe_key
       }
     })
+
+    :ok
   rescue
     _error ->
       # If event store append fails (e.g. no event log), skip dedupe recording.
