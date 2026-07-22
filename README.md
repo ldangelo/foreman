@@ -801,6 +801,7 @@ Workflows define:
 - **PR gates** — explicit `create-pr`, `pr-wait`, and `merge` phases for review-aware workflows; PR readiness requires zero failed checks plus a brief stable window, and merge re-waits on late pending checks
 - **Targeted PR remediation** — PR check failures route to `cicd-developer`, CodeRabbit findings route to `cr-developer`, merge conflicts route to `merge-resolver`, and unknown failures fall back to `developer`
 - **Finalize guardrails** — finalized branches are checked against Explorer's `Edit First` scope, and Elixir/Go/workflow-prompt changes trigger matching domain validation even when QA already passed
+- **Strict Scope Expansions contract** — when a developer modifies a file outside Explorer's `Edit First` scope, finalize requires a structured per-file entry under `## Scope Expansions` in `DEVELOPER_REPORT.md` with a substantive (non-placeholder, ≥12 char) justification; mentions in any other section (`## Decisions & Trade-offs`, `## CI Findings Addressed`, etc.) no longer count. Placeholders like `TODO`, `TBD`, `n/a`, blank, or dashes are rejected.
 - **Mail hooks** — lifecycle notifications and artifact forwarding
 
 Top-level `merge:` and `pr:` workflow tags are not supported; add or omit PR/merge phases to control behavior.
