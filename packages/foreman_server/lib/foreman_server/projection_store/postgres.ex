@@ -52,7 +52,7 @@ defmodule ForemanServer.ProjectionStore.Postgres do
     :ok
   end
 
-  @spec replace_all(map()) :: :ok
+  @spec replace_all(map()) :: {:ok, term()} | {:error, term()}
   def replace_all(projection) do
     Repo.transaction(
       fn ->
@@ -85,8 +85,6 @@ defmodule ForemanServer.ProjectionStore.Postgres do
       end,
       timeout: rebuild_timeout_ms()
     )
-
-    :ok
   end
 
   @spec project(String.t()) :: map() | nil
@@ -343,11 +341,8 @@ defmodule ForemanServer.ProjectionStore.Postgres do
     ArgumentError -> key
   end
 
-  # Finite, configurable timeout for the projection rebuild transaction.
-  # Shared with ForemanServer.EventStore.rebuild_projections/0 so the
-  # same default (10 min) governs both the GenServer call and the Repo
-  # transaction. Application env key: :projection_rebuild_timeout_ms.
-  defp rebuild_timeout_ms do
-    Application.get_env(:foreman_server, :projection_rebuild_timeout_ms, 600_000)
-  end
+  # Delegate to ForemanServer.RuntimeInfo so the env/app-config/default
+  # resolution (and the strict-parse invalid-value fallback) lives in
+  # one place and is unit-tested there.
+  defp rebuild_timeout_ms, do: ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms()
 end

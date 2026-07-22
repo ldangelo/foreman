@@ -50,7 +50,7 @@ defmodule ForemanServer.EventStore do
     GenServer.call(__MODULE__, {:stream, stream_id})
   end
 
-  @spec rebuild_projections() :: {:ok, map()}
+  @spec rebuild_projections() :: {:ok, map()} | {:error, term()}
   def rebuild_projections do
     GenServer.call(__MODULE__, :rebuild_projections, rebuild_timeout_ms())
   end
@@ -59,8 +59,14 @@ defmodule ForemanServer.EventStore do
   def init(_opts) do
     adapter = adapter()
     events = load_events(adapter)
-    {:ok, _projection} = ProjectionStore.rebuild(events)
-    {:ok, %{adapter: adapter, events: events}}
+
+    case ProjectionStore.rebuild(events, rebuild_timeout_ms()) do
+      {:ok, _projection} ->
+        {:ok, %{adapter: adapter, events: events}}
+
+      {:error, reason} ->
+        raise "projection rebuild failed during init: #{inspect(reason)}"
+    end
   end
 
   @impl true
@@ -93,7 +99,7 @@ defmodule ForemanServer.EventStore do
   end
 
   def handle_call(:rebuild_projections, _from, state) do
-    {:reply, ProjectionStore.rebuild(state.events), state}
+    {:reply, ProjectionStore.rebuild(state.events, rebuild_timeout_ms()), state}
   end
 
   defp adapter do
@@ -265,11 +271,8 @@ defmodule ForemanServer.EventStore do
 
   defp safe_atom(key) when is_atom(key), do: key
   defp safe_atom(key) when is_binary(key), do: String.to_atom(key)
-  # Finite, configurable timeout for the projection rebuild path. Defaults
-  # to 10 minutes, which comfortably covers the rebuild of a 157K-event log
-  # (observed ~30s in this session) while still letting the supervisor
-  # recover from a genuinely stalled initialization or transaction.
-  defp rebuild_timeout_ms do
-    Application.get_env(:foreman_server, :projection_rebuild_timeout_ms, 600_000)
-  end
+  # Delegate to ForemanServer.RuntimeInfo so the env/app-config/default
+  # resolution (and the strict-parse invalid-value fallback) lives in
+  # one place and is unit-tested there.
+  defp rebuild_timeout_ms, do: ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms()
 end

@@ -149,4 +149,48 @@ defmodule ForemanServer.RuntimeInfo do
       _ -> nil
     end
   end
+
+  @doc """
+  Finite, configurable timeout (ms) for the projection rebuild path:
+  EventStore.start_link/1 init, EventStore.rebuild_projections/0
+  GenServer.call/3 (used by POST /rebuild_projections), and
+  ProjectionStore.Postgres.replace_all/1 Repo.transaction/3.
+
+  Resolution order:
+  1. Env var FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS, if
+     present and a positive integer.
+  2. App config :foreman_server, :projection_rebuild_timeout_ms
+     (set by config/config.exs), if positive.
+  3. Default 600_000 ms (10 minutes).
+
+  Reading timing is per-call. The EventStore.start_link/1 init
+  timeout is captured when the supervisor spawns the GenServer, so
+  a new env value affects the next start, not a running process.
+  The HTTP-triggered rebuild_projections/0 and Repo.transaction/3
+  paths read at request time, so the next request after an env change
+  picks up the new value without restart.
+
+  Invalid values (non-integer strings, integers <= 0, or env values
+  with trailing characters like "600000ms") fall back to step 2,
+  then step 3.
+  """
+  @spec projection_rebuild_timeout_ms() :: pos_integer()
+  def projection_rebuild_timeout_ms do
+    parse_pos_int(System.get_env("FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS")) ||
+      parse_pos_int(Application.get_env(:foreman_server, :projection_rebuild_timeout_ms)) ||
+      600_000
+  end
+
+  defp parse_pos_int(nil), do: nil
+
+  defp parse_pos_int(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_pos_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_pos_int(_), do: nil
 end
