@@ -132,7 +132,7 @@ Retry phases (cicd-developer, cr-developer, merge-resolver) are activated only w
 
 After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
 
-The Elixir server also runs PR reconciliation: recorded GitHub PR URLs are checked periodically, GitHub `MERGED` records `run.pr.merge`, and the associated task is updated to `merged`. GitHub closed-without-merge only closes the run PR state.
+The Elixir server also runs PR reconciliation: recorded GitHub PR URLs are checked periodically, GitHub `MERGED` records `run.pr.merge`, and the associated task is updated to `merged`. GitHub closed-without-merge only closes the run PR state. As a real-time optimization, the server also exposes `POST /webhooks/github` for GitHub pull_request webhook events (HMAC-SHA256 verification via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback.
 
 ## VCS Backend Abstraction (PRD-2026-004)
 
