@@ -273,6 +273,12 @@ foreman run --no-watch            # Tick once and exit
 
 Bundled workflows use a deterministic builtin finalize step: Foreman commits, checks the final diff against Explorer's `Edit First` scope, runs changed-domain validation for Elixir/Go/workflow-prompt files, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, retries non-fast-forward branch publication with `--force-with-lease`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
 
+### Scope Expansions contract (developer agent)
+
+When the developer modifies a file outside Explorer's `Edit First` scope, finalize requires a structured per-file entry under `## Scope Expansions` in `DEVELOPER_REPORT.md`. Each entry must be a bullet of the form ``- `path/to/file` — substantive justification``. Mentions in any other section (`## Decisions & Trade-offs`, `## CI Findings Addressed`, prose paragraphs) do NOT count as justification. Placeholders (`TODO`, `TBD`, `n/a`, blank, `-`, `.`) and justifications shorter than 12 characters are rejected. See `src/defaults/prompts/default/developer.md:78,86,116-119` for the developer-side contract.
+
+**Recovering a `scope_guard_failed` finalize**: there is no phase-resume primitive; the supported recovery is `foreman recover <task-id> --reason finalize-conflict --run-id <id>`. Before running it, append the missing `## Scope Expansions` entries to the worktree's `reports/DEVELOPER_REPORT.md` and commit them on the task branch, so the recovery agent sees the corrected report.
+
 ### 7. Monitor Progress
 
 ```bash

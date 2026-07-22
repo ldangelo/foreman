@@ -29,25 +29,89 @@ export function extractExplorerScopedPaths(report: string): Set<string> {
   return paths;
 }
 
-export function reportJustifiesOutOfScope(report: string, file: string): boolean {
-  const lower = report.toLowerCase();
-  // First, check if the developer added a dedicated Scope Expansions section.
-  // Accept the file as justified if it's listed under that heading, since that
-  // section is the explicit developer contract for out-of-scope edits and is
-  // documented in src/defaults/prompts/default/developer.md.
-  const scopeSection = report.match(/##\s*Scope Expansions\b([\s\S]*?)(?=\n##\s|$)/i);
-  if (scopeSection && scopeSection[1].toLowerCase().includes(file.toLowerCase())) {
-    return true;
+// Placeholder values that do not constitute a real justification. These are
+// accepted as "non-justification" so a developer cannot blow through the guard
+// by appending TODO/blank entries. Case-insensitive; matched against the
+// trimmed justification text. Keep this list narrow and grounded in observed
+// stubs (TODO/TBD/NONE/blank/punctuation) rather than a long word list.
+const SYMBOL_ONLY_JUSTIFICATION = /^(?!.*[\p{L}\p{N}]).+$/u;
+const LEADING_PLACEHOLDER = /^\s*(TODO|TBD|TBA|N\/A|NA|NONE)\b/i;
+// PLACEHOLDER as a stub must be followed by punctuation (comma/colon/semicolon/period)
+// so the literal English word in legitimate justifications is not matched.
+const PLACEHOLDER_STUB = /^\s*PLACEHOLDER\s*[,;:.]/i;
+// Minimum substantive length for a real justification. Anything shorter than
+// ~12 characters is almost certainly a stub or accidental acceptance. We do
+// not enforce a specific keyword vocabulary because the developer prompt
+// (developer.md:116-119) accepts a wide range of legitimate phrasings
+// ("per AGENTS documentation discipline", "config/test coupling", etc.).
+const MIN_JUSTIFICATION_LENGTH = 12;
+
+// Parse the developer's ## Scope Expansions section as a structured per-file
+// map of (file path) -> (justification text). Returns an empty map if the
+// section is missing. Each bullet line is expected to be of the form:
+//
+//   - `path/to/file` — justification text here
+//   - `path/to/file`: justification text here
+//   - path/to/file — justification text here
+//
+// File paths may contain hyphens (e.g. heartbeat-manager.ts,
+// finalize-guards.ts). We split on the separator character rather than
+// matching the path regex, so hyphens in file names are preserved.
+function parseScopeExpansions(report: string): Map<string, string> {
+  const result = new Map<string, string>();
+  const sectionMatch = report.match(/##\s*Scope Expansions\b([\s\S]*?)(?=\n##\s|$)/i);
+  if (!sectionMatch) return result;
+
+  for (const rawLine of sectionMatch[1].split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith('-') && !line.startsWith('*')) continue;
+    const body = line.replace(/^[-*]\s+/, '');
+
+    // Try em-dash separator first, then " - " (double-hyphen, which renders as
+    // em-dash in some editors), then colon. Each must have content on both
+    // sides.
+    let file = '';
+    let justification = '';
+    const emDashMatch = body.match(/^`?([^`]+?)`?\s+(?:\u2014|--)\s+(.+)$/);
+    const colonMatch = body.match(/^`?([^`]+?)`?\s*:\s+(.+)$/);
+    if (emDashMatch) {
+      file = emDashMatch[1].trim();
+      justification = emDashMatch[2].trim();
+    } else if (colonMatch) {
+      file = colonMatch[1].trim();
+      justification = colonMatch[2].trim();
+    } else {
+      continue;
+    }
+    // Strip any remaining surrounding backticks from the file path.
+    file = file.replace(/^`+|`+$/g, '').trim();
+    if (file) result.set(file, justification);
   }
+  return result;
+}
 
-  // Fall back to keyword-based detection across the whole report. The regex
-  // captures common justification patterns agents use when explaining why an
-  // out-of-scope edit was unavoidable: explicit out-of-scope labels, scope
-  // expansions, necessity language, remediation of CI/CodeRabbit findings,
-  // prerequisite/dependency relationships, and CodeRabbit sections.
-  const keywordPattern = /\b(out-of-scope|outside scope|scope expansion|deviat|additional file|broadened|changed because|need(ed|s) to fix|required to fix|necessary to (make|fix)|prerequisit|unavoidable|to unblock|blocker|regression|CodeRabbit findings (addressed|remediation|resolved)|CI findings addressed|CodeRabbit remediation)\b/i;
+function isValidJustification(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (SYMBOL_ONLY_JUSTIFICATION.test(trimmed)) return false;
+  if (LEADING_PLACEHOLDER.test(trimmed)) return false;
+  if (PLACEHOLDER_STUB.test(trimmed)) return false;
+  if (trimmed.length < MIN_JUSTIFICATION_LENGTH) return false;
+  return true;
+}
 
-  return lower.includes(file.toLowerCase()) && keywordPattern.test(report);
+export function reportJustifiesOutOfScope(report: string, file: string): boolean {
+  // The developer contract (developer.md:116-119) requires each out-of-scope
+  // file to have a structured entry under ## Scope Expansions with a real
+  // justification. Parse the section strictly and require a substantive,
+  // non-placeholder justification for the specific file. No keyword fallback
+  // across the rest of the report — a file mentioned in any other section
+  // (Decisions & Trade-offs, CI Findings Addressed, etc.) does NOT count as
+  // justified, because the contract is the section.
+  const expansions = parseScopeExpansions(report);
+  const justification = expansions.get(file);
+  if (justification === undefined) return false;
+  return isValidJustification(justification);
 }
 
 export function findFinalizeScopeViolations(config: FinalizeGuardConfig, changedFiles: string[]): string[] {
