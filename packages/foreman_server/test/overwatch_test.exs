@@ -295,4 +295,76 @@ defmodule ForemanServer.OverwatchTest do
              &(&1.from == "overwatch" and &1.subject == "overwatch nudge: stale phase")
            )
   end
+
+  test "does not send nudges for polling phases (merge, pr-wait)" do
+    # Test merge phase
+    EventStore.append(%{
+      stream_id: "run:run-merge-1",
+      event_type: "RunStarted",
+      payload: %{run_id: "run-merge-1", task_id: "task-merge-1", status: "in_progress"},
+      metadata: %{correlation_id: "test"}
+    })
+
+    EventStore.append(%{
+      stream_id: "run:run-merge-1",
+      event_type: "PhaseStarted",
+      payload: %{run_id: "run-merge-1", task_id: "task-merge-1", phase_id: "merge"},
+      metadata: %{correlation_id: "test"}
+    })
+
+    for seq <- 1..3 do
+      EventStore.append(%{
+        stream_id: "worker:run-merge-1:worker-1",
+        event_type: "WorkerHeartbeat",
+        payload: %{
+          run_id: "run-merge-1",
+          task_id: "task-merge-1",
+          phase_id: "merge",
+          worker_id: "worker-1",
+          sequence: seq
+        },
+        metadata: %{correlation_id: "test"}
+      })
+    end
+
+    Process.sleep(50)
+
+    events = EventStore.stream("run:run-merge-1")
+    refute Enum.any?(events, &(&1.event_type == "PhaseNudged"))
+
+    # Test pr-wait phase
+    EventStore.append(%{
+      stream_id: "run:run-prwait-1",
+      event_type: "RunStarted",
+      payload: %{run_id: "run-prwait-1", task_id: "task-prwait-1", status: "in_progress"},
+      metadata: %{correlation_id: "test"}
+    })
+
+    EventStore.append(%{
+      stream_id: "run:run-prwait-1",
+      event_type: "PhaseStarted",
+      payload: %{run_id: "run-prwait-1", task_id: "task-prwait-1", phase_id: "pr-wait"},
+      metadata: %{correlation_id: "test"}
+    })
+
+    for seq <- 1..3 do
+      EventStore.append(%{
+        stream_id: "worker:run-prwait-1:worker-1",
+        event_type: "WorkerHeartbeat",
+        payload: %{
+          run_id: "run-prwait-1",
+          task_id: "task-prwait-1",
+          phase_id: "pr-wait",
+          worker_id: "worker-1",
+          sequence: seq
+        },
+        metadata: %{correlation_id: "test"}
+      })
+    end
+
+    Process.sleep(50)
+
+    events = EventStore.stream("run:run-prwait-1")
+    refute Enum.any?(events, &(&1.event_type == "PhaseNudged"))
+  end
 end

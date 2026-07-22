@@ -13,6 +13,9 @@ defmodule ForemanServer.Overwatch do
   @stale_intervals 2
   @max_nudges 3
 
+  # Phases that poll for external conditions and should NOT receive overwatch nudges.
+  @polling_phases ~w(merge pr-wait refinery)
+
   @type decision :: %{
           allowed: boolean(),
           action: String.t(),
@@ -80,41 +83,48 @@ defmodule ForemanServer.Overwatch do
 
   defp observe_event(%Event{event_type: "WorkerHeartbeat", payload: payload}, state) do
     key = phase_key(payload)
-    phase = Map.get(state.phases, key, fresh_phase(payload))
-    signature = activity_signature(phase)
+    phase_id = fetch(payload, :phase_id) || fetch(payload, :phase) || "pipeline"
 
-    cond do
-      phase.last_signature in [nil, signature] and phase.last_signature != nil ->
-        stale_count = phase.stale_count + 1
-        phase = %{phase | stale_count: stale_count}
+    # Skip nudging for polling phases — they intentionally wait without activity
+    if phase_id in @polling_phases do
+      state
+    else
+      phase = Map.get(state.phases, key, fresh_phase(payload))
+      signature = activity_signature(phase)
 
-        if stale_count >= @stale_intervals and phase.nudge_count < @max_nudges do
-          nudge_count = phase.nudge_count + 1
+      cond do
+        phase.last_signature in [nil, signature] and phase.last_signature != nil ->
+          stale_count = phase.stale_count + 1
+          phase = %{phase | stale_count: stale_count}
 
-          reason =
-            "No new assistant/tool activity for #{@stale_intervals} heartbeat intervals. Summarize current state, choose the next concrete action, and avoid repeating failed tool calls."
+          if stale_count >= @stale_intervals and phase.nudge_count < @max_nudges do
+            nudge_count = phase.nudge_count + 1
 
-          send_overwatch_nudge(
-            phase.run_id,
-            phase.phase_id,
-            "overwatch nudge: stale phase",
-            reason
-          )
+            reason =
+              "No new assistant/tool activity for #{@stale_intervals} heartbeat intervals. Summarize current state, choose the next concrete action, and avoid repeating failed tool calls."
 
-          append_phase_nudge(phase.run_id, phase.phase_id, reason, nudge_count)
+            send_overwatch_nudge(
+              phase.run_id,
+              phase.phase_id,
+              "overwatch nudge: stale phase",
+              reason
+            )
 
-          put_phase(state, key, %{
-            phase
-            | stale_count: 0,
-              nudge_count: nudge_count,
-              last_signature: signature
-          })
-        else
-          put_phase(state, key, phase)
-        end
+            append_phase_nudge(phase.run_id, phase.phase_id, reason, nudge_count)
 
-      true ->
-        put_phase(state, key, %{phase | stale_count: 0, last_signature: signature})
+            put_phase(state, key, %{
+              phase
+              | stale_count: 0,
+                nudge_count: nudge_count,
+                last_signature: signature
+            })
+          else
+            put_phase(state, key, phase)
+          end
+
+        true ->
+          put_phase(state, key, %{phase | stale_count: 0, last_signature: signature})
+      end
     end
   end
 
