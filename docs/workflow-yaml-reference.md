@@ -291,6 +291,7 @@ The `phases` array defines the ordered sequence of pipeline phases. Most phases 
 | `files` | object | — | File reservation configuration (see below) |
 | `builtin` | boolean | `false` | Phase implemented in TypeScript, not as agent prompt |
 | `checkpointPr` | boolean | `false` | After a successful dirty phase, commit and push the worktree, then create or update a draft PR when the workflow also has a `create-pr` phase |
+| `rebaseAfterPhase` | string | — | After a phase completes successfully, run `vcs.rebase()` against the specified target branch before the next phase dispatches. When rebase fails (conflicts), the phase is marked failed and the pipeline stops. Requires a VCS backend to be configured. |
 
 ### Documentation Phase
 
