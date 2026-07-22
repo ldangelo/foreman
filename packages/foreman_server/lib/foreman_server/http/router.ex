@@ -551,56 +551,61 @@ defmodule ForemanServer.Http.Router do
     # Verify HMAC-SHA256 signature when secret is configured.
     # If no secret is configured, skip verification (development mode).
     # When secret is configured, signature header must be present and valid.
-    cond do
-      secret != "" and secret != nil and signature == "" ->
-        send_error(conn, 401, "UNAUTHORIZED", "missing webhook signature header", false)
-        |> halt()
+    case verify_signature(secret, signature, raw_body, conn) do
+      {:error, conn} -> conn
+      {:ok, conn} ->
+        case verify_event_type(event, conn) do
+          {:error, conn} -> conn
+          {:ok, conn} ->
+            # Parse JSON payload.
+            case Jason.decode(raw_body) do
+              {:ok, payload} ->
+                payload_with_delivery = Map.put(payload, "delivery_id", delivery_id)
 
-      secret != "" and secret != nil ->
-        unless ForemanServer.PrMonitor.GhWebhookHandler.verify_signature(raw_body, signature, secret) do
-          send_error(conn, 401, "UNAUTHORIZED", "invalid webhook signature", false)
-          |> halt()
+                case ForemanServer.PrMonitor.GhWebhookHandler.handle(payload_with_delivery) do
+                  {:ok, %{commands_issued: count}} ->
+                    send_json(conn, 200, %{ok: true, handled: true, commands_issued: count})
+
+                  {:error, :duplicate} ->
+                    # Idempotent — webhook was already processed.
+                    send_json(conn, 200, %{ok: true, handled: false, reason: "duplicate delivery"})
+
+                  {:error, :no_matching_run} ->
+                    # PR doesn't match any known run — that's fine, just acknowledge.
+                    send_json(conn, 200, %{ok: true, handled: false, reason: "no matching run"})
+
+                  {:error, reason} ->
+                    send_error(conn, 500, "INTERNAL", "webhook processing failed: #{inspect(reason)}", true)
+                end
+
+              {:error, %Jason.DecodeError{}} ->
+                send_error(conn, 400, "BAD_REQUEST", "invalid JSON payload", false)
+            end
         end
-
-      true ->
-        :ok
     end
+  end
 
-    # Only handle pull_request events.
-    unless event == "pull_request" do
-      send_json(conn, 200, %{ok: true, handled: false, reason: "event type not supported"})
-      |> halt()
+  # Returns {:ok, conn} when no secret is configured or verification passes.
+  # Returns {:error, conn} with response already sent when verification fails.
+  defp verify_signature(secret, _signature, _raw_body, conn) when secret == "" or is_nil(secret) do
+    {:ok, conn}
+  end
+
+  defp verify_signature(_secret, signature, _raw_body, conn) when signature == "" do
+    {:error, send_error(conn, 401, "UNAUTHORIZED", "missing webhook signature header", false)}
+  end
+
+  defp verify_signature(secret, signature, raw_body, conn) do
+    if ForemanServer.PrMonitor.GhWebhookHandler.verify_signature(raw_body, signature, secret) do
+      {:ok, conn}
+    else
+      {:error, send_error(conn, 401, "UNAUTHORIZED", "invalid webhook signature", false)}
     end
+  end
 
-    # Parse JSON payload.
-    case Jason.decode(raw_body) do
-      {:ok, payload} ->
-        payload_with_delivery = Map.put(payload, "delivery_id", delivery_id)
-
-        case ForemanServer.PrMonitor.GhWebhookHandler.handle(payload_with_delivery) do
-          {:ok, %{commands_issued: count}} ->
-            send_json(conn, 200, %{ok: true, handled: true, commands_issued: count})
-            |> halt()
-
-          {:error, :duplicate} ->
-            # Idempotent — webhook was already processed.
-            send_json(conn, 200, %{ok: true, handled: false, reason: "duplicate delivery"})
-            |> halt()
-
-          {:error, :no_matching_run} ->
-            # PR doesn't match any known run — that's fine, just acknowledge.
-            send_json(conn, 200, %{ok: true, handled: false, reason: "no matching run"})
-            |> halt()
-
-          {:error, reason} ->
-            send_error(conn, 500, "INTERNAL", "webhook processing failed: #{inspect(reason)}", true)
-            |> halt()
-        end
-
-      {:error, %Jason.DecodeError{}} ->
-        send_error(conn, 400, "BAD_REQUEST", "invalid JSON payload", false)
-        |> halt()
-    end
+  defp verify_event_type("pull_request", conn), do: {:ok, conn}
+  defp verify_event_type(_event, conn) do
+    {:error, send_json(conn, 200, %{ok: true, handled: false, reason: "event type not supported"})}
   end
 
   defp query_limit(nil, fallback), do: fallback
