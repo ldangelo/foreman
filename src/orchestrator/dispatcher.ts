@@ -586,12 +586,67 @@ export class Dispatcher {
 
       // ── Epic tasks: dispatch through epic pipeline ─────────────────────────
       // Epic tasks are dispatched as a single epic runner that executes all
-      // child tasks sequentially within one worktree. Native task store does not
-      // have children support, so epics dispatch as single-agent tasks.
+      // child tasks sequentially within one worktree.
       if (task.type === "epic") {
-        log(`[dispatch] Epic ${task.id} — dispatching as single-agent task`);
-        // Fall through to regular dispatch so the epic's phases
-        // (developer → qa → finalize) run as a single worktree.
+        // Get child task IDs from native task store (via task_dependencies table)
+        let childTaskIds: string[] = [];
+        if (this.overrides?.nativeTaskOps?.getChildren) {
+          try {
+            childTaskIds = await this.overrides.nativeTaskOps.getChildren(task.id);
+          } catch (err) {
+            log(`[dispatch] Epic ${task.id} — failed to get children: ${err}`);
+            // Fall through to single-agent dispatch
+          }
+        }
+
+        // AC-001-3: Epic with 0 child tasks auto-closes
+        if (childTaskIds.length === 0) {
+          log(`[dispatch] Epic ${task.id} — no children, auto-closing`);
+          await this.updateNativeTaskStatus(task.id, "closed");
+          skipped.push({
+            taskId: task.id,
+            title: task.title,
+            reason: "Epic has no child tasks",
+          });
+          continue;
+        }
+
+        // AC-001-1: Epic with 3+ child tasks creates one worktree + Epic Runner
+        if (childTaskIds.length >= 3) {
+          log(`[dispatch] Epic ${task.id} — ${childTaskIds.length} children, spawning Epic Runner`);
+
+          // Fetch child task details to build EpicTask[]
+          const epicTasks: EpicTask[] = [];
+          for (const childId of childTaskIds) {
+            try {
+              const childTask = this.overrides?.nativeTaskOps
+                ? await this.overrides.nativeTaskOps.getTaskById(childId)
+                : await this.store.getTaskById(childId);
+              if (childTask) {
+                epicTasks.push({
+                  taskId: childTask.id,
+                  taskTitle: childTask.title,
+                  taskDescription: childTask.description ?? undefined,
+                });
+              }
+            } catch (err) {
+              log(`[dispatch] Epic ${task.id} — failed to fetch child ${childId}: ${err}`);
+            }
+          }
+
+          if (epicTasks.length >= 3) {
+            // Mark task as epic dispatch with children (used by spawnAgent)
+            (task as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+            log(`[dispatch] Epic ${task.id} — prepared ${epicTasks.length} epic tasks for Epic Runner`);
+            // Continue to regular dispatch which will pass epicTasks to spawnAgent
+          } else {
+            log(`[dispatch] Epic ${task.id} — fewer than 3 actionable children, falling back to single-agent`);
+          }
+        } else {
+          // AC-001-2: Task type still uses 5-phase pipeline (no change)
+          // Epic with < 3 children falls through to single-agent dispatch
+          log(`[dispatch] Epic ${task.id} — ${childTaskIds.length} children (< 3), single-agent fallback`);
+        }
       }
 
       // Skip tasks that are in cooldown state after a retryable failure.
