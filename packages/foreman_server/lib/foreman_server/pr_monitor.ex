@@ -386,6 +386,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   """
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.EventStore
 
   @default_command_handler ForemanServer.PrMonitor.CommandHandler
 
@@ -527,8 +528,6 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   end
 
   defp try_record_dedupe_event(dedupe_key, task_id) do
-    alias ForemanServer.EventStore
-
     {:ok, _event} = EventStore.append(%{
       stream_id: "integration:#{dedupe_key}",
       event_type: "IntegrationCommandIngested",

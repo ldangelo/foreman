@@ -799,6 +799,7 @@ defmodule ForemanServer.Http.RouterTest do
       Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
       Application.put_env(:foreman_server, :github_webhook_secret, @secret)
       Application.put_env(:foreman_server, :auth_token, "secret")
+      Application.put_env(:foreman_server, :command_handler, ForemanServer.PrMonitorTest.FakeCommandHandler)
       assert :ok = Application.start(:foreman_server)
 
       # Seed a run with a PR
@@ -809,6 +810,7 @@ defmodule ForemanServer.Http.RouterTest do
         Application.delete_env(:foreman_server, :event_log_path)
         Application.delete_env(:foreman_server, :github_webhook_secret)
         Application.delete_env(:foreman_server, :auth_token)
+        Application.delete_env(:foreman_server, :command_handler)
         File.rm_rf!(tmp_dir)
         Application.start(:foreman_server)
       end)

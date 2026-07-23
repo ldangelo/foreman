@@ -142,7 +142,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
              end)
 
       assert Enum.any?(commands, fn c ->
-               c.command_type == "task.update" and c.payload["status"] == "merged"
+               c.command_type == "task.update" and c.payload[:status] == "merged"
              end)
     end
 
@@ -166,7 +166,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       commands = drain_commands()
 
       assert Enum.any?(commands, fn c ->
-               c.command_type == "run.pr.reset" and c.payload["action"] == "closed"
+               c.command_type == "run.pr.reset" and c.payload[:action] == "closed"
              end)
 
       assert Enum.any?(commands, fn c ->
@@ -241,7 +241,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
 
       commands = drain_commands()
       assert Enum.any?(commands, fn c ->
-               c.command_type == "run.pr.update" and c.payload["pr_state"] == "draft"
+               c.command_type == "run.pr.update" and c.payload[:pr_state] == "draft"
              end)
     end
 
