@@ -21,9 +21,14 @@ export FOREMAN_ROOT="$HOME/Development/Fortium/foreman"
 # The user home. Used for ~/.foreman/... and ~/.pi/agent/skills/... paths.
 export HOME_DIR="$HOME"
 
-# The intended Postgres host/port. Defaults to the documented local
-# foreman-postgres (55432). Override if you want to start against a
-# different DB (e.g. 5432 with historical data).
+# Load the checkout's .env before choosing defaults. For Foreman restarts,
+# DATABASE_URL from .env or the process environment is the source of truth.
+# Only fall back to the compose default when DATABASE_URL is unset.
+if [[ -f "$FOREMAN_ROOT/.env" ]]; then
+  set -a
+  source "$FOREMAN_ROOT/.env"
+  set +a
+fi
 export FOREMAN_PG_HOST="${FOREMAN_PG_HOST:-127.0.0.1}"
 export FOREMAN_PG_PORT="${FOREMAN_PG_PORT:-55432}"
 export DATABASE_URL="${DATABASE_URL:-postgresql://postgres:postgres@${FOREMAN_PG_HOST}:${FOREMAN_PG_PORT}/foreman}"
@@ -49,34 +54,34 @@ If the operator prefers a different layout, the rest of the recipe reads the val
 
 ## DB alignment caveat (read this before starting)
 
-- The project's documented local `DATABASE_URL` is `127.0.0.1:55432/foreman` (the foreman-postgres container). The shell env may have a different `DATABASE_URL` (e.g. `...5432/foreman`) from earlier misconfiguration.
+- The checkout's `.env` is the source of truth for Foreman's `DATABASE_URL`; do not hardcode the compose default when restarting. The compose-managed Foreman database is exposed on `127.0.0.1:55432` only when local env does not intentionally point elsewhere.
 - **Always verify which DB the running server is on** with `curl -sS http://127.0.0.1:4766/api/v1/health` and `pg_stat_activity`, before declaring the restart done. Confirm both:
   - `lsof -nP -iTCP:4766 -sTCP:LISTEN` shows the active beam PID
   - `ps eww -p $PID | tr ' ' '\n' | grep '^DATABASE_URL='` shows the actual env
-  - `pg_stat_activity` on the candidate DB shows the beam's idle connections
-- The foreman-postgres container (55432) and the analytics-postgres container (5432) are different Postgres instances. Task data does not automatically move between them.
-- **Don't switch DBs without migrating data.** If the user has historical data in a different container and asks to start on 55432, do NOT truncate first. The migration is destructive to the target.
-  1. **Confirm the target is disposable.** If the user has data on 55432 already, do not migrate. Ask the user.
+  - `psql "$DATABASE_URL" -c "SELECT ... FROM pg_stat_activity"` shows the beam's idle connections on the same database
+- Different Postgres instances (for example, ports 55432 and 5432) do not share task data.
+- **Don't switch DBs without migrating data.** If the populated task history is on a different database than the one you intend to start, do NOT truncate or restore first. Ask the user before any destructive migration.
+  1. **Confirm the target is disposable.** If the target already has task data, do not migrate. Ask the user.
   2. **Back up the target** even if it looks empty:
      ```bash
-     PGPASSWORD=postgres pg_dump -h 127.0.0.1 -p 55432 -U postgres -d foreman -F c -f "${FOREMAN_ROOT}/foreman-55432-backup.dump"
+     pg_dump "$TARGET_DATABASE_URL" -F c -f "${FOREMAN_ROOT}/foreman-target-backup.dump"
      ```
   3. **Back up the source** (the data you want to keep):
      ```bash
-     PGPASSWORD=postgres pg_dump -h 127.0.0.1 -p 5432 -U postgres -d foreman -F c -f "${FOREMAN_ROOT}/foreman-5432-backup.dump"
+     pg_dump "$SOURCE_DATABASE_URL" -F c -f "${FOREMAN_ROOT}/foreman-source-backup.dump"
      ```
   4. **Truncate the target** projection tables + `foreman_events` (the destructive step):
      ```bash
-     PGPASSWORD=postgres psql -h 127.0.0.1 -p 55432 -U postgres -d foreman -c "TRUNCATE foreman_projection_checkpoints, foreman_task_projections, foreman_run_projections, foreman_project_projections, foreman_inbox_message_projections, foreman_events;"
+     psql "$TARGET_DATABASE_URL" -c "TRUNCATE foreman_projection_checkpoints, foreman_task_projections, foreman_run_projections, foreman_project_projections, foreman_inbox_message_projections, foreman_events;"
      ```
   5. **Restore the source dump** into the target:
      ```bash
-     PGPASSWORD=postgres pg_restore -h 127.0.0.1 -p 55432 -U postgres -d foreman --clean --if-exists --no-owner --no-acl "${FOREMAN_ROOT}/foreman-5432-backup.dump"
+     pg_restore --dbname="$TARGET_DATABASE_URL" --clean --if-exists --no-owner --no-acl "${FOREMAN_ROOT}/foreman-source-backup.dump"
      ```
   6. **Verify** with `SELECT count(*) FROM foreman_task_projections;` on both sides — the counts should match the source.
   7. If anything looks wrong, restore the target from the backup dump:
      ```bash
-     PGPASSWORD=postgres pg_restore -h 127.0.0.1 -p 55432 -U postgres -d foreman --clean --if-exists --no-owner --no-acl "${FOREMAN_ROOT}/foreman-55432-backup.dump"
+     pg_restore --dbname="$TARGET_DATABASE_URL" --clean --if-exists --no-owner --no-acl "${FOREMAN_ROOT}/foreman-target-backup.dump"
      ```
 
 ## Recipe
@@ -148,7 +153,7 @@ If the operator prefers a different layout, the rest of the recipe reads the val
    ```bash
    rm -f "$HOME_DIR/.foreman/elixir-server.pid"
    ```
-8. **Start the server** (use the variables; prefix `DATABASE_URL=...` explicitly so the shell's stale env doesn't override the canonical one):
+8. **Start the server** (use `DATABASE_URL` loaded from `.env`/env; prefix it explicitly so unrelated shell state cannot override the selected database):
    ```bash
    cd "$FOREMAN_ROOT"
    DATABASE_URL="$DATABASE_URL" nohup foreman server start > /tmp/srv.log 2>&1 &
@@ -156,7 +161,7 @@ If the operator prefers a different layout, the rest of the recipe reads the val
    # Readiness polling (moved to step 9b) replaces the old fixed 20s sleep.
    cat /tmp/srv.log
    ```
-   Override `FOREMAN_PG_HOST` / `FOREMAN_PG_PORT` (or the whole `DATABASE_URL`) to start against a different DB. The DB-alignment check in step 9a uses the same variables, so the verify step stays consistent with the start step. Don't guess.
+   Override `DATABASE_URL` in `.env` or the shell when intentionally changing databases. The DB-alignment check in step 9a uses the same `DATABASE_URL`, so the verify step stays consistent with the start step. Don't guess.
 9. **Verify** (DB alignment FIRST, then port, then board API, then doctor — with readiness polling, not a fixed sleep):
    ```bash
    readiness_budget_ms="${FOREMAN_STARTUP_TIMEOUT_MS:-600000}"
@@ -179,8 +184,8 @@ If the operator prefers a different layout, the rest of the recipe reads the val
    echo "  beam pid=$pid"
    ps eww -p "$pid" 2>/dev/null | tr ' ' '
 ' | grep '^DATABASE_URL=' | head -1
-   PGPASSWORD=postgres psql -h "$FOREMAN_PG_HOST" -p "$FOREMAN_PG_PORT" -U postgres -d foreman -tA -c "SELECT count(*) FROM pg_stat_activity WHERE datname='foreman' AND application_name = '' AND state='idle';" 2>/dev/null | xargs -I{} echo "  ${FOREMAN_PG_HOST}:${FOREMAN_PG_PORT} idle connections: {}"
-   # If the beam is on a different DB (e.g. 5432), do not declare success — fix the DB first.
+   PGPASSWORD="${POSTGRES_PASSWORD:-postgres}" psql "$DATABASE_URL" -tA -c "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND application_name = '' AND state='idle';" 2>/dev/null | xargs -I{} echo "  DATABASE_URL idle connections: {}"
+   # If the beam is on a different DB than DATABASE_URL, do not declare success — fix the DB first.
 
    # 9b. Wait for the server to report ready. Default readiness budget is
    # 600_000 ms (the documented projection-rebuild timeout). Override with

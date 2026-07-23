@@ -6,6 +6,14 @@ defmodule ForemanServer.ProjectionStore do
   alias ForemanServer.ProjectionStore.Postgres
 
   @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
+  @terminal_task_to_run_status %{
+    "blocked" => "blocked",
+    "closed" => "completed",
+    "conflict" => "failed",
+    "failed" => "failed",
+    "merged" => "merged",
+    "stuck" => "failed"
+  }
   @task_statuses MapSet.new([
                    "backlog",
                    "ready",
@@ -209,6 +217,7 @@ defmodule ForemanServer.ProjectionStore do
 
     {:reply, tasks, projection}
   end
+
   @spec board(String.t()) :: map()
   def board(project_id) do
     GenServer.call(__MODULE__, {:board, project_id})
@@ -399,7 +408,7 @@ defmodule ForemanServer.ProjectionStore do
          %{
            type: "TaskUpdated",
            payload: %{task_id: task_id} = payload
-         },
+         } = event,
          _mode
        ) do
     existing = empty_task(task_id)
@@ -411,9 +420,13 @@ defmodule ForemanServer.ProjectionStore do
       |> keep_only_task_status_values()
       |> clear_failure_fields_for_active_status()
 
+    task = Map.merge(existing, updates)
+    now = Map.get(event, :occurred_at) || DateTime.utc_now()
+
     projection
     |> put_worker_sequence(payload)
-    |> put_in([:tasks, task_id], Map.merge(existing, updates))
+    |> put_in([:tasks, task_id], task)
+    |> maybe_terminalize_run_from_task(task, payload, now)
   end
 
   defp apply_domain_event(
@@ -1142,6 +1155,39 @@ defmodule ForemanServer.ProjectionStore do
 
   defp terminal_run?(_run), do: false
 
+  defp terminal_run_status_for_task_status(status) when is_binary(status) do
+    Map.get(@terminal_task_to_run_status, status)
+  end
+
+  defp terminal_run_status_for_task_status(_status), do: nil
+
+  defp maybe_terminalize_run_from_task(projection, task, payload, now) do
+    task_status = Map.get(task, :status)
+    run_status = terminal_run_status_for_task_status(task_status)
+    run_id = payload_value(payload, :run_id) || Map.get(task, :run_id)
+
+    case {run_status, run_id} do
+      {status, run_id} when is_binary(status) and is_binary(run_id) and run_id != "" ->
+        update_run(projection, run_id, fn run ->
+          if terminal_run?(run) do
+            run
+          else
+            run
+            |> Map.put(:status, status)
+            |> put_terminal_current_phase(payload)
+            |> put_terminal_phase_status(payload, status)
+            |> put_terminal_worker_status(payload, status)
+            |> Map.put(:updated_at, now)
+            |> maybe_put(:completed_at, if(status in ["completed", "merged"], do: now, else: nil))
+            |> maybe_put(:failed_at, if(status == "failed", do: now, else: nil))
+          end
+        end)
+
+      _ ->
+        projection
+    end
+  end
+
   defp put_active_worker_status(run, worker_id, status)
        when is_binary(worker_id) and worker_id != "" do
     if terminal_run?(run) do
@@ -1395,7 +1441,9 @@ defmodule ForemanServer.ProjectionStore do
 
   defp coerce_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
-      {:ok, dt, _} -> dt
+      {:ok, dt, _} ->
+        dt
+
       _ ->
         case NaiveDateTime.from_iso8601(value) do
           {:ok, ndt} -> coerce_datetime(ndt)
@@ -1409,12 +1457,12 @@ defmodule ForemanServer.ProjectionStore do
   # ─── Board grouping ───────────────────────────────────────────────────────────
 
   @active_task_statuses MapSet.new([
-                           "in_progress",
-                           "in-progress",
-                           "review",
-                           "cooldown",
-                           "running"
-                         ])
+                          "in_progress",
+                          "in-progress",
+                          "review",
+                          "cooldown",
+                          "running"
+                        ])
 
   @blocked_task_statuses MapSet.new([
                            "failed",
@@ -1427,15 +1475,22 @@ defmodule ForemanServer.ProjectionStore do
                          ])
 
   @done_task_statuses MapSet.new([
-                         "merged",
-                         "completed",
-                         "done",
-                         "closed",
-                         "reset",
-                         "pr_created"
-                       ])
+                        "merged",
+                        "completed",
+                        "done",
+                        "closed",
+                        "reset",
+                        "pr_created"
+                      ])
 
-  @active_run_statuses MapSet.new(["running", "queued", "pending", "in_progress", "retrying", "cooldown"])
+  @active_run_statuses MapSet.new([
+                         "running",
+                         "queued",
+                         "pending",
+                         "in_progress",
+                         "retrying",
+                         "cooldown"
+                       ])
   # (used when Postgres is the backing store and GenServer state may be cold)
   defp build_board_from_maps(tasks_map, runs_map, project_id) do
     tasks =
@@ -1460,12 +1515,15 @@ defmodule ForemanServer.ProjectionStore do
     run_by_task =
       Enum.reduce(runs, %{}, fn run, acc ->
         task_id = Map.get(run, :task_id)
+
         case Map.get(acc, task_id) do
           nil ->
             Map.put(acc, task_id, run)
+
           existing ->
             existing_updated = Map.get(existing, :updated_at, "") || ""
             run_updated = Map.get(run, :updated_at, "") || ""
+
             if run_updated > existing_updated,
               do: Map.put(acc, task_id, run),
               else: acc
@@ -1479,20 +1537,28 @@ defmodule ForemanServer.ProjectionStore do
         task_id = Map.get(task, :task_id)
         status = Map.get(task, :status, "backlog") |> String.downcase() |> String.trim()
         run = Map.get(run_by_task, task_id)
-        run_status = if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
+
+        run_status =
+          if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
+
         active_run = run && MapSet.member?(@active_run_statuses, run_status)
 
         cond do
           active_run ->
             {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
+
           MapSet.member?(@blocked_task_statuses, status) ->
             {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+
           MapSet.member?(@done_task_statuses, status) ->
             {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+
           MapSet.member?(@active_task_statuses, status) ->
             {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
+
           status in ["ready", "approved"] ->
             {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
+
           true ->
             {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
         end
@@ -1506,6 +1572,7 @@ defmodule ForemanServer.ProjectionStore do
       ready: Enum.reverse(ready_tasks)
     }
   end
+
   defp build_board(projection, project_id) do
     # Filter tasks by project
     tasks =
@@ -1553,7 +1620,10 @@ defmodule ForemanServer.ProjectionStore do
         task_id = Map.get(task, :task_id)
         status = Map.get(task, :status, "backlog") |> String.downcase() |> String.trim()
         run = Map.get(run_by_task, task_id)
-        run_status = if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
+
+        run_status =
+          if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
+
         active_run = run && MapSet.member?(@active_run_statuses, run_status)
 
         cond do
@@ -1601,6 +1671,7 @@ defmodule ForemanServer.ProjectionStore do
 
       {task, run, group} ->
         run_status = Map.get(run, :status, "")
+
         run_attention =
           case {Map.get(run, :failure_reason, ""), Map.get(run, :attention, "")} do
             {fr, _} when fr != "" -> fr
@@ -1624,8 +1695,8 @@ defmodule ForemanServer.ProjectionStore do
           })
 
         if run_attention != "",
-            do: Map.put(base, :attention, run_attention),
-            else: base
+          do: Map.put(base, :attention, run_attention),
+          else: base
     end
 
     columns =

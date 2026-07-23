@@ -14,7 +14,7 @@ foreman <command> --help    # Show command-specific help
 
 ### Local Development Services
 
-This repository's Devbox/direnv setup starts Docker Compose services before you run Foreman locally. `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. Foreman CLI commands continue to use `DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/foreman` by default; Hindsight uses a separate `hindsight` database in the same container.
+This repository's Devbox/direnv setup starts Docker Compose services before you run Foreman locally. `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. `.envrc` sources `.env`, and Foreman CLI/server commands use `DATABASE_URL` from `.env` or the process environment. If `DATABASE_URL` is unset, the compose-managed Foreman database is exposed on `127.0.0.1:55432` by default; Hindsight uses a separate `hindsight` database in the same container.
 
 ### Domain Groups and Deprecated Aliases
 
