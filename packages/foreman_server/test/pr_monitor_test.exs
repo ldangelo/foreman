@@ -53,7 +53,13 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
     Application.put_env(:foreman_server, :pr_monitor_test_pid, self())
-    Application.put_env(:foreman_server, :command_handler, ForemanServer.PrMonitorTest.FakeCommandHandler)
+
+    Application.put_env(
+      :foreman_server,
+      :command_handler,
+      ForemanServer.PrMonitorTest.FakeCommandHandler
+    )
+
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
@@ -125,7 +131,6 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
           "html_url" => @pr_url,
           "state" => "closed",
           "merged" => true,
-          "merged_at" => "2026-07-22T10:00:00Z",
           "merged_at" => "2026-07-22T10:00:00Z",
           "merge_commit_sha" => "merge-sha-webhook",
           "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
@@ -240,6 +245,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       assert {:ok, %{commands_issued: 1}} = PrMonitor.GhWebhookHandler.handle(payload)
 
       commands = drain_commands()
+
       assert Enum.any?(commands, fn c ->
                c.command_type == "run.pr.update" and c.payload[:pr_state] == "draft"
              end)

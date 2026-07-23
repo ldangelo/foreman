@@ -299,6 +299,7 @@ defmodule ForemanServer.Http.RouterTest do
     assert run["pr_mergeable"] == false
     assert run["mergeable"] == false
   end
+
   test "authorized runs endpoint falls back to run fields when worktree snapshot is blank" do
     # Native runs use WorktreeManager.createWorktree which does not emit
     # WorktreeCreated, so the worktrees snapshot entry is absent. The API should
@@ -791,7 +792,10 @@ defmodule ForemanServer.Http.RouterTest do
 
     setup do
       tmp_dir =
-        Path.join(System.tmp_dir!(), "foreman-webhook-http-test-#{System.unique_integer([:positive])}")
+        Path.join(
+          System.tmp_dir!(),
+          "foreman-webhook-http-test-#{System.unique_integer([:positive])}"
+        )
 
       File.mkdir_p!(tmp_dir)
 
@@ -799,7 +803,14 @@ defmodule ForemanServer.Http.RouterTest do
       Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
       Application.put_env(:foreman_server, :github_webhook_secret, @secret)
       Application.put_env(:foreman_server, :auth_token, "secret")
-      Application.put_env(:foreman_server, :command_handler, ForemanServer.PrMonitorTest.FakeCommandHandler)
+
+      Application.put_env(
+        :foreman_server,
+        :command_handler,
+        ForemanServer.PrMonitorTest.FakeCommandHandler
+      )
+
+      Application.put_env(:foreman_server, :pr_monitor_test_pid, self())
       assert :ok = Application.start(:foreman_server)
 
       # Seed a run with a PR
@@ -811,6 +822,7 @@ defmodule ForemanServer.Http.RouterTest do
         Application.delete_env(:foreman_server, :github_webhook_secret)
         Application.delete_env(:foreman_server, :auth_token)
         Application.delete_env(:foreman_server, :command_handler)
+        Application.delete_env(:foreman_server, :pr_monitor_test_pid)
         File.rm_rf!(tmp_dir)
         Application.start(:foreman_server)
       end)
@@ -919,6 +931,7 @@ defmodule ForemanServer.Http.RouterTest do
         webhook_payload("closed", "https://github.com/acme/foreman/pull/99999", merged: true)
         |> put_in(["pull_request", "head", "ref"], "nonexistent/branch")
         |> put_in(["pull_request", "head", "sha"], "nonexistent-sha")
+
       raw_body = Jason.encode!(payload)
       signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
 
@@ -977,7 +990,11 @@ defmodule ForemanServer.Http.RouterTest do
 
     test "webhook endpoint accepts payload with delivery_id field instead of header" do
       # Some webhook dispatchers pass delivery_id in the payload body
-      payload = Map.merge(webhook_payload("closed", @pr_url, merged: true), %{"delivery_id" => "body-delivery-id"})
+      payload =
+        Map.merge(webhook_payload("closed", @pr_url, merged: true), %{
+          "delivery_id" => "body-delivery-id"
+        })
+
       raw_body = Jason.encode!(payload)
       signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
 
@@ -994,6 +1011,7 @@ defmodule ForemanServer.Http.RouterTest do
 
     defp webhook_payload(action, pr_url, opts) do
       merged = Keyword.get(opts, :merged, false)
+
       %{
         "action" => action,
         "pull_request" => %{
