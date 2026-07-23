@@ -1449,27 +1449,32 @@ async function runPhaseSequence(
 
   // Kill-switch routing: skip phases before startPhase target
   let i = 0;
+  const retryOnlyActivations = new Set<string>();
   if (config.startPhase) {
     const startIdx = phaseIndex.get(config.startPhase);
-    if (startIdx !== undefined) {
-      ctx.log(`[PIPELINE] Kill-switch routing: starting from phase '${config.startPhase}' (skipping ${startIdx} phases before it)`);
-      // Emit authoritative events for each routed skip so projections can derive them
-      for (let skippedIdx = 0; skippedIdx < startIdx; skippedIdx++) {
-        const skippedPhaseName = phases[skippedIdx].name;
-        const routingReason = `kill-switch routed to '${config.startPhase}' — skipping prior phase`;
-        await appendFile(logFile, `\n[PHASE: ${skippedPhaseName.toUpperCase()}] SKIPPED (kill-switch routing)\n`);
-        await writeNormalPhaseEvent(store, projectId, runId, "phase-skipped", { taskId, phase: skippedPhaseName, reason: routingReason, routedFrom: config.startPhase }, observabilityWriter);
-        await writeTaskPhaseNote(skippedPhaseName, "system", routingReason, { routedFrom: config.startPhase, routingType: "kill-switch" });
-        phaseRecords.push({ name: skippedPhaseName, skipped: true });
-      }
-      i = startIdx;
-    } else {
+    if (startIdx === undefined) {
       // Fail closed: reject unknown route targets rather than silently falling back to phase zero
       ctx.log(`[PIPELINE] ERROR: startPhase '${config.startPhase}' not found in workflow — rejecting route target`);
       throw new Error(`Kill-switch route target '${config.startPhase}' not found in workflow phases. Valid phases are: ${phases.map(p => p.name).join(", ")}`);
     }
+
+    ctx.log(`[PIPELINE] Kill-switch routing: starting from phase '${config.startPhase}' (skipping ${startIdx} phases before it)`);
+    const startPhaseConfig = phases[startIdx];
+    if (startPhaseConfig.retryOnly) {
+      retryOnlyActivations.add(startPhaseConfig.name);
+    }
+
+    // Emit authoritative events for each routed skip so projections can derive them
+    for (let skippedIdx = 0; skippedIdx < startIdx; skippedIdx++) {
+      const skippedPhaseName = phases[skippedIdx].name;
+      const routingReason = `kill-switch routed to '${config.startPhase}' — skipping prior phase`;
+      await appendFile(logFile, `\n[PHASE: ${skippedPhaseName.toUpperCase()}] SKIPPED (kill-switch routing)\n`);
+      await writeNormalPhaseEvent(store, projectId, runId, "phase-skipped", { taskId, phase: skippedPhaseName, reason: routingReason, routedFrom: config.startPhase }, observabilityWriter);
+      await writeTaskPhaseNote(skippedPhaseName, "system", routingReason, { routedFrom: config.startPhase, routingType: "kill-switch" });
+      phaseRecords.push({ name: skippedPhaseName, skipped: true });
+    }
+    i = startIdx;
   }
-  const retryOnlyActivations = new Set<string>();
   while (i < phases.length) {
     const phase = phases[i];
     const phaseName = phase.name;

@@ -60,7 +60,7 @@ function makeBasePipelineArgs(
       env: {},
     },
     workflowConfig: { name: "test", phases } as never,
-    store: mockStore as never,
+    store: mockStore,
     logFile: join(tmpDir, "verdict.log"),
     notifyClient: null,
     agentMailClient: opts.agentMailClient ?? null,
@@ -108,7 +108,7 @@ describe("verdict-triggered retry", () => {
     // Create stub prompt files so prompt-loader doesn't throw
     const promptDir = join(tmpDir, "prompts", "default");
     mkdirSync(promptDir, { recursive: true });
-    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue", "repair", "documentation"]) {
+    for (const phase of ["developer", "qa", "reviewer", "explorer", "fix", "fix-issue", "repair", "documentation", "cr-developer"]) {
       writeFileSync(join(promptDir, `${phase}.md`), `# ${phase} stub\n`);
     }
     writeFileSync(
@@ -292,6 +292,73 @@ describe("verdict-triggered retry", () => {
 
     expect(phaseOrder).toEqual(["fix", "qa", "finalize"]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("DEVELOPER] Skipping — retryOnly phase"));
+  });
+
+  it("runs a retryOnly target selected by kill-switch routing", async () => {
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+    const onTaskPhaseNote = vi.fn().mockResolvedValue(undefined);
+
+    const phases = [
+      { name: "explorer", artifact: "EXPLORER_REPORT.md" },
+      { name: "cr-developer", artifact: "CR_DEVELOPER_REPORT.md", retryOnly: true },
+      { name: "qa", artifact: "QA_REPORT.md" },
+    ];
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      return successResult();
+    });
+    const baseArgs = makeBasePipelineArgs(tmpDir, phases, runPhase, log);
+    const args = {
+      ...baseArgs,
+      config: { ...baseArgs.config, startPhase: "cr-developer" },
+      onTaskPhaseNote,
+    };
+
+    await executePipeline(args as never);
+
+    expect(phaseOrder).toEqual(["cr-developer", "qa"]);
+    expect(baseArgs.store.logEvent).toHaveBeenCalledWith(
+      "proj-001",
+      "phase-skipped",
+      expect.objectContaining({
+        phase: "explorer",
+        routedFrom: "cr-developer",
+        reason: expect.stringContaining("kill-switch routed"),
+      }),
+      "run-verdict-001",
+    );
+    expect(onTaskPhaseNote).toHaveBeenCalledWith(
+      null,
+      "explorer",
+      "system",
+      expect.stringContaining("kill-switch routed"),
+      expect.objectContaining({ routedFrom: "cr-developer", routingType: "kill-switch" }),
+    );
+  });
+
+  it("rejects an unknown kill-switch route target before running phases", async () => {
+    const phaseOrder: string[] = [];
+    const log = vi.fn();
+
+    const phases = [
+      { name: "developer", artifact: "DEVELOPER_REPORT.md" },
+      { name: "qa", artifact: "QA_REPORT.md" },
+    ];
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      phaseOrder.push(phaseName);
+      return successResult();
+    });
+    const baseArgs = makeBasePipelineArgs(tmpDir, phases, runPhase, log);
+    const args = {
+      ...baseArgs,
+      config: { ...baseArgs.config, startPhase: "missing" },
+    };
+
+    await expect(executePipeline(args as never)).rejects.toThrow("Kill-switch route target 'missing' not found");
+    expect(phaseOrder).toEqual([]);
   });
 
   it("accepts a PASS verdict artifact when the SDK reports maxTurns after writing it", async () => {

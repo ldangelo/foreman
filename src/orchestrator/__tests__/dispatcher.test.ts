@@ -2590,6 +2590,13 @@ describe("killSwitchRun", () => {
     last_phase: "developer",
   };
 
+  beforeEach(() => {
+    mockWriteElixirOrchestrationEvent.mockReset();
+    mockWriteElixirOrchestrationEvent.mockResolvedValue(undefined);
+    mockRm.mockReset();
+    mockRm.mockResolvedValue(undefined);
+  });
+
   it("returns failure when run is not found", async () => {
     const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(null) });
     const tasks = makeKillSwitchTasks();
@@ -2602,6 +2609,23 @@ describe("killSwitchRun", () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toContain("No run found");
+  });
+
+  it("rejects non-active runs without mutating them", async () => {
+    const completedRun = { ...baseRun, status: "completed" as const };
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(completedRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("kill-switch only applies to active runs");
+    expect(store.updateRun).not.toHaveBeenCalled();
+    expect(store.logEvent).not.toHaveBeenCalled();
   });
 
   it("marks run as failed by default (safe-by-default)", async () => {
@@ -2619,7 +2643,7 @@ describe("killSwitchRun", () => {
     expect(store.updateRun).toHaveBeenCalledWith("run-abc123", {
       status: "failed",
       completed_at: expect.any(String),
-      session_key: null,
+      session_key: baseRun.session_key,
       route_to: "developer",
     });
     expect(store.logEvent).toHaveBeenCalledWith(
@@ -2628,6 +2652,35 @@ describe("killSwitchRun", () => {
       expect.objectContaining({ taskId: "foreman-001", routeTo: "developer" }),
       "run-abc123",
     );
+  });
+
+  it("preserves the SDK resume token and terminates the detached worker", async () => {
+    const runWithSession = {
+      ...baseRun,
+      session_key: "foreman:sdk:claude-sonnet-4-6:run-abc123:pid-999999:session-resume-123",
+    };
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(runWithSession) });
+    const tasks = makeKillSwitchTasks();
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((() => {
+      const err = new Error("no such process") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    }) as typeof process.kill);
+
+    const result = await killSwitchRun("run-abc123", {}, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+    });
+
+    expect(result.success).toBe(true);
+    expect(store.updateRun).toHaveBeenCalledWith("run-abc123", expect.objectContaining({
+      session_key: runWithSession.session_key,
+      route_to: "developer",
+    }));
+    expect(killSpy).toHaveBeenCalledWith(999999, "SIGTERM");
+    expect(result.message).toContain("worker process 999999 already stopped");
+    killSpy.mockRestore();
   });
 
   it("preserves worktree by default", async () => {
@@ -2811,6 +2864,25 @@ describe("killSwitchRun", () => {
     expect(store.getProjectByPath).not.toHaveBeenCalled();
   });
 
+  it("returns failure when the external kill-switch event cannot be written", async () => {
+    mockWriteElixirOrchestrationEvent.mockRejectedValueOnce(new Error("Elixir unavailable"));
+    const store = makeKillSwitchStore({ getRun: vi.fn().mockResolvedValue(baseRun) });
+    const tasks = makeKillSwitchTasks();
+
+    const result = await killSwitchRun("run-abc123", { closePr: true, discardReports: true, resetTask: true }, {
+      tasks,
+      store,
+      projectPath: "/tmp/proj",
+      overrides: { externalProjectId: "proj-1", defaultBranch: "main" },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Kill-switch event write failed: Elixir unavailable");
+    expect(tasks.update).not.toHaveBeenCalled();
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(store.logEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("returns failure when no project is registered (unregistered path)", async () => {
     const store = makeKillSwitchStore({ getProjectByPath: vi.fn().mockResolvedValue(null) });
     const tasks = makeKillSwitchTasks();
@@ -2854,8 +2926,9 @@ describe("killSwitchRun", () => {
   });
 
   it("sets prClosed to false when close-PR fails", async () => {
-    // Make logEvent succeed (first call at line 2369) but writeElixirOrchestrationEvent fail
-    mockWriteElixirOrchestrationEvent.mockRejectedValue(new Error("Elixir unavailable"));
+    mockWriteElixirOrchestrationEvent
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Elixir unavailable"));
     const store = makeKillSwitchStore({
       getRun: vi.fn().mockResolvedValue(baseRun),
     });

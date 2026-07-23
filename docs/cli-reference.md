@@ -489,7 +489,7 @@ foreman run kill-switch <run-id> --discard-reports             # delete ~/.forem
 | Option | Description |
 |--------|-------------|
 | `<run-id>` | Run ID to kill |
-| `--route-to <phase>` | Target phase for `retryWith` routing (default: `developer`) |
+| `--route-to <phase>` | Target workflow phase for `retryWith` routing (default: `developer`); unknown phases are rejected and `retryOnly` targets are activated explicitly |
 | `--reason <text>` | Reason recorded in kill-switch event and run history |
 | `--reset` | Also reset the task to backlog (opt-in; default preserves task status) |
 | `--force` | Confirm worktree deletion intent |

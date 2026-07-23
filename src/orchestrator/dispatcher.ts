@@ -2229,6 +2229,40 @@ export async function purgeOrphanedWorkerConfigs(
 
 // ── Kill-switch ────────────────────────────────────────────────────────────────
 
+const killSwitchActiveStatuses: Partial<Record<Run["status"], true>> = {
+  pending: true,
+  running: true,
+  stuck: true,
+  cooldown: true,
+  waiting_for_operator: true,
+};
+
+function extractWorkerPid(sessionKey: string | null): number | null {
+  if (!sessionKey) return null;
+  const match = sessionKey.match(/pid-(\d+)/);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function stopDetachedWorker(sessionKey: string | null): string | null {
+  const pid = extractWorkerPid(sessionKey);
+  if (pid === null || pid === process.pid) return null;
+
+  try {
+    process.kill(pid, "SIGTERM");
+    return `stopped worker process ${pid}`;
+  } catch (err: unknown) {
+    let code: unknown;
+    if (typeof err === "object" && err !== null && "code" in err) {
+      code = err.code;
+    }
+    if (code === "ESRCH") return `worker process ${pid} already stopped`;
+    const msg = err instanceof Error ? err.message : String(err);
+    return `failed to stop worker process ${pid}: ${msg}`;
+  }
+}
+
 /** Minimal store interface needed by killSwitchRun. */
 export interface KillSwitchStoreDeps {
   getProjectByPath(path: string): Awaitable<Project | null>;
@@ -2351,6 +2385,21 @@ export async function killSwitchRun(
     };
   }
 
+  if (!killSwitchActiveStatuses[run.status]) {
+    return {
+      success: false,
+      runId,
+      taskId: run.task_id,
+      runStatus: run.status,
+      reason: "run not active",
+      worktreeDeleted: false,
+      prClosed: false,
+      reportsDiscarded: false,
+      taskReset: false,
+      message: `Run '${runId}' is ${run.status}; kill-switch only applies to active runs.`,
+    };
+  }
+
   const taskId = run.task_id;
   const routeTo = opts.routeTo ?? "developer";
   const reason = opts.reason ?? "operator kill-switch";
@@ -2365,14 +2414,14 @@ export async function killSwitchRun(
   const results: string[] = [];
 
   if (!dryRun) {
-    // 1. Update run status → failed with kill-switch event
-    // Clear session_key to invalidate the worker (active termination signal)
-    // Store route_to so resumeRuns() knows where to route the pipeline
+    // 1. Update run status → failed with kill-switch event.
+    // Preserve session_key so resumeRuns() retains the SDK resume token.
+    // Store route_to so resumeRuns() knows where to route the pipeline.
     await store.updateRun(runId, {
       status: "failed",
       completed_at: new Date().toISOString(),
-      session_key: null,  // Invalidate the worker session
-      route_to: routeTo,  // Persist routing target for resume
+      session_key: run.session_key,
+      route_to: routeTo,
     });
 
     // 2. Emit kill-switch event to Elixir (for registered projects)
@@ -2386,15 +2435,33 @@ export async function killSwitchRun(
     await Promise.resolve(store.logEvent(projectId, "kill-switch" as EventType, killSwitchPayload, runId));
 
     if (overrides?.externalProjectId) {
-      await writeElixirOrchestrationEvent({
-        runId,
-        projectId,
-        eventType: "kill-switch",
-        payload: killSwitchPayload,
-      }).catch(() => {
-        // Non-fatal: Elixir event write failure should not block kill-switch completion
-      });
+      try {
+        await writeElixirOrchestrationEvent({
+          runId,
+          projectId,
+          eventType: "kill-switch",
+          payload: killSwitchPayload,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          success: false,
+          runId,
+          taskId,
+          runStatus: "failed",
+          routeTo,
+          reason,
+          worktreeDeleted: false,
+          prClosed: false,
+          reportsDiscarded: false,
+          taskReset: false,
+          message: `Kill-switch event write failed: ${msg}`,
+        };
+      }
     }
+
+    const workerStopResult = stopDetachedWorker(run.session_key);
+    if (workerStopResult) results.push(workerStopResult);
 
     // 3. Delete worktree if --force (worktree is normally preserved)
     let worktreeDeleted = false;
