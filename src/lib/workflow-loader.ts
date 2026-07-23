@@ -202,6 +202,15 @@ export interface WorkflowPhaseConfig {
   /** When true, successful dirty phases checkpoint work to a draft PR. */
   checkpointPr?: boolean;
   /**
+   * When set, the pipeline executor runs `vcs.rebase(onto)` against the
+   * worktree after this phase completes successfully and before the next
+   * phase dispatches. The value is passed directly as the `onto` argument
+   * to `VcsBackend.rebase()`.
+   *
+   * @example rebaseAfterPhase: "origin/dev"
+   */
+  rebaseAfterPhase?: string;
+  /**
    * Bash command string executed via `/bin/sh -c` in the worktree directory.
    * Supports multi-arg commands, shell operators (`&&`, `||`, `|`), and redirects.
    * Mutually exclusive with `command` and `prompt`. Exactly one of the three
@@ -529,6 +538,7 @@ export function validateWorkflowConfig(raw: unknown, workflowName: string): Work
     if (typeof p["cooldownSeconds"] === "number") phase.cooldownSeconds = p["cooldownSeconds"];
     if (typeof p["builtin"] === "boolean") phase.builtin = p["builtin"];
     if (p["checkpointPr"] === true) phase.checkpointPr = true;
+    if (typeof p["rebaseAfterPhase"] === "string") phase.rebaseAfterPhase = p["rebaseAfterPhase"];
     if (typeof p["bash"] === "string") phase.bash = p["bash"];
     if (typeof p["command"] === "string") phase.command = p["command"];
 
