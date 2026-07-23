@@ -556,7 +556,32 @@ export class Dispatcher {
     const completedRuns = await this.getRunsByStatusRecord("completed", projectId);
     const completedTaskIds = new Set(completedRuns.map((r) => r.task_id));
 
+    // Collect epic child task IDs to exclude from standalone dispatch.
+    // Epic children should only be dispatched via their parent epic's pipeline,
+    // not as standalone work (prevents duplicate dispatch).
+    const epicChildTaskIds = new Set<string>();
     for (const task of readyTasks) {
+      if (task.type === "epic") {
+        let childIds: string[] = [];
+        try {
+          if (this.overrides?.nativeTaskOps?.getChildren) {
+            childIds = await this.overrides.nativeTaskOps.getChildren(task.id);
+          } else if (this.store && typeof this.store.getChildren === "function") {
+            childIds = await this.store.getChildren(task.id);
+          }
+        } catch {
+          // Ignore errors here — the epic dispatch path will handle errors
+        }
+        for (const childId of childIds) {
+          epicChildTaskIds.add(childId);
+        }
+      }
+    }
+
+    // Filter out epic children from readyTasks — they should only be dispatched via epic pipeline
+    const dispatchableReadyTasks = readyTasks.filter((t) => !epicChildTaskIds.has(t.id));
+
+    for (const task of dispatchableReadyTasks) {
       if (await this.hasMergedOutcomeWithoutLaterReset(task.id, projectId)) {
         skipped.push({
           taskId: task.id,
@@ -586,12 +611,109 @@ export class Dispatcher {
 
       // ── Epic tasks: dispatch through epic pipeline ─────────────────────────
       // Epic tasks are dispatched as a single epic runner that executes all
-      // child tasks sequentially within one worktree. Native task store does not
-      // have children support, so epics dispatch as single-agent tasks.
+      // child tasks sequentially within one worktree.
       if (task.type === "epic") {
-        log(`[dispatch] Epic ${task.id} — dispatching as single-agent task`);
-        // Fall through to regular dispatch so the epic's phases
-        // (developer → qa → finalize) run as a single worktree.
+        // Get child task IDs from native task store (via task_dependencies table)
+        let childTaskIds: string[] = [];
+        let getChildrenFailed = false; // Track whether getChildren errored
+        if (this.overrides?.nativeTaskOps?.getChildren) {
+          try {
+            childTaskIds = await this.overrides.nativeTaskOps.getChildren(task.id);
+          } catch (err) {
+            log(`[dispatch] Epic ${task.id} — failed to get children via override: ${err}`);
+            getChildrenFailed = true;
+            // Do NOT fall through to zero-child auto-close; leave epic open for retry
+          }
+        } else if (this.store && typeof this.store.getChildren === "function") {
+          // Fallback to store's getChildren when no override exists
+          try {
+            const storeChildren = await this.store.getChildren(task.id);
+            childTaskIds = storeChildren;
+          } catch (err) {
+            log(`[dispatch] Epic ${task.id} — failed to get children via store: ${err}`);
+            getChildrenFailed = true;
+            // Do NOT fall through to zero-child auto-close; leave epic open for retry
+          }
+        }
+
+        // AC-001-3: Epic with 0 child tasks auto-closes
+        // Only auto-close if getChildren succeeded and found no children.
+        // On error, leave the epic open so the next dispatch cycle can retry.
+        if (childTaskIds.length === 0 && !getChildrenFailed) {
+          log(`[dispatch] Epic ${task.id} — no children, auto-closing`);
+          await this.updateNativeTaskStatus(task.id, "closed");
+          // Emit close event through the normal event path (logEventRecord)
+          // Use 'complete' as the terminal event type — auto-close is benign, not a failure
+          // Use the epic's task ID as the run identifier for audit trail consistency
+          await this.logEventRecord(projectId, "complete", {
+            taskId: task.id,
+            title: task.title,
+            reason: "Epic has no child tasks",
+          }, task.id).catch(() => undefined);
+          skipped.push({
+            taskId: task.id,
+            title: task.title,
+            reason: "Epic has no child tasks",
+          });
+          continue;
+        }
+
+        // If getChildren errored, fall through to single-agent dispatch for retry
+        if (getChildrenFailed) {
+          log(`[dispatch] Epic ${task.id} — getChildren errored, falling back to single-agent dispatch`);
+        }
+
+        // Fetch child task details and filter to dispatchable (non-terminal, non-claimed) children
+        const epicTasks: EpicTask[] = [];
+        for (const childId of childTaskIds) {
+          try {
+            const childTask = this.overrides?.nativeTaskOps
+              ? await this.overrides.nativeTaskOps.getTaskById(childId)
+              : await this.store.getTaskById(childId);
+            if (childTask) {
+              // Skip terminal children (closed, merged, completed, etc.) and children already claimed
+              const childStatus = childTask.status?.toLowerCase();
+              const isTerminal = !childStatus ||
+                childStatus === "closed" ||
+                childStatus === "merged" ||
+                childStatus === "completed" ||
+                childStatus === "cancelled" ||
+                childStatus === "done" ||
+                childStatus === "duplicate";
+              const isClaimed = !!childTask.run_id; // run_id set means already claimed
+              if (isTerminal) {
+                log(`[dispatch] Epic ${task.id} — skipping terminal child ${childId} (status: ${childTask.status})`);
+              } else if (isClaimed) {
+                log(`[dispatch] Epic ${task.id} — skipping already-claimed child ${childId}`);
+              } else {
+                epicTasks.push({
+                  taskId: childTask.id,
+                  taskTitle: childTask.title,
+                  taskDescription: childTask.description ?? undefined,
+                });
+              }
+            }
+          } catch (err) {
+            log(`[dispatch] Epic ${task.id} — failed to fetch child ${childId}: ${err}`);
+          }
+        }
+
+        // AC-001-1: Epic with 3+ dispatchable children creates one worktree + Epic Runner
+        if (epicTasks.length >= 3) {
+          log(`[dispatch] Epic ${task.id} — ${epicTasks.length} dispatchable children, spawning Epic Runner`);
+          // Mark task as epic dispatch with children (used by spawnAgent)
+          (task as unknown as Record<string, unknown>).__epicTasks = epicTasks;
+          log(`[dispatch] Epic ${task.id} — prepared ${epicTasks.length} epic tasks for Epic Runner`);
+          // Continue to regular dispatch which will pass epicTasks to spawnAgent
+        } else if (epicTasks.length > 0) {
+          // Epic has < 3 dispatchable children (after filtering) — fall back to single-agent
+          log(`[dispatch] Epic ${task.id} — ${epicTasks.length} dispatchable children (< 3), single-agent fallback`);
+        } else if (childTaskIds.length > 0) {
+          // Original children existed but all were filtered out
+          log(`[dispatch] Epic ${task.id} — all children filtered out, falling back to single-agent`);
+        } else {
+          // getChildren errored — already logged above, fall through to single-agent
+        }
       }
 
       // Skip tasks that are in cooldown state after a retryable failure.

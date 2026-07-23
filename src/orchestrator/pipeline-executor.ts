@@ -1234,6 +1234,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   await appendFile(logFile, `\n[EPIC] Task loop complete: ${completedCount}/${epicTasks.length} passed\n`);
 
   // ── Final phases (finalize) — run once after all tasks ─────────────
+  let finalPhasesSuccess: boolean | undefined = undefined;
   if (finalPhases.length > 0 && completedCount > 0) {
     ctx.log(`[EPIC] Running final phases: ${finalPhaseNames.join(" → ")}`);
     await appendFile(logFile, `\n[EPIC] === Final phases ===\n`);
@@ -1252,6 +1253,8 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
       allRetryCounts[k] = (allRetryCounts[k] ?? 0) + v;
     }
 
+    finalPhasesSuccess = finalResult.success;
+
     if (!finalResult.success) {
       ctx.log(`[EPIC] Final phases failed`);
       return; // markStuck already called inside runPhaseSequence
@@ -1264,7 +1267,7 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
   // ── Pipeline completion ──────────────────────────────────────────────
   // P0 fix: Pass success=false when final phases failed, preventing branch-ready.
   // Epic pipeline success = final phases succeeded (not just task loop completion).
-  const pipelineSuccess = true; // Default: final phases succeeded if we reached here
+  const pipelineSuccess = finalPhasesSuccess ?? true;
   if (ctx.onPipelineComplete) {
     await ctx.onPipelineComplete({
       progress: totalProgress,

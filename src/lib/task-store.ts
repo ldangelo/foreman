@@ -1078,4 +1078,27 @@ export class NativeTaskStore {
       }
     }
   }
+
+  // ── Child Task Queries ─────────────────────────────────────────────────
+
+  /**
+   * Get the child task IDs of a parent task.
+   *
+   * Queries the task_dependencies table where type='parent-child'.
+   * For parent-child relationships: from_task_id is the child, to_task_id is the parent.
+   *
+   * @param parentId - The parent task ID.
+   * @returns Promise resolving to array of child task IDs.
+   */
+  async getChildren(parentId: string): Promise<string[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT from_task_id
+           FROM task_dependencies
+          WHERE to_task_id = ? AND type = 'parent-child'
+          ORDER BY rowid ASC`,
+      )
+      .all(parentId) as Array<{ from_task_id: string }>;
+    return rows.map((row) => row.from_task_id);
+  }
 }
