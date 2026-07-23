@@ -23,7 +23,7 @@ foreman init           # Initialize project and register it with the Elixir back
 foreman run            # Tick Elixir scheduler for ready-task dispatch
 foreman status         # Show tasks + active agents; --live opens cockpit status/workflow
 foreman metrics        # Show total cost, cost per turn, total time, time per turn, and total turns
-foreman watch          # Canonical live cockpit TUI; action palette reset asks y then runs reset ('dashboard' is deprecated)
+foreman watch          # Canonical live cockpit TUI; action palette reset asks y then runs reset ('dashboard' is deprecated); alias: 'monitor'
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
 foreman reset <task>   # Close open/draft PRs, clean stale artifacts, and re-dispatch unless the recorded PR is already merged; merged-PR resets preserve run artifacts

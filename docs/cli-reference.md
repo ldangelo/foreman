@@ -23,7 +23,7 @@ This repository's Devbox/direnv setup starts Docker Compose services before you 
 - Setup/health: `init`, `doctor`, `daemon`, `server`
 - Planning: `plan`, `sling`
 - Execution: `run`, `retry`, `reset`, `stop`, `recover`
-- Tasks/views: `task`, `status`, `board`, `watch`, `logs`
+- Tasks/views: `task`, `status`, `board`, `watch`, `monitor`, `logs`
 - Collaboration: `inbox`, `attach`, `debug`
 - Delivery/VCS: `worktree`, `merge`, `pr`
 
@@ -31,7 +31,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 
 | Deprecated | Use instead |
 |------------|-------------|
-| `foreman dashboard` | `foreman watch` |
+| `foreman dashboard` | `foreman watch` or `foreman monitor` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow <custom-workflow>` |
@@ -224,6 +224,16 @@ foreman watch --refresh 5000      # Refresh every 5 seconds
 | `--project <id>` | — | Filter to a specific project |
 
 Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `n` create task (TTY form with type/priority dropdowns), `m/e/l/r/f` detail tabs, `/` search, `1/2/3` active/attention/all scopes, `!` failed, `p` has PR, `d` dirty worktree, `a`/`:` action palette, `q`/`Esc` quit. Palette reset asks for `y` confirmation and executes `foreman reset` for the selected task; the Go cockpit `R` key resets the selected run or a selected task card's latest known run. All other entries print copy/manual command text only.
+
+### `foreman monitor`
+
+Alias for `foreman watch`. Canonical command for unified live operator cockpit with same options and behavior.
+
+```bash
+foreman monitor                     # Unified live cockpit (same as foreman watch)
+foreman monitor --no-watch          # One-shot snapshot, no polling
+foreman monitor --refresh 5000      # Refresh every 5 seconds
+```
 
 ### `foreman sentinel`
 
@@ -934,4 +944,4 @@ foreman issue link owner/repo#123 --pr owner/repo#456  # Link PR to issue
 | `status` | Show sync status for a GitHub repository |
 | `link` | Link a GitHub pull request to an issue (or unlink) |
 
-> **Removed commands:** `foreman monitor` has been removed. `foreman mail send` has been removed — use `foreman inbox send`.
+> **Removed commands:** `foreman mail send` has been removed — use `foreman inbox send`.

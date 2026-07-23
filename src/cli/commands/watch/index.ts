@@ -65,6 +65,7 @@ export function maybePrintDashboardAliasNotice(argv: readonly string[] = process
 
 export const watchCommand = new Command("watch")
   .alias("dashboard")
+  .alias("monitor")
   .description("Unified live cockpit: task selector, inbox, status workflow, board context, and details")
   .option("--refresh <ms>", "Cockpit refresh interval in milliseconds (default: 5000; min: 1000)", "")
   .option("--inbox-limit <n>", "One-shot --no-watch inbox message limit (default: 5)", "")
