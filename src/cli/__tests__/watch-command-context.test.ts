@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Command } from "commander";
 
 const mockResolveRepoRootProjectPath = vi.hoisted(() => vi.fn());
 const mockLoadDashboardConfig = vi.hoisted(() => vi.fn());
@@ -100,6 +101,31 @@ describe("watch command bootstrap", () => {
     expect(mockLoadDashboardConfig).toHaveBeenCalledWith(canonicalPath);
     expect(mockPollWatchData).toHaveBeenCalledWith(canonicalPath, "registered-project");
     expect(mockForemanForProject).not.toHaveBeenCalled();
+  });
+
+  it("resolves the monitor alias through the watch command action", async () => {
+    const projectPath = join(tempDir, "monitor-project");
+    mkdirSync(projectPath, { recursive: true });
+    mockResolveRepoRootProjectPath.mockResolvedValue(projectPath);
+
+    const program = new Command("foreman").exitOverride();
+    program.addCommand(watchCommand);
+
+    await program.parseAsync([
+      "node",
+      "foreman",
+      "monitor",
+      "--no-watch",
+      "--no-inbox",
+      "--no-events",
+      "--project",
+      "proj-monitor",
+    ]);
+
+    expect(mockResolveRepoRootProjectPath).toHaveBeenCalledWith({ project: "proj-monitor" });
+    expect(mockPollWatchData).toHaveBeenCalledWith(projectPath, "proj-monitor");
+    expect(mockRenderWatch).toHaveBeenCalledOnce();
+    expect(mockPrintDeprecationNotice).not.toHaveBeenCalled();
   });
 
   it("skips inbox and pipeline event polling when those panels are disabled", async () => {

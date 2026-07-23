@@ -336,12 +336,10 @@ describe("epic task loop (TRD-005)", () => {
     expect(callArg.success).toBe(true);
   });
 
-  it("finalize failure calls markStuck and does NOT call onPipelineComplete", async () => {
+  it("finalize failure calls markStuck and reports success=false on completion", async () => {
     // When finalize (final phase) fails, runPhaseSequence calls markStuck and returns
-    // { success: false }. The epic then returns early — onPipelineComplete is never
-    // called. This confirms pipelineSuccess never matters in this code path; the
-    // fix to pipelineSuccess = finalPhasesSuccess ?? true is only relevant for the
-    // onPipelineComplete(success=true) path.
+    // { success: false }. The epic still reports pipeline completion with
+    // success=false so downstream handlers do not mark the branch ready.
     const { executePipeline } = await import("../pipeline-executor.js");
     const log = vi.fn();
     const markStuck = vi.fn().mockResolvedValue(undefined);
@@ -364,9 +362,9 @@ describe("epic task loop (TRD-005)", () => {
     (args as Record<string, unknown>).onPipelineComplete = onComplete;
     await executePipeline(args as never);
 
-    // Finalize fails → markStuck called → early return → onPipelineComplete NOT called
     expect(markStuck).toHaveBeenCalled();
-    expect(onComplete).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toEqual(expect.objectContaining({ success: false }));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("Final phases failed"));
   });
 });

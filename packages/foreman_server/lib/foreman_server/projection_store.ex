@@ -681,7 +681,7 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:status, "blocked")
       |> Map.put(:updated_at, now)
     end)
-    |> maybe_update_task_from_run_terminal(payload, "blocked")
+    |> maybe_update_task_from_run_terminal(payload, "blocked", now)
   end
 
   defp apply_domain_event(
@@ -1276,7 +1276,19 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:runs, run_id], fun.(existing))
   end
 
-  defp maybe_update_task_from_run_terminal(projection, %{task_id: task_id} = payload, status)
+  defp maybe_update_task_from_run_terminal(
+         projection,
+         payload,
+         status,
+         fallback_updated_at \\ nil
+       )
+
+  defp maybe_update_task_from_run_terminal(
+         projection,
+         %{task_id: task_id} = payload,
+         status,
+         fallback_updated_at
+       )
        when is_binary(task_id) do
     existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
 
@@ -1289,7 +1301,7 @@ defmodule ForemanServer.ProjectionStore do
         Map.get(
           payload,
           :updated_at,
-          Map.get(payload, :completed_at, Map.get(payload, :failed_at))
+          Map.get(payload, :completed_at, Map.get(payload, :failed_at, fallback_updated_at))
         )
       )
       |> maybe_put(:failure_reason, Map.get(payload, :reason, Map.get(payload, :failure_reason)))
@@ -1297,7 +1309,8 @@ defmodule ForemanServer.ProjectionStore do
     put_in(projection, [:tasks, task_id], task)
   end
 
-  defp maybe_update_task_from_run_terminal(projection, _payload, _status), do: projection
+  defp maybe_update_task_from_run_terminal(projection, _payload, _status, _fallback_updated_at),
+    do: projection
 
   defp update_checkpoint(projection, event) do
     checkpoint = %{

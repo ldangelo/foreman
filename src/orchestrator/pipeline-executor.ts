@@ -1257,7 +1257,6 @@ async function executeEpicPipeline(ctx: PipelineContext): Promise<void> {
 
     if (!finalResult.success) {
       ctx.log(`[EPIC] Final phases failed`);
-      return; // markStuck already called inside runPhaseSequence
     }
   }
 
