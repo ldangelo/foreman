@@ -299,6 +299,7 @@ defmodule ForemanServer.Http.RouterTest do
     assert run["pr_mergeable"] == false
     assert run["mergeable"] == false
   end
+
   test "authorized runs endpoint falls back to run fields when worktree snapshot is blank" do
     # Native runs use WorktreeManager.createWorktree which does not emit
     # WorktreeCreated, so the worktrees snapshot entry is absent. The API should
@@ -779,5 +780,359 @@ defmodule ForemanServer.Http.RouterTest do
       },
       "metadata" => %{"correlation_id" => "corr-ext-http"}
     }
+  end
+
+  describe "POST /webhooks/github" do
+    @secret "webhook-test-secret"
+    @project_id "proj-webhook-http"
+    @project_path "/tmp/proj-webhook-http"
+    @task_id "task-webhook-http"
+    @run_id "run-webhook-http"
+    @pr_url "https://github.com/acme/foreman/pull/77"
+
+    setup do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "foreman-webhook-http-test-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+
+      Application.stop(:foreman_server)
+      Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+      Application.put_env(:foreman_server, :github_webhook_secret, @secret)
+      Application.put_env(:foreman_server, :auth_token, "secret")
+
+      Application.put_env(
+        :foreman_server,
+        :command_handler,
+        ForemanServer.PrMonitorTest.FakeCommandHandler
+      )
+
+      Application.put_env(:foreman_server, :pr_monitor_test_pid, self())
+      assert :ok = Application.start(:foreman_server)
+
+      # Seed a run with a PR
+      seed_webhook_pr_run!()
+
+      on_exit(fn ->
+        Application.stop(:foreman_server)
+        Application.delete_env(:foreman_server, :event_log_path)
+        Application.delete_env(:foreman_server, :github_webhook_secret)
+        Application.delete_env(:foreman_server, :auth_token)
+        Application.delete_env(:foreman_server, :command_handler)
+        Application.delete_env(:foreman_server, :pr_monitor_test_pid)
+        File.rm_rf!(tmp_dir)
+        Application.start(:foreman_server)
+      end)
+
+      :ok
+    end
+
+    test "returns 200 with valid HMAC signature for merged pull_request" do
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["ok"] == true
+      assert body["handled"] == true
+      assert body["commands_issued"] == 2
+    end
+
+    test "returns 401 when HMAC signature is invalid" do
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+      bad_signature = "sha256=0000000000000000000000000000000000000000000000000000000000000000"
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", bad_signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    end
+
+    test "returns 401 when HMAC signature is missing" do
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+    end
+
+    test "returns 401 when remote access requires a webhook secret" do
+      Application.delete_env(:foreman_server, :github_webhook_secret)
+      Application.put_env(:foreman_server, :remote_access_enabled, true)
+
+      on_exit(fn ->
+        Application.delete_env(:foreman_server, :remote_access_enabled)
+      end)
+
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["message"] == "missing webhook secret"
+    end
+
+    test "allows unsigned webhook without remote access when secret is unset" do
+      Application.delete_env(:foreman_server, :github_webhook_secret)
+
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["ok"] == true
+      assert body["handled"] == true
+    end
+
+    test "returns 200 for closed (not merged) pull_request" do
+      payload = webhook_payload("closed", @pr_url, merged: false)
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["ok"] == true
+      assert body["handled"] == true
+      assert body["commands_issued"] == 2
+    end
+
+    test "returns 200 but handled=false for non-pull_request events" do
+      payload = %{"zen" => "keep it around"}
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "ping")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["handled"] == false
+    end
+
+    test "returns 200 with handled=false when no matching run exists" do
+      # Use a different branch name so find_matching_context cannot match by branch_name.
+      # The seeded run has branch_name "foreman/task-webhook-http", so use a different one.
+      payload =
+        webhook_payload("closed", "https://github.com/acme/foreman/pull/99999", merged: true)
+        |> put_in(["pull_request", "head", "ref"], "nonexistent/branch")
+        |> put_in(["pull_request", "head", "sha"], "nonexistent-sha")
+
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["ok"] == true
+      assert body["handled"] == false
+      assert body["reason"] == "no matching run"
+    end
+
+    test "webhook endpoint does not require bearer token" do
+      # Even without auth, the webhook endpoint should process (or reject with 401 for bad HMAC)
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        # No authorization header — webhook endpoint should still work
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+    end
+
+    test "webhook endpoint skips Plug.Parsers body parsing and handles raw body directly" do
+      # Verify that the raw body is accessible by sending a valid HMAC-signed payload
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+    end
+
+    test "webhook endpoint accepts payload with delivery_id field instead of header" do
+      # Some webhook dispatchers pass delivery_id in the payload body
+      payload =
+        Map.merge(webhook_payload("closed", @pr_url, merged: true), %{
+          "delivery_id" => "body-delivery-id"
+        })
+
+      raw_body = Jason.encode!(payload)
+      signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-hub-signature-256", signature)
+        |> put_req_header("x-github-event", "pull_request")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+    end
+
+    defp webhook_payload(action, pr_url, opts) do
+      merged = Keyword.get(opts, :merged, false)
+
+      %{
+        "action" => action,
+        "pull_request" => %{
+          "html_url" => pr_url,
+          "state" => if(merged, do: "closed", else: "open"),
+          "merged" => merged,
+          "merged_at" => if(merged, do: "2026-07-22T10:00:00Z", else: nil),
+          "merge_commit_sha" => if(merged, do: "merge-sha-http", else: nil),
+          "draft" => false,
+          "head" => %{"ref" => "foreman/task-webhook-http", "sha" => "head-sha-http"},
+          "base" => %{"ref" => "main"}
+        },
+        "repository" => %{"full_name" => "acme/foreman"}
+      }
+    end
+
+    defp seed_webhook_pr_run do
+      ForemanServer.EventStore.append(%{
+        stream_id: "project:#{@project_id}",
+        event_type: "ProjectRegistered",
+        payload: %{
+          project_id: @project_id,
+          path: @project_path,
+          status: "active",
+          default_branch: "main",
+          config: %{},
+          health: %{ok: true}
+        },
+        metadata: %{}
+      })
+
+      ForemanServer.EventStore.append(%{
+        stream_id: "task:#{@task_id}",
+        event_type: "TaskCreated",
+        payload: %{
+          task_id: @task_id,
+          project_id: @project_id,
+          title: @task_id,
+          status: "in_progress",
+          run_id: @run_id
+        },
+        metadata: %{}
+      })
+
+      ForemanServer.EventStore.append(%{
+        stream_id: "run:#{@run_id}",
+        event_type: "RunStarted",
+        payload: %{
+          run_id: @run_id,
+          task_id: @task_id,
+          project_id: @project_id,
+          status: "in_progress",
+          base_branch: "main"
+        },
+        metadata: %{}
+      })
+
+      ForemanServer.EventStore.append(%{
+        stream_id: "run:#{@run_id}",
+        event_type: "PrUpdated",
+        payload: %{
+          run_id: @run_id,
+          project_id: @project_id,
+          task_id: @task_id,
+          pr_url: @pr_url,
+          pr_state: "open",
+          branch_name: "foreman/task-webhook-http",
+          head_sha: "head-sha-http",
+          base_branch: "main",
+          phase: "developer"
+        },
+        metadata: %{}
+      })
+
+      :ok
+    end
+
+    # Alias for readability in test setup
+    defp seed_webhook_pr_run!, do: seed_webhook_pr_run()
   end
 end

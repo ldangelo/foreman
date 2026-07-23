@@ -6,6 +6,8 @@ defmodule ForemanServer.RuntimeInfoTest do
   setup do
     original_env = System.get_env("FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS")
     original_app = Application.get_env(:foreman_server, :projection_rebuild_timeout_ms)
+    original_webhook_env = System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET")
+    original_webhook_app = Application.get_env(:foreman_server, :github_webhook_secret)
 
     on_exit(fn ->
       if is_nil(original_env) do
@@ -18,6 +20,18 @@ defmodule ForemanServer.RuntimeInfoTest do
         Application.delete_env(:foreman_server, :projection_rebuild_timeout_ms)
       else
         Application.put_env(:foreman_server, :projection_rebuild_timeout_ms, original_app)
+      end
+
+      if is_nil(original_webhook_env) do
+        System.delete_env("FOREMAN_GITHUB_WEBHOOK_SECRET")
+      else
+        System.put_env("FOREMAN_GITHUB_WEBHOOK_SECRET", original_webhook_env)
+      end
+
+      if is_nil(original_webhook_app) do
+        Application.delete_env(:foreman_server, :github_webhook_secret)
+      else
+        Application.put_env(:foreman_server, :github_webhook_secret, original_webhook_app)
       end
     end)
 
@@ -79,6 +93,36 @@ defmodule ForemanServer.RuntimeInfoTest do
       Application.put_env(:foreman_server, :projection_rebuild_timeout_ms, -5)
 
       assert RuntimeInfo.projection_rebuild_timeout_ms() == 600_000
+    end
+  end
+
+  describe "github_webhook_secret/0" do
+    test "prefers runtime env over app config" do
+      System.put_env("FOREMAN_GITHUB_WEBHOOK_SECRET", "env-secret")
+      Application.put_env(:foreman_server, :github_webhook_secret, "app-secret")
+
+      assert RuntimeInfo.github_webhook_secret() == "env-secret"
+    end
+
+    test "falls back to app config when env unset" do
+      System.delete_env("FOREMAN_GITHUB_WEBHOOK_SECRET")
+      Application.put_env(:foreman_server, :github_webhook_secret, "app-secret")
+
+      assert RuntimeInfo.github_webhook_secret() == "app-secret"
+    end
+
+    test "falls back to app config when env is blank" do
+      System.put_env("FOREMAN_GITHUB_WEBHOOK_SECRET", "")
+      Application.put_env(:foreman_server, :github_webhook_secret, "app-secret")
+
+      assert RuntimeInfo.github_webhook_secret() == "app-secret"
+    end
+
+    test "returns nil when secret is blank or unset" do
+      System.delete_env("FOREMAN_GITHUB_WEBHOOK_SECRET")
+      Application.put_env(:foreman_server, :github_webhook_secret, "")
+
+      assert RuntimeInfo.github_webhook_secret() == nil
     end
   end
 end

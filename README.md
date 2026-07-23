@@ -34,6 +34,7 @@ Node CLI / frontend
   │    ├─ authenticated HTTP JSON API
   │    ├─ durable event store + CQRS projections
   │    ├─ scheduler, run/phase actors, recovery, inbox/debug views
+  │    ├─ GitHub webhook intake (`POST /webhooks/github`)
   │    └─ launches Node/Pi worker bridge
   │
   ├─ per task: agent-worker.ts (detached child process)
@@ -502,7 +503,7 @@ foreman server stop          # Stop local Elixir server
 
 The Elixir server scheduler automatically ticks every 5 seconds, claims dispatchable `ready` tasks within global/project capacity, and launches the Node/Pi worker bridge. Project/task/run/phase/inbox/worker/scheduler/VCS/recovery/integration command families are aggregate-validated before new events are appended. `foreman server doctor` calls the server doctor endpoint and includes operational metrics: phase timers, retry/failure/recovery counters, worker restarts, and projection lag. `foreman server status` shows the active `MIX_ENV`, event store, projection store, and project config store so wrong-runtime state is visible. With `FOREMAN_SERVER_EVENT_STORE_ADAPTER=postgres` and `DATABASE_URL`, Foreman writes events to `foreman_events` and persists read models in `foreman_project_projections`, `foreman_task_projections`, `foreman_run_projections`, and `foreman_inbox_message_projections`; term mode keeps projections in memory from the term event log. If server auth is configured, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics requests include the bearer token. Run debug views include anomaly detection for inconsistent event timelines. Troubleshoot Elixir-backed status issues by checking the durable event first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
 
-The server also runs a PR monitor. When a run has a recorded GitHub PR URL, the monitor checks GitHub from the registered project path and reconciles PR state into Foreman events. A GitHub `MERGED` state records `run.pr.merge` metadata and updates the associated task to `merged`; a closed-but-unmerged PR records the run PR state as closed and closes the associated task.
+The server also runs a PR monitor. When a run has a recorded GitHub PR URL, the monitor checks GitHub from the registered project path and reconciles PR state into Foreman events. A GitHub `MERGED` state records `run.pr.merge` metadata and updates the associated task to `merged`; a closed-but-unmerged PR records the run PR state as closed and closes the associated task. As a real-time optimization, the server also exposes `POST /webhooks/github` for GitHub pull_request webhook events; the polling path remains as fallback when the webhook secret is not configured (`FOREMAN_GITHUB_WEBHOOK_SECRET`).
 
 Security controls for the Elixir server:
 - Worker startup scopes environment to `FOREMAN_PROJECT_ID`, `FOREMAN_RUN_ID`, allowed base variables, and explicit project/run secret maps. Forbidden host secrets such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped before worker launch metadata is recorded.
@@ -867,6 +868,7 @@ The bundled `epic` workflow uses the same post-finalize PR gates as task/feature
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...          # Required (or use `pi /login` for OAuth)
+export FOREMAN_GITHUB_WEBHOOK_SECRET=...     # HMAC-SHA256 secret for GitHub webhook intake (optional; enables real-time PR-status monitoring)
 export FOREMAN_MAX_AGENTS=5                  # Max concurrent agents (default: 5)
 export FOREMAN_MAX_PIPELINE_WALL_CLOCK_MS=0  # Per-run wall-clock budget; 0 disables
 export FOREMAN_MAX_PIPELINE_COST_USD=0       # Per-run cost budget; 0 disables

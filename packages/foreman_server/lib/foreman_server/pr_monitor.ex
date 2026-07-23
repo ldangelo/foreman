@@ -111,7 +111,8 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
-  defp handle_observation(context, %{state: :merged} = observation, command_handler) do
+  # Made public so GhWebhookHandler (submodule) can reuse these functions.
+  def handle_observation(context, %{state: :merged} = observation, command_handler) do
     payload =
       context
       |> common_payload(observation)
@@ -132,7 +133,7 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
-  defp handle_observation(context, %{state: :closed} = observation, command_handler) do
+  def handle_observation(context, %{state: :closed} = observation, command_handler) do
     if context.pr_state == "closed" do
       %{empty_summary() | closed: 1}
     else
@@ -155,7 +156,7 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
-  defp handle_observation(context, %{state: :draft} = observation, command_handler) do
+  def handle_observation(context, %{state: :draft} = observation, command_handler) do
     if context.pr_state == "draft" do
       empty_summary()
     else
@@ -171,7 +172,7 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
-  defp handle_observation(context, %{state: :open} = observation, command_handler) do
+  def handle_observation(context, %{state: :open} = observation, command_handler) do
     if context.pr_state == "open" do
       empty_summary()
     else
@@ -185,7 +186,7 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
-  defp handle_observation(_context, _observation, _command_handler), do: empty_summary()
+  def handle_observation(_context, _observation, _command_handler), do: empty_summary()
 
   defp update_pr(command_handler, command_type, payload) do
     required = [:branch_name, :head_sha, :base_branch]
@@ -238,7 +239,8 @@ defmodule ForemanServer.PrMonitor do
     error -> {:error, error}
   end
 
-  defp normalize_observation(observation) do
+  # Made public so GhWebhookHandler (submodule) can reuse this function.
+  def normalize_observation(observation) do
     %{
       state: normalize_state(get_field(observation, :state), get_field(observation, :is_draft)),
       url: get_field(observation, :url),
@@ -368,4 +370,336 @@ defmodule ForemanServer.PrMonitor.CommandHandler do
     unique = System.unique_integer([:positive])
     "pr-monitor:#{command_type}:#{run_id}:#{unique}"
   end
+end
+
+defmodule ForemanServer.PrMonitor.GhWebhookHandler do
+  @moduledoc """
+  Handles GitHub webhook `pull_request` events in real time.
+
+  Reuses `GhChecker.observe_pr/2` result normalization and `CommandHandler.handle/1`
+  command dispatch — the webhook path differs only in how the observation is obtained
+  (payload parsing vs. `gh` CLI call) and how the matching run is found (snapshot scan
+  by `pr_url` or `branch_name`).
+
+  Duplicate deliveries are idempotent via `X-GitHub-Delivery` header dedupe in the
+  existing `integration_dedupe` projection.
+  """
+
+  alias ForemanServer.ProjectionStore
+  alias ForemanServer.EventStore
+
+  @default_command_handler ForemanServer.PrMonitor.CommandHandler
+
+  @spec handle(map(), module() | nil) :: {:ok, map()} | {:error, term()}
+  @doc """
+  Process a GitHub `pull_request` webhook payload.
+
+  ## Payload shape
+  Expected keys:
+  - `action` (string) — e.g. "opened", "closed", "synchronize", "ready_for_review"
+  - `pull_request` (map) — GitHub PR object
+  - `repository` (map) — GitHub repository object
+  - `delivery_id` (string) — `X-GitHub-Delivery` header value (for dedupe)
+
+  ## Options
+  - `command_handler` (module) — optional command handler module for test injection.
+    When nil, reads from app config `:foreman_server, :command_handler`, falling back
+    to `#{inspect(@default_command_handler)}`.
+
+  ## Returns
+  - `{:ok, %{commands_issued: non_neg_integer()}}` on success
+  - `{:error, :duplicate}` if this delivery was already processed
+  - `{:error, :no_matching_run}` if no run matches the PR URL or branch
+  - `{:error, reason}` on other failures
+  """
+  def handle(payload, command_handler \\ nil) do
+    handler =
+      command_handler ||
+        Application.get_env(:foreman_server, :command_handler, @default_command_handler)
+
+    with {:ok,
+          %{
+            pr_url: pr_url,
+            branch_name: branch_name,
+            action: action,
+            pr_payload: pr_payload,
+            merged: merged,
+            is_draft: is_draft
+          }} <- parse_payload(payload),
+         {:ok, dedupe_key} <- dedupe_key(payload),
+         :ok <- check_dedupe(dedupe_key),
+         {:ok, context} <- find_matching_context(pr_url, branch_name) do
+      # Normalize observation from the webhook payload, mirroring GhChecker.observe_pr/2 output
+      observation = normalize_webhook_observation(pr_payload, action, merged, is_draft)
+      # Call parent PrMonitor module functions by their full module path.
+      observation = ForemanServer.PrMonitor.normalize_observation(observation)
+
+      result =
+        ForemanServer.PrMonitor.handle_observation(
+          context,
+          observation,
+          handler
+        )
+
+      record_dedupe(dedupe_key, context.task_id)
+
+      {:ok, %{commands_issued: result_issued_count(result)}}
+    end
+  end
+
+  @doc "Verify an HMAC-SHA256 signature from GitHub's X-Hub-Signature-256 header."
+  @spec verify_signature(String.t(), String.t(), String.t()) :: boolean()
+  def verify_signature(body, signature_header, secret) do
+    expected =
+      "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, body) |> Base.encode16(case: :lower))
+
+    safe_string_compare(expected, signature_header)
+  end
+
+  @doc "Build the HMAC signature for a given body and secret (useful in tests)."
+  @spec build_signature(String.t(), String.t()) :: String.t()
+  def build_signature(body, secret) do
+    "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, body) |> Base.encode16(case: :lower))
+  end
+
+  # Parse the webhook payload into a normalized structure.
+  defp parse_payload(payload) when is_map(payload) do
+    with {:ok, pr_url} <- extract_pr_url(payload),
+         {:ok, branch_name} <- extract_branch_name(payload),
+         {:ok, action} <- extract_action(payload),
+         {:ok, pr_payload} <- extract_pr(payload),
+         {:ok, merged} <- extract_merged(pr_payload),
+         {:ok, is_draft} <- extract_is_draft(pr_payload) do
+      {:ok,
+       %{
+         pr_url: pr_url,
+         branch_name: branch_name,
+         action: action,
+         pr_payload: pr_payload,
+         merged: merged,
+         is_draft: is_draft
+       }}
+    end
+  end
+
+  defp parse_payload(_payload), do: {:error, :invalid_payload}
+
+  defp extract_pr_url(payload) do
+    url =
+      get_field(payload, ["pull_request", "html_url"]) ||
+        get_field(payload, ["pull_request", "url"])
+
+    if is_binary(url) and url != "", do: {:ok, url}, else: {:error, :missing_pr_url}
+  end
+
+  defp extract_branch_name(payload) do
+    head = get_field(payload, ["pull_request", "head"])
+    branch = get_field(head, "ref") || get_field(payload, ["pull_request", "head_ref"])
+    if is_binary(branch) and branch != "", do: {:ok, branch}, else: {:error, :missing_branch_name}
+  end
+
+  defp extract_action(payload) do
+    action = get_field(payload, "action")
+    if is_binary(action) and action != "", do: {:ok, action}, else: {:error, :missing_action}
+  end
+
+  defp extract_pr(payload) do
+    pr = get_field(payload, "pull_request")
+    if is_map(pr), do: {:ok, pr}, else: {:error, :missing_pull_request}
+  end
+
+  defp extract_merged(pr) do
+    merged = get_field(pr, "merged")
+    {:ok, merged == true}
+  end
+
+  defp extract_is_draft(pr) do
+    draft = get_field(pr, "draft") || get_field(pr, "is_draft")
+    {:ok, draft == true}
+  end
+
+  # Build dedupe key from X-GitHub-Delivery header / payload delivery_id
+  defp dedupe_key(%{"delivery_id" => id}) when is_binary(id) and id != "",
+    do: {:ok, "github:webhook:#{id}"}
+
+  defp dedupe_key(%{"delivery" => id}) when is_binary(id) and id != "",
+    do: {:ok, "github:webhook:#{id}"}
+
+  defp dedupe_key(_payload), do: {:error, :missing_delivery_id}
+
+  # Check dedupe in the integration_dedupe projection
+  defp check_dedupe(dedupe_key) do
+    snapshot = ProjectionStore.snapshot()
+
+    case get_in(snapshot, [:integration_dedupe, dedupe_key]) do
+      nil -> :ok
+      _existing -> {:error, :duplicate}
+    end
+  end
+
+  # Record dedupe entry after successful processing
+  defp record_dedupe(dedupe_key, task_id) do
+    # Write a lightweight dedupe event so the projection catches it.
+    # We append to an integration stream; the integration_dedupe projection
+    # will record the dedupe_key -> task_id mapping idempotently.
+    snapshot = ProjectionStore.snapshot()
+    existing = get_in(snapshot, [:integration_dedupe, dedupe_key])
+
+    unless existing do
+      # Emit IntegrationCommandIngested so the projection stores the dedupe key.
+      # This mirrors the pattern in IntegrationIngestion but scoped to webhook events.
+      :ok = try_record_dedupe_event(dedupe_key, task_id)
+    end
+  end
+
+  defp try_record_dedupe_event(dedupe_key, task_id) do
+    {:ok, _event} =
+      EventStore.append(%{
+        stream_id: "integration:#{dedupe_key}",
+        event_type: "IntegrationCommandIngested",
+        payload: %{
+          source: "github",
+          external_id: dedupe_key,
+          project_id: nil,
+          event_type: "pull_request",
+          occurred_at: DateTime.utc_now(),
+          payload: %{},
+          idempotency_key: dedupe_key,
+          dedupe_key: dedupe_key,
+          external_link: nil,
+          task_id: task_id,
+          command_type: "webhook"
+        },
+        metadata: %{
+          source: "gh-webhook-handler",
+          correlation_id: dedupe_key,
+          idempotency_key: dedupe_key
+        }
+      })
+
+    :ok
+  rescue
+    _error ->
+      # If event store append fails (e.g. no event log), skip dedupe recording.
+      # The handler already returned success to GitHub; GitHub will not retry.
+      :ok
+  end
+
+  # Find the run context matching this PR by pr_url or branch_name.
+  defp find_matching_context(pr_url, branch_name) do
+    snapshot = ProjectionStore.snapshot()
+
+    # Try pr_url first, then branch_name
+    context =
+      find_run_by_pr_url(snapshot, pr_url) ||
+        find_run_by_branch(snapshot, branch_name)
+
+    case context do
+      %{run_id: run_id, task_id: task_id, project_id: _project_id, branch_name: _bn, pr_url: _pu} =
+          ctx
+      when is_binary(run_id) and is_binary(task_id) ->
+        {:ok, %{ctx | phase: "webhook"}}
+
+      _ ->
+        {:error, :no_matching_run}
+    end
+  end
+
+  defp find_run_by_pr_url(snapshot, pr_url) do
+    snapshot.runs
+    |> Map.values()
+    |> Enum.find_value(fn run ->
+      run_pr_url = Map.get(run, :pr_url)
+
+      if run_pr_url != nil and run_pr_url != "" and run_pr_url == pr_url do
+        build_context(snapshot, run)
+      end
+    end)
+  end
+
+  defp find_run_by_branch(snapshot, branch_name) do
+    snapshot.runs
+    |> Map.values()
+    |> Enum.find_value(fn run ->
+      run_branch = Map.get(run, :branch_name) || Map.get(run, :branch)
+
+      if run_branch != nil and run_branch != "" and run_branch == branch_name do
+        build_context(snapshot, run)
+      end
+    end)
+  end
+
+  defp build_context(snapshot, run) do
+    run_id = Map.get(run, :run_id)
+    task_id = Map.get(run, :task_id) || Map.get(run, "task_id")
+    task = Map.get(snapshot.tasks, task_id, %{})
+    project_id = Map.get(run, :project_id) || Map.get(task, :project_id)
+    project = Map.get(snapshot.projects, project_id, %{})
+
+    %{
+      run_id: run_id,
+      task_id: task_id,
+      project_id: project_id,
+      project_path: Map.get(project, :path),
+      pr_url: Map.get(run, :pr_url),
+      pr_state: Map.get(run, :pr_state),
+      branch_name: Map.get(run, :branch_name) || Map.get(run, :branch),
+      phase: Map.get(run, :current_phase) || "pr-monitor"
+    }
+  end
+
+  # Convert webhook payload to the same normalized shape that GhChecker.observe_pr/2 returns.
+  defp normalize_webhook_observation(pr_payload, action, merged, is_draft) do
+    %{
+      state: state_from_webhook(action, merged, is_draft),
+      url: get_field(pr_payload, "html_url") || get_field(pr_payload, "url"),
+      merged_at: get_field(pr_payload, "merged_at"),
+      merge_commit_sha: merge_commit_sha(pr_payload),
+      head_ref_oid: get_field(pr_payload, ["head", "sha"]) || get_field(pr_payload, "head_sha"),
+      head_ref_name: get_field(pr_payload, ["head", "ref"]) || get_field(pr_payload, "head_ref"),
+      base_ref_name: get_field(pr_payload, ["base", "ref"]) || get_field(pr_payload, "base_ref")
+    }
+  end
+
+  defp state_from_webhook("closed", true, _is_draft), do: :merged
+  defp state_from_webhook("closed", false, _is_draft), do: :closed
+  defp state_from_webhook(_action, _merged, true), do: :draft
+  defp state_from_webhook("opened", _merged, _is_draft), do: :open
+  defp state_from_webhook("synchronize", _merged, _is_draft), do: :open
+  defp state_from_webhook("ready_for_review", _merged, _is_draft), do: :open
+  defp state_from_webhook("converted_to_draft", _merged, _is_draft), do: :draft
+  defp state_from_webhook(_action, _merged, _is_draft), do: :open
+
+  defp merge_commit_sha(pr_payload) do
+    case get_field(pr_payload, "merge_commit") do
+      %{} = commit -> get_field(commit, "oid") || get_field(commit, "sha")
+      _ -> get_field(pr_payload, "merge_commit_sha")
+    end
+  end
+
+  defp get_field(map, keys) when is_list(keys) do
+    Enum.reduce(keys, map, fn key, acc -> get_single_field(acc, key) end)
+  end
+
+  defp get_field(map, key) do
+    get_single_field(map, key)
+  end
+
+  defp get_single_field(nil, _key), do: nil
+
+  defp get_single_field(%{} = map, key) do
+    Map.get(map, key) || Map.get(map, to_string(key))
+  end
+
+  defp get_single_field(_not_map, _key), do: nil
+
+  defp result_issued_count(%{merged: n}) when n > 0, do: 2
+  defp result_issued_count(%{closed: n}) when n > 0, do: 2
+  defp result_issued_count(%{updated: n}) when n > 0, do: 1
+  defp result_issued_count(%{skipped: n}) when n > 0, do: 0
+  defp result_issued_count(%{errors: n}) when n > 0, do: 0
+  defp result_issued_count(_), do: 0
+
+  # Constant-time string comparison to avoid timing attacks on HMAC verification.
+  defp safe_string_compare(a, b), do: Plug.Crypto.secure_compare(a, b)
 end

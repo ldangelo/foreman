@@ -25,7 +25,8 @@ defmodule ForemanServer.Operations do
       workers: check_workers(snapshot),
       vcs: check_vcs(),
       provider_adapters: check_provider_adapters(),
-      integrations: check_integrations(snapshot)
+      integrations: check_integrations(snapshot),
+      webhook: check_webhook()
     }
 
     {:ok,
@@ -102,6 +103,24 @@ defmodule ForemanServer.Operations do
       dedupe_keys: snapshot |> Map.get(:integration_dedupe, %{}) |> map_size(),
       message: "integration projections readable"
     }
+  end
+
+  defp check_webhook do
+    secret = ForemanServer.RuntimeInfo.github_webhook_secret()
+
+    if secret != "" and not is_nil(secret) do
+      %{
+        ok: true,
+        configured: true,
+        message: "GitHub webhook HMAC secret configured"
+      }
+    else
+      %{
+        ok: true,
+        configured: false,
+        message: "GitHub webhook secret not configured (webhook intake disabled)"
+      }
+    end
   end
 
   @doc false

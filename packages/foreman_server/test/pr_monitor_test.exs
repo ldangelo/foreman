@@ -30,6 +30,292 @@ defmodule ForemanServer.PrMonitorTest.FakeCommandHandler do
   end
 end
 
+defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
+  use ExUnit.Case
+
+  alias ForemanServer.{EventStore, ProjectionStore, PrMonitor}
+
+  @project_id "proj-webhook-test"
+  @project_path "/tmp/foreman-webhook-test-project"
+  @task_id "task-webhook-test"
+  @run_id "run-webhook-test"
+  @pr_url "https://github.com/acme/foreman/pull/99"
+
+  setup do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "foreman-webhook-test-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(tmp_dir)
+
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    Application.put_env(:foreman_server, :pr_monitor_test_pid, self())
+
+    Application.put_env(
+      :foreman_server,
+      :command_handler,
+      ForemanServer.PrMonitorTest.FakeCommandHandler
+    )
+
+    assert :ok = Application.start(:foreman_server)
+
+    on_exit(fn ->
+      Application.stop(:foreman_server)
+      Application.delete_env(:foreman_server, :event_log_path)
+      Application.delete_env(:foreman_server, :pr_monitor_test_pid)
+      Application.delete_env(:foreman_server, :command_handler)
+      File.rm_rf!(tmp_dir)
+      Application.start(:foreman_server)
+    end)
+
+    :ok
+  end
+
+  defp seed_pr_run!(attrs \\ []) do
+    pr_url = Keyword.get(attrs, :pr_url, @pr_url)
+    pr_state = Keyword.get(attrs, :pr_state, "open")
+    branch_name = Keyword.get(attrs, :branch_name, "foreman/task-webhook-test")
+
+    append!("project:#{@project_id}", "ProjectRegistered", %{
+      project_id: @project_id,
+      path: @project_path,
+      status: "active",
+      default_branch: "main",
+      config: %{},
+      health: %{ok: true}
+    })
+
+    append!("task:#{@task_id}", "TaskCreated", %{
+      task_id: @task_id,
+      project_id: @project_id,
+      title: @task_id,
+      status: "in_progress",
+      run_id: @run_id
+    })
+
+    append!("run:#{@run_id}", "RunStarted", %{
+      run_id: @run_id,
+      task_id: @task_id,
+      project_id: @project_id,
+      status: "in_progress",
+      base_branch: "main"
+    })
+
+    append!("run:#{@run_id}", "PrUpdated", %{
+      run_id: @run_id,
+      project_id: @project_id,
+      task_id: @task_id,
+      pr_url: pr_url,
+      pr_state: pr_state,
+      branch_name: branch_name,
+      head_sha: "head-sha-webhook",
+      base_branch: "main",
+      phase: "developer"
+    })
+
+    :ok
+  end
+
+  describe "handle/1" do
+    test "merged pull_request event emits run.pr.merge and task.update merged" do
+      :ok = seed_pr_run!()
+
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => "delivery-merged-#{:rand.uniform(999_999)}",
+        "repository" => %{"full_name" => "acme/foreman"},
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "closed",
+          "merged" => true,
+          "merged_at" => "2026-07-22T10:00:00Z",
+          "merge_commit_sha" => "merge-sha-webhook",
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 2}} = PrMonitor.GhWebhookHandler.handle(payload)
+
+      commands = drain_commands()
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "run.pr.merge"
+             end)
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "task.update" and c.payload[:status] == "merged"
+             end)
+    end
+
+    test "closed pull_request (not merged) emits run.pr.reset and task.close" do
+      :ok = seed_pr_run!(pr_state: "open")
+
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => "delivery-closed-#{:rand.uniform(999_999)}",
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "closed",
+          "merged" => false,
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 2}} = PrMonitor.GhWebhookHandler.handle(payload)
+
+      commands = drain_commands()
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "run.pr.reset" and c.payload[:action] == "closed"
+             end)
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "task.close"
+             end)
+    end
+
+    test "duplicate delivery returns error without emitting commands" do
+      :ok = seed_pr_run!()
+      delivery_id = "delivery-duplicate-#{:rand.uniform(999_999)}"
+
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => delivery_id,
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "closed",
+          "merged" => true,
+          "merged_at" => "2026-07-22T10:00:00Z",
+          "merge_commit_sha" => "merge-sha-dup",
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 2}} = PrMonitor.GhWebhookHandler.handle(payload)
+
+      commands_after_first = drain_commands()
+      assert length(commands_after_first) == 2
+
+      # Same delivery_id should be deduped
+      assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+
+      # No new commands should have been emitted
+      refute_receive {:handled_command, _}, 100
+    end
+
+    test "no matching run returns error gracefully" do
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => "delivery-no-run-#{:rand.uniform(999_999)}",
+        "pull_request" => %{
+          "html_url" => "https://github.com/acme/foreman/pull/99999",
+          "state" => "closed",
+          "merged" => true,
+          "merged_at" => "2026-07-22T10:00:00Z",
+          "head" => %{"ref" => "nonexistent/branch", "sha" => "abc"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:error, :no_matching_run} = PrMonitor.GhWebhookHandler.handle(payload)
+    end
+
+    test "draft pull_request event updates pr state to draft" do
+      :ok = seed_pr_run!(pr_state: "open")
+
+      payload = %{
+        "action" => "converted_to_draft",
+        "delivery_id" => "delivery-draft-#{:rand.uniform(999_999)}",
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "open",
+          "merged" => false,
+          "draft" => true,
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 1}} = PrMonitor.GhWebhookHandler.handle(payload)
+
+      commands = drain_commands()
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "run.pr.update" and c.payload[:pr_state] == "draft"
+             end)
+    end
+
+    test "open pull_request event updates pr state to ready" do
+      :ok = seed_pr_run!(pr_state: "draft")
+
+      payload = %{
+        "action" => "ready_for_review",
+        "delivery_id" => "delivery-open-#{:rand.uniform(999_999)}",
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "open",
+          "merged" => false,
+          "draft" => false,
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 1}} = PrMonitor.GhWebhookHandler.handle(payload)
+
+      commands = drain_commands()
+      assert Enum.any?(commands, fn c -> c.command_type == "run.pr.ready" end)
+    end
+  end
+
+  describe "verify_signature/3" do
+    @secret "test-webhook-secret"
+
+    test "valid HMAC-SHA256 signature returns true" do
+      body = ~s({"action":"closed","pull_request":{"merged":true}})
+      signature = PrMonitor.GhWebhookHandler.build_signature(body, @secret)
+      assert PrMonitor.GhWebhookHandler.verify_signature(body, signature, @secret)
+    end
+
+    test "invalid HMAC-SHA256 signature returns false" do
+      body = ~s({"action":"closed","pull_request":{"merged":true}})
+      bad_signature = "sha256=0000000000000000000000000000000000000000000000000000000000000000"
+      refute PrMonitor.GhWebhookHandler.verify_signature(body, bad_signature, @secret)
+    end
+
+    test "tampered body fails verification" do
+      body = ~s({"action":"closed","pull_request":{"merged":true}})
+      signature = PrMonitor.GhWebhookHandler.build_signature(body, @secret)
+      tampered = ~s({"action":"closed","pull_request":{"merged":false}})
+      refute PrMonitor.GhWebhookHandler.verify_signature(tampered, signature, @secret)
+    end
+  end
+
+  defp drain_commands(commands \\ []) do
+    receive do
+      {:handled_command, command} -> drain_commands([command | commands])
+    after
+      50 -> Enum.reverse(commands)
+    end
+  end
+
+  defp append!(stream_id, event_type, payload) do
+    {:ok, _event} =
+      EventStore.append(%{
+        stream_id: stream_id,
+        event_type: event_type,
+        payload: payload,
+        metadata: %{}
+      })
+  end
+end
+
 defmodule ForemanServer.PrMonitorTest do
   use ExUnit.Case
 
