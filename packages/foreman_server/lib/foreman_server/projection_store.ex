@@ -1282,13 +1282,6 @@ defmodule ForemanServer.ProjectionStore do
          status,
          fallback_updated_at
        )
-
-  defp maybe_update_task_from_run_terminal(
-         projection,
-         payload,
-         status,
-         fallback_updated_at
-       )
        when is_map(payload) do
     task_id = terminal_task_id(projection, payload)
 
