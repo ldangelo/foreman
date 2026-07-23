@@ -228,6 +228,53 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert blocked.type == "attention"
   end
 
+  test "done task status overrides stale failed run status in board output" do
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Closed task",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("run:run-1", "RunStarted", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1"
+    })
+
+    append!("run:run-1", "RunFailed", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1",
+      reason: "nothing_to_commit"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      status: "closed"
+    })
+
+    assert [done] = ProjectionStore.board("project-1").done
+    assert done.status == "closed"
+    assert done.run_id == "run-1"
+    assert done.type == "run"
+  end
+
+  test "runless terminal task status is normalized in board output" do
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Closed task",
+      status: " CLOSED "
+    })
+
+    assert [done] = ProjectionStore.board("project-1").done
+    assert done.status == "closed"
+    assert done.type == "task"
+  end
+
   test "blocked task status is normalized before overriding stale run status" do
     append!("task:task-1", "TaskCreated", %{
       project_id: "project-1",

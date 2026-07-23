@@ -1689,9 +1689,16 @@ defmodule ForemanServer.ProjectionStore do
   defp normalize_board_output(board) do
     transform = fn
       {task, nil, group} ->
+        task_status = normalized_task_status(task)
+
+        visible_status =
+          if terminal_task_status?(task_status),
+            do: task_status,
+            else: Map.get(task, :status)
+
         task
-        |> Map.take([:task_id, :title, :status, :priority, :task_type, :updated_at])
-        |> Map.merge(%{group: group, type: "task"})
+        |> Map.take([:task_id, :title, :priority, :task_type, :updated_at])
+        |> Map.merge(%{group: group, type: "task", status: visible_status})
 
       {task, run, group} ->
         run_status = Map.get(run, :status, "")
@@ -1703,22 +1710,20 @@ defmodule ForemanServer.ProjectionStore do
             _ -> ""
           end
 
-        task_status =
-          task
-          |> Map.get(:status, "")
-          |> to_string()
-          |> String.trim()
-          |> String.downcase()
+        task_status = normalized_task_status(task)
+        terminal_task_status = terminal_task_status?(task_status)
 
         visible_status =
-          if group == "RECENT" and MapSet.member?(@blocked_task_statuses, task_status),
+          if group == "RECENT" and terminal_task_status,
             do: task_status,
             else: run_status
 
-        # Needs attention: failed run status OR explicit attention flag
+        # Needs attention: failed run status OR explicit attention flag,
+        # unless the task itself has already reached a terminal done status.
         needs_attention =
-          run_status in ["failed", "fail", "stuck", "conflict", "test-failed"] ||
-            run_attention != ""
+          not MapSet.member?(@done_task_statuses, task_status) and
+            (run_status in ["failed", "fail", "stuck", "conflict", "test-failed"] ||
+               run_attention != "")
 
         base =
           task
@@ -1753,5 +1758,18 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.new()
 
     Map.merge(columns, %{counts: counts})
+  end
+
+  defp normalized_task_status(task) do
+    task
+    |> Map.get(:status, "")
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp terminal_task_status?(task_status) do
+    MapSet.member?(@blocked_task_statuses, task_status) ||
+      MapSet.member?(@done_task_statuses, task_status)
   end
 end
