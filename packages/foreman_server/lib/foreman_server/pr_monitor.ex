@@ -389,7 +389,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
 
   @default_command_handler ForemanServer.PrMonitor.CommandHandler
 
-  @spec handle(map(), module()) :: {:ok, map()} | {:error, term()}
+  @spec handle(map(), module() | nil) :: {:ok, map()} | {:error, term()}
   @doc """
   Process a GitHub `pull_request` webhook payload.
 
@@ -402,7 +402,8 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
 
   ## Options
   - `command_handler` (module) — optional command handler module for test injection.
-    Defaults to `#{inspect(@default_command_handler)}`.
+    When nil, reads from app config `:foreman_server, :command_handler`, falling back
+    to `#{inspect(@default_command_handler)}`.
 
   ## Returns
   - `{:ok, %{commands_issued: non_neg_integer()}}` on success
@@ -410,7 +411,8 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   - `{:error, :no_matching_run}` if no run matches the PR URL or branch
   - `{:error, reason}` on other failures
   """
-  def handle(payload, command_handler \\ @default_command_handler) do
+  def handle(payload, command_handler \\ nil) do
+    handler = command_handler || Application.get_env(:foreman_server, :command_handler, @default_command_handler)
     with {:ok, %{pr_url: pr_url, branch_name: branch_name, action: action, pr_payload: pr_payload, merged: merged, is_draft: is_draft}} <- parse_payload(payload),
          {:ok, dedupe_key} <- dedupe_key(payload),
          :ok <- check_dedupe(dedupe_key),
@@ -424,7 +426,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
         ForemanServer.PrMonitor.handle_observation(
           context,
           observation,
-          command_handler
+          handler
         )
 
       record_dedupe(dedupe_key, context.task_id)
