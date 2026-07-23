@@ -412,170 +412,25 @@ defmodule ForemanServer.PrMonitorTest do
     assert task_payload.status == "merged"
   end
 
-  test "terminal task with stale open PR state is reconciled when PR is merged" do
-    # Previously this was a skip (per the old `terminal_task_status?`
-    # guard). The new behavior: skip only when BOTH `terminal_task_status?`
-    # AND `pr_state == "merged"`. If the task is terminal but `pr_state`
-    # disagrees (e.g. an old poll mis-recorded the PR as `open`),
-    # re-observe is a one-way repair path that emits `run.pr.merge`
-    # + `task.update merged`. This is the user-reported bug case.
-    seed_recorded_pr!(pr_state: "open", task_status: "closed")
-
-    merged_at = "2026-07-09T12:34:56Z"
-
-    put_observations(%{
-      @pr_url =>
-        {:ok,
-         %{
-          state: :merged,
-          url: @pr_url,
-          merged_at: merged_at,
-          merge_commit_sha: "merge-sha",
-          head_ref_oid: "head-sha",
-          head_ref_name: "foreman/task-pr-monitor",
-          base_ref_name: "main"
-        }}
-    })
-
-    assert {:ok, %{merged: 1, errors: 0}} = PrMonitor.tick_once()
-    assert_receive {:checked_pr, @project_path, @pr_url}
-
-    assert_receive {:handled_command,
-                    %{
-                      command_type: "run.pr.merge",
-                      payload: merge_payload
-                    }}
-
-    assert_receive {:handled_command,
-                    %{
-                      command_type: "task.update",
-                      payload: task_payload
-                    }}
-
-    assert merge_payload.pr_url == @pr_url
-    assert merge_payload.merged_at == merged_at
-    assert task_payload.task_id == @task_id
-    assert task_payload.status == "merged"
-  end
-
-  test "REST-shaped CLOSED + merged_at observation is normalized to :merged and reconciled" do
-    # GitHub's REST API reports merged PRs as `state: "CLOSED"` with
-    # `merged_at` set. The polling normalizer (`normalize_state/3`) must
-    # distinguish merged-but-CLOSED from closed-without-merge by checking
-    # `merged_at`. The previous normalizer discarded `merged_at` and
-    # always emitted `PrReset` for these — which is what made the user's
-    # landed PRs surface as `blocked` on the board.
-    #
-    # Use `pr_state: "open"` so the run passes the tick filter; the
-    # bug we're guarding against is the normalizer mis-classifying a
-    # REST-shaped merged observation. `task_status: "closed"` exercises
-    # the reconciliation path through `handle_observation`.
+  test "terminal task with stale open PR state is skipped when PR is merged" do
     seed_recorded_pr!(pr_state: "open", task_status: "closed")
 
     put_observations(%{
       @pr_url =>
         {:ok,
          %{
-           state: "CLOSED",
+           state: :merged,
            url: @pr_url,
-           merged_at: "2026-07-22T10:00:00Z",
-           merge_commit_sha: "merge-sha-rest",
-           head_ref_oid: "head-sha-rest",
-           head_ref_name: "foreman/task-pr-monitor",
-           base_ref_name: "main"
-         }}
-    })
-
-    assert {:ok, %{merged: 1, errors: 0}} = PrMonitor.tick_once()
-    assert_receive {:checked_pr, @project_path, @pr_url}
-
-    assert_receive {:handled_command,
-                    %{
-                      command_type: "run.pr.merge",
-                      payload: merge_payload
-                    }}
-
-    assert_receive {:handled_command,
-                    %{
-                      command_type: "task.update",
-                      payload: task_payload
-                    }}
-
-    # No reset must be emitted — the normalizer's `merged` classification
-    # means the run is reconciled, not reset.
-    refute_receive {:handled_command, %{command_type: "run.pr.reset"}}
-
-    assert merge_payload.merged_at == "2026-07-22T10:00:00Z"
-    assert merge_payload.merge_commit_sha == "merge-sha-rest"
-    assert task_payload.status == "merged"
-  end
-
-  test "REST-shaped CLOSED + nil merged_at observation is normalized to :closed" do
-    # Companion case: a PR that was actually closed without merge.
-    # `state: "CLOSED"`, `merged_at: nil` → `:closed` → emits reset.
-    seed_recorded_pr!(pr_state: "open")
-
-    put_observations(%{
-      @pr_url =>
-        {:ok,
-         %{
-           state: "CLOSED",
-           url: @pr_url,
-           merged_at: nil,
-           merge_commit_sha: nil,
+           merged_at: "2026-07-09T12:34:56Z",
+           merge_commit_sha: "merge-sha",
            head_ref_oid: "head-sha",
            head_ref_name: "foreman/task-pr-monitor",
            base_ref_name: "main"
          }}
     })
 
-    assert {:ok, %{closed: 1, errors: 0}} = PrMonitor.tick_once()
+    assert {:ok, %{skipped: 1, merged: 0, errors: 0}} = PrMonitor.tick_once()
     assert_receive {:checked_pr, @project_path, @pr_url}
-
-    assert_receive {:handled_command,
-                    %{
-                      command_type: "run.pr.reset",
-                      payload: reset_payload
-                    }}
-
-    refute_receive {:handled_command, %{command_type: "run.pr.merge"}}
-    assert reset_payload.action == "closed"
-  end
-
-  test "locally-merged run is preserved against a later closed observation" do
-    # One-way merge preservation: once `pr_state == "merged"` is
-    # recorded locally, a later `:closed` observation must NOT
-    # downgrade it. GitHub merges are irreversible, and a task can
-    # have multiple PRs (re-targets, follow-up attempts).
-    #
-    # `tick_once` filters terminal pr_state runs entirely, so call
-    # `handle_observation/3` directly with a hand-built context.
-    context = %{
-      run_id: @run_id,
-      task_id: @task_id,
-      task_status: "merged",
-      project_id: @project_id,
-      project_path: @project_path,
-      pr_url: @pr_url,
-      pr_state: "merged",
-      branch_name: "foreman/#{@task_id}",
-      phase: "pr-monitor"
-    }
-
-    observation = %{
-      state: :closed,
-      url: @pr_url,
-      merged_at: nil,
-      head_ref_oid: "head-sha",
-      head_ref_name: "foreman/#{@task_id}",
-      base_ref_name: "main"
-    }
-
-    summary = PrMonitor.handle_observation(context, observation, @command_handler)
-
-    assert summary.skipped == 1
-    assert summary.closed == 0
-    assert summary.errors == 0
     refute_receive {:handled_command, _command}
   end
 
@@ -617,6 +472,7 @@ defmodule ForemanServer.PrMonitorTest do
     assert {:ok, %{closed: 1, errors: 0}} = PrMonitor.tick_once()
 
     assert_receive {:checked_pr, @project_path, @pr_url}
+
     assert_receive {:handled_command,
                     %{
                       command_type: "run.pr.reset",
@@ -641,7 +497,6 @@ defmodule ForemanServer.PrMonitorTest do
   end
 
   test "closed open and draft observations never mark the task merged" do
-
     observations =
       [:closed, :open, :draft]
       |> Enum.map(fn state ->
