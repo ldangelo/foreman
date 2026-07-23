@@ -1,4 +1,4 @@
-import { writeFile, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { writeFile, mkdir, open, readdir, unlink, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { runWithPiSdk } from "./pi-sdk-runner.js";
 
 import type { ITaskClient, Issue } from "../lib/task-client.js";
-import type { NativeTask, Run, EventType, RunStore, ProgressEventStore } from "../lib/store.js";
+import type { NativeTask, Project, Run, EventType, RunStore, ProgressEventStore } from "../lib/store.js";
 import type { RunStatus } from "./read-models.js";
 import type { DispatcherStoreDeps } from "./dispatcher-dependencies.js";
 import { STUCK_RETRY_CONFIG, calculateStuckBackoffMs, getDefaultModel } from "../lib/config.js";
@@ -204,7 +204,7 @@ export class Dispatcher {
 
   private async updateRunRecord(
     runId: string,
-    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at">>,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "route_to">>,
   ): Promise<void> {
     return this.runLifecycleService.updateRunRecord(runId, updates);
   }
@@ -1183,6 +1183,7 @@ export class Dispatcher {
       await this.updateNativeTaskStatus(run.task_id, "in-progress");
 
       // Spawn the resumed agent
+      // Pass route_to from kill-switch so pipeline starts at the target phase
       const { sessionKey } = await this.resumeAgent(
         model,
         run.worktree_path,
@@ -1192,12 +1193,14 @@ export class Dispatcher {
         opts?.telemetry,
         opts?.notifyUrl,
         opts?.runtimeMode,
+        run.route_to ?? undefined,
       );
 
       await this.updateRunRecord(newRun.id, {
         session_key: sessionKey,
         status: "running",
         started_at: new Date().toISOString(),
+        route_to: run.route_to ?? undefined,
       });
 
       resumed.push({
@@ -1485,11 +1488,12 @@ export class Dispatcher {
     telemetry?: boolean,
     notifyUrl?: string,
     runtimeMode?: RuntimeMode,
+    startPhase?: string,
   ): Promise<{ sessionKey: string }> {
     const resumePrompt = this.buildResumePrompt(task.id, task.title);
 
     const env = buildWorkerEnv(telemetry, task.id, runId, model, notifyUrl, undefined, runtimeMode);
-    log(`Resuming worker for ${task.id} [${model}] session=${sdkSessionId}`);
+    log(`Resuming worker for ${task.id} [${model}] session=${sdkSessionId}${startPhase ? ` (routing to phase: ${startPhase})` : ""}`);
 
     const projectId = await this.resolveProjectId();
     const { pid } = await spawnWorkerProcess({
@@ -1503,6 +1507,7 @@ export class Dispatcher {
       env,
       resume: sdkSessionId,
       nativeTaskId: task.id,
+      startPhase,
     });
 
     const sessionKey = buildSdkSessionKey(model, runId, pid, sdkSessionId);
@@ -1929,6 +1934,14 @@ export interface WorkerConfig {
    * Loaded from project config and passed to the agent worker.
    */
   hooks?: import("../lib/project-config.js").ProjectHooksConfig;
+  /**
+   * Target phase to start execution from (kill-switch routing).
+   * When set, the pipeline executor skips all phases before this target and
+   * starts execution at the specified phase. This enables the kill-switch
+   * to route a failed run to a specific recovery phase without re-running
+   * completed phases.
+   */
+  startPhase?: string;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────
@@ -2212,4 +2225,350 @@ export async function purgeOrphanedWorkerConfigs(
   }
 
   return deleted;
+}
+
+// ── Kill-switch ────────────────────────────────────────────────────────────────
+
+const killSwitchActiveStatuses: Partial<Record<Run["status"], true>> = {
+  pending: true,
+  running: true,
+  stuck: true,
+  cooldown: true,
+  waiting_for_operator: true,
+};
+
+function extractWorkerPid(sessionKey: string | null): number | null {
+  if (!sessionKey) return null;
+  const match = sessionKey.match(/pid-(\d+)/);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function stopDetachedWorker(sessionKey: string | null): string | null {
+  const pid = extractWorkerPid(sessionKey);
+  if (pid === null || pid === process.pid) return null;
+
+  try {
+    process.kill(pid, "SIGTERM");
+    return `stopped worker process ${pid}`;
+  } catch (err: unknown) {
+    let code: unknown;
+    if (typeof err === "object" && err !== null && "code" in err) {
+      code = err.code;
+    }
+    if (code === "ESRCH") return `worker process ${pid} already stopped`;
+    const msg = err instanceof Error ? err.message : String(err);
+    return `failed to stop worker process ${pid}: ${msg}`;
+  }
+}
+
+/** Minimal store interface needed by killSwitchRun. */
+export interface KillSwitchStoreDeps {
+  getProjectByPath(path: string): Awaitable<Project | null>;
+  getRun(runId: string): Awaitable<Run | null>;
+  updateRun(
+    runId: string,
+    updates: Partial<Pick<Run, "status" | "session_key" | "worktree_path" | "started_at" | "completed_at" | "route_to">>,
+  ): Awaitable<void>;
+  logEvent(
+    projectId: string,
+    eventType: EventType,
+    data: Record<string, unknown>,
+    runId?: string,
+  ): Awaitable<void>;
+}
+
+export interface KillSwitchOptions {
+  /** Explicit route-to phase (overrides next phase). */
+  routeTo?: string;
+  /** Reason recorded in kill-switch event. */
+  reason?: string;
+  /** Delete the worktree (requires --force in CLI). */
+  deleteWorktree?: boolean;
+  /** Close the associated PR (requires --close-pr in CLI). */
+  closePr?: boolean;
+  /** Discard the reports directory (requires --discard-reports in CLI). */
+  discardReports?: boolean;
+  /** Reset the task to backlog (requires --reset in CLI). */
+  resetTask?: boolean;
+  /** Dry-run: only describe what would happen. */
+  dryRun?: boolean;
+}
+
+export interface KillSwitchResult {
+  success: boolean;
+  runId: string;
+  taskId: string;
+  runStatus: string;
+  routeTo?: string;
+  reason: string;
+  worktreeDeleted: boolean;
+  prClosed: boolean;
+  reportsDiscarded: boolean;
+  taskReset: boolean;
+  message: string;
+}
+
+/**
+ * Kill an active stuck run and route to a recovery phase without losing artifacts.
+ *
+ * Safe-by-default behaviour:
+ *   - Marks the active phase as failed with retryWith → target phase
+ *   - Preserves the worktree (~/.foreman/worktrees/...)
+ *   - Preserves the PR (no close, no comment)
+ *   - Preserves the reports directory (~/.foreman/reports/<run-id>/)
+ *
+ * Destructive options (all opt-in via explicit flags):
+ *   --reset         → reset task to backlog
+ *   --force         → confirm destructive intent
+ *   --close-pr      → close the GitHub PR
+ *   --discard-reports → delete the reports directory
+ *
+ * Used by: `foreman run kill-switch <run-id>`
+ */
+export async function killSwitchRun(
+  runId: string,
+  opts: KillSwitchOptions,
+  deps: {
+    tasks: ITaskClient;
+    store: KillSwitchStoreDeps;
+    projectPath: string;
+    overrides?: DispatcherOverrides;
+  },
+): Promise<KillSwitchResult> {
+  const { tasks, store, projectPath, overrides } = deps;
+
+  // Resolve project ID
+  let projectId: string;
+  if (overrides?.externalProjectId) {
+    projectId = overrides.externalProjectId;
+  } else {
+    const project = await store.getProjectByPath(projectPath);
+    if (!project) {
+      return {
+        success: false,
+        runId,
+        taskId: "",
+        runStatus: "unknown",
+        reason: "no project",
+        worktreeDeleted: false,
+        prClosed: false,
+        reportsDiscarded: false,
+        taskReset: false,
+        message: `No project registered for '${projectPath}'. Run 'foreman init' first.`,
+      };
+    }
+    projectId = project.id;
+  }
+
+  // Get run
+  let run: Run | null;
+  if (overrides?.getRun) {
+    run = await overrides.getRun(runId);
+  } else {
+    run = await store.getRun(runId);
+  }
+
+  if (!run) {
+    return {
+      success: false,
+      runId,
+      taskId: "",
+      runStatus: "unknown",
+      reason: "run not found",
+      worktreeDeleted: false,
+      prClosed: false,
+      reportsDiscarded: false,
+      taskReset: false,
+      message: `No run found for '${runId}'.`,
+    };
+  }
+
+  if (!killSwitchActiveStatuses[run.status]) {
+    return {
+      success: false,
+      runId,
+      taskId: run.task_id,
+      runStatus: run.status,
+      reason: "run not active",
+      worktreeDeleted: false,
+      prClosed: false,
+      reportsDiscarded: false,
+      taskReset: false,
+      message: `Run '${runId}' is ${run.status}; kill-switch only applies to active runs.`,
+    };
+  }
+
+  const taskId = run.task_id;
+  const routeTo = opts.routeTo ?? "developer";
+  const reason = opts.reason ?? "operator kill-switch";
+
+  // Destructive operations require explicit opt-in flags
+  const wantDeleteWorktree = opts.deleteWorktree === true;
+  const wantClosePr = opts.closePr === true;
+  const wantDiscardReports = opts.discardReports === true;
+  const wantResetTask = opts.resetTask === true;
+  const dryRun = opts.dryRun ?? false;
+
+  const results: string[] = [];
+
+  if (!dryRun) {
+    // 1. Update run status → failed with kill-switch event.
+    // Preserve session_key so resumeRuns() retains the SDK resume token.
+    // Store route_to so resumeRuns() knows where to route the pipeline.
+    await store.updateRun(runId, {
+      status: "failed",
+      completed_at: new Date().toISOString(),
+      session_key: run.session_key,
+      route_to: routeTo,
+    });
+
+    // 2. Emit kill-switch event to Elixir (for registered projects)
+    const killSwitchPayload = {
+      taskId,
+      phase: "kill-switch",
+      routeTo,
+      reason,
+      previousStatus: run.status,
+    };
+    await Promise.resolve(store.logEvent(projectId, "kill-switch" as EventType, killSwitchPayload, runId));
+
+    if (overrides?.externalProjectId) {
+      try {
+        await writeElixirOrchestrationEvent({
+          runId,
+          projectId,
+          eventType: "kill-switch",
+          payload: killSwitchPayload,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          success: false,
+          runId,
+          taskId,
+          runStatus: "failed",
+          routeTo,
+          reason,
+          worktreeDeleted: false,
+          prClosed: false,
+          reportsDiscarded: false,
+          taskReset: false,
+          message: `Kill-switch event write failed: ${msg}`,
+        };
+      }
+    }
+
+    const workerStopResult = stopDetachedWorker(run.session_key);
+    if (workerStopResult) results.push(workerStopResult);
+
+    // 3. Delete worktree if --force (worktree is normally preserved)
+    let worktreeDeleted = false;
+    if (wantDeleteWorktree && run.worktree_path) {
+      try {
+        const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+        await vcs.removeWorkspace(projectPath, run.worktree_path);
+        worktreeDeleted = true;
+        results.push(`deleted worktree ${run.worktree_path}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push(`failed to delete worktree: ${msg}`);
+      }
+    } else if (run.worktree_path) {
+      results.push(`preserved worktree ${run.worktree_path}`);
+    }
+
+    // 4. Close PR if --close-pr
+    let prClosed = false;
+    if (wantClosePr && overrides?.externalProjectId) {
+      try {
+        // Emit a close-pr event for Elixir to handle (PR close is managed by the backend)
+        await store.logEvent(projectId, "kill-switch-close-pr" as EventType, { taskId, runId }, runId);
+        await writeElixirOrchestrationEvent({
+          runId,
+          projectId,
+          eventType: "kill-switch-close-pr",
+          payload: { taskId, runId },
+        });
+        prClosed = true;
+        results.push("closed PR (handled by Elixir backend)");
+      } catch {
+        results.push("failed to close PR");
+      }
+    }
+
+    // 5. Discard reports if --discard-reports
+    let reportsDiscarded = false;
+    if (wantDiscardReports) {
+      const reportsDir = getRunReportsDir(projectId, taskId, runId);
+      try {
+        await rm(reportsDir, { recursive: true, force: true });
+        reportsDiscarded = true;
+        results.push(`discarded reports ${reportsDir}`);
+      } catch {
+        results.push(`failed to discard reports`);
+      }
+    }
+
+    // 6. Reset task if --reset
+    let taskReset = false;
+    if (wantResetTask) {
+      try {
+        if (tasks.update) {
+          await tasks.update(taskId, { status: "backlog" });
+          taskReset = true;
+          results.push("reset task to backlog");
+        }
+      } catch {
+        results.push("failed to reset task to backlog");
+      }
+    }
+
+    return {
+      success: true,
+      runId,
+      taskId,
+      runStatus: "failed",
+      routeTo,
+      reason,
+      worktreeDeleted,
+      prClosed,
+      reportsDiscarded,
+      taskReset,
+      message: [
+        `killed run ${runId} (${run.status} → failed)`,
+        `routing to phase: ${routeTo}`,
+        `reason: ${reason}`,
+        ...results,
+      ].join("\n  • "),
+    };
+  } else {
+    // Dry-run: describe what would happen
+    return {
+      success: true,
+      runId,
+      taskId,
+      runStatus: run.status,
+      routeTo,
+      reason,
+      worktreeDeleted: wantDeleteWorktree,
+      prClosed: wantClosePr,
+      reportsDiscarded: wantDiscardReports,
+      taskReset: wantResetTask,
+      message: [
+        `Would kill run ${runId} (status: ${run.status} → failed)`,
+        `Would route to phase: ${routeTo}`,
+        `Would record reason: ${reason}`,
+        run.worktree_path
+          ? wantDeleteWorktree
+            ? `Would delete worktree ${run.worktree_path}`
+            : `Would preserve worktree ${run.worktree_path}`
+          : "No worktree to manage",
+        wantClosePr ? "Would close PR" : "Would preserve PR",
+        wantDiscardReports ? "Would discard reports" : "Would preserve reports",
+        wantResetTask ? "Would reset task to backlog" : "Would leave task status unchanged",
+      ].join("\n  • "),
+    };
+  }
 }

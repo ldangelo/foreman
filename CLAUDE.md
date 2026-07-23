@@ -27,6 +27,7 @@ foreman watch          # Canonical live cockpit TUI; action palette reset asks y
 foreman sentinel       # Background health daemon
 foreman retry <task>   # Re-run a failed pipeline phase
 foreman reset <task>   # Close open/draft PRs, clean stale artifacts, and re-dispatch unless the recorded PR is already merged; merged-PR resets preserve run artifacts
+foreman run kill-switch <run-id>  # Stop a stuck run, preserve worktree/PR/reports by default; use --route-to, --reset, --force, --close-pr, --discard-reports, --dry-run
 foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
 foreman debug <id>     # AI-powered execution analysis (Opus)
 foreman sling trd X    # TRD -> task hierarchy
@@ -281,7 +282,7 @@ npx tsc --noEmit       # Type-check without building
 
 **Common failure modes:**
 
-- Agent stuck in Developer phase → check `foreman inbox --task <id> --events` for overwatch nudges, then `foreman retry <task>` or Elixir recovery workflow
+- Agent stuck in Developer phase → check `foreman inbox --task <id> --events` for overwatch nudges, then `foreman retry <task>`, `foreman run kill-switch <run-id>` (preserves worktree/PR/reports by default), or Elixir recovery workflow
 - Branch not merged after completion → `foreman merge` to trigger manually
 - autoMerge returns failed=1 → check run status is "completed" before merge queue entry
 - Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)

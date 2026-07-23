@@ -461,6 +461,56 @@ Abandon removes matching merge-queue entries, archives/removes the run worktree,
 
 Reset Foreman to a clean operator state by intentionally dropping stale/obsolete Foreman work.
 
+### `foreman run kill-switch`
+
+Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
+
+```bash
+foreman run kill-switch <run-id>                              # safe-by-default: preserve worktree, PR, reports
+foreman run kill-switch <run-id> --route-to qa                # route to qa instead of developer
+foreman run kill-switch <run-id> --reason "blocking CodeRabbit review"
+foreman run kill-switch <run-id> --dry-run
+foreman run kill-switch <run-id> --reset                       # also reset task to backlog
+foreman run kill-switch <run-id> --force                       # confirm worktree deletion
+foreman run kill-switch <run-id> --close-pr                    # close the GitHub PR
+foreman run kill-switch <run-id> --discard-reports             # delete ~/.foreman/reports/<run-id>/
+```
+
+**Typical workflow (pr-wait blocking review):**
+
+1. Observe a run stuck in `pr-wait` with a terminal-negative CodeRabbit review.
+2. Kill the stuck phase: `foreman run kill-switch <run-id> --route-to cr-developer --reason "terminal CodeRabbit CHANGES_REQUESTED"`.
+3. The run is marked failed with `retryWith → cr-developer`; worktree and PR are preserved.
+
+**Safe-by-default behavior (no destructive flags needed):**
+
+| Action | Default | Flag to change |
+|--------|---------|---------------|
+| Mark phase failed with `retryWith` → target | **ON** | `--route-to <phase>` |
+| Stop the worker process | **ON** | — |
+| Preserve worktree (`~/.foreman/worktrees/...`) | **ON** | `--force` to delete |
+| Preserve PR (no close, no comment) | **ON** | `--close-pr` to close |
+| Preserve reports (`~/.foreman/reports/<run-id>/`) | **ON** | `--discard-reports` to delete |
+| Reset task to backlog | OFF | `--reset` |
+| Delete worktree | OFF | `--force` + confirmation |
+| Close the PR | OFF | `--close-pr` |
+| Discard reports | OFF | `--discard-reports` |
+
+| Option | Description |
+|--------|-------------|
+| `<run-id>` | Run ID to kill |
+| `--route-to <phase>` | Target workflow phase for `retryWith` routing (default: `developer`); unknown phases are rejected and `retryOnly` targets are activated explicitly |
+| `--reason <text>` | Reason recorded in kill-switch event and run history |
+| `--reset` | Also reset the task to backlog (opt-in; default preserves task status) |
+| `--force` | Confirm worktree deletion intent |
+| `--close-pr` | Close the GitHub PR (handled by Elixir backend) |
+| `--discard-reports` | Delete the reports directory for this run |
+| `--dry-run` | Preview what would happen without making changes |
+| `--project <name>` | Registered project name (default: current directory) |
+| `--project-path <absolute-path>` | Absolute project path (advanced/script usage) |
+
+### `foreman clean-state`
+
 ```bash
 foreman clean-state --dry-run
 foreman clean-state --force

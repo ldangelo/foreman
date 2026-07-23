@@ -128,6 +128,13 @@ export interface Run {
    * The dispatcher skips this task until the cooldown period expires.
    */
   cooldown_until?: string | null;
+  /**
+   * Target phase for kill-switch routing.
+   * When a kill-switch marks a run failed with retry routing, this field stores
+   * the destination phase. When the run is resumed, the pipeline executor skips
+   * phases before this target and starts from the specified phase.
+   */
+  route_to?: string | null;
 }
 
 export interface Cost {

@@ -24,7 +24,7 @@ import {
   listAvailableWorkflows,
   loadWorkflowConfig,
 } from "../../lib/workflow-loader.js";
-import { Dispatcher } from "../../orchestrator/dispatcher.js";
+import { Dispatcher, killSwitchRun, type KillSwitchOptions } from "../../orchestrator/dispatcher.js";
 import type { DispatcherOverrides } from "../../orchestrator/dispatcher.js";
 import type { ModelSelection } from "../../orchestrator/types.js";
 import { watchRunsInk } from "../watch-ui.js";
@@ -1287,3 +1287,143 @@ export const runCommand = new Command("run")
 
 // Add task subcommand for direct workflow execution
 runCommand.addCommand(runTaskCommand);
+
+// ── Kill-switch subcommand ─────────────────────────────────────────────────────
+
+export interface KillSwitchCliOpts extends KillSwitchOptions {
+  project?: string;
+  projectPath?: string;
+  force?: boolean;
+  /** Commander maps --reset to opts.reset (camelCase conversion) */
+  reset?: boolean;
+}
+
+/**
+ * Kill an active stuck run and route to a recovery phase without losing artifacts.
+ *
+ * Safe-by-default: preserves worktree, PR, and reports.
+ * Destructive flags (all opt-in):
+ *   --reset             → reset task to backlog
+ *   --force             → confirm worktree deletion
+ *   --close-pr          → close the GitHub PR
+ *   --discard-reports   → delete the reports directory
+ */
+async function killSwitchAction(
+  runId: string,
+  opts: KillSwitchCliOpts,
+): Promise<number> {
+  const { projectPath, registered } = await resolveProjectContext(
+    { project: opts.project, projectPath: opts.projectPath },
+    { normalizePaths: true },
+  );
+
+  const localStore = ForemanStore.forProject(projectPath);
+  const store: ForemanStore | ElixirCliStore = registered
+    ? ElixirCliStore.forProject(registered)
+    : localStore;
+
+  try {
+    // Ensure Elixir server is running for registered projects
+    if (registered) {
+      const manager = new ElixirServerManager();
+      await manager.ensureRunning();
+    }
+
+    const { taskClient } = await createTaskClients(projectPath, "normal", registered?.id);
+
+    const killOpts: KillSwitchOptions = {
+      routeTo: opts.routeTo,
+      reason: opts.reason,
+      deleteWorktree: opts.force, // --force confirms worktree deletion intent
+      closePr: opts.closePr,
+      discardReports: opts.discardReports,
+      resetTask: opts.reset, // Commander: --reset → opts.reset
+      dryRun: opts.dryRun,
+    };
+
+    const result = await killSwitchRun(runId, killOpts, {
+      tasks: taskClient,
+      store,
+      projectPath,
+      overrides: registered
+        ? createRegisteredDispatcherOverrides(registered.id, store as ElixirCliStore, registered.defaultBranch)
+        : undefined,
+    });
+
+    if (!result.success) {
+      console.error(chalk.red(`Error: ${result.message}`));
+      return 1;
+    }
+
+    if (opts.dryRun) {
+      console.log(chalk.yellow("(dry run — no changes will be made)\n"));
+    }
+
+    console.log(chalk.bold(`${opts.dryRun ? "Would" : "Killed"} run ${chalk.cyan(runId)}`));
+    console.log(`  Task:    ${chalk.cyan(result.taskId)}`);
+    console.log(`  Status:  ${result.runStatus} (operator kill-switch)`);
+    console.log(`  Route:   → ${chalk.yellow(result.routeTo ?? "next phase")}`);
+    console.log(`  Reason:  ${result.reason}`);
+
+    if (opts.dryRun) {
+      for (const line of result.message.split("\n")) {
+        console.log(`  ${line}`);
+      }
+    } else {
+      // Print action summary lines
+      for (const line of result.message.split("\n")) {
+        console.log(`  • ${line}`);
+      }
+      console.log();
+      console.log(chalk.green("Done."));
+    }
+
+    return 0;
+  } finally {
+    localStore.close();
+    if (store !== localStore) store.close();
+  }
+}
+
+// ── Helpers for kill-switch ────────────────────────────────────────────────────
+
+/**
+ * Resolve project context: registered project or local path.
+ */
+async function resolveProjectContext(
+  opts: { project?: string; projectPath?: string },
+  _options?: { normalizePaths?: boolean },
+): Promise<{ projectPath: string; registered: RegisteredProjectSummary | null }> {
+  const projectPath = opts.projectPath
+    ? opts.projectPath
+    : await resolveRepoRootProjectPath({ project: opts.project });
+
+  const registered = await resolveRunRegisteredProject(projectPath);
+  return { projectPath, registered };
+}
+
+// Add kill-switch subcommand to runCommand
+const killSwitchCmd = new Command("kill-switch")
+  .description("Kill a stuck active run and route to a recovery phase (safe-by-default: preserves worktree, PR, reports)")
+  .argument("<run-id>", "Run ID to kill")
+  .option("--route-to <phase>", "Target phase for retryWith routing (default: developer)")
+  .option("--reason <text>", "Reason recorded in kill-switch event")
+  .option("--reset", "Also reset task to backlog")
+  .option("--force", "Confirm destructive intent (required for worktree deletion)")
+  .option("--close-pr", "Close the GitHub PR")
+  .option("--discard-reports", "Delete the reports directory (~/.foreman/reports/<run-id>/)")
+  .option("--dry-run", "Preview what would happen without making changes")
+  .option("--project <name>", "Registered project name (default: current directory)")
+  .option("--project-path <absolute-path>", "Absolute project path (advanced/script usage)")
+  .action(async (runId: string, opts: KillSwitchCliOpts) => {
+    try {
+      const code = await killSwitchAction(runId, opts);
+      process.exit(code);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`Error: ${msg}`));
+      process.exit(1);
+    }
+  });
+
+runCommand.addCommand(killSwitchCmd);
