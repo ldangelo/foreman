@@ -556,7 +556,32 @@ export class Dispatcher {
     const completedRuns = await this.getRunsByStatusRecord("completed", projectId);
     const completedTaskIds = new Set(completedRuns.map((r) => r.task_id));
 
+    // Collect epic child task IDs to exclude from standalone dispatch.
+    // Epic children should only be dispatched via their parent epic's pipeline,
+    // not as standalone work (prevents duplicate dispatch).
+    const epicChildTaskIds = new Set<string>();
     for (const task of readyTasks) {
+      if (task.type === "epic") {
+        let childIds: string[] = [];
+        try {
+          if (this.overrides?.nativeTaskOps?.getChildren) {
+            childIds = await this.overrides.nativeTaskOps.getChildren(task.id);
+          } else if (this.store && typeof this.store.getChildren === "function") {
+            childIds = await this.store.getChildren(task.id);
+          }
+        } catch {
+          // Ignore errors here — the epic dispatch path will handle errors
+        }
+        for (const childId of childIds) {
+          epicChildTaskIds.add(childId);
+        }
+      }
+    }
+
+    // Filter out epic children from readyTasks — they should only be dispatched via epic pipeline
+    const dispatchableReadyTasks = readyTasks.filter((t) => !epicChildTaskIds.has(t.id));
+
+    for (const task of dispatchableReadyTasks) {
       if (await this.hasMergedOutcomeWithoutLaterReset(task.id, projectId)) {
         skipped.push({
           taskId: task.id,
@@ -595,7 +620,17 @@ export class Dispatcher {
           try {
             childTaskIds = await this.overrides.nativeTaskOps.getChildren(task.id);
           } catch (err) {
-            log(`[dispatch] Epic ${task.id} — failed to get children: ${err}`);
+            log(`[dispatch] Epic ${task.id} — failed to get children via override: ${err}`);
+            getChildrenFailed = true;
+            // Do NOT fall through to zero-child auto-close; leave epic open for retry
+          }
+        } else if (this.store && typeof this.store.getChildren === "function") {
+          // Fallback to store's getChildren when no override exists
+          try {
+            const storeChildren = await this.store.getChildren(task.id);
+            childTaskIds = storeChildren;
+          } catch (err) {
+            log(`[dispatch] Epic ${task.id} — failed to get children via store: ${err}`);
             getChildrenFailed = true;
             // Do NOT fall through to zero-child auto-close; leave epic open for retry
           }
@@ -608,12 +643,13 @@ export class Dispatcher {
           log(`[dispatch] Epic ${task.id} — no children, auto-closing`);
           await this.updateNativeTaskStatus(task.id, "closed");
           // Emit close event through the normal event path (logEventRecord)
-          // Use 'fail' as the terminal event type since there's no 'closed' event
-          await this.logEventRecord(projectId, "fail", {
+          // Use 'complete' as the terminal event type — auto-close is benign, not a failure
+          // Use the epic's task ID as the run identifier for audit trail consistency
+          await this.logEventRecord(projectId, "complete", {
             taskId: task.id,
             title: task.title,
             reason: "Epic has no child tasks",
-          }, "").catch(() => undefined);
+          }, task.id).catch(() => undefined);
           skipped.push({
             taskId: task.id,
             title: task.title,

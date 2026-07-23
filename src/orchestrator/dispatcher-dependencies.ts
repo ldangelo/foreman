@@ -41,6 +41,8 @@ export interface TaskStoreOps {
   claimTask(taskId: string, runId: string): Promise<boolean>;
   /** Update a task's status. */
   updateTaskStatus?(taskId: string, status: NativeTaskStatus): Promise<void>;
+  /** Get child task IDs for a given parent task (via task_dependencies table). */
+  getChildren?(parentId: string): Promise<string[]>;
 }
 
 // ── Dispatcher store deps (narrow interface) ──────────────────────────────
@@ -79,6 +81,8 @@ export interface DispatcherStoreDeps {
   updateTaskLabels?(taskId: string, labels: string[]): Awaitable<void>;
   /** Update task status. */
   updateTaskStatus?(taskId: string, status: string): Awaitable<void>;
+  /** Get child task IDs for a given parent task (via task_dependencies table). */
+  getChildren?(parentId: string): Awaitable<string[]>;
 
   // Run operations
   /** Create a new run record. */
