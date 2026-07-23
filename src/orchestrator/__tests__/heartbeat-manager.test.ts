@@ -275,7 +275,7 @@ describe("HeartbeatManager", () => {
       );
     });
 
-    it("does not send overwatch nudge for polling phases (merge, pr-wait)", async () => {
+    it("does not send overwatch nudge for polling phases (merge, pr-wait, refinery)", async () => {
       const heartbeatWriter = {
         logEvent: vi.fn().mockResolvedValue(undefined),
       };
@@ -340,6 +340,35 @@ describe("HeartbeatManager", () => {
       await prWaitManager.fireHeartbeat();
       await prWaitManager.fireHeartbeat();
       await prWaitManager.fireHeartbeat();
+
+      // Test refinery phase
+      const refineryManager = new HeartbeatManager(
+        { enabled: true, intervalSeconds: 60, overwatchStaleIntervals: 1, overwatchMaxNudges: 3 },
+        mockStoreInstance,
+        "proj-123",
+        "run-refinery",
+        mockVcsInstance,
+        "/worktrees/project/task-refinery",
+        heartbeatWriter,
+        { sendNudge },
+      );
+
+      await refineryManager.start("refinery");
+      refineryManager.setTaskId("task-refinery");
+      refineryManager.update({
+        turns: 1,
+        toolCalls: 1,
+        toolBreakdown: {},
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        lastFileEdited: null,
+        lastActivity: new Date().toISOString(),
+      });
+
+      await refineryManager.fireHeartbeat();
+      await refineryManager.fireHeartbeat();
+      await refineryManager.fireHeartbeat();
 
       expect(sendNudge).not.toHaveBeenCalled();
     });

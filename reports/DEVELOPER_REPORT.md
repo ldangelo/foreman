@@ -12,15 +12,16 @@ Implemented **Option 1 (Targeted Polling-Phase Suppression)** from the task desc
 
 ## Files Changed
 - `src/orchestrator/heartbeat-manager.ts` — Added `POLLING_PHASES` set and `isPollingPhase()` check at start of `maybeNudge()`
-- `src/orchestrator/__tests__/heartbeat-manager.test.ts` — Added `does not send overwatch nudge for polling phases (merge, pr-wait)` test
+- `src/orchestrator/__tests__/heartbeat-manager.test.ts` — Added `does not send overwatch nudge for polling phases (merge, pr-wait, refinery)` test
 - `packages/foreman_server/lib/foreman_server/overwatch.ex` — Added `@polling_phases` module attribute and early-return guard in `observe_event/2` for `WorkerHeartbeat`
-- `packages/foreman_server/test/overwatch_test.exs` — Added `does not send nudges for polling phases (merge, pr-wait)` test
+- `packages/foreman_server/test/overwatch_test.exs` — Added `does not send nudges for polling phases (merge, pr-wait, refinery)` test
+- `docs/user-guide.md` — Documented that polling-only phases are exempt from stale-heartbeat nudges
 
 ## Self-Check Evidence
-- `git diff --name-only`: heartbeat-manager.ts, heartbeat-manager.test.ts, overwatch.ex, overwatch_test.exs (all expected files present)
-- `git diff --check`: pass (no whitespace issues)
-- TypeScript compilation: N/A (verified by existing CI)
-- Tests: Present in both TypeScript and Elixir test files
+- CodeRabbit finding addressed: both TypeScript and Elixir polling-phase tests now cover "merge", "pr-wait", and "refinery".
+- `npx vitest run src/orchestrator/__tests__/heartbeat-manager.test.ts`: pass.
+- `cd packages/foreman_server && mix test test/overwatch_test.exs`: 10 tests, 0 failures.
+- Documentation: `docs/user-guide.md` documents the polling-phase stale-nudge exemption.
 
 ## Acceptance Contract
 - **AC1: Overwatch does not send nudges for polling phases (merge, pr-wait, refinery)** — Implemented: `maybeNudge()` and `observe_event()` check `isPollingPhase()` / `@polling_phases` and return early
@@ -39,11 +40,14 @@ Implemented **Option 1 (Targeted Polling-Phase Suppression)** from the task desc
 ### `src/orchestrator/__tests__/heartbeat-manager.test.ts`
 **Justification:** Required to test the TypeScript HeartbeatManager fix. The new test case `does not send overwatch nudge for polling phases` directly validates the core behavior change.
 
+### `docs/user-guide.md`
+**Justification:** The polling-phase nudge exemption changes operator expectations for when Agent Mail steering nudges should appear, so the user guide now documents the visible behavior.
+
 ## QA Handoff
 - **TypeScript tests**: `npx vitest run src/orchestrator/__tests__/heartbeat-manager.test.ts`
-- **Elixir tests**: `mix test packages/foreman_server/test/overwatch_test.exs`
+- **Elixir tests**: `cd packages/foreman_server && mix test test/overwatch_test.exs`
 - **Key assertions to verify**:
-  - `sendNudge` is NOT called for phases "merge" and "pr-wait" even after multiple stale heartbeats
+  - `sendNudge` is NOT called for phases "merge", "pr-wait", and "refinery" even after multiple stale heartbeats
   - `sendNudge` IS called for non-polling phases (e.g., "developer") after stale intervals
   - Existing test `sends overwatch nudge and event after unchanged heartbeat intervals` still passes
 

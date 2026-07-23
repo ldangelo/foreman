@@ -296,7 +296,7 @@ defmodule ForemanServer.OverwatchTest do
            )
   end
 
-  test "does not send nudges for polling phases (merge, pr-wait)" do
+  test "does not send nudges for polling phases (merge, pr-wait, refinery)" do
     # Test merge phase
     EventStore.append(%{
       stream_id: "run:run-merge-1",
@@ -365,6 +365,41 @@ defmodule ForemanServer.OverwatchTest do
     Process.sleep(50)
 
     events = EventStore.stream("run:run-prwait-1")
+    refute Enum.any?(events, &(&1.event_type == "PhaseNudged"))
+
+    # Test refinery phase
+    EventStore.append(%{
+      stream_id: "run:run-refinery-1",
+      event_type: "RunStarted",
+      payload: %{run_id: "run-refinery-1", task_id: "task-refinery-1", status: "in_progress"},
+      metadata: %{correlation_id: "test"}
+    })
+
+    EventStore.append(%{
+      stream_id: "run:run-refinery-1",
+      event_type: "PhaseStarted",
+      payload: %{run_id: "run-refinery-1", task_id: "task-refinery-1", phase_id: "refinery"},
+      metadata: %{correlation_id: "test"}
+    })
+
+    for seq <- 1..3 do
+      EventStore.append(%{
+        stream_id: "worker:run-refinery-1:worker-1",
+        event_type: "WorkerHeartbeat",
+        payload: %{
+          run_id: "run-refinery-1",
+          task_id: "task-refinery-1",
+          phase_id: "refinery",
+          worker_id: "worker-1",
+          sequence: seq
+        },
+        metadata: %{correlation_id: "test"}
+      })
+    end
+
+    Process.sleep(50)
+
+    events = EventStore.stream("run:run-refinery-1")
     refute Enum.any?(events, &(&1.event_type == "PhaseNudged"))
   end
 end
