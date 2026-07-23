@@ -106,7 +106,7 @@ defmodule ForemanServer.Operations do
   end
 
   defp check_webhook do
-    secret = Application.get_env(:foreman_server, :github_webhook_secret, "")
+    secret = ForemanServer.RuntimeInfo.github_webhook_secret()
 
     if secret != "" and not is_nil(secret) do
       %{

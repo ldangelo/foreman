@@ -15,11 +15,14 @@ defmodule ForemanServer.Http.Router do
     do: conn
 
   defp maybe_parse_body(conn, _opts) do
-    Plug.Parsers.call(conn, Plug.Parsers.init(
-      parsers: [:json],
-      pass: ["application/json"],
-      json_decoder: Jason
-    ))
+    Plug.Parsers.call(
+      conn,
+      Plug.Parsers.init(
+        parsers: [:json],
+        pass: ["application/json"],
+        json_decoder: Jason
+      )
+    )
   end
 
   get "/api/v1/health" do
@@ -140,11 +143,13 @@ defmodule ForemanServer.Http.Router do
         send_error(conn, 401, "UNAUTHORIZED", "missing or invalid authorization", false)
     end
   end
+
   get "/api/v1/board" do
     conn = fetch_query_params(conn)
 
     with :ok <- authorize(conn),
-         project_id when not is_nil(project_id) and project_id != "" <- conn.query_params["project_id"] do
+         project_id when not is_nil(project_id) and project_id != "" <-
+           conn.query_params["project_id"] do
       board = ForemanServer.ProjectionStore.board(project_id)
       send_json(conn, 200, %{ok: true, project_id: project_id, columns: board})
     else
@@ -522,7 +527,13 @@ defmodule ForemanServer.Http.Router do
         handle_github_webhook(conn, raw_body)
 
       {:error, reason} ->
-        send_error(conn, 400, "BAD_REQUEST", "could not read request body: #{inspect(reason)}", false)
+        send_error(
+          conn,
+          400,
+          "BAD_REQUEST",
+          "could not read request body: #{inspect(reason)}",
+          false
+        )
     end
   end
 
@@ -543,7 +554,7 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp handle_github_webhook(conn, raw_body) do
-    secret = Application.get_env(:foreman_server, :github_webhook_secret, "")
+    secret = ForemanServer.RuntimeInfo.github_webhook_secret()
     signature = List.first(get_req_header(conn, "x-hub-signature-256")) || ""
     event = List.first(get_req_header(conn, "x-github-event")) || ""
     delivery_id = List.first(get_req_header(conn, "x-github-delivery")) || ""
@@ -552,10 +563,14 @@ defmodule ForemanServer.Http.Router do
     # If no secret is configured, skip verification (development mode).
     # When secret is configured, signature header must be present and valid.
     case verify_signature(secret, signature, raw_body, conn) do
-      {:error, conn} -> conn
+      {:error, conn} ->
+        conn
+
       {:ok, conn} ->
         case verify_event_type(event, conn) do
-          {:error, conn} -> conn
+          {:error, conn} ->
+            conn
+
           {:ok, conn} ->
             # Parse JSON payload.
             case Jason.decode(raw_body) do
@@ -582,7 +597,13 @@ defmodule ForemanServer.Http.Router do
                     send_json(conn, 200, %{ok: true, handled: false, reason: "no matching run"})
 
                   {:error, reason} ->
-                    send_error(conn, 500, "INTERNAL", "webhook processing failed: #{inspect(reason)}", true)
+                    send_error(
+                      conn,
+                      500,
+                      "INTERNAL",
+                      "webhook processing failed: #{inspect(reason)}",
+                      true
+                    )
                 end
 
               {:error, %Jason.DecodeError{}} ->
@@ -592,10 +613,15 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
-  # Returns {:ok, conn} when no secret is configured or verification passes.
+  # Returns {:ok, conn} when local development bypass is allowed or verification passes.
   # Returns {:error, conn} with response already sent when verification fails.
-  defp verify_signature(secret, _signature, _raw_body, conn) when secret == "" or is_nil(secret) do
-    {:ok, conn}
+  defp verify_signature(secret, _signature, _raw_body, conn)
+       when secret == "" or is_nil(secret) do
+    if ForemanServer.Security.remote_auth_required?() do
+      {:error, send_error(conn, 401, "UNAUTHORIZED", "missing webhook secret", false)}
+    else
+      {:ok, conn}
+    end
   end
 
   defp verify_signature(_secret, signature, _raw_body, conn) when signature == "" do
@@ -611,8 +637,10 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp verify_event_type("pull_request", conn), do: {:ok, conn}
+
   defp verify_event_type(_event, conn) do
-    {:error, send_json(conn, 200, %{ok: true, handled: false, reason: "event type not supported"})}
+    {:error,
+     send_json(conn, 200, %{ok: true, handled: false, reason: "event type not supported"})}
   end
 
   defp query_limit(nil, fallback), do: fallback
@@ -634,27 +662,33 @@ defmodule ForemanServer.Http.Router do
     present? = fn v -> v != nil and v != "" end
     # Fall back to run's own fields when worktree snapshot is empty (native runs
     # use WorktreeManager.createWorktree which does not emit WorktreeCreated).
-    worktree_path = cond do
-      present?.(worktree[:worktree_path]) -> worktree[:worktree_path]
-      present?.(worktree[:worktree]) -> worktree[:worktree]
-      present?.(run[:worktree_path]) -> run[:worktree_path]
-      present?.(run[:worktree]) -> run[:worktree]
-      true -> nil
-    end
-    branch = cond do
-      present?.(worktree[:branch]) -> worktree[:branch]
-      present?.(worktree[:branch_name]) -> worktree[:branch_name]
-      present?.(run[:branch]) -> run[:branch]
-      present?.(run[:branch_name]) -> run[:branch_name]
-      true -> nil
-    end
-    base = cond do
-      present?.(worktree[:base_ref]) -> worktree[:base_ref]
-      present?.(worktree[:base_branch]) -> worktree[:base_branch]
-      present?.(run[:base_ref]) -> run[:base_ref]
-      present?.(run[:base_branch]) -> run[:base_branch]
-      true -> nil
-    end
+    worktree_path =
+      cond do
+        present?.(worktree[:worktree_path]) -> worktree[:worktree_path]
+        present?.(worktree[:worktree]) -> worktree[:worktree]
+        present?.(run[:worktree_path]) -> run[:worktree_path]
+        present?.(run[:worktree]) -> run[:worktree]
+        true -> nil
+      end
+
+    branch =
+      cond do
+        present?.(worktree[:branch]) -> worktree[:branch]
+        present?.(worktree[:branch_name]) -> worktree[:branch_name]
+        present?.(run[:branch]) -> run[:branch]
+        present?.(run[:branch_name]) -> run[:branch_name]
+        true -> nil
+      end
+
+    base =
+      cond do
+        present?.(worktree[:base_ref]) -> worktree[:base_ref]
+        present?.(worktree[:base_branch]) -> worktree[:base_branch]
+        present?.(run[:base_ref]) -> run[:base_ref]
+        present?.(run[:base_branch]) -> run[:base_branch]
+        true -> nil
+      end
+
     revision = worktree[:revision]
 
     run

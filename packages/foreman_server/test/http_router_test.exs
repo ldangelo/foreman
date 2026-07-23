@@ -884,6 +884,49 @@ defmodule ForemanServer.Http.RouterTest do
       assert conn.status == 401
     end
 
+    test "returns 401 when remote access requires a webhook secret" do
+      Application.delete_env(:foreman_server, :github_webhook_secret)
+      Application.put_env(:foreman_server, :remote_access_enabled, true)
+
+      on_exit(fn ->
+        Application.delete_env(:foreman_server, :remote_access_enabled)
+      end)
+
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["message"] == "missing webhook secret"
+    end
+
+    test "allows unsigned webhook without remote access when secret is unset" do
+      Application.delete_env(:foreman_server, :github_webhook_secret)
+
+      payload = webhook_payload("closed", @pr_url, merged: true)
+      raw_body = Jason.encode!(payload)
+
+      conn =
+        :post
+        |> conn("/webhooks/github", raw_body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-github-event", "pull_request")
+        |> put_req_header("x-github-delivery", "delivery-#{:rand.uniform(999_999)}")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["ok"] == true
+      assert body["handled"] == true
+    end
+
     test "returns 200 for closed (not merged) pull_request" do
       payload = webhook_payload("closed", @pr_url, merged: false)
       raw_body = Jason.encode!(payload)
@@ -1028,7 +1071,7 @@ defmodule ForemanServer.Http.RouterTest do
       }
     end
 
-    defp seed_webhook_pr_run_run do
+    defp seed_webhook_pr_run do
       ForemanServer.EventStore.append(%{
         stream_id: "project:#{@project_id}",
         event_type: "ProjectRegistered",
@@ -1090,6 +1133,6 @@ defmodule ForemanServer.Http.RouterTest do
     end
 
     # Alias for readability in test setup
-    defp seed_webhook_pr_run!, do: seed_webhook_pr_run_run()
+    defp seed_webhook_pr_run!, do: seed_webhook_pr_run()
   end
 end

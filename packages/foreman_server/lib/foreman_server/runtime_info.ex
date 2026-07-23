@@ -117,6 +117,15 @@ defmodule ForemanServer.RuntimeInfo do
     is_binary(url) and url != ""
   end
 
+  @spec github_webhook_secret() :: String.t() | nil
+  def github_webhook_secret do
+    case System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET") ||
+           Application.get_env(:foreman_server, :github_webhook_secret) do
+      secret when is_binary(secret) and secret != "" -> secret
+      _ -> nil
+    end
+  end
+
   defp default_event_store_adapter do
     if database_url?(), do: :postgres, else: :term
   end

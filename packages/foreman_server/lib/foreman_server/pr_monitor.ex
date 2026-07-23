@@ -413,8 +413,19 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   - `{:error, reason}` on other failures
   """
   def handle(payload, command_handler \\ nil) do
-    handler = command_handler || Application.get_env(:foreman_server, :command_handler, @default_command_handler)
-    with {:ok, %{pr_url: pr_url, branch_name: branch_name, action: action, pr_payload: pr_payload, merged: merged, is_draft: is_draft}} <- parse_payload(payload),
+    handler =
+      command_handler ||
+        Application.get_env(:foreman_server, :command_handler, @default_command_handler)
+
+    with {:ok,
+          %{
+            pr_url: pr_url,
+            branch_name: branch_name,
+            action: action,
+            pr_payload: pr_payload,
+            merged: merged,
+            is_draft: is_draft
+          }} <- parse_payload(payload),
          {:ok, dedupe_key} <- dedupe_key(payload),
          :ok <- check_dedupe(dedupe_key),
          {:ok, context} <- find_matching_context(pr_url, branch_name) do
@@ -439,7 +450,9 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   @doc "Verify an HMAC-SHA256 signature from GitHub's X-Hub-Signature-256 header."
   @spec verify_signature(String.t(), String.t(), String.t()) :: boolean()
   def verify_signature(body, signature_header, secret) do
-    expected = "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, body) |> Base.encode16(case: :lower))
+    expected =
+      "sha256=" <> (:crypto.mac(:hmac, :sha256, secret, body) |> Base.encode16(case: :lower))
+
     safe_string_compare(expected, signature_header)
   end
 
@@ -457,14 +470,25 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
          {:ok, pr_payload} <- extract_pr(payload),
          {:ok, merged} <- extract_merged(pr_payload),
          {:ok, is_draft} <- extract_is_draft(pr_payload) do
-      {:ok, %{pr_url: pr_url, branch_name: branch_name, action: action, pr_payload: pr_payload, merged: merged, is_draft: is_draft}}
+      {:ok,
+       %{
+         pr_url: pr_url,
+         branch_name: branch_name,
+         action: action,
+         pr_payload: pr_payload,
+         merged: merged,
+         is_draft: is_draft
+       }}
     end
   end
 
   defp parse_payload(_payload), do: {:error, :invalid_payload}
 
   defp extract_pr_url(payload) do
-    url = get_field(payload, ["pull_request", "html_url"]) || get_field(payload, ["pull_request", "url"])
+    url =
+      get_field(payload, ["pull_request", "html_url"]) ||
+        get_field(payload, ["pull_request", "url"])
+
     if is_binary(url) and url != "", do: {:ok, url}, else: {:error, :missing_pr_url}
   end
 
@@ -506,6 +530,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   # Check dedupe in the integration_dedupe projection
   defp check_dedupe(dedupe_key) do
     snapshot = ProjectionStore.snapshot()
+
     case get_in(snapshot, [:integration_dedupe, dedupe_key]) do
       nil -> :ok
       _existing -> {:error, :duplicate}
@@ -528,28 +553,29 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   end
 
   defp try_record_dedupe_event(dedupe_key, task_id) do
-    {:ok, _event} = EventStore.append(%{
-      stream_id: "integration:#{dedupe_key}",
-      event_type: "IntegrationCommandIngested",
-      payload: %{
-        source: "github",
-        external_id: dedupe_key,
-        project_id: nil,
-        event_type: "pull_request",
-        occurred_at: DateTime.utc_now(),
-        payload: %{},
-        idempotency_key: dedupe_key,
-        dedupe_key: dedupe_key,
-        external_link: nil,
-        task_id: task_id,
-        command_type: "webhook"
-      },
-      metadata: %{
-        source: "gh-webhook-handler",
-        correlation_id: dedupe_key,
-        idempotency_key: dedupe_key
-      }
-    })
+    {:ok, _event} =
+      EventStore.append(%{
+        stream_id: "integration:#{dedupe_key}",
+        event_type: "IntegrationCommandIngested",
+        payload: %{
+          source: "github",
+          external_id: dedupe_key,
+          project_id: nil,
+          event_type: "pull_request",
+          occurred_at: DateTime.utc_now(),
+          payload: %{},
+          idempotency_key: dedupe_key,
+          dedupe_key: dedupe_key,
+          external_link: nil,
+          task_id: task_id,
+          command_type: "webhook"
+        },
+        metadata: %{
+          source: "gh-webhook-handler",
+          correlation_id: dedupe_key,
+          idempotency_key: dedupe_key
+        }
+      })
 
     :ok
   rescue
@@ -569,7 +595,8 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
         find_run_by_branch(snapshot, branch_name)
 
     case context do
-      %{run_id: run_id, task_id: task_id, project_id: _project_id, branch_name: _bn, pr_url: _pu} = ctx
+      %{run_id: run_id, task_id: task_id, project_id: _project_id, branch_name: _bn, pr_url: _pu} =
+          ctx
       when is_binary(run_id) and is_binary(task_id) ->
         {:ok, %{ctx | phase: "webhook"}}
 
@@ -583,6 +610,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
     |> Map.values()
     |> Enum.find_value(fn run ->
       run_pr_url = Map.get(run, :pr_url)
+
       if run_pr_url != nil and run_pr_url != "" and run_pr_url == pr_url do
         build_context(snapshot, run)
       end
@@ -594,6 +622,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
     |> Map.values()
     |> Enum.find_value(fn run ->
       run_branch = Map.get(run, :branch_name) || Map.get(run, :branch)
+
       if run_branch != nil and run_branch != "" and run_branch == branch_name do
         build_context(snapshot, run)
       end
@@ -602,7 +631,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
 
   defp build_context(snapshot, run) do
     run_id = Map.get(run, :run_id)
-    task_id = Map.get(run, :task_id) || Map.get(run, :task_id)
+    task_id = Map.get(run, :task_id) || Map.get(run, "task_id")
     task = Map.get(snapshot.tasks, task_id, %{})
     project_id = Map.get(run, :project_id) || Map.get(task, :project_id)
     project = Map.get(snapshot.projects, project_id, %{})
@@ -657,9 +686,11 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   end
 
   defp get_single_field(nil, _key), do: nil
+
   defp get_single_field(%{} = map, key) do
     Map.get(map, key) || Map.get(map, to_string(key))
   end
+
   defp get_single_field(_not_map, _key), do: nil
 
   defp result_issued_count(%{merged: n}) when n > 0, do: 2
@@ -670,14 +701,5 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   defp result_issued_count(_), do: 0
 
   # Constant-time string comparison to avoid timing attacks on HMAC verification.
-  if function_exported?(:crypto, :strong_rand_bytes, 1) do
-    defp safe_string_compare(a, b) when byte_size(a) == byte_size(b) do
-      a_byte = :binary.bin_to_list(a)
-      b_byte = :binary.bin_to_list(b)
-      0 == Enum.sum(Enum.zip_with(a_byte, b_byte, fn x, y -> if x == y, do: 0, else: 1 end))
-    end
-    defp safe_string_compare(_a, _b), do: false
-  else
-    defp safe_string_compare(a, b), do: a == b
-  end
+  defp safe_string_compare(a, b), do: Plug.Crypto.secure_compare(a, b)
 end
