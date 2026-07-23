@@ -80,6 +80,33 @@ describe("ElixirCliStore", () => {
     }));
   });
 
+  it("blocked task updates block the active run before updating task status", async () => {
+    const store = ElixirCliStore.forProject({ id: "proj-1", name: "Proj", path: "/tmp/proj" });
+    mockElixirClient.listRuns.mockResolvedValue([
+      { run_id: "run-1", task_id: "task-1", status: "in_progress" },
+    ]);
+
+    await store.updateTaskStatus("task-1", "blocked");
+
+    expect(mockElixirClient.sendCommand).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      command_type: "run.block",
+      payload: expect.objectContaining({
+        run_id: "run-1",
+        task_id: "task-1",
+        project_id: "proj-1",
+        status: "blocked",
+      }),
+    }));
+    expect(mockElixirClient.sendCommand).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      command_type: "task.update",
+      payload: expect.objectContaining({
+        task_id: "task-1",
+        project_id: "proj-1",
+        status: "blocked",
+      }),
+    }));
+  });
+
   it("filters active runs whose task is already terminal", async () => {
     const store = ElixirCliStore.forProject({ id: "proj-1", name: "Proj", path: "/tmp/proj" });
     mockElixirClient.listRuns.mockResolvedValue([

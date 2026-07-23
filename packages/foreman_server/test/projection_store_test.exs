@@ -126,6 +126,65 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert task.updated_at == "2026-07-01T20:10:23Z"
   end
 
+  test "blocked run terminal events update task projection when task_id is present" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Blocked server",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("run:run-1", "RunStarted", %{run_id: "run-1", task_id: "task-1"})
+
+    append!("run:run-1", "RunBlocked", %{
+      run_id: "run-1",
+      task_id: "task-1",
+      reason: "operator review required",
+      failed_at: "2026-07-01T20:10:23Z"
+    })
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "blocked"
+    assert task.run_id == "run-1"
+    assert task.failure_reason == "operator review required"
+    assert task.updated_at == "2026-07-01T20:10:23Z"
+  end
+
+  test "blocked task status overrides stale failed run status in board output" do
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Blocked server",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("run:run-1", "RunStarted", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1"
+    })
+
+    append!("run:run-1", "RunFailed", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1",
+      reason: "nothing_to_commit",
+      failed_at: "2026-07-01T20:10:23Z"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      status: "blocked"
+    })
+
+    assert [blocked] = ProjectionStore.board("project-1").blocked
+    assert blocked.status == "blocked"
+    assert blocked.run_id == "run-1"
+    assert blocked.type == "attention"
+  end
+
   test "terminal task updates also terminalize the associated active run projection" do
     append!("task:task-1", "TaskCreated", %{
       task_id: "task-1",

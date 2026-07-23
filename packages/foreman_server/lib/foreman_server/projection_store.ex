@@ -670,16 +670,18 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
-         %{type: "RunBlocked", payload: %{run_id: run_id}, occurred_at: occurred_at},
+         %{type: "RunBlocked", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
          _mode
        ) do
     now = occurred_at || DateTime.utc_now()
 
-    update_run(projection, run_id, fn run ->
+    projection
+    |> update_run(run_id, fn run ->
       run
       |> Map.put(:status, "blocked")
       |> Map.put(:updated_at, now)
     end)
+    |> maybe_update_task_from_run_terminal(payload, "blocked")
   end
 
   defp apply_domain_event(
@@ -1679,6 +1681,13 @@ defmodule ForemanServer.ProjectionStore do
             _ -> ""
           end
 
+        task_status = Map.get(task, :status, "")
+
+        visible_status =
+          if group == "RECENT" and MapSet.member?(@blocked_task_statuses, task_status),
+            do: task_status,
+            else: run_status
+
         # Needs attention: failed run status OR explicit attention flag
         needs_attention =
           run_status in ["failed", "fail", "stuck", "conflict", "test-failed"] ||
@@ -1690,7 +1699,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.merge(%{
             group: group,
             type: if(needs_attention, do: "attention", else: "run"),
-            status: run_status,
+            status: visible_status,
             run_id: Map.get(run, :run_id)
           })
 
