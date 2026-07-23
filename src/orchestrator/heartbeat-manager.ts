@@ -14,6 +14,25 @@
 import type { ProgressEventStore } from "../lib/store.js";
 import type { VcsBackend } from "../lib/vcs/index.js";
 
+// ── Constants ─────────────────────────────────────────────────────────────
+
+/**
+ * Phases that poll for external conditions and should NOT receive overwatch nudges.
+ * These phases intentionally wait without activity, so nudging them is noisy and unhelpful.
+ */
+const POLLING_PHASES = new Set([
+  "merge",      // Polls for PR merge completion
+  "pr-wait",    // Polls for PR checks/review readiness
+  "refinery",   // Processes merge queue (may poll)
+]);
+
+/**
+ * Check if a phase is a polling phase that should not receive overwatch nudges.
+ */
+function isPollingPhase(phase: string): boolean {
+  return POLLING_PHASES.has(phase);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────
 
 /**
@@ -302,6 +321,9 @@ export class HeartbeatManager {
 
   private async maybeNudge(data: HeartbeatData): Promise<void> {
     if (!this.config.overwatchEnabled || this.config.overwatchMaxNudges <= 0 || !this.currentPhase) return;
+
+    // Skip nudging for polling phases — they intentionally wait without activity
+    if (isPollingPhase(this.currentPhase)) return;
 
     const snapshot = JSON.stringify({
       turns: data.turns,
