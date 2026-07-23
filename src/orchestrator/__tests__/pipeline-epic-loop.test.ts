@@ -336,7 +336,7 @@ describe("epic task loop (TRD-005)", () => {
     expect(callArg.success).toBe(true);
   });
 
-  it("finalize failure calls markStuck and reports success=false on completion", async () => {
+it("finalize failure calls markStuck and reports success=false on completion", async () => {
     // When finalize (final phase) fails, runPhaseSequence calls markStuck and returns
     // { success: false }. The epic still reports pipeline completion with
     // success=false so downstream handlers do not mark the branch ready.
