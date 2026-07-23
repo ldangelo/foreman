@@ -636,7 +636,7 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:completed_at, now)
       |> Map.put(:totalDurationMs, total_duration_ms)
     end)
-    |> maybe_update_task_from_run_terminal(payload, "completed")
+    |> maybe_update_task_from_run_terminal(payload, "completed", now)
   end
 
   defp apply_domain_event(
@@ -665,7 +665,7 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:failed_at, now)
       |> Map.put(:totalDurationMs, total_duration_ms)
     end)
-    |> maybe_update_task_from_run_terminal(payload, "failed")
+    |> maybe_update_task_from_run_terminal(payload, "failed", now)
   end
 
   defp apply_domain_event(
@@ -1280,37 +1280,53 @@ defmodule ForemanServer.ProjectionStore do
          projection,
          payload,
          status,
-         fallback_updated_at \\ nil
+         fallback_updated_at
        )
 
   defp maybe_update_task_from_run_terminal(
          projection,
-         %{task_id: task_id} = payload,
+         payload,
          status,
          fallback_updated_at
        )
-       when is_binary(task_id) do
-    existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
+       when is_map(payload) do
+    task_id = terminal_task_id(projection, payload)
 
-    task =
-      existing
-      |> Map.put(:status, status)
-      |> Map.put(:run_id, Map.get(payload, :run_id, Map.get(existing, :run_id)))
-      |> maybe_put(
-        :updated_at,
-        Map.get(
-          payload,
+    if is_binary(task_id) and task_id != "" do
+      existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
+
+      task =
+        existing
+        |> Map.put(:status, status)
+        |> Map.put(:run_id, Map.get(payload, :run_id, Map.get(existing, :run_id)))
+        |> maybe_put(
           :updated_at,
-          Map.get(payload, :completed_at, Map.get(payload, :failed_at, fallback_updated_at))
+          Map.get(
+            payload,
+            :updated_at,
+            Map.get(payload, :completed_at, Map.get(payload, :failed_at, fallback_updated_at))
+          )
         )
-      )
-      |> maybe_put(:failure_reason, Map.get(payload, :reason, Map.get(payload, :failure_reason)))
+        |> maybe_put(
+          :failure_reason,
+          Map.get(payload, :reason, Map.get(payload, :failure_reason))
+        )
 
-    put_in(projection, [:tasks, task_id], task)
+      put_in(projection, [:tasks, task_id], task)
+    else
+      projection
+    end
   end
 
   defp maybe_update_task_from_run_terminal(projection, _payload, _status, _fallback_updated_at),
     do: projection
+
+  defp terminal_task_id(_projection, %{task_id: task_id}) when is_binary(task_id), do: task_id
+
+  defp terminal_task_id(projection, %{run_id: run_id}) when is_binary(run_id),
+    do: get_in(projection, [:runs, run_id, :task_id])
+
+  defp terminal_task_id(_projection, _payload), do: nil
 
   defp update_checkpoint(projection, event) do
     checkpoint = %{
@@ -1694,7 +1710,12 @@ defmodule ForemanServer.ProjectionStore do
             _ -> ""
           end
 
-        task_status = Map.get(task, :status, "")
+        task_status =
+          task
+          |> Map.get(:status, "")
+          |> to_string()
+          |> String.trim()
+          |> String.downcase()
 
         visible_status =
           if group == "RECENT" and MapSet.member?(@blocked_task_statuses, task_status),
