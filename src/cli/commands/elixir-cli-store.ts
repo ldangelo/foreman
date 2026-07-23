@@ -17,6 +17,28 @@ function terminalRunCommand(status: string | undefined): "run.complete" | "run.f
   }
 }
 
+const activeRunStatuses: Record<string, true> = {
+  in_progress: true,
+  pending: true,
+  running: true,
+};
+const terminalTaskToRunStatus: Record<string, "completed" | "failed" | "blocked" | "merged"> = {
+  blocked: "blocked",
+  closed: "completed",
+  conflict: "failed",
+  failed: "failed",
+  merged: "merged",
+  stuck: "failed",
+};
+
+function isActiveRunStatus(status: unknown): boolean {
+  return typeof status === "string" && activeRunStatuses[status] === true;
+}
+
+function terminalRunStatusForTaskStatus(status: string): "completed" | "failed" | "blocked" | "merged" | null {
+  return terminalTaskToRunStatus[status] ?? null;
+}
+
 function adaptRun(run: ElixirRun): Run {
   const runId = String(run.run_id ?? run.id ?? "");
   return {
@@ -98,8 +120,19 @@ export class ElixirCliStore {
 
   async getActiveRuns(_projectId?: string): Promise<Run[]> {
     const client = await elixirClient();
-    const runs = await client.listRuns({ projectId: this.project.id });
-    return runs.filter((run) => run.status === "pending" || run.status === "running" || run.status === "in_progress").map(adaptRun);
+    const [runs, tasks] = await Promise.all([
+      client.listRuns({ projectId: this.project.id }),
+      client.listTasks(),
+    ]);
+    const terminalTaskIds = new Set(
+      tasks
+        .filter((task) => typeof task.status === "string" && terminalRunStatusForTaskStatus(task.status) !== null)
+        .map((task) => task.task_id ?? task.id)
+        .filter((taskId): taskId is string => typeof taskId === "string" && taskId.length > 0),
+    );
+    return runs
+      .filter((run) => isActiveRunStatus(run.status) && !terminalTaskIds.has(run.task_id ?? ""))
+      .map(adaptRun);
   }
 
   async getRunsByBaseBranch(baseBranch: string): Promise<Run[]> {
@@ -141,6 +174,24 @@ export class ElixirCliStore {
 
   async updateTaskStatus(taskId: string, status: string): Promise<void> {
     const client = await elixirClient();
+    const terminalRunStatus = terminalRunStatusForTaskStatus(status);
+    if (terminalRunStatus !== null) {
+      const runs = await client.listRuns({ projectId: this.project.id });
+      const activeRun = runs.find((run) => run.task_id === taskId && isActiveRunStatus(run.status));
+      const runId = activeRun?.run_id ?? activeRun?.id;
+      if (runId) {
+        const terminalCommand = terminalRunCommand(terminalRunStatus);
+        if (terminalCommand) {
+          const response = await client.sendCommand({
+            command_id: `${terminalCommand.replace(".", "-")}-${runId}-${randomUUID()}`,
+            command_type: terminalCommand,
+            payload: { run_id: runId, task_id: taskId, project_id: this.project.id, status: terminalRunStatus },
+          });
+          if (!response.ok) throw new Error(response.error.message);
+        }
+      }
+    }
+
     const response = await client.sendCommand({
       command_id: `task-update-${taskId}-${randomUUID()}`,
       command_type: "task.update",

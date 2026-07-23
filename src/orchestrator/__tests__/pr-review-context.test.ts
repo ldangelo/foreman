@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrWaitStatusReady, parseCodeRabbitFindings, parseFailedChecks, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus, updatePrReadyStability } from "../pr-review-context.js";
+import { isPrWaitStatusReady, parseCodeRabbitFindings, parseFailedChecks, prWaitFailureReason, renderPrReviewFindings, renderPrWaitReport, summarizePrWaitStatus, updatePrReadyStability } from "../pr-review-context.js";
 
 describe("pr-review-context", () => {
   it("detects terminal review state APPROVED as prReviewTerminal", () => {
@@ -22,6 +22,21 @@ describe("pr-review-context", () => {
     });
 
     expect(status.prReviewTerminal).toBe(true);
+  });
+
+  it("routes CHANGES_REQUESTED review state to CodeRabbit remediation", () => {
+    const status = summarizePrWaitStatus({
+      prNumber: 201,
+      latestReviewState: "CHANGES_REQUESTED",
+      checks: [{ name: "unit", status: "COMPLETED", conclusion: "SUCCESS" }],
+      codeRabbitComments: 2,
+      codeRabbitReviews: 1,
+    });
+
+    expect(status.prReviewTerminal).toBe(true);
+    expect(status.reviewChangesRequested).toBe(true);
+    expect(isPrWaitStatusReady(status)).toBe(false);
+    expect(prWaitFailureReason(status, false)).toBe("coderabbit_changes_requested: latest review state is CHANGES_REQUESTED");
   });
 
   it("detects terminal review state DISMISSED as prReviewTerminal", () => {
@@ -247,6 +262,23 @@ describe("pr-review-context", () => {
     expect(rendered).toContain("- Reviews: 1");
     expect(rendered).toContain("- Status: OK");
     expect(rendered).toContain("## Verdict: PASS");
+  });
+
+  it("renders PR wait failed when CodeRabbit requested changes", () => {
+    const rendered = renderPrWaitReport({
+      prNumber: 390,
+      prUrl: "https://github.com/ldangelo/foreman/pull/390",
+      headSha: "c5360ed",
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "BLOCKED",
+      latestReviewState: "CHANGES_REQUESTED",
+      checks: [{ name: "unit", status: "COMPLETED", conclusion: "SUCCESS" }],
+      codeRabbitComments: 2,
+      codeRabbitReviews: 1,
+    }, false);
+
+    expect(rendered).toContain("- Latest Review State: CHANGES_REQUESTED");
+    expect(rendered).toContain("## Verdict: FAIL");
   });
 
   it("renders blocking CodeRabbit finding details in the PR wait report", () => {

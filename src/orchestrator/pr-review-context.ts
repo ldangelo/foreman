@@ -58,6 +58,8 @@ export interface PrWaitStatus {
   mergeConflict: boolean;
   mergeConflictReason?: string;
   prReviewTerminal: boolean;
+  latestReviewState?: string;
+  reviewChangesRequested: boolean;
 }
 
 export interface PrReadyStability {
@@ -152,7 +154,8 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
   // Terminal review states: APPROVED, CHANGES_REQUESTED, DISMISSED
   // Also consider MERGED as terminal (merge queue completion)
   const latestReviewState = snapshot.latestReviewState?.toUpperCase();
-  const prReviewTerminal = (latestReviewState === "APPROVED" || latestReviewState === "CHANGES_REQUESTED" || latestReviewState === "DISMISSED") || mergeStateStatus === "MERGED";
+  const reviewChangesRequested = latestReviewState === "CHANGES_REQUESTED";
+  const prReviewTerminal = (latestReviewState === "APPROVED" || reviewChangesRequested || latestReviewState === "DISMISSED") || mergeStateStatus === "MERGED";
   return {
     checksTerminal: pendingChecks.length === 0,
     pendingChecks,
@@ -163,11 +166,26 @@ export function summarizePrWaitStatus(snapshot: PrWaitSnapshot): PrWaitStatus {
     mergeConflict,
     mergeConflictReason,
     prReviewTerminal,
+    latestReviewState,
+    reviewChangesRequested,
   };
 }
 
 export function isPrWaitStatusReady(status: PrWaitStatus): boolean {
-  return status.checksTerminal && status.failedChecks.length === 0 && status.codeRabbitComplete && status.blockingFindings.length === 0 && !status.mergeConflict;
+  return status.checksTerminal && status.failedChecks.length === 0 && status.codeRabbitComplete && status.blockingFindings.length === 0 && !status.mergeConflict && !status.reviewChangesRequested;
+}
+
+export function prWaitFailureReason(status: PrWaitStatus, timedOut: boolean): string | undefined {
+  if (isPrWaitStatusReady(status)) return undefined;
+  const failedCheckNames = status.failedChecks.map((check) => check.name).join(", ") || "unknown";
+  const blockingCodeRabbit = status.blockingFindings.map((finding) => finding.path ?? finding.severity).join(", ") || "blocking review findings";
+  if (status.mergeConflict) return `merge_conflict: ${status.mergeConflictReason ?? "unknown"}`;
+  if (status.reviewChangesRequested) return "coderabbit_changes_requested: latest review state is CHANGES_REQUESTED";
+  if (status.failedChecks.length > 0) return `ci_failed: ${failedCheckNames}`;
+  if (status.blockingFindings.length > 0) return `coderabbit_blocking: ${blockingCodeRabbit}`;
+  if (status.codeRabbitSeen && !status.codeRabbitComplete) return "coderabbit_pending: review did not complete before timeout";
+  if (status.checksTerminal) return "coderabbit_pending: review did not complete before timeout";
+  return timedOut ? "ci_pending: PR checks did not reach a terminal state before timeout" : "ci_pending: PR checks are not ready";
 }
 
 export function updatePrReadyStability(status: PrWaitStatus, readySince: number | undefined, now: number, stabilityMs: number): PrReadyStability {
@@ -339,6 +357,7 @@ export function renderPrWaitReport(snapshot: PrWaitSnapshot, timedOut: boolean):
     ``,
     `## CodeRabbit`,
     `- Status: ${status.codeRabbitComplete ? "COMPLETE" : status.codeRabbitSeen ? "SEEN" : timedOut ? "TIMEOUT" : "PENDING"}`,
+    `- Latest Review State: ${status.latestReviewState ?? "unknown"}`,
     `- Comments: ${snapshot.codeRabbitComments}`,
     `- Reviews: ${snapshot.codeRabbitReviews ?? 0}`,
     `- Blocking Findings: ${status.blockingFindings.length}`,

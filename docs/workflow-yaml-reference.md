@@ -332,6 +332,7 @@ Bundled merge-capable workflows express PR and merge behavior as phases, not top
     artifact: "{task.projectReportsDir}/PR_WAIT_REPORT.md"
     retryWithByReason:
       "ci_failed:": cicd-developer
+      "coderabbit_": cr-developer
       "merge_conflict:": merge-resolver
 
   - name: merge
@@ -341,7 +342,7 @@ Bundled merge-capable workflows express PR and merge behavior as phases, not top
 
 - `checkpointPr: true` on mutating prompt/command phases checkpoints committed work to the task branch and ensures a draft PR exists as soon as that phase produces changes. Bundled merge-capable workflows set it on developer/fix/remediation/documentation phases, not on read-only, QA/review, `finalize`, `create-pr`, `pr-wait`, or `merge`.
 - `create-pr` refreshes or reuses the same PR, marks an existing draft ready, and writes `PR_METADATA.json`.
-- `pr-wait` waits for required checks/review readiness and can route failures.
+- `pr-wait` waits for required checks/review readiness and can route retryable failures: CI failures to `cicd-developer`, CodeRabbit requested-changes or blocking findings to `cr-developer`, and merge conflicts to `merge-resolver`.
 - `merge` performs the final PR readiness gate and queues refinery merge processing.
 - Omit `merge` for workflows that should not merge. Omit `create-pr`/`pr-wait` for workflows that should not create or wait on PRs; `checkpointPr` has no effect without `create-pr`.
 

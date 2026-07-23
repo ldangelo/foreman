@@ -70,7 +70,7 @@ import { createTaskClient } from "../lib/task-client-factory.js";
 import { loadWorkflowConfig, resolveWorkflowName, type WorkflowConfig } from "../lib/workflow-loader.js";
 import { getRunReportsDir, resolveArtifactPath } from "../lib/report-paths.js";
 import { runCodeRabbitCliReview } from "./coderabbit-cli-review.js";
-import { collectPrReviewContext, collectPrWaitSnapshot, isPrWaitStatusReady, summarizePrWaitStatus, updatePrReadyStability, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
+import { collectPrReviewContext, collectPrWaitSnapshot, isPrWaitStatusReady, prWaitFailureReason, summarizePrWaitStatus, updatePrReadyStability, writePrReviewFindings, writePrWaitReport } from "./pr-review-context.js";
 import { Refinery, type RefineryRunLookup } from "./refinery.js";
 import type { ITaskClient } from "../lib/task-client.js";
 import { VcsBackendFactory } from "../lib/vcs/index.js";
@@ -1750,17 +1750,19 @@ async function runPrWaitBuiltinPhase(args: {
   let lastSnapshot = await collectPrWaitSnapshot(args.pipelineProjectPath, prNumber);
   let timedOut = false;
 
-  // Short-circuit: if PR has terminal review state or is already ready on entry, exit immediately without waiting
   const entryStatus = summarizePrWaitStatus(lastSnapshot);
-  if (entryStatus.prReviewTerminal || isPrWaitStatusReady(entryStatus)) {
-    args.log(`[PR-WAIT] PR #${prNumber} has terminal review state or is already ready on entry: prReviewTerminal=${String(entryStatus.prReviewTerminal)} checksTerminal=${String(entryStatus.checksTerminal)} codeRabbitComplete=${String(entryStatus.codeRabbitComplete)} mergeConflict=${String(entryStatus.mergeConflict)} latestReviewState=${lastSnapshot.latestReviewState ?? "none"}`);
+  if (entryStatus.reviewChangesRequested || isPrWaitStatusReady(entryStatus)) {
+    const success = isPrWaitStatusReady(entryStatus);
+    args.log(`[PR-WAIT] PR #${prNumber} resolved on entry: success=${String(success)} checksTerminal=${String(entryStatus.checksTerminal)} codeRabbitComplete=${String(entryStatus.codeRabbitComplete)} mergeConflict=${String(entryStatus.mergeConflict)} latestReviewState=${entryStatus.latestReviewState ?? "none"}`);
     await writePrWaitReport(args.config.worktreePath, lastSnapshot, false, workerReportDir(args.config));
     return {
-      success: true,
+      success,
       costUsd: 0,
       turns: 0,
       tokensIn: 0,
       tokensOut: 0,
+      error: prWaitFailureReason(entryStatus, false),
+      outputText: `checksTerminal=${String(entryStatus.checksTerminal)} failedChecks=${entryStatus.failedChecks.length} codeRabbitSeen=${String(entryStatus.codeRabbitSeen)} codeRabbitComplete=${String(entryStatus.codeRabbitComplete)} blockingFindings=${entryStatus.blockingFindings.length} mergeConflict=${String(entryStatus.mergeConflict)} latestReviewState=${entryStatus.latestReviewState ?? "none"} timedOut=false`,
     };
   }
 
@@ -1769,7 +1771,7 @@ async function runPrWaitBuiltinPhase(args: {
     const now = Date.now();
     const stability = updatePrReadyStability(status, readySince, now, stabilityMs);
     readySince = stability.readySince;
-    if (status.mergeConflict) break;
+    if (status.mergeConflict || status.reviewChangesRequested) break;
     if (stability.stable) break;
     if (Date.now() - startedAt >= timeoutMs) {
       timedOut = true;
@@ -1784,28 +1786,14 @@ async function runPrWaitBuiltinPhase(args: {
   await writePrWaitReport(args.config.worktreePath, lastSnapshot, timedOut, workerReportDir(args.config));
   const finalStatus = summarizePrWaitStatus(lastSnapshot);
   const success = isPrWaitStatusReady(finalStatus);
-  const failedCheckNames = finalStatus.failedChecks.map((check) => check.name).join(", ") || "unknown";
-  const blockingCodeRabbit = finalStatus.blockingFindings.map((finding) => finding.path ?? finding.severity).join(", ") || "blocking review findings";
   return {
     success,
     costUsd: 0,
     turns: 0,
     tokensIn: 0,
     tokensOut: 0,
-    error: success
-      ? undefined
-      : finalStatus.mergeConflict
-        ? `merge_conflict: ${finalStatus.mergeConflictReason ?? "unknown"}`
-        : finalStatus.failedChecks.length > 0
-          ? `ci_failed: ${failedCheckNames}`
-          : finalStatus.blockingFindings.length > 0
-            ? `coderabbit_blocking: ${blockingCodeRabbit}`
-            : finalStatus.codeRabbitSeen && !finalStatus.codeRabbitComplete
-              ? "coderabbit_pending: review did not complete before timeout"
-              : finalStatus.checksTerminal
-                ? "coderabbit_pending: review did not complete before timeout"
-                : "ci_pending: PR checks did not reach a terminal state before timeout",
-    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} failedChecks=${finalStatus.failedChecks.length} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} codeRabbitComplete=${String(finalStatus.codeRabbitComplete)} blockingFindings=${finalStatus.blockingFindings.length} mergeConflict=${String(finalStatus.mergeConflict)} timedOut=${String(timedOut)}`,
+    error: prWaitFailureReason(finalStatus, timedOut),
+    outputText: `checksTerminal=${String(finalStatus.checksTerminal)} failedChecks=${finalStatus.failedChecks.length} codeRabbitSeen=${String(finalStatus.codeRabbitSeen)} codeRabbitComplete=${String(finalStatus.codeRabbitComplete)} blockingFindings=${finalStatus.blockingFindings.length} mergeConflict=${String(finalStatus.mergeConflict)} latestReviewState=${finalStatus.latestReviewState ?? "none"} timedOut=${String(timedOut)}`,
   };
 }
 

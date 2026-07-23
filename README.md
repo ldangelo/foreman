@@ -140,7 +140,7 @@ Foreman includes a checked-in local development environment:
 - `compose.yaml` — shared local Postgres + Hindsight stack
 - `.envrc` — direnv hook that loads Devbox and starts the local containers when you enter the repository
 
-The shared Postgres service uses `pgvector/pgvector:pg16`, exposes Foreman's database on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides it), and also creates a separate `hindsight` database with the `vector` extension enabled. Hindsight connects to that same Postgres container over Docker's internal network.
+The shared Postgres service uses `pgvector/pgvector:pg16`, exposes the compose-managed Foreman database on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides it), and also creates a separate `hindsight` database with the `vector` extension enabled. Foreman itself uses `DATABASE_URL` from `.env` or the process environment; check `.env` before starting or restarting the server. Hindsight connects to the compose Postgres container over Docker's internal network.
 
 ### Prerequisites
 
@@ -798,8 +798,8 @@ Workflows define:
 - **Task-type routing** — optional top-level `task_type: bug` declarations map task types to workflows and must be unique
 - **Model selection** — per-phase models with priority-based overrides
 - **Retry loops** — QA/Reviewer/merge failure → targeted retry with feedback
-- **PR gates** — explicit `create-pr`, `pr-wait`, and `merge` phases for review-aware workflows; PR readiness requires zero failed checks plus a brief stable window, and merge re-waits on late pending checks
-- **Targeted PR remediation** — PR check failures route to `cicd-developer`, CodeRabbit findings route to `cr-developer`, merge conflicts route to `merge-resolver`, and unknown failures fall back to `developer`
+- **PR gates** — explicit `create-pr`, `pr-wait`, and `merge` phases for review-aware workflows; PR readiness requires zero failed checks, no active CodeRabbit changes-requested review, plus a brief stable window, and merge re-waits on late pending checks
+- **Targeted PR remediation** — PR check failures route to `cicd-developer`, CodeRabbit requested-changes reviews/findings route to `cr-developer`, merge conflicts route to `merge-resolver`, and unknown failures fall back to `developer`
 - **Finalize guardrails** — finalized branches are checked against Explorer's `Edit First` scope, and Elixir/Go/workflow-prompt changes trigger matching domain validation even when QA already passed
 - **Strict Scope Expansions contract** — when a developer modifies a file outside Explorer's `Edit First` scope, finalize requires a structured per-file entry under `## Scope Expansions` in `DEVELOPER_REPORT.md` with a substantive (non-placeholder, ≥12 char) justification; mentions in any other section (`## Decisions & Trade-offs`, `## CI Findings Addressed`, etc.) no longer count. Placeholders like `TODO`, `TBD`, `n/a`, blank, or dashes are rejected.
 - **Mail hooks** — lifecycle notifications and artifact forwarding

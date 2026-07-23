@@ -126,6 +126,42 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert task.updated_at == "2026-07-01T20:10:23Z"
   end
 
+  test "terminal task updates also terminalize the associated active run projection" do
+    append!("task:task-1", "TaskCreated", %{
+      task_id: "task-1",
+      title: "Implement server",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("run:run-1", "RunStarted", %{run_id: "run-1", task_id: "task-1"})
+
+    append!("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "in_progress",
+      run_id: "run-1"
+    })
+
+    append!("worker:run-1:worker-1", "WorkerStarted", %{
+      run_id: "run-1",
+      task_id: "task-1",
+      worker_id: "worker-1",
+      phase_id: "developer"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      task_id: "task-1",
+      status: "failed",
+      updated_at: "2026-07-01T20:10:23Z"
+    })
+
+    run = ProjectionStore.snapshot().runs["run-1"]
+    assert run.status == "failed"
+    assert run.current_phase == "developer"
+    assert run.phase_status["developer"] == "failed"
+    assert run.worker_status["worker-1"] == "failed"
+  end
+
   test "terminal run projection is not made active by late worker events" do
     append!("run:late-worker", "RunStarted", %{run_id: "late-worker", task_id: "task-1"})
 
