@@ -560,7 +560,14 @@ defmodule ForemanServer.Http.Router do
             # Parse JSON payload.
             case Jason.decode(raw_body) do
               {:ok, payload} ->
-                payload_with_delivery = Map.put(payload, "delivery_id", delivery_id)
+                # Only set delivery_id from header when present; preserve body delivery_id otherwise.
+                # This handles webhook dispatchers that send delivery_id in the body instead of the header.
+                payload_with_delivery =
+                  if delivery_id != "" do
+                    Map.put(payload, "delivery_id", delivery_id)
+                  else
+                    payload
+                  end
 
                 case ForemanServer.PrMonitor.GhWebhookHandler.handle(payload_with_delivery) do
                   {:ok, %{commands_issued: count}} ->

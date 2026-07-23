@@ -911,7 +911,12 @@ defmodule ForemanServer.Http.RouterTest do
     end
 
     test "returns 200 with handled=false when no matching run exists" do
-      payload = webhook_payload("closed", "https://github.com/acme/foreman/pull/99999", merged: true)
+      # Use a different branch name so find_matching_context cannot match by branch_name.
+      # The seeded run has branch_name "foreman/task-webhook-http", so use a different one.
+      payload =
+        webhook_payload("closed", "https://github.com/acme/foreman/pull/99999", merged: true)
+        |> put_in(["pull_request", "head", "ref"], "nonexistent/branch")
+        |> put_in(["pull_request", "head", "sha"], "nonexistent-sha")
       raw_body = Jason.encode!(payload)
       signature = ForemanServer.PrMonitor.GhWebhookHandler.build_signature(raw_body, @secret)
 
