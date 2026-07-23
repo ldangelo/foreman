@@ -111,6 +111,13 @@ defmodule ForemanServer.RuntimeInfoTest do
       assert RuntimeInfo.github_webhook_secret() == "app-secret"
     end
 
+    test "falls back to app config when env is blank" do
+      System.put_env("FOREMAN_GITHUB_WEBHOOK_SECRET", "")
+      Application.put_env(:foreman_server, :github_webhook_secret, "app-secret")
+
+      assert RuntimeInfo.github_webhook_secret() == "app-secret"
+    end
+
     test "returns nil when secret is blank or unset" do
       System.delete_env("FOREMAN_GITHUB_WEBHOOK_SECRET")
       Application.put_env(:foreman_server, :github_webhook_secret, "")

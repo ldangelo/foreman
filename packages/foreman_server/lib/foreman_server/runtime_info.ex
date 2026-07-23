@@ -119,12 +119,12 @@ defmodule ForemanServer.RuntimeInfo do
 
   @spec github_webhook_secret() :: String.t() | nil
   def github_webhook_secret do
-    case System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET") ||
-           Application.get_env(:foreman_server, :github_webhook_secret) do
-      secret when is_binary(secret) and secret != "" -> secret
-      _ -> nil
-    end
+    configured_secret(System.get_env("FOREMAN_GITHUB_WEBHOOK_SECRET")) ||
+      configured_secret(Application.get_env(:foreman_server, :github_webhook_secret))
   end
+
+  defp configured_secret(secret) when is_binary(secret) and secret != "", do: secret
+  defp configured_secret(_), do: nil
 
   defp default_event_store_adapter do
     if database_url?(), do: :postgres, else: :term
