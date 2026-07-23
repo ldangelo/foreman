@@ -412,6 +412,48 @@ defmodule ForemanServer.PrMonitorTest do
     assert task_payload.status == "merged"
   end
 
+  test "terminal task with stale open PR state is skipped when PR is merged" do
+    seed_recorded_pr!(pr_state: "open", task_status: "closed")
+
+    put_observations(%{
+      @pr_url =>
+        {:ok,
+         %{
+           state: :merged,
+           url: @pr_url,
+           merged_at: "2026-07-09T12:34:56Z",
+           merge_commit_sha: "merge-sha",
+           head_ref_oid: "head-sha",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
+    })
+
+    assert {:ok, %{skipped: 1, merged: 0, errors: 0}} = PrMonitor.tick_once()
+    assert_receive {:checked_pr, @project_path, @pr_url}
+    refute_receive {:handled_command, _command}
+  end
+
+  test "terminal task with stale open PR state is skipped when PR is closed" do
+    seed_recorded_pr!(pr_state: "open", task_status: "closed")
+
+    put_observations(%{
+      @pr_url =>
+        {:ok,
+         %{
+           state: :closed,
+           url: @pr_url,
+           head_ref_oid: "head-sha",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
+    })
+
+    assert {:ok, %{skipped: 1, closed: 0, errors: 0}} = PrMonitor.tick_once()
+    assert_receive {:checked_pr, @project_path, @pr_url}
+    refute_receive {:handled_command, _command}
+  end
+
   test "closed recorded PR records run reset then closes task" do
     seed_recorded_pr!(pr_state: "open")
 
@@ -524,7 +566,7 @@ defmodule ForemanServer.PrMonitorTest do
       task_id: task_id,
       project_id: @project_id,
       title: task_id,
-      status: "in_progress",
+      status: Keyword.get(attrs, :task_status, "in_progress"),
       run_id: run_id
     })
 

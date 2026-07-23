@@ -94,6 +94,7 @@ defmodule ForemanServer.PrMonitor do
     context = %{
       run_id: Map.get(run, :run_id),
       task_id: task_id,
+      task_status: Map.get(task, :status),
       project_id: project_id,
       project_path: Map.get(project, :path),
       pr_url: Map.get(run, :pr_url),
@@ -113,46 +114,55 @@ defmodule ForemanServer.PrMonitor do
 
   # Made public so GhWebhookHandler (submodule) can reuse these functions.
   def handle_observation(context, %{state: :merged} = observation, command_handler) do
-    payload =
-      context
-      |> common_payload(observation)
-      |> maybe_put(:merged_at, Map.get(observation, :merged_at))
-      |> maybe_put(:merge_commit_sha, Map.get(observation, :merge_commit_sha))
-      |> maybe_put(:head_sha, Map.get(observation, :head_ref_oid))
-      |> maybe_put(:base_branch, Map.get(observation, :base_ref_name))
-
-    with {:ok, _} <- handle_command(command_handler, "run.pr.merge", payload),
-         {:ok, _} <-
-           handle_command(command_handler, "task.update", %{
-             task_id: context.task_id,
-             status: "merged"
-           }) do
-      %{empty_summary() | merged: 1}
-    else
-      {:error, _reason} -> %{empty_summary() | errors: 1}
-    end
-  end
-
-  def handle_observation(context, %{state: :closed} = observation, command_handler) do
-    if context.pr_state == "closed" do
-      %{empty_summary() | closed: 1}
+    if terminal_task_status?(Map.get(context, :task_status)) do
+      %{empty_summary() | skipped: 1}
     else
       payload =
         context
         |> common_payload(observation)
-        |> Map.put(:action, "closed")
-        |> Map.put(:reason, "GitHub reports PR closed without merge")
+        |> maybe_put(:merged_at, Map.get(observation, :merged_at))
+        |> maybe_put(:merge_commit_sha, Map.get(observation, :merge_commit_sha))
+        |> maybe_put(:head_sha, Map.get(observation, :head_ref_oid))
+        |> maybe_put(:base_branch, Map.get(observation, :base_ref_name))
 
-      with {:ok, _} <- handle_command(command_handler, "run.pr.reset", payload),
+      with {:ok, _} <- handle_command(command_handler, "run.pr.merge", payload),
            {:ok, _} <-
-             handle_command(command_handler, "task.close", %{
+             handle_command(command_handler, "task.update", %{
                task_id: context.task_id,
-               project_id: context.project_id
+               status: "merged"
              }) do
-        %{empty_summary() | closed: 1}
+        %{empty_summary() | merged: 1}
       else
         {:error, _reason} -> %{empty_summary() | errors: 1}
       end
+    end
+  end
+
+  def handle_observation(context, %{state: :closed} = observation, command_handler) do
+    cond do
+      terminal_task_status?(Map.get(context, :task_status)) ->
+        %{empty_summary() | skipped: 1}
+
+      context.pr_state == "closed" ->
+        %{empty_summary() | closed: 1}
+
+      true ->
+        payload =
+          context
+          |> common_payload(observation)
+          |> Map.put(:action, "closed")
+          |> Map.put(:reason, "GitHub reports PR closed without merge")
+
+        with {:ok, _} <- handle_command(command_handler, "run.pr.reset", payload),
+             {:ok, _} <-
+               handle_command(command_handler, "task.close", %{
+                 task_id: context.task_id,
+                 project_id: context.project_id
+               }) do
+          %{empty_summary() | closed: 1}
+        else
+          {:error, _reason} -> %{empty_summary() | errors: 1}
+        end
     end
   end
 
@@ -210,6 +220,17 @@ defmodule ForemanServer.PrMonitor do
       branch_name: Map.get(observation, :head_ref_name) || context.branch_name
     }
   end
+
+  defp terminal_task_status?(status) when is_binary(status) do
+    normalized =
+      status
+      |> String.trim()
+      |> String.downcase()
+
+    normalized in ["closed", "merged", "completed", "done"]
+  end
+
+  defp terminal_task_status?(_status), do: false
 
   defp call_checker(checker, project_path, pr_url) do
     cond do
