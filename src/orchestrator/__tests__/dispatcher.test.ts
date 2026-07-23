@@ -2667,20 +2667,23 @@ describe("killSwitchRun", () => {
       throw err;
     }) as typeof process.kill);
 
-    const result = await killSwitchRun("run-abc123", {}, {
-      tasks,
-      store,
-      projectPath: "/tmp/proj",
-    });
+    try {
+      const result = await killSwitchRun("run-abc123", {}, {
+        tasks,
+        store,
+        projectPath: "/tmp/proj",
+      });
 
-    expect(result.success).toBe(true);
-    expect(store.updateRun).toHaveBeenCalledWith("run-abc123", expect.objectContaining({
-      session_key: runWithSession.session_key,
-      route_to: "developer",
-    }));
-    expect(killSpy).toHaveBeenCalledWith(999999, "SIGTERM");
-    expect(result.message).toContain("worker process 999999 already stopped");
-    killSpy.mockRestore();
+      expect(result.success).toBe(true);
+      expect(store.updateRun).toHaveBeenCalledWith("run-abc123", expect.objectContaining({
+        session_key: runWithSession.session_key,
+        route_to: "developer",
+      }));
+      expect(killSpy).toHaveBeenCalledWith(999999, "SIGTERM");
+      expect(result.message).toContain("worker process 999999 already stopped");
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it("preserves worktree by default", async () => {
