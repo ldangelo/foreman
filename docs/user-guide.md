@@ -105,7 +105,7 @@ foreman status --project my-project
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. Workflow phases are tracked separately from task status, so custom phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context.
+Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. Workflow phases are tracked separately from task status, so custom phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context. A terminal blocked run marks its task blocked, so operator-paused work appears with other needs-attention tasks instead of remaining active.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high

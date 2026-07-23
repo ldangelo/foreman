@@ -8,6 +8,7 @@
  *  4. Single-task mode unchanged (no epicTasks)
  *  5. Finalize runs once after all tasks
  *  6. No empty commits after task loop (VCS commit only on success)
+ *  7. pipelineSuccess reflects finalize result; onPipelineComplete receives success=false on failure
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -309,7 +310,7 @@ describe("epic task loop (TRD-005)", () => {
     expect(phaseOrder[phaseOrder.length - 1]).not.toBe("finalize");
   });
 
-  it("onPipelineComplete callback receives accumulated progress", async () => {
+  it("onPipelineComplete callback receives success=true when finalize succeeds", async () => {
     const { executePipeline } = await import("../pipeline-executor.js");
     const log = vi.fn();
     const onComplete = vi.fn().mockResolvedValue(undefined);
@@ -331,5 +332,39 @@ describe("epic task loop (TRD-005)", () => {
     // 2 tasks × 2 phases + 1 finalize = 5 phases total
     expect(callArg.progress.costUsd).toBeGreaterThan(0);
     expect(callArg.phaseRecords.length).toBe(5);
+    // pipelineSuccess is derived from final phases result; when finalize succeeds it is true
+    expect(callArg.success).toBe(true);
+  });
+
+  it("finalize failure calls markStuck and reports success=false on completion", async () => {
+    // When finalize (final phase) fails, runPhaseSequence calls markStuck and returns
+    // { success: false }. The epic still reports pipeline completion with
+    // success=false so downstream handlers do not mark the branch ready.
+    const { executePipeline } = await import("../pipeline-executor.js");
+    const log = vi.fn();
+    const markStuck = vi.fn().mockResolvedValue(undefined);
+    const onComplete = vi.fn().mockResolvedValue(undefined);
+
+    const runPhase = vi.fn().mockImplementation(async (phaseName: string) => {
+      if (phaseName === "qa") {
+        writeFileSync(join(tmpDir, "QA_REPORT.md"), qaPassReport());
+      }
+      if (phaseName === "finalize") {
+        // Simulate finalize failing — runPhaseSequence will call markStuck internally
+        return { success: false, costUsd: 0, turns: 0, tokensIn: 0, tokensOut: 0 };
+      }
+      return successResult();
+    });
+
+    const epicTasks = makeEpicTasks(1);
+    const args = makeEpicPipelineArgs(tmpDir, runPhase, log, epicTasks);
+    (args as Record<string, unknown>).markStuck = markStuck;
+    (args as Record<string, unknown>).onPipelineComplete = onComplete;
+    await executePipeline(args as never);
+
+    expect(markStuck).toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete.mock.calls[0][0]).toEqual(expect.objectContaining({ success: false }));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("Final phases failed"));
   });
 });

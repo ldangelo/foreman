@@ -23,7 +23,7 @@ This repository's Devbox/direnv setup starts Docker Compose services before you 
 - Setup/health: `init`, `doctor`, `daemon`, `server`
 - Planning: `plan`, `sling`
 - Execution: `run`, `retry`, `reset`, `stop`, `recover`
-- Tasks/views: `task`, `status`, `board`, `watch`, `monitor`, `logs`
+- Tasks/views: `task`, `status`, `board`, `watch` (`monitor` alias), `logs`
 - Collaboration: `inbox`, `attach`, `debug`
 - Delivery/VCS: `worktree`, `merge`, `pr`
 
@@ -31,7 +31,7 @@ Deprecated aliases stay hidden from help and print the replacement spelling when
 
 | Deprecated | Use instead |
 |------------|-------------|
-| `foreman dashboard` | `foreman watch` or `foreman monitor` |
+| `foreman dashboard` | `foreman watch` |
 | `foreman purge-logs` | `foreman purge logs` |
 | `foreman purge-zombie-runs` | `foreman purge runs` |
 | `foreman run --skip-explore` / `--skip-review` | `foreman run --workflow <custom-workflow>` |
@@ -227,7 +227,7 @@ Cockpit keys: `j/k` select, `i` inbox, `s` status/workflow, `b` board, `n` creat
 
 ### `foreman monitor`
 
-Alias for `foreman watch`. Canonical command for unified live operator cockpit with same options and behavior.
+Alias for the canonical `foreman watch` command, with the same options and behavior.
 
 ```bash
 foreman monitor                     # Unified live cockpit (same as foreman watch)
