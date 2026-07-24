@@ -1650,6 +1650,7 @@ func (m *model) loadDetail() {
 		m.logPath = m.client.LogPath(run.RunID)
 	case "reports":
 		m.reports = m.client.Reports(run.RunID)
+		inferReportPhases(m.reports, run.Phase)
 	case "files":
 		m.files = m.client.Files(run.RunID)
 	case "pr":
@@ -1666,6 +1667,34 @@ func formatClientErrors(errors []string) string {
 		return errors[0]
 	}
 	return strings.Join(errors, " · ")
+}
+
+// inferReportPhases sets the Phase field on each report by matching its name
+// against known artifact filename conventions. Falls back to currentPhase.
+func inferReportPhases(reports []Report, currentPhase string) {
+	for i := range reports {
+		reports[i].Phase = phaseFromName(reports[i].Name, currentPhase)
+	}
+}
+
+// phaseFromName infers the pipeline phase that produced a report from its filename.
+func phaseFromName(name, fallback string) string {
+	switch {
+	case strings.Contains(name, "EXPLORER_REPORT"):
+		return "explorer"
+	case strings.Contains(name, "DEVELOPER_REPORT"):
+		return "developer"
+	case strings.Contains(name, "QA_REPORT") || strings.Contains(name, "_qa_") || name == "qa.md":
+		return "qa"
+	case strings.Contains(name, "FINALIZE"):
+		return "finalize"
+	case strings.Contains(name, "CR_CLI_REPORT") || strings.Contains(name, "_cli_"):
+		return "cli-review"
+	case strings.Contains(name, "REVIEW"):
+		return "reviewer"
+	default:
+		return fallback
+	}
 }
 func (m model) selectedItem() (Item, bool) {
 	return m.taskList.SelectedItem()

@@ -2037,7 +2037,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
 		reports: []Report{
 			{Name: "qa.md", Path: "docs/reports/task-1/qa.md", Size: "1K", Status: "done", Preview: "# QA"},
-			{Name: "review.md", Path: "artifacts/task-1/review.md", Size: "2K", Status: "done", Preview: "# Review"},
+			{Name: "REVIEW.md", Path: "artifacts/task-1/review.md", Size: "2K", Status: "done", Preview: "# Review"},
 		},
 		files: []FileChange{
 			{Change: "M", Path: "src/a.go", Stat: "+1 -1"},
@@ -2057,7 +2057,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	m.viewFocused = true
 	updated, _ = m.handleKey(keyPress("j"))
 	m = updated.(model)
-	if got := resolveTarget(m); !got.ok || got.label != "review.md" || got.path != "/tmp/work/artifacts/task-1/review.md" {
+	if got := resolveTarget(m); !got.ok || got.label != "REVIEW.md" || got.path != "/tmp/work/artifacts/task-1/review.md" {
 		t.Fatalf("expected report target to follow returned artifact path, got %#v", got)
 	}
 
@@ -2070,6 +2070,70 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	if got := resolveTarget(m); !got.ok || got.label != "src/b.go" || got.path != "/tmp/work/src/b.go" || !got.conflict {
 		t.Fatalf("expected file target to follow cursor, got %#v", got)
 	}
+}
+
+func TestReportsGroupedByPhase(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
+		reports: []Report{
+			{Name: "DEVELOPER_REPORT.md", Path: "docs/reports/task-1/DEVELOPER_REPORT.md", Size: "2K", Status: "done", Preview: "# Developer"},
+			{Name: "QA_REPORT.md", Path: "docs/reports/task-1/QA_REPORT.md", Size: "1K", Status: "done", Preview: "# QA"},
+			{Name: "EXPLORER_REPORT.md", Path: "docs/reports/task-1/EXPLORER_REPORT.md", Size: "3K", Status: "done", Preview: "# Explorer"},
+		},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 4
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+
+	// Verify phase group header keys are present in the viewer (proves grouping happened).
+	keys := viewerKeys(m)
+	t.Logf("viewer keys: %v", keys)
+	t.Logf("report phases in model: %+v", phasesOf(m.reports))
+
+	if !contains(keys, "report-phase:explorer") {
+		t.Fatalf("expected explorer phase group key in viewer, available keys: %v", keys)
+	}
+	if !contains(keys, "report-phase:developer") {
+		t.Fatalf("expected developer phase group key in viewer, available keys: %v", keys)
+	}
+	if !contains(keys, "report-phase:qa") {
+		t.Fatalf("expected qa phase group key in viewer, available keys: %v", keys)
+	}
+
+	// Verify individual report rows are still selectable.
+	if !contains(keys, "report:EXPLORER_REPORT.md") || !contains(keys, "report:QA_REPORT.md") {
+		t.Fatalf("expected all report rows in viewer, available keys: %v", keys)
+	}
+}
+
+func contains[T comparable](list []T, v T) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func phasesOf(reports []Report) []string {
+	var phases []string
+	for _, r := range reports {
+		phases = append(phases, r.Phase)
+	}
+	return phases
+}
+
+// viewerKeys returns all keys in the viewer for debugging test failures.
+func viewerKeys(m model) []string {
+	var keys []string
+	m.refreshViewer(viewerPreserve)
+	for _, line := range m.viewer.lines {
+		keys = append(keys, line.Key)
+	}
+	return keys
 }
 
 func TestLogOpenTargetUsesEndpointPathWhenPresent(t *testing.T) {
