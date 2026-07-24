@@ -1507,6 +1507,18 @@ defmodule ForemanServer.ProjectionStore do
                         "pr_created"
                       ])
 
+  # Narrower override used for the pre-PR-state precedence: only
+  # truly unambiguous done statuses where the operator has confirmed
+  # the task landed. `"closed"` / `"reset"` / `"pr_created"` are
+  # intentionally NOT here — those can be set without an actual
+  # merge (abandoned PR, re-target reset, draft) and would incorrectly
+  # route genuinely closed-PR tasks to done if used as the override.
+  @authoritative_done_task_statuses MapSet.new([
+                                       "merged",
+                                       "completed",
+                                       "done"
+                                     ])
+
   @active_run_statuses MapSet.new([
                          "running",
                          "queued",
@@ -1555,16 +1567,28 @@ defmodule ForemanServer.ProjectionStore do
       end)
 
     # Group tasks. Precedence (the Query-side state machine):
-    #   1. PR terminal state (run.pr_state) — merged → done, closed/reset → blocked.
-    #      This is the fix for the user-reported bug: task.status was stale
+    #   1. Task terminal status (operator's intent, set via
+    #      `task.update` / `task.close` / `task.approve`). Wins over
+    #      PR state so a later closed-without-merge re-target on a
+    #      task the operator marked merged does not undo the landing.
+    #      A narrower set (`@authoritative_done_task_statuses` =
+    #      merged / completed / done) is checked first; the broader
+    #      `@done_task_statuses` (closed / reset / pr_created) is the
+    #      post-PR fallback for tasks with no PR override.
+    #   2. Blocked task status (`@blocked_task_statuses`).
+    #   3. PR terminal state (`run.pr_state`) for non-terminal tasks —
+    #      merged → done, closed/reset → blocked. This is the fix for
+    #      the user-reported bug: task.status was stale
     #      ("in-progress") after the PR was merged, so the task showed
-    #      `developer`/`qa`/`reviewer` in the board. The run's pr_state
-    #      is the more authoritative signal and wins.
-    #   2. Task terminal status (`@done_task_statuses`, `@blocked_task_statuses`).
-    #   3. Active run + non-terminal task → in_progress (RUNNING).
-    #   4. Non-terminal active task status → in_progress (RECENT).
-    #   5. Ready/approved → ready.
-    #   6. Default → backlog.
+    #      `developer` / `qa` / `reviewer` in the board. The run's
+    #      pr_state is the more authoritative signal for non-terminal
+    #      tasks.
+    #   4. Post-PR fallback: broader `@done_task_statuses` for tasks
+    #      with no PR override (closed/reset/pr_created → done).
+    #   5. Active run + non-terminal task → in_progress (RUNNING).
+    #   6. Non-terminal active task status → in_progress (RECENT).
+    #   7. Ready/approved → ready.
+    #   8. Default → backlog.
     # Phase (developer/qa/reviewer/...) is NEVER used to decide the
     # column; it is rendered as a separate `current_phase` field.
     {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
@@ -1583,33 +1607,40 @@ defmodule ForemanServer.ProjectionStore do
         active_run = run && MapSet.member?(@active_run_statuses, run_status)
 
         cond do
-          # 1. PR terminal state wins (overrides stale task.status).
+          # Pre-PR override: only operator-confirmed done states
+          # (merged/completed/done) win over PR state. `closed` /
+          # `reset` / `pr_created` are NOT here — those can be set
+          # without an actual merge (abandoned PR, re-target reset)
+          # and would incorrectly turn genuinely closed-PR tasks
+          # into done. They fall through to PR state + the post-PR
+          # fallback below.
+          MapSet.member?(@authoritative_done_task_statuses, status) ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+
+          MapSet.member?(@blocked_task_statuses, status) ->
+            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+
           pr_override == "done" ->
             {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
           pr_override == "blocked" ->
             {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
 
-          # 2. Task terminal status.
+          # Post-PR fallback: broader @done_task_statuses (includes
+          # closed/reset/pr_created) so a closed task with no PR
+          # override still lands in done, matching pre-fix behavior.
           MapSet.member?(@done_task_statuses, status) ->
             {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
-          MapSet.member?(@blocked_task_statuses, status) ->
-            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
-
-          # 3. Active run + non-terminal task → in_progress (RUNNING).
           active_run ->
             {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
 
-          # 4. Non-terminal active task status → in_progress (RECENT).
           MapSet.member?(@active_task_statuses, status) ->
             {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
 
-          # 5. Ready/approved.
           status in ["ready", "approved"] ->
             {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
 
-          # 6. Default.
           true ->
             {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
         end
@@ -1665,12 +1696,27 @@ defmodule ForemanServer.ProjectionStore do
       end)
 
     # Group tasks. Precedence (the Query-side state machine):
-    #   1. PR terminal state (run.pr_state) — merged → done, closed/reset → blocked.
-    #   2. Task terminal status.
-    #   3. Active run + non-terminal task → in_progress (RUNNING).
-    #   4. Non-terminal active task status → in_progress (RECENT).
-    #   5. Ready/approved → ready.
-    #   6. Default → backlog.
+    #   1. Task terminal status (operator's intent, set via
+    #      `task.update` / `task.close` / `task.approve`). When the
+    #      operator marks a task merged/closed/etc., that is the
+    #      authoritative outcome — even if a later run's pr_state
+    #      disagrees (re-target, follow-up branch). PR state is a
+    #      mirror of GitHub, not a source of truth. A narrower set
+    #      (`@authoritative_done_task_statuses` = merged / completed /
+    #      done) is checked first; the broader `@done_task_statuses`
+    #      (closed / reset / pr_created) is the post-PR fallback for
+    #      tasks with no PR override.
+    #   2. Blocked task status (`@blocked_task_statuses`).
+    #   3. PR terminal state (`run.pr_state`) for non-terminal tasks —
+    #      merged → done, closed/reset → blocked. This catches the
+    #      case where task.status is stale (still `in-progress`)
+    #      but GitHub already merged the PR.
+    #   4. Post-PR fallback: broader `@done_task_statuses` for tasks
+    #      with no PR override (closed / reset / pr_created → done).
+    #   5. Active run + non-terminal task → in_progress (RUNNING).
+    #   6. Non-terminal active task status → in_progress (RECENT).
+    #   7. Ready/approved → ready.
+    #   8. Default → backlog.
     # Phase (developer/qa/reviewer/...) is NEVER used to decide the
     # column; it is rendered as a separate `current_phase` field.
     {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
@@ -1689,33 +1735,40 @@ defmodule ForemanServer.ProjectionStore do
         active_run = run && MapSet.member?(@active_run_statuses, run_status)
 
         cond do
-          # 1. PR terminal state wins.
+          # Pre-PR override: only operator-confirmed done states
+          # (merged/completed/done) win over PR state. `closed` /
+          # `reset` / `pr_created` are NOT here — those can be set
+          # without an actual merge (abandoned PR, re-target reset)
+          # and would incorrectly turn genuinely closed-PR tasks
+          # into done. They fall through to PR state + the post-PR
+          # fallback below.
+          MapSet.member?(@authoritative_done_task_statuses, status) ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+
+          MapSet.member?(@blocked_task_statuses, status) ->
+            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+
           pr_override == "done" ->
             {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
           pr_override == "blocked" ->
             {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
 
-          # 2. Task terminal status.
+          # Post-PR fallback: broader @done_task_statuses (includes
+          # closed/reset/pr_created) so a closed task with no PR
+          # override still lands in done, matching pre-fix behavior.
           MapSet.member?(@done_task_statuses, status) ->
             {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
-          MapSet.member?(@blocked_task_statuses, status) ->
-            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
-
-          # 3. Active run + non-terminal task.
           active_run ->
             {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
 
-          # 4. Non-terminal active task status.
           MapSet.member?(@active_task_statuses, status) ->
             {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
 
-          # 5. Ready/approved.
           status in ["ready", "approved"] ->
             {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
 
-          # 6. Default.
           true ->
             {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
         end
@@ -1761,19 +1814,40 @@ defmodule ForemanServer.ProjectionStore do
 
         task_status = normalized_task_status(task)
 
-        # Precedence (Query state machine):
-        #   1. PR terminal state (run.pr_state) wins over stale task.status.
-        #   2. task.status via the state machine.
-        #   3. Column: the item is already bucketed correctly by
-        #      `build_board/2`; if the state machine cannot map the
-        #      status, use the column as the lifecycle truth.
+        # Precedence (mirrors `build_board/2` and `build_board_from_maps/3`):
+        #   1. Operator-confirmed done status (merged/completed/done)
+        #      wins over PR state. So `task.status="merged"` renders
+        #      `done` even if a later re-target closed the PR.
+        #   2. Blocked task status (failed/blocked/etc.) wins.
+        #   3. PR terminal state (run.pr_state) for non-terminal tasks.
+        #   4. task.status via the state machine.
+        #   5. Column: the item is already bucketed correctly by
+        #      `build_board/2`/`build_board_from_maps/3`; if the state
+        #      machine cannot map the status, use the column as the
+        #      lifecycle truth.
         # Phase names (developer/qa/reviewer/...) are NEVER used as a
         # visible status — they belong to a run, not a task.
         pr_state = Map.get(run, :pr_state, "")
         pr_override = sm.pr_state_to_board_status(pr_state)
         task_mapped = sm.task_status_to_board_status(task_status)
 
-        visible_status = pr_override || task_mapped || column_to_lifecycle(col)
+        authoritative_done =
+          MapSet.member?(@authoritative_done_task_statuses, task_status)
+
+        authoritative_blocked =
+          MapSet.member?(@blocked_task_statuses, task_status)
+
+        # Post-PR fallback (`@done_task_statuses` for non-authoritative
+        # statuses like `closed`/`reset`/`pr_created`) is already covered
+        # by `task_mapped` below: the state machine maps those to `done`.
+        visible_status =
+          cond do
+            authoritative_done -> "done"
+            authoritative_blocked -> "blocked"
+            pr_override -> pr_override
+            task_mapped -> task_mapped
+            true -> column_to_lifecycle(col)
+          end
 
         # Needs attention: failed run status OR explicit attention flag,
         # unless the visible status is already a terminal `done`.
