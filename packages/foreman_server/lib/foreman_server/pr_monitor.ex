@@ -114,7 +114,15 @@ defmodule ForemanServer.PrMonitor do
 
   # Made public so GhWebhookHandler (submodule) can reuse these functions.
   def handle_observation(context, %{state: :merged} = observation, command_handler) do
-    if terminal_task_status?(Map.get(context, :task_status)) do
+    # Skip only when the local projection already agrees: task is
+    # terminal AND `pr_state == "merged"`. If the task is terminal but
+    # `pr_state` disagrees (e.g. a previous poll mis-recorded the PR as
+    # closed while GitHub had it merged), reconcile by emitting the
+    # merge commands. Without this exception the previous bad row
+    # stays sticky forever — re-observe normalizes state correctly
+    # but the terminal-task skip blocks `run.pr.merge`.
+    if terminal_task_status?(Map.get(context, :task_status)) and
+         context.pr_state == "merged" do
       %{empty_summary() | skipped: 1}
     else
       payload =
@@ -138,8 +146,24 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
+  # `:closed` is intentionally conservative: it does NOT reconcile a
+  # locally-recorded `pr_state == "merged"` from a later closed
+  # observation. GitHub merges are irreversible, and a task can have
+  # multiple PRs (re-targets, follow-ups) where an earlier PR landed
+  # and a later attempt was closed. The `:merged` handler is the
+  # ONLY one-way repair path; `:closed` skips terminal tasks to
+  # avoid downgrading a landed merge.
+  # `:closed` is conservative: it does NOT reconcile a downstream
+  # state change. But a locally-recorded `pr_state == "merged"` must
+  # be preserved — GitHub merges are irreversible, and a later
+  # closed PR observation (re-target, follow-up attempt) must never
+  # downgrade it. Only the `:merged` handler is a one-way repair
+  # path.
   def handle_observation(context, %{state: :closed} = observation, command_handler) do
     cond do
+      context.pr_state == "merged" ->
+        %{empty_summary() | skipped: 1}
+
       terminal_task_status?(Map.get(context, :task_status)) ->
         %{empty_summary() | skipped: 1}
 
@@ -165,7 +189,6 @@ defmodule ForemanServer.PrMonitor do
         end
     end
   end
-
   def handle_observation(context, %{state: :draft} = observation, command_handler) do
     if context.pr_state == "draft" do
       empty_summary()
@@ -261,11 +284,24 @@ defmodule ForemanServer.PrMonitor do
   end
 
   # Made public so GhWebhookHandler (submodule) can reuse this function.
+  # GitHub marks merged PRs as `state: CLOSED` with `merged_at` set.
+  # The previous normalizer discarded `merged_at` and always treated
+  # `CLOSED` as `:closed`, so merged-but-restated PRs were recorded as
+  # `PrReset` instead of `PrMerged`. This board bucketing bug let
+  # landed PRs surface as `blocked`. Thread `merged_at` through and
+  # return `:merged` when state is CLOSED and merged_at is set.
   def normalize_observation(observation) do
+    merged_at = get_field(observation, :merged_at)
+
     %{
-      state: normalize_state(get_field(observation, :state), get_field(observation, :is_draft)),
+      state:
+        normalize_state(
+          get_field(observation, :state),
+          get_field(observation, :is_draft),
+          merged_at
+        ),
       url: get_field(observation, :url),
-      merged_at: get_field(observation, :merged_at),
+      merged_at: merged_at,
       merge_commit_sha:
         get_field(observation, :merge_commit_sha) || merge_commit_sha(observation),
       head_ref_oid: get_field(observation, :head_ref_oid),
@@ -274,21 +310,25 @@ defmodule ForemanServer.PrMonitor do
     }
   end
 
-  defp normalize_state(:merged, _is_draft), do: :merged
-  defp normalize_state(:closed, _is_draft), do: :closed
-  defp normalize_state(:draft, _is_draft), do: :draft
-  defp normalize_state(:open, true), do: :draft
-  defp normalize_state(:open, _is_draft), do: :open
-  defp normalize_state("MERGED", _is_draft), do: :merged
-  defp normalize_state("CLOSED", _is_draft), do: :closed
-  defp normalize_state("OPEN", true), do: :draft
-  defp normalize_state("OPEN", _is_draft), do: :open
-  defp normalize_state("merged", _is_draft), do: :merged
-  defp normalize_state("closed", _is_draft), do: :closed
-  defp normalize_state("draft", _is_draft), do: :draft
-  defp normalize_state("open", true), do: :draft
-  defp normalize_state("open", _is_draft), do: :open
-  defp normalize_state(state, _is_draft), do: state
+  # GitHub reports `state=CLOSED` for both merged (with merged_at) and
+  # closed-without-merge (merged_at is nil). Distinguish via merged_at.
+  defp normalize_state(:closed, _is_draft, merged_at) when not is_nil(merged_at), do: :merged
+  defp normalize_state("CLOSED", _is_draft, merged_at) when not is_nil(merged_at), do: :merged
+  defp normalize_state("closed", _is_draft, merged_at) when not is_nil(merged_at), do: :merged
+  defp normalize_state(:merged, _is_draft, _merged_at), do: :merged
+  defp normalize_state("MERGED", _is_draft, _merged_at), do: :merged
+  defp normalize_state("merged", _is_draft, _merged_at), do: :merged
+  defp normalize_state(:closed, _is_draft, _merged_at), do: :closed
+  defp normalize_state("CLOSED", _is_draft, _merged_at), do: :closed
+  defp normalize_state("closed", _is_draft, _merged_at), do: :closed
+  defp normalize_state(:draft, _is_draft, _merged_at), do: :draft
+  defp normalize_state(:open, true, _merged_at), do: :draft
+  defp normalize_state(:open, _is_draft, _merged_at), do: :open
+  defp normalize_state("OPEN", true, _merged_at), do: :draft
+  defp normalize_state("OPEN", _is_draft, _merged_at), do: :open
+  defp normalize_state("open", true, _merged_at), do: :draft
+  defp normalize_state("open", _is_draft, _merged_at), do: :open
+  defp normalize_state(state, _is_draft, _merged_at), do: state
 
   defp merge_commit_sha(observation) do
     case get_field(observation, :merge_commit) do
