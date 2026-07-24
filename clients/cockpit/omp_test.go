@@ -262,9 +262,9 @@ func TestBuildTriageBriefRedactsCommonSecretAndBearerLines(t *testing.T) {
 
 func TestBuildTriageBriefIncludesReportsLogsAndRedactsSecrets(t *testing.T) {
 	m := newModel(NewMockClient())
-	m.reports = []Report{
-		{Name: "CR_CLI_REPORT.md", Preview: "token=abc123\nReview finding: fix retry handling"},
-		{Name: "FINALIZE_VALIDATION.md", Preview: "Rebase conflict in src/app.ts"},
+	m.reports = []ReportWithPhase{
+		{Report: Report{Name: "CR_CLI_REPORT.md", Preview: "token=abc123\nReview finding: fix retry handling"}},
+		{Report: Report{Name: "FINALIZE_VALIDATION.md", Preview: "Rebase conflict in src/app.ts"}},
 	}
 	m.logs = []LogEntry{
 		{Message: "ok", Stream: "stdout", OccurredAt: "2026-07-16T10:00:00Z"},

@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1148,19 +1149,32 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			return []ViewerLine{{Key: "reports:empty", Text: dimStyle.Render("No reports produced yet.")}}
 		}
 		idx := m.selectedReportIndex()
-		for _, r := range m.reports {
+
+		// Sort reports by pipeline phase order so group headers appear in sequence.
+		sorted := make([]ReportWithPhase, len(m.reports))
+		copy(sorted, m.reports)
+		sort.Slice(sorted, func(i, j int) bool {
+			return phaseRank(sorted[i].Phase) < phaseRank(sorted[j].Phase)
+		})
+
+		seenPhases := make(map[string]bool)
+		for _, r := range sorted {
+			if !seenPhases[r.Phase] {
+				seenPhases[r.Phase] = true
+				add("report-phase:"+r.Phase, dimStyle.Render("── "+r.Phase+" ──"), target{})
+			}
 			sc := visual.Green
 			if r.Status != "done" {
 				sc = visual.Yellow
 			}
-			t := reportTarget(run, r)
+			t := reportTarget(run, r.Report)
 			line := padRow(greenStyle.Render("⧉ ")+cyanStyle.Render(r.Name)+dimStyle.Render(" "+r.Size),
 				lipgloss.NewStyle().Foreground(sc).Render(r.Status), w)
 			add("report:"+r.Name, line, t)
 		}
 		if idx >= 0 && m.glam != nil {
 			r := m.reports[idx]
-			t := reportTarget(run, r)
+			t := reportTarget(run, r.Report)
 			if out, err := m.glam.Render(r.Preview); err == nil {
 				add("report-preview:"+r.Name+":spacer", "", t)
 				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
@@ -1759,4 +1773,39 @@ func atoi(s string) (int, bool) {
 		n = n*10 + int(r-'0')
 	}
 	return n, true
+}
+
+// phaseRank returns a sort priority for a phase string. Lower values appear
+// earlier in the pipeline (explorer → developer → qa → reviewer → finalize).
+func phaseRank(phase string) int {
+	switch phase {
+	case "explorer":
+		return 0
+	case "developer":
+		return 1
+	case "cicd-developer":
+		return 2
+	case "cr-developer":
+		return 3
+	case "merge-resolver":
+		return 4
+	case "documentation":
+		return 5
+	case "qa":
+		return 6
+	case "reviewer":
+		return 7
+	case "cli-review":
+		return 8
+	case "finalize":
+		return 9
+	case "create-pr":
+		return 10
+	case "pr-wait":
+		return 11
+	case "merge":
+		return 12
+	default:
+		return 99
+	}
 }
