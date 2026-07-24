@@ -57,8 +57,14 @@ defmodule ForemanServer.BoardItemStateMachine do
       s when s in ["backlog", "open", "todo"] -> "backlog"
       s when s in ["ready", "approved"] -> "ready"
       s when s in ["in_progress", "in-progress", "running", "cooldown", "review"] -> "in-progress"
+      # User clarification: reset isn't done. It stays at "blocked"
+      # because PrReset is a cleanup signal that may need attention.
+      # `pr_state="reset"` continues to route to "blocked" via
+      # `pr_state_to_board_status/1`. `pr_created` is done (the
+      # PR exists; the run is still in pr-wait / merge phases).
+      s when s in ["merged", "closed", "completed", "done", "pr_created"] -> "done"
+      s when s == "reset" -> "blocked"
       s when s in ["blocked", "conflict", "stuck", "failed", "fail", "test_failed"] -> "blocked"
-      s when s in ["merged", "closed", "completed", "done", "reset", "pr_created"] -> "done"
       _ -> nil
     end
   end

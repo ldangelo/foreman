@@ -225,7 +225,10 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert [blocked] = ProjectionStore.board("project-1").blocked
     assert blocked.status == "blocked"
     assert blocked.run_id == "run-1"
-    assert blocked.type == "attention"
+    # `type: "run"` (not "attention") because `task.status="blocked"`
+    # is terminal — per user directive, blocked tasks don't need
+    # an automated attention flag.
+    assert blocked.type == "run"
   end
 
   test "done task status overrides stale failed run status in board output" do
@@ -313,7 +316,10 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert [blocked] = ProjectionStore.board("project-1").blocked
     assert blocked.status == "blocked"
     assert blocked.run_id == "run-1"
-    assert blocked.type == "attention"
+    # `type: "run"` (not "attention") because `task.status="blocked"`
+    # is terminal — per user directive, blocked tasks don't need
+    # an automated attention flag.
+    assert blocked.type == "run"
   end
 
   test "terminal task updates also terminalize the associated active run projection" do
@@ -674,14 +680,21 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert done.status == "done"
   end
 
-  test "task.status=closed + latest pr_state=closed stays blocked" do
-    # The narrower authoritative-done set protects this case:
-    # `closed` alone does not preempt PR state. A closed task with
-    # a closed-without-merge PR must remain blocked.
+  test "task.status=closed + latest pr_state=closed → done (real close via PrMonitor path)" do
+    # The PrMonitor `:closed` handler emits both `run.pr.reset` AND
+    # `task.close`, so a real GitHub close lands with both fields
+    # set. Per the user directive ("merged (or closed) should be Done"),
+    # the broader `@done_task_statuses` fallback (closed / pr_created)
+    # is checked BEFORE `pr_override="blocked"`, so a task whose
+    # `task.status` was explicitly closed routes to Done even though
+    # the run's PR is closed. The narrower `reset` is NOT in
+    # `@done_task_statuses` — that's what preserves operator resets
+    # (which only have `pr_state="closed"`, not `task.status="closed"`)
+    # in Blocked.
     append!("task:task-1", "TaskCreated", %{
       project_id: "project-1",
       task_id: "task-1",
-      title: "Closed without merge",
+      title: "Real close via PrMonitor path",
       status: "in_progress"
     })
 
@@ -705,9 +718,106 @@ defmodule ForemanServer.ProjectionStoreTest do
       status: "closed"
     })
 
+    assert [done] = ProjectionStore.board("project-1").done
+    assert done.task_id == "task-1"
+    assert done.status == "done"
+  end
+
+  test "task.status=failed + latest pr_state=closed → blocked (operator reset stays in triage)" do
+    # An operator reset emits `run.pr.reset` (`pr_state="closed"`) but
+    # does NOT emit `task.close`. The task keeps its prior status
+    # (often `failed` after a failed run). Because `task.status` is
+    # in `@blocked_task_statuses`, step 2 of the board grouping
+    # fires BEFORE the broader `@done_task_statuses` step, so the
+    # task correctly stays in Blocked for triage. Without this guard
+    # the post-PR-fallback step would misclassify the task as Done.
+    #
+    # Seed the task as `failed` from TaskCreated so we don't depend
+    # on TaskUpdated ordering; this exercises the
+    # `@blocked_task_statuses` precedence directly.
+    # `seed_recorded_pr!/1` doesn't exist in this test file; build the
+    # events inline so the test doesn't depend on a missing helper.
+    append!("project:project-1", "ProjectRegistered", %{
+      project_id: "project-1",
+      path: "/tmp/project-1",
+      status: "active",
+      default_branch: "main",
+      config: %{},
+      health: %{ok: true}
+    })
+
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Operator reset, no task.close",
+      # Seed as `failed` so we exercise the `@blocked_task_statuses`
+      # precedence (step 2 of the board grouping), not just the
+      # pr_state=closed fallback.
+      status: "failed"
+    })
+
+    append!("run:run-1", "RunStarted", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1"
+    })
+
+    append!("run:run-1", "PrReset", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1",
+      pr_url: "https://github.com/acme/foreman/pull/326",
+      action: "closed"
+    })
+
     assert [blocked] = ProjectionStore.board("project-1").blocked
     assert blocked.task_id == "task-1"
     assert blocked.status == "blocked"
+  end
+
+  test "task.status=blocked + failed run → type='run' (not 'attention') per user directive" do
+    # Per user directive: "merged or blocked isn't Needs Attention."
+    # A blocked task (operator-paused) with a failed run should NOT
+    # be flagged with `type: "attention"` in the cockpit render. The
+    # `needs_attention` guard in `normalize_board_output/1` excludes
+    # `done` and `blocked` lifecycle states from attention — only
+    # `in_progress` (genuinely failing active runs) trips it.
+    append!("project:project-1", "ProjectRegistered", %{
+      project_id: "project-1",
+      path: "/tmp/project-1",
+      status: "active",
+      default_branch: "main",
+      config: %{},
+      health: %{ok: true}
+    })
+
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Operator-blocked task with failed run",
+      status: "blocked"
+    })
+
+    append!("run:run-1", "RunStarted", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1"
+    })
+
+    append!("run:run-1", "RunFailed", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1",
+      reason: "test"
+    })
+
+    assert [blocked] = ProjectionStore.board("project-1").blocked
+    assert blocked.task_id == "task-1"
+    # `blocked` (not `type: "attention"`) because the task.status
+    # is terminal `blocked`, so the needs_attention guard suppresses
+    # the "attention" type. Operator doesn't need an automated
+    # attention flag for an operator-paused task.
+    assert blocked.type == "run"
   end
 
   test "task.status=closed + no PR override falls back to done (post-PR)" do

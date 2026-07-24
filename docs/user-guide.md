@@ -105,9 +105,7 @@ foreman status --project my-project
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. The canonical lifecycle vocabulary is `backlog, ready, in-progress, blocked, done` — the same five the Go cockpit (`/api/v1/board`) renders as columns. The legacy CLI board route surfaces the same lifecycle under the aliases `in_progress`, `needs_attention`, and `closed` for backward compatibility; both are equivalent. Workflow phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`, etc.) are tracked separately from task status, so phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context. A terminal blocked run marks its task blocked, so operator-paused work appears with other needs-attention tasks instead of remaining active.
-
-**PR-state precedence:** when a task's `status` is stale (`in-progress`) but the run's PR is already merged, the board shows the task in the `done` column, not `in_progress`. Likewise, a closed (non-merged) PR forces the task into `blocked`. This precedence is enforced on the read side so a workflow that exits in `merge` doesn't strand the task as `in-progress` forever.
+Tasks represent units of work. They have a type, priority, status, title, and description. The canonical lifecycle vocabulary is `backlog, ready, in-progress, blocked, done` — the same five the Go cockpit (`/api/v1/board`) renders as columns. The legacy CLI board route surfaces the same lifecycle under the aliases `in_progress`, `closed`, and `needs_attention` for backward compatibility; both are equivalent. Workflow phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`, etc.) are tracked separately from task status, so phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context. A terminal blocked run marks its task `blocked` (not as attention); operator-paused work stays in the `blocked` column for triage, not as a needs-attention flag.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high
@@ -115,6 +113,9 @@ foreman task approve <task-id>
 foreman task show <task-id>
 foreman task list
 ```
+**Board column precedence (operator-done wins):** when the operator marks a task `merged`/`completed`/`done` via `foreman task update`, that lifecycle is authoritative — the task stays in the `done` column even if a later re-target emits `PrReset` (the latest run's `pr_state` would be `closed` but the operator's earlier intent overrides). The task discriminator is `task.status`: `PrMonitor` emits `task.close` on real GitHub closes, so a real close sets both `task.status='closed'` AND `pr_state='closed'` and routes to `done`; an operator reset emits only `run.pr.reset` (no `task.close`), so `task.status` keeps its pre-reset value (typically `failed`) and routes to `blocked` for triage.
+
+**"Needs Attention" semantics:** the cockpit `type="attention"` flag fires only for genuinely failing active runs (visible_status in `in-progress`). Terminal states (`done`, `blocked`) suppress the attention flag — merged PRs and operator-paused blocks don't need automated attention prompts. `task.status="reset"` (operator reset cleanup) stays in `blocked` so the operator can triage it; it does not auto-route to `done`.
 
 ### Workflows
 
@@ -297,7 +298,7 @@ Use `foreman watch` (or `foreman monitor`) as the canonical live cockpit. From t
 
 ### 8. Triage Failures
 
-Failed, stuck, blocked, conflict, and review statuses appear as needs-attention work. Start with artifacts before retrying.
+Attention is for failed/attention runs that are still `in_progress`; start with artifacts before retrying. Blocked-family task statuses (`failed`, `stuck`, `conflict`, `review`, `blocked`) stay in the `blocked` column without `type: "attention"` (the `needs_attention` guard suppresses the attention flag for blocked tasks).
 
 Recommended order:
 
