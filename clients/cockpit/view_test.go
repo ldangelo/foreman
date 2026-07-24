@@ -2118,7 +2118,7 @@ func contains[T comparable](list []T, v T) bool {
 	return false
 }
 
-func phasesOf(reports []Report) []string {
+func phasesOf(reports []ReportWithPhase) []string {
 	var phases []string
 	for _, r := range reports {
 		phases = append(phases, r.Phase)
@@ -3168,7 +3168,7 @@ func TestInactiveMetadataAdaptersUseMutedVisual(t *testing.T) {
 			name: "reports",
 			tab:  4,
 			setup: func() {
-				m.reports = []Report{{Name: "qa.md", Size: "1K", Status: "pending"}}
+				m.reports = []ReportWithPhase{{Report: Report{Name: "qa.md", Size: "1K", Status: "pending"}}}
 			},
 		},
 		{

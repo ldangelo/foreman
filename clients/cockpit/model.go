@@ -18,6 +18,14 @@ var tabNames = []string{"summary", "messages", "events", "logs", "reports", "fil
 
 const openableTabMarker = "⧉"
 
+// ReportWithPhase wraps client.Report with an inferred pipeline phase field.
+// The Phase is computed client-side from artifact filename conventions and used
+// only for display grouping in the reports viewer.
+type ReportWithPhase struct {
+	Report
+	Phase string
+}
+
 type model struct {
 	client Client
 	config Config
@@ -36,7 +44,7 @@ type model struct {
 	events         []Event
 	logs           []LogEntry
 	logPath        string
-	reports        []Report
+	reports        []ReportWithPhase
 	files          []FileChange
 	pr             PRStatus
 	metrics        Metrics
@@ -1649,7 +1657,11 @@ func (m *model) loadDetail() {
 		m.logs = m.client.Logs(run.RunID)
 		m.logPath = m.client.LogPath(run.RunID)
 	case "reports":
-		m.reports = m.client.Reports(run.RunID)
+		raw := m.client.Reports(run.RunID)
+		m.reports = make([]ReportWithPhase, len(raw))
+		for i := range raw {
+			m.reports[i] = ReportWithPhase{Report: raw[i]}
+		}
 		inferReportPhases(m.reports, run.Phase)
 	case "files":
 		m.files = m.client.Files(run.RunID)
@@ -1671,7 +1683,7 @@ func formatClientErrors(errors []string) string {
 
 // inferReportPhases sets the Phase field on each report by matching its name
 // against known artifact filename conventions. Falls back to currentPhase.
-func inferReportPhases(reports []Report, currentPhase string) {
+func inferReportPhases(reports []ReportWithPhase, currentPhase string) {
 	for i := range reports {
 		reports[i].Phase = phaseFromName(reports[i].Name, currentPhase)
 	}

@@ -54,7 +54,7 @@ func resolveTarget(m model) target {
 		if tabNames[m.tab] == "reports" {
 			if idx := m.selectedReportIndex(); idx >= 0 {
 				r := m.reports[idx]
-				return reportTarget(run, r)
+				return reportTarget(run, r.Report)
 			}
 		}
 		if idx := m.selectedFileIndex(); idx >= 0 && idx < len(m.files) {

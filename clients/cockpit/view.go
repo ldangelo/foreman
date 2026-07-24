@@ -1151,7 +1151,7 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		idx := m.selectedReportIndex()
 
 		// Sort reports by pipeline phase order so group headers appear in sequence.
-		sorted := make([]Report, len(m.reports))
+		sorted := make([]ReportWithPhase, len(m.reports))
 		copy(sorted, m.reports)
 		sort.Slice(sorted, func(i, j int) bool {
 			return phaseRank(sorted[i].Phase) < phaseRank(sorted[j].Phase)
@@ -1167,14 +1167,14 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 			if r.Status != "done" {
 				sc = visual.Yellow
 			}
-			t := reportTarget(run, r)
+			t := reportTarget(run, r.Report)
 			line := padRow(greenStyle.Render("⧉ ")+cyanStyle.Render(r.Name)+dimStyle.Render(" "+r.Size),
 				lipgloss.NewStyle().Foreground(sc).Render(r.Status), w)
 			add("report:"+r.Name, line, t)
 		}
 		if idx >= 0 && m.glam != nil {
 			r := m.reports[idx]
-			t := reportTarget(run, r)
+			t := reportTarget(run, r.Report)
 			if out, err := m.glam.Render(r.Preview); err == nil {
 				add("report-preview:"+r.Name+":spacer", "", t)
 				for i, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {

@@ -122,7 +122,6 @@ type Report struct {
 	Status  string
 	Preview string // markdown, rendered with Glamour in the drill-down
 	Path    string
-	Phase   string // inferred phase grouping: explorer | developer | qa | reviewer | finalize | ...
 }
 
 // FileChange is a changed file in a run's worktree.
