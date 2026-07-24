@@ -10,6 +10,7 @@
 ### Development Methodology: TDD (Test-Driven Development)
 
 All new features and bug fixes follow the RED-GREEN-REFACTOR cycle:
+
 1. **RED** - Write a failing test that defines the expected behavior
 2. **GREEN** - Write the minimum code to make the test pass
 3. **REFACTOR** - Clean up while keeping tests green
@@ -17,18 +18,28 @@ All new features and bug fixes follow the RED-GREEN-REFACTOR cycle:
 No feature is considered started until a failing test exists. No feature is considered complete until all tests pass.
 
 ### Non-Negotiable Rules
+
 1. **No secrets in code** - All credentials via environment variables or secrets manager
 2. **Input validation required** - Validate all external input at system boundaries
 3. **Tests accompany features** - No feature is complete without tests
 4. **Strict TypeScript** - `strict: true` in tsconfig, no `any` escape hatches without justification
 5. **ESM only** - All modules use ES module syntax (`import`/`export`)
-6. **Event-sourced orchestration invariant** - Domain events are the source of truth and trigger operational behavior. Projections are read models only. The scheduler, run loop, inbox/watch surfaces, and recovery logic must consume or reconcile from events, using projections only to make decisions after an event signal or explicit reconciliation. Worker/Pi SDK tool calls, assistant messages, and execution trace facts must be emitted as ordered worker events first; raw log files may mirror those facts for compatibility/debugging but must not contain unique operational truth.
+6. Use the Query in CQRS for read side models.  Only use projections where required.
+7. **Event-sourced orchestration invariant** - Domain events are the source of truth and trigger operational behavior. Projections are for people/reports/integrations. The scheduler, run loop, inbox/watch surfaces, and recovery logic must consume or reconcile from events, using projections only to make decisions after an event signal or explicit reconciliation. Worker/Pi SDK tool calls, assistant messages, and execution trace facts must be emitted as ordered worker events first; raw log files may mirror those facts for compatibility/debugging but must not contain unique operational truth.
+8. New event names end in `Event` (e.g., `BoardItemCreatedEvent`).
+9. New command names end in `Command` (e.g., `ApproveTaskCommand`).
+10. New aggregate names end in `Aggregate` (e.g., `TaskAggregate`).
+11. New projection names end in `Projection` (e.g., `BoardItemProjection`).
+   Existing persisted events (`PrMerged`, `RunStarted`, `TaskCreated`,
+   etc.) predate this convention; do not rename them as part of any
+   new change. The convention applies to *new* code only.
 
 ---
 
 ## 2. Tech Stack
 
 ### Languages & Frameworks
+
 - **Primary Language:** TypeScript 5.x (strict mode)
 - **Runtime:** Node.js >= 20.0.0 (ESM)
 - **Web Framework:** Hono 4.x with @hono/node-server
@@ -37,11 +48,13 @@ No feature is considered started until a failing test exists. No feature is cons
 - **Database:** pg 12.x
 
 ### Testing
+
 - **Unit/Integration Testing:** Vitest 4.x
 - **Test Location:** Co-located `__tests__/` directories
 - **Test Pattern:** `*.test.ts`
 
 ### Build & Deploy
+
 - **Build Tool:** tsc (TypeScript compiler)
 - **Dev Runner:** tsx (watch mode)
 - **Module System:** ESNext with bundler resolution
@@ -51,10 +64,12 @@ No feature is considered started until a failing test exists. No feature is cons
 ## 3. Quality Gates (Definition of Done)
 
 ### Test Coverage Targets
+
 - Unit Tests: >= 80%
 - Integration Tests: >= 70%
 
 ### Code Quality
+
 - [ ] All acceptance criteria met
 - [ ] Test coverage targets satisfied
 - [ ] No critical/high security vulnerabilities
@@ -66,6 +81,7 @@ No feature is considered started until a failing test exists. No feature is cons
 > **Note:** Foreman's feature workflow includes an explicit PR review gate after finalize, which waits for CodeRabbit analysis and requires a PASS verdict before merging.
 
 ### Security Requirements
+
 - [ ] Input validation at all entry points (CLI args, HTTP routes, WebSocket messages)
 - [ ] No hardcoded secrets or credentials
 - [ ] SQL parameterized queries only (no string concatenation)
@@ -78,11 +94,13 @@ No feature is considered started until a failing test exists. No feature is cons
 The following changes require explicit user approval before implementation:
 
 ### Always Require Approval
+
 - **Architecture changes** - Structural changes to modules, new patterns, or service boundaries
 - **New dependencies** - Adding new npm packages or external services
 - **Breaking API changes** - Changes to CLI commands, HTTP endpoints, or WebSocket protocols
 
 ### No Approval Needed
+
 - Reading files or searching code
 - Running tests (non-destructive)
 - Creating new files in appropriate locations
@@ -95,13 +113,17 @@ The following changes require explicit user approval before implementation:
 ## 5. Agent Delegation Standards
 
 ### Specialist Priority
+
 When delegating implementation work:
+
 1. Use framework-specific specialists when available (e.g., TypeScript developer, Hono API specialist)
 2. Fall back to general specialists (`backend-developer`, `frontend-developer`)
 3. Use `general-purpose` only for research, not implementation
 
 ### Quality Validation
+
 Every implementation must pass through:
+
 1. `test-runner` for coverage validation
 2. `code-reviewer` for security and quality
 3. `vitest run` must pass with zero failures before marking complete

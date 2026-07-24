@@ -105,7 +105,9 @@ foreman status --project my-project
 
 ### Tasks
 
-Tasks represent units of work. They have a type, priority, status, title, and description. Typical statuses include backlog, ready, in progress, needs attention, and closed. Workflow phases are tracked separately from task status, so custom phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context. A terminal blocked run marks its task blocked, so operator-paused work appears with other needs-attention tasks instead of remaining active.
+Tasks represent units of work. They have a type, priority, status, title, and description. The canonical lifecycle vocabulary is `backlog, ready, in-progress, blocked, done` — the same five the Go cockpit (`/api/v1/board`) renders as columns. The legacy CLI board route surfaces the same lifecycle under the aliases `in_progress`, `needs_attention`, and `closed` for backward compatibility; both are equivalent. Workflow phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`, etc.) are tracked separately from task status, so phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context. A terminal blocked run marks its task blocked, so operator-paused work appears with other needs-attention tasks instead of remaining active.
+
+**PR-state precedence:** when a task's `status` is stale (`in-progress`) but the run's PR is already merged, the board shows the task in the `done` column, not `in_progress`. Likewise, a closed (non-merged) PR forces the task into `blocked`. This precedence is enforced on the read side so a workflow that exits in `merge` doesn't strand the task as `in-progress` forever.
 
 ```bash
 foreman task create --title "Fix flaky retry" --type bug --priority high

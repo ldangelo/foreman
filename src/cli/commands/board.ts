@@ -74,6 +74,13 @@ export function normalizeStatusForBoard(status: string): BoardStatus | null {
   return BOARD_STATUSES.includes(normalized as BoardStatus) ? normalized as BoardStatus : null;
 }
 
+// The server's `BoardItem.status` is already a lifecycle value
+// (backlog/ready/in_progress/needs_attention/done). Phase names
+// (developer/qa/reviewer/finalize/explorer) are NEVER accepted here
+// — they belong to runs, not tasks, and treating them as task
+// statuses was the root cause of the user-reported leak. If a phase
+// name somehow reaches the CLI, the default arm routes to
+// `needs_attention` so the ambiguous state is visible.
 export function boardColumnForTaskStatus(status: string): BoardStatus {
   const normalized = status.replace(/-/g, "_");
   if (["open", "todo"].includes(normalized)) {
@@ -82,13 +89,15 @@ export function boardColumnForTaskStatus(status: string): BoardStatus {
   if (["pending", "ready"].includes(normalized)) {
     return "ready";
   }
-  if (["running", "cooldown", "explorer", "developer", "qa", "reviewer", "finalize"].includes(normalized)) {
+  if (["running", "cooldown"].includes(normalized)) {
     return "in_progress";
   }
-  if (["failed", "fail", "stuck", "conflict", "blocked", "review", "test_failed"].includes(normalized)) {
+  if (["failed", "fail", "stuck", "conflict", "blocked", "test_failed"].includes(normalized)) {
     return "needs_attention";
   }
   if (["merged", "completed", "done", "closed", "reset", "pr_created"].includes(normalized)) {
+    // Legacy CLI column key is `closed` (Go cockpit uses `done`);
+    // see the module-level `BoardCommandRoute` comment.
     return "closed";
   }
   return normalizeStatusForBoard(status) ?? "needs_attention";
