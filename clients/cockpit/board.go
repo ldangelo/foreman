@@ -353,8 +353,15 @@ func (b *Board) column(col BoardColumn) *BoardColumnState {
 	return nil
 }
 
-// boardColumnForTaskStatus ports the proven super-tui BoardPane mapping. Unknown
-// statuses intentionally map to Blocked so ambiguous states surface for humans.
+// boardColumnForTaskStatus is a defense-in-depth mapping: the server's
+// `BoardItem.status` is already a lifecycle value (backlog/ready/in-
+// progress/blocked/done), so this function should only ever need to
+// match the five canonical forms. Phase names (developer/qa/reviewer/
+// finalize/explorer) are NEVER accepted here — they belong to runs,
+// not tasks, and treating them as task statuses was the root cause
+// of the user-reported `developer`/`qa`/`reviewer` leak. If a phase
+// name somehow reaches the cockpit, the default arm routes to Blocked
+// so the ambiguous state is visible.
 func boardColumnForTaskStatus(status string) BoardColumn {
 	normalized := strings.TrimSpace(strings.ToLower(normalizeStatus(status)))
 	switch normalized {
@@ -362,9 +369,9 @@ func boardColumnForTaskStatus(status string) BoardColumn {
 		return BoardColumnBacklog
 	case "pending", "ready":
 		return BoardColumnReady
-	case "running", "in_progress", "cooldown", "explorer", "developer", "qa", "reviewer", "finalize":
+	case "running", "in_progress", "cooldown":
 		return BoardColumnInProgress
-	case "failed", "fail", "stuck", "conflict", "blocked", "review", "test_failed":
+	case "failed", "fail", "stuck", "conflict", "blocked", "test_failed":
 		return BoardColumnBlocked
 	case "merged", "completed", "done", "closed", "reset", "pr_created":
 		return BoardColumnDone

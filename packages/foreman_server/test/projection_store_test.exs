@@ -257,7 +257,11 @@ defmodule ForemanServer.ProjectionStoreTest do
     })
 
     assert [done] = ProjectionStore.board("project-1").done
-    assert done.status == "closed"
+    # `closed` is now normalized to the lifecycle `done` by the
+    # state machine (user-directed vocabulary: backlog/ready/in-progress/
+    # blocked/done). The task projection keeps the raw `"closed"`;
+    # the board-visible status is the lifecycle form.
+    assert done.status == "done"
     assert done.run_id == "run-1"
     assert done.type == "run"
   end
@@ -271,7 +275,9 @@ defmodule ForemanServer.ProjectionStoreTest do
     })
 
     assert [done] = ProjectionStore.board("project-1").done
-    assert done.status == "closed"
+    # `closed` (case/whitespace-insensitive) is now normalized to the
+    # lifecycle `done` by the state machine.
+    assert done.status == "done"
     assert done.type == "task"
   end
 
@@ -570,6 +576,69 @@ defmodule ForemanServer.ProjectionStoreTest do
 
     assert ProjectionStore.project("project-1").path == "/tmp/project-1"
     assert Enum.map(ProjectionStore.project_list(), & &1.project_id) == ["project-1"]
+  end
+
+  # Regression tests for the user-reported bug: the board was leaking
+  # phase names (developer/qa/reviewer) as task statuses, and stale
+  # task.status of "in_progress" was being honored even when the PR
+  # was already merged or closed. The PR-override path in
+  # `build_board/2` and `build_board_from_maps/3` lets run.pr_state
+  # win over a stale task.status.
+
+  test "PR merged wins over stale in_progress task status" do
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Real merge queue",
+      status: "in_progress"
+    })
+
+    append!("run:run-1", "RunStarted", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1"
+    })
+
+    append!("run:run-1", "PrMerged", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1",
+      pr_url: "https://example.com/pr/1",
+      merged_at: "2026-07-22T12:00:00Z"
+    })
+
+    assert [done] = ProjectionStore.board("project-1").done
+    assert done.task_id == "task-1"
+    # Lifecycle form, not the raw `merged` value.
+    assert done.status == "done"
+    assert done.run_id == "run-1"
+  end
+
+  test "PR closed wins over stale in_progress task status" do
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Reviewer closed without merge",
+      status: "in_progress"
+    })
+
+    append!("run:run-1", "RunStarted", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1"
+    })
+
+    append!("run:run-1", "PrReset", %{
+      project_id: "project-1",
+      run_id: "run-1",
+      task_id: "task-1",
+      pr_url: "https://example.com/pr/1"
+    })
+
+    assert [blocked] = ProjectionStore.board("project-1").blocked
+    assert blocked.task_id == "task-1"
+    assert blocked.status == "blocked"
+    assert blocked.run_id == "run-1"
   end
 
   defp append!(stream_id, event_type, payload) do

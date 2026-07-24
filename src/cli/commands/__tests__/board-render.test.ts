@@ -537,9 +537,15 @@ describe("BoardRendering", () => {
   });
 
   describe("boardColumnForTaskStatus", () => {
-    it("maps native workflow phase statuses to in_progress", () => {
+    it("rejects phase names as task statuses (defense in depth)", () => {
+      // Phase names (developer/qa/reviewer/finalize/explorer) belong
+      // to runs, not tasks. The server's `BoardItem.status` is a
+      // lifecycle value; the legacy CLI route must not re-introduce
+      // phase-name leaks by mapping them to `in_progress`. They
+      // fall through to `needs_attention` (the default) so the
+      // ambiguous state is visible to the operator.
       for (const status of ["explorer", "developer", "qa", "reviewer", "finalize"]) {
-        expect(boardColumnForTaskStatus(status)).toBe("in_progress");
+        expect(boardColumnForTaskStatus(status)).toBe("needs_attention");
       }
     });
 
@@ -547,6 +553,7 @@ describe("BoardRendering", () => {
       expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("closed")).toBe("closed");
+      expect(boardColumnForTaskStatus("done")).toBe("closed");
       expect(boardColumnForTaskStatus("unknown")).toBe("needs_attention");
     });
   });

@@ -1554,7 +1554,19 @@ defmodule ForemanServer.ProjectionStore do
         end
       end)
 
-    # Group tasks
+    # Group tasks. Precedence (the Query-side state machine):
+    #   1. PR terminal state (run.pr_state) — merged → done, closed/reset → blocked.
+    #      This is the fix for the user-reported bug: task.status was stale
+    #      ("in-progress") after the PR was merged, so the task showed
+    #      `developer`/`qa`/`reviewer` in the board. The run's pr_state
+    #      is the more authoritative signal and wins.
+    #   2. Task terminal status (`@done_task_statuses`, `@blocked_task_statuses`).
+    #   3. Active run + non-terminal task → in_progress (RUNNING).
+    #   4. Non-terminal active task status → in_progress (RECENT).
+    #   5. Ready/approved → ready.
+    #   6. Default → backlog.
+    # Phase (developer/qa/reviewer/...) is NEVER used to decide the
+    # column; it is rendered as a separate `current_phase` field.
     {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
       Enum.reduce(tasks, {[], [], [], [], []}, fn task, acc ->
         {in_prog, blocked, done, backlog, ready} = acc
@@ -1565,24 +1577,39 @@ defmodule ForemanServer.ProjectionStore do
         run_status =
           if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
 
+        pr_state = if run, do: Map.get(run, :pr_state, ""), else: ""
+        pr_override = ForemanServer.BoardItemStateMachine.pr_state_to_board_status(pr_state)
+
         active_run = run && MapSet.member?(@active_run_statuses, run_status)
 
         cond do
-          active_run ->
-            {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
+          # 1. PR terminal state wins (overrides stale task.status).
+          pr_override == "done" ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+
+          pr_override == "blocked" ->
+            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+
+          # 2. Task terminal status.
+          MapSet.member?(@done_task_statuses, status) ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
           MapSet.member?(@blocked_task_statuses, status) ->
             {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
 
-          MapSet.member?(@done_task_statuses, status) ->
-            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
+          # 3. Active run + non-terminal task → in_progress (RUNNING).
+          active_run ->
+            {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
 
+          # 4. Non-terminal active task status → in_progress (RECENT).
           MapSet.member?(@active_task_statuses, status) ->
             {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
 
+          # 5. Ready/approved.
           status in ["ready", "approved"] ->
             {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
 
+          # 6. Default.
           true ->
             {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
         end
@@ -1637,7 +1664,15 @@ defmodule ForemanServer.ProjectionStore do
         end
       end)
 
-    # Group tasks
+    # Group tasks. Precedence (the Query-side state machine):
+    #   1. PR terminal state (run.pr_state) — merged → done, closed/reset → blocked.
+    #   2. Task terminal status.
+    #   3. Active run + non-terminal task → in_progress (RUNNING).
+    #   4. Non-terminal active task status → in_progress (RECENT).
+    #   5. Ready/approved → ready.
+    #   6. Default → backlog.
+    # Phase (developer/qa/reviewer/...) is NEVER used to decide the
+    # column; it is rendered as a separate `current_phase` field.
     {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
       Enum.reduce(tasks, {[], [], [], [], []}, fn task, acc ->
         {in_prog, blocked, done, backlog, ready} = acc
@@ -1648,30 +1683,39 @@ defmodule ForemanServer.ProjectionStore do
         run_status =
           if run, do: Map.get(run, :status, "") |> String.downcase() |> String.trim(), else: ""
 
+        pr_state = if run, do: Map.get(run, :pr_state, ""), else: ""
+        pr_override = ForemanServer.BoardItemStateMachine.pr_state_to_board_status(pr_state)
+
         active_run = run && MapSet.member?(@active_run_statuses, run_status)
 
         cond do
-          # Task has active run → in_progress
-          active_run ->
-            {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
+          # 1. PR terminal state wins.
+          pr_override == "done" ->
+            {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
-          # Blocked task statuses → blocked
-          MapSet.member?(@blocked_task_statuses, status) ->
+          pr_override == "blocked" ->
             {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
 
-          # Done task statuses → done
+          # 2. Task terminal status.
           MapSet.member?(@done_task_statuses, status) ->
             {in_prog, blocked, [{task, run, "RECENT"} | done], backlog, ready}
 
-          # Active task statuses (no active run) → in_progress
+          MapSet.member?(@blocked_task_statuses, status) ->
+            {in_prog, [{task, run, "RECENT"} | blocked], done, backlog, ready}
+
+          # 3. Active run + non-terminal task.
+          active_run ->
+            {[{task, run, "RUNNING"} | in_prog], blocked, done, backlog, ready}
+
+          # 4. Non-terminal active task status.
           MapSet.member?(@active_task_statuses, status) ->
             {[{task, run, "RECENT"} | in_prog], blocked, done, backlog, ready}
 
-          # Ready/approved → ready
+          # 5. Ready/approved.
           status in ["ready", "approved"] ->
             {in_prog, blocked, done, backlog, [{task, run, "RECENT"} | ready]}
 
-          # Backlog/open/default → backlog
+          # 6. Default.
           true ->
             {in_prog, blocked, done, [{task, run, "RECENT"} | backlog], ready}
         end
@@ -1687,20 +1731,25 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp normalize_board_output(board) do
+    sm = ForemanServer.BoardItemStateMachine
+
+    # `transform` receives the column atom so the visible_status fallback
+    # can use the column as the source of truth at render time. Without
+    # this, an unknown task.status already bucketed into `done` (via PR
+    # override) or `blocked` would fall back to `in-progress`/`backlog`
+    # from the group, mislabeling the rendered item.
     transform = fn
-      {task, nil, group} ->
+      col, {task, nil, group} ->
         task_status = normalized_task_status(task)
 
         visible_status =
-          if terminal_task_status?(task_status),
-            do: task_status,
-            else: Map.get(task, :status)
+          sm.task_status_to_board_status(task_status) || column_to_lifecycle(col)
 
         task
         |> Map.take([:task_id, :title, :priority, :task_type, :updated_at])
         |> Map.merge(%{group: group, type: "task", status: visible_status})
 
-      {task, run, group} ->
+      col, {task, run, group} ->
         run_status = Map.get(run, :status, "")
 
         run_attention =
@@ -1711,17 +1760,25 @@ defmodule ForemanServer.ProjectionStore do
           end
 
         task_status = normalized_task_status(task)
-        terminal_task_status = terminal_task_status?(task_status)
 
-        visible_status =
-          if group == "RECENT" and terminal_task_status,
-            do: task_status,
-            else: run_status
+        # Precedence (Query state machine):
+        #   1. PR terminal state (run.pr_state) wins over stale task.status.
+        #   2. task.status via the state machine.
+        #   3. Column: the item is already bucketed correctly by
+        #      `build_board/2`; if the state machine cannot map the
+        #      status, use the column as the lifecycle truth.
+        # Phase names (developer/qa/reviewer/...) are NEVER used as a
+        # visible status — they belong to a run, not a task.
+        pr_state = Map.get(run, :pr_state, "")
+        pr_override = sm.pr_state_to_board_status(pr_state)
+        task_mapped = sm.task_status_to_board_status(task_status)
+
+        visible_status = pr_override || task_mapped || column_to_lifecycle(col)
 
         # Needs attention: failed run status OR explicit attention flag,
-        # unless the task itself has already reached a terminal done status.
+        # unless the visible status is already a terminal `done`.
         needs_attention =
-          not MapSet.member?(@done_task_statuses, task_status) and
+          visible_status != "done" and
             (run_status in ["failed", "fail", "stuck", "conflict", "test-failed"] ||
                run_attention != "")
 
@@ -1732,7 +1789,9 @@ defmodule ForemanServer.ProjectionStore do
             group: group,
             type: if(needs_attention, do: "attention", else: "run"),
             status: visible_status,
-            run_id: Map.get(run, :run_id)
+            run_id: Map.get(run, :run_id),
+            current_phase: Map.get(run, :current_phase),
+            pr_state: pr_state
           })
 
         if run_attention != "",
@@ -1745,7 +1804,7 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.map(fn col ->
         items =
           (board[col] || [])
-          |> Enum.map(transform)
+          |> Enum.map(fn item -> transform.(col, item) end)
           |> Enum.sort_by(&{Map.get(&1, :group) == "RUNNING", Map.get(&1, :updated_at)}, :desc)
 
         {col, items}
@@ -1768,8 +1827,15 @@ defmodule ForemanServer.ProjectionStore do
     |> String.downcase()
   end
 
-  defp terminal_task_status?(task_status) do
-    MapSet.member?(@blocked_task_statuses, task_status) ||
-      MapSet.member?(@done_task_statuses, task_status)
-  end
+  # terminal_task_status?/1 was removed — the state machine in
+  # `BoardItemStateMachine` is now the source of truth for whether
+  # a status is terminal.
+
+  # Translate the API column atom (`:in_progress`) back to the
+  # lifecycle form (`"in-progress"`) for the safe fallback in
+  # `normalize_board_output/1`. Other column atoms are already in
+  # lifecycle form.
+  defp column_to_lifecycle(:in_progress), do: "in-progress"
+  defp column_to_lifecycle(other) when is_atom(other), do: Atom.to_string(other)
+  defp column_to_lifecycle(other) when is_binary(other), do: other
 end

@@ -55,8 +55,16 @@ describe("board pure helpers", () => {
 
   it("maps task statuses into board columns", () => {
     expect(boardColumnForTaskStatus("open")).toBe("backlog");
-    expect(boardColumnForTaskStatus("reviewer")).toBe("in_progress");
+    // Phase names (developer/qa/reviewer/finalize/explorer) are NOT
+    // accepted as task statuses. They belong to runs, not tasks. The
+    // legacy CLI route falls through to `needs_attention` for unknown
+    // values so the ambiguous state is visible to the operator.
+    expect(boardColumnForTaskStatus("reviewer")).toBe("needs_attention");
+    expect(boardColumnForTaskStatus("developer")).toBe("needs_attention");
     expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
+    // The legacy CLI column key for terminal is `closed`; the Go
+    // cockpit uses `done`. The shared state machine in the server
+    // maps both forms correctly at the source.
     expect(boardColumnForTaskStatus("done")).toBe("closed");
     expect(boardColumnForTaskStatus("unknown-status")).toBe("needs_attention");
   });
