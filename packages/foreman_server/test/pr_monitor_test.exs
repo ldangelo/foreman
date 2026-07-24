@@ -617,7 +617,6 @@ defmodule ForemanServer.PrMonitorTest do
     assert {:ok, %{closed: 1, errors: 0}} = PrMonitor.tick_once()
 
     assert_receive {:checked_pr, @project_path, @pr_url}
-
     assert_receive {:handled_command,
                     %{
                       command_type: "run.pr.reset",
@@ -639,6 +638,68 @@ defmodule ForemanServer.PrMonitorTest do
 
     assert close_payload.project_id == @project_id
     assert close_payload.task_id == @task_id
+  end
+
+  test "reconcile_terminal_prs re-observes runs with terminal pr_state" do
+    # Bug-recovery entry point: a run whose `pr_state` was
+    # mis-recorded (e.g. merged PR recorded as closed by the old
+    # normalizer) gets re-observed. The normalizer now classifies
+    # the merged observation correctly, and the :merged handler
+    # emits `run.pr.merge` + `task.update merged`. `tick_once`
+    # filters terminal pr_state runs out entirely, so this is the
+    # only path that repairs existing bad rows.
+    seed_recorded_pr!(pr_state: "open", task_status: "closed")
+
+    # Flip pr_state to closed so the bad-row state is simulated and
+    # the tick filter would now skip this run.
+    append!("run:#{@run_id}", "PrReset", %{
+      run_id: @run_id,
+      task_id: @task_id,
+      project_id: @project_id,
+      pr_url: @pr_url,
+      action: "closed",
+      reason: "simulate bad row"
+    })
+
+    assert ProjectionStore.snapshot().runs[@run_id].pr_state == "closed"
+
+    put_observations(%{
+      @pr_url =>
+        {:ok,
+         %{
+           state: "CLOSED",
+           url: @pr_url,
+           merged_at: "2026-07-22T10:00:00Z",
+           merge_commit_sha: "merge-sha-reconcile",
+           head_ref_oid: "head-sha",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
+    })
+
+    assert {:ok, %{merged: 1, errors: 0}} = PrMonitor.reconcile_terminal_prs()
+    assert_receive {:checked_pr, @project_path, @pr_url}
+
+    assert_receive {:handled_command,
+                    %{command_type: "run.pr.merge", payload: merge_payload}}
+
+    assert_receive {:handled_command,
+                    %{command_type: "task.update", payload: task_payload}}
+
+    assert merge_payload.merged_at == "2026-07-22T10:00:00Z"
+    assert task_payload.status == "merged"
+  end
+
+  test "reconcile_terminal_prs skips already-merged runs (scope is closed only)" do
+    # The scope is intentionally narrow: only `pr_state == "closed"`
+    # runs are re-observed. Already-merged runs are skipped to avoid
+    # accidental downgrade via follow-up/reused branches. This test
+    # pins that contract.
+    seed_recorded_pr!(pr_state: "merged", task_status: "merged")
+
+    assert {:ok, %{checked: 0, merged: 0, errors: 0}} = PrMonitor.reconcile_terminal_prs()
+    refute_receive {:checked_pr, _, _}
+    refute_receive {:handled_command, _command}
   end
 
   test "closed open and draft observations never mark the task merged" do

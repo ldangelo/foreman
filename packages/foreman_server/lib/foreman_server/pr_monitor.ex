@@ -18,6 +18,61 @@ defmodule ForemanServer.PrMonitor do
     run_once(monitor_config([]))
   end
 
+  @doc """
+  Re-observes runs whose `pr_state` was mis-recorded as `"closed"`
+  by the previous normalizer (REST-shaped `state: CLOSED` with
+  `merged_at` set), bypassing the normal `monitorable_run?/1`
+  filter. The new normalizer + the `:merged` reconciliation in
+  `handle_observation/3` will then emit `run.pr.merge` +
+  `task.update merged`.
+
+  Scope is intentionally narrow: only `pr_state == "closed"` runs
+  with a non-empty `pr_url`. Already-`"merged"` runs are NOT
+  re-observed — re-polling them risks accidental downgrade/update
+  if GitHub returns `open` / `draft` / `closed` for a follow-up
+  branch, and adds needless API churn. The `:closed` handler's
+  `pr_state == "merged"` arm already protects merges from any
+  later closed observation in normal operation.
+
+  Returns `{:ok, summary}` with the same shape as `tick_once/0`.
+  """
+  @spec reconcile_terminal_prs() :: {:ok, map()}
+  def reconcile_terminal_prs do
+    run_reconciliation_once(monitor_config([]))
+  end
+
+  @spec reconcile_terminal_prs(keyword()) :: {:ok, map()}
+  def reconcile_terminal_prs(opts) when is_list(opts) do
+    run_reconciliation_once(monitor_config(opts))
+  end
+
+  defp run_reconciliation_once(config) do
+    snapshot = ProjectionStore.snapshot()
+
+    summary =
+      snapshot.runs
+      |> Map.values()
+      |> Enum.filter(&closed_pr_run?/1)
+      |> Enum.reduce(empty_summary(), fn run, summary ->
+        case monitor_run(run, snapshot, config) do
+          {:ok, result} -> merge_result(summary, result)
+          {:error, _reason} -> Map.update!(summary, :errors, &(&1 + 1))
+        end
+      end)
+
+    {:ok, summary}
+  end
+
+  # Only `"closed"` runs are reconciled. Already-`"merged"` runs are
+  # skipped to avoid accidental downgrade via follow-up/reused
+  # branches returning a non-merged state.
+  defp closed_pr_run?(run) do
+    pr_url = Map.get(run, :pr_url)
+    pr_state = Map.get(run, :pr_state)
+
+    is_binary(pr_url) and pr_url != "" and pr_state == "closed"
+  end
+
   @spec state() :: map()
   def state, do: GenServer.call(__MODULE__, :state)
 
