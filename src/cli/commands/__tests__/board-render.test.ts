@@ -186,11 +186,21 @@ describe("BoardRendering", () => {
       expect(normalizeStatusForBoard("totally-unknown")).toBeNull();
     });
 
-    it("maps workflow and failure statuses into board columns", () => {
+    it("maps lifecycle statuses into board columns and routes phase names to default", () => {
+      // Lifecycle statuses route to their column.
       expect(boardColumnForTaskStatus("open")).toBe("backlog");
-      expect(boardColumnForTaskStatus("developer")).toBe("in_progress");
-      expect(boardColumnForTaskStatus("review")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("ready")).toBe("ready");
+      expect(boardColumnForTaskStatus("cooldown")).toBe("in_progress");
+      expect(boardColumnForTaskStatus("failed")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("blocked")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("done")).toBe("closed");
+      // Defense in depth: workflow phase names (developer/qa/
+      // reviewer/finalize) are NOT task statuses. They reach the
+      // default arm and land in `needs_attention` so an ambiguous
+      // state stays visible to operators.
+      expect(boardColumnForTaskStatus("developer")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("qa")).toBe("needs_attention");
+      expect(boardColumnForTaskStatus("reviewer")).toBe("needs_attention");
       expect(boardColumnForTaskStatus("weird-status")).toBe("needs_attention");
     });
   });
