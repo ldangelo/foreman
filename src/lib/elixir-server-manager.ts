@@ -79,6 +79,9 @@ export class ElixirServerManager {
   }
 
   async ensureRunning(): Promise<ElixirServerStatus> {
+    // Validate BEFORE accepting an already-running server, so a test-runtime BEAM
+    // occupying port 4766 is rejected rather than silently treated as valid.
+    validateStartSafety(this);
     const status = this.status();
     if (status.running && (await this.health()).ok) return status;
     const startError = this.start();
@@ -88,10 +91,9 @@ export class ElixirServerManager {
     ]);
     return this.status();
   }
-
   start(): Promise<never> {
-    if (this.status().running) return new Promise(() => undefined);
     validateStartSafety(this);
+    if (this.status().running) return new Promise(() => undefined);
     mkdirSync(dirname(this.pidPath), { recursive: true });
 
     const child = spawn("mix", ["run", "--no-halt"], {
@@ -115,7 +117,6 @@ export class ElixirServerManager {
       child.once("error", reject);
     });
   }
-
   stop(): void {
     const pid = this.readPid();
     if (pid !== undefined && isProcessAlive(pid)) process.kill(pid, "SIGTERM");
@@ -174,6 +175,16 @@ function defaultPidPath(mixEnv: string): string {
 }
 
 function validateStartSafety(manager: ElixirServerManager): void {
+  const runtimeMode = process.env.FOREMAN_RUNTIME_MODE?.trim().toLowerCase() ?? "normal";
+  if (manager.port === USER_HTTP_PORT && runtimeMode === "test") {
+    if (process.env.FOREMAN_ALLOW_TEST_PORT_COLLISION !== "1") {
+      throw new Error(
+        `refusing to start Foreman with FOREMAN_RUNTIME_MODE=test on user HTTP port ${USER_HTTP_PORT}; ` +
+          `use a free port or set FOREMAN_ALLOW_TEST_PORT_COLLISION=1`,
+      );
+    }
+  }
+
   if (manager.mixEnv !== "test") return;
 
   if (manager.port === USER_HTTP_PORT && process.env.FOREMAN_ALLOW_TEST_PORT_COLLISION !== "1") {

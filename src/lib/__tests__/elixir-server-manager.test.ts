@@ -7,6 +7,7 @@ import { ElixirServerManager } from "../elixir-server-manager.js";
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   delete process.env.FOREMAN_SERVER_AUTH_TOKEN;
   delete process.env.FOREMAN_SERVER_URL;
   delete process.env.FOREMAN_SERVER_HTTP_PORT;
@@ -34,13 +35,47 @@ describe("ElixirServerManager", () => {
     expect(manager.port).toBe(14766);
     expect(manager.pidPath).toContain(join(".foreman", "test", "elixir-server.pid"));
   });
-
   it("refuses to start MIX_ENV=test on the user port without explicit override", () => {
     const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
     try {
+      // Vitest global setup sets FOREMAN_RUNTIME_MODE=test; stub it to normal so this
+      // test targets MIX_ENV=test specifically without polluting other tests.
+      vi.stubEnv("FOREMAN_RUNTIME_MODE", "normal");
       process.env.MIX_ENV = "test";
       const manager = new ElixirServerManager({ port: 4766, pidPath: join(tmp, "server.pid") });
       expect(() => manager.start()).toThrow(/MIX_ENV=test on user HTTP port 4766/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  it.each([
+    ["test", "lowercase"],
+    ["TEST", "uppercase"],
+    [" test ", "whitespace-padded"],
+  ])("refuses to start FOREMAN_RUNTIME_MODE=%s (%s) on user port without override", (mode, _label) => {
+    const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
+    try {
+      // Invariant: test runtime must not occupy the user server port 4766.
+      // Normalization matches phase-runner.ts getRuntimeMode(): trim().toLowerCase().
+      vi.stubEnv("FOREMAN_RUNTIME_MODE", mode);
+      const manager = new ElixirServerManager({ port: 4766, pidPath: join(tmp, "server.pid") });
+      expect(() => manager.start()).toThrow(/FOREMAN_RUNTIME_MODE=test on user HTTP port 4766/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+  // Regression: ensureRunning() must reject FOREMAN_RUNTIME_MODE=test on port 4766
+  // BEFORE accepting a pre-existing healthy server — validateStartSafety runs before
+  // the status()+health() early-return path.
+  it("refuses ensureRunning FOREMAN_RUNTIME_MODE=test on user port even when server is healthy", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
+    try {
+      vi.stubEnv("FOREMAN_RUNTIME_MODE", "test");
+      const pidPath = join(tmp, "server.pid");
+      writeFileSync(pidPath, String(process.pid), "utf8"); // pre-existing PID
+      const manager = new ElixirServerManager({ port: 4766, pidPath });
+      vi.spyOn(manager, "health").mockResolvedValue({ ok: true, ms: 1 });
+      await expect(manager.ensureRunning()).rejects.toThrow(/FOREMAN_RUNTIME_MODE=test on user HTTP port 4766/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -49,6 +84,7 @@ describe("ElixirServerManager", () => {
   it("refuses to start MIX_ENV=test with non-temp storage paths", () => {
     const tmp = mkdtempSync(join(tmpdir(), "foreman-elixir-manager-"));
     try {
+      vi.stubEnv("FOREMAN_RUNTIME_MODE", "normal");
       process.env.MIX_ENV = "test";
       process.env.FOREMAN_SERVER_EVENT_LOG = join(process.cwd(), ".foreman", "events.term.log");
       const manager = new ElixirServerManager({ port: 14766, pidPath: join(tmp, "server.pid") });
@@ -57,7 +93,6 @@ describe("ElixirServerManager", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
-
   it("prefers FOREMAN_SERVER_URL over FOREMAN_SERVER_HTTP_PORT", async () => {
     process.env.FOREMAN_SERVER_URL = "http://127.0.0.1:4999";
     process.env.FOREMAN_SERVER_HTTP_PORT = "0";

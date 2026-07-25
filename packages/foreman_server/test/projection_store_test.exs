@@ -881,6 +881,34 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert in_progress.run_id == "run-1"
   end
 
+  # Regression: closed was incorrectly marked irreversible, blocking closed->ready
+  # transitions. Only "merged" is truly terminal. This test would fail if
+  # "closed" were restored to @irreversible_task_statuses.
+  test "task.status=closed can transition to ready (irreversible excludes closed)" do
+    append!("task:task-1", "TaskCreated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      title: "Task to reopen",
+      status: "open"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      status: "closed"
+    })
+
+    append!("task:task-1", "TaskUpdated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      status: "ready"
+    })
+
+    task = ProjectionStore.task("task-1")
+    assert task.status == "ready"
+    assert task.task_id == "task-1"
+  end
+
   defp append!(stream_id, event_type, payload) do
     {:ok, event} =
       EventStore.append(%{
