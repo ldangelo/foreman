@@ -14,7 +14,7 @@ defmodule ForemanServer.ProjectionStore do
     "merged" => "merged",
     "stuck" => "failed"
   }
-  @irreversible_task_statuses MapSet.new(["closed", "merged"])
+  @irreversible_task_statuses MapSet.new(["merged"])
   @task_statuses MapSet.new([
                    "backlog",
                    "ready",

@@ -2211,6 +2211,10 @@ export function buildWorkerEnv(
 
   if (runtimeMode) {
     env.FOREMAN_RUNTIME_MODE = runtimeMode;
+  } else {
+    // Prevent inherited test env (e.g. vitest FOREMAN_RUNTIME_MODE=test) from
+    // leaking into production workers. Only pass when explicitly set by caller.
+    delete env.FOREMAN_RUNTIME_MODE;
   }
 
   if (telemetry) {
