@@ -18,8 +18,8 @@ export function extractExplorerScopedPaths(report: string): Set<string> {
   if (!match) return paths;
   for (const line of match[1].split(/\r?\n/)) {
     const candidates = [
-      ...line.matchAll(/`([^`]+\.[A-Za-z0-9]+)`/g),
-      ...line.matchAll(/\*\*([^*]+\.[A-Za-z0-9]+)\*\*/g),
+      ...line.matchAll(/`([^`]+\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/g),
+      ...line.matchAll(/\*\*([^*]+?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)\*\*/g),
     ].map((candidate) => candidate[1].trim());
     for (const candidate of candidates) {
       if (!candidate || candidate.includes(" ")) continue;
@@ -85,6 +85,8 @@ function parseScopeExpansions(report: string): Map<string, string> {
     }
     // Strip any remaining surrounding backticks from the file path.
     file = file.replace(/^`+|`+$/g, '').trim();
+    // Strip surrounding bold/italic markers (**, __, *, _) from the file path.
+    file = file.replace(/^[*_]+|[*_]+$/g, '').trim();
     if (file) result.set(file, justification);
   }
   return result;

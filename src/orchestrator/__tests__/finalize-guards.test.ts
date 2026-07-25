@@ -215,4 +215,48 @@ describe("finalize guards", () => {
       "npx vitest run src/orchestrator/__tests__/workflow-loader.test.ts src/orchestrator/__tests__/workflow-remediation-routing.test.ts --reporter=dot",
     ]);
   });
+
+  // Regression tests for foreman-a365b: line-range and styled path parsing
+  it("extracts backtick-wrapped paths with line ranges from Explorer Edit First", () => {
+    // Backtick pattern must strip :1146-1165 suffix after extracting the path
+    const paths = extractExplorerScopedPaths(`## Developer Handoff\n\n### Edit First\n- \`clients/cockpit/view.go:1146-1165\` — edit summary here\n\n### Boundaries\n- Do not touch backend\n`);
+
+    expect([...paths]).toEqual(["clients/cockpit/view.go"]);
+  });
+
+  it("extracts backtick-wrapped paths with single-line ranges from Explorer Edit First", () => {
+    // Single-line range (e.g. :119-125) must also be stripped
+    const paths = extractExplorerScopedPaths(`## Developer Handoff\n\n### Edit First\n- \`clients/cockpit/model.go:119-125\` — edit summary here\n\n### Boundaries\n- Do not touch backend\n`);
+
+    expect([...paths]).toEqual(["clients/cockpit/model.go"]);
+  });
+
+  it("extracts bold-wrapped paths with line ranges from Explorer Edit First", () => {
+    // Bold pattern with non-greedy match must handle paths with line ranges
+    // e.g. **clients/cockpit/view.go:1146-1165**
+    const paths = extractExplorerScopedPaths(`## Developer Handoff\n\n### Edit First\n- **clients/cockpit/view.go:1146-1165** — edit summary here\n\n### Boundaries\n- Do not touch backend\n`);
+
+    expect([...paths]).toEqual(["clients/cockpit/view.go"]);
+  });
+
+  it("accepts bold-wrapped paths in Scope Expansions with em-dash justification", () => {
+    // Bold markers (**, __) must be stripped from file paths before storage.
+    // e.g. **clients/cockpit/omp.go** — reason here
+    const report = [
+      "## Scope Expansions",
+      "- **clients/cockpit/omp.go** \u2014 em-dash justification: required to coordinate with the view layer change.",
+    ].join("\n");
+
+    expect(reportJustifiesOutOfScope(report, "clients/cockpit/omp.go")).toBe(true);
+  });
+
+  it("accepts italic-wrapped paths in Scope Expansions", () => {
+    // Italic markers (*, _) must also be stripped from file paths
+    const report = [
+      "## Scope Expansions",
+      "- _src/cli/commands/task.ts_ — justified with italic markers.",
+    ].join("\n");
+
+    expect(reportJustifiesOutOfScope(report, "src/cli/commands/task.ts")).toBe(true);
+  });
 });
