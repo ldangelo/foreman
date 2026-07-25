@@ -3,6 +3,7 @@ import { createElement, useEffect, useMemo, useState, type ReactElement } from "
 import { resetAction } from "../commands/reset.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
 import { buildSuperTuiPaletteActions, type SuperTuiPaletteAction } from "./actions.js";
+import { canonicalTaskView } from "../../lib/canonical-task-view.js";
 import type { SuperTuiLoadSummaries } from "./data.js";
 import { createSuperTuiState, filterSuperTuiSummaries, reduceSuperTuiState, selectedIndexForSelection, type SuperTuiState, type SuperTuiTab, type SuperTuiView } from "./model.js";
 import { BoardPane } from "./panes/BoardPane.js";
@@ -137,15 +138,8 @@ function FooterBar({ state }: { state: SuperTuiState }): ReactElement {
 
 function OverviewPane({ selected, compact }: { selected: InboxTaskSummary | undefined; compact: boolean }): ReactElement {
   if (!selected) return h(Pane, { title: "Overview" }, h(Text, null, "No task selected."));
-  // Canonical task fields first. The previous version rendered `statusText`
-  // (mailbox body key dump) under the Status label, which surfaced
-  // `phase=finalize` as the task status. Canonical task data is the
-  // source of truth.
-  const status = selected.taskStatus ?? selected.runStatus;
-  const phase = selected.taskPhaseId ?? selected.phase;
-  const reason = selected.taskFailureReason ?? selected.taskReason ?? null;
-  const activePhase = selected.phase;
-  const showActivePhaseSuffix = activePhase && activePhase !== phase && activePhase !== "unknown";
+  // Canonical fields from the task projection; run-derived fallbacks when unavailable.
+  const { status, phase, reason, activePhase, showActivePhaseSuffix } = canonicalTaskView(selected);
   return h(Pane, { title: "Overview", minHeight: compact ? 7 : 14 },
     h(Text, { bold: true }, selected.taskId),
     h(Text, null, `Run:     ${selected.runId}`),

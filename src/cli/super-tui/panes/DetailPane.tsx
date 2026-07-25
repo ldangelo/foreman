@@ -21,6 +21,11 @@ interface RenderContext {
   eventsLimit: number;
 }
 
+/** Returns true when `a` and `b` describe identical render contexts. */
+function renderContextEqual(a: RenderContext, b: RenderContext): boolean {
+  return a.runId === b.runId && a.tab === b.tab && a.limit === b.limit && a.eventsLimit === b.eventsLimit;
+}
+
 /**
  * Detail pane for the super-tui cockpit. Thin wrapper that delegates field
  * rendering to the shared `TaskDetails` component. The wrapper only owns
@@ -52,19 +57,19 @@ export function DetailPane({ summary, tab, limit, eventsLimit, renderTaskDetail,
       });
       if (result instanceof Promise) {
         result.then((output) => {
-          if (renderCtxRef.current?.runId !== ctx.runId) return; // stale — user switched tasks
+          if (renderCtxRef.current && !renderContextEqual(renderCtxRef.current, ctx)) return;
           setRenderedDetail(output);
         }).catch(() => {
-          if (renderCtxRef.current?.runId !== ctx.runId) return;
+          if (renderCtxRef.current && !renderContextEqual(renderCtxRef.current, ctx)) return;
           setRenderedDetail(undefined);
         });
       } else {
-        if (renderCtxRef.current?.runId === ctx.runId) {
+        if (renderCtxRef.current && renderContextEqual(renderCtxRef.current, ctx)) {
           setRenderedDetail(result);
         }
       }
     } catch {
-      if (renderCtxRef.current?.runId === ctx.runId) {
+      if (renderCtxRef.current && renderContextEqual(renderCtxRef.current, ctx)) {
         setRenderedDetail(undefined);
       }
     }

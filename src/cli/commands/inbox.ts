@@ -12,6 +12,8 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { canonicalTaskView } from "../../lib/canonical-task-view.js";
+import { formatWorktreeEvent } from "../../lib/format-worktree-event.js";
 import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -562,18 +564,11 @@ export function formatEventSummary(eventType: string, details: Record<string, un
     case "WorkerLaunchRequested":
       return `Worker launch requested${target ? ` for ${target}` : ""}${workflow ? ` (${workflow})` : ""}${runId ? ` (run ${runId})` : ""}`;
     case "WorktreeCreated":
-    case "worktree-created": {
-      const branch = detailString(details, ["branchName", "branch_name"]);
-      const path = detailString(details, ["worktreePath", "worktree_path"]);
-      return `Worktree created${target ? ` for ${target}` : ""}${branch ? ` (${branch})` : ""}${path ? ` at ${path}` : ""}`;
-    }
+    case "worktree-created":
     case "WorktreeCleaned":
     case "worktree-cleaned":
-    case "worktree-removed": {
-      const path = detailString(details, ["worktreePath", "worktree_path"]);
-      const reason = detailString(details, ["reason"]);
-      return `Worktree removed${target ? ` for ${target}` : ""}${path ? ` (${path})` : ""}${reason ? ` — ${reason}` : ""}`;
-    }
+    case "worktree-removed":
+      return formatWorktreeEvent(eventType, { target, details });
     case "WorkerLaunchFailed":
       return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
     case "WorkerProcessExited": {
@@ -2076,15 +2071,8 @@ function selectRecentChronological<T>(items: T[], limit: number, timestamp: (ite
 }
 
 export async function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): Promise<string> {
-  // Read canonical task fields (`taskStatus`/`taskPhaseId`/`taskReason`/
-  // `taskFailureReason`) ahead of run-derived fields. The previous version
-  // leaked mailbox body content (`phase=finalize status=failed`) into the
-  // Status row because `statusText` was the latest parsed message body.
-  const status = summary.taskStatus ?? summary.runStatus;
-  const phase = summary.taskPhaseId ?? summary.phase;
-  const reason = summary.taskFailureReason ?? summary.taskReason ?? null;
-  const activePhase = summary.phase;
-  const showActivePhaseSuffix = activePhase && activePhase !== phase && activePhase !== "unknown";
+  // Canonical fields from the task projection; run-derived fallbacks when unavailable.
+  const { status, phase, reason, activePhase, showActivePhaseSuffix } = canonicalTaskView(summary);
   const lines = [
     chalk.bold(`FOREMAN INBOX › ${summary.taskId}`),
     `Run:      ${summary.runId}`,
@@ -2515,7 +2503,7 @@ async function fetchEventsForSources(
  * in `InboxTaskSummary` stay null and the cockpit falls back to run-derived
  * text.
  */
-async function fetchInboxTasksForSources(sources: InboxSources): Promise<InboxTaskDetail[]> {
+export async function fetchInboxTasksForSources(sources: InboxSources): Promise<InboxTaskDetail[]> {
   if (sources.daemon) {
     const client = sources.daemon.client;
     if (typeof client.listTasks !== "function") return [];

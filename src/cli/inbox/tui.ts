@@ -1,6 +1,7 @@
 import { Box, Text, useApp, useInput } from "ink";
 import { createElement, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import type { InboxTaskSummary } from "../commands/inbox.js";
+import { canonicalTaskView } from "../../lib/canonical-task-view.js";
 import { buildInboxTimeline, type InboxTimelineItem } from "./timeline.js";
 
 type InboxDashboardTab = "summary" | "messages" | "events" | "logs" | "reports" | "files";
@@ -306,15 +307,8 @@ function ActionPalette({ actions, selectedActionIndex, actionNotice }: { actions
 }
 
 function DetailPane({ summary, tab }: { summary: InboxTaskSummary; tab: InboxDashboardTab }): ReactElement {
-  // Read canonical task fields (`taskStatus`/`taskPhaseId`/`taskReason`/
-  // `taskFailureReason`) ahead of run-derived fields. The previous version
-  // showed `Status: phase=finalize status=failed` because it rendered the
-  // latest mailbox body verbatim. Canonical task data fixes that leak.
-  const status = summary.taskStatus ?? summary.runStatus;
-  const phase = summary.taskPhaseId ?? summary.phase;
-  const reason = summary.taskFailureReason ?? summary.taskReason ?? null;
-  const activePhase = summary.phase;
-  const showActivePhaseSuffix = activePhase && activePhase !== phase && activePhase !== "unknown";
+  // Canonical fields from the task projection; run-derived fallbacks when unavailable.
+  const { status, phase, reason, activePhase, showActivePhaseSuffix } = canonicalTaskView(summary);
   const rows = [
     `Run: ${summary.runId}`,
     `State: ${status}${phase && phase !== "unknown" ? ` · Phase: ${phase}` : ""} · Verdict: ${summary.verdict}`,
