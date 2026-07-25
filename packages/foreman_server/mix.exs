@@ -43,6 +43,7 @@ defmodule ForemanServer.MixProject do
 
       if File.dir?(src) do
         File.mkdir_p!(dest)
+
         count =
           for file <- File.ls!(src) do
             dest_file = Path.join(dest, file)

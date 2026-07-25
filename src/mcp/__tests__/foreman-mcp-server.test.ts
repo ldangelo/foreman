@@ -6,7 +6,7 @@ vi.mock("../../cli/commands/reset.js", () => ({
   resetAction: mockResetAction,
 }));
 
-import { ForemanMcpServer, compactMcpPayload } from "../foreman-mcp-server.js";
+import { ForemanMcpServer, McpStdioFramer, compactMcpPayload, writeMcpFrame } from "../foreman-mcp-server.js";
 
 const originalFetch = globalThis.fetch;
 const fetchMock = vi.fn();
@@ -123,6 +123,44 @@ describe("ForemanMcpServer", () => {
         serverInfo: { name: "foreman-mcp" },
       },
     });
+  });
+
+  it("keeps standard Content-Length framing for MCP stdio clients", async () => {
+    const server = new ForemanMcpServer({ autoStart: false });
+    const writes: string[] = [];
+    const stream = { write: (chunk: string) => writes.push(chunk) } as unknown as NodeJS.WritableStream;
+    const request = { jsonrpc: "2.0", id: "init", method: "initialize" };
+    const body = JSON.stringify(request);
+    const framer = new McpStdioFramer(async (message, format) => {
+      const response = await server.handle(message);
+      if (response) writeMcpFrame(stream, response, format);
+    });
+
+    framer.push(Buffer.from(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`));
+    await Promise.resolve();
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatch(/^Content-Length: \d+\r\n\r\n/);
+    expect(writes[0]).toContain("\"serverInfo\":{\"name\":\"foreman-mcp\"");
+  });
+
+  it("mirrors JSONL framing for OMP stdio clients", async () => {
+    const server = new ForemanMcpServer({ autoStart: false });
+    const writes: string[] = [];
+    const stream = { write: (chunk: string) => writes.push(chunk) } as unknown as NodeJS.WritableStream;
+    const framer = new McpStdioFramer(async (message, format) => {
+      const response = await server.handle(message);
+      if (response) writeMcpFrame(stream, response, format);
+    });
+
+    framer.push(Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: "init", method: "initialize" })}\n`));
+    await Promise.resolve();
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).not.toContain("Content-Length");
+    expect(writes[0]).toMatch(/^\{"jsonrpc":"2.0"/);
+    expect(writes[0]).toContain("\"serverInfo\":{\"name\":\"foreman-mcp\"");
+    expect(writes[0]).toMatch(/\n$/);
   });
 
   it("reports unknown tools as JSON-RPC errors", async () => {

@@ -106,6 +106,7 @@ defmodule ForemanServer.ProjectionStore.Postgres do
   def task_list do
     read_many("SELECT data FROM foreman_task_projections ORDER BY task_id ASC", [])
   end
+
   @spec board_data(String.t()) :: {map(), map()}
   def board_data(project_id) do
     # Use raw SQL to fetch multi-column results directly

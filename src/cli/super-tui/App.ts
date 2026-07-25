@@ -3,6 +3,7 @@ import { createElement, useEffect, useMemo, useState, type ReactElement } from "
 import { resetAction } from "../commands/reset.js";
 import type { InboxTaskSummary } from "../commands/inbox.js";
 import { buildSuperTuiPaletteActions, type SuperTuiPaletteAction } from "./actions.js";
+import { canonicalTaskView } from "../../lib/canonical-task-view.js";
 import type { SuperTuiLoadSummaries } from "./data.js";
 import { createSuperTuiState, filterSuperTuiSummaries, reduceSuperTuiState, selectedIndexForSelection, type SuperTuiState, type SuperTuiTab, type SuperTuiView } from "./model.js";
 import { BoardPane } from "./panes/BoardPane.js";
@@ -137,11 +138,16 @@ function FooterBar({ state }: { state: SuperTuiState }): ReactElement {
 
 function OverviewPane({ selected, compact }: { selected: InboxTaskSummary | undefined; compact: boolean }): ReactElement {
   if (!selected) return h(Pane, { title: "Overview" }, h(Text, null, "No task selected."));
+  // Canonical fields from the task projection; run-derived fallbacks when unavailable.
+  const { status, phase, reason, activePhase, showActivePhaseSuffix } = canonicalTaskView(selected);
   return h(Pane, { title: "Overview", minHeight: compact ? 7 : 14 },
     h(Text, { bold: true }, selected.taskId),
-    h(Text, null, `Run: ${selected.runId}`),
-    h(Text, null, `State: ${selected.runStatus} · Phase: ${selected.phase} · Verdict: ${selected.verdict}`),
-    h(Text, null, `Status: ${truncate(selected.statusText, compact ? 72 : 120)}`),
+    h(Text, null, `Run:     ${selected.runId}`),
+    h(Text, null, `Status:  ${status}${phase && phase !== "unknown" ? ` · Phase: ${phase}` : ""} · Verdict: ${selected.verdict}`),
+    showActivePhaseSuffix ? h(Text, { color: "yellow" }, `Active:  ${activePhase} (in flight)`) : null,
+    reason ? h(Text, { color: "red" }, `Reason:  ${truncate(reason, compact ? 64 : 120)}`) : null,
+    h(Text, null, `Activity: ${selected.lastActivityAt ?? "—"} via ${selected.lastActivitySource}`),
+    h(Text, null, `Last:     ${truncate(selected.statusText ?? "—", compact ? 72 : 120)}`),
     selected.attentionReason ? h(Text, { color: "red" }, `Attention: ${truncate(selected.attentionReason, compact ? 72 : 120)}`) : h(Text, { dimColor: true }, "Attention: none"),
     h(Text, { dimColor: true }, "Switch views: i inbox · s status/workflow · b board."),
   );

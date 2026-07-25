@@ -82,6 +82,7 @@ import { loadProjectConfig, type ProjectHooksConfig } from "../lib/project-confi
 import { foremanBackendMode } from "../lib/backend-mode.js";
 import { nativeTaskStatusForPhase } from "./task-phase-status.js";
 import { classifyFinalizeTestFailure, findFinalizeScopeViolations, finalizeValidationCommands } from "./finalize-guards.js";
+import { rotateReport } from "./agent-worker-finalize.js";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { collectRuntimeAssetIssues, runtimeAssetIssueMessage } from "../lib/runtime-assets.js";
 
@@ -429,6 +430,15 @@ interface WorkerConfig {
    * completed phases.
    */
   startPhase?: string;
+  /**
+   * 1-based iteration number of the current phase run within the run.
+   * The pipeline-executor counts how many times this phase has been
+   * entered in this run and passes that count + 1 here. Used by the
+   * finalize artifact writers to rotate the previous iteration's
+   * `FINALIZE_*.md` files to `i${phaseIteration-1}.md` so re-run
+   * debugging can find every attempt.
+   */
+  phaseIteration?: number;
 }
 
 // ── Structured Logging Context ───────────────────────────────────────────────
@@ -1890,6 +1900,17 @@ async function writeFinalizeValidation(args: {
 }): Promise<void> {
   const reportDir = resolveArtifactPath(args.config.worktreePath, workerReportDir(args.config));
   await mkdir(reportDir, { recursive: true });
+  // Preserve the previous iteration's FINALIZE_TEST_OUTPUT.txt (a side file
+  // owned by the wrapper, not the pipeline-executor) so re-run debugging
+  // can find every attempt. The pipeline-executor already rotates the
+  // artifact (FINALIZE_VALIDATION.md) at phase start, so we only need
+  // to handle the side file here.
+  const rotationSuffix = args.config.phaseIteration !== undefined
+    ? args.config.phaseIteration - 1
+    : undefined;
+  if (rotationSuffix !== undefined && rotationSuffix > 0) {
+    rotateReport(args.config.worktreePath, "FINALIZE_TEST_OUTPUT.txt", rotationSuffix);
+  }
   const fullOutputPath = join(reportDir, "FINALIZE_TEST_OUTPUT.txt");
   await writeFile(fullOutputPath, args.output || "", "utf8");
   await writeFile(join(reportDir, "FINALIZE_VALIDATION.md"), `# Finalize Validation: ${args.config.taskTitle}\n\n` +

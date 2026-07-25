@@ -1,3 +1,4 @@
+import { formatWorktreeEvent } from "../../lib/format-worktree-event.js";
 type SummaryMessage = {
   id: string;
   run_id: string;
@@ -493,11 +494,11 @@ function formatEventSummary(eventType: string, details: Record<string, unknown> 
     case "WorkerLaunchRequested":
       return `Worker launch requested${target ? ` for ${target}` : ""}${workflow ? ` (${workflow})` : ""}${runId ? ` (run ${runId})` : ""}`;
     case "WorktreeCreated":
-    case "worktree-created": {
-      const branch = detailString(details, ["branchName", "branch_name"]);
-      const path = detailString(details, ["worktreePath", "worktree_path"]);
-      return `Worktree created${target ? ` for ${target}` : ""}${branch ? ` (${branch})` : ""}${path ? ` at ${path}` : ""}`;
-    }
+    case "worktree-created":
+    case "WorktreeCleaned":
+    case "worktree-cleaned":
+    case "worktree-removed":
+      return formatWorktreeEvent(eventType, { target, details });
     case "WorkerLaunchFailed":
       return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
     case "WorkerProcessExited": {

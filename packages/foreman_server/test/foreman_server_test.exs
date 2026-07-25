@@ -15,7 +15,11 @@ defmodule ForemanServerTest do
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :project_store_path, project_store_path)
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
-    Application.put_env(:foreman_server, :scheduler, auto_tick: false, event_triggered_ticks: false)
+
+    Application.put_env(:foreman_server, :scheduler,
+      auto_tick: false,
+      event_triggered_ticks: false
+    )
 
     on_exit(fn ->
       Application.stop(:foreman_server)
@@ -242,7 +246,12 @@ defmodule ForemanServerTest do
              ForemanServer.handle_command(%{
                command_id: "cmd-dependent",
                command_type: "task.create",
-               payload: %{task_id: "dependent", status: "ready", dependencies: ["blocker"], project_id: "test"}
+               payload: %{
+                 task_id: "dependent",
+                 status: "ready",
+                 dependencies: ["blocker"],
+                 project_id: "test"
+               }
              })
 
     assert Enum.map(ForemanServer.ProjectionStore.dispatchable_tasks(), & &1.task_id) == [

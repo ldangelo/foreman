@@ -1,6 +1,7 @@
 import { Box, Text, useApp, useInput } from "ink";
 import { createElement, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import type { InboxTaskSummary } from "../commands/inbox.js";
+import { canonicalTaskView } from "../../lib/canonical-task-view.js";
 import { buildInboxTimeline, type InboxTimelineItem } from "./timeline.js";
 
 type InboxDashboardTab = "summary" | "messages" | "events" | "logs" | "reports" | "files";
@@ -306,12 +307,16 @@ function ActionPalette({ actions, selectedActionIndex, actionNotice }: { actions
 }
 
 function DetailPane({ summary, tab }: { summary: InboxTaskSummary; tab: InboxDashboardTab }): ReactElement {
+  // Canonical fields from the task projection; run-derived fallbacks when unavailable.
+  const { status, phase, reason, activePhase, showActivePhaseSuffix } = canonicalTaskView(summary);
   const rows = [
     `Run: ${summary.runId}`,
-    `State: ${summary.runStatus} · Phase: ${summary.phase} · Verdict: ${summary.verdict}`,
+    `State: ${status}${phase && phase !== "unknown" ? ` · Phase: ${phase}` : ""} · Verdict: ${summary.verdict}`,
+    showActivePhaseSuffix ? `Active: ${activePhase} (in flight)` : null,
+    reason ? `Reason: ${reason}` : null,
     `Activity: ${relativeTime(summary.lastActivityAt)} via ${summary.lastActivitySource}`,
-    `Status: ${summary.statusText}`,
-  ];
+    `Status: ${summary.statusText ?? "—"}`,
+  ].filter((row): row is string => row !== null);
 
   if (summary.attentionReason) rows.push(`Attention: ${summary.attentionReason}`);
   if (summary.projectId) rows.push(`Project: ${summary.projectId}`);

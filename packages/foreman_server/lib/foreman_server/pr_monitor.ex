@@ -189,6 +189,7 @@ defmodule ForemanServer.PrMonitor do
         end
     end
   end
+
   def handle_observation(context, %{state: :draft} = observation, command_handler) do
     if context.pr_state == "draft" do
       empty_summary()

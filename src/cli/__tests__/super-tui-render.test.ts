@@ -185,8 +185,16 @@ function cockpitRows(): InboxTaskSummary[] {
 }
 
 function renderCockpit(initialView: "inbox" | "status" | "board", initialRunId: string): string {
+  return renderCockpitForSummaries(cockpitRows(), initialView, initialRunId);
+}
+
+function renderCockpitForSummary(s: InboxTaskSummary, initialView: "inbox" | "status" | "board", initialRunId: string): string {
+  return renderCockpitForSummaries([s], initialView, initialRunId);
+}
+
+function renderCockpitForSummaries(summaries: InboxTaskSummary[], initialView: "inbox" | "status" | "board", initialRunId: string): string {
   return renderToString(createElement(SuperTuiApp, {
-    summaries: cockpitRows(),
+    summaries,
     projectLabel: "Fortium Foreman",
     limit: 10,
     eventsLimit: 10,
@@ -206,7 +214,7 @@ describe("super TUI render contracts", () => {
     expect(output).toContain("Tasks");
     expect(output).toContain("Inbox timeline");
     expect(output).toContain("Details · task-retry");
-    expect(output).toContain("Run: run-retry");
+    expect(output).toContain("Run:      run-retry");
     expect(output).toContain("QA asked for repair");
     expect(output).toContain("Failed qa");
     expect(output).toContain("j/k select");
@@ -234,6 +242,65 @@ describe("super TUI render contracts", () => {
     expect(output).toContain("Details · task-retry");
   });
 
+  it("DetailPane renders canonical taskStatus/taskPhaseId instead of mailbox-derived statusText", () => {
+    // Regression: foreman-a365b's statusText was `phase=finalize status=failed`
+    // because it was built from the latest mailbox body. That string rendered
+    // under `Status:` in the cockpit and made it look like the task's status
+    // was `finalize` (a phase name). The pane must read canonical
+    // `taskStatus`/`taskPhaseId` from /api/v1/tasks/:id.
+    const s = summary({
+      taskId: "foreman-a365b",
+      runId: "ce101e9e-f8b1-af6b-ccb5-a64dc7f568bc",
+      runStatus: "failed",
+      phase: "developer",
+      taskStatus: "failed",
+      taskPhaseId: "developer",
+      taskReason: "reset requested from cockpit",
+      taskFailureReason: "scope_guard_failed: clients/cockpit/model.go",
+      statusText: "phase=finalize status=failed",
+      verdict: "fail",
+    });
+    const output = renderCockpitForSummary(s, "inbox", "ce101e9e-f8b1-af6b-ccb5-a64dc7f568bc");
+
+    // Status row reads from canonical taskStatus (failed), not the mailbox body.
+    expect(output).toMatch(/Status:\s+failed\b/);
+    // Phase shows canonical phaseId (developer), not phase=finalize.
+    expect(output).toContain("Phase: developer");
+    // Reason row surfaces the canonical failure_reason.
+    expect(output).toContain("scope_guard_failed: clients/cockpit/model.go");
+    // Last row keeps the mailbox-derived statusText, demoted.
+    expect(output).toContain("phase=finalize status=failed");
+    // The Status row must NOT contain the phase name as a status value.
+    expect(output).not.toMatch(/Status:\s+finalize\b/);
+  });
+  it("DetailPane falls back to runStatus/phase when canonical taskStatus/taskPhaseId are absent", () => {
+    // Summaries from store backends that don't perform task fetches (or were
+    // constructed before the canonical fields were added) omit taskStatus and
+    // taskPhaseId. The pane must still render meaningful values from runStatus
+    // and phase.
+    const s = summary({
+      taskId: "foreman-old",
+      runId: "run-old",
+      runStatus: "in_progress",
+      phase: "triage",
+      // canonical fields intentionally absent
+      taskStatus: undefined,
+      taskPhaseId: undefined,
+      taskReason: undefined,
+      taskFailureReason: undefined,
+      statusText: "phase=triage status=in_progress",
+      verdict: "unknown",
+    });
+    const output = renderCockpitForSummary(s, "inbox", "run-old");
+
+    // Status row falls back to runStatus (in_progress).
+    expect(output).toMatch(/Status:\s+in_progress\b/);
+    // Phase falls back to run-level phase (triage).
+    expect(output).toContain("Phase: triage");
+    // No Reason row since neither canonical reason is set.
+    expect(output).not.toContain("Reason:");
+  });
+
   it("renders the board view and selected task board context without leaving the cockpit shell", () => {
     const output = renderCockpit("board", "run-ready");
 
@@ -245,7 +312,7 @@ describe("super TUI render contracts", () => {
     expect(output).toContain("task-ready triage");
     expect(output).toContain("Selected board context: task-ready is in ready.");
     expect(output).toContain("Details · task-ready");
-    expect(output).toContain("Run: run-ready");
+    expect(output).toContain("Run:      run-ready");
   });
 
   it("marks reset as a confirmed destructive executable and Enter cues confirmation before execution", () => {

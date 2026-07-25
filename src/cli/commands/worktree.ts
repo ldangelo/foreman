@@ -8,6 +8,9 @@ import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { Workspace } from "../../lib/vcs/types.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { resolveProjectContext } from "./project-context.js";
+import { emitWorktreeCleaned } from "../../lib/worktree-events.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -93,11 +96,25 @@ export async function listForemanWorktrees(
 export async function cleanWorktrees(
   projectPath: string,
   worktrees: WorktreeInfo[],
-  opts: { all: boolean; force: boolean; dryRun?: boolean },
+  opts: { all: boolean; force: boolean; dryRun?: boolean; elixirClient?: ElixirServerClient; projectId?: string },
 ): Promise<CleanResult> {
   let removed = 0;
   const errors: string[] = [];
   const wouldRemove: WorktreeInfo[] = [];
+
+  const worktreeToRunId = new Map<string, { runId: string; projectId: string }>();
+  if (opts.elixirClient && opts.projectId) {
+    try {
+      const runs = (await opts.elixirClient.listRuns({ projectId: opts.projectId })) as unknown as Run[];
+      for (const run of runs) {
+        if (typeof run.worktree_path === "string" && run.worktree_path.length > 0) {
+          worktreeToRunId.set(run.worktree_path, { runId: run.id, projectId: run.project_id });
+        }
+      }
+    } catch {
+      // Non-fatal — events will simply not be emitted for unmatched paths.
+    }
+  }
 
   for (const wt of worktrees) {
     const shouldClean =
@@ -117,6 +134,16 @@ export async function cleanWorktrees(
       await archiveWorktreeReports(projectPath, wt.path, wt.taskId);
       const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
       await vcs.removeWorkspace(projectPath, wt.path);
+      const match = worktreeToRunId.get(wt.path);
+      if (opts.elixirClient && match) {
+        const result = await emitWorktreeCleaned(opts.elixirClient, {
+          projectId: match.projectId,
+          runId: match.runId,
+          worktreePath: wt.path,
+          reason: "worktree clean",
+        });
+        if (!result.ok) console.log(`  ${chalk.yellow("warning:")} worktree cleanup event rejected: ${result.error?.message ?? "unknown"}`);
+      }
       await vcs.deleteBranch(projectPath, wt.branch, {
         force: opts.force,
       });
@@ -216,10 +243,23 @@ export async function worktreeCleanCommandAction(opts: WorktreeCleanOpts): Promi
 
     console.log(chalk.bold("Cleaning foreman worktrees...\n"));
 
+    let elixirClient: ElixirServerClient | undefined;
+    if (registered) {
+      try {
+        const manager = new ElixirServerManager();
+        const status = await manager.ensureRunning();
+        elixirClient = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+      } catch {
+        elixirClient = undefined;
+      }
+    }
+
     const result = await cleanWorktrees(projectPath, worktrees, {
       all: Boolean(opts.all),
       force: Boolean(opts.force),
       dryRun,
+      elixirClient,
+      projectId: registered?.id,
     });
 
     if (dryRun && result.wouldRemove && result.wouldRemove.length > 0) {

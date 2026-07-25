@@ -9,6 +9,7 @@ import chalk from "chalk";
 
 import { ElixirServerClient } from "../../lib/elixir-server-client.js";
 import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
+import { emitWorktreeCleaned } from "../../lib/worktree-events.js";
 import { resolveProjectContext } from "./project-context.js";
 import { printDryRunNotice } from "./cli-output.js";
 import { ElixirMergeQueue } from "./elixir-merge-queue.js";
@@ -315,12 +316,29 @@ export async function resetAction(taskId: string, opts: ResetOpts = {}): Promise
       .map((candidate) => candidate.worktree_path)
       .filter((path): path is string => typeof path === "string" && path.length > 0),
   ];
+  const runIdByWorktreePath = new Map<string, string>();
+  for (const candidate of runs) {
+    if (typeof candidate.worktree_path === "string" && candidate.worktree_path.length > 0) {
+      const rid = runIdOf(candidate);
+      if (rid) runIdByWorktreePath.set(candidate.worktree_path, rid);
+    }
+  }
   for (const worktreePath of [...new Set(worktreePaths)]) {
     if (!opts.removeWorktree) continue;
     if (dryRun) {
       console.log(`  would remove worktree ${chalk.dim(worktreePath)}`);
     } else {
       await vcs.removeWorkspace(registered.path, worktreePath);
+      const runIdForPath = runIdByWorktreePath.get(worktreePath);
+      if (runIdForPath) {
+        const result = await emitWorktreeCleaned(client, {
+          projectId: registered.id,
+          runId: runIdForPath,
+          worktreePath,
+          reason: "reset --remove-worktree",
+        });
+        if (!result.ok) console.log(`  ${chalk.yellow("warning:")} worktree cleanup event rejected: ${result.error?.message ?? "unknown"}`);
+      }
       console.log(`  removed worktree ${chalk.dim(worktreePath)}`);
     }
   }

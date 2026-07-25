@@ -129,7 +129,7 @@ describe("rotateReport", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("renames an existing report file with a timestamp suffix", () => {
+  it("renames an existing report file with a timestamp suffix when no iteration is given", () => {
     const filename = "FINALIZE_REPORT.md";
     writeFileSync(join(tmpDir, filename), "# Old report");
 
@@ -143,9 +143,55 @@ describe("rotateReport", () => {
     expect(rotated).toBeDefined();
   });
 
-  it("does nothing when the file does not exist (non-fatal)", () => {
-    // Should not throw
-    expect(() => rotateReport(tmpDir, "NONEXISTENT.md")).not.toThrow();
+  it("renames an existing report file with an iteration suffix (i<N>) when iteration is given", () => {
+    // The pipeline-executor rotates the previous iteration's report to
+    // `i${N-1}.md` so re-run debugging can find every attempt without
+    // scanning timestamped filenames.
+    const filename = "FINALIZE_VALIDATION.md";
+    writeFileSync(join(tmpDir, filename), "# previous iteration");
+
+    rotateReport(tmpDir, filename, 1);
+
+    expect(existsSync(join(tmpDir, filename))).toBe(false);
+    expect(existsSync(join(tmpDir, "FINALIZE_VALIDATION.i1.md"))).toBe(true);
+    // No timestamped siblings should be left behind
+    const files = readdirSync(tmpDir);
+    expect(files).toEqual(["FINALIZE_VALIDATION.i1.md"]);
+  });
+
+  it("preserves every iteration when called between writes", () => {
+    // The pipeline-executor rotates the previous iteration's report BEFORE
+    // the next iteration writes. So per iteration: rotate → write.
+    const filename = "FINALIZE_VALIDATION.md";
+
+    // iter 1
+    writeFileSync(join(tmpDir, filename), "iter 1");
+
+    // iter 2 starts: rotate iter 1's file → i1.md, then write iter 2
+    rotateReport(tmpDir, filename, 1);
+    writeFileSync(join(tmpDir, filename), "iter 2");
+
+    // iter 3 starts: rotate iter 2's file → i2.md, then write iter 3
+    rotateReport(tmpDir, filename, 2);
+    writeFileSync(join(tmpDir, filename), "iter 3");
+
+    // After iter 3: canonical file is the current iter, preserved files
+    // are i1.md and i2.md. Operators can list every iteration with
+    // `ls FINALIZE_VALIDATION*` and recover any prior run's report.
+    const files = readdirSync(tmpDir).sort();
+    expect(files).toEqual([
+      "FINALIZE_VALIDATION.i1.md",
+      "FINALIZE_VALIDATION.i2.md",
+      "FINALIZE_VALIDATION.md",
+    ]);
+    expect(readFileSync(join(tmpDir, "FINALIZE_VALIDATION.i1.md"), "utf8")).toBe("iter 1");
+    expect(readFileSync(join(tmpDir, "FINALIZE_VALIDATION.i2.md"), "utf8")).toBe("iter 2");
+    expect(readFileSync(join(tmpDir, "FINALIZE_VALIDATION.md"), "utf8")).toBe("iter 3");
+  });
+
+  it("does nothing when iteration is 0 or undefined and the file does not exist", () => {
+    expect(() => rotateReport(tmpDir, "NONEXISTENT.md", 0)).not.toThrow();
+    expect(() => rotateReport(tmpDir, "NONEXISTENT.md", undefined)).not.toThrow();
   });
 });
 

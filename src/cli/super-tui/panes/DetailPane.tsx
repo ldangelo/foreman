@@ -1,5 +1,4 @@
-import { useEffect, useState, type ReactElement, useRef } from "react";
-import { createElement } from "react";
+import { createElement, useEffect, useState, type ReactElement, useRef } from "react";
 import type { InboxTaskSummary } from "../../commands/inbox.js";
 import type { SuperTuiTab } from "../model.js";
 import { TaskDetails, type TaskDetailsProps } from "../components/TaskDetails.js";

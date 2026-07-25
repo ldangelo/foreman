@@ -1562,8 +1562,16 @@ async function runPhaseSequence(
     const interpolatedArtifact = phase.artifact
       ? interpolateTaskPlaceholders(phase.artifact, phaseMeta)
       : undefined;
+    // `phaseIteration` is the 1-based index of the current run of this phase
+    // in the current run; previous iterations in this run are counted from
+    // `phaseRecords`. The artifact is rotated to `i${phaseIteration-1}` so
+    // the previous run's report is preserved under an iterationed filename.
+    const previousIterations = phaseRecords.filter(
+      (r) => r.name === phaseName || r.name.startsWith(`${phaseName} (`),
+    ).length;
+    const phaseIteration = previousIterations + 1;
     if (interpolatedArtifact) {
-      rotateReport(worktreePath, interpolatedArtifact);
+      rotateReport(worktreePath, interpolatedArtifact, previousIterations);
     }
 
     // Compute VCS-specific prompt variables for finalize and reviewer phases (TRD-026, TRD-027).
@@ -1764,7 +1772,7 @@ async function runPhaseSequence(
       phaseModel = fallbackModelForPhase;
     }
 
-    const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns };
+    const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns, phaseIteration };
     if (phase.tools?.allowed) {
       (phaseConfig as typeof phaseConfig & { allowedTools?: string[] }).allowedTools = phase.tools.allowed;
     }

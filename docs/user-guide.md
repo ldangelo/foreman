@@ -113,9 +113,9 @@ foreman task approve <task-id>
 foreman task show <task-id>
 foreman task list
 ```
-**Board column precedence (operator-done wins):** when the operator marks a task `merged`/`completed`/`done` via `foreman task update`, that lifecycle is authoritative — the task stays in the `done` column even if a later re-target emits `PrReset` (the latest run's `pr_state` would be `closed` but the operator's earlier intent overrides). The task discriminator is `task.status`: `PrMonitor` emits `task.close` on real GitHub closes, so a real close sets both `task.status='closed'` AND `pr_state='closed'` and routes to `done`; an operator reset emits only `run.pr.reset` (no `task.close`), so `task.status` keeps its pre-reset value (typically `failed`) and routes to `blocked` for triage.
+**Board column source:** the board uses `task.status` as the only source for lifecycle column membership. Run state, PR state, workflow phase, stale-worker detection, and attention flags remain card metadata; they do not independently move cards between `backlog`, `ready`, `in-progress`, `blocked`, and `done`. Terminal lifecycle events must update `task.status`: for example, a `PrMerged` event records the task as `merged`, which places it in `done`.
 
-**"Needs Attention" semantics:** the cockpit `type="attention"` flag fires only for genuinely failing active runs (visible_status in `in-progress`). Terminal states (`done`, `blocked`) suppress the attention flag — merged PRs and operator-paused blocks don't need automated attention prompts. `task.status="reset"` (operator reset cleanup) stays in `blocked` so the operator can triage it; it does not auto-route to `done`.
+**"Needs Attention" semantics:** the cockpit `type="attention"` flag can highlight a card with failing run metadata, but it does not choose the card's column. A task appears in `blocked` only when its task status maps to the blocked lifecycle.
 
 ### Workflows
 
@@ -298,7 +298,7 @@ Use `foreman watch` (or `foreman monitor`) as the canonical live cockpit. From t
 
 ### 8. Triage Failures
 
-Attention is for failed/attention runs that are still `in_progress`; start with artifacts before retrying. Blocked-family task statuses (`failed`, `stuck`, `conflict`, `review`, `blocked`) stay in the `blocked` column without `type: "attention"` (the `needs_attention` guard suppresses the attention flag for blocked tasks).
+Attention is for failed/attention runs; start with artifacts before retrying. Attention is metadata on the card, not the column source. A task appears in `blocked` only when `task.status` maps to the blocked lifecycle (`failed`, `stuck`, `conflict`, `review`, `blocked`, etc.).
 
 Recommended order:
 

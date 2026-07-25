@@ -1,7 +1,13 @@
 defmodule ForemanServer.PlanningFlow do
   @moduledoc "Event-backed PRD/TRD planning flow execution through the worker pipeline."
 
-  alias ForemanServer.{AggregateRouter, CommandRouter, EventStore, ProjectionStore, WorkerProtocol}
+  alias ForemanServer.{
+    AggregateRouter,
+    CommandRouter,
+    EventStore,
+    ProjectionStore,
+    WorkerProtocol
+  }
 
   @compat_commands %{
     "/ensemble:create-prd" => "/ensemble:create-prd",

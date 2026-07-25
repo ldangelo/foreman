@@ -883,7 +883,7 @@ describe("inbox Elixir context", () => {
     const expectedLogDir = join(homedir(), ".foreman", "logs");
     expect(rendered).toContain("FOREMAN INBOX › task-event-fallback");
     expect(rendered).toContain("Run:      run-event-fallback");
-    expect(rendered).toContain("State:    running");
+    expect(rendered).toContain("Status:   running");
     expect(rendered).toContain("Recent Messages");
     expect(rendered).toContain("vitest run src/cli/__tests__/inbox-elixir-context.test.ts");
     expect(rendered).toContain("Logs");

@@ -57,11 +57,8 @@ defmodule ForemanServer.BoardItemStateMachine do
       s when s in ["backlog", "open", "todo"] -> "backlog"
       s when s in ["ready", "approved"] -> "ready"
       s when s in ["in_progress", "in-progress", "running", "cooldown", "review"] -> "in-progress"
-      # User clarification: reset isn't done. It stays at "blocked"
-      # because PrReset is a cleanup signal that may need attention.
-      # `pr_state="reset"` continues to route to "blocked" via
-      # `pr_state_to_board_status/1`. `pr_created` is done (the
-      # PR exists; the run is still in pr-wait / merge phases).
+      # `PrMerged` must update task.status to "merged"; board grouping
+      # should not need to infer lifecycle state from run PR metadata.
       s when s in ["merged", "closed", "completed", "done", "pr_created"] -> "done"
       s when s == "reset" -> "blocked"
       s when s in ["blocked", "conflict", "stuck", "failed", "fail", "test_failed"] -> "blocked"
@@ -80,18 +77,4 @@ defmodule ForemanServer.BoardItemStateMachine do
   @spec board_column_key(status()) :: String.t()
   def board_column_key("in-progress"), do: "in_progress"
   def board_column_key(other) when is_binary(other), do: other
-  @doc """
-  Translate a run's `pr_state` to a board-level override. Used by the
-  grouping logic to give PR terminal state precedence over a stale
-  `task.status`. Returns `nil` for non-terminal PR states so the
-  caller falls through to the task-based check.
-
-  Precedence: PR `merged` → `done`; PR `closed`/`reset` → `blocked`;
-  anything else (open, nil) → `nil` (caller falls through).
-  """
-  @spec pr_state_to_board_status(String.t() | nil) :: status() | nil
-  def pr_state_to_board_status("merged"), do: "done"
-  def pr_state_to_board_status("closed"), do: "blocked"
-  def pr_state_to_board_status("reset"), do: "blocked"
-  def pr_state_to_board_status(_), do: nil
 end

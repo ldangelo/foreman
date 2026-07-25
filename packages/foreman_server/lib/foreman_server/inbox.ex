@@ -40,7 +40,7 @@ defmodule ForemanServer.Inbox do
     |> Kernel.||([])
     |> Enum.map(&get_in(snapshot, [:inbox_messages, &1]))
     |> Enum.reject(&is_nil/1)
-    |> Enum.sort_by(&Map.get(&1, :created_at) || DateTime.utc_now(), {:asc, DateTime})
+    |> Enum.sort_by(&(Map.get(&1, :created_at) || DateTime.utc_now()), {:asc, DateTime})
   end
 
   @spec append_phase_mail(String.t(), map(), map()) :: {:ok, [map()]} | {:error, term()}
@@ -232,7 +232,11 @@ defmodule ForemanServer.Inbox do
 
   defp delivery_update_idempotency_key(update) do
     stable_update = Map.drop(update, [:updated_at, "updated_at"])
-    fingerprint = :crypto.hash(:sha256, :erlang.term_to_binary(stable_update)) |> Base.url_encode64(padding: false)
+
+    fingerprint =
+      :crypto.hash(:sha256, :erlang.term_to_binary(stable_update))
+      |> Base.url_encode64(padding: false)
+
     "InboxDeliveryUpdated:#{update.message_id}:#{fingerprint}"
   end
 

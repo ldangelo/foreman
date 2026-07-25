@@ -8,6 +8,9 @@ import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { resolveProjectContext } from "./project-context.js";
+import { emitWorktreeCleaned } from "../../lib/worktree-events.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 type RunStore = ForemanStore | ElixirCliStore;
 
@@ -63,6 +66,7 @@ async function abandonRun(
     store: RunStore;
     queue: MergeQueue | ElixirMergeQueue;
     vcs: Awaited<ReturnType<typeof VcsBackendFactory.create>>;
+    elixirClient?: ElixirServerClient;
   },
 ): Promise<void> {
   const dryRun = opts.dryRun ?? false;
@@ -81,6 +85,15 @@ async function abandonRun(
     } else {
       await archiveWorktreeReports(deps.projectPath, run.worktree_path, run.task_id).catch(() => {});
       await deps.vcs.removeWorkspace(deps.projectPath, run.worktree_path);
+      if (deps.elixirClient && run.project_id) {
+        const result = await emitWorktreeCleaned(deps.elixirClient, {
+          projectId: run.project_id,
+          runId: run.id,
+          worktreePath: run.worktree_path,
+          reason: "abandon",
+        });
+        if (!result.ok) console.log(`  ${chalk.yellow("warning:")} worktree cleanup event rejected: ${result.error?.message ?? "unknown"}`);
+      }
       console.log(`  removed worktree ${chalk.dim(run.worktree_path)}`);
     }
   }
@@ -146,7 +159,17 @@ export async function abandonAction(target: string | undefined, opts: AbandonOpt
       ? new ElixirMergeQueue(registered.id, registered.path)
       : new MergeQueue(localStore.getDb());
     const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
-    const deps = { projectPath, store, queue, vcs };
+    let elixirClient: ElixirServerClient | undefined;
+    if (registered) {
+      try {
+        const manager = new ElixirServerManager();
+        const status = await manager.ensureRunning();
+        elixirClient = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+      } catch {
+        elixirClient = undefined;
+      }
+    }
+    const deps = { projectPath, store, queue, vcs, elixirClient };
 
     if (opts.missingBranches) {
       const runs = await findCompletedRunsWithMissingBranches(store, projectPath);
