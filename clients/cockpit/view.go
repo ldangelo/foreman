@@ -1161,7 +1161,11 @@ func (m model) renderViewerLines(run Run, it Item, isRun bool, w int, visual pan
 		for _, r := range sorted {
 			if !seenPhases[r.Phase] {
 				seenPhases[r.Phase] = true
-				add("report-phase:"+r.Phase, dimStyle.Render("── "+r.Phase+" ──"), target{})
+				s = append(s, ViewerLine{
+					Key:          "report-phase:" + r.Phase,
+					Text:         dimStyle.Render("── " + r.Phase + " ──"),
+					Unselectable: true,
+				})
 			}
 			sc := visual.Green
 			if r.Status != "done" {
