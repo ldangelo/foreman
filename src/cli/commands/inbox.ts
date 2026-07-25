@@ -127,9 +127,9 @@ const PIPELINE_EVENT_ICONS: Record<string, string> = {
   "merge-cleanup-fallback":"⚠",
   "WorktreeCreated":       "▣",
   "worktree-created":      "▣",
-  "conflict":              "⚠",
-  "test-fail":             "✗",
-  "stuck":                 "⚠",
+  "WorktreeCleaned":       "▢",
+  "worktree-cleaned":      "▢",
+  "worktree-removed":      "▢",
 };
 
 export function formatPipelineEvent(event: PipelineEvent): string {
@@ -566,6 +566,13 @@ export function formatEventSummary(eventType: string, details: Record<string, un
       const branch = detailString(details, ["branchName", "branch_name"]);
       const path = detailString(details, ["worktreePath", "worktree_path"]);
       return `Worktree created${target ? ` for ${target}` : ""}${branch ? ` (${branch})` : ""}${path ? ` at ${path}` : ""}`;
+    }
+    case "WorktreeCleaned":
+    case "worktree-cleaned":
+    case "worktree-removed": {
+      const path = detailString(details, ["worktreePath", "worktree_path"]);
+      const reason = detailString(details, ["reason"]);
+      return `Worktree removed${target ? ` for ${target}` : ""}${path ? ` (${path})` : ""}${reason ? ` — ${reason}` : ""}`;
     }
     case "WorkerLaunchFailed":
       return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
@@ -1487,12 +1494,49 @@ export interface InboxTaskSummary {
   worktreePath: string | null;
   messages: Message[];
   events: PipelineEvent[];
+  /**
+   * Canonical lifecycle status from the task projection (/api/v1/tasks/:id).
+   * Distinct from `runStatus` (run-level) and `statusText` (mailbox-derived).
+   * Operators should rely on this field for "what is the task's current state"
+   * instead of the run or latest message. `undefined` when the canonical
+   * fetch was unavailable (postgres/store backends without task fetch) or
+   * the summary was constructed by a test fixture that pre-dates this field.
+   */
+  taskStatus?: string | null;
+  /**
+   * Canonical current phase from the task projection. Server-set, not derived
+   * from mailbox bodies or event phase_id fields. `undefined` when unavailable.
+   */
+  taskPhaseId?: string | null;
+  /**
+   * Canonical reason text from the task projection (e.g. "reset requested from cockpit").
+   */
+  taskReason?: string | null;
+  /**
+   * Canonical failure reason text from the task projection.
+   */
+  taskFailureReason?: string | null;
+}
+
+/**
+ * Minimal canonical task record carried alongside the inbox data set so the
+ * cockpit's DetailPane can render task-level fields without falling back to
+ * mailbox-derived or run-derived text. Source: `/api/v1/tasks/:id`.
+ */
+export interface InboxTaskDetail {
+  taskId: string;
+  status: string;
+  phaseId: string | null;
+  reason: string | null;
+  failureReason: string | null;
 }
 
 interface InboxDataSet {
   runs: Run[];
   messages: Message[];
   events: PipelineEvent[];
+  /** Canonical task records keyed by taskId; empty for backends without task fetch. */
+  tasks: InboxTaskDetail[];
 }
 
 export function timestampMs(value: unknown): number {
@@ -1632,6 +1676,10 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
   ]);
 
   const summaries: InboxTaskSummary[] = [];
+  const taskById = new Map<string, InboxTaskDetail>();
+  for (const task of data.tasks ?? []) {
+    if (task.taskId) taskById.set(task.taskId, task);
+  }
   for (const runId of runIds) {
     const run = runById.get(runId);
     const messages = [...(messagesByRun.get(runId) ?? [])].sort((a, b) => timestampMs(a.created_at) - timestampMs(b.created_at));
@@ -1653,6 +1701,7 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
     });
     const phase = phaseFromEvent(latestEvt) ?? (latestMsg ? messagePhase(latestMsg) : undefined) ?? "unknown";
     const taskId = run?.task_id ?? (latestMsg ? messageTask(latestMsg) : runId);
+    const canonical = taskId ? taskById.get(taskId) : undefined;
     const summary: InboxTaskSummary = {
       taskId,
       runId,
@@ -1668,32 +1717,34 @@ export function buildInboxTaskSummaries(data: InboxDataSet, scope: InboxScope = 
       worktreePath: run?.worktree_path ?? null,
       messages,
       events,
+      taskStatus: canonical?.status ?? null,
+      taskPhaseId: canonical?.phaseId ?? null,
+      taskReason: canonical?.reason ?? null,
+      taskFailureReason: canonical?.failureReason ?? null,
     };
     if (scopeIncludesSummary(scope, summary)) summaries.push(summary);
   }
-
   return summaries.sort((a, b) => timestampMs(b.lastActivityAt) - timestampMs(a.lastActivityAt));
 }
 
 export function renderInboxTaskSummaryTable(summaries: InboxTaskSummary[]): string {
-  if (summaries.length === 0) return "No active or attention tasks found.";
   const rows = summaries.map((summary) => ({
     task: summary.taskId,
     state: summary.runStatus,
     phase: summary.phase,
-    run: summary.runId.slice(0, 10),
-    last: summary.lastActivityAt ? formatTimestamp(summary.lastActivityAt) : "—",
+    run: summary.runId,
+    last: summary.lastActivityAt ?? "—",
     age: relativeTime(summary.lastActivityAt),
     verdict: summary.verdict,
     status: summary.statusText,
   }));
-  const widths = {
+  const widths: { task: number; state: number; phase: number; run: number; last: number; age: number; verdict: number; status: number } = {
     task: Math.max(12, ...rows.map((row) => row.task.length)),
-    state: Math.max(10, ...rows.map((row) => row.state.length)),
-    phase: Math.max(10, ...rows.map((row) => row.phase.length)),
-    run: 10,
-    last: 19,
-    age: Math.max(8, ...rows.map((row) => row.age.length)),
+    state: Math.max(8, ...rows.map((row) => row.state.length)),
+    phase: Math.max(8, ...rows.map((row) => row.phase.length)),
+    run: Math.max(8, ...rows.map((row) => row.run.length)),
+    last: Math.max(18, ...rows.map((row) => row.last.length)),
+    age: Math.max(7, ...rows.map((row) => row.age.length)),
     verdict: Math.max(7, ...rows.map((row) => row.verdict.length)),
     status: Math.max(20, Math.min(80, getTerminalWidth() - 96)),
   };
@@ -2025,15 +2076,24 @@ function selectRecentChronological<T>(items: T[], limit: number, timestamp: (ite
 }
 
 export async function renderTaskDetail(summary: InboxTaskSummary, options: { messages: boolean; events: boolean; logs?: boolean; reports?: boolean; files?: boolean; limit: number; eventsLimit: number }): Promise<string> {
+  // Read canonical task fields (`taskStatus`/`taskPhaseId`/`taskReason`/
+  // `taskFailureReason`) ahead of run-derived fields. The previous version
+  // leaked mailbox body content (`phase=finalize status=failed`) into the
+  // Status row because `statusText` was the latest parsed message body.
+  const status = summary.taskStatus ?? summary.runStatus;
+  const phase = summary.taskPhaseId ?? summary.phase;
+  const reason = summary.taskFailureReason ?? summary.taskReason ?? null;
+  const activePhase = summary.phase;
+  const showActivePhaseSuffix = activePhase && activePhase !== phase && activePhase !== "unknown";
   const lines = [
     chalk.bold(`FOREMAN INBOX › ${summary.taskId}`),
     `Run:      ${summary.runId}`,
-    `State:    ${summary.runStatus}`,
-    `Phase:    ${summary.phase}`,
+    `Status:   ${status}${phase && phase !== "unknown" ? ` · Phase: ${phase}` : ""} · Verdict: ${summary.verdict}`,
+    showActivePhaseSuffix ? `Active:   ${activePhase} (in flight)` : null,
+    reason ? `Reason:   ${reason}` : null,
     `Activity: ${relativeTime(summary.lastActivityAt)} via ${summary.lastActivitySource}`,
-    `Verdict:  ${summary.verdict}`,
-    `Status:   ${summary.statusText}`,
-  ];
+    `Last:     ${summary.statusText ?? "—"}`,
+  ].filter((line): line is string => line !== null);
   if (options.events) {
     lines.push("", chalk.bold("Recent Events"));
     const events = selectRecentChronological(summary.events, options.eventsLimit, (event) => event.createdAt);
@@ -2130,7 +2190,7 @@ async function loadTaskDetailSummary(
   const boundedEvents = [...events]
     .sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt))
     .slice(0, options.eventsLimit);
-  const summaries = buildInboxTaskSummaries({ runs, messages: boundedMessages, events: boundedEvents }, "all");
+  const summaries = buildInboxTaskSummaries({ runs, messages: boundedMessages, events: boundedEvents, tasks: [] }, "all");
   return {
     runId,
     summary: findSummaryForRunOrTask(summaries, { run: runId }) ?? findSummaryForRunOrTask(summaries, { task: selector.task }) ?? summaries[0] ?? null,
@@ -2435,7 +2495,6 @@ async function fetchMessagesForSources(
   if (!options.runId) return [];
   return fetchMessages(sources.store, options.runId, options.agent, options.unread ?? false, options.limit);
 }
-
 async function fetchEventsForSources(
   sources: InboxSources,
   options: { all?: boolean; runId?: string; limit: number },
@@ -2447,6 +2506,38 @@ async function fetchEventsForSources(
   if (!sources.store) return [];
   if (options.all) return fetchEventsFromStore(sources.store, options.limit);
   return options.runId ? fetchEventsFromStoreForRun(sources.store, options.runId, options.limit) : [];
+}
+
+/**
+ * Fetch canonical task records from the active backend. The daemon (elixir)
+ * path calls `client.listTasks()` and projects each record into the inbox
+ * detail shape. Other backends return an empty array — the canonical fields
+ * in `InboxTaskSummary` stay null and the cockpit falls back to run-derived
+ * text.
+ */
+async function fetchInboxTasksForSources(sources: InboxSources): Promise<InboxTaskDetail[]> {
+  if (sources.daemon) {
+    const client = sources.daemon.client;
+    if (typeof client.listTasks !== "function") return [];
+    try {
+    const raw: unknown[] = (await client.listTasks()) as unknown[];
+    const projectId = sources.daemon.projectId;
+    type RawTask = { task_id?: unknown; id?: unknown; project_id?: unknown; status?: unknown; phase_id?: unknown; reason?: unknown; failure_reason?: unknown };
+    return (raw as RawTask[])
+      .filter((task: RawTask) => !projectId || task.project_id === projectId)
+      .map((task: RawTask) => ({
+        taskId: String(task.task_id ?? task.id ?? ""),
+        status: String(task.status ?? ""),
+        phaseId: typeof task.phase_id === "string" ? task.phase_id : null,
+        reason: typeof task.reason === "string" ? task.reason : null,
+        failureReason: typeof task.failure_reason === "string" ? task.failure_reason : null,
+      }))
+      .filter((task: InboxTaskDetail) => task.taskId !== "");
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 async function loadInboxOverview(
@@ -2469,6 +2560,7 @@ async function loadInboxOverview(
   } catch {
     events = [];
   }
+  const tasks = await fetchInboxTasksForSources(sources);
   const messageRunIds = new Set(messages.map((message) => message.run_id));
   const eventRunIds = new Set(events.map((event) => event.runId).filter((runId): runId is string => Boolean(runId)));
   const activeRuns = runs.filter((run) => isActiveRunStatus(runStatusText(run)));
@@ -2493,6 +2585,7 @@ async function loadInboxOverview(
     runs,
     messages: [...messages, ...activeMessages.flat()],
     events: [...events, ...activeEvents.flat()],
+    tasks,
   }, options.scope);
 }
 

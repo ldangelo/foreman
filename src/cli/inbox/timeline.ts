@@ -498,6 +498,13 @@ function formatEventSummary(eventType: string, details: Record<string, unknown> 
       const path = detailString(details, ["worktreePath", "worktree_path"]);
       return `Worktree created${target ? ` for ${target}` : ""}${branch ? ` (${branch})` : ""}${path ? ` at ${path}` : ""}`;
     }
+    case "WorktreeCleaned":
+    case "worktree-cleaned":
+    case "worktree-removed": {
+      const path = detailString(details, ["worktreePath", "worktree_path"]);
+      const reason = detailString(details, ["reason"]);
+      return `Worktree removed${target ? ` for ${target}` : ""}${path ? ` (${path})` : ""}${reason ? ` — ${reason}` : ""}`;
+    }
     case "WorkerLaunchFailed":
       return `Worker launch failed${target ? ` for ${target}` : ""}${error ? `: ${error}` : ""}`;
     case "WorkerProcessExited": {

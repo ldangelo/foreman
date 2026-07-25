@@ -8,6 +8,9 @@ import { archiveWorktreeReports } from "../../lib/archive-reports.js";
 import { MergeQueue, type MergeQueueEntry } from "../../orchestrator/merge-queue.js";
 import { ElixirMergeQueue } from "./elixir-merge-queue.js";
 import { resolveProjectContext } from "./project-context.js";
+import { emitWorktreeCleaned } from "../../lib/worktree-events.js";
+import { ElixirServerClient } from "../../lib/elixir-server-client.js";
+import { ElixirServerManager } from "../../lib/elixir-server-manager.js";
 
 type RunStore = ForemanStore | ElixirCliStore;
 type Queue = MergeQueue | ElixirMergeQueue;
@@ -62,14 +65,18 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
   const store: RunStore = registered ? ElixirCliStore.forProject(registered) : localStore;
   const queue: Queue = registered ? new ElixirMergeQueue(registered.id, projectPath) : new MergeQueue(localStore.getDb());
   const vcs = await VcsBackendFactory.create({ backend: "auto" }, projectPath);
+  let elixirClient: ElixirServerClient | undefined;
+  if (registered) {
+    try {
+      const manager = new ElixirServerManager();
+      const status = await manager.ensureRunning();
+      elixirClient = new ElixirServerClient(status.url, process.env.FOREMAN_SERVER_AUTH_TOKEN);
+    } catch {
+      elixirClient = undefined;
+    }
+  }
   const dryRun = opts.dryRun ?? !opts.force;
   const reason = "clean state reset";
-
-  const close = () => {
-    localStore.close();
-    if (store !== localStore) store.close();
-  };
-
   try {
     if (!dryRun && !opts.force) {
       console.error(chalk.red("Error: clean-state mutation requires --force. Use --dry-run to preview."));
@@ -143,9 +150,25 @@ export async function cleanStateAction(opts: CleanStateOpts = {}): Promise<numbe
     for (const run of runsToDrop.values()) {
       await markRunDropped(store, run, reason, opts.keepTasks ?? false);
     }
+    const worktreeToRunId = new Map<string, string>();
+    for (const run of runsToDrop.values()) {
+      if (typeof run.worktree_path === "string" && run.worktree_path.length > 0) {
+        worktreeToRunId.set(run.worktree_path, run.id);
+      }
+    }
     for (const wt of worktreesToRemove.values()) {
       await archiveWorktreeReports(projectPath, wt.path, wt.taskId).catch(() => {});
       await vcs.removeWorkspace(projectPath, wt.path);
+      const runIdForPath = worktreeToRunId.get(wt.path);
+      if (elixirClient && runIdForPath) {
+        const result = await emitWorktreeCleaned(elixirClient, {
+          projectId: registered?.id ?? "",
+          runId: runIdForPath,
+          worktreePath: wt.path,
+          reason: "clean-state --force",
+        });
+        if (!result.ok) console.log(`  ${chalk.yellow("warning:")} worktree cleanup event rejected: ${result.error?.message ?? "unknown"}`);
+      }
     }
     if (opts.deleteBranches) {
       for (const branchName of branchesToDelete) {

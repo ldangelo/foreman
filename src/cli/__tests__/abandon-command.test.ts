@@ -10,6 +10,8 @@ const {
   mockRemoveWorkspace,
   mockDeleteBranch,
   mockBranchExists,
+  mockElixirEnsureRunning,
+  mockSendCommand,
 } = vi.hoisted(() => {
   const mockResolveProjectContext = vi.fn();
   const mockLocalStore = {
@@ -36,6 +38,14 @@ const {
   const mockRemoveWorkspace = vi.fn(async () => {});
   const mockDeleteBranch = vi.fn(async () => ({ deleted: true, wasFullyMerged: false }));
   const mockBranchExists = vi.fn(async () => false);
+  const mockElixirEnsureRunning = vi.fn(async () => ({ url: "http://elixir.test" }));
+  const mockSendCommand = vi.fn(async (cmd: { command_type: string }) => ({
+    ok: true,
+    events: [],
+    projection_version: 1,
+    correlation_id: "c1",
+    data: { command_type: cmd.command_type },
+  }));
   return {
     mockResolveProjectContext,
     mockLocalStore,
@@ -45,6 +55,8 @@ const {
     mockRemoveWorkspace,
     mockDeleteBranch,
     mockBranchExists,
+    mockElixirEnsureRunning,
+    mockSendCommand,
   };
 });
 
@@ -73,7 +85,6 @@ vi.mock("../commands/elixir-merge-queue.js", () => ({
     remove = mockMergeQueueRemove;
   },
 }));
-
 vi.mock("../../lib/vcs/index.js", () => ({
   VcsBackendFactory: {
     create: vi.fn(async () => ({
@@ -81,6 +92,21 @@ vi.mock("../../lib/vcs/index.js", () => ({
       deleteBranch: mockDeleteBranch,
       branchExists: mockBranchExists,
     })),
+  },
+}));
+
+vi.mock("../../lib/elixir-server-manager.js", () => ({
+  ElixirServerManager: class MockManager {
+    ensureRunning = mockElixirEnsureRunning;
+    status = vi.fn(() => ({ ok: true, url: "http://elixir.test" }));
+  },
+}));
+
+vi.mock("../../lib/elixir-server-client.js", () => ({
+  ElixirServerClient: class MockClient {
+    sendCommand = mockSendCommand;
+    listRuns = vi.fn(async () => []);
+    listTasks = vi.fn(async () => []);
   },
 }));
 
@@ -144,6 +170,23 @@ describe("abandonAction", () => {
     await abandonAction("run-1", { deleteBranch: true, force: true });
 
     expect(mockDeleteBranch).toHaveBeenCalledWith("/tmp/project", "foreman/task-1", { force: true });
+  });
+
+  it("emits a vcs.worktree.clean command after removeWorkspace (CQRS)", async () => {
+    mockPostgresStore.getRun.mockResolvedValue(makeRun({ id: "run-1", project_id: "proj-1", worktree_path: "/tmp/wt/task-1" }));
+    const code = await abandonAction("run-1");
+    expect(code).toBe(0);
+    expect(mockRemoveWorkspace).toHaveBeenCalledWith("/tmp/project", "/tmp/wt/task-1");
+    type CleanCommand = { command_type: string; payload: Record<string, unknown> };
+    const cleanCalls = mockSendCommand.mock.calls
+      .map((call) => call[0] as CleanCommand)
+      .filter((cmd) => cmd.command_type === "vcs.worktree.clean");
+    expect(cleanCalls).toHaveLength(1);
+    const payload = cleanCalls[0].payload;
+    expect(payload.run_id).toBe("run-1");
+    expect(payload.project_id).toBe("proj-1");
+    expect(payload.worktree_path).toBe("/tmp/wt/task-1");
+    expect(payload.reason).toBe("abandon");
   });
 
   it("bulk-abandons completed runs with missing branches", async () => {
