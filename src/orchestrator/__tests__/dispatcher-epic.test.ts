@@ -1,11 +1,11 @@
 /**
- * dispatcher-epic.test.ts — Tests for TRD-006: epic task dispatch logic.
+ * dispatcher-epic.test.ts — Tests for TRD-006 / PRD-2026-007: epic task dispatch logic.
  *
- * Verifies current native-task behavior:
- *  1. Epic tasks dispatch as single-agent tasks
- *  2. Task tasks dispatch through standard path
- *  3. Empty epics still dispatch as ordinary tasks
- *  4. Epic counts as 1 agent slot
+ * Verifies native-task epic behavior per PRD-2026-007 AC-001:
+ *  1. Epic tasks with 3+ children spawn Epic Runner with epicTasks
+ *  2. Epic tasks with 0 children auto-close and skip dispatch
+ *  3. Epic tasks with < 3 children fall back to single-agent dispatch
+ *  4. Task type still uses standard pipeline (no change)
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Dispatcher } from "../dispatcher.js";
@@ -13,6 +13,9 @@ import type { ITaskClient, Issue } from "../../lib/task-client.js";
 import type { ForemanStore } from "../../lib/store.js";
 import { VcsBackendFactory } from "../../lib/vcs/index.js";
 import type { EpicTask } from "../pipeline-executor.js";
+import type { DispatcherOverrides } from "../dispatcher.js";
+import type { NativeTaskStatus } from "../types.js";
+type NativeTaskOps = DispatcherOverrides["nativeTaskOps"] extends infer T ? NonNullable<T> : never;
 
 // ── Module Mocks ─────────────────────────────────────────────────────────────
 
@@ -139,11 +142,13 @@ function makeIssue(id: string, type: string, priority = "P2"): Issue {
 
 
 let currentReadyIssues: Issue[] = [];
+let childTasksByParent: Record<string, string[]> = {};
+let childTaskDetails: Record<string, ReturnType<typeof nativeTaskFromIssue>> = {};
 
 function nativeTaskFromIssue(issue: Issue) {
   return {
     id: issue.id, title: issue.title, description: issue.description ?? null, type: issue.type,
-    priority: Number(String(issue.priority ?? "2").replace(/^P/, "")) || 2, status: "ready",
+    priority: Number(String(issue.priority ?? "2").replace(/^P/, "")) || 2, status: "ready" as NativeTaskStatus,
     run_id: null, branch: null, external_id: null, labels: issue.labels ?? [], parent: issue.parent ?? null,
     created_at: issue.created_at, updated_at: issue.updated_at, approved_at: new Date().toISOString(), closed_at: null,
   };
@@ -160,7 +165,12 @@ function makeStore(): ForemanStore {
     hasNativeTasks: vi.fn().mockReturnValue(true),
     getReadyTasks: vi.fn(() => currentReadyIssues.map(nativeTaskFromIssue)),
     getTaskByExternalId: vi.fn().mockReturnValue(null),
-    getTaskById: vi.fn((id: string) => currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null),
+    getTaskById: vi.fn((id: string) => {
+      // Check child tasks first
+      const childDetail = childTaskDetails[id];
+      if (childDetail) return childDetail;
+      return currentReadyIssues.map(nativeTaskFromIssue).find((task) => task.id === id) ?? null;
+    }),
     claimTask: vi.fn().mockReturnValue(true),
     hasActiveOrPendingRun: vi.fn().mockReturnValue(false),
     createRun: vi.fn().mockReturnValue({ id: "run-1" }),
@@ -169,6 +179,26 @@ function makeStore(): ForemanStore {
     sendMessage: vi.fn(),
     getPendingTaskWrites: vi.fn().mockReturnValue([]),
   } as unknown as ForemanStore;
+}
+
+function makeNativeTaskOps(): NativeTaskOps {
+  return {
+    hasNativeTasks: vi.fn().mockResolvedValue(true),
+    getReadyTasks: vi.fn().mockResolvedValue(currentReadyIssues.map(nativeTaskFromIssue)),
+    getTaskByExternalId: vi.fn().mockResolvedValue(null),
+    getTaskById: vi.fn((id: string) => {
+      const childDetail = childTaskDetails[id];
+      if (childDetail) return Promise.resolve(childDetail);
+      const task = currentReadyIssues.map(nativeTaskFromIssue).find((t) => t.id === id);
+      return Promise.resolve(task ?? null);
+    }),
+    claimTask: vi.fn().mockResolvedValue(true),
+    updateTaskStatus: vi.fn().mockResolvedValue(undefined),
+    getChildren: vi.fn((parentId: string) => {
+      const children = childTasksByParent[parentId] ?? [];
+      return Promise.resolve(children);
+    }),
+  };
 }
 
 function makeTasksClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
@@ -189,52 +219,152 @@ function makeTasksClient(overrides: Partial<ITaskClient> = {}): ITaskClient {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("Dispatcher — Epic Task Detection (TRD-006)", () => {
+describe("Dispatcher — Epic Task Detection (TRD-006 / PRD-2026-007)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset test data
+    currentReadyIssues = [];
+    childTasksByParent = {};
+    childTaskDetails = {};
   });
 
-  it("epic task dispatches as a single-agent task without child expansion", async () => {
-    const epicIssue = makeIssue("epic-1", "epic");
+  // Helper to set up ready issues that will be returned by both store and nativeOps
+  function setupReadyIssues(issues: Issue[]): void {
+    currentReadyIssues = issues;
+  }
+
+  // Helper to set up epic with children
+  function setupEpicWithChildren(epicId: string, childIds: string[]): void {
+    childTasksByParent[epicId] = childIds;
+    for (const childId of childIds) {
+      childTaskDetails[childId] = {
+        id: childId,
+        title: `Child Task ${childId}`,
+        description: `Description for ${childId}`,
+        type: "task",
+        priority: 2,
+        status: "ready" as NativeTaskStatus,
+        run_id: null,
+        branch: null,
+        external_id: null,
+        labels: [],
+        parent: epicId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        approved_at: new Date().toISOString(),
+        closed_at: null,
+      };
+    }
+  }
+
+  // ── PRD-2026-007 AC-001-1: Epic with 3+ children spawns Epic Runner ────────
+
+  it("AC-001-1: epic with 3+ children spawns Epic Runner with epicTasks", async () => {
+    const epicIssue = makeIssue("epic-3plus", "epic");
+    setupReadyIssues([epicIssue]);
+    setupEpicWithChildren("epic-3plus", ["child-1", "child-2", "child-3"]);
+
     const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue]),
-      show: vi.fn().mockResolvedValue({
-        ...epicIssue,
-        children: ["child-1", "child-2", "child-3"],
-      }),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
 
-    // Spy on spawnAgent to capture the call args without actually spawning
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
 
     const result = await dispatcher.dispatch({ pipeline: true });
 
-    // Should have dispatched (not skipped)
     expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].taskId).toBe("epic-1");
+    expect(result.dispatched[0].taskId).toBe("epic-3plus");
     expect(result.skipped).toHaveLength(0);
 
-    // Native tasks do not expose child expansion to the worker.
     expect(spawnSpy).toHaveBeenCalledOnce();
     const callArgs = spawnSpy.mock.calls[0];
-    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+    const epicTasks = callArgs[10] as EpicTask[];
     const epicId = callArgs[11] as string | undefined;
 
-    expect(epicTasks).toBeUndefined();
-    expect(epicId).toBeUndefined();
+    // Epic with 3+ children should pass epicTasks to spawnAgent
+    expect(epicTasks).toBeDefined();
+    expect(epicTasks.length).toBe(3);
+    expect(epicTasks[0].taskId).toBe("child-1");
+    expect(epicTasks[1].taskId).toBe("child-2");
+    expect(epicTasks[2].taskId).toBe("child-3");
+    expect(epicId).toBe("epic-3plus");
   });
 
-  it("task task dispatches via standard path without epicTasks", async () => {
-    const taskIssue = makeIssue("task-1", "task");
+  it("AC-001-1: epic with 5 children spawns Epic Runner with all 5 epicTasks", async () => {
+    const epicIssue = makeIssue("epic-big", "epic");
+    setupReadyIssues([epicIssue]);
+    setupEpicWithChildren("epic-big", ["child-1", "child-2", "child-3", "child-4", "child-5"]);
+
     const tasksClient = makeTasksClient({
-      ready: vi.fn().mockResolvedValue([taskIssue]),
-      show: vi.fn().mockResolvedValue({ ...taskIssue, description: "do the thing" }),
+      ready: vi.fn().mockResolvedValue([epicIssue]),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(spawnSpy).toHaveBeenCalledOnce();
+
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[];
+    expect(epicTasks).toBeDefined();
+    expect(epicTasks.length).toBe(5);
+  });
+
+  // ── PRD-2026-007 AC-001-3: Epic with 0 children auto-closes ───────────────
+
+  it("AC-001-3: epic with 0 children auto-closes and is skipped", async () => {
+    const epicIssue = makeIssue("epic-empty", "epic");
+    setupReadyIssues([epicIssue]);
+    // No children set up
+
+    const updateStatusFn = vi.fn();
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([epicIssue]),
+    });
+    const store = makeStore();
+    const nativeOps = makeNativeTaskOps();
+    (nativeOps as { updateTaskStatus?: typeof updateStatusFn }).updateTaskStatus = updateStatusFn;
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    // Should be skipped, not dispatched
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].taskId).toBe("epic-empty");
+    expect(result.skipped[0].reason).toBe("Epic has no child tasks");
+
+    // Should have called updateNativeTaskStatus to close the epic
+    expect(updateStatusFn).toHaveBeenCalledWith("epic-empty", "closed");
+
+    // Should NOT have spawned an agent
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  // ── PRD-2026-007 AC-001-2: Task type uses standard pipeline ────────────────
+
+  it("AC-001-2: task type dispatches via standard path without epicTasks", async () => {
+    const taskIssue = makeIssue("task-1", "task");
+    setupReadyIssues([taskIssue]);
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([taskIssue]),
+    });
+    const store = makeStore();
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -244,29 +374,50 @@ describe("Dispatcher — Epic Task Detection (TRD-006)", () => {
     expect(result.dispatched).toHaveLength(1);
     expect(result.dispatched[0].taskId).toBe("task-1");
 
-    // spawnAgent should have been called WITHOUT epicTasks
     expect(spawnSpy).toHaveBeenCalledOnce();
     const callArgs = spawnSpy.mock.calls[0];
     const epicTasks = callArgs[10] as EpicTask[] | undefined;
-    const epicId = callArgs[11] as string | undefined;
 
+    // Task should NOT have epicTasks
     expect(epicTasks).toBeUndefined();
-    expect(epicId).toBeUndefined();
   });
 
-  it("epic task with 0 children still dispatches as a normal task", async () => {
-    const epicIssue = makeIssue("epic-empty", "epic");
-    const closeFn = vi.fn().mockResolvedValue(undefined);
+  it("AC-001-2: bug type dispatches via standard path without epicTasks", async () => {
+    const bugIssue = makeIssue("bug-1", "bug");
+    setupReadyIssues([bugIssue]);
     const tasksClient = makeTasksClient({
-      ready: vi.fn().mockResolvedValue([epicIssue]),
-      show: vi.fn().mockResolvedValue({
-        ...epicIssue,
-        children: [],
-      }),
-      close: closeFn,
+      ready: vi.fn().mockResolvedValue([bugIssue]),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(spawnSpy).toHaveBeenCalledOnce();
+
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+    expect(epicTasks).toBeUndefined();
+  });
+
+  // ── Fallback behavior: epic with < 3 children ───────────────────────────────
+
+  it("epic with 2 children falls back to single-agent dispatch", async () => {
+    const epicIssue = makeIssue("epic-2", "epic");
+    setupReadyIssues([epicIssue]);
+    setupEpicWithChildren("epic-2", ["child-1", "child-2"]);
+
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([epicIssue]),
+    });
+    const store = makeStore();
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
@@ -275,136 +426,223 @@ describe("Dispatcher — Epic Task Detection (TRD-006)", () => {
 
     expect(result.dispatched).toHaveLength(1);
     expect(result.skipped).toHaveLength(0);
-    expect(closeFn).not.toHaveBeenCalled();
+
     expect(spawnSpy).toHaveBeenCalledOnce();
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+
+    // Epic with < 3 children should NOT have epicTasks (single-agent fallback)
+    expect(epicTasks).toBeUndefined();
   });
 
-  it("epic counts as 1 agent slot regardless of child task count", async () => {
-    const epicIssue = makeIssue("epic-big", "epic");
+  it("epic with 1 child falls back to single-agent dispatch", async () => {
+    const epicIssue = makeIssue("epic-1child", "epic");
+    setupReadyIssues([epicIssue]);
+    setupEpicWithChildren("epic-1child", ["child-1"]);
+
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([epicIssue]),
+    });
+    const store = makeStore();
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    expect(result.dispatched).toHaveLength(1);
+
+    expect(spawnSpy).toHaveBeenCalledOnce();
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+    expect(epicTasks).toBeUndefined();
+  });
+
+  // ── Epic counts as 1 agent slot ────────────────────────────────────────────
+
+  it("epic counts as 1 agent slot when spawning Epic Runner", async () => {
+    const epicIssue = makeIssue("epic-3plus", "epic");
     const taskIssue = makeIssue("task-1", "task");
+    setupReadyIssues([epicIssue, taskIssue]);
+    setupEpicWithChildren("epic-3plus", ["child-1", "child-2", "child-3"]);
 
     const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue, taskIssue]),
-      show: vi.fn().mockImplementation(async (id: string) => {
-        if (id === "epic-big") {
-          return {
-            ...epicIssue,
-            children: ["child-1", "child-2", "child-3", "child-4", "child-5"],
-          };
-        }
-        return { ...taskIssue, description: "a task" };
-      }),
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+    const nativeOps = makeNativeTaskOps();
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
 
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
 
+    // With maxAgents: 2, epic + task should both dispatch (epic counts as 1 slot)
     const result = await dispatcher.dispatch({ pipeline: true, maxAgents: 2 });
 
-    // Both should be dispatched — the epic counts as 1 slot, leaving room for the task
     expect(result.dispatched).toHaveLength(2);
-    expect(result.dispatched.map(d => d.taskId)).toContain("epic-big");
+    expect(result.dispatched.map(d => d.taskId)).toContain("epic-3plus");
     expect(result.dispatched.map(d => d.taskId)).toContain("task-1");
 
-    // spawnAgent called twice
     expect(spawnSpy).toHaveBeenCalledTimes(2);
 
-    // Native epic dispatch does not expand children into epicTasks.
-    const epicCall = spawnSpy.mock.calls.find(c => (c[2] as { id: string }).id === "epic-big");
+    // Epic should have epicTasks
+    const epicCall = spawnSpy.mock.calls.find(c => (c[2] as { id: string }).id === "epic-3plus");
     expect(epicCall).toBeDefined();
-    expect(epicCall![10]).toBeUndefined();
-
-    const taskCall = spawnSpy.mock.calls.find(c => (c[2] as { id: string }).id === "task-1");
-    expect(taskCall).toBeDefined();
-    expect(taskCall![10]).toBeUndefined();
+    expect(epicCall![10]).toBeDefined(); // epicTasks
   });
 
-  it("feature task with children dispatches under native task semantics", async () => {
-    const featureIssue = makeIssue("feat-1", "feature");
-    const tasksClient = makeTasksClient({
-      ready: vi.fn().mockResolvedValue([featureIssue]),
-      show: vi.fn().mockResolvedValue({
-        ...featureIssue,
-        dependents: [{ id: "child-1", status: "open" }],
-        status: "open",
-      }),
-    });
-    const store = makeStore();
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+  // ── Error handling: child task fetch fails ─────────────────────────────────
 
-    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
-      .mockResolvedValue({ sessionKey: "test-key" });
+  it("epic falls back to single-agent when child task fetch partially fails", async () => {
+    const epicIssue = makeIssue("epic-partial", "epic");
+    setupReadyIssues([epicIssue]);
+    setupEpicWithChildren("epic-partial", ["child-1", "child-2", "child-3"]);
 
-    const result = await dispatcher.dispatch({ pipeline: true });
-
-    expect(result.dispatched).toHaveLength(1);
-    expect(result.skipped).toHaveLength(0);
-    expect(spawnSpy).toHaveBeenCalledOnce();
-  });
-
-  it("native feature task dispatches instead of being treated as a container", async () => {
-    const featureIssue = {
-      id: "feat-native",
-      title: "feature feat-native",
-      description: null,
-      type: "feature",
-      priority: 2,
-      status: "ready",
-      run_id: null,
-      branch: null,
-      external_id: "github:test/repo#1",
-      labels: ["feature", "github:feature"],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      approved_at: null,
-      closed_at: null,
-    };
-    const tasksClient = makeTasksClient();
-    const store = {
-      ...makeStore(),
-      hasNativeTasks: vi.fn().mockReturnValue(true),
-      getReadyTasks: vi.fn().mockReturnValue([featureIssue]),
-      claimTask: vi.fn().mockReturnValue(true),
-    } as unknown as ForemanStore;
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
-
-    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
-      .mockResolvedValue({ sessionKey: "test-key" });
-
-    const result = await dispatcher.dispatch({ pipeline: true });
-
-    expect(result.dispatched).toHaveLength(1);
-    expect(result.dispatched[0].taskId).toBe("feat-native");
-    expect(result.skipped).toHaveLength(0);
-    expect(spawnSpy).toHaveBeenCalledOnce();
-  });
-
-  it("epic with no actionable child tasks still dispatches natively", async () => {
-    const { getTaskOrder } = await import("../task-ordering.js");
-    vi.mocked(getTaskOrder).mockResolvedValueOnce([]);
-
-    const epicIssue = makeIssue("epic-containers", "epic");
-    const closeFn = vi.fn().mockResolvedValue(undefined);
     const tasksClient = makeTasksClient({
       ready: vi.fn().mockResolvedValue([epicIssue]),
-      show: vi.fn().mockResolvedValue({
-        ...epicIssue,
-        children: ["story-1", "story-2"],
-      }),
-      close: closeFn,
     });
     const store = makeStore();
-    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+    const nativeOps = makeNativeTaskOps();
+    // Make child-2 fetch return null (simulates missing child)
+    (nativeOps.getTaskById as ReturnType<typeof vi.fn>).mockImplementation((id: string) => {
+      if (id === "child-2") return Promise.resolve(null);
+      const childDetail = childTaskDetails[id];
+      return Promise.resolve(childDetail ?? null);
+    });
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project", undefined, { nativeTaskOps: nativeOps });
+
     const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
       .mockResolvedValue({ sessionKey: "test-key" });
 
     const result = await dispatcher.dispatch({ pipeline: true });
 
     expect(result.dispatched).toHaveLength(1);
-    expect(result.skipped).toHaveLength(0);
-    expect(closeFn).not.toHaveBeenCalled();
+
+    // With only 2 actionable children (< 3), should fall back to single-agent
     expect(spawnSpy).toHaveBeenCalledOnce();
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[] | undefined;
+    expect(epicTasks).toBeUndefined();
+  });
+
+  // ── Store fallback: Dispatcher without nativeTaskOps override ──────────────────
+
+  it("uses store.getChildren fallback when no nativeTaskOps override is provided", async () => {
+    const epicIssue = makeIssue("epic-store-fallback", "epic");
+    setupReadyIssues([epicIssue]);
+    setupEpicWithChildren("epic-store-fallback", ["child-1", "child-2", "child-3"]);
+
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([epicIssue]),
+    });
+
+    // Create store with getChildren method as the fallback
+    const store = makeStore();
+    (store as { getChildren?: (parentId: string) => Promise<string[]> }).getChildren = vi.fn().mockImplementation(
+      (parentId: string) => {
+        const children = childTasksByParent[parentId] ?? [];
+        return Promise.resolve(children);
+      },
+    );
+
+    // Create dispatcher WITHOUT nativeTaskOps override
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    // Should have dispatched the epic
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].taskId).toBe("epic-store-fallback");
+
+    expect(spawnSpy).toHaveBeenCalledOnce();
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[];
+    const epicId = callArgs[11] as string | undefined;
+
+    // Epic should have children from store fallback
+    expect(epicTasks).toBeDefined();
+    expect(epicTasks.length).toBe(3);
+    expect(epicId).toBe("epic-store-fallback");
+
+    // Verify store.getChildren was called
+    expect((store as { getChildren?: (parentId: string) => Promise<string[]> }).getChildren).toHaveBeenCalledWith("epic-store-fallback");
+  });
+
+  it("epic with 0 children auto-closes via store fallback path", async () => {
+    const epicIssue = makeIssue("epic-empty-fallback", "epic");
+    setupReadyIssues([epicIssue]);
+    // No children set up
+
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([epicIssue]),
+    });
+
+    const updateStatusFn = vi.fn();
+    const store = makeStore();
+    (store as unknown as { getChildren?: (parentId: string) => Promise<string[]> }).getChildren = vi.fn().mockResolvedValue([]);
+    (store as unknown as { updateTaskStatus?: (taskId: string, status: string) => Promise<void> }).updateTaskStatus = updateStatusFn;
+
+    // Create dispatcher WITHOUT nativeTaskOps override
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    // Should be skipped, not dispatched
+    expect(result.dispatched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].taskId).toBe("epic-empty-fallback");
+    expect(result.skipped[0].reason).toBe("Epic has no child tasks");
+
+    // Should have called updateTaskStatus to close the epic
+    expect(updateStatusFn).toHaveBeenCalledWith("epic-empty-fallback", "closed");
+
+    // Should NOT have spawned an agent
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  it("excludes epic child tasks from standalone dispatch to prevent duplicate processing", async () => {
+    // Set up an epic with children that are also in the ready list
+    const epicIssue = makeIssue("epic-dedup", "epic");
+    const childIssue = makeIssue("child-1", "task"); // This child is also a ready task
+    setupReadyIssues([epicIssue, childIssue]);
+    setupEpicWithChildren("epic-dedup", ["child-1", "child-2", "child-3"]);
+
+    const tasksClient = makeTasksClient({
+      ready: vi.fn().mockResolvedValue([epicIssue, childIssue]),
+    });
+
+    const store = makeStore();
+    (store as { getChildren?: (parentId: string) => Promise<string[]> }).getChildren = vi.fn().mockImplementation(
+      (parentId: string) => {
+        const children = childTasksByParent[parentId] ?? [];
+        return Promise.resolve(children);
+      },
+    );
+
+    const dispatcher = new Dispatcher(tasksClient, store, "/tmp/project");
+
+    const spawnSpy = vi.spyOn(dispatcher as never as { spawnAgent: (...args: unknown[]) => Promise<{ sessionKey: string }> }, "spawnAgent")
+      .mockResolvedValue({ sessionKey: "test-key" });
+
+    const result = await dispatcher.dispatch({ pipeline: true });
+
+    // Should have dispatched only the epic (not child-1 separately)
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.dispatched[0].taskId).toBe("epic-dedup");
+
+    // Epic should have all 3 children
+    expect(spawnSpy).toHaveBeenCalledOnce();
+    const callArgs = spawnSpy.mock.calls[0];
+    const epicTasks = callArgs[10] as EpicTask[];
+    expect(epicTasks).toBeDefined();
+    expect(epicTasks.length).toBe(3);
   });
 });
