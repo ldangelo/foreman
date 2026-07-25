@@ -127,7 +127,7 @@ describe("pipeline-executor.ts — resolvePhaseModel integration", () => {
     );
     // phaseModel is set (can be 'let' to allow Haiku fallback) and phaseConfig uses it
     expect(src).toMatch(/[\n\r]\s*(const|let)\s+phaseModel\s*=\s*resolvePhaseModel\(/);
-    expect(src).toContain("const phaseConfig = { ...config, model: phaseModel, maxTurns: phase.maxTurns }");
+    expect(src).toMatch(/const\s+phaseConfig\s*=\s*\{\s*\.\.\.config,\s*model:\s*phaseModel,\s*maxTurns:\s*phase\.maxTurns/);
     // runPhase is called with phaseConfig
     expect(src).toMatch(/ctx\.runPhase\(\s*phaseName,\s*prompt,\s*phaseConfig,/);
   });
