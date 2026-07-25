@@ -3,8 +3,8 @@ package main
 import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"strings"
 	"testing"
@@ -346,7 +346,7 @@ func TestRunRowShowsTitleWhenAvailable(t *testing.T) {
 
 func TestActiveTaskOnlyRowRendersInRunningSection(t *testing.T) {
 	m := newModel(NewMockClient())
- 	m.runs = nil
+	m.runs = nil
 	m.tasks = []Task{{TaskID: "task-pending", Title: "Waiting for worker", TaskType: "feature", Priority: "P0", Status: "pending"}}
 	m.buildItems()
 
@@ -1347,21 +1347,21 @@ func TestRunSummaryTabRendersCriticalFields(t *testing.T) {
 
 	// Verify critical fields are rendered
 	wantFields := []string{
-		"developer",      // Phase should be shown (takes precedence over status)
-		"pass",           // Verdict
-		"45m",            // Elapsed
-		"2024-01-15",     // Created
-		"10 msgs",        // Messages count
-		"5 events",      // Events count
-		"open",           // PR state
-		"+150",           // Diff added
-		"-30",            // Diff removed
-		"✓5",             // Checks passed (5 check marks)
-		"✗1",             // Checks failed (1 X mark)
-		"●2",             // Checks pending (2 dots)
-		"/tmp/worktree",  // Worktree
-		"main",           // Branch
-		"2h ago",         // Last activity
+		"developer",            // Phase should be shown (takes precedence over status)
+		"pass",                 // Verdict
+		"45m",                  // Elapsed
+		"2024-01-15",           // Created
+		"10 msgs",              // Messages count
+		"5 events",             // Events count
+		"open",                 // PR state
+		"+150",                 // Diff added
+		"-30",                  // Diff removed
+		"✓5",                   // Checks passed (5 check marks)
+		"✗1",                   // Checks failed (1 X mark)
+		"●2",                   // Checks pending (2 dots)
+		"/tmp/worktree",        // Worktree
+		"main",                 // Branch
+		"2h ago",               // Last activity
 		"Test summary content", // Summary text
 		"cockpit task summary is missing critical info", // Title
 	}
@@ -2037,7 +2037,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
 		reports: []Report{
 			{Name: "qa.md", Path: "docs/reports/task-1/qa.md", Size: "1K", Status: "done", Preview: "# QA"},
-			{Name: "review.md", Path: "artifacts/task-1/review.md", Size: "2K", Status: "done", Preview: "# Review"},
+			{Name: "REVIEW.md", Path: "artifacts/task-1/review.md", Size: "2K", Status: "done", Preview: "# Review"},
 		},
 		files: []FileChange{
 			{Change: "M", Path: "src/a.go", Stat: "+1 -1"},
@@ -2057,7 +2057,7 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	m.viewFocused = true
 	updated, _ = m.handleKey(keyPress("j"))
 	m = updated.(model)
-	if got := resolveTarget(m); !got.ok || got.label != "review.md" || got.path != "/tmp/work/artifacts/task-1/review.md" {
+	if got := resolveTarget(m); !got.ok || got.label != "REVIEW.md" || got.path != "/tmp/work/artifacts/task-1/review.md" {
 		t.Fatalf("expected report target to follow returned artifact path, got %#v", got)
 	}
 
@@ -2070,6 +2070,109 @@ func TestOpenTargetsFollowSelectedReportAndFileRows(t *testing.T) {
 	if got := resolveTarget(m); !got.ok || got.label != "src/b.go" || got.path != "/tmp/work/src/b.go" || !got.conflict {
 		t.Fatalf("expected file target to follow cursor, got %#v", got)
 	}
+}
+
+func TestReportsGroupedByPhase(t *testing.T) {
+	client := &mutableClient{
+		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work", Summary: "first"}},
+		reports: []Report{
+			{Name: "DEVELOPER_REPORT.md", Path: "docs/reports/task-1/DEVELOPER_REPORT.md", Size: "2K", Status: "done", Preview: "# Developer"},
+			{Name: "QA_REPORT.md", Path: "docs/reports/task-1/QA_REPORT.md", Size: "1K", Status: "done", Preview: "# QA"},
+			{Name: "EXPLORER_REPORT.md", Path: "docs/reports/task-1/EXPLORER_REPORT.md", Size: "3K", Status: "done", Preview: "# Explorer"},
+		},
+	}
+	m := newModel(client)
+	m.width = 120
+	m.height = 20
+	m.tab = 4
+	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
+	m = updated.(model)
+
+	m.refreshViewer(viewerPreserve)
+	keys := viewerKeys(m)
+	t.Logf("viewer keys: %v", keys)
+	t.Logf("report phases in model: %+v", phasesOf(m.reports))
+
+	for _, line := range m.viewer.lines {
+		if strings.HasPrefix(line.Key, "report-phase:") && !line.Unselectable {
+			t.Fatalf("expected phase header %q to be unselectable", line.Key)
+		}
+	}
+
+	wantSequence := []string{
+		"report-phase:explorer",
+		"report:EXPLORER_REPORT.md",
+		"report-phase:developer",
+		"report:DEVELOPER_REPORT.md",
+		"report-phase:qa",
+		"report:QA_REPORT.md",
+	}
+	last := -1
+	for _, want := range wantSequence {
+		next := indexOfKeyAfter(keys, want, last)
+		if next == -1 {
+			t.Fatalf("expected %q after index %d in viewer keys: %v", want, last, keys)
+		}
+		last = next
+	}
+
+	// Verify individual report rows are still selectable.
+	if !contains(keys, "report:EXPLORER_REPORT.md") || !contains(keys, "report:QA_REPORT.md") {
+		t.Fatalf("expected all report rows in viewer, available keys: %v", keys)
+	}
+}
+
+func TestPhaseFromNameFallsBackForUnrecognizedReports(t *testing.T) {
+	tests := []struct {
+		name     string
+		fallback string
+		want     string
+	}{
+		{name: "notes.md", fallback: "developer", want: "developer"},
+		{name: "custom-artifact.txt", fallback: "qa", want: "qa"},
+	}
+
+	for _, tc := range tests {
+		if got := phaseFromName(tc.name, tc.fallback); got != tc.want {
+			t.Fatalf("phaseFromName(%q, %q) = %q, want %q", tc.name, tc.fallback, got, tc.want)
+		}
+	}
+}
+
+func indexOfKeyAfter(keys []string, want string, after int) int {
+	for i := after + 1; i < len(keys); i++ {
+		if keys[i] == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func contains[T comparable](list []T, v T) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func phasesOf(reports []ReportWithPhase) []string {
+	var phases []string
+	for _, r := range reports {
+		phases = append(phases, r.Phase)
+	}
+	return phases
+}
+
+// viewerKeys returns all keys in the viewer for debugging test failures.
+func viewerKeys(m model) []string {
+	var keys []string
+	m.refreshViewer(viewerPreserve)
+	for _, line := range m.viewer.lines {
+		keys = append(keys, line.Key)
+	}
+	return keys
 }
 
 func TestLogOpenTargetUsesEndpointPathWhenPresent(t *testing.T) {
@@ -2810,7 +2913,7 @@ func TestMouseActionHitTestingCoversFilesPRAndRunActions(t *testing.T) {
 	// This test verifies that the files tab can be set up correctly
 	// Full action key testing requires proper model initialization via Update
 	client := &mutableClient{
-		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
+		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
 		files: []FileChange{{Change: "M", Path: "src/a.go"}},
 	}
 	m := newModel(client)
@@ -2884,7 +2987,7 @@ func TestMouseClickPRURLLineOpensPR(t *testing.T) {
 
 func TestMouseClickFileActionOpensSelectedTarget(t *testing.T) {
 	client := &mutableClient{
-		runs: []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
+		runs:  []Run{{Group: "RUNNING", TaskID: "task-1", RunID: "run-1", Status: "running", Phase: "developer", Worktree: "/tmp/work"}},
 		files: []FileChange{{Change: "M", Path: "src/a.go"}},
 	}
 	m := newModel(client)
@@ -3104,7 +3207,7 @@ func TestInactiveMetadataAdaptersUseMutedVisual(t *testing.T) {
 			name: "reports",
 			tab:  4,
 			setup: func() {
-				m.reports = []Report{{Name: "qa.md", Size: "1K", Status: "pending"}}
+				m.reports = []ReportWithPhase{{Report: Report{Name: "qa.md", Size: "1K", Status: "pending"}}}
 			},
 		},
 		{
@@ -3335,7 +3438,6 @@ func assertViewHeight(t *testing.T, m model) {
 	}
 }
 
-
 // Board mode is always a vertical split: board (top) + activities (bottom).
 // detailPaneHeight must match the activities split so the viewer fits, and
 // the board columns + ▶ marker must stay visible on every tab.
@@ -3511,13 +3613,12 @@ func manyRuns(n int) []Run {
 	return out
 }
 
-
 func TestFormatAgeRendersHoursDaysAndAgo(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
-		name string
+		name  string
 		stamp time.Time
-		want string
+		want  string
 	}{
 		{"just now", now.Add(-30 * time.Second), "just now"},
 		{"minutes", now.Add(-3 * time.Minute), "3m ago"},

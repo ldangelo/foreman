@@ -310,7 +310,7 @@ func conflictedFiles(files []FileChange) []string {
 	return out
 }
 
-func appendBriefReports(b *strings.Builder, reports []Report) {
+func appendBriefReports(b *strings.Builder, reports []ReportWithPhase) {
 	wrote := false
 	for _, report := range reports {
 		name := strings.TrimSpace(report.Name)
