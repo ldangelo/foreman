@@ -209,30 +209,41 @@ describe("inbox daemon helper functions", () => {
     expect(nodeRuns).toHaveLength(1);
     expect(nodeRuns[0]?.task_id).toBe("task-2");
   });
+
   describe("fetchInboxTasksForSources", () => {
+    // Typed sources fixture — uses the function's own parameter type so that
+    // InboxSources contract changes are caught at compile time.
+    // projectId must be a non-empty string (InboxClientContext contract).
+    type Sources = Parameters<typeof fetchInboxTasksForSources>[0];
+    const sources = (overrides: Partial<Sources>): Sources => ({
+      daemon: { backend: "node" as const, projectId: "test-project", client: {} },
+      postgres: null,
+      store: null,
+      ...overrides,
+    });
+
     it("projects snake_case to camelCase with task_id fallback to id", async () => {
-      const sources = {
+      // Note: tasks must include project_id matching the fixture projectId, or the
+      // projectId filter in fetchInboxTasksForSources will drop them.
+      const result = await fetchInboxTasksForSources(sources({
         daemon: {
           backend: "node",
-          projectId: null,
+          projectId: "test-project",
           client: {
             listTasks: async () => [
-              { task_id: "task-1", status: "in_progress", phase_id: "developer", reason: "scope creep", failure_reason: null },
-              { id: "task-2", status: "failed", phase_id: "triage", reason: null, failure_reason: "test timeout" },
+              { task_id: "task-1", project_id: "test-project", status: "in_progress", phase_id: "developer", reason: "scope creep", failure_reason: null },
+              { id: "task-2", project_id: "test-project", status: "failed", phase_id: "triage", reason: null, failure_reason: "test timeout" },
             ],
           },
         },
-        postgres: null,
-        store: null,
-      } as any;
-      const results = await fetchInboxTasksForSources(sources);
-      expect(results).toHaveLength(2);
-      expect(results[0]).toEqual({ taskId: "task-1", status: "in_progress", phaseId: "developer", reason: "scope creep", failureReason: null });
-      expect(results[1]).toEqual({ taskId: "task-2", status: "failed", phaseId: "triage", reason: null, failureReason: "test timeout" });
+      }));
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({ taskId: "task-1", status: "in_progress", phaseId: "developer", reason: "scope creep", failureReason: null });
+      expect(result[1]).toEqual({ taskId: "task-2", status: "failed", phaseId: "triage", reason: null, failureReason: "test timeout" });
     });
 
     it("filters by projectId when provided", async () => {
-      const sources = {
+      const result = await fetchInboxTasksForSources(sources({
         daemon: {
           backend: "node",
           projectId: "proj-filtered",
@@ -244,69 +255,54 @@ describe("inbox daemon helper functions", () => {
             ],
           },
         },
-        postgres: null,
-        store: null,
-      } as any;
-      const results = await fetchInboxTasksForSources(sources);
-      expect(results).toHaveLength(2);
-      expect(results.map((r) => r.taskId)).toEqual(["task-1", "task-3"]);
+      }));
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.taskId)).toEqual(["task-1", "task-3"]);
     });
 
     it("drops tasks with empty taskId (no task_id and no id)", async () => {
-      const sources = {
+      const result = await fetchInboxTasksForSources(sources({
         daemon: {
           backend: "node",
-          projectId: null,
+          projectId: "test-project",
           client: {
             listTasks: async () => [
-              { task_id: "task-1", status: "running", phase_id: "dev", reason: null, failure_reason: null },
-              { status: "running", phase_id: "dev", reason: null, failure_reason: null },
-              { id: "", status: "done", phase_id: "dev", reason: null, failure_reason: null },
-              { task_id: "task-2", status: "done", phase_id: "dev", reason: null, failure_reason: null },
+              { task_id: "task-1", project_id: "test-project", status: "running", phase_id: "dev", reason: null, failure_reason: null },
+              { project_id: "test-project", status: "running", phase_id: "dev", reason: null, failure_reason: null },
+              { id: "", project_id: "test-project", status: "done", phase_id: "dev", reason: null, failure_reason: null },
+              { task_id: "task-2", project_id: "test-project", status: "done", phase_id: "dev", reason: null, failure_reason: null },
             ],
           },
         },
-        postgres: null,
-        store: null,
-      } as any;
-      const results = await fetchInboxTasksForSources(sources);
-      expect(results).toHaveLength(2);
-      expect(results.map((r) => r.taskId)).toEqual(["task-1", "task-2"]);
+      }));
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.taskId)).toEqual(["task-1", "task-2"]);
     });
 
     it("returns empty array when client has no listTasks", async () => {
-      const sources = {
-        daemon: {
-          backend: "node",
-          projectId: null,
-          client: {},
-        },
-        postgres: null,
-        store: null,
-      } as any;
-      await expect(fetchInboxTasksForSources(sources)).resolves.toEqual([]);
+      const result = await fetchInboxTasksForSources(sources({
+        daemon: { backend: "node", projectId: "test-project", client: {} },
+      }));
+      expect(result).toEqual([]);
     });
 
     it("returns empty array when listTasks throws", async () => {
-      const sources = {
+      const result = await fetchInboxTasksForSources(sources({
         daemon: {
           backend: "node",
-          projectId: null,
+          projectId: "test-project",
           client: {
             listTasks: async () => {
               throw new Error("connection refused");
             },
           },
         },
-        postgres: null,
-        store: null,
-      } as any;
-      await expect(fetchInboxTasksForSources(sources)).resolves.toEqual([]);
+      }));
+      expect(result).toEqual([]);
     });
 
     it("returns empty array when daemon is absent", async () => {
-      const sources = { daemon: null, postgres: null, store: null };
-      await expect(fetchInboxTasksForSources(sources)).resolves.toEqual([]);
+      expect(await fetchInboxTasksForSources({ daemon: null, postgres: null, store: null })).toEqual([]);
     });
   });
 });
