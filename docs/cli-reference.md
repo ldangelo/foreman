@@ -298,7 +298,7 @@ Sentinel persists each run in `sentinel_runs` and records `sentinel-start`, `sen
 
 ### `foreman board`
 
-On a TTY, open the unified cockpit in board view. The board pane groups selected active/attention rows by lifecycle status, keeps workflow phase separate, and lets operators jump to inbox/status details without starting a second terminal loop. Non-TTY output, `--all`, and `--filter` keep the legacy/scriptable board path.
+On a TTY, open the unified cockpit in board view. The board pane groups rows by task-status lifecycle columns, keeps workflow phase and run/PR state as separate card metadata, and lets operators jump to inbox/status details without starting a second terminal loop. Terminal events update task status first, so a merged PR appears in `done` because the task is marked `merged`. Non-TTY output, `--all`, and `--filter` keep the legacy/scriptable board path.
 
 ```bash
 foreman board                     # TTY: unified cockpit opened to board view

@@ -400,7 +400,7 @@ foreman status --live                    # Unified cockpit opened to status/work
 ```
 
 ### `foreman board`
-On a TTY, `foreman board` opens the unified cockpit in board view so operators can jump from a task to inbox/status/board without leaving the session. The board pane keeps lifecycle status separate from workflow phase and highlights the selected task's board context. Scriptable and legacy board paths remain available for non-TTY output, `--all`, and filtered board usage.
+On a TTY, `foreman board` opens the unified cockpit in board view so operators can jump from a task to inbox/status/board without leaving the session. The board pane keeps lifecycle status separate from workflow phase; lifecycle columns come from task status only, while run/PR/attention state remains card metadata. Terminal events update task status first, so a merged PR appears in `done` because the task is marked `merged`. Scriptable and legacy board paths remain available for non-TTY output, `--all`, and filtered board usage.
 
 ```bash
 foreman board                             # TTY: unified cockpit opened to board view

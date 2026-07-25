@@ -427,14 +427,14 @@ defmodule ForemanServer.PrMonitorTest do
       @pr_url =>
         {:ok,
          %{
-          state: :merged,
-          url: @pr_url,
-          merged_at: merged_at,
-          merge_commit_sha: "merge-sha",
-          head_ref_oid: "head-sha",
-          head_ref_name: "foreman/task-pr-monitor",
-          base_ref_name: "main"
-        }}
+           state: :merged,
+           url: @pr_url,
+           merged_at: merged_at,
+           merge_commit_sha: "merge-sha",
+           head_ref_oid: "head-sha",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
     })
 
     assert {:ok, %{merged: 1, errors: 0}} = PrMonitor.tick_once()
@@ -617,6 +617,7 @@ defmodule ForemanServer.PrMonitorTest do
     assert {:ok, %{closed: 1, errors: 0}} = PrMonitor.tick_once()
 
     assert_receive {:checked_pr, @project_path, @pr_url}
+
     assert_receive {:handled_command,
                     %{
                       command_type: "run.pr.reset",
@@ -641,7 +642,6 @@ defmodule ForemanServer.PrMonitorTest do
   end
 
   test "closed open and draft observations never mark the task merged" do
-
     observations =
       [:closed, :open, :draft]
       |> Enum.map(fn state ->

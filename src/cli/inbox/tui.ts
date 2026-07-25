@@ -306,12 +306,23 @@ function ActionPalette({ actions, selectedActionIndex, actionNotice }: { actions
 }
 
 function DetailPane({ summary, tab }: { summary: InboxTaskSummary; tab: InboxDashboardTab }): ReactElement {
+  // Read canonical task fields (`taskStatus`/`taskPhaseId`/`taskReason`/
+  // `taskFailureReason`) ahead of run-derived fields. The previous version
+  // showed `Status: phase=finalize status=failed` because it rendered the
+  // latest mailbox body verbatim. Canonical task data fixes that leak.
+  const status = summary.taskStatus ?? summary.runStatus;
+  const phase = summary.taskPhaseId ?? summary.phase;
+  const reason = summary.taskFailureReason ?? summary.taskReason ?? null;
+  const activePhase = summary.phase;
+  const showActivePhaseSuffix = activePhase && activePhase !== phase && activePhase !== "unknown";
   const rows = [
     `Run: ${summary.runId}`,
-    `State: ${summary.runStatus} · Phase: ${summary.phase} · Verdict: ${summary.verdict}`,
+    `State: ${status}${phase && phase !== "unknown" ? ` · Phase: ${phase}` : ""} · Verdict: ${summary.verdict}`,
+    showActivePhaseSuffix ? `Active: ${activePhase} (in flight)` : null,
+    reason ? `Reason: ${reason}` : null,
     `Activity: ${relativeTime(summary.lastActivityAt)} via ${summary.lastActivitySource}`,
-    `Status: ${summary.statusText}`,
-  ];
+    `Status: ${summary.statusText ?? "—"}`,
+  ].filter((row): row is string => row !== null);
 
   if (summary.attentionReason) rows.push(`Attention: ${summary.attentionReason}`);
   if (summary.projectId) rows.push(`Project: ${summary.projectId}`);

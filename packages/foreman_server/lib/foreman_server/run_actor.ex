@@ -128,6 +128,7 @@ defmodule ForemanServer.RunActor do
     Logger.warning("[RunActor/#{state.run_id}] unexpected message: #{inspect(msg)}")
     {:noreply, state}
   end
+
   defp advance_after_pass(%{phase_index: index, phase_order: phase_order} = state)
        when index + 1 < length(phase_order) do
     next_phase = Enum.at(phase_order, index + 1)

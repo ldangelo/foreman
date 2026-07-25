@@ -1922,18 +1922,10 @@ export interface WorkerConfig {
    * in the wrong worktree.
    */
   guardrailConfig?: {
-    /** Guardrail enforcement mode. Default: `auto-correct`. */
     mode?: "auto-correct" | "veto" | "disabled";
-    /** Expected working directory for this agent session. */
     expectedCwd?: string;
-    /** Optional list of allowed path prefixes. */
     allowedPaths?: string[];
   };
-  /**
-   * Workspace lifecycle hooks for pre/post-run customization.
-   * Loaded from project config and passed to the agent worker.
-   */
-  hooks?: import("../lib/project-config.js").ProjectHooksConfig;
   /**
    * Target phase to start execution from (kill-switch routing).
    * When set, the pipeline executor skips all phases before this target and
@@ -1942,6 +1934,16 @@ export interface WorkerConfig {
    * completed phases.
    */
   startPhase?: string;
+  /**
+   * 1-based iteration number of the current phase run within the run.
+   * The pipeline-executor counts how many times this phase has been
+   * entered in this run and passes that count + 1 here. Used by the
+   * finalize artifact writers to rotate the previous iteration's
+   * `FINALIZE_*.md` files to `i${phaseIteration-1}.md` so re-run
+   * debugging can find every attempt.
+   */
+  phaseIteration?: number;
+  hooks?: import("../lib/project-config.js").ProjectHooksConfig;
 }
 
 // ── Spawn Strategy Pattern ──────────────────────────────────────────────

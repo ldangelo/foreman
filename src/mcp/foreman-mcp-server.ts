@@ -7,14 +7,14 @@ import { resetAction } from "../cli/commands/reset.js";
 
 export type McpTransport = "stdio" | "http";
 
-type JsonRpcRequest = {
+export type JsonRpcRequest = {
   jsonrpc?: "2.0";
   id?: string | number | null;
   method?: string;
   params?: Record<string, unknown>;
 };
 
-type JsonRpcResponse = {
+export type JsonRpcResponse = {
   jsonrpc: "2.0";
   id: string | number | null;
   result?: unknown;
@@ -233,9 +233,9 @@ export class ForemanMcpServer {
   }
 
   startStdio(): void {
-    const reader = new McpStdioFramer(async (request) => {
+    const reader = new McpStdioFramer(async (request, format) => {
       const response = await this.handle(request);
-      if (response) writeMcpFrame(process.stdout, response);
+      if (response) writeMcpFrame(process.stdout, response, format);
     });
     process.stdin.on("data", (chunk) => reader.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
   }
@@ -562,32 +562,68 @@ export class ForemanMcpServer {
   }
 }
 
-class McpStdioFramer {
+export type McpStdioFrameFormat = "content-length" | "jsonl";
+
+export class McpStdioFramer {
   private buffer = Buffer.alloc(0);
 
-  constructor(private readonly onMessage: (message: JsonRpcRequest) => void | Promise<void>) {}
+  constructor(private readonly onMessage: (message: JsonRpcRequest, format: McpStdioFrameFormat) => void | Promise<void>) {}
 
   push(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
     while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) return;
-      const header = this.buffer.slice(0, headerEnd).toString("utf8");
-      const match = /content-length:\s*(\d+)/i.exec(header);
-      if (!match) throw new Error("Invalid MCP frame: missing Content-Length");
-      const length = Number(match[1]);
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + length;
-      if (this.buffer.length < bodyEnd) return;
-      const body = this.buffer.slice(bodyStart, bodyEnd).toString("utf8");
-      this.buffer = this.buffer.slice(bodyEnd);
-      void this.onMessage(JSON.parse(body) as JsonRpcRequest);
+      if (this.startsWithContentLengthHeader()) {
+        if (!this.tryReadContentLengthFrame()) return;
+        continue;
+      }
+
+      if (!this.tryReadJsonLineFrame()) return;
     }
+  }
+
+  private startsWithContentLengthHeader(): boolean {
+    const prefix = this.buffer.subarray(0, Math.min(this.buffer.length, "Content-Length:".length)).toString("utf8");
+    return "Content-Length:".toLowerCase().startsWith(prefix.toLowerCase())
+      || prefix.toLowerCase() === "Content-Length:".toLowerCase();
+  }
+
+  private tryReadContentLengthFrame(): boolean {
+    const headerEnd = this.buffer.indexOf("\r\n\r\n");
+    if (headerEnd === -1) return false;
+    const header = this.buffer.slice(0, headerEnd).toString("utf8");
+    const match = /content-length:\s*(\d+)/i.exec(header);
+    if (!match) throw new Error("Invalid MCP frame: missing Content-Length");
+    const length = Number(match[1]);
+    const bodyStart = headerEnd + 4;
+    const bodyEnd = bodyStart + length;
+    if (this.buffer.length < bodyEnd) return false;
+    const body = this.buffer.slice(bodyStart, bodyEnd).toString("utf8");
+    this.buffer = this.buffer.slice(bodyEnd);
+    void this.onMessage(JSON.parse(body) as JsonRpcRequest, "content-length");
+    return true;
+  }
+
+  private tryReadJsonLineFrame(): boolean {
+    const lineEnd = this.buffer.indexOf("\n");
+    if (lineEnd === -1) return false;
+    const line = this.buffer.slice(0, lineEnd).toString("utf8").trim();
+    this.buffer = this.buffer.slice(lineEnd + 1);
+    if (!line) return true;
+    void this.onMessage(JSON.parse(line) as JsonRpcRequest, "jsonl");
+    return true;
   }
 }
 
-function writeMcpFrame(stream: NodeJS.WritableStream, message: JsonRpcResponse): void {
+export function writeMcpFrame(
+  stream: NodeJS.WritableStream,
+  message: JsonRpcResponse,
+  format: McpStdioFrameFormat = "content-length",
+): void {
   const body = JSON.stringify(message);
+  if (format === "jsonl") {
+    stream.write(`${body}\n`);
+    return;
+  }
   stream.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
 }
 

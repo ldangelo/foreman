@@ -584,14 +584,12 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert Enum.map(ProjectionStore.project_list(), & &1.project_id) == ["project-1"]
   end
 
-  # Regression tests for the user-reported bug: the board was leaking
-  # phase names (developer/qa/reviewer) as task statuses, and stale
-  # task.status of "in_progress" was being honored even when the PR
-  # was already merged or closed. The PR-override path in
-  # `build_board/2` and `build_board_from_maps/3` lets run.pr_state
-  # win over a stale task.status.
+  # Regression tests for the board source-of-truth rule: columns are
+  # selected from task.status only. Terminal run/PR events must update
+  # task.status; board grouping must not silently infer lifecycle state
+  # from stale run metadata.
 
-  test "PR merged wins over stale in_progress task status" do
+  test "PR merged marks the task merged and moves it to done" do
     append!("task:task-1", "TaskCreated", %{
       project_id: "project-1",
       task_id: "task-1",
@@ -613,18 +611,24 @@ defmodule ForemanServer.ProjectionStoreTest do
       merged_at: "2026-07-22T12:00:00Z"
     })
 
+    append!("task:task-1", "TaskUpdated", %{
+      project_id: "project-1",
+      task_id: "task-1",
+      status: "in-progress",
+      command_id: "manual:restore-task-updated-at:task-1:2026-07-23"
+    })
+
+    assert ProjectionStore.task("task-1").status == "merged"
+
     assert [done] = ProjectionStore.board("project-1").done
     assert done.task_id == "task-1"
-    # Lifecycle form, not the raw `merged` value.
     assert done.status == "done"
+    assert done.pr_state == "merged"
     assert done.run_id == "run-1"
   end
 
-  # Precedence precedence precedence: the new authoritative-done
-  # override only fires for `merged`/`completed`/`done` task.status.
-  # `closed` alone does NOT preempt PR state — a `closed` task with a
-  # closed-without-merge PR must still land in `blocked` (otherwise
-  # the 12 genuinely closed-PR tasks would all flip to done).
+  # A terminal task.status remains authoritative. PR state is display
+  # metadata in board output, not a column discriminator.
 
   test "task.status=merged wins over latest pr_state=closed (task-beff3caa case)" do
     # Operator has explicitly marked the task merged (e.g. via
@@ -849,7 +853,7 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert done.status == "done"
   end
 
-  test "PR closed wins over stale in_progress task status" do
+  test "PR closed does not override in_progress task status" do
     append!("task:task-1", "TaskCreated", %{
       project_id: "project-1",
       task_id: "task-1",
@@ -870,10 +874,11 @@ defmodule ForemanServer.ProjectionStoreTest do
       pr_url: "https://example.com/pr/1"
     })
 
-    assert [blocked] = ProjectionStore.board("project-1").blocked
-    assert blocked.task_id == "task-1"
-    assert blocked.status == "blocked"
-    assert blocked.run_id == "run-1"
+    assert [in_progress] = ProjectionStore.board("project-1").in_progress
+    assert in_progress.task_id == "task-1"
+    assert in_progress.status == "in-progress"
+    assert in_progress.pr_state == "closed"
+    assert in_progress.run_id == "run-1"
   end
 
   defp append!(stream_id, event_type, payload) do

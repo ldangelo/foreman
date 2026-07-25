@@ -62,18 +62,28 @@ export interface FinalizeResult {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
 /**
  * Rotate an existing report file so previous reports are preserved for
- * debugging.  Non-fatal — any rename error is silently swallowed.
+ * debugging. The rotated filename is `${base}.i${iteration}${ext}` when an
+ * iteration number is provided, otherwise the previous timestamp-based
+ * suffix is used for backward compatibility. Non-fatal — any rename error
+ * is silently swallowed.
+ *
+ * The iteration number is the 1-based index of the phase run that
+ * *produced* the file being rotated. So when iteration N starts, the
+ * previous file (from iteration N-1) is renamed to `i${N-1}.md`.
+ * Passing `iteration=0` (or undefined when no previous iteration exists)
+ * is a no-op because the file is expected to be absent on first run.
  */
-export function rotateReport(worktreePath: string, filename: string): void {
+export function rotateReport(worktreePath: string, filename: string, iteration?: number): void {
   const p = resolveArtifactPath(worktreePath, filename);
   if (!existsSync(p)) return;
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const suffix = iteration !== undefined && iteration > 0
+    ? `i${iteration}`
+    : new Date().toISOString().replace(/[:.]/g, "-");
   const ext = filename.endsWith(".md") ? ".md" : "";
   const base = ext ? filename.slice(0, -3) : filename;
-  const rotated = join(dirname(p), `${base}.${stamp}${ext}`);
+  const rotated = join(dirname(p), `${base}.${suffix}${ext}`);
   try {
     renameSync(p, rotated);
   } catch {
@@ -98,7 +108,7 @@ function log(msg: string): void {
  *          `{ success: false, retryable: false }` for deterministic failures
  *          (e.g. diverged history that could not be rebased via pull --rebase).
  */
-export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend): Promise<FinalizeResult> {
+export async function finalize(config: FinalizeConfig, logFile: string, vcs: VcsBackend, phaseIteration?: number): Promise<FinalizeResult> {
   const { taskId, taskTitle, worktreePath } = config;
   // `storeProjectPath` is used only to open the Postgres store for the merge
   // queue — it must never be undefined, so we infer it from the workspace path
@@ -395,10 +405,11 @@ export async function finalize(config: FinalizeConfig, logFile: string, vcs: Vcs
     log(`[FINALIZE] Push failed for ${taskId} — merge queue entry written pre-push; refinery will handle gracefully on re-dispatch`);
     report.push(`## Task Status`, `- Status: PUSH_FAILED`, `- Note: merge queue entry written before push attempt`, "");
   }
-
-  // Write finalize report
+  // Write finalize report; preserve previous iteration's report as `i${iteration-1}.md`
+  // so concurrent reads and re-run debugging can find every attempt.
   try {
-    rotateReport(worktreePath, "FINALIZE_REPORT.md");
+    const rotationSuffix = phaseIteration !== undefined ? phaseIteration - 1 : undefined;
+    rotateReport(worktreePath, "FINALIZE_REPORT.md", rotationSuffix);
     writeFileSync(join(worktreePath, "FINALIZE_REPORT.md"), report.join("\n"));
   } catch {
     // Non-fatal — finalize report is for debugging

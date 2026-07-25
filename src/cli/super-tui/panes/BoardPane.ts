@@ -33,8 +33,18 @@ const STATUS_LABELS: Record<BoardStatus, string> = {
 };
 
 function boardColumn(summary: InboxTaskSummary): BoardStatus {
-  if (summary.attention || summary.verdict === "fail" || summary.verdict === "blocked") return "needs_attention";
-  return boardColumnForTaskStatus(summary.runStatus);
+  const baseColumn = boardColumnForTaskStatus(summary.runStatus);
+  // The attention/verdict override only applies to non-terminal runs. A merged/closed
+  // run is the source of truth for the lifecycle column; stale `attention` flags set
+  // during the active phase must not override a terminal status. The watch dashboard's
+  // `NEEDS_ATTENTION_STATUSES` (WatchState.ts:512) already follows this rule.
+  if (
+    baseColumn !== "closed" &&
+    (summary.attention || summary.verdict === "fail" || summary.verdict === "blocked")
+  ) {
+    return "needs_attention";
+  }
+  return baseColumn;
 }
 
 export function BoardPane({ summaries, selected, compact }: { summaries: InboxTaskSummary[]; selected: InboxTaskSummary | undefined; compact: boolean }): ReactElement {
