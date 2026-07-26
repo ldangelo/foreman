@@ -4,65 +4,65 @@ on:
   pull_request:
     branches:
       - main
-      - dev
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test (Node ${{ matrix.node-version }})
+  validate:
+    name: Validate (Spike — no build yet)
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: foreman
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d foreman"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/foreman
-
-    strategy:
-      matrix:
-        node-version: ["20"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure git for tests
+      - name: Configure git
         run: |
           git config --global user.email "ci@foreman.dev"
           git config --global user.name "Foreman CI"
           git config --global init.defaultBranch main
 
-      - name: Set up Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
+      - name: Validate compose.yaml
+        run: docker compose -f compose.yaml config --quiet
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Check shell script syntax
+        run: bash -n scripts/dev-compose-up.sh
 
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Write repo .env for integration tests
+      - name: Validate YAML files
         run: |
-          printf 'DATABASE_URL=%s\n' "$DATABASE_URL" > .env
+          pip install pyyaml -q
+          shopt -s nullglob globstar
+          for f in .github/workflows/*.yml .github/workflows/*.yaml src/defaults/workflows/**/*.yaml; do
+            python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || {
+              echo "Invalid YAML: $f"
+              exit 1
+            }
+            echo "valid: $f"
+          done
+          echo "All YAML files valid"
 
-      - name: Run database migrations
-        run: npm run db:migrate
+      - name: Validate constitution and spec markdown
+        run: |
+          for f in docs/standards/constitution.md docs/architecture/spike-slice-spec.md AGENTS.md; do
+            if [ -f "$f" ]; then
+              lines=$(wc -l < "$f")
+              if [ "$lines" -lt 10 ]; then
+                echo "Suspiciously short: $f ($lines lines)"
+                exit 1
+              fi
+              echo "$f: $lines lines — OK"
+            fi
+          done
 
-      - name: Run CI tests
-        run: npm run test:ci
+      - name: Check required files exist
+        run: |
+          required="devbox.json compose.yaml AGENTS.md docs/standards/constitution.md docs/architecture/spike-slice-spec.md"
+          for f in $required; do
+            if [ ! -f "$f" ]; then
+              echo "Missing required file: $f"
+              exit 1
+            fi
+            echo "$f — present"
+          done

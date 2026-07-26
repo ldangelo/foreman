@@ -1,9 +1,9 @@
 {
   "packages": [
-    "nodejs@20",
     "postgresql@16",
     "git",
-    "jq"
+    "jq",
+    "python3"
   ],
   "env": {
     "DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:55432/foreman",
@@ -13,31 +13,19 @@
   },
   "shell": {
     "init_hook": [
-      "echo 'Foreman devbox ready. direnv/devbox starts Postgres + Hindsight with: devbox run dev:up'"
+      "echo 'Foreman spike devbox ready.'",
+      "echo 'Postgres: devbox run dev:up'",
+      "echo 'CI validation: devbox run ci:validate'"
     ],
     "scripts": {
-      "install": "npm ci",
       "dev:up": "bash scripts/dev-compose-up.sh all",
       "db:up": "bash scripts/dev-compose-up.sh postgres",
       "hindsight:up": "bash scripts/dev-compose-up.sh hindsight",
-      "db:down": "if command -v docker >/dev/null 2>&1; then docker compose down; elif command -v docker-compose >/dev/null 2>&1; then docker-compose down; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
-      "db:reset": [
-        "if command -v docker >/dev/null 2>&1; then docker compose down -v; elif command -v docker-compose >/dev/null 2>&1; then docker-compose down -v; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
-        "bash scripts/dev-compose-up.sh all",
-        "npm run db:migrate"
-      ],
-      "db:logs": "if command -v docker >/dev/null 2>&1; then docker compose logs -f postgres; elif command -v docker-compose >/dev/null 2>&1; then docker-compose logs -f postgres; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
-      "hindsight:logs": "if command -v docker >/dev/null 2>&1; then docker compose logs -f hindsight; elif command -v docker-compose >/dev/null 2>&1; then docker-compose logs -f hindsight; else echo 'Docker CLI not found. Install Docker Desktop, Colima, or OrbStack and retry.' >&2; exit 1; fi",
+      "db:down": "if command -v docker >/dev/null 2>&1; then docker compose -f compose.yaml down; elif command -v docker-compose >/dev/null 2>&1; then docker-compose -f compose.yaml down; else echo 'Docker CLI not found.' >&2; exit 1; fi",
+      "db:reset": "if command -v docker >/dev/null 2>&1; then docker compose -f compose.yaml down -v; elif command -v docker-compose >/dev/null 2>&1; then docker-compose -f compose.yaml down -v; fi && bash scripts/dev-compose-up.sh all",
+      "db:logs": "if command -v docker >/dev/null 2>&1; then docker compose -f compose.yaml logs -f; elif command -v docker-compose >/dev/null 2>&1; then docker-compose -f compose.yaml logs -f; fi",
       "db:psql": "psql \"$DATABASE_URL\"",
-      "db:migrate": "npm run db:migrate",
-      "db:migrate:down": "npm run db:migrate:down",
-      "db:migrate:create": "npm run db:migrate:create --",
-      "daemon:start": [
-        "npm run build",
-        "npm run db:migrate",
-        "node dist/cli/index.js daemon start"
-      ],
-      "test": "npm run test:all"
+      "ci:validate": "echo 'No build/test commands yet — spike scaffold pending' && docker compose -f compose.yaml config --quiet && echo 'compose.yaml valid'"
     }
   }
 }
