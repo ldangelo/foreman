@@ -39,25 +39,6 @@
 
 ---
 
-## Scope: One Closed Loop
-
-```
-Go CLI                          Phoenix                       Commanded + EventStore
-   |                                |                                    |
-   |-- HTTP POST /api/commands --->|                                    |
-   |<-- 200 ok --------------------|                                    |
-   |                                |-- dispatch(command) --------------->
-   |                                |         (aggregate process)         |
-   |                                |         (append + rehydrate)        |
-   |<-- HTTP GET /api/runs/:id ----|                                    |
-```
-
-All HTTP arrows are commands or queries. No direct writes from Go CLI or worker
-to the event store. All state mutations route through Phoenix → Commanded.
-Commanded owns aggregate lifecycle: append, rehydration, `:temporary` restart (lazy).
-
----
-
 ## Acceptance Criteria
 
  ### AC1 — Supervised Actor: Serialized Commands, Stream Rehydration, Event Ordering
@@ -91,9 +72,9 @@ Asserted behaviors:
     post-crash events.
  
  5. **Append-then-apply ordering**: `CommandRouter` appends with `expected_stream_version`.
-    If append fails (conflict), the actor's in-memory state is **not** mutated.
-    `CommandRouter` returns `{:error, :too_many_attempts}`; the actor remains alive
-    with rebuilt state. Verify by inducing a conflict and asserting actor state is unchanged.
+    If append fails (conflict), the actor's in-memory state is **not** mutated —
+    no confirmed event is sent to `Actor.apply_event`. The actor remains alive.
+    Verify by inducing a conflict and asserting actor state is unchanged.
  
  6. **No silent event loss on crash**: Any event that was appended before the crash
     is replayed on restart via `Aggregate.load/2`. Any event that was in-flight
@@ -153,7 +134,7 @@ command is a no-op.
 4. Verify the rebuilt `runs` projection shows `status: "completed"`,
    `current_phase: nil`, `pr_url: "<url>"`.
 5. Verify the rebuilt `tasks` projection shows `status: "merged"`.
- 
+6. Verify no events are lost, duplicated, or misattributed during replay.
  ### AC5 — Happy Path (Closed Loop)
  
  1. Register a project via `project.register` command.
@@ -171,8 +152,9 @@ command is a no-op.
  4. Worker completion is sent as a command (`command_type: "worker.event"` or
     `command_type: "run.complete"`), not a direct event write.
  
+## Architecture Rules
  
- ### Custom Actor Supervision
+  ### Custom Actor Supervision
  
   Custom `Actor` modules are supervised by a project-specific `Aggregator` supervisor
  with `restart: :permanent`. Each active aggregate has one supervised GenServer actor
@@ -266,7 +248,9 @@ Read model returned (no write)
 | Domain aggregates | Elixir                                   | Elixir (same domain, custom Actor modules) |
 | Actor supervision  | `RunActor` `:temporary` — no restart      | Custom `Actor` modules, `:permanent`, eager rehydrate via `Aggregate.load/2` |
 | Event routing      | 16 direct appenders                      | Phoenix → CommandRouter only (sole append point) |
-
+| VCS / worktree     | Node (vcs-backend)                       | Go + Elixir commands                              |
+| ForemanStore       | Node (disabled no-op shell)               | Gone                                             |
+| writeElixirOrchestrationEvent | Node (bypasses CommandRouter) | Gone                                              |
 ---
 
 ## Spike Repo Plan
