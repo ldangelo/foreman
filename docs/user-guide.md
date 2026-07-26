@@ -351,7 +351,7 @@ Common cockpit keys:
 | `s` | Status/workflow view |
 | `b` | Board context view |
 | `n` | Create new task (TTY form with type/priority dropdowns) |
-| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; messages render oldest-first (chronological) with local `mm/dd hh:mm`, sender, receiver, and message columns |
+| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; all timestamps (messages `MM/DD HH:MM`, events `MM/DD HH:MM:SS`, logs `HH:MM:SS`) render in the cockpit client's local timezone; messages are oldest-first (chronological) with sender, receiver, and message columns |
 | `/` | Search tasks, runs, messages, events, and report paths |
 | `1` / `2` / `3` | Active, attention, all scopes |
 | `!` / `p` / `d` | Failed, has PR, dirty worktree filters |

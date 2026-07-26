@@ -2517,10 +2517,12 @@ func TestFocusedViewerPreservesFullLogMessages(t *testing.T) {
 	m.height = 12
 	m.tab = 3
 	m.viewFocused = true
-
+	orig := time.Local
+	time.Local = time.UTC
 	updated, _ := m.Update(dataMsg{runs: client.Runs(), tasks: client.Dispatchable()})
 	m = updated.(model)
 	before := stripANSI(m.renderRight(m.rightPaneWidth()))
+	time.Local = orig
 	// Check that line number appears in the new format (with timestamp and stream indicator)
 	if !strings.Contains(before, "   2 ") || !strings.Contains(before, "10:00:01") {
 		t.Fatalf("expected log rows to render line numbers with timestamp, got:\n%s", before)
@@ -3962,5 +3964,165 @@ func TestSearchBarPreservesQueryText(t *testing.T) {
 	// The word "query" should be present (from the search)
 	if !strings.Contains(rendered, "query") {
 		t.Fatalf("expected search query text to be preserved, got:\n%s", rendered)
+	}
+}
+
+// --- Timestamp timezone regression tests ---
+
+// Regression: formatLocalTime must render client-local time, not UTC.
+// All three display views (messages, events, logs) must agree on timezone.
+func TestFormatEventTimeRendersLocalDateAndTime(t *testing.T) {
+	// 2026-07-26T18:05:58Z in UTC+8 → 2026-07-27T02:05:58+08:00 → "07/27 02:05:58"
+	stamp := "2026-07-26T18:05:58.123456789Z"
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	defer func() { time.Local = orig }()
+
+	got := formatEventTime(stamp)
+	if got != "07/27 02:05:58" {
+		t.Fatalf("formatEventTime with UTC+8: got %q, want %q", got, "07/27 02:05:58")
+	}
+}
+
+func TestFormatEventTimePassesThroughEmptyString(t *testing.T) {
+	got := formatEventTime("")
+	if got != "" {
+		t.Fatalf("formatEventTime empty: got %q, want %q", got, "")
+	}
+}
+
+func TestFormatEventTimePassesThroughInvalidStamp(t *testing.T) {
+	got := formatEventTime("not-a-timestamp")
+	if got != "not-a-timestamp" {
+		t.Fatalf("formatEventTime invalid: got %q, want %q", got, "not-a-timestamp")
+	}
+}
+func TestFormatLocalTimeRendersLocalTime(t *testing.T) {
+	// 2026-07-26 18:05:58 UTC — in Asia/Shanghai (UTC+8) this is 2026-07-27 02:05:58
+	stamp := "2026-07-26T18:05:58.123456789Z"
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	defer func() { time.Local = orig }()
+
+	got := formatLocalTime(stamp)
+	// Expected: 02:05:58 in UTC+8
+	if got != "02:05:58" {
+		t.Fatalf("formatLocalTime with UTC+8: got %q, want %q", got, "02:05:58")
+	}
+}
+
+func TestFormatLocalTimeRendersLocalTimeNegativeOffset(t *testing.T) {
+	// 2026-07-26 18:05:58 UTC — in US/Pacific (UTC-7 PDT) this is 2026-07-26 11:05:58
+	stamp := "2026-07-26T18:05:58.123456789Z"
+	orig := time.Local
+	time.Local = time.FixedZone("UTC-7", -7*60*60)
+	defer func() { time.Local = orig }()
+
+	got := formatLocalTime(stamp)
+	if got != "11:05:58" {
+		t.Fatalf("formatLocalTime with UTC-7: got %q, want %q", got, "11:05:58")
+	}
+}
+
+func TestFormatLocalTimePassesThroughEmptyString(t *testing.T) {
+	got := formatLocalTime("")
+	if got != "" {
+		t.Fatalf("formatLocalTime empty: got %q, want %q", got, "")
+	}
+}
+
+func TestFormatLocalTimePassesThroughInvalidStamp(t *testing.T) {
+	got := formatLocalTime("not-a-timestamp")
+	if got != "not-a-timestamp" {
+		t.Fatalf("formatLocalTime invalid: got %q, want %q", got, "not-a-timestamp")
+	}
+}
+
+func TestRenderEventLinesUsesLocalTime(t *testing.T) {
+	// 2026-07-26 18:05:58 UTC → 02:05:58 in UTC+8
+	stamp := "2026-07-26T18:05:58Z"
+	events := []Event{{At: stamp, Type: "ToolCallFinished", Detail: "done"}}
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	defer func() { time.Local = orig }()
+
+	lines := renderEventLines(events, 80, paneVisual{})
+	if len(lines) == 0 {
+		t.Fatal("expected at least one line")
+	}
+	// The Text field must contain the local time, not the raw UTC stamp.
+	// In UTC+8: 2026-07-26T18:05:58Z → 2026-07-27T02:05:58 → "07/27 02:05:58"
+	text := lines[0].Text
+	if strings.Contains(text, "18:05:58Z") || strings.Contains(text, "2026-07-26T") {
+		t.Fatalf("event line contains raw UTC timestamp instead of local time: %s", text)
+	}
+	if !strings.Contains(text, "02:05:58") {
+		t.Fatalf("event line does not contain local time 02:05:58: %s", text)
+	}
+	// Verify date was preserved and shifted to next day in UTC+8
+	if !strings.Contains(text, "07/27") {
+		t.Fatalf("event line does not contain shifted date 07/27: %s", text)
+	}
+}
+
+func TestRenderLogLinesUsesLocalTime(t *testing.T) {
+	// 2026-07-26 18:05:58 UTC → 02:05:58 in UTC+8
+	stamp := "2026-07-26T18:05:58.000000000Z"
+	logs := []LogEntry{{Message: "hello", Stream: "stdout", OccurredAt: stamp}}
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	defer func() { time.Local = orig }()
+
+	lines := renderLogLines(Run{RunID: "r1"}, logs, "/tmp/run.log", 80, paneVisual{})
+	if len(lines) < 2 { // header + log line
+		t.Fatal("expected at least two lines")
+	}
+	// The log line text must contain local time, not raw UTC
+	logLine := lines[1].Text
+	if strings.Contains(logLine, "18:05:58Z") || strings.Contains(logLine, "2026-07-26T") {
+		t.Fatalf("log line contains raw UTC timestamp instead of local time: %s", logLine)
+	}
+	if !strings.Contains(logLine, "02:05:58") {
+		t.Fatalf("log line does not contain local time 02:05:58: %s", logLine)
+	}
+}
+
+func TestRenderEventLinesDetailUsesLocalTime(t *testing.T) {
+	stamp := "2026-07-26T18:05:58Z"
+	events := []Event{{At: stamp, Type: "ToolCallFinished", Detail: "done"}}
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	defer func() { time.Local = orig }()
+
+	lines := renderEventLines(events, 80, paneVisual{})
+	detail := lines[0].DetailFunc()
+	detailText := strings.Join(detail, "\n")
+	// In UTC+8: 2026-07-26T18:05:58Z → 2026-07-27T02:05:58 → "07/27 02:05:58"
+	if strings.Contains(detailText, "18:05:58Z") || strings.Contains(detailText, "2026-07-26T") {
+		t.Fatalf("event detail contains raw UTC timestamp: %s", detailText)
+	}
+	if !strings.Contains(detailText, "02:05:58") {
+		t.Fatalf("event detail does not contain local time 02:05:58: %s", detailText)
+	}
+	if !strings.Contains(detailText, "07/27") {
+		t.Fatalf("event detail does not contain shifted date 07/27: %s", detailText)
+	}
+}
+
+func TestRenderLogLinesDetailUsesLocalTime(t *testing.T) {
+	stamp := "2026-07-26T18:05:58.000000000Z"
+	logs := []LogEntry{{Message: "hello", Stream: "stdout", OccurredAt: stamp}}
+	orig := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	defer func() { time.Local = orig }()
+
+	lines := renderLogLines(Run{RunID: "r1"}, logs, "/tmp/run.log", 80, paneVisual{})
+	detail := lines[1].DetailFunc()
+	detailText := strings.Join(detail, "\n")
+	if strings.Contains(detailText, "18:05:58Z") || strings.Contains(detailText, "2026-07-26T") {
+		t.Fatalf("log detail contains raw UTC timestamp: %s", detailText)
+	}
+	if !strings.Contains(detailText, "02:05:58") {
+		t.Fatalf("log detail does not contain local time 02:05:58: %s", detailText)
 	}
 }

@@ -1266,6 +1266,26 @@ func formatMessageTime(stamp string) string {
 	return t.Local().Format("01/02 15:04")
 }
 
+// formatEventTime converts an RFC3339Nano timestamp to local MM/DD HH:MM:SS.
+// Used for event rows and details to preserve the date while showing local time.
+func formatEventTime(stamp string) string {
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stamp))
+	if err != nil {
+		return stamp
+	}
+	return t.Local().Format("01/02 15:04:05")
+}
+
+// formatLocalTime converts an RFC3339Nano timestamp to local HH:MM:SS.
+// Used for compact timestamp display in log rows and log detail.
+func formatLocalTime(stamp string) string {
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stamp))
+	if err != nil {
+		return stamp
+	}
+	return t.Local().Format("15:04:05")
+}
+
 func messageColumnWidths(w int) (int, int, int, int) {
 	timeW := 11
 	// Give message column priority when pane is narrow; from/to shrink aggressively
@@ -1420,11 +1440,11 @@ func renderEventLines(events []Event, w int, visual paneVisual) []ViewerLine {
 		event := e
 		lines = append(lines, ViewerLine{
 			Key:  "event:" + itoa(i) + ":" + event.At + ":" + event.Type + ":" + event.Detail,
-			Text: wrapText(dimStyle.Render(event.At+" ")+yellowStyle.Render(event.Type)+" "+textStyle.Render(event.Detail), w),
+			Text: wrapText(dimStyle.Render(formatEventTime(event.At)+" ")+yellowStyle.Render(event.Type)+" "+textStyle.Render(event.Detail), w),
 			DetailFunc: func() []string {
 				detail := []string{
 					whiteStyle.Render("  Event detail"),
-					detailKV("at", event.At, w, visual),
+					detailKV("at", formatEventTime(event.At), w, visual),
 					detailKV("type", event.Type, w, visual),
 				}
 				return append(detail, detailWrapped("detail", event.Detail, w, visual)...)
@@ -1454,7 +1474,7 @@ func renderLogLines(run Run, logs []LogEntry, logPath string, w int, visual pane
 
 	for i, entry := range logs {
 		lineNumber := i + 1
-		ts := formatTimestamp(entry.OccurredAt)
+		ts := formatLocalTime(entry.OccurredAt)
 		glyph := streamGlyph[entry.Stream]
 		if glyph == "" {
 			glyph = "[O]"
@@ -1492,7 +1512,7 @@ func renderLogLines(run Run, logs []LogEntry, logPath string, w int, visual pane
 						detailKV("stream", entry.Stream, w, visual),
 					}
 					if entry.OccurredAt != "" {
-						detail = append(detail, detailKV("at", entry.OccurredAt, w, visual))
+						detail = append(detail, detailKV("at", formatLocalTime(entry.OccurredAt), w, visual))
 					}
 					return append(detail, detailWrapped("text", entry.Message, w, visual)...)
 				}
@@ -1500,14 +1520,6 @@ func renderLogLines(run Run, logs []LogEntry, logPath string, w int, visual pane
 		})
 	}
 	return lines
-}
-
-// formatTimestamp converts ISO timestamp to HH:MM:SS format
-func formatTimestamp(ts string) string {
-	if len(ts) < 19 {
-		return ts
-	}
-	return ts[11:19]
 }
 
 func (m model) renderPRLines(w int, visual paneVisual) []ViewerLine {
