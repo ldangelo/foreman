@@ -88,102 +88,121 @@ Execution safety rules:
 
 ## Slice: `slices/go-elixir-cqrs`
 
-This branch is a greenfield spike implementing a Go CLI + Elixir ES/CQRS backend.
+This branch is a greenfield spike implementing a Go CLI + Elixir ES/CQRS backend
+using Commanded + Phoenix.
 The rules above continue to apply. The additional rules below are specific to this
 slice and supplement — not replace — the standing rules.
+
+### Stack (Slice)
+
+- **Commanded**: aggregate supervision, ES/CQRS, command routing
+- **EventStore**: event persistence (via Commanded adapter)
+- **Postgrex**: Postgres driver
+- **Phoenix**: HTTP API boundary for Go CLI; receives commands and dispatches to Commanded
 
 ### Architecture Decisions (Slice)
 
 #### 1. Event Sourcing Core
 
 **State lives in the event log.** The `foreman_events` Postgres table is the single
-source of truth. Aggregate modules (`Run`, `Task`, `Project`) are stateless functions
-that rebuild transient in-memory state by folding their event stream via
-`Aggregate.load/2`. Projections are read models derived from the event log.
+source of truth. Aggregate modules (`Run`, `Task`, `Project`) use `Commanded.Aggregate`
+behaviour with `execute/2` for command handling and `apply/2` for event application.
+Projections are read models derived from the event log.
 
 **Command flow**:
 ```
-CommandRouter.handle(command)
-    → AggregateRouter.route
-    → Aggregate.decide(module, stream_id, type, payload)
-    → Aggregate.handle_command(state, command)
-    → {:ok, event_spec}
-    → EventStore.append(event_spec)   ← sole append point
-    → ProjectionStore.apply_event
-    → Actor.apply_event              (notify supervised actor)
+Go CLI
+    │
+    ▼
+Phoenix POST /api/commands
+    │
+    ▼
+ForemanApp.dispatch(command)   ◄── Phoenix dispatches to Commanded
+    │
+    ▼
+ForemanRouter.route(command)  ◄── Commanded.Router
+    │
+    ▼
+RunAggregate."run-1"           ◄── Commanded supervised aggregate process
+    │
+    ▼
+Run.execute(command, state)    ◄── execute/2 returns event struct
+    │
+    ▼
+Commanded appends internally  ◄── Commanded handles append internally
+    │
+    ▼
+Run.apply(event, state)       ◄── apply/2 mutates aggregate state
 ```
 
-#### 2. Supervised Actors Per Aggregate
+#### 2. Commanded Owns Aggregate Lifecycle
 
-Every active aggregate (Project, Task, Run) has one supervised GenServer actor
-registered by aggregate ID (`"run:#{run_id}"`). The actor's mailbox serializes all
-commands for its aggregate — no two commands to the same aggregate process concurrently.
+Commanded aggregate processes are supervised by `Commanded.Aggregates.Supervisor`
+with `restart: :permanent`. Commanded owns append, rehydration, and concurrency
+internally — these are not implemented by spike application code.
 
-**Actor lifecycle**:
-- **Startup**: actor calls `Aggregate.load/2` to rehydrate from its event stream
-  before processing any command.
-- **Normal operation**: actor receives command, calls `Aggregate.decide`, returns
-  event spec to `CommandRouter`, appends via `CommandRouter`, applies confirmed event
-  to in-memory state.
-- **Crash + restart**: supervisor restarts actor automatically (`:permanent`). Restarted
-  actor rehydrates via `Aggregate.load/2` before processing the next command.
-- **Append-then-apply**: actor applies events to in-memory state **only after**
-  `EventStore.append` succeeds — not optimistically before.
+**Actor lifecycle** (Commanded-managed):
+- **Startup**: Commanded replays the aggregate's event stream via `apply/2`
+  before processing the first command.
+- **Normal operation**: aggregate receives command, `execute/2` returns event struct,
+  Commanded appends and applies internally.
+- **Crash + restart**: supervisor restarts aggregate automatically (`:permanent`).
+  Restarted aggregate rehydrates from the event stream before the next command.
+- **Append-then-apply**: Commanded guarantees events are appended before `apply/2`
+  is called — no optimistic mutations.
 
-#### 3. Only CommandRouter Appends
+#### 3. Phoenix Is the Sole HTTP Ingress
 
-**Only `CommandRouter`** (or a `defp` helper private to `CommandRouter`) calls
-`EventStore.append` in production code. No handler, actor, or external module calls
-`EventStore.append` directly. This is enforced by an ExUnit architecture test.
+Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
+Phoenix dispatches to Commanded's application (e.g. `ForemanApp.dispatch(command)`).
+No other module (worker, Go CLI, or other Elixir code) writes to the event store
+directly. All mutations route through Phoenix → Commanded.
 
-#### 4. Node/Worker Sends Commands, Not Events
+#### 4. Architecture Test
 
-Node and worker processes send **commands** to the Elixir backend. Commands are
-HTTP POSTs to `/api/commands`. Workers send structured events as command payloads
-(e.g., `command_type: "worker.event"`). No worker process writes directly to the
-event store.
+An ExUnit architecture test verifies that `EventStore.append/1` is called only from
+within Commanded's internal modules. Any direct `EventStore.append` call from outside
+the Commanded/Router boundary causes the test to fail.
 
 #### 5. CQRS Invariant
 
-- **Commands** mutate state via the event store. All state mutations go through
-  `CommandRouter.handle`.
+- **Commands** mutate state via Commanded. All state mutations go through
+  Phoenix → Commanded.
 - **Queries** read from the projection store (read model). No writes on the query path.
 
 ### Domain Events (Slice)
 
 All authoritative state transitions are domain events persisted in `foreman_events`.
-Every event is emitted by an aggregate `handle_command` function routed through
-`CommandRouter` — no module emits events directly.
+Every event is emitted by an aggregate `execute/2` function routed through
+`ForemanRouter` — no module emits events directly.
 
 | Event | Emitted by | Effects |
 |---|---|---|
-| `ProjectRegistered` | `Project.handle_command` | Creates project projection |
-| `TaskCreated` | `Task.handle_command` | Creates task projection |
-| `TaskUpdated` | `Task.handle_command` | Updates task status |
-| `RunStarted` | `Run.handle_command` | Creates run projection, spawns worker |
-| `PhaseStarted` | `Phase.handle_command` | Updates run phase |
-| `PhaseCompleted` | `Phase.handle_command` | Updates run phase |
-| `RunCompleted` | `Run.handle_command` | Marks run terminal |
-| `RunFailed` | `Run.handle_command` | Marks run terminal |
-| `PrCreated` | `Run.handle_command` | Records PR URL |
-| `PrMerged` | `Run.handle_command` | Marks run merged |
+| `ProjectRegistered` | `Project.execute/2` | Creates project projection |
+| `TaskCreated` | `Task.execute/2` | Creates task projection |
+| `TaskUpdated` | `Task.execute/2` | Updates task status |
+| `RunStarted` | `Run.execute/2` | Creates run projection, spawns worker |
+| `PhaseStarted` | `Phase.execute/2` | Updates run phase |
+| `PhaseCompleted` | `Phase.execute/2` | Updates run phase |
+| `RunCompleted` | `Run.execute/2` | Marks run terminal |
+| `RunFailed` | `Run.execute/2` | Marks run terminal |
+| `PrCreated` | `Run.execute/2` | Records PR URL |
+| `PrMerged` | `Run.execute/2` | Marks run merged |
 | `WorkerHeartbeat` | `worker.event` command | Updates worker projection |
-| `ToolCallApproved` | `Overwatch.handle_command` (via `CommandRouter`) | Records tool call decision |
-| `ToolCallDenied` | `Overwatch.handle_command` (via `CommandRouter`) | Records tool call decision |
+| `ToolCallApproved` | `Overwatch.execute/2` | Records tool call decision |
+| `ToolCallDenied` | `Overwatch.execute/2` | Records tool call decision |
 
 ### Idempotency and Concurrency (Slice)
 
-**Idempotency**: Every command carries a unique `command_id`. The event store
-deduplicates by `command_id` — appending the same command twice produces one event.
+**Idempotency**: Commanded deduplicates commands by `command_id` — appending the same
+command twice produces one event.
 
-**Optimistic Concurrency**: Every append uses `expected_stream_version`. If the
-stream has moved past the expected version, append fails with
-`{:error, {:conflict, ...}}`. The command is rejected; the actor's in-memory state
-is unchanged.
+**Optimistic Concurrency**: Commanded uses `expected_stream_version` internally. If the
+stream has moved past the expected version, append fails with a concurrency conflict.
+The aggregate's in-memory state is unchanged.
 
-**Ordering**: Commands to a given aggregate are serialized through the actor's
-mailbox. Out-of-order commands are rejected by the aggregate's state machine — the
-event ordering is part of the aggregate invariant.
+**Ordering**: Commands to a given aggregate are serialized through the aggregate's
+mailbox. Out-of-order commands are rejected by the aggregate's state machine.
 
 ### Go CLI Boundaries (Slice)
 
@@ -199,8 +218,8 @@ The Go CLI only:
 
 ### Test Architecture (Slice)
 
-- **Unit tests**: aggregate handlers — `handle_command` → event spec, valid transitions
-- **Integration tests**: actor startup, mailbox serialization, crash/restart/rehydration
-- **Architecture tests**: `EventStore.append` is called only from `CommandRouter`
+- **Unit tests**: aggregate handlers — `execute/2` → event struct, valid transitions
+- **Integration tests**: aggregate startup, mailbox serialization, crash/restart/rehydration
+- **Architecture tests**: `EventStore.append` is called only from Commanded internals
 - **Projection tests**: known event sequence → rebuild → verify read model matches
 - **Concurrency tests**: parallel commands to same aggregate, optimistic concurrency conflicts
