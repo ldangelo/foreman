@@ -100,35 +100,42 @@ command is a no-op.
 
 **Framework behaviour**: Commanded's `Aggregate` subscribes to the event stream via
 `EventStore.subscribe`. While `execute/2` is blocked in a `receive`, the GenServer mailbox
-cannot run `handle_info/2` — externally appended events queue in the mailbox but are not
-applied. On `:wrong_expected_version`, `persist_events/3` calls
-`AggregateStateBuilder.rebuild_from_events/1` which refreshes state from the queued events,
-then returns `{:error, :too_many_attempts}` at retry 0. The aggregate process does
-**not** exit; it remains alive with rebuilt state.
+cannot run `handle_info/2` — externally appended events arrive as `{:events, events}`
+messages and queue behind the blocked `receive`. On `:wrong_expected_version`,
+`persist_events/3` calls `AggregateStateBuilder.rebuild_from_events/1` which queries
+EventStore for the authoritative event list (including the externally appended event),
+**not** from the queued mailbox message. It returns `{:error, :too_many_attempts}` at retry 0.
+The aggregate process does **not** exit; it remains alive with rebuilt state.
 
-**Test**: A test-only `execute/2` does `receive {:release, ref} -> event end` after reading
-state. Dispatch it from a Task holding the `ref`. Externally append while blocked. Then
-`send(aggregate_pid, {:release, ref})` to release and trigger the conflict.
+**Test**: A test-only `execute/2` does a selective `receive` that matches only
+`{:release, ^ref}` — it must not consume the queued `{:events, events}` subscription
+messages. Dispatch it from a Task holding the `ref`.
 
 1. Start `run-1` aggregate and send `run.start` — stream version N.
-2. Dispatch a test-only `run.blocking` command whose `execute/2` reads state, then calls
-   `receive do: (msg -> {:released, msg}) end` after the read. Dispatch from a Task
-   holding the `ref`. The command is parked in `execute/2`; the GenServer mailbox is
-   held open.
+2. Dispatch a test-only `run.blocking` command whose `execute/2` reads state, then calls:
+   ```
+   receive do
+     {:release, ^ref} -> event_struct
+   after 60_000 -> :timeout
+   end
+   ```
+   The receive is selective — it will not consume `{:events, events}` messages. The
+   command is parked in `execute/2`. Dispatch from a Task holding `ref`.
 3. While the command is blocked, call `append_to_stream/4` externally to append a
-   `RunCompleted` event — stream advances to N+1. The event is queued in the aggregate's
-   mailbox (cannot be applied because `execute/2` holds the receive).
-4. Send `send(aggregate_pid, {:release, ref})` to deliver the release message. `execute/2`
-   returns its event struct.
+   `RunCompleted` event — stream advances to N+1. The subscription delivers a
+   `{:events, events}` message that queues behind the blocked `receive`.
+4. Send `send(aggregate_pid, {:release, ref})` to release. The selective `receive`
+   matches it (not the queued events message). `execute/2` returns its event struct.
 5. Commanded's `persist_events/3` detects `:wrong_expected_version` (stream is N+1, command
-   expected N). It calls `AggregateStateBuilder.rebuild_from_events/1` — the queued
-   `RunCompleted` event is included, refreshing state to N+1. With `retry_attempts: 0`,
+   expected N). It calls `AggregateStateBuilder.rebuild_from_events/1` which queries
+   EventStore for events up to version N+1 — the externally appended `RunCompleted` is
+   included. The queued `{:events, events}` mailbox message is **not** applied (it is
+   already-seen by the subscription). With `retry_attempts: 0`,
    `persist_events/3` returns `{:error, :too_many_attempts}`. The aggregate process
    **does not exit**; it remains alive with rebuilt state.
-6. Assert the aggregate process is still alive (verified by sending it a message and
-   receiving a reply).
+6. Assert the aggregate process is still alive (verified by sending it a message).
 7. Assert the aggregate's state reflects the externally-appended `RunCompleted` event
-   at N+1 (the queued subscription event was applied during rebuild).
+   at N+1 (rebuilt from EventStore, not from the queued mailbox message).
 8. Assert no `RunBlocking` event was persisted — the aggregate's command event is absent
    because Commanded rejected the persist after the conflict.
 
