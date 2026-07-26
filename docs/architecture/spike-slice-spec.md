@@ -6,10 +6,7 @@ Validate a greenfield Go CLI + Elixir ES/CQRS backend implementing the full
 Project → Task → Run → worker completion → projection loop correctly, before
 committing to rescuing or replacing the current repo.
 
-**Stack**: Commanded (aggregate supervision, ES/CQRS), EventStore (persistence),
-Postgrex (driver), Phoenix (HTTP API boundary for Go CLI). Commanded owns aggregate
-lifecycle (append, rehydration, `:permanent` restart). Phoenix receives commands from
-Go CLI and dispatches to Commanded — no direct event writes from Go.
+lifecycle (append, rehydration, `:temporary` restart — lazy reopen on next dispatch).
 
 The current repo (`v0.x-poc`) is evidence of current behavior, not target behavior.
 
@@ -27,18 +24,13 @@ Go CLI                          Phoenix                       Commanded + EventS
    |<-- HTTP GET /api/runs/:id ----|                                    |
 ```
 
-All HTTP arrows are commands or queries. No direct writes from Go CLI or worker
-to the event store. All state mutations route through Phoenix → Commanded.
-Commanded owns aggregate lifecycle: append, rehydration, `:permanent` restart.
+Commanded owns aggregate lifecycle: append, rehydration, `:temporary` restart (lazy).
 
 ## Acceptance Criteria
 
 ### AC1 — Supervised Actor: Serialized Commands, Stream Rehydration, Event Ordering
 
-**Framework under test**: Commanded `Commanded.Aggregate` — supervised aggregate processes
-managed by `Commanded.Aggregates.Supervisor`. Commanded aggregate processes own append,
-rehydration, and `:permanent` restart internally. The spike tests that these guarantees
-hold for `Project`, `Task`, `Run`, `Worker`, and `Phase` aggregates.
+rehydration, and `:temporary` restart (lazy reopen on next dispatch) internally. The spike
 
 Asserted behaviors:
 
@@ -52,10 +44,11 @@ Asserted behaviors:
    stream via `apply/2`. The aggregate's in-memory state matches the event stream —
    not a blank slate. Verified by reading aggregate state after startup.
 
-3. **Crash + automatic restart**: `RunAggregate` is a supervised child with
-   `restart: :permanent`. After `Process.exit(pid, :kill)`, Commanded's aggregate
-   supervisor restarts it automatically. The restarted aggregate rehydrates from the
-   event stream before processing the next command.
+3. **Crash + lazy reopen**: Commanded aggregates use `restart: :temporary`. After
+   `Process.exit(pid, :kill)`, Commanded does **not** auto-restart the aggregate
+   process immediately. On the **next dispatch** to that aggregate, Commanded re-opens
+   a new process and replays the event stream before handling the command. No manual
+   intervention — but the restart is lazy, not immediate.
 
 4. **Post-restart command correctness**: After restart rehydration (step 3), send
    `run.complete` to the restarted aggregate. The aggregate operates on the correct
@@ -73,14 +66,21 @@ Asserted behaviors:
 
 ### AC2 — Duplicate / Out-of-Order Worker Completion
 
+**Idempotency is a domain invariant**, not a Commanded feature. Commanded does not
+deduplicate by `command_id`. The aggregate's `execute/2` function tracks processed
+`completion_sequence` numbers in its state. On a duplicate `run.complete` with the
+same `sequence`, the aggregate emits no event and returns an error tuple — the
+command is a no-op.
+
 1. Send `run.complete` for `run-1` with `sequence: 1`.
 2. Send a second `run.complete` for `run-1` with `sequence: 1` (duplicate).
-3. Verify the second command is idempotent — one `RunCompleted` event appended,
-   not two.
+3. Verify the second command is idempotent — `execute/2` detects the duplicate
+   sequence in aggregate state, emits no event, and returns `{:error, :already_completed}`.
+   Only one `RunCompleted` event exists in the event store.
 4. Send `run.complete` for `run-1` with `sequence: 3` (skipping 2).
-5. Verify the command is rejected or handled per defined ordering policy
-   (reject / buffer / apply optimistically).
-6. Verify the aggregate state is consistent with the applied events.
+5. Verify the command is rejected — `execute/2` detects the gap and returns
+   `{:error, :out_of_order}`.
+6. Verify the aggregate state is unchanged after steps 2–5.
 
 ### AC3 — Optimistic Concurrency
 
@@ -127,12 +127,13 @@ Asserted behaviors:
 ### Commanded Owns Aggregate Lifecycle
 
 - Commanded aggregate processes (`Commanded.Aggregate`) are supervised by
-  `Commanded.Aggregates.Supervisor` with `restart: :permanent`.
-- Commanded owns append, rehydration, and concurrency internally — these are
-  not implemented by the spike's application code.
+  `Commanded.Aggregates.Supervisor` with `restart: :temporary` — they are not
+  automatically restarted on crash.
+- Rehydration is **lazy**: on the next dispatch to an aggregate after a crash/exit,
+  Commanded opens a new process and replays the event stream before handling the
+  command.
 - Aggregate handlers (`use Commanded.Aggregate, …`) define `execute/2` for command
   handling and `apply/2` for event application. They do not call `EventStore` directly.
-
 ### Phoenix Is the Sole HTTP Ingress
 
 - Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
@@ -202,8 +203,7 @@ Read model returned (no write)
 | Go CLI / dispatch  | Node/TypeScript                          | Go                               |
 | Cockpit client     | Go                                       | Go (unchanged)                   |
 | Worker protocol    | Node/TypeScript                          | Pi-native or Go↔Elixir           |
-| Domain aggregates | Elixir                                   | Elixir (same, Commanded-style)   |
-| Actor supervision  | `RunActor` `:temporary` — no restart      | Commanded `:permanent` supervised |
+| Actor supervision  | `RunActor` `:temporary` — no restart        | Commanded `:temporary`, lazy reopen |
 | Event routing     | 16 direct appenders                      | Phoenix → Commanded Router only  |
 | VCS / worktree    | Node (vcs-backend)                       | Go + Elixir commands             |
 | ForemanStore      | Node (disabled no-op shell)               | Gone                             |

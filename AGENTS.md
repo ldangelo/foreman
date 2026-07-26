@@ -135,21 +135,19 @@ Commanded appends internally  ◄── Commanded handles append internally
 Run.apply(event, state)       ◄── apply/2 mutates aggregate state
 ```
 
-#### 2. Commanded Owns Aggregate Lifecycle
-
 Commanded aggregate processes are supervised by `Commanded.Aggregates.Supervisor`
-with `restart: :permanent`. Commanded owns append, rehydration, and concurrency
-internally — these are not implemented by spike application code.
+with `restart: :temporary` — they are not automatically restarted on crash.
+Rehydration is **lazy**: on the next dispatch after a crash, Commanded opens a new
+process and replays the event stream before handling the command.
 
 **Actor lifecycle** (Commanded-managed):
 - **Startup**: Commanded replays the aggregate's event stream via `apply/2`
   before processing the first command.
 - **Normal operation**: aggregate receives command, `execute/2` returns event struct,
   Commanded appends and applies internally.
-- **Crash + restart**: supervisor restarts aggregate automatically (`:permanent`).
-  Restarted aggregate rehydrates from the event stream before the next command.
-- **Append-then-apply**: Commanded guarantees events are appended before `apply/2`
-  is called — no optimistic mutations.
+- **Crash + lazy reopen**: supervisor does **not** auto-restart the aggregate. On the
+  next dispatch, Commanded reopens a new process and rehydrates from the event stream.
+  Restart is lazy, not immediate.
 
 #### 3. Phoenix Is the Sole HTTP Ingress
 
@@ -194,15 +192,14 @@ Every event is emitted by an aggregate `execute/2` function routed through
 
 ### Idempotency and Concurrency (Slice)
 
-**Idempotency**: Commanded deduplicates commands by `command_id` — appending the same
-command twice produces one event.
+**Idempotency**: Commanded does **not** deduplicate by `command_id`. Idempotency is a
+domain invariant implemented in each aggregate's `execute/2`. The aggregate tracks
+processed completion sequences in its state. On a duplicate `run.complete` with the
+same `sequence`, `execute/2` returns `{:error, :already_completed}` and emits no event.
 
 **Optimistic Concurrency**: Commanded uses `expected_stream_version` internally. If the
 stream has moved past the expected version, append fails with a concurrency conflict.
 The aggregate's in-memory state is unchanged.
-
-**Ordering**: Commands to a given aggregate are serialized through the aggregate's
-mailbox. Out-of-order commands are rejected by the aggregate's state machine.
 
 ### Go CLI Boundaries (Slice)
 
