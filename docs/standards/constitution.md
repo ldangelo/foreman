@@ -152,11 +152,82 @@ foreman/
     TRD/              # Technical Requirements Documents
 ```
 
+## 7. Slice: `slices/go-elixir-cqrs`
+
+The rules in this section are binding on all implementation in `slices/go-elixir-cqrs`.
+They supplement Sections 1–6. Violations are rejected at code review.
+
+### Article I — Event Store Append
+
+1. **Only `CommandRouter`** (or a `defp` helper private to `CommandRouter`) may call
+   `EventStore.append` in production code.
+2. No aggregate handler calls `EventStore.append` directly. Handlers return
+   `{:ok, event_spec()}`. `CommandRouter` appends after validation.
+3. An ExUnit architecture test enumerates all allowed `EventStore.append` call sites
+   and fails if any unauthorized module appends.
+
+### Article II — Actor Supervision
+
+1. Every active aggregate (Project, Task, Run) has one supervised GenServer actor
+   registered by aggregate ID (`"project:#{id}"`, `"task:#{id}"`, `"run:#{id}"`).
+2. Actor restart policy is `:permanent`. On restart, the actor must call
+   `Aggregate.load/2` to rehydrate state from its event stream before processing
+   any command.
+3. Commands to a given aggregate are serialized through the actor's mailbox.
+   No two commands to the same aggregate process concurrently.
+4. Actor in-memory state is mutated **only after** `EventStore.append` succeeds —
+   not optimistically before.
+
+### Article III — Command / Query Separation
+
+1. All state mutations are commands. Every command is a `POST /api/commands` routed
+   through `CommandRouter.handle`.
+2. All reads are queries. Queries read from the projection store (read model).
+   No write on the query path.
+3. Workers send commands (not events). Worker completion is a `command_type:
+   "worker.event"` or `command_type: "run.complete"` command. Workers never write
+   to the event store directly.
+
+### Article IV — Go CLI Boundaries
+
+1. The Go CLI sends commands and queries only. It has no direct access to the
+   event store, projection store, or Elixir internal state.
+2. The Go CLI maps every operation to exactly one `POST` (command) or one `GET`
+   (query). No multi-step transaction spanning multiple HTTP calls.
+
+### Article V — Concurrency
+
+1. Every `EventStore.append` uses `expected_stream_version` for optimistic
+   concurrency. Conflicts return `{:error, {:conflict, ...}}`. No partial state
+   is written.
+2. Every command carries a unique `command_id`. The event store deduplicates
+   by `command_id`.
+3. Out-of-order events are rejected by the aggregate's state machine. The event
+   ordering is part of the aggregate invariant; violating order is a rejected
+   command, not silent state drift.
+
+### Article VI — Crash Behavior
+
+1. Events written before a crash are durable and replayable after restart
+   rehydration.
+2. Events that were in-flight (written by the actor but not yet appended) are
+   absent after restart — confirmed absent, not silently lost.
+3. After restart rehydration, subsequent commands operate on the correct
+   pre-crash state. No phantom post-crash state, no duplicate events.
+
+### Article VII — Greenfield Constraint
+
+1. Implementation files are not copied from the current repo (`main`,
+   `fix/runtime-mode-leak`). Only `packages/foreman_server/lib/foreman_server/aggregates/`
+   is consulted as behavioral reference — no source files transferred.
+2. Decisions documented in `AGENTS.md` and this constitution are binding.
+   Changing any rule requires updating both documents.
 ---
 
 ## Changelog
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-26 | Added Section 7: Slice `slices/go-elixir-cqrs` — supervised actors, sole CommandRouter append, CQRS, Go CLI boundaries, greenfield constraint | Pi Agent |
 | 2026-07-01 | Added event-sourced orchestration invariant: events trigger behavior; projections are read models | Pi Agent |
 | 2026-03-10 | Initial constitution generated | /init-project |
