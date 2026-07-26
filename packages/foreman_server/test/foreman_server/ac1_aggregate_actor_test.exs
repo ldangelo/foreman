@@ -304,8 +304,9 @@ defmodule ForemanServer.AC1AggregateActorTest do
         )
       end)
 
-    # Wait for aggregate to enter receive before doing external append
-    assert_receive {:block_entered, ^ref, _}, 5_000
+    # Wait for aggregate to enter receive before doing external append.
+    # Capture pid so we can prove the same actor is still responsive after conflict.
+    assert_receive {:block_entered, ^ref, actor_pid}, 5_000
 
     # 2. Stream is still empty — InMemory returns stream_not_found for unknown streams
     assert TestEventStore.stream_forward(TestApplication, agg_id, 0, 10) ==
@@ -331,12 +332,10 @@ defmodule ForemanServer.AC1AggregateActorTest do
       TestEventStore.stream_forward(TestApplication, agg_id, 0, 10) |> Enum.to_list()
 
     assert length(events_after_append) == 1
-
     # 5. Release — aggregate's persist attempt gets :wrong_expected_version.
-    #    The aggregate may exit on conflict. Yield until the dispatch settles,
-    #    then explicitly assert conflict.
-    pid = aggregate_pid(TestApplication, BlockingAggregate, agg_id)
-    if pid && Process.alive?(pid), do: send(pid, {:release, ref})
+    #    The aggregate stays alive (does NOT exit on conflict); it returns an error.
+    #    Use actor_pid (captured from block_entered) — proves same actor handles conflict.
+    send(actor_pid, {:release, ref})
 
     result =
       case Task.yield(task, 5_000) do
@@ -344,13 +343,23 @@ defmodule ForemanServer.AC1AggregateActorTest do
         nil -> Task.shutdown(task)
       end
 
-    assert match?({:error, _}, result),
-           "dispatch should return error when expected version conflicts"
+    # Spec requires exactly :too_many_attempts — not :aggregate_not_found or supervisor errors.
+    assert result == {:error, :too_many_attempts},
+           "dispatch should return :too_many_attempts when expected version conflicts"
+
+    # Actor stays alive and is still the same responsive process after conflict.
+    assert Process.alive?(actor_pid),
+           "aggregate must stay alive after conflict (not exit)"
+
+    # Verify the same actor is responsive by querying its internal state directly.
+    # Responsiveness proof: :sys.get_state calls the GenServer and returns its internal state.
+    # For Commanded aggregates this is the aggregate's GenServer state, not the domain struct.
+    _internal_state = :sys.get_state(actor_pid, 5_000)
 
     # Key invariant: exactly 1 event (the external one) is in the stream.
     assert length(TestEventStore.stream_forward(TestApplication, agg_id, 0, 10) |> Enum.to_list()) ==
-             1,
-           "event store should contain exactly 1 external event — aggregate's event was rejected"
+              1,
+            "event store should contain exactly 1 external event — aggregate's event was rejected"
 
     # State reflects only the externally appended event
     state =
@@ -360,8 +369,12 @@ defmodule ForemanServer.AC1AggregateActorTest do
         agg_id
       )
 
+    # State reflects only the externally appended event (aggregate_type: :conflict, NOT :conflict_test).
+    # This proves the rejected pending event did not mutate actor state.
     assert state.status == :blocked,
            "aggregate state should reflect the externally appended event (event store is authoritative)"
+    assert state.aggregate_type == :conflict,
+           "aggregate_type must be :conflict — the externally persisted event, not the rejected :conflict_test command"
   end
 
   # -------------------------------------------------------------------------
