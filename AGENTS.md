@@ -221,6 +221,8 @@ The Go CLI only:
 - **Architecture tests**: no direct `append_to_stream`/adapter calls in `lib/foreman_server/`
 - **Projection tests**: known event sequence → rebuild → verify read model matches
 - **Concurrency tests**: optimistic concurrency via blocking command — test-only `execute/2`
-  blocks via `Process.sleep` after reading state; externally append while blocked; release
-  and assert `{:error, :too_many_attempts}`, aggregate alive with rebuilt state, no command
+  blocks via `receive {:release, ref}` after reading state; dispatch from Task holding ref;
+  externally append while blocked (event queues in mailbox); send release message; persist_events/3
+  calls AggregateStateBuilder.rebuild_from_events (queued event included), returns
+  `{:error, :too_many_attempts}`; aggregate alive, state includes external event, no command
   event persisted.

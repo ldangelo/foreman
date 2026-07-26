@@ -99,31 +99,36 @@ command is a no-op.
 ### AC3 — Optimistic Concurrency
 
 **Framework behaviour**: Commanded's `Aggregate` subscribes to the event stream via
-`EventStore.subscribe`. An externally appended event is received by the live aggregate
-process before the next command is processed, refreshing its state. On
-`:wrong_expected_version`, `persist_events/3` rebuilds state and retries — default
-`retry_attempts: 0` means it returns `{:error, :too_many_attempts}`. The aggregate
-process does **not** exit; it remains alive with rebuilt state.
+`EventStore.subscribe`. While `execute/2` is blocked in a `receive`, the GenServer mailbox
+cannot run `handle_info/2` — externally appended events queue in the mailbox but are not
+applied. On `:wrong_expected_version`, `persist_events/3` calls
+`AggregateStateBuilder.rebuild_from_events/1` which refreshes state from the queued events,
+then returns `{:error, :too_many_attempts}` at retry 0. The aggregate process does
+**not** exit; it remains alive with rebuilt state.
 
-**Test**: Use a blocking command (test-only, `execute/2` uses `Process.sleep` after
-reading state) to hold the aggregate's command handler open while the stream is
-externally advanced.
+**Test**: A test-only `execute/2` does `receive {:release, ref} -> event end` after reading
+state. Dispatch it from a Task holding the `ref`. Externally append while blocked. Then
+`send(aggregate_pid, {:release, ref})` to release and trigger the conflict.
 
 1. Start `run-1` aggregate and send `run.start` — stream version N.
 2. Dispatch a test-only `run.blocking` command whose `execute/2` reads state, then calls
-   `Process.sleep/1` (e.g. 60 000 ms) before returning. The aggregate handler holds
-   the command in `execute/2`, mailbox is blocked.
+   `receive do: (msg -> {:released, msg}) end` after the read. Dispatch from a Task
+   holding the `ref`. The command is parked in `execute/2`; the GenServer mailbox is
+   held open.
 3. While the command is blocked, call `append_to_stream/4` externally to append a
-   `RunCompleted` event — stream advances to N+1. Commanded's subscription delivers the
-   event to the live aggregate, refreshing its state.
-4. Release the blocked command (cancel the sleep, e.g. via `Process.exit` or a monitor
-   signal). `execute/2` returns its event struct.
-5. Commanded's `persist_events/3` detects `:wrong_expected_version` (the stream is N+1,
-   the command's expected version is N). With `retry_attempts: 0`, it returns
-   `{:error, :too_many_attempts}`. The aggregate process does **not** exit.
-6. Assert the aggregate process is still alive.
+   `RunCompleted` event — stream advances to N+1. The event is queued in the aggregate's
+   mailbox (cannot be applied because `execute/2` holds the receive).
+4. Send `send(aggregate_pid, {:release, ref})` to deliver the release message. `execute/2`
+   returns its event struct.
+5. Commanded's `persist_events/3` detects `:wrong_expected_version` (stream is N+1, command
+   expected N). It calls `AggregateStateBuilder.rebuild_from_events/1` — the queued
+   `RunCompleted` event is included, refreshing state to N+1. With `retry_attempts: 0`,
+   `persist_events/3` returns `{:error, :too_many_attempts}`. The aggregate process
+   **does not exit**; it remains alive with rebuilt state.
+6. Assert the aggregate process is still alive (verified by sending it a message and
+   receiving a reply).
 7. Assert the aggregate's state reflects the externally-appended `RunCompleted` event
-   at N+1.
+   at N+1 (the queued subscription event was applied during rebuild).
 8. Assert no `RunBlocking` event was persisted — the aggregate's command event is absent
    because Commanded rejected the persist after the conflict.
 
