@@ -98,22 +98,34 @@ command is a no-op.
 
 ### AC3 — Optimistic Concurrency
 
-**Constraint**: two local dispatches to the same aggregate are mailbox-serialized — the second
-dispatch waits for the first to complete and therefore sees the updated stream version. A
-genuine concurrency conflict requires advancing the stream from outside the aggregate.
+**Framework behaviour**: Commanded's `Aggregate` subscribes to the event stream via
+`EventStore.subscribe`. An externally appended event is received by the live aggregate
+process before the next command is processed, refreshing its state. On
+`:wrong_expected_version`, `persist_events/3` rebuilds state and retries — default
+`retry_attempts: 0` means it returns `{:error, :too_many_attempts}`. The aggregate
+process does **not** exit; it remains alive with rebuilt state.
 
-1. Start `run-1` aggregate and send `run.start` — stream version is N. Keep the aggregate
-   process alive (do not close it).
-2. In test setup (outside the aggregate process), call `append_to_stream/4` with
-   `expected_version: N` to append a `RunCompleted` event — stream advances to N+1.
-3. While the original aggregate process is still alive (stale at version N), dispatch a
-   normal `run.cancel` command to `run-1` through Commanded.
-4. The aggregate process attempts to append its event at version N but the stream is
-   now N+1 — Commanded rejects with a concurrency conflict error
-   (`{:error, {:conflict, ...}}`). The aggregate exits (lazy reopen).
-5. Dispatch a new command to `run-1` to trigger lazy reopen and rehydration.
-6. Verify the reopened aggregate's state includes the externally-appended `RunCompleted`
-   event at version N+1 — no partial mutation from the rejected `run.cancel`.
+**Test**: Use a blocking command (test-only, `execute/2` uses `Process.sleep` after
+reading state) to hold the aggregate's command handler open while the stream is
+externally advanced.
+
+1. Start `run-1` aggregate and send `run.start` — stream version N.
+2. Dispatch a test-only `run.blocking` command whose `execute/2` reads state, then calls
+   `Process.sleep/1` (e.g. 60 000 ms) before returning. The aggregate handler holds
+   the command in `execute/2`, mailbox is blocked.
+3. While the command is blocked, call `append_to_stream/4` externally to append a
+   `RunCompleted` event — stream advances to N+1. Commanded's subscription delivers the
+   event to the live aggregate, refreshing its state.
+4. Release the blocked command (cancel the sleep, e.g. via `Process.exit` or a monitor
+   signal). `execute/2` returns its event struct.
+5. Commanded's `persist_events/3` detects `:wrong_expected_version` (the stream is N+1,
+   the command's expected version is N). With `retry_attempts: 0`, it returns
+   `{:error, :too_many_attempts}`. The aggregate process does **not** exit.
+6. Assert the aggregate process is still alive.
+7. Assert the aggregate's state reflects the externally-appended `RunCompleted` event
+   at N+1.
+8. Assert no `RunBlocking` event was persisted — the aggregate's command event is absent
+   because Commanded rejected the persist after the conflict.
 
 ### AC4 — Full Projection Rebuild
 

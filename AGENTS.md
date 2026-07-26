@@ -220,6 +220,7 @@ The Go CLI only:
 - **Integration tests**: aggregate startup, mailbox serialization, crash/restart/rehydration
 - **Architecture tests**: no direct `append_to_stream`/adapter calls in `lib/foreman_server/`
 - **Projection tests**: known event sequence → rebuild → verify read model matches
-- **Concurrency tests**: stale-process conflict — keep aggregate alive at version N, externally
-  advance stream via test-only append_to_stream/4, dispatch normal command — stale aggregate
-  conflicts and exits; lazy reopen and rehydration verified.
+- **Concurrency tests**: optimistic concurrency via blocking command — test-only `execute/2`
+  blocks via `Process.sleep` after reading state; externally append while blocked; release
+  and assert `{:error, :too_many_attempts}`, aggregate alive with rebuilt state, no command
+  event persisted.
