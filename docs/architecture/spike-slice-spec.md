@@ -6,8 +6,8 @@
  Project → Task → Run → worker completion → projection loop correctly, before
  committing to rescuing or replacing the current repo.
  
-**Stack**: Commanded (event store adapter only), Elixir/OTP (GenServer, Supervisor,
-Registry), EventStore (persistence), Postgrex (driver), Phoenix (HTTP API boundary for Go CLI).
+**Stack**: Elixir/OTP (GenServer, Supervisor, Registry), EventStore (persistence),
+Postgrex (driver), Phoenix (HTTP API boundary for Go CLI).
 Custom `Actor` modules provide aggregate supervision with `:permanent` restart,
 `Aggregate.load/2` rehydration, and `apply/2` event application. `CommandRouter` is the
 sole append point — no module other than `CommandRouter` calls `EventStore.append_to_stream`.
