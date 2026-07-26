@@ -221,7 +221,7 @@ Run.execute(state, command)    ◄── execute/2 returns event struct
 Commanded appends event         ◄── Commanded handles this internally
     │
     ▼
-Run.apply(event, state)        ◄── apply/2 mutates aggregate state
+Run.apply(state, event)        ◄── apply/2 mutates aggregate state
     │
     ▼
 {:ok, event, new_state} returned to Commanded, committed via HTTP response

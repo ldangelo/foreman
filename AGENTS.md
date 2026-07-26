@@ -132,7 +132,7 @@ Run.execute(state, command)   ◄── execute/2 returns event struct
 Commanded appends internally  ◄── Commanded handles append internally
     │
     ▼
-Run.apply(event, state)       ◄── apply/2 mutates aggregate state
+Run.apply(state, event)       ◄── apply/2 mutates aggregate state
 ```
 
 Commanded aggregate processes are supervised by `Commanded.Aggregates.Supervisor`
