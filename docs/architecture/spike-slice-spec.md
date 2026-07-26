@@ -98,13 +98,19 @@ command is a no-op.
 
 ### AC3 — Optimistic Concurrency
 
-1. Send `run.start` — event stream version is N.
-2. Concurrently, from another process, send a conflicting command for `run-1`
-   that mutates state (e.g., `run.complete`).
-3. Verify the first command to arrive succeeds.
-4. Verify the second is rejected with a concurrency conflict error
+**Constraint**: two local dispatches to the same aggregate are mailbox-serialized — the second
+dispatch waits for the first to complete and therefore sees the updated stream version. A
+genuine concurrency conflict requires advancing the stream from outside the aggregate.
+
+1. Start `run-1` aggregate and send `run.start` — stream version is N.
+2. In test setup (outside the aggregate process), directly call `append_to_stream/4` to
+   append a `RunCompleted` event at version N+1, bypassing Commanded.
+3. Dispatch a new command to `run-1` through Commanded with `expected_version: N`
+   (simulating the stale view from step 1).
+4. Verify Commanded rejects the dispatch with a concurrency conflict error
    (`{:error, {:conflict, ...}}`).
-5. Verify no partial state is written.
+5. Verify the aggregate state reflects the externally-appended `RunCompleted` event,
+   not a partial mutation from the rejected command.
 
 ### AC4 — Full Projection Rebuild
 
@@ -149,7 +155,6 @@ command is a no-op.
 - Aggregate modules implement `@behaviour Commanded.Aggregates.Aggregate` with `execute/2`
   for command handling and `apply/2` for event application. They do not call
   `EventStore` directly.
-
 ### Phoenix Is the Sole HTTP Ingress
 
 - Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
@@ -159,11 +164,11 @@ command is a no-op.
 
 ### Architecture Test
 
-- An ExUnit architecture test (`CommandRouterEnforcement` test) verifies that
-  `EventStore.append/1` is called only from within Commanded's internal modules
-  (or from a single thin wrapper inside the application).
-- Any direct `EventStore.append` call from outside the Commanded/Router boundary
-  causes the architecture test to fail.
+- An ExUnit architecture test (`EventStore.Enforcement`) scans all `.ex` source files
+  under `lib/foreman_server/` for direct operational calls to `append_to_stream` or
+  adapter dispatch functions (e.g. `EventStore.append_to_stream(`, `Adapter.dispatch(`).
+  Module declarations (`defmodule … do; use EventStore`, `otp_app:` config) are allowed.
+  Any match causes the test to fail.
 
 ### Command Flow
 

@@ -158,9 +158,10 @@ directly. All mutations route through Phoenix → Commanded.
 
 #### 4. Architecture Test
 
-An ExUnit architecture test verifies that `EventStore.append/1` is called only from
-within Commanded's internal modules. Any direct `EventStore.append` call from outside
-the Commanded/Router boundary causes the test to fail.
+An ExUnit architecture test (`EventStore.Enforcement`) scans all `.ex` source files under
+`lib/foreman_server/` for direct operational calls to `append_to_stream` or adapter dispatch
+functions. Module declarations (`defmodule … do; use EventStore`, `otp_app:` config) are
+allowed. Any match causes the test to fail.
 
 #### 5. CQRS Invariant
 
@@ -217,6 +218,6 @@ The Go CLI only:
 
 - **Unit tests**: aggregate handlers — `execute/2` → event struct, valid transitions
 - **Integration tests**: aggregate startup, mailbox serialization, crash/restart/rehydration
-- **Architecture tests**: `EventStore.append` is called only from Commanded internals
+- **Architecture tests**: no direct `append_to_stream`/adapter calls in `lib/foreman_server/`
 - **Projection tests**: known event sequence → rebuild → verify read model matches
 - **Concurrency tests**: parallel commands to same aggregate, optimistic concurrency conflicts
