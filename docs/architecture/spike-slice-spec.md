@@ -6,13 +6,18 @@ Validate a greenfield Go CLI + Elixir ES/CQRS backend implementing the full
 Project → Task → Run → worker completion → projection loop correctly, before
 committing to rescuing or replacing the current repo.
 
+**Stack**: Commanded (aggregate supervision, ES/CQRS), EventStore (persistence),
+Postgrex (driver), Phoenix (HTTP API boundary for Go CLI). Commanded owns aggregate
 lifecycle (append, rehydration, `:temporary` restart — lazy reopen on next dispatch).
+Phoenix receives commands from Go CLI and dispatches to Commanded — no direct event
+writes from Go.
 
 The current repo (`v0.x-poc`) is evidence of current behavior, not target behavior.
 
 ---
 
 ## Scope: One Closed Loop
+
 ```
 Go CLI                          Phoenix                       Commanded + EventStore
    |                                |                                    |
@@ -24,13 +29,22 @@ Go CLI                          Phoenix                       Commanded + EventS
    |<-- HTTP GET /api/runs/:id ----|                                    |
 ```
 
+All HTTP arrows are commands or queries. No direct writes from Go CLI or worker
+to the event store. All state mutations route through Phoenix → Commanded.
 Commanded owns aggregate lifecycle: append, rehydration, `:temporary` restart (lazy).
+
+---
 
 ## Acceptance Criteria
 
 ### AC1 — Supervised Actor: Serialized Commands, Stream Rehydration, Event Ordering
 
-rehydration, and `:temporary` restart (lazy reopen on next dispatch) internally. The spike
+**Framework under test**: Commanded `Commanded.Aggregates.Aggregate` — supervised aggregate
+processes managed by `Commanded.Aggregates.Supervisor` with `restart: :temporary`.
+Commanded aggregate processes own append and rehydration internally. Rehydration is lazy:
+on the next dispatch after a crash/exit, Commanded reopens a new process and replays the
+event stream before handling the command. The spike tests these guarantees for `Project`,
+`Task`, `Run`, `Worker`, and `Phase` aggregates.
 
 Asserted behaviors:
 
@@ -126,14 +140,16 @@ command is a no-op.
 
 ### Commanded Owns Aggregate Lifecycle
 
-- Commanded aggregate processes (`Commanded.Aggregate`) are supervised by
-  `Commanded.Aggregates.Supervisor` with `restart: :temporary` — they are not
+- Commanded aggregate processes (`@behaviour Commanded.Aggregates.Aggregate`) are supervised
+  by `Commanded.Aggregates.Supervisor` with `restart: :temporary` — they are not
   automatically restarted on crash.
 - Rehydration is **lazy**: on the next dispatch to an aggregate after a crash/exit,
   Commanded opens a new process and replays the event stream before handling the
   command.
-- Aggregate handlers (`use Commanded.Aggregate, …`) define `execute/2` for command
-  handling and `apply/2` for event application. They do not call `EventStore` directly.
+- Aggregate modules implement `@behaviour Commanded.Aggregates.Aggregate` with `execute/2`
+  for command handling and `apply/2` for event application. They do not call
+  `EventStore` directly.
+
 ### Phoenix Is the Sole HTTP Ingress
 
 - Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
@@ -164,19 +180,19 @@ ForemanApp.dispatch(command)   ◄── Phoenix dispatches to Commanded
 ForemanRouter.route(command)   ◄── Commanded.Router
     │
     ▼
-RunAggregate."run-1"           ◄── Commanded aggregate process (supervised)
+RunAggregate."run-1"           ◄── Commanded aggregate process (:temporary, lazy reopen)
     │
     ▼
 Run.execute(command, state)     ◄── execute/2 returns event struct
     │
     ▼
-Commanded appends event        ◄── Commanded handles this internally
+Commanded appends event         ◄── Commanded handles this internally
     │
     ▼
 Run.apply(event, state)        ◄── apply/2 mutates aggregate state
     │
     ▼
-{:ok, event, new_state} returned to Commanded, Committed via HTTP response
+{:ok, event, new_state} returned to Commanded, committed via HTTP response
 ```
 
 ### Query Flow
@@ -198,19 +214,19 @@ Read model returned (no write)
 
 ## What Stays vs Goes
 
-| Layer             | Current Repo (POC)                        | Spike Target                     |
-|-------------------|-------------------------------------------|----------------------------------|
-| Go CLI / dispatch  | Node/TypeScript                          | Go                               |
-| Cockpit client     | Go                                       | Go (unchanged)                   |
-| Worker protocol    | Node/TypeScript                          | Pi-native or Go↔Elixir           |
-| Actor supervision  | `RunActor` `:temporary` — no restart        | Commanded `:temporary`, lazy reopen |
-| Event routing     | 16 direct appenders                      | Phoenix → Commanded Router only  |
-| VCS / worktree    | Node (vcs-backend)                       | Go + Elixir commands             |
-| ForemanStore      | Node (disabled no-op shell)               | Gone                             |
-| writeElixirOrchestrationEvent | Node (bypasses CommandRouter) | Gone                          |
+| Layer              | Current Repo (POC)                        | Spike Target                        |
+|--------------------|-------------------------------------------|-------------------------------------|
+| Go CLI / dispatch   | Node/TypeScript                          | Go                                  |
+| Cockpit client     | Go                                       | Go (unchanged)                      |
+| Worker protocol    | Node/TypeScript                          | Pi-native or Go↔Elixir              |
+| Domain aggregates | Elixir                                   | Elixir (same, Commanded-style)      |
+| Actor supervision  | `RunActor` `:temporary` — no restart      | Commanded `:temporary`, lazy reopen |
+| Event routing      | 16 direct appenders                      | Phoenix → Commanded Router only     |
+| VCS / worktree     | Node (vcs-backend)                       | Go + Elixir commands                |
+| ForemanStore       | Node (disabled no-op shell)               | Gone                                |
+| writeElixirOrchestrationEvent | Node (bypasses CommandRouter) | Gone                               |
 
 ---
-
 
 ## Spike Repo Plan
 
@@ -234,9 +250,9 @@ Read model returned (no write)
       → **Resolved by AC6**: all worker events route through `CommandRouter`.
 - [ ] Is `RunActor` stateless + process registry, or supervised GenServer with
       stream rehydration?
-      → **Resolved by AC1**: supervised actors with `Aggregate.load/2` on restart.
+      → **Resolved by AC1**: Commanded `:temporary` aggregates, lazy reopen on next dispatch.
 - [ ] What is the idempotency key strategy for duplicate worker completion events?
-      → **Resolved by AC2**: defined and tested.
+      → **Resolved by AC2**: domain invariant in `execute/2` — aggregate tracks sequences.
 - [ ] Does the Go CLI need a local event log buffer for offline operation?
       → **Out of scope for slice** — slice assumes always-online.
 - [ ] Is `Aggregate.load/2` fast enough for every command, or is caching required?
