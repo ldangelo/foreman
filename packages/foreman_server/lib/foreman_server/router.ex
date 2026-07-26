@@ -3,4 +3,5 @@ defmodule ForemanServer.Router do
 
   identify ForemanServer.AC1RunAggregate, by: :run_id
   dispatch ForemanServer.Commands.StartRun, to: ForemanServer.AC1RunAggregate
+  dispatch ForemanServer.Commands.CompleteRun, to: ForemanServer.AC1RunAggregate
 end
