@@ -4,84 +4,72 @@
 
 Validate a greenfield Go CLI + Elixir ES/CQRS backend implementing the full
 Project → Task → Run → worker completion → projection loop correctly, before
-committing to rescuing or replacing the current repo. The slice tests the hard
-parts of CQRS/ES — actor supervision and crash recovery, not merely the happy path.
+committing to rescuing or replacing the current repo.
+
+**Stack**: Commanded (aggregate supervision, ES/CQRS), EventStore (persistence),
+Postgrex (driver), Phoenix (HTTP API boundary for Go CLI). Commanded owns aggregate
+lifecycle (append, rehydration, `:permanent` restart). Phoenix receives commands from
+Go CLI and dispatches to Commanded — no direct event writes from Go.
 
 The current repo (`v0.x-poc`) is evidence of current behavior, not target behavior.
-`RunActor` with `restart: :temporary` is the POC; supervised actors with stream
-rehydration are the target.
 
 ---
 
 ## Scope: One Closed Loop
-
 ```
-Go CLI                          Elixir Backend                    Go/Pi Worker
-   |                                  |                                  |
-   |--- command: project.register --->|                                  |
-   |<-- ok ---------------------------|                                  |
-   |--- command: task.create -------->|                                  |
-   |<-- ok ---------------------------|                                  |
-   |--- command: run.start --------->|                                  |
-   |                                  |--- worker.launch -------------->|
-   |<-- ok ---------------------------|                                  |
-   |                                  |<---- command: worker.event ------|
-   |                                  |<---- command: worker.event ------|
-   |                                  |<---- command: run.complete ------|
-   |<-- query: run -------------------|                                  |
-   |<-- query: task -----------------|                                  |
-   |--- command: run.pr.create ----->|                                  |
-   |<-- ok ---------------------------|                                  |
+Go CLI                          Phoenix                       Commanded + EventStore
+   |                                |                                    |
+   |-- HTTP POST /api/commands --->|                                    |
+   |<-- 200 ok --------------------|                                    |
+   |                                |-- dispatch(command) --------------->
+   |                                |         (aggregate process)         |
+   |                                |         (append + rehydrate)        |
+   |<-- HTTP GET /api/runs/:id ----|                                    |
 ```
 
-All arrows are commands or queries. No direct writes from worker or Go CLI to the
-event store. All state mutations route through `CommandRouter.handle`.
-
----
+All HTTP arrows are commands or queries. No direct writes from Go CLI or worker
+to the event store. All state mutations route through Phoenix → Commanded.
+Commanded owns aggregate lifecycle: append, rehydration, `:permanent` restart.
 
 ## Acceptance Criteria
 
 ### AC1 — Supervised Actor: Serialized Commands, Stream Rehydration, Event Ordering
 
-**Architecture under test**: one supervised GenServer (`ProjectActor`, `TaskActor`,
-`RunActor`) per active aggregate, registered by aggregate ID. The actor's mailbox
-serializes all commands for its aggregate. On every startup (first command or crash
-restart) the actor rehydrates from its event stream. The actor calls the aggregate
-handler which returns `{:ok, event_spec}`. `CommandRouter` appends with
-`expected_stream_version`. The actor applies the committed event to its in-memory
-state **only after** the append succeeds — not optimistically before.
+**Framework under test**: Commanded `Commanded.Aggregate` — supervised aggregate processes
+managed by `Commanded.Aggregates.Supervisor`. Commanded aggregate processes own append,
+rehydration, and `:permanent` restart internally. The spike tests that these guarantees
+hold for `Project`, `Task`, `Run`, `Worker`, and `Phase` aggregates.
 
 Asserted behaviors:
 
-1. **Serialization**: While `RunActor` for `run-1` is processing a command, a
-   concurrent `sendCommand` for `run-1` from another process is queued in the
-   actor's mailbox and processed after the current command completes. No race
-   between two concurrent commands to the same aggregate.
+1. **Serialization**: While `RunAggregate."run-1"` is processing a command, a concurrent
+   `sendCommand` for `run-1` from another process is queued in that aggregate's mailbox
+   and processed after the current command completes. No race between two concurrent
+   commands to the same aggregate instance.
 
-2. **Stream rehydration on startup**: `RunActor` for `run-1` is started and sent its
-   first command. Before handling the command, the actor calls
-   `Aggregate.load(Run, "run:#{run_id}")` and applies the resulting state.
-   The actor's in-memory state matches the event stream — not a blank slate.
+2. **Stream rehydration on startup**: `RunAggregate."run-1"` is started and sent its
+   first command. Before handling the command, Commanded replays the aggregate's event
+   stream via `apply/2`. The aggregate's in-memory state matches the event stream —
+   not a blank slate. Verified by reading aggregate state after startup.
 
-3. **Crash + automatic restart**: `RunActor` is a supervised child (`:permanent`).
-   After `Process.exit(pid, :kill)`, the supervisor restarts it automatically.
-   The restarted actor rehydrates from the event stream before processing the next
-   command. No manual intervention, no blank state.
+3. **Crash + automatic restart**: `RunAggregate` is a supervised child with
+   `restart: :permanent`. After `Process.exit(pid, :kill)`, Commanded's aggregate
+   supervisor restarts it automatically. The restarted aggregate rehydrates from the
+   event stream before processing the next command.
 
 4. **Post-restart command correctness**: After restart rehydration (step 3), send
-   `run.complete` to the restarted actor. The actor operates on the correct
+   `run.complete` to the restarted aggregate. The aggregate operates on the correct
    rehydrated state — it does not lose pre-crash events or emit conflicting
    post-crash events.
 
-5. **Append-then-apply ordering**: `CommandRouter` appends with
-   `expected_stream_version`. If append fails (conflict), the actor's in-memory
-   state is **not** mutated. The actor applies the event only after confirmed
-   append. Verify this by inducing a conflict and asserting the actor's GenServer
-   state is unchanged.
+5. **Append-then-apply ordering**: Commanded appends with `expected_stream_version`.
+   If append fails (conflict), the aggregate's in-memory state is **not** mutated.
+   Commanded's aggregate process handles this internally; verify by inducing a conflict
+   and asserting the aggregate state is unchanged.
 
 6. **No silent event loss on crash**: Any event that was appended before the crash
-   is replayed on restart. Any event that was in-flight (written by the actor but
-   not yet appended) is absent after restart — confirmed absent, not silently lost.
+   is replayed on restart. Any event that was in-flight (produced by the aggregate
+   but not yet appended) is absent after restart — confirmed absent, not silently lost.
 
 ### AC2 — Duplicate / Out-of-Order Worker Completion
 
@@ -136,48 +124,58 @@ Asserted behaviors:
 
 ## Architecture Rules
 
-### Only `CommandRouter` Appends
+### Commanded Owns Aggregate Lifecycle
 
-- **Only** `CommandRouter` (or a `defp` helper within it) calls `EventStore.append`
-  in the production slice.
-- Aggregate handlers return `{:ok, event_spec}`; `CommandRouter` appends and
-  then the aggregate's `apply_event` mutates the in-memory aggregate state.
-- No handler, actor, or external module calls `EventStore.append` directly.
+- Commanded aggregate processes (`Commanded.Aggregate`) are supervised by
+  `Commanded.Aggregates.Supervisor` with `restart: :permanent`.
+- Commanded owns append, rehydration, and concurrency internally — these are
+  not implemented by the spike's application code.
+- Aggregate handlers (`use Commanded.Aggregate, …`) define `execute/2` for command
+  handling and `apply/2` for event application. They do not call `EventStore` directly.
 
-### Actors Return Events, Not Direct Writes
+### Phoenix Is the Sole HTTP Ingress
 
-- Actors (`RunActor`, `TaskActor`, `ProjectActor`) receive commands, call
-  `Aggregate.decide`, and return the event spec to `CommandRouter`.
-- `CommandRouter` appends, then notifies the actor so it can apply the event
-  to its in-memory state.
-- Actor state is derived from the event stream on startup and after restart.
+- Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
+- Phoenix dispatches to Commanded's application (e.g. `ForemanApp.dispatch(command)`).
+- No other module (worker, Go CLI, or other Elixir code) writes to the event store
+  directly. All mutations route through Phoenix → Commanded.
+
+### Architecture Test
+
+- An ExUnit architecture test (`CommandRouterEnforcement` test) verifies that
+  `EventStore.append/1` is called only from within Commanded's internal modules
+  (or from a single thin wrapper inside the application).
+- Any direct `EventStore.append` call from outside the Commanded/Router boundary
+  causes the architecture test to fail.
 
 ### Command Flow
 
 ```
-Go CLI / Worker
+Go CLI
     │
     ▼
-HTTP POST /api/commands
+Phoenix POST /api/commands
     │
     ▼
-CommandRouter.handle(command)
+ForemanApp.dispatch(command)   ◄── Phoenix dispatches to Commanded
     │
-    ├──► AggregateRouter.route(command_type, payload)
-    │         │
-    │         └──► Aggregate.decide(Run, "run:#{run_id}", command_type, payload)
-    │                    │
-    │                    └──► Run.handle_command(state, command)
-    │                              │
-    │                              └──► {:ok, event_spec}
+    ▼
+ForemanRouter.route(command)   ◄── Commanded.Router
     │
-    ├──► EventStore.append(event_spec)   ◄── sole append point
+    ▼
+RunAggregate."run-1"           ◄── Commanded aggregate process (supervised)
     │
-    ├──► ProjectionStore.apply_event(event)
+    ▼
+Run.execute(command, state)     ◄── execute/2 returns event struct
     │
-    ├──► Actor.apply_event(event)   (notify supervised actor)
+    ▼
+Commanded appends event        ◄── Commanded handles this internally
     │
-    └──► {:ok, result} returned to caller
+    ▼
+Run.apply(event, state)        ◄── apply/2 mutates aggregate state
+    │
+    ▼
+{:ok, event, new_state} returned to Commanded, Committed via HTTP response
 ```
 
 ### Query Flow
@@ -186,10 +184,10 @@ CommandRouter.handle(command)
 Go CLI
     │
     ▼
-HTTP GET /api/runs/:run_id
+Phoenix GET /api/runs/:run_id
     │
     ▼
-ProjectionStore.snapshot
+ProjectionStore.snapshot(run_id)   ◄── read model only, no write
     │
     ▼
 Read model returned (no write)
@@ -199,19 +197,20 @@ Read model returned (no write)
 
 ## What Stays vs Goes
 
-| Layer             | Current Repo (POC)                        | Spike Target              |
-|-------------------|-------------------------------------------|--------------------------|
-| Go CLI / dispatch  | Node/TypeScript                          | Go                       |
-| Cockpit client     | Go                                       | Go (unchanged)           |
-| Worker protocol    | Node/TypeScript                          | Pi-native or Go↔Elixir   |
-| Domain aggregates | Elixir                                   | Elixir (same)            |
-| Actor supervision  | `RunActor` `:temporary` — no restart      | Supervised `:permanent`   |
-| Event routing     | 16 direct appenders                      | `CommandRouter` only     |
-| VCS / worktree    | Node (vcs-backend)                       | Go + Elixir commands     |
-| ForemanStore      | Node (disabled no-op shell)               | Gone                     |
-| writeElixirOrchestrationEvent | Node (bypasses CommandRouter) | Gone                 |
+| Layer             | Current Repo (POC)                        | Spike Target                     |
+|-------------------|-------------------------------------------|----------------------------------|
+| Go CLI / dispatch  | Node/TypeScript                          | Go                               |
+| Cockpit client     | Go                                       | Go (unchanged)                   |
+| Worker protocol    | Node/TypeScript                          | Pi-native or Go↔Elixir           |
+| Domain aggregates | Elixir                                   | Elixir (same, Commanded-style)   |
+| Actor supervision  | `RunActor` `:temporary` — no restart      | Commanded `:permanent` supervised |
+| Event routing     | 16 direct appenders                      | Phoenix → Commanded Router only  |
+| VCS / worktree    | Node (vcs-backend)                       | Go + Elixir commands             |
+| ForemanStore      | Node (disabled no-op shell)               | Gone                             |
+| writeElixirOrchestrationEvent | Node (bypasses CommandRouter) | Gone                          |
 
 ---
+
 
 ## Spike Repo Plan
 
