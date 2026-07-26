@@ -21,13 +21,16 @@ defmodule ForemanServer.MixProject do
       # Phoenix HTTP boundary
       {:phoenix, "~> 1.7"},
       {:plug_cowboy, "~> 2.6"},
+
+      # JSON serialization for EventStore
+      {:jason, "~> 1.4"},
     ]
   end
 
   def application do
     [
       extra_applications: [:logger],
-      mod: {ForemanServer.Application, []}
+      mod: {ForemanServer.AppStart, []}
     ]
   end
 end
