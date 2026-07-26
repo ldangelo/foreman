@@ -6,12 +6,12 @@
  Project → Task → Run → worker completion → projection loop correctly, before
  committing to rescuing or replacing the current repo.
  
- **Stack**: Commanded (event store adapter, dispatcher), EventStore (persistence),
- Postgrex (driver), Phoenix (HTTP API boundary for Go CLI). Custom `Actor` modules
- provide aggregate supervision with `:permanent` restart, `Aggregate.load/2` rehydration,
- and `apply/2` event application. `CommandRouter` is the sole append point — no module
- other than `CommandRouter` calls `EventStore.append_to_stream`. Phoenix receives commands
- from Go CLI and dispatches to `CommandRouter` — no direct event writes from Go.
+**Stack**: Commanded (event store adapter only), Elixir/OTP (GenServer, Supervisor,
+Registry), EventStore (persistence), Postgrex (driver), Phoenix (HTTP API boundary for Go CLI).
+Custom `Actor` modules provide aggregate supervision with `:permanent` restart,
+`Aggregate.load/2` rehydration, and `apply/2` event application. `CommandRouter` is the
+sole append point — no module other than `CommandRouter` calls `EventStore.append_to_stream`.
+Phoenix receives commands from Go CLI and dispatches to `CommandRouter` — no direct event writes from Go.
  
  The current repo (`v0.x-poc`) is evidence of current behavior, not target behavior.
  
@@ -26,7 +26,7 @@
     |<-- 200 ok --------------------|                                    |
     |                                |-- CommandRouter.handle(command) --->|
     |                                |         (Actor process)            |
-    |                                |         (Aggregate.load + execute) |
+    |                                |         (Aggregate.load + handle_command) |
     |                                |<-- {:ok, events} ----------------|
     |<-- HTTP GET /api/runs/:id ----|                                    |
  ```
