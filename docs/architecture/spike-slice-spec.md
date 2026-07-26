@@ -1,6 +1,6 @@
  # Spike: Vertical Slice — Go/Elixir CQRS/ES Backend
  
- ## Goal
+## Goal
  
  Validate a greenfield Go CLI + Elixir ES/CQRS backend implementing the full
  Project → Task → Run → worker completion → projection loop correctly, before
@@ -17,7 +17,7 @@
  
  ---
  
- ## Scope: One Closed Loop
+## Scope: One Closed Loop
  
  ```
  Go CLI                          Phoenix                       Actor + CommandRouter + EventStore
@@ -41,7 +41,7 @@
 
 ## Acceptance Criteria
 
- ### AC1 — Supervised Actor: Serialized Commands, Stream Rehydration, Event Ordering
+### AC1 — Supervised Actor: Serialized Commands, Stream Rehydration, Event Ordering
  
  **Framework under test**: Custom `Actor` modules supervised with `restart: :permanent`.
  Each actor is a `GenServer` that calls `Aggregate.load/2` on startup/restart to rebuild
@@ -83,35 +83,34 @@ Asserted behaviors:
 
 ### AC2 — Duplicate / Out-of-Order Worker Completion
 
-**Idempotency is a domain invariant**, not a Commanded feature. Commanded does not
-deduplicate by `command_id`. The aggregate's `execute/2` function tracks processed
-`completion_sequence` numbers in its state. On a duplicate `run.complete` with the
-same `sequence`, the aggregate emits no event and returns an error tuple — the
-command is a no-op.
+**Idempotency via `command_id` deduplication**: every command carries a unique
+`command_id`. The event store append deduplicates by `command_id` — appending the
+same command twice produces one event. Sequence validation remains as a domain
+out-of-order guard in `handle_command` in the aggregate.
 
-1. Send `run.complete` for `run-1` with `sequence: 1`.
-2. Send a second `run.complete` for `run-1` with `sequence: 1` (duplicate).
-3. Verify the second command is idempotent — `execute/2` detects the duplicate
-   sequence in aggregate state, emits no event, and returns `{:error, :already_completed}`.
-   Only one `RunCompleted` event exists in the event store.
-4. Send `run.complete` for `run-1` with `sequence: 3` (skipping 2).
-5. Verify the command is rejected — `execute/2` detects the gap and returns
-   `{:error, :out_of_order}`.
+1. Send `run.complete` for `run-1` with `command_id: "cmd-1"`, `sequence: 1`.
+2. Send a second `run.complete` for `run-1` with `command_id: "cmd-1"` (same id, duplicate).
+3. Verify the event store persisted exactly one `RunCompleted` event for `run-1`.
+   The second command was deduplicated at append — no second event.
+4. Send `run.complete` for `run-1` with `command_id: "cmd-3"`, `sequence: 3`
+   (skipping sequence 2, out-of-order).
+5. Verify `handle_command` rejects the command — it detects the sequence gap
+   and returns `{:error, :out_of_order}`. No event is appended.
 6. Verify the aggregate state is unchanged after steps 2–5.
 
- ### AC3 — Optimistic Concurrency
+### AC3 — Optimistic Concurrency
  
  **Mandated behaviour**: `CommandRouter` appends with `expected_stream_version`. If the stream
  has advanced (externally appended), the append fails and `CommandRouter` returns the conflict
  error to the caller. No confirmed event is sent to `Actor.apply_event` — the actor's
  in-memory state is unchanged. The actor remains alive.
  
- **Test**: A test-only `execute/2` does a selective `receive` matching only `{:release, ref}`
- to park without consuming other messages. The test externally appends an event while the
- actor is parked, inducing a conflict.
- 
+**Test**: A test-only `handle_command` does a selective `receive` matching only `{:release, ref}`
+to park without consuming other messages. The test externally appends an event while the
+actor is parked, inducing a conflict.
+
  1. Start `Actor."run-1"` and send `run.start` — stream version N.
- 2. Dispatch a test-only command whose `execute/2` parks in selective `receive` waiting for
+ 2. Dispatch a test-only command whose `handle_command` parks in selective `receive` waiting for
     `{:release, ref}`. The command is parked; the actor's mailbox queues it.
  3. While parked, externally call `append_to_stream(stream_uuid, N, events)` — stream advances
     to N+1. This simulates an external actor appending to the same stream.
@@ -123,8 +122,8 @@ command is a no-op.
  6. Assert the actor is still alive (`:sys.get_state(actor_pid)` proves responsiveness).
  7. Assert the actor's in-memory state is unchanged from step 1 — `apply_event` was never
     called because the conflict prevented any confirmed event.
- 8. Assert exactly N events are in the stream (the externally appended one from step 3;
-    the actor's pending event was rejected).
+ 8. Assert exactly N+1 events are in the stream — the externally appended one from step 3.
+    The actor's pending event was rejected and is absent.
 ### AC4 — Full Projection Rebuild
 
 1. Populate the event store with a known sequence for `run-1`:
@@ -135,7 +134,7 @@ command is a no-op.
    `current_phase: nil`, `pr_url: "<url>"`.
 5. Verify the rebuilt `tasks` projection shows `status: "merged"`.
 6. Verify no events are lost, duplicated, or misattributed during replay.
- ### AC5 — Happy Path (Closed Loop)
+### AC5 — Happy Path (Closed Loop)
  
  1. Register a project via `project.register` command.
  2. Create a task linked to the project via `task.create`.
@@ -144,7 +143,7 @@ command is a no-op.
  5. Query the run — verify `status: "completed"` and `completed_at` set.
  6. Query the task — verify its `status` reflects the run outcome.
  
- ### AC6 — Go CLI as Command/Query Client Only
+### AC6 — Go CLI as Command/Query Client Only
  
  1. Every Go CLI operation maps to one `CommandRouter.dispatch` HTTP POST.
  2. Every Go CLI query maps to one HTTP GET against the read model.
@@ -154,12 +153,12 @@ command is a no-op.
  
 ## Architecture Rules
  
-  ### Custom Actor Supervision
+### Custom Actor Supervision
  
-  Custom `Actor` modules are supervised by a project-specific `Aggregator` supervisor
- with `restart: :permanent`. Each active aggregate has one supervised GenServer actor
- registered by aggregate ID (`"run:#{run_id}"`). The actor's mailbox serializes all
- commands for its aggregate — no two commands to the same aggregate process concurrently.
+Custom `Actor` modules are supervised by a project-specific `Aggregator` supervisor
+with `restart: :permanent`. Each active aggregate has one supervised GenServer actor
+registered by aggregate ID (`"run:#{run_id}"`). The actor's mailbox serializes all
+commands for its aggregate — no two commands to the same aggregate process concurrently.
  
  **Actor lifecycle**:
  - **Startup / restart**: actor calls `Aggregate.load/2` to rehydrate from its event
@@ -172,21 +171,21 @@ command is a no-op.
  - **Append-then-apply**: actor applies events to in-memory state **only after**
    `CommandRouter` append succeeds — not optimistically before.
  
- ### CommandRouter Is the Sole Append Point
+### CommandRouter Is the Sole Append Point
  
  Only `CommandRouter` (or a `defp` helper private to `CommandRouter`) calls
  `EventStore.append_to_stream` in production code. No handler, actor, or external
  module calls `EventStore.append_to_stream` directly. This is enforced by an ExUnit
  architecture test.
  
- ### Phoenix Is the Sole HTTP Ingress
+### Phoenix Is the Sole HTTP Ingress
  
  Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
  Phoenix dispatches to `CommandRouter.handle/1`.
  No other module (worker, Go CLI, or other Elixir code) writes to the event store
  directly. All mutations route through Phoenix → CommandRouter.
  
- ### Architecture Test
+### Architecture Test
  
  An ExUnit architecture test (`EventStore.Enforcement`) scans all `.ex` source files
  under `lib/foreman_server/` for direct operational calls to `append_to_stream` or
@@ -194,7 +193,7 @@ command is a no-op.
  Module declarations (`defmodule … do; use EventStore`, `otp_app:` config) are allowed.
  Any match causes the test to fail.
  
- ### Command Flow
+### Command Flow
  
  ```
  Go CLI
@@ -278,7 +277,8 @@ Read model returned (no write)
      → **Resolved by standing rules**: custom `Actor` GenServer supervised with
       `:permanent`; eager rehydration via `Aggregate.load/2` on startup/restart.
 - [ ] What is the idempotency key strategy for duplicate worker completion events?
-      → **Resolved by AC2**: domain invariant in `execute/2` — aggregate tracks sequences.
+     → **Resolved by AC2**: `command_id` deduplication at event store append;
+      sequence gap check in `handle_command` (domain out-of-order guard).
 - [ ] Does the Go CLI need a local event log buffer for offline operation?
       → **Out of scope for slice** — slice assumes always-online.
 - [ ] Is `Aggregate.load/2` fast enough for every command, or is caching required?
