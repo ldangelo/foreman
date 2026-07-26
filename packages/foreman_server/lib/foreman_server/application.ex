@@ -6,5 +6,5 @@ defmodule ForemanServer.Application do
       event_store: ForemanServer.EventStore
     ]
 
-  router ForemanServer.Router
+  router(ForemanServer.Router)
 end
