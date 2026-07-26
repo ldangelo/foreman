@@ -208,7 +208,7 @@ ForemanRouter.route(command)   ◄── Commanded.Router
 RunAggregate."run-1"           ◄── Commanded aggregate process (:temporary, lazy reopen)
     │
     ▼
-Run.execute(command, state)     ◄── execute/2 returns event struct
+Run.execute(state, command)    ◄── execute/2 returns event struct
     │
     ▼
 Commanded appends event         ◄── Commanded handles this internally

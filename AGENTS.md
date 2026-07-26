@@ -126,7 +126,7 @@ ForemanRouter.route(command)  ◄── Commanded.Router
 RunAggregate."run-1"           ◄── Commanded supervised aggregate process
     │
     ▼
-Run.execute(command, state)    ◄── execute/2 returns event struct
+Run.execute(state, command)   ◄── execute/2 returns event struct
     │
     ▼
 Commanded appends internally  ◄── Commanded handles append internally
