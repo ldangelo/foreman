@@ -102,15 +102,18 @@ command is a no-op.
 dispatch waits for the first to complete and therefore sees the updated stream version. A
 genuine concurrency conflict requires advancing the stream from outside the aggregate.
 
-1. Start `run-1` aggregate and send `run.start` — stream version is N.
-2. In test setup (outside the aggregate process), directly call `append_to_stream/4` to
-   append a `RunCompleted` event at version N+1, bypassing Commanded.
-3. Dispatch a new command to `run-1` through Commanded with `expected_version: N`
-   (simulating the stale view from step 1).
-4. Verify Commanded rejects the dispatch with a concurrency conflict error
-   (`{:error, {:conflict, ...}}`).
-5. Verify the aggregate state reflects the externally-appended `RunCompleted` event,
-   not a partial mutation from the rejected command.
+1. Start `run-1` aggregate and send `run.start` — stream version is N. Keep the aggregate
+   process alive (do not close it).
+2. In test setup (outside the aggregate process), call `append_to_stream/4` with
+   `expected_version: N` to append a `RunCompleted` event — stream advances to N+1.
+3. While the original aggregate process is still alive (stale at version N), dispatch a
+   normal `run.cancel` command to `run-1` through Commanded.
+4. The aggregate process attempts to append its event at version N but the stream is
+   now N+1 — Commanded rejects with a concurrency conflict error
+   (`{:error, {:conflict, ...}}`). The aggregate exits (lazy reopen).
+5. Dispatch a new command to `run-1` to trigger lazy reopen and rehydration.
+6. Verify the reopened aggregate's state includes the externally-appended `RunCompleted`
+   event at version N+1 — no partial mutation from the rejected `run.cancel`.
 
 ### AC4 — Full Projection Rebuild
 
