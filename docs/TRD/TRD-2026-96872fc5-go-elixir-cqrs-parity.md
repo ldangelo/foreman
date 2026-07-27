@@ -1,19 +1,19 @@
 ---
 document_id: TRD-2026-96872fc5
 prd_reference: PRD-2026-001
-version: 1.0.1
+version: 1.0.3
 status: Draft
 date: 2026-07-27
 total_tasks: 51
-total_hours: 144
-design_readiness_score: 3.75
+total_hours: 147
+design_readiness_score: 4.0
 ---
 
 # TRD: Go/Elixir CQRS Slice Functional Parity — Technical Requirements
 
 ## Document Status
 - Status: Draft
-- Version: 1.0.1
+- Version: 1.0.3
 - Date: 2026-07-27
 - Document ID: TRD-2026-96872fc5
 - PRD Reference: PRD-2026-001
@@ -148,7 +148,7 @@ Update `ForemanServer.Aggregate` behaviour: change `handle_command` callback ret
 
 ---
 
-**TRD-005** — Migrate all aggregate apply_event to typed struct pattern-match | 9h | [satisfies REQ-010] [satisfies AC-010-3] [depends: TRD-002]
+**TRD-005** — Migrate all aggregate apply_event to typed struct pattern-match | 12h | [satisfies REQ-010] [satisfies AC-010-3] [depends: TRD-002]
 
 Update every aggregate's apply_event/2: replace `case Aggregate.event_type(event)` string switch with direct typed struct pattern-match clauses. Remove the catch-all `_ -> state` fallback that silently swallows unknown events (unknown events should raise).
 
@@ -676,12 +676,12 @@ Generate Mix coverage report. Identify any REQ without at least one integration 
 - TRD-002 (3h) — Add @enforce_keys and @type t to existing events
 - TRD-003 (4h) — EventCodec dual-read path
 - TRD-004 (4h) — handle_command return typed_event
-- TRD-005 (9h) — Migrate all apply_event to typed pattern-match
+- TRD-005 (12h) — Migrate all apply_event to typed pattern-match
 - TRD-006 (3h) — Versioned envelope migration path
 - TRD-007 (2h) — Architecture test: no string switching
 - TRD-001-TEST (2h) — Verify typed event architecture
 
-**Total: 29h**
+**Total: 32h**
 
 ### Sprint 2 (2 weeks)
 **PR 2: HTTP Command Ingress** (parallel track, starts Sprint 2 — no dependency on PR 1)
@@ -834,7 +834,7 @@ TRD-036 ──► TRD-037 ──► TRD-038 ──► TRD-039 ──► TRD-036-
 TRD-040 ──► TRD-041 ──► TRD-040-TEST
 ```
 
-**Critical path (longest chain):** TRD-001 → TRD-002 → TRD-005 → TRD-007 → TRD-001-TEST = 18h sequential  
+**Critical path (longest chain):** TRD-001 → TRD-002 → TRD-005 → TRD-007 → TRD-001-TEST = 21h sequential  
 **Parallel tracks:** PR 1 (typed events) and PR 2 (HTTP) run concurrently from Sprint 2
 
 ---
@@ -871,16 +871,16 @@ TRD-040 ──► TRD-041 ──► TRD-040-TEST
 | **Architecture completeness** — All components, interfaces, and data flows defined? | 4 | All 10 components defined; all 5 architecture gaps resolved (worker payload, Node→Elixir hash report, PR→run lookup, EventCodec strictness, scheduler orphan); Node/Elixir boundary explicit; PR monitor event contract defined (ownership TBD) |
 | **Task coverage** — Does every REQ-NNN have implementation and test tasks? | 4 | All 10 REQs have implementation TRD tasks; all except REQ-009 have paired TEST tasks; REQ-009 is itself a testing REQ so its tasks are the test tasks |
 | **Dependency clarity** — Are dependencies explicit and acyclic? | 4 | All [depends: TRD-NNN] annotations present; dependency map shows clean DAG; critical path identified; no circular dependencies |
-| **Estimate confidence** — Are estimates consistent, reasonable, and granular enough? | 3 | Total 144h across 10 sprints (avg 14.4h/sprint); TRD-005 (9h, migrate all applies) is the highest-risk estimate — 9h assumes 17 aggregates; recommends buffer |
+| **Estimate confidence** — Are estimates consistent, reasonable, and granular enough? | 4 | Total 147h across 10 sprints (avg 14.7h/sprint); TRD-005 (12h, migrate all applies) is the highest-risk estimate — 12h = 9h best-case + 3h buffer; TRD-005 is the only task with explicit contingency |
 
-**Overall Design Readiness Score: 3.75 / 5.0**
+**Overall Design Readiness Score: 4.0 / 5.0**
 
 | Dimension | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
 | Architecture completeness | — | — | — | ✓ | — |
 | Task coverage | — | — | — | ✓ | — |
 | Dependency clarity | — | — | — | ✓ | — |
-| Estimate confidence | — | — | ✓ | — | — |
+| Estimate confidence | — | — | — | ✓ |
 
 **Design Readiness trend:** First scoring (no prior baseline).
 
@@ -905,4 +905,7 @@ TRD-040 ──► TRD-041 ──► TRD-040-TEST
 | Date | Version | Change | Author |
 |------|---------|--------|--------|
 | 2026-07-27 | 1.0.0 | Initial TRD from PRD-2026-001 go-elixir-cqrs-parity | Pi Agent |
-| 2026-07-27 | 1.0.1 | Fix TRD-005 aggregate list (add project, operator_intervention; was missing); TRD-005 estimate 6h→9h (11→17 aggregates); sprint 1 total 26h→29h; overall 141h→144h; Estimate confidence row updated | Pi Agent |
+| 2026-07-27 | 1.0.1 | Fix TRD-005 aggregate list (add project, operator_intervention); TRD-005 6h→9h (11→17 aggregates); overall 134h→141h | Pi Agent |
+| 2026-07-27 | 1.0.2 | TRD-005 9h→12h (+3h buffer); Sprint 1 29h→32h; overall 141h→144h; critical path 18h→21h | Pi Agent |
+| 2026-07-27 | 1.0.3 | Design readiness gate: estimate confidence 3→4; overall 3.75→4.0; frontmatter and scorecard updated to PASS | Pi Agent |
+
