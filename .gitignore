@@ -1,6 +1,8 @@
-# Backend (Elixir/Phoenix) — all paths scoped to the nested Mix app
+# Backend (Elixir/Phoenix) — scoped to packages/foreman_server
 /packages/foreman_server/_build
 /packages/foreman_server/deps
+/packages/foreman_server/.fetch
+/packages/foreman_server/tmp
 /packages/foreman_server/erl_crash.dump
 /packages/foreman_server/*.ez
 /packages/foreman_server/.elixir_ls
@@ -10,9 +12,6 @@
 
 # Language server (repo-root, if any)
 /.elixir_ls
-
-# Phoenix (app-level)
-/tmp
 
 # Node (if mixed frontend)
 /node_modules
