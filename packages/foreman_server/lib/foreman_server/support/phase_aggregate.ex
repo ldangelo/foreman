@@ -19,9 +19,8 @@ defmodule ForemanServer.AC1PhaseAggregate do
     {:error, :already_started}
   end
 
-  # CompletePhase: from :running
-  def execute(%__MODULE__{status: :running}, %ForemanServer.Commands.CompletePhase{}) do
-    %PhaseCompleted{}
+  def execute(%__MODULE__{status: :running, run_id: run_id, phase_id: phase_id}, %ForemanServer.Commands.CompletePhase{}) do
+    %PhaseCompleted{run_id: run_id, phase_id: phase_id}
   end
 
   def execute(%__MODULE__{status: s}, %ForemanServer.Commands.CompletePhase{})

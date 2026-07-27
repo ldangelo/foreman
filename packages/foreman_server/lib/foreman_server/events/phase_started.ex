@@ -1,4 +1,9 @@
 defmodule ForemanServer.Events.PhaseStarted do
+  @enforce_keys [:run_id, :phase_id]
+  @type t :: %__MODULE__{
+    run_id: String.t(),
+    phase_id: String.t()
+  }
   @derive Jason.Encoder
-  defstruct [:phase_id, :run_id]
+  defstruct [:run_id, :phase_id]
 end
