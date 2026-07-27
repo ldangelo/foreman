@@ -149,6 +149,60 @@ process and replays the event stream before handling the command.
   next dispatch, Commanded reopens a new process and rehydrates from the event stream.
   Restart is lazy, not immediate.
 
+#### 2. Aggregate State Design
+
+**Every aggregate's fixed top-level state MUST be a dedicated `%Aggregate.State{}`
+struct. Maps are permitted only as nested genuinely dynamic values.**
+
+Each aggregate defines a nested `State` struct:
+
+```elixir
+defmodule ForemanServer.Aggregates.Run do
+  defmodule State do
+    defstruct [:exists?, :run_id, :status, :phase_status,
+               :worker_status, :retry_history, :terminal?]
+  end
+
+  @initial_state %State{exists?: false, status: nil}
+
+  # ...
+end
+```
+
+**Why:** Plain maps (`%{exists?: false, ...}`) admit atom/string key drift and
+silently accept unknown fields. `Map.merge(state, payload)` in `apply_event`
+can add undeclared keys with no warning, causing silent schema drift across
+replay. Struct-update syntax (`%State{state | field: value}`) rejects
+undeclared fields at compile time (literal unknown atoms) or runtime (`KeyError`
+for unknown variable fields). `struct/2` silently ignores unknown keys and
+MUST NOT be used.
+
+**Maps for dynamic collections are fine.** Fields like `phase_status`,
+`worker_status`, `config`, or `retry_history` — where the shape is genuinely
+open or comes from heterogeneous event payloads — may remain maps. The struct
+covers the closed aggregate invariant fields; maps cover open metadata.
+
+**Enforcement rules:**
+
+- `apply_event` uses `%State{state | field: value}` — not `Map.merge(state, payload)`,
+  not `struct(state, field: value)`.
+- Explicit per-event field mapping: `event_type → state field` is written out
+  per event type.
+- `initial_state()` returns the State struct with required fields set to defaults.
+- **`handle_command` enforces domain invariants.** Struct construction alone does
+  not validate state preconditions or valid transitions.
+
+**Required migrations (all under `lib/foreman_server/aggregates/`):**
+`Project`, `Run`, `Task`, `Phase`, `Worker`, `OperatorIntervention`, `PlanningFlow`,
+`Recovery`, `Scheduler`, `ToolCall`, `VcsOperation`, `ArtifactReport`, `Attachment`,
+`ExternalTrigger`, `ImportMigration`, `InboxThread`, `Integration`.
+All are noncompliant and must be migrated to State structs.
+
+**Command ingress typing** is a parallel required migration. Every ingress adapter
+(REST/GraphQL controllers, worker adapters, internal command producers) MUST construct
+recognized command structs. `CommandRouter` MUST reject non-struct payloads. These
+two migrations may proceed independently.
+
 #### 3. Phoenix Is the Sole HTTP Ingress
 
 Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.

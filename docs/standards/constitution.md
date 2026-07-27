@@ -222,12 +222,38 @@ They supplement Sections 1–6. Violations are rejected at code review.
    is consulted as behavioral reference — no source files transferred.
 2. Decisions documented in `AGENTS.md` and this constitution are binding.
    Changing any rule requires updating both documents.
----
+
+### Article VIII — Aggregate State and Command Ingress
+
+1. **Aggregate state MUST be a dedicated `%Aggregate.State{}` struct.** Every aggregate
+   module defines a nested `State` struct (e.g., `defmodule State, do: defstruct [...]`)
+   for its closed field set. Maps are permitted only as nested genuinely dynamic
+   values (e.g., `config`, `phase_status`). All existing aggregates are noncompliant:
+
+   Required migrations (all under `lib/foreman_server/aggregates/`):
+   `Project`, `Run`, `Task`, `Phase`, `Worker`, `OperatorIntervention`, `PlanningFlow`,
+   `Recovery`, `Scheduler`, `ToolCall`, `VcsOperation`, `ArtifactReport`, `Attachment`,
+   `ExternalTrigger`, `ImportMigration`, `InboxThread`, `Integration`.
+2. **Event application MUST use struct-update syntax.** `apply_event` uses
+   `%State{state | field: value}`. Raw `Map.merge(state, payload)` is
+   prohibited — it bypasses the struct's closed-field enforcement. `struct/2`
+   silently ignores unknown keys and MUST NOT be used.
+3. **Every ingress adapter and internal command producer MUST construct a recognized
+   command struct.** REST/GraphQL controllers, worker adapters, and any internal
+   module that produces commands must build explicit command structs from
+   `lib/foreman_server/commands/`. `CommandRouter` MUST reject non-struct payloads.
+   This is migration debt: `CommandRouter` currently accepts `map()`.
+4. **`handle_command` independently enforces domain invariants.** Struct
+   construction does not enforce state preconditions or valid transitions.
+   Field-level validation belongs in `handle_command`.
+
+___
 
 ## Changelog
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-26 | Added Article VIII: aggregate State structs, struct-update syntax in apply_event, command ingress coercion, handle_command domain invariants | Pi Agent |
 | 2026-07-26 | Added Section 7: Slice `slices/go-elixir-cqrs` — supervised actors, sole CommandRouter append, CQRS, Go CLI boundaries, greenfield constraint | Pi Agent |
 | 2026-07-01 | Added event-sourced orchestration invariant: events trigger behavior; projections are read models | Pi Agent |
 | 2026-03-10 | Initial constitution generated | /init-project |
