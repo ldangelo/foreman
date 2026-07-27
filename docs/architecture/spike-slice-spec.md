@@ -80,6 +80,17 @@ Asserted behaviors:
     (produced by the actor but not yet appended via `CommandRouter`) is absent after restart —
     confirmed absent, not silently lost.
 
+ 7. **Correlation ref selective receive**: When `CommandRouter` appends an event,
+    it returns `{:append_ok, ref, count}` to the actor. The actor uses a
+    `^ref` pattern in a `receive` to match only its own reply, discarding
+    unrelated messages. A queued wrong-ref does not satisfy the actor's
+    selective receive — the actor continues waiting for its matching `ref`.
+
+    Asserted via AC1.7: park an actor in a blocking aggregate, queue a mismatched
+    `{:append_ok, wrong_ref, _}` while the actor is parked, then send the correct
+    release. The mismatched reply does **not** satisfy the actor's selective
+    receive (`^ref`); the command remains blocked until the correct reply arrives.
+
 ### AC2 — Duplicate / Out-of-Order Worker Completion
 
 **Idempotency via `command_id` deduplication**: every command carries a unique
@@ -288,4 +299,5 @@ Read model returned (no write)
 - [ ] Does the Go CLI need a local event log buffer for offline operation?
      → **Out of scope for slice** — slice assumes always-online.
 - [ ] Is `Aggregate.load/2` fast enough for every command, or is caching required?
-     → **Resolved by slice measurement** — target is <5ms per load.
+     → **Pending slice measurement** — target is <5ms per load; no measurement
+      recorded yet in this spike.
