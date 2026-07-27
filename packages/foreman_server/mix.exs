@@ -17,10 +17,8 @@ defmodule ForemanServer.MixProject do
 
   defp deps do
     [
-      # Commanded ES/CQRS framework
-      {:commanded, "~> 1.0"},
+      # EventStore persistence
       {:eventstore, "~> 1.3"},
-      {:commanded_eventstore_adapter, "~> 1.0"},
 
       # Phoenix HTTP boundary
       {:phoenix, "~> 1.7"},
@@ -34,7 +32,10 @@ defmodule ForemanServer.MixProject do
   def application do
     [
       extra_applications: [:logger],
-      mod: {ForemanServer.AppStart, []}
+      mod: {ForemanServer.Application, []},
+      env: [
+        event_stores: [ForemanServer.EventStore]
+      ]
     ]
   end
 end

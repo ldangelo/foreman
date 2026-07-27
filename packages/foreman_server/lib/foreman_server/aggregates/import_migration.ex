@@ -4,14 +4,14 @@ defmodule ForemanServer.Aggregates.ImportMigration do
 
   alias ForemanServer.Aggregate
 
-  @impl true
-  def initial_state do
-    %{
-      exists?: false,
-      completed?: false,
-      records: MapSet.new()
-    }
+  defmodule State do
+    @enforce_keys [:exists?, :completed?]
+    defstruct [:exists?, :completed?, :import_id, records: MapSet.new()]
   end
+
+  @impl true
+  def initial_state,
+    do: %State{exists?: false, completed?: false, import_id: nil, records: MapSet.new()}
 
   @impl true
   def apply_event(state, event) do
@@ -19,22 +19,23 @@ defmodule ForemanServer.Aggregates.ImportMigration do
 
     case Aggregate.event_type(event) do
       "MigrationImportStarted" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:completed?, false)
+        import_id =
+          Aggregate.get(payload, :import_id) ||
+            Aggregate.get(payload, :migration_id)
+
+        %State{state | exists?: true, completed?: false, import_id: import_id}
 
       "MigrationRecordImported" ->
         record_id = record_id(payload)
 
-        state
-        |> Map.put(:records, MapSet.put(state.records || MapSet.new(), record_id))
+        %State{state | records: MapSet.put(state.records || MapSet.new(), record_id)}
 
       "MigrationImportCompleted" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:completed?, true)
+        import_id =
+          Aggregate.get(payload, :import_id) ||
+            Aggregate.get(payload, :migration_id)
+
+        %State{state | exists?: true, completed?: true, import_id: import_id}
 
       _ ->
         state
@@ -102,16 +103,16 @@ defmodule ForemanServer.Aggregates.ImportMigration do
       "#{Aggregate.get(payload, :record_type, "record")}:#{Aggregate.get(payload, :import_index, "unknown")}"
   end
 
-  defp require_absent(%{exists?: true}), do: {:error, :migration_import_already_started}
+  defp require_absent(%State{exists?: true}), do: {:error, :migration_import_already_started}
   defp require_absent(_state), do: :ok
 
-  defp require_active(%{exists?: false}), do: {:error, :migration_import_not_started}
-  defp require_active(%{completed?: true}), do: {:error, :migration_import_completed}
+  defp require_active(%State{exists?: false}), do: {:error, :migration_import_not_started}
+  defp require_active(%State{completed?: true}), do: {:error, :migration_import_completed}
   defp require_active(_state), do: :ok
 
   defp reject_duplicate_record(_state, nil), do: :ok
 
-  defp reject_duplicate_record(%{records: records}, record_id) do
+  defp reject_duplicate_record(%State{records: records}, record_id) do
     if MapSet.member?(records || MapSet.new(), record_id),
       do: {:error, {:migration_record_already_imported, record_id}},
       else: :ok

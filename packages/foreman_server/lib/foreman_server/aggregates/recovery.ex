@@ -4,6 +4,17 @@ defmodule ForemanServer.Aggregates.Recovery do
 
   alias ForemanServer.Aggregate
 
+  defmodule RecoveryEntry do
+    @moduledoc "An observation or action record in the recovery chain."
+    @enforce_keys [:event_type, :run_id]
+    defstruct [:event_type, :run_id, metadata: %{}]
+  end
+
+  defmodule State do
+    @enforce_keys [:exists?]
+    defstruct [:exists?, :run_id, :status, attempts: 0, observations: [], actions: []]
+  end
+
   @observation_events MapSet.new([
                         "WorkerFailureSimulated",
                         "WorkerRecoveryRequired",
@@ -17,25 +28,43 @@ defmodule ForemanServer.Aggregates.Recovery do
                  ])
 
   @impl true
-  def initial_state, do: %{observations: [], actions: [], status: nil, attempts: 0}
+  def initial_state,
+    do: %State{
+      exists?: false,
+      run_id: nil,
+      status: nil,
+      attempts: 0,
+      observations: [],
+      actions: []
+    }
 
   @impl true
   def apply_event(state, event) do
     payload = Aggregate.event_payload(event)
     type = Aggregate.event_type(event)
-    record = Map.put(payload, :event_type, type)
+    run_id = Aggregate.get(payload, :run_id)
+    metadata = Map.drop(payload, [:run_id])
+    record = %RecoveryEntry{event_type: type, run_id: run_id, metadata: metadata}
 
     cond do
       MapSet.member?(@observation_events, type) ->
-        state
-        |> update_in([:observations], &((&1 || []) ++ [record]))
-        |> Map.put(:status, "observed")
+        %State{
+          state
+          | exists?: true,
+            run_id: run_id,
+            observations: state.observations ++ [record],
+            status: "observed"
+        }
 
       MapSet.member?(@action_events, type) ->
-        state
-        |> update_in([:actions], &((&1 || []) ++ [record]))
-        |> Map.update(:attempts, 1, &(&1 + 1))
-        |> Map.put(:status, recovery_status(type))
+        %State{
+          state
+          | exists?: true,
+            run_id: run_id,
+            actions: state.actions ++ [record],
+            attempts: state.attempts + 1,
+            status: recovery_status(type)
+        }
 
       true ->
         state
@@ -80,13 +109,13 @@ defmodule ForemanServer.Aggregates.Recovery do
        when type in ["recovery.observe_external_worker", "recovery.require"],
        do: :ok
 
-  defp require_observation_for_action(%{observations: observations}, _type)
-       when length(observations) > 0,
+  defp require_observation_for_action(%State{observations: obs}, _type)
+       when length(obs) > 0,
        do: :ok
 
   defp require_observation_for_action(_state, _type), do: {:error, :recovery_requires_observation}
 
-  defp reject_resolved(%{status: "resolved"}), do: {:error, :recovery_resolved}
+  defp reject_resolved(%State{status: "resolved"}), do: {:error, :recovery_resolved}
   defp reject_resolved(_state), do: :ok
 
   defp recovery_status("NeedsOperator"), do: "needs_operator"

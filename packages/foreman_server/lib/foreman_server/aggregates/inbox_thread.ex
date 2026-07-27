@@ -4,8 +4,18 @@ defmodule ForemanServer.Aggregates.InboxThread do
 
   alias ForemanServer.Aggregate
 
+  defmodule Message do
+    @moduledoc "A message in the thread, keyed by message_id."
+    defstruct [:message_id, :body, :delivery_status, metadata: %{}]
+  end
+
+  defmodule State do
+    @enforce_keys [:messages]
+    defstruct [:messages]
+  end
+
   @impl true
-  def initial_state, do: %{messages: %{}}
+  def initial_state, do: %State{messages: %{}}
 
   @impl true
   def apply_event(state, event) do
@@ -14,16 +24,40 @@ defmodule ForemanServer.Aggregates.InboxThread do
     case Aggregate.event_type(event) do
       "InboxMessageAppended" ->
         message_id = Aggregate.get(payload, :message_id)
-        put_in(state, [:messages, message_id], payload)
+
+        message = %Message{
+          message_id: message_id,
+          body: Aggregate.get(payload, :body),
+          metadata: Map.drop(payload, [:message_id, :body])
+        }
+
+        %State{state | messages: Map.put(state.messages, message_id, message)}
 
       "InboxDeliveryUpdated" ->
         message_id = Aggregate.get(payload, :message_id)
 
-        update_in(
-          state,
-          [:messages, message_id],
-          &Map.merge(&1 || %{message_id: message_id}, payload)
-        )
+        updated_message =
+          case Map.fetch(state.messages, message_id) do
+            {:ok, existing} ->
+              %Message{
+                existing
+                | delivery_status: Aggregate.get(payload, :delivery_status),
+                  metadata:
+                    Map.merge(
+                      existing.metadata,
+                      Map.drop(payload, [:message_id, :delivery_status])
+                    )
+              }
+
+            :error ->
+              %Message{
+                message_id: message_id,
+                delivery_status: Aggregate.get(payload, :delivery_status),
+                metadata: Map.drop(payload, [:message_id, :delivery_status])
+              }
+          end
+
+        %State{state | messages: Map.put(state.messages, message_id, updated_message)}
 
       _ ->
         state
@@ -65,13 +99,13 @@ defmodule ForemanServer.Aggregates.InboxThread do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp require_absent(%{messages: messages}, message_id) do
+  defp require_absent(%State{messages: messages}, message_id) do
     if Map.has_key?(messages, message_id),
       do: {:error, {:already_exists, :message, message_id}},
       else: :ok
   end
 
-  defp require_message(%{messages: messages}, message_id) do
+  defp require_message(%State{messages: messages}, message_id) do
     if Map.has_key?(messages, message_id),
       do: :ok,
       else: {:error, {:not_found, :message, message_id}}

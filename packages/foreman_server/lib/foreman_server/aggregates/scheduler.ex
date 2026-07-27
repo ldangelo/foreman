@@ -4,8 +4,30 @@ defmodule ForemanServer.Aggregates.Scheduler do
 
   alias ForemanServer.Aggregate
 
+  defmodule Claim do
+    @moduledoc "A task claim keyed by task_id."
+    @enforce_keys [:task_id, :project_id]
+    defstruct [:task_id, :project_id, metadata: %{}]
+  end
+
+  defmodule Skip do
+    @moduledoc "A task skip keyed by task_id."
+    @enforce_keys [:task_id, :project_id]
+    defstruct [:task_id, :project_id, metadata: %{}]
+  end
+
+  defmodule State do
+    @enforce_keys [:claims, :skips]
+    defstruct [:claims, :skips, last_tick: nil]
+  end
+
   @impl true
-  def initial_state, do: %{claims: %{}, skips: %{}, last_tick: nil}
+  def initial_state,
+    do: %State{
+      claims: %{},
+      skips: %{},
+      last_tick: nil
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -13,13 +35,29 @@ defmodule ForemanServer.Aggregates.Scheduler do
 
     case Aggregate.event_type(event) do
       "SchedulerTicked" ->
-        Map.put(state, :last_tick, payload)
+        %State{state | last_tick: payload}
 
       "SchedulerTaskClaimed" ->
-        put_in(state, [:claims, Aggregate.get(payload, :task_id)], payload)
+        task_id = Aggregate.get(payload, :task_id)
+
+        claim = %Claim{
+          task_id: task_id,
+          project_id: Aggregate.get(payload, :project_id),
+          metadata: Map.drop(payload, [:task_id, :project_id])
+        }
+
+        %State{state | claims: Map.put(state.claims, task_id, claim)}
 
       "SchedulerTaskSkipped" ->
-        put_in(state, [:skips, Aggregate.get(payload, :task_id)], payload)
+        task_id = Aggregate.get(payload, :task_id)
+
+        skip = %Skip{
+          task_id: task_id,
+          project_id: Aggregate.get(payload, :project_id),
+          metadata: Map.drop(payload, [:task_id, :project_id])
+        }
+
+        %State{state | skips: Map.put(state.skips, task_id, skip)}
 
       _ ->
         state
@@ -67,7 +105,7 @@ defmodule ForemanServer.Aggregates.Scheduler do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp reject_duplicate_claim(%{claims: claims}, task_id) do
+  defp reject_duplicate_claim(%State{claims: claims}, task_id) do
     if Map.has_key?(claims, task_id), do: {:error, {:already_claimed, task_id}}, else: :ok
   end
 end

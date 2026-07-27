@@ -4,12 +4,25 @@ defmodule ForemanServer.Aggregates.ArtifactReport do
 
   alias ForemanServer.Aggregate
 
+  defmodule Report do
+    @moduledoc "A single phase report, keyed by report_id."
+    @enforce_keys [:report_id]
+    defstruct [:report_id, :phase_id, :run_id, metadata: %{}]
+  end
+
+  defmodule State do
+    @enforce_keys [:reports, :final_verdict?, :verdict, :run_id, :phase_id]
+    defstruct [:reports, :run_id, :phase_id, final_verdict?: false, verdict: nil]
+  end
+
   @impl true
   def initial_state do
-    %{
+    %State{
       reports: %{},
       final_verdict?: false,
-      verdict: nil
+      verdict: nil,
+      run_id: nil,
+      phase_id: nil
     }
   end
 
@@ -19,14 +32,30 @@ defmodule ForemanServer.Aggregates.ArtifactReport do
 
     case Aggregate.event_type(event) do
       "PhaseReportProduced" ->
-        report_id = report_id(payload)
-        put_in(state.reports[report_id], payload)
+        report = %Report{
+          report_id: report_id(payload),
+          phase_id: Aggregate.get(payload, :phase_id),
+          run_id: Aggregate.get(payload, :run_id),
+          metadata: Map.drop(payload, [:report_id, :phase_id, :run_id])
+        }
+
+        new_reports = Map.put(state.reports, report.report_id, report)
+
+        %State{
+          state
+          | reports: new_reports,
+            run_id: Aggregate.get(payload, :run_id),
+            phase_id: Aggregate.get(payload, :phase_id)
+        }
 
       "PhaseVerdict" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:final_verdict?, final_verdict?(payload))
-        |> Map.put(:verdict, Aggregate.get(payload, :verdict, Aggregate.get(payload, :status)))
+        %State{
+          state
+          | final_verdict?: final_verdict?(payload),
+            verdict: Aggregate.get(payload, :verdict) || Aggregate.get(payload, :status),
+            run_id: Aggregate.get(payload, :run_id),
+            phase_id: Aggregate.get(payload, :phase_id)
+        }
 
       _ ->
         state
@@ -72,7 +101,7 @@ defmodule ForemanServer.Aggregates.ArtifactReport do
     Aggregate.get(payload, :final, true) != false
   end
 
-  defp reject_duplicate_final_verdict(%{final_verdict?: true}, payload) do
+  defp reject_duplicate_final_verdict(%State{final_verdict?: true}, payload) do
     if Aggregate.get(payload, :supersedes) || Aggregate.get(payload, :revision) do
       :ok
     else

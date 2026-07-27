@@ -4,10 +4,21 @@ defmodule ForemanServer.Aggregates.VcsOperation do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:exists?, :operation_id, :status, :terminal?]
+    defstruct [:exists?, :operation_id, :status, :terminal?]
+  end
+
   @terminal_statuses MapSet.new(["cleaned", "merged", "failed", "blocked"])
 
   @impl true
-  def initial_state, do: %{exists?: false, status: nil}
+  def initial_state,
+    do: %State{
+      exists?: false,
+      operation_id: nil,
+      status: nil,
+      terminal?: false
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -15,28 +26,60 @@ defmodule ForemanServer.Aggregates.VcsOperation do
 
     case Aggregate.event_type(event) do
       "WorktreeCreated" ->
-        state |> Map.merge(payload) |> Map.put(:exists?, true) |> Map.put(:status, "created")
+        %State{
+          state
+          | exists?: true,
+            operation_id: Aggregate.get(payload, :operation_id),
+            status: "created"
+        }
 
       "WorktreeCleaned" ->
-        state |> Map.merge(payload) |> Map.put(:status, "cleaned") |> Map.put(:terminal?, true)
+        %State{
+          state
+          | operation_id: Aggregate.get(payload, :operation_id),
+            status: "cleaned",
+            terminal?: true
+        }
 
       "VcsMergeRequested" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:status, "merge_requested")
+        %State{
+          state
+          | exists?: true,
+            operation_id: Aggregate.get(payload, :operation_id),
+            status: "merge_requested"
+        }
 
       "PrGateObserved" ->
-        state |> Map.merge(payload) |> Map.put(:exists?, true) |> Map.put(:status, "pr_observed")
+        %State{
+          state
+          | exists?: true,
+            operation_id: Aggregate.get(payload, :operation_id),
+            status: "pr_observed"
+        }
 
       "PrMerged" ->
-        state |> Map.merge(payload) |> Map.put(:status, "merged") |> Map.put(:terminal?, true)
+        %State{
+          state
+          | operation_id: Aggregate.get(payload, :operation_id),
+            status: "merged",
+            terminal?: true
+        }
 
       "MergeFailed" ->
-        state |> Map.merge(payload) |> Map.put(:status, "failed") |> Map.put(:terminal?, true)
+        %State{
+          state
+          | operation_id: Aggregate.get(payload, :operation_id),
+            status: "failed",
+            terminal?: true
+        }
 
       "MergeBlocked" ->
-        state |> Map.merge(payload) |> Map.put(:status, "blocked") |> Map.put(:terminal?, true)
+        %State{
+          state
+          | operation_id: Aggregate.get(payload, :operation_id),
+            status: "blocked",
+            terminal?: true
+        }
 
       _ ->
         state
@@ -84,12 +127,12 @@ defmodule ForemanServer.Aggregates.VcsOperation do
        when type in ["vcs.worktree.create", "vcs.merge.request", "vcs.pr.observe"],
        do: :ok
 
-  defp require_existing_operation_for_terminal(%{exists?: true}, _type), do: :ok
+  defp require_existing_operation_for_terminal(%State{exists?: true}, _type), do: :ok
 
   defp require_existing_operation_for_terminal(_state, type),
     do: {:error, {:vcs_operation_not_started, type}}
 
-  defp reject_terminal(%{status: status}, _type) do
+  defp reject_terminal(%State{status: status}, _type) do
     if MapSet.member?(@terminal_statuses, status),
       do: {:error, {:vcs_operation_terminal, status}},
       else: :ok

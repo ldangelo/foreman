@@ -1,9 +1,6 @@
 defmodule ForemanServer.TestSupport.TestApplication do
-  use Commanded.Application,
-    otp_app: :foreman_server,
-    event_store: [
-      adapter: Commanded.EventStore.Adapters.InMemory
-    ]
-
-  router(ForemanServer.TestSupport.TestRouter)
+  @moduledoc """
+  No longer used — `ForemanServer.Application` is started once by ExUnit's
+  `application` env and shared across all tests. Each test uses unique stream IDs.
+  """
 end

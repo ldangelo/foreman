@@ -4,10 +4,34 @@ defmodule ForemanServer.Aggregates.Project do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:exists?, :project_id, :path, :status, :default_branch, :archived?]
+    defstruct [
+      :exists?,
+      :project_id,
+      :path,
+      :status,
+      :default_branch,
+      :archived?,
+      config: %{},
+      health: %{ok: true}
+    ]
+  end
+
   @valid_statuses MapSet.new(["active", "paused", "archived"])
 
   @impl true
-  def initial_state, do: %{exists?: false, status: nil, config: %{}}
+  def initial_state,
+    do: %State{
+      exists?: false,
+      project_id: nil,
+      path: nil,
+      status: nil,
+      default_branch: "main",
+      archived?: false,
+      config: %{},
+      health: %{ok: true}
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -15,35 +39,37 @@ defmodule ForemanServer.Aggregates.Project do
 
     case Aggregate.event_type(event) do
       "ProjectRegistered" ->
-        state
-        |> Map.merge(%{
-          exists?: true,
-          project_id: Aggregate.get(payload, :project_id),
-          path: Aggregate.get(payload, :path),
-          status: Aggregate.get(payload, :status, "active"),
-          default_branch: Aggregate.get(payload, :default_branch, "main"),
-          config: Aggregate.get(payload, :config, %{}),
-          health: Aggregate.get(payload, :health, %{ok: true}),
-          archived?: false
-        })
+        %State{
+          state
+          | exists?: true,
+            project_id: Aggregate.get(payload, :project_id),
+            path: Aggregate.get(payload, :path),
+            status: Aggregate.get(payload, :status, "active"),
+            default_branch: Aggregate.get(payload, :default_branch, "main"),
+            config: Aggregate.get(payload, :config, %{}),
+            health: Aggregate.get(payload, :health, %{ok: true}),
+            archived?: false
+        }
 
       "ProjectUpdated" ->
-        config = Map.merge(Map.get(state, :config, %{}), Aggregate.get(payload, :config, %{}))
+        new_config = Map.merge(state.config, Aggregate.get(payload, :config, %{}))
 
         config =
-          if name = Aggregate.get(payload, :name), do: Map.put(config, :name, name), else: config
+          if name = Aggregate.get(payload, :name),
+            do: Map.put(new_config, :name, name),
+            else: new_config
 
         state
-        |> Aggregate.put_if(:status, Aggregate.get(payload, :status))
-        |> Aggregate.put_if(:default_branch, Aggregate.get(payload, :default_branch))
-        |> Aggregate.put_if(:health, Aggregate.get(payload, :health))
-        |> Map.put(:config, config)
+        |> update_status(payload)
+        |> update_default_branch(payload)
+        |> update_health(payload)
+        |> put_config(config)
 
       "ProjectArchived" ->
-        state |> Map.put(:status, "archived") |> Map.put(:archived?, true)
+        %State{state | status: "archived", archived?: true}
 
       "ProjectReactivated" ->
-        state |> Map.put(:status, "active") |> Map.put(:archived?, false)
+        %State{state | status: "active", archived?: false}
 
       _ ->
         state
@@ -62,74 +88,60 @@ defmodule ForemanServer.Aggregates.Project do
        %{
          stream_id: "project:#{project_id}",
          event_type: "ProjectRegistered",
-         payload: %{
-           project_id: project_id,
-           path: path,
-           status: Aggregate.get(payload, :status, "active"),
-           default_branch: Aggregate.get(payload, :default_branch, "main"),
-           config: Aggregate.get(payload, :config, %{}),
-           health: Aggregate.get(payload, :health, %{ok: true})
-         }
+         payload: Map.merge(payload, %{project_id: project_id, path: path})
        }}
     end
   end
 
   def handle_command(state, %{type: "project.update", payload: payload}) do
-    project_id = Aggregate.get(payload, :project_id) || Aggregate.get(payload, :id)
-
-    with {:ok, project_id} <- Aggregate.required_binary(project_id, :project_id),
-         :ok <- require_exists(state, project_id),
-         :ok <- validate_status(Aggregate.get(payload, :status)) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id) do
       {:ok,
        %{
          stream_id: "project:#{project_id}",
          event_type: "ProjectUpdated",
-         payload: Map.put(payload, :project_id, project_id)
+         payload: Map.merge(payload, %{project_id: project_id})
        }}
     end
   end
 
   def handle_command(state, %{type: "project.archive", payload: payload}) do
-    project_id = Aggregate.get(payload, :project_id) || Aggregate.get(payload, :id)
-
-    with {:ok, project_id} <- Aggregate.required_binary(project_id, :project_id),
-         :ok <- require_exists(state, project_id) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- validate_archive(state) do
       {:ok,
        %{
          stream_id: "project:#{project_id}",
          event_type: "ProjectArchived",
-         payload: %{
-           project_id: project_id,
-           status: "archived",
-           force: Aggregate.get(payload, :force, false),
-           reason: Aggregate.get(payload, :reason)
-         }
+         payload: Map.merge(payload, %{project_id: project_id})
        }}
     end
   end
 
   def handle_command(state, %{type: "project.reactivate", payload: payload}) do
-    project_id = Aggregate.get(payload, :project_id) || Aggregate.get(payload, :id)
-
-    with {:ok, project_id} <- Aggregate.required_binary(project_id, :project_id),
-         :ok <- require_exists(state, project_id) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_exists(state, project_id),
+         :ok <- validate_reactivate(state) do
       {:ok,
        %{
          stream_id: "project:#{project_id}",
          event_type: "ProjectReactivated",
-         payload: %{project_id: project_id, status: "active"}
+         payload: Map.merge(payload, %{project_id: project_id})
        }}
     end
   end
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp require_absent(%{exists?: true}, project_id),
+  defp require_absent(%State{exists?: true}, project_id),
     do: {:error, {:already_exists, :project, project_id}}
 
   defp require_absent(_state, _project_id), do: :ok
 
-  defp require_exists(%{exists?: true}, _project_id), do: :ok
+  defp require_exists(%State{exists?: true}, _project_id), do: :ok
   defp require_exists(_state, project_id), do: {:error, {:not_found, :project, project_id}}
 
   defp validate_status(nil), do: :ok
@@ -141,4 +153,30 @@ defmodule ForemanServer.Aggregates.Project do
   end
 
   defp validate_status(status), do: {:error, {:invalid_project_status, status}}
+
+  defp validate_archive(%State{archived?: true}), do: {:error, {:already_archived, :project}}
+  defp validate_archive(_state), do: :ok
+
+  defp validate_reactivate(%State{archived?: false}), do: {:error, {:not_archived, :project}}
+  defp validate_reactivate(_state), do: :ok
+
+  defp update_status(state, payload) do
+    if status = Aggregate.get(payload, :status),
+      do: %State{state | status: status},
+      else: state
+  end
+
+  defp update_default_branch(state, payload) do
+    if db = Aggregate.get(payload, :default_branch),
+      do: %State{state | default_branch: db},
+      else: state
+  end
+
+  defp update_health(state, payload) do
+    if health = Aggregate.get(payload, :health),
+      do: %State{state | health: health},
+      else: state
+  end
+
+  defp put_config(state, config), do: %State{state | config: config}
 end

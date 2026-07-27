@@ -95,19 +95,24 @@ slice and supplement — not replace — the standing rules.
 
 ### Stack (Slice)
 
-- **Commanded**: aggregate supervision, ES/CQRS, command routing
-- **EventStore**: event persistence (via Commanded adapter)
+- **ForemanServer.Aggregate**: behaviour defining `initial_state/0`,
+  `handle_command/2`, `apply_event/2` callbacks
+- **ForemanServer.Aggregate.Actor**: supervised GenServer holding in-memory
+  aggregate state and stream version; routes commands through `CommandRouter`
+- **CommandRouter**: single append point for all domain events
+- **EventStore** (via Commanded adapter): event persistence
 - **Postgrex**: Postgres driver
-- **Phoenix**: HTTP API boundary for Go CLI; receives commands and dispatches to Commanded
+- **Phoenix**: HTTP API boundary for Go CLI
 
 ### Architecture Decisions (Slice)
 
 #### 1. Event Sourcing Core
 
 **State lives in the event log.** The `foreman_events` Postgres table is the single
-source of truth. Aggregate modules (`Run`, `Task`, `Project`) use `Commanded.Aggregate`
-behaviour with `execute/2` for command handling and `apply/2` for event application.
-Projections are read models derived from the event log.
+source of truth. Aggregate modules (`Run`, `Task`, `Project`) implement the
+`ForemanServer.Aggregate` behaviour with `handle_command/2` for command handling
+and `apply_event/2` for event application. Projections are read models derived
+from the event log.
 
 **Command flow**:
 ```
@@ -117,55 +122,55 @@ Go CLI
 Phoenix POST /api/commands
     │
     ▼
-ForemanApp.dispatch(command)   ◄── Phoenix dispatches to Commanded
+CommandRouter.dispatch(command)  ◄── CommandRouter.dispatch/1
     │
     ▼
-ForemanRouter.route(command)  ◄── Commanded.Router
+Aggregator.start_aggregate(module, id)  ◄── starts Actor if not running
     │
     ▼
-RunAggregate."run-1"           ◄── Commanded supervised aggregate process
+Actor.handle_call(:command, cmd)  ◄── Actor calls aggregate directly
     │
     ▼
-Run.execute(state, command)   ◄── execute/2 returns event struct
+aggregate.handle_command(state, cmd)  ◄── handle_command/2 returns event spec
     │
     ▼
-Commanded appends internally  ◄── Commanded handles append internally
+Actor sends event spec to CommandRouter  ◄── send CommandRouter, {:append, ...}
     │
     ▼
-Run.apply(state, event)       ◄── apply/2 mutates aggregate state
+EventStore.append_to_stream  ◄── CommandRouter is sole append point
+    │
+    ▼
+CommandRouter sends {:append_ok, count} back to Actor  ◄── append confirmed
+    │
+    ▼
+Actor calls aggregate_module.apply_event/2  ◄── state updated after confirm
 ```
 
-Commanded aggregate processes are supervised by `Commanded.Aggregates.Supervisor`
-with `restart: :temporary` — they are not automatically restarted on crash.
-Rehydration is **lazy**: on the next dispatch after a crash, Commanded opens a new
-process and replays the event stream before handling the command.
-
-**Actor lifecycle** (Commanded-managed):
-- **Startup**: Commanded replays the aggregate's event stream via `apply/2`
-  before processing the first command.
-- **Normal operation**: aggregate receives command, `execute/2` returns event struct,
-  Commanded appends and applies internally.
-- **Crash + lazy reopen**: supervisor does **not** auto-restart the aggregate. On the
-  next dispatch, Commanded reopens a new process and rehydrates from the event stream.
-  Restart is lazy, not immediate.
+**Actor lifecycle** (`Aggregator` manages with `restart: :permanent`):
+- **Startup**: `Actor.init` calls `Aggregate.load/2` which replays the event stream
+  via `apply_event` before processing any command.
+- **Normal operation**: actor receives command, calls `handle_command`, sends event spec
+  to `CommandRouter`, awaits append confirmation, then calls `apply_event` to update state.
+- **Crash + eager restart**: `Aggregator` supervisor restarts the actor immediately
+  (`restart: :permanent`). Restarted actor rehydrates via `Aggregate.load/2` before
+  processing the next command.
 
 #### 2. Aggregate State Design
-
 **Every aggregate's fixed top-level state MUST be a dedicated `%Aggregate.State{}`
 struct. Maps are permitted only as nested genuinely dynamic values.**
+
 
 Each aggregate defines a nested `State` struct:
 
 ```elixir
 defmodule ForemanServer.Aggregates.Run do
   defmodule State do
-    defstruct [:exists?, :run_id, :status, :phase_status,
-               :worker_status, :retry_history, :terminal?]
+    defstruct [:exists?, :run_id, :status, :terminal?,
+               phase_status: %{}, worker_status: %{}, retry_history: []]
   end
 
-  @initial_state %State{exists?: false, status: nil}
-
-  # ...
+  @impl true
+  def initial_state, do: %State{exists?: false, run_id: nil, status: nil, ...}
 end
 ```
 
@@ -188,7 +193,7 @@ covers the closed aggregate invariant fields; maps cover open metadata.
   not `struct(state, field: value)`.
 - Explicit per-event field mapping: `event_type → state field` is written out
   per event type.
-- `initial_state()` returns the State struct with required fields set to defaults.
+- `initial_state/0` returns the State struct with required fields set to defaults.
 - **`handle_command` enforces domain invariants.** Struct construction alone does
   not validate state preconditions or valid transitions.
 
@@ -196,63 +201,58 @@ covers the closed aggregate invariant fields; maps cover open metadata.
 `Project`, `Run`, `Task`, `Phase`, `Worker`, `OperatorIntervention`, `PlanningFlow`,
 `Recovery`, `Scheduler`, `ToolCall`, `VcsOperation`, `ArtifactReport`, `Attachment`,
 `ExternalTrigger`, `ImportMigration`, `InboxThread`, `Integration`.
-All are noncompliant and must be migrated to State structs.
-
-**Command ingress typing** is a parallel required migration. Every ingress adapter
-(REST/GraphQL controllers, worker adapters, internal command producers) MUST construct
-recognized command structs. `CommandRouter` MUST reject non-struct payloads. These
-two migrations may proceed independently.
+All are now migrated to `%State{}` structs with `%State{state | ...}` updates.
 
 #### 3. Phoenix Is the Sole HTTP Ingress
 
 Phoenix receives all HTTP commands from Go CLI via `POST /api/commands`.
-Phoenix dispatches to Commanded's application (e.g. `ForemanApp.dispatch(command)`).
-No other module (worker, Go CLI, or other Elixir code) writes to the event store
-directly. All mutations route through Phoenix → Commanded.
+Phoenix dispatches to `CommandRouter.dispatch/1`. No other module (worker, Go CLI,
+or other Elixir code) writes to the event store directly. All mutations route
+through Phoenix → CommandRouter.
 
 #### 4. Architecture Test
 
-An ExUnit architecture test (`EventStore.Enforcement`) scans all `.ex` source files under
-`lib/foreman_server/` for direct operational calls to `append_to_stream` or adapter dispatch
-functions. Module declarations (`defmodule … do; use EventStore`, `otp_app:` config) are
-allowed. Any match causes the test to fail.
+An ExUnit architecture test (`EventStore.Enforcement`) scans all `.ex` source files
+under `lib/foreman_server/` for direct operational calls to `append_to_stream` or
+adapter dispatch functions. Module declarations (`defmodule … do; use EventStore`,
+`otp_app:` config) are allowed. Any match causes the test to fail.
 
 #### 5. CQRS Invariant
 
-- **Commands** mutate state via Commanded. All state mutations go through
-  Phoenix → Commanded.
+- **Commands** mutate state via `CommandRouter`. All state mutations go through
+  Phoenix → CommandRouter.
 - **Queries** read from the projection store (read model). No writes on the query path.
 
 ### Domain Events (Slice)
 
 All authoritative state transitions are domain events persisted in `foreman_events`.
-Every event is emitted by an aggregate `execute/2` function routed through
-`ForemanRouter` — no module emits events directly.
+Every event is emitted by an aggregate `handle_command/2` function routed through
+`CommandRouter` — no module emits events directly.
 
 | Event | Emitted by | Effects |
 |---|---|---|
-| `ProjectRegistered` | `Project.execute/2` | Creates project projection |
-| `TaskCreated` | `Task.execute/2` | Creates task projection |
-| `TaskUpdated` | `Task.execute/2` | Updates task status |
-| `RunStarted` | `Run.execute/2` | Creates run projection, spawns worker |
-| `PhaseStarted` | `Phase.execute/2` | Updates run phase |
-| `PhaseCompleted` | `Phase.execute/2` | Updates run phase |
-| `RunCompleted` | `Run.execute/2` | Marks run terminal |
-| `RunFailed` | `Run.execute/2` | Marks run terminal |
-| `PrCreated` | `Run.execute/2` | Records PR URL |
-| `PrMerged` | `Run.execute/2` | Marks run merged |
+| `ProjectRegistered` | `Project.handle_command/2` | Creates project projection |
+| `TaskCreated` | `Task.handle_command/2` | Creates task projection |
+| `TaskUpdated` | `Task.handle_command/2` | Updates task status |
+| `RunStarted` | `Run.handle_command/2` | Creates run projection, spawns worker |
+| `PhaseStarted` | `Phase.handle_command/2` | Updates run phase |
+| `PhaseCompleted` | `Phase.handle_command/2` | Updates run phase |
+| `RunCompleted` | `Run.handle_command/2` | Marks run terminal |
+| `RunFailed` | `Run.handle_command/2` | Marks run terminal |
+| `PrCreated` | `Run.handle_command/2` | Records PR URL |
+| `PrMerged` | `Run.handle_command/2` | Marks run merged |
 | `WorkerHeartbeat` | `worker.event` command | Updates worker projection |
-| `ToolCallApproved` | `Overwatch.execute/2` | Records tool call decision |
-| `ToolCallDenied` | `Overwatch.execute/2` | Records tool call decision |
+| `ToolCallApproved` | `ToolCall.handle_command/2` | Records tool call decision |
+| `ToolCallDenied` | `ToolCall.handle_command/2` | Records tool call decision |
 
 ### Idempotency and Concurrency (Slice)
 
-**Idempotency**: Commanded does **not** deduplicate by `command_id`. Idempotency is a
-domain invariant implemented in each aggregate's `execute/2`. The aggregate tracks
-processed completion sequences in its state. On a duplicate `run.complete` with the
-same `sequence`, `execute/2` returns `{:error, :already_completed}` and emits no event.
+**Idempotency**: `CommandRouter` deduplicates by `command_id`. Duplicate commands
+produce no additional events. Domain idempotency (e.g. rejecting a second
+`run.complete` on an already-completed run) is implemented in each aggregate's
+`handle_command/2`.
 
-**Optimistic Concurrency**: Commanded uses `expected_stream_version` internally. If the
+**Optimistic Concurrency**: Every append uses `expected_stream_version`. If the
 stream has moved past the expected version, append fails with a concurrency conflict.
 The aggregate's in-memory state is unchanged.
 
@@ -270,14 +270,7 @@ The Go CLI only:
 
 ### Test Architecture (Slice)
 
-- **Unit tests**: aggregate handlers — `execute/2` → event struct, valid transitions
+- **Unit tests**: aggregate handlers — `handle_command/2` → event spec, valid transitions
 - **Integration tests**: aggregate startup, mailbox serialization, crash/restart/rehydration
 - **Architecture tests**: no direct `append_to_stream`/adapter calls in `lib/foreman_server/`
 - **Projection tests**: known event sequence → rebuild → verify read model matches
-- **Concurrency tests**: optimistic concurrency via blocking command — test-only `execute/2`
-  selective `receive {:release, ^ref}` (won't consume queued `{:events, events}` messages);
-  dispatch from Task holding ref; externally append while blocked (event arrives as queued
-  `{:events, events}` mailbox message); send release; persist_events/3 calls
-  AggregateStateBuilder.rebuild_from_events which queries EventStore (not queued mailbox);
-  returns `{:error, :too_many_attempts}`; aggregate alive, rebuilt state from EventStore,
-  no command event persisted.

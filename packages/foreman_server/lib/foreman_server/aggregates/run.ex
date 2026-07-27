@@ -1,14 +1,53 @@
 defmodule ForemanServer.Aggregates.Run do
-  @moduledoc "Run aggregate: validates run lifecycle commands and folds legacy run/worker phase events."
+  @moduledoc "Run aggregate: validates run lifecycle commands and folds phase/worker events."
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
 
-  @terminal_statuses MapSet.new(["completed", "failed", "blocked", "cancelled", "deleted"])
+  defmodule PhaseStatus do
+    @moduledoc "Phase status keyed by phase_id."
+    @enforce_keys [:phase_id]
+    defstruct [:phase_id, :status, metadata: %{}]
+  end
+
+  defmodule WorkerStatus do
+    @moduledoc "Worker status keyed by worker_id."
+    @enforce_keys [:worker_id]
+    defstruct [:worker_id, :status, metadata: %{}]
+  end
+
+  defmodule RetryEntry do
+    @moduledoc "A retry attempt entry in the history."
+    @enforce_keys [:attempt]
+    defstruct [:attempt, :run_id, :reason, metadata: %{}]
+  end
+
+  defmodule State do
+    @enforce_keys [:exists?]
+    defstruct [
+      :exists?,
+      :run_id,
+      :task_id,
+      :status,
+      :terminal?,
+      phase_status: %{},
+      worker_status: %{},
+      retry_history: []
+    ]
+  end
 
   @impl true
   def initial_state,
-    do: %{exists?: false, status: nil, phase_status: %{}, worker_status: %{}, retry_history: []}
+    do: %State{
+      exists?: false,
+      run_id: nil,
+      task_id: nil,
+      status: nil,
+      terminal?: false,
+      phase_status: %{},
+      worker_status: %{},
+      retry_history: []
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -16,31 +55,46 @@ defmodule ForemanServer.Aggregates.Run do
 
     case Aggregate.event_type(event) do
       "RunStarted" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:status, "in_progress")
-        |> Map.put_new(:phase_status, %{})
-        |> Map.put_new(:worker_status, %{})
-        |> Map.put_new(:retry_history, [])
+        %State{
+          state
+          | exists?: true,
+            run_id: Aggregate.get(payload, :run_id),
+            task_id: Aggregate.get(payload, :task_id),
+            status: "in_progress"
+        }
 
       "RunUpdated" ->
-        state |> Map.merge(payload) |> Map.put(:exists?, true)
+        %State{
+          state
+          | exists?: true,
+            run_id: Aggregate.get(payload, :run_id),
+            task_id: Aggregate.get(payload, :task_id) || state.task_id
+        }
 
       type when type in ["PrUpdated", "PrReady", "PrRetargeted", "PrReset", "PrMerged"] ->
-        state |> Map.merge(payload) |> Map.put(:exists?, true)
+        %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id)}
 
       "RunCompleted" ->
-        state |> Map.merge(payload) |> Map.put(:status, "completed") |> Map.put(:terminal?, true)
+        %State{
+          state
+          | status: "completed",
+            terminal?: true,
+            run_id: Aggregate.get(payload, :run_id)
+        }
 
       "RunFailed" ->
-        state |> Map.merge(payload) |> Map.put(:status, "failed") |> Map.put(:terminal?, true)
+        %State{state | status: "failed", terminal?: true, run_id: Aggregate.get(payload, :run_id)}
 
       "RunBlocked" ->
-        state |> Map.merge(payload) |> Map.put(:status, "blocked") |> Map.put(:terminal?, true)
+        %State{
+          state
+          | status: "blocked",
+            terminal?: true,
+            run_id: Aggregate.get(payload, :run_id)
+        }
 
       "RunDeleted" ->
-        state |> Map.put(:status, "deleted") |> Map.put(:terminal?, true)
+        %State{state | status: "deleted", terminal?: true}
 
       "PhaseStarted" ->
         put_phase(state, payload, "in_progress")
@@ -167,24 +221,34 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(_state, _command), do: :unhandled
 
   defp put_phase(state, payload, status) do
-    case Aggregate.get(payload, :phase_id) do
-      phase_id when is_binary(phase_id) and phase_id != "" ->
-        state
-        |> Map.put(:current_phase, phase_id)
-        |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, status))
+    phase_id = Aggregate.get(payload, :phase_id)
 
-      _ ->
-        state
+    if is_binary(phase_id) and phase_id != "" do
+      entry = %PhaseStatus{
+        phase_id: phase_id,
+        status: status,
+        metadata: Map.drop(payload, [:phase_id])
+      }
+
+      %State{state | phase_status: Map.put(state.phase_status, phase_id, entry)}
+    else
+      state
     end
   end
 
   defp put_worker(state, payload, status) do
-    case Aggregate.get(payload, :worker_id) do
-      worker_id when is_binary(worker_id) and worker_id != "" ->
-        update_in(state, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+    worker_id = Aggregate.get(payload, :worker_id)
 
-      _ ->
-        state
+    if is_binary(worker_id) and worker_id != "" do
+      entry = %WorkerStatus{
+        worker_id: worker_id,
+        status: status,
+        metadata: Map.drop(payload, [:worker_id])
+      }
+
+      %State{state | worker_status: Map.put(state.worker_status, worker_id, entry)}
+    else
+      state
     end
   end
 
@@ -247,22 +311,23 @@ defmodule ForemanServer.Aggregates.Run do
             ],
        do: :ok
 
-  defp require_absent(%{exists?: true}, run_id), do: {:error, {:already_exists, :run, run_id}}
+  defp require_absent(%State{exists?: true}, run_id),
+    do: {:error, {:already_exists, :run, run_id}}
+
   defp require_absent(_state, _run_id), do: :ok
 
-  defp require_exists(%{exists?: true}, _run_id), do: :ok
+  defp require_exists(%State{exists?: true, run_id: run_id}, run_id), do: :ok
   defp require_exists(_state, run_id), do: {:error, {:not_found, :run, run_id}}
 
-  defp reject_terminal_mutation(%{status: status}) do
-    if MapSet.member?(@terminal_statuses, status),
-      do: {:error, {:run_terminal, status}},
-      else: :ok
-  end
+  # NOTE: MapSet.member? is not guard-safe in older Elixir; using literal type guard
+  defp reject_terminal_mutation(%State{status: status})
+       when status in ["completed", "failed", "blocked", "cancelled", "deleted"],
+       do: {:error, {:run_terminal, status}}
 
-  # Allow delete for terminal runs that are not already deleted.
-  # Delete is cleanup/tombstoning, not a normal lifecycle mutation.
-  defp allow_delete_on_terminal(%{status: status}) when status == "deleted",
-    do: {:error, {:run_terminal, status}}
+  defp reject_terminal_mutation(_state), do: :ok
+
+  defp allow_delete_on_terminal(%State{status: "deleted"}),
+    do: {:error, {:run_terminal, "deleted"}}
 
   defp allow_delete_on_terminal(_state), do: :ok
 end

@@ -4,6 +4,17 @@ defmodule ForemanServer.Aggregates.Task do
 
   alias ForemanServer.{Aggregate, ProjectionStore}
 
+  defmodule Annotation do
+    @moduledoc "An annotation on a task with enforced schema from TaskAnnotated."
+    @enforce_keys [:body, :author, :created_at]
+    defstruct [:body, :author, :created_at, metadata: %{}]
+  end
+
+  defmodule State do
+    @enforce_keys [:exists?]
+    defstruct [:exists?, :task_id, :project_id, :status, dependencies: [], annotations: []]
+  end
+
   @valid_statuses MapSet.new([
                     "open",
                     "backlog",
@@ -20,8 +31,17 @@ defmodule ForemanServer.Aggregates.Task do
                     "blocked",
                     "cooldown"
                   ])
+
   @impl true
-  def initial_state, do: %{exists?: false, dependencies: [], annotations: []}
+  def initial_state,
+    do: %State{
+      exists?: false,
+      task_id: nil,
+      project_id: nil,
+      status: nil,
+      dependencies: [],
+      annotations: []
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -29,36 +49,40 @@ defmodule ForemanServer.Aggregates.Task do
 
     case Aggregate.event_type(event) do
       "TaskCreated" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:task_id, Aggregate.get(payload, :task_id))
-        |> Map.put(:status, Aggregate.get(payload, :status, "open"))
-        |> Map.put(:dependencies, Aggregate.get(payload, :dependencies, []))
-        |> Map.put(:annotations, Map.get(state, :annotations, []))
-        |> Map.put(:exists?, true)
-
-      "TaskUpdated" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-
-      "TaskAnnotated" ->
-        annotation = %{
-          body: Aggregate.get(payload, :body),
-          author: Aggregate.get(payload, :author),
-          created_at: Aggregate.get(payload, :created_at)
+        %State{
+          state
+          | exists?: true,
+            task_id: Aggregate.get(payload, :task_id),
+            project_id: Aggregate.get(payload, :project_id),
+            status: Aggregate.get(payload, :status, "open"),
+            dependencies: Aggregate.get(payload, :dependencies, [])
         }
 
-        state
-        |> Map.update(:annotations, [annotation], &(&1 ++ [annotation]))
-        |> Map.put(:exists?, true)
+      "TaskUpdated" ->
+        %State{
+          state
+          | exists?: true,
+            task_id: Aggregate.get(payload, :task_id) || state.task_id,
+            status: Aggregate.get(payload, :status, state.status)
+        }
+
+      "TaskAnnotated" ->
+        annotation = %Annotation{
+          body: Aggregate.get(payload, :body),
+          author: Aggregate.get(payload, :author),
+          created_at: Aggregate.get(payload, :created_at),
+          metadata: Map.drop(payload, [:body, :author, :created_at])
+        }
+
+        %State{state | exists?: true, annotations: state.annotations ++ [annotation]}
 
       "TaskDependencyAdded" ->
-        state
-        |> Map.update(:dependencies, [Aggregate.get(payload, :depends_on)], fn deps ->
-          Enum.uniq((deps || []) ++ [Aggregate.get(payload, :depends_on)])
-        end)
-        |> Map.put(:exists?, true)
+        %State{
+          state
+          | exists?: true,
+            dependencies:
+              Enum.uniq((state.dependencies || []) ++ [Aggregate.get(payload, :depends_on)])
+        }
 
       "RunCompleted" ->
         maybe_apply_terminal_run(state, payload, "closed")
@@ -147,7 +171,11 @@ defmodule ForemanServer.Aggregates.Task do
        %{
          stream_id: "task:#{task_id}",
          event_type: "TaskAnnotated",
-         payload: %{task_id: task_id, body: body, author: Aggregate.get(payload, :author)}
+         payload: %{
+           task_id: task_id,
+           body: body,
+           author: Aggregate.get(payload, :author)
+         }
        }}
     end
   end
@@ -171,14 +199,16 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp maybe_apply_terminal_run(state, payload, status) do
     if Aggregate.get(payload, :task_id) == Map.get(state, :task_id),
-      do: Map.put(state, :status, status),
+      do: %State{state | status: status},
       else: state
   end
 
-  defp require_absent(%{exists?: true}, task_id), do: {:error, {:already_exists, :task, task_id}}
+  defp require_absent(%State{exists?: true}, task_id),
+    do: {:error, {:already_exists, :task, task_id}}
+
   defp require_absent(_state, _task_id), do: :ok
 
-  defp require_exists(%{exists?: true}, _task_id), do: :ok
+  defp require_exists(%State{exists?: true}, _task_id), do: :ok
   defp require_exists(_state, task_id), do: {:error, {:not_found, :task, task_id}}
 
   defp validate_status(nil), do: :ok
@@ -193,7 +223,7 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp allow_transition(_state, nil), do: :ok
 
-  defp allow_transition(%{status: status}, new_status)
+  defp allow_transition(%State{status: status}, new_status)
        when status == "merged" and new_status != status,
        do: {:error, {:invalid_task_transition, status, new_status}}
 

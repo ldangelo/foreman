@@ -1,9 +1,13 @@
 defmodule ForemanServer.TestSupport.TestRouter do
-  use Commanded.Commands.Router
+  @moduledoc """
+  Thin dispatch wrapper for test commands.
 
-  identify(ForemanServer.TestSupport.BlockingAggregate, by: :aggregate_id)
+  Provides a `dispatch/1-2` function that delegates to `CommandRouter.dispatch/2`.
+  Tests call `TestRouter.dispatch(command)` rather than importing CommandRouter directly.
+  """
 
-  dispatch(ForemanServer.TestSupport.BlockCommand,
-    to: ForemanServer.TestSupport.BlockingAggregate
-  )
+  @spec dispatch(command :: map(), timeout :: integer()) ::
+          {:ok, event_spec :: map() | nil}
+          | {:error, any()}
+  defdelegate dispatch(command, timeout \\ 5_000), to: ForemanServer.CommandRouter
 end

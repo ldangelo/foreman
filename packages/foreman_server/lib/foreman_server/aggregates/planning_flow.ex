@@ -4,14 +4,14 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:exists?, :completed?]
+    defstruct [:exists?, :completed?, :flow_id, commands: [], traces: %{}]
+  end
+
   @impl true
   def initial_state do
-    %{
-      exists?: false,
-      completed?: false,
-      commands: [],
-      traces: %{}
-    }
+    %State{exists?: false, completed?: false, flow_id: nil, commands: [], traces: %{}}
   end
 
   @impl true
@@ -20,23 +20,23 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
 
     case Aggregate.event_type(event) do
       "PlanningFlowStarted" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:completed?, false)
+        %State{
+          state
+          | exists?: true,
+            completed?: false,
+            flow_id: Aggregate.get(payload, :flow_id)
+        }
 
       "PlanningFlowCommand" ->
-        update_in(state.commands, &((&1 || []) ++ [payload]))
+        %State{state | exists?: true, commands: (state.commands || []) ++ [payload]}
 
       "PlanningTraceLinked" ->
         trace_id = Aggregate.get(payload, :traceability_key) || Aggregate.get(payload, :phase_id)
-        put_in(state.traces[trace_id], payload)
+        new_traces = Map.put(state.traces || %{}, trace_id, payload)
+        %State{state | traces: new_traces}
 
       "PlanningFlowCompleted" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:completed?, true)
+        %State{state | exists?: true, completed?: true, flow_id: Aggregate.get(payload, :flow_id)}
 
       _ ->
         state
@@ -105,11 +105,11 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
     Enum.find_value(keys, &Aggregate.get(payload, &1))
   end
 
-  defp require_absent(%{exists?: true}), do: {:error, :planning_flow_already_started}
+  defp require_absent(%State{exists?: true}), do: {:error, :planning_flow_already_started}
   defp require_absent(_state), do: :ok
 
-  defp require_active(%{exists?: false}), do: {:error, :planning_flow_not_started}
-  defp require_active(%{completed?: true}), do: {:error, :planning_flow_completed}
+  defp require_active(%State{exists?: false}), do: {:error, :planning_flow_not_started}
+  defp require_active(%State{completed?: true}), do: {:error, :planning_flow_completed}
   defp require_active(_state), do: :ok
 
   defp escape(value), do: String.replace(value, ":", "%3A")

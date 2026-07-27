@@ -4,12 +4,17 @@ defmodule ForemanServer.Aggregates.OperatorIntervention do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    defstruct [:active?, :status, :run_id, interruptions: 0]
+  end
+
   @impl true
   def initial_state do
-    %{
+    %State{
       active?: false,
       status: nil,
-      interruptions: 0
+      interruptions: 0,
+      run_id: nil
     }
   end
 
@@ -19,24 +24,30 @@ defmodule ForemanServer.Aggregates.OperatorIntervention do
 
     case Aggregate.event_type(event) do
       "NeedsOperator" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:active?, true)
-        |> Map.put(:status, "needs_operator")
-        |> Map.update(:interruptions, 1, &(&1 + 1))
+        %State{
+          state
+          | active?: true,
+            status: "needs_operator",
+            interruptions: state.interruptions + 1,
+            run_id: Aggregate.get(payload, :run_id)
+        }
 
       "HumanInterruptionRecorded" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:active?, true)
-        |> Map.put(:status, "interrupted")
-        |> Map.update(:interruptions, 1, &(&1 + 1))
+        %State{
+          state
+          | active?: true,
+            status: "interrupted",
+            interruptions: state.interruptions + 1,
+            run_id: Aggregate.get(payload, :run_id)
+        }
 
       "InteractiveRecoveryResumed" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:active?, false)
-        |> Map.put(:status, "resume_requested")
+        %State{
+          state
+          | active?: false,
+            status: "resume_requested",
+            run_id: Aggregate.get(payload, :run_id)
+        }
 
       _ ->
         state
@@ -74,10 +85,10 @@ defmodule ForemanServer.Aggregates.OperatorIntervention do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp reject_active(%{active?: true}), do: {:error, :operator_intervention_active}
+  defp reject_active(%State{active?: true}), do: {:error, :operator_intervention_active}
   defp reject_active(_state), do: :ok
 
-  defp require_active(%{active?: true}), do: :ok
+  defp require_active(%State{active?: true}), do: :ok
   defp require_active(_state), do: {:error, :operator_intervention_not_active}
 
   defp escape(value), do: String.replace(value, ":", "%3A")

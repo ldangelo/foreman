@@ -4,53 +4,112 @@ defmodule ForemanServer.Aggregates.Worker do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:exists?, :worker_id, :run_id, :status, :terminal?]
+    defstruct [
+      :exists?,
+      :worker_id,
+      :run_id,
+      :status,
+      :terminal?,
+      last_sequence: -1,
+      tool_events: 0,
+      assistant_messages: 0
+    ]
+  end
+
   @terminal_events MapSet.new(["RunCompleted", "RunFailed", "WorkerExited"])
 
   @impl true
   def initial_state,
-    do: %{exists?: false, last_sequence: -1, status: nil, tool_events: 0, assistant_messages: 0}
+    do: %State{
+      exists?: false,
+      worker_id: nil,
+      run_id: nil,
+      last_sequence: -1,
+      status: nil,
+      tool_events: 0,
+      assistant_messages: 0,
+      terminal?: false
+    }
 
   @impl true
   def apply_event(state, event) do
     payload = Aggregate.event_payload(event)
     type = Aggregate.event_type(event)
-    sequence = Aggregate.get(payload, :sequence, Map.get(state, :last_sequence))
+    sequence = Aggregate.get(payload, :sequence)
 
-    state =
-      if is_integer(sequence),
-        do: Map.put(state, :last_sequence, max(sequence, Map.get(state, :last_sequence, 0))),
-        else: state
+    new_state =
+      if is_integer(sequence) do
+        %State{state | last_sequence: max(sequence, state.last_sequence)}
+      else
+        state
+      end
 
     case type do
       "WorkerStarted" ->
-        state |> Map.merge(payload) |> Map.put(:exists?, true) |> Map.put(:status, "running")
+        %State{
+          new_state
+          | exists?: true,
+            worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            status: "running",
+            terminal?: false
+        }
 
       "WorkerHeartbeat" ->
-        state |> Map.merge(payload) |> Map.put(:status, "heartbeat")
+        %State{
+          new_state
+          | worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            status: "heartbeat"
+        }
 
       "ToolCallFinished" ->
-        state
-        |> Map.merge(payload)
-        |> Map.update(:tool_events, 1, &(&1 + 1))
-        |> Map.put(:status, "running")
+        %State{
+          new_state
+          | worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            tool_events: new_state.tool_events + 1,
+            status: "running"
+        }
 
       "AssistantMessage" ->
-        state
-        |> Map.merge(payload)
-        |> Map.update(:assistant_messages, 1, &(&1 + 1))
-        |> Map.put(:status, "running")
+        %State{
+          new_state
+          | worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            assistant_messages: new_state.assistant_messages + 1,
+            status: "running"
+        }
 
       "WorkerStdout" ->
-        state |> Map.merge(payload) |> Map.put(:status, "running")
+        %State{
+          new_state
+          | worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            status: "running"
+        }
 
       "WorkerStderr" ->
-        state |> Map.merge(payload) |> Map.put(:status, "running")
+        %State{
+          new_state
+          | worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            status: "running"
+        }
 
       type when type in ["RunCompleted", "RunFailed", "WorkerExited"] ->
-        state |> Map.merge(payload) |> Map.put(:status, "terminal") |> Map.put(:terminal?, true)
+        %State{
+          new_state
+          | worker_id: Aggregate.get(payload, :worker_id),
+            run_id: Aggregate.get(payload, :run_id),
+            status: "terminal",
+            terminal?: true
+        }
 
       _ ->
-        state
+        new_state
     end
   end
 
@@ -74,7 +133,7 @@ defmodule ForemanServer.Aggregates.Worker do
 
   def handle_command(_state, _command), do: :unhandled
 
-  def next_sequence(state), do: Map.get(state, :last_sequence, 0) + 1
+  def next_sequence(state), do: state.last_sequence + 1
 
   defp validate_next_sequence(_state, nil), do: :ok
 
@@ -89,7 +148,7 @@ defmodule ForemanServer.Aggregates.Worker do
   defp validate_next_sequence(_state, sequence),
     do: {:error, {:missing_or_invalid, {:sequence, sequence}}}
 
-  defp allow_after_terminal(%{terminal?: true}, event_type) do
+  defp allow_after_terminal(%State{terminal?: true}, event_type) do
     if MapSet.member?(@terminal_events, event_type), do: :ok, else: {:error, :worker_terminal}
   end
 
