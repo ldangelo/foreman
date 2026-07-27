@@ -50,7 +50,7 @@ defmodule ForemanServer.CommandRouter do
   end
 
   @impl true
-  def handle_info({:append, aggregate_id, event_data_list, expected_version, actor_pid}, state) do
+  def handle_info({:append, aggregate_id, event_data_list, expected_version, ref, actor_pid}, state) do
     result = append_events(aggregate_id, expected_version, event_data_list)
 
     case result do
@@ -58,10 +58,10 @@ defmodule ForemanServer.CommandRouter do
         # Apply confirmed events to projection store before notifying actor.
         # This keeps the projection synchronous with the command path.
         _ = ForemanServer.ProjectionStore.apply_events(event_data_list)
-        send(actor_pid, {:append_ok, length(event_data_list)})
+        send(actor_pid, {:append_ok, ref, length(event_data_list)})
 
-      {:error, _} = error ->
-        send(actor_pid, error)
+      {:error, reason} ->
+        send(actor_pid, {:error, ref, reason})
     end
 
     {:noreply, state}

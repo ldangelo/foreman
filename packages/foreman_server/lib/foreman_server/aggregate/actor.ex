@@ -22,9 +22,11 @@ defmodule ForemanServer.Aggregate.Actor do
   1. Actor receives `{:command, cmd}` from caller.
   2. Actor captures `expected_version` — BEFORE `handle_command`.
   3. Actor calls `aggregate_module.handle_command(current_state, cmd)`.
-  4. Actor sends `{:append, aggregate_id, event_data_list, expected_version}` to CommandRouter.
-  5. Actor waits in selective `receive` for `{:append_ok, count}` or `{:append_error, reason}`.
-  6. CommandRouter appends events and sends result back.
+  4. Actor generates a correlation `ref = make_ref()` and sends
+     `{:append, aggregate_id, event_data_list, expected_version, ref, self()}` to CommandRouter.
+  5. Actor waits in selective `receive` for `{:append_ok, ^ref, count}` or `{:error, ^ref, reason}`.
+     Using `^ref` ensures stale/foreign replies cannot satisfy the receive.
+  6. CommandRouter appends events and replies with the same `ref`.
   7. Actor applies confirmed events and:
      - On success: bumps version by 1, returns `{:reply, {:ok, event_spec}, new_state}`
      - On conflict/error: version unchanged, returns `{:reply, {:error, reason}, old_state}`
@@ -97,18 +99,19 @@ defmodule ForemanServer.Aggregate.Actor do
 
       {:ok, event_spec} when is_map(event_spec) ->
         event_data = normalize_to_event_data(event_spec)
+        ref = make_ref()
 
-        send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, self()})
+        send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()})
 
         receive do
-          {:append_ok, _event_count} ->
+          {:append_ok, ^ref, _event_count} ->
             new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
             new_version = state.version + 1
             {:reply, {:ok, event_spec},
              %{state | module_state: new_module_state, version: new_version}}
 
-          {:error, _reason} = error ->
-            {:reply, error, state}
+          {:error, ^ref, reason} ->
+            {:reply, {:error, reason}, state}
         end
 
       {:error, _reason} = error ->
@@ -122,13 +125,9 @@ defmodule ForemanServer.Aggregate.Actor do
 
   # Convert event_spec map to %EventData{} for append.
   defp normalize_to_event_data(%{stream_id: _stream_id, event_type: event_type, payload: payload}) do
-    %EventData{
-      event_type: event_type,
-      data: payload
-    }
+    %EventData{event_type: event_type, data: payload}
   end
 
-  # Already an %EventData{} — pass through (shouldn't happen in normal flow
-  # but defensive for test fixtures).
+  # Already an %EventData{} — pass through (defensive for test fixtures).
   defp normalize_to_event_data(%EventData{} = ed), do: ed
 end
