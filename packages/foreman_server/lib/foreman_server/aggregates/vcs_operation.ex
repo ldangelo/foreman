@@ -57,14 +57,13 @@ defmodule ForemanServer.Aggregates.VcsOperation do
             status: "pr_observed"
         }
 
-      "PrMerged" ->
+      "VcsPrMerged" ->
         %State{
           state
           | operation_id: Aggregate.get(payload, :operation_id),
             status: "merged",
             terminal?: true
         }
-
       "MergeFailed" ->
         %State{
           state
@@ -107,7 +106,7 @@ defmodule ForemanServer.Aggregates.VcsOperation do
           "vcs.worktree.clean" => "WorktreeCleaned",
           "vcs.merge.request" => "VcsMergeRequested",
           "vcs.pr.observe" => "PrGateObserved",
-          "vcs.pr.merge" => "PrMerged",
+          "vcs.pr.merge" => "VcsPrMerged",
           "vcs.merge.fail" => "MergeFailed",
           "vcs.merge.block" => "MergeBlocked"
         }[type]

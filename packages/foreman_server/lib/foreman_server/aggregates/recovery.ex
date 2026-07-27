@@ -18,7 +18,7 @@ defmodule ForemanServer.Aggregates.Recovery do
   @observation_events MapSet.new([
                         "WorkerFailureSimulated",
                         "WorkerRecoveryRequired",
-                        "ExternalWorkerObserved"
+                        "WorkerRecoveryObserved"
                       ])
   @action_events MapSet.new([
                    "WorkerReattached",
@@ -86,7 +86,7 @@ defmodule ForemanServer.Aggregates.Recovery do
          :ok <- reject_resolved(state) do
       event_type =
         %{
-          "recovery.observe_external_worker" => "ExternalWorkerObserved",
+          "recovery.observe_external_worker" => "WorkerRecoveryObserved",
           "recovery.require" => "WorkerRecoveryRequired",
           "recovery.reattach" => "WorkerReattached",
           "recovery.restart" => "WorkerRestarted",

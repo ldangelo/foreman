@@ -113,15 +113,33 @@ defmodule ForemanServer.Aggregates.Worker do
     end
   end
 
+  @terminal_events MapSet.new(["WorkerExited"])
+
   @impl true
-  def handle_command(state, %{type: "worker.record", payload: payload}) do
+  def handle_command(state, %{type: type, payload: payload})
+      when type in [
+             "worker.start",
+             "worker.heartbeat",
+             "worker.exit",
+             "worker.message",
+             "worker.stdout.append",
+             "worker.stderr.append"
+           ] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, worker_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :worker_id), :worker_id),
-         {:ok, event_type} <-
-           Aggregate.required_binary(Aggregate.get(payload, :event_type), :event_type),
          :ok <- validate_next_sequence(state, Aggregate.get(payload, :sequence)),
-         :ok <- allow_after_terminal(state, event_type) do
+         :ok <- allow_after_terminal(state, type) do
+      event_type =
+        %{
+          "worker.start" => "WorkerStarted",
+          "worker.heartbeat" => "WorkerHeartbeat",
+          "worker.exit" => "WorkerExited",
+          "worker.message" => "AssistantMessage",
+          "worker.stdout.append" => "WorkerStdout",
+          "worker.stderr.append" => "WorkerStderr"
+        }[type]
+
       {:ok,
        %{
          stream_id: "worker:#{run_id}:#{worker_id}",
@@ -148,9 +166,10 @@ defmodule ForemanServer.Aggregates.Worker do
   defp validate_next_sequence(_state, sequence),
     do: {:error, {:missing_or_invalid, {:sequence, sequence}}}
 
-  defp allow_after_terminal(%State{terminal?: true}, event_type) do
-    if MapSet.member?(@terminal_events, event_type), do: :ok, else: {:error, :worker_terminal}
+  # Only worker.exit may be sent after the worker is terminal.
+  defp allow_after_terminal(%State{terminal?: true}, type) do
+    if type == "worker.exit", do: :ok, else: {:error, :worker_terminal}
   end
 
-  defp allow_after_terminal(_state, _event_type), do: :ok
+  defp allow_after_terminal(_state, _type), do: :ok
 end
