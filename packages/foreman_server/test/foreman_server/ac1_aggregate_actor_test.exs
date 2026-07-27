@@ -541,6 +541,53 @@ defmodule ForemanServer.AC1AggregateActorTest do
   end
 
   # ---------------------------------------------------------------------------
+  # AC1.7 — Correlation ref: mismatched reply is queued, not consumed
+  # ---------------------------------------------------------------------------
+
+  test "AC1.7: mismatched append reply is queued and does not satisfy selective receive" do
+    agg_id = "blocking:#{uuid()}"
+    wrong_ref = make_ref()
+    test_pid = self()
+
+    # Pre-start the actor so it is alive before dispatch.
+    {:ok, actor_pid} = ForemanServer.Aggregator.start_aggregate(BlockingAggregate, agg_id)
+
+    # Queue a wrong-ref reply directly in the actor's mailbox BEFORE the command
+    # is dispatched. This simulates a stale reply from a prior or concurrent command.
+    # The actor is not yet waiting for a reply, so the message sits in its mailbox.
+    send(actor_pid, {:append_ok, wrong_ref, 1})
+
+    # Now dispatch a real command. Actor will:
+    # 1. Send {:append, ..., right_ref, actor_pid} to CommandRouter
+    # 2. Enter selective receive waiting for {:append_ok, ^right_ref, _}
+    #
+    # The wrong_ref reply is already queued and will be skipped (^right_ref does
+    # not match it). When CommandRouter sends {:append_ok, right_ref, 1}, the
+    # receive matches and completes the command.
+    ref = make_ref()
+
+    task =
+      Task.async(fn ->
+        TestRouter.dispatch(%BlockCommand{
+          aggregate_id: agg_id,
+          aggregate_type: :conflict_test,
+          ref: ref,
+          notify_pid: test_pid
+        })
+      end)
+
+    assert_receive {:block_entered, ^ref, ^actor_pid}, 5_000
+
+    # Unblock the blocking command — Actor will now send append and wait.
+    send(actor_pid, {:release, ref})
+
+    # The command must complete successfully using the CORRECT ref reply,
+    # not the wrong_ref that was queued earlier.
+    result = Task.await(task, 5_000)
+    assert {:ok, _} = result
+  end
+
+  # ---------------------------------------------------------------------------
   # AC1d — Event roundtrip through EventStore
   # ---------------------------------------------------------------------------
 
