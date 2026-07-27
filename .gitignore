@@ -1,18 +1,17 @@
-# App artifacts
-/_build
-/buck-out
-/bin
-
-# Backend (Elixir)
+# Backend (Elixir/Phoenix) — all paths scoped to the nested Mix app
 /packages/foreman_server/_build
 /packages/foreman_server/deps
 /packages/foreman_server/erl_crash.dump
 /packages/foreman_server/*.ez
+/packages/foreman_server/.elixir_ls
+/packages/foreman_server/cover
+/packages/foreman_server/excover
+/packages/foreman_server/doc
 
-# Language server
+# Language server (repo-root, if any)
 /.elixir_ls
 
-# Phoenix
+# Phoenix (app-level)
 /tmp
 
 # Node (if mixed frontend)
@@ -28,10 +27,7 @@
 # macOS
 .DS_Store
 
-# Terraform (if used)
-/.terraform
-
-# Coverage reports
+# Coverage reports (repo-root, if any)
 /cover
 /excover
 
@@ -41,7 +37,6 @@
 /secrets/
 
 # Crash dumps
-erl_crash.dump
 *.dump
 
 # macOS quarantine artifacts
