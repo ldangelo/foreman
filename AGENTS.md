@@ -245,6 +245,36 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 | `ToolCallApproved` | `ToolCall.handle_command/2` | Records tool call decision |
 | `ToolCallDenied` | `ToolCall.handle_command/2` | Records tool call decision |
 
+#### Typed Event Structs
+
+Every domain event is a typed struct in `lib/foreman_server/events/` with `@enforce_keys`
+and `@type t`. `%EventData{}` / `%RecordedEvent{}` are persistence envelopes only — they
+are not domain types. `EventData.data` / `RecordedEvent.data` holds the serialized domain
+struct; on replay, the struct MUST be reconstructed before `apply_event` pattern-matches it.
+
+Canonical event struct (`@derive` before `defstruct`):
+```elixir
+defmodule ForemanServer.Events.RunCompleted do
+  @enforce_keys [:run_id, :sequence]
+  @type t :: %__MODULE__{run_id: String.t(), sequence: non_neg_integer(), status: String.t() | nil}
+  @derive Jason.Encoder
+  defstruct [:run_id, :sequence, status: nil]
+end
+```
+
+`apply_event` pattern-matches the typed struct directly:
+```elixir
+def apply_event(state, %RunCompleted{run_id: run_id, sequence: seq}) do
+  %State{state | status: "completed", terminal?: true, run_id: run_id, last_sequence: seq}
+end
+```
+
+`EventCodec.decode!/2` is the replay contract. It reconstructs typed structs from
+deserialized data with uniform API `decode!(event_type, data)`: typed structs pass through,
+JSON maps are validated and rebuilt. Both paths reject a struct whose module does not
+match the `event_type` string. Maps are reserved for genuinely open nested data inside
+the event. They MUST NOT replace the typed event struct itself.
+
 ### Idempotency and Concurrency (Slice)
 
 **Idempotency**: `CommandRouter` deduplicates by `command_id`. Duplicate commands

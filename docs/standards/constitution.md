@@ -247,13 +247,100 @@ They supplement Sections 1–6. Violations are rejected at code review.
    construction does not enforce state preconditions or valid transitions.
    Field-level validation belongs in `handle_command`.
 
+### Article IX — Typed Domain Events
+
+1. **Closed-domain events are typed structs with enforced fields.** Every authoritative
+   domain event is a module in `lib/foreman_server/events/` with '@enforce_keys' and
+   an explicit '@type t'. An empty `defstruct []` is a missing schema — it provides
+   no field contracts and permits all values to be `nil`.
+   Canonical form:
+   ```elixir
+   defmodule ForemanServer.Events.RunCompleted do
+     @enforce_keys [:run_id, :sequence]
+     @type t :: %__MODULE__{
+       run_id: String.t(),
+       sequence: non_neg_integer(),
+       status: String.t() | nil
+     }
+     @derive Jason.Encoder
+     defstruct [:run_id, :sequence, status: nil]
+   end
+   ```
+
+2. **`%EventData{}` and `%RecordedEvent{}` are persistence envelopes only.** They are
+   the EventStore adapter's serialization wrappers. `EventData.data` / `RecordedEvent.data`
+   holds the serialized domain struct — it is not a domain type itself.
+
+3. **Aggregates pattern-match on typed event structs.** `apply_event` receives the
+   typed struct directly:
+   ```elixir
+   # Correct — typed pattern match
+   def apply_event(state, %RunCompleted{run_id: run_id, sequence: seq}) do
+     %State{state | status: "completed", terminal?: true,
+            run_id: run_id, last_sequence: seq}
+   end
+
+   # Regression — string-keyed switching defeats the type contract
+   def apply_event(state, event) do
+     payload = Aggregate.event_payload(event)
+     case Aggregate.event_type(event) do
+       "RunCompleted" -> %State{state | status: payload["status"], ...}
+     end
+   end
+   ```
+
+4. **`EventCodec.decode!/2` is the replay contract.** The codec reconstructs typed
+   domain structs from deserialized data. The uniform API is `decode!(event_type, data)`:
+   typed structs pass through unchanged; JSON-deserialized maps are validated and rebuilt.
+   Both paths reject a struct whose module does not match the `event_type` string:
+   ```elixir
+     defmodule ForemanServer.EventCodec do
+       # Typed Erlang-term struct — reject mismatched event_type
+       def decode!("RunCompleted", %ForemanServer.Events.RunCompleted{} = event), do: event
+       def decode!("RunStarted",     %ForemanServer.Events.RunStarted{} = event),     do: event
+       # ... one pass-through clause per typed event struct
+     # JSON-deserialized map — string keys from JSON, reject unknown keys
+     def decode!("RunCompleted", data) do
+       allowed = ~w[run_id sequence status]
+       unknown = Map.keys(data) -- allowed
+       (unknown == []) or raise "unknown keys: #{inspect(unknown)}"
+       %ForemanServer.Events.RunCompleted{
+         run_id:   Map.fetch!(data, "run_id"),
+         sequence: Map.fetch!(data, "sequence"),
+         status:   Map.get(data, "status")
+       }
+     end
+
+     def decode!("RunStarted", data) do
+       allowed = ~w[run_id task_id]
+       unknown = Map.keys(data) -- allowed
+       (unknown == []) or raise "unknown keys: #{inspect(unknown)}"
+       %ForemanServer.Events.RunStarted{
+         run_id:  Map.fetch!(data, "run_id"),
+         task_id: Map.fetch!(data, "task_id")
+       }
+     end
+   end
+   ```
+   The aggregate's `apply_event` then pattern-matches the typed struct, not a map.
+
+5. **Maps are for genuinely open nested data only.** The `payload` of a typed event
+   struct may contain a map for open-ended data (e.g., config blobs, heterogeneous
+   metadata). Maps MUST NOT replace the typed event struct itself.
+
+6. **Event structs are defined before the aggregate that emits them.** New domain
+   events are added to `events/` before `handle_command` produces them. No `case`
+   on string event types as a workaround for missing structs.
+
 ___
+
 
 ## Changelog
 
 | Date | Change | Author |
 |------|--------|--------|
-| 2026-07-26 | Added Article VIII: aggregate State structs, struct-update syntax in apply_event, command ingress coercion, handle_command domain invariants | Pi Agent |
+| 2026-07-27 | Added Article IX: typed domain event structs, EventData/RecordedEvent as persistence envelopes only, EventCodec.decode!/2 replay contract, explicit per-event decoders | Pi Agent |
 | 2026-07-26 | Added Section 7: Slice `slices/go-elixir-cqrs` — supervised actors, sole CommandRouter append, CQRS, Go CLI boundaries, greenfield constraint | Pi Agent |
+| 2026-07-26 | Added Article VIII: aggregate State structs, struct-update syntax in apply_event, command ingress coercion, handle_command domain invariants | Pi Agent |
 | 2026-07-01 | Added event-sourced orchestration invariant: events trigger behavior; projections are read models | Pi Agent |
 | 2026-03-10 | Initial constitution generated | /init-project |
