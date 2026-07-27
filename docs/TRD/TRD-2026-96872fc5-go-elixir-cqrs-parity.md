@@ -95,7 +95,7 @@ Node: prompt file loading + hash reporting (per REQ-003 boundary)
 
 ---
 
-## 2. Master Task List
+## Master Task List
 
 ### PR 1: Typed Event Policy Foundation
 **Shippable State:** Aggregate event application uses typed structs throughout; no string-based switching; EventCodec decodes both legacy and typed events; architecture test enforces Article IX.
