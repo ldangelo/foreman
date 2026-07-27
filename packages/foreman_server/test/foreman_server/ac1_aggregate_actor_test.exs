@@ -171,8 +171,8 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
     {:ok, _} =
       CommandRouter.dispatch(%{
-        type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted"},
+        type: "worker.start",
+        payload: %{worker_id: id, run_id: run_id},
         aggregate_id: agg_stream
       })
 
@@ -319,8 +319,8 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
     {:ok, _} =
       CommandRouter.dispatch(%{
-        type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted"},
+        type: "worker.start",
+        payload: %{worker_id: id, run_id: run_id},
         aggregate_id: agg_stream
       })
 
@@ -338,8 +338,8 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
     {:ok, _} =
       CommandRouter.dispatch(%{
-        type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerExited"},
+        type: "worker.exit",
+        payload: %{worker_id: id, run_id: run_id},
         aggregate_id: agg_stream
       })
 

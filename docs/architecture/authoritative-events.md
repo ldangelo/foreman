@@ -113,8 +113,7 @@ distinct names. The emitting aggregate is part of the event's identity.
 | `WorkerRestarted` | `ForemanServer.Events.WorkerRestarted` | Recovery | 3 |
 | `RecoveryResolved` | `ForemanServer.Events.RecoveryResolved` | Recovery | 3 |
 
-**Total: 70 events across 17 aggregates.**
-
+**Total: 73 events across 17 aggregates.**
 ---
 
 ## Event Definitions
@@ -239,7 +238,7 @@ distinct names. The emitting aggregate is part of the event's identity.
 - **Module:** `ForemanServer.Events.TaskCreated`
 - **Emitted by:** `task.create`
 - **Stream:** `task:<task_id>`
-- **Fields:** `task_id` (string, req), `project_id` (string, req), `status` (string, opt, default `"open"`), `dependencies` (list, opt)
+- **Fields:** `task_id` (string, req), `project_id` (string, req), `title` (string, opt, default `task_id`), `description` (string, opt), `priority` (string, opt), `status` (string, opt, default `"open"`), `dependencies` (list, opt, default `[]`), `task_type` (string, opt), `source` (string, opt), `external_id` (string, opt), `external_link` (string, opt), `dedupe_key` (string, opt), `integration_event_type` (string, opt), `planning_run_id` (string, opt), `planning_kind` (string, opt), `planning_phase_id` (string, opt), `trace_event_id` (string, opt)
 - **Consumed by:** `Task`
 
 #### `TaskUpdated`
@@ -375,33 +374,31 @@ aggregate must apply when replaying its stream. These are consumed but not emitt
 #### `ToolCallRequested`
 - **Module:** `ForemanServer.Events.ToolCallRequested`
 - **Emitted by:** `tool.request`
-- **Stream:** `tool_call:<tool_call_id>`
-- **Fields:** `tool_call_id` (string, req), `tool_name` (string, req), `input` (map, opt)
+- **Stream:** `tool_call:<run_id-or-global>:<tool_call_id>` — `run_id` from payload, defaults to `"global"`, both segments URI-escaped
+- **Fields:** `tool_call_id` (string, req), `tool_name` (string, opt — accepted from payload, not validated by aggregate), `input` (map, opt), `run_id` (string, opt — emitted into stream prefix, not required in payload)
 - **Consumed by:** `ToolCall`
 
 #### `ToolCallApproved`
 - **Module:** `ForemanServer.Events.ToolCallApproved`
 - **Emitted by:** `tool.approve`
-- **Stream:** `tool_call:<tool_call_id>`
+- **Stream:** `tool_call:<run_id-or-global>:<tool_call_id>`
 - **Fields:** `tool_call_id` (string, req)
 - **Consumed by:** `ToolCall`
 
 #### `ToolCallDenied`
 - **Module:** `ForemanServer.Events.ToolCallDenied`
 - **Emitted by:** `tool.deny`
-- **Stream:** `tool_call:<tool_call_id>`
+- **Stream:** `tool_call:<run_id-or-global>:<tool_call_id>`
 - **Fields:** `tool_call_id` (string, req)
 - **Consumed by:** `ToolCall`
 
 #### `ToolCallFinished`
 - **Module:** `ForemanServer.Events.ToolCallFinished`
 - **Emitted by:** `tool.finish`
-- **Stream:** `tool_call:<tool_call_id>`
+- **Stream:** `tool_call:<run_id-or-global>:<tool_call_id>`
 - **Fields:** `tool_call_id` (string, req), `worker_id` (string, opt), `run_id` (string, opt)
 - **Consumed by:** `ToolCall`
-- **Note:** Distinct from any Worker-emitted event. `ToolCall` emits to
-  `tool_call:<tool_call_id>`; Worker events go to `worker:<run_id>:<worker_id>`.
-
+- **Note:** Distinct from any Worker-emitted event. All ToolCall stream events use the `tool_call:<run_id-or-global>:<tool_call_id>` pattern; Worker events go to `worker:<run_id>:<worker_id>`.
 ---
 
 ### Scheduler Aggregate (`ForemanServer.Aggregates.Scheduler`)
