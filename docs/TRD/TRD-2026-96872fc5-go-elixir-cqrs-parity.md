@@ -880,9 +880,9 @@ TRD-040 ──► TRD-041 ──► TRD-040-TEST
 | Architecture completeness | — | — | — | ✓ | — |
 | Task coverage | — | — | — | ✓ | — |
 | Dependency clarity | — | — | — | ✓ | — |
-| Estimate confidence | — | — | — | ✓ |
+| Estimate confidence | — | — | — | ✓ | — |
 
-**Design Readiness trend:** First scoring (no prior baseline).
+**Design Readiness trend:** v1.0.3 rescored estimate confidence 3→4; overall 3.75→4.0 PASS.
 
 ---
 
@@ -905,7 +905,7 @@ TRD-040 ──► TRD-041 ──► TRD-040-TEST
 | Date | Version | Change | Author |
 |------|---------|--------|--------|
 | 2026-07-27 | 1.0.0 | Initial TRD from PRD-2026-001 go-elixir-cqrs-parity | Pi Agent |
-| 2026-07-27 | 1.0.1 | Fix TRD-005 aggregate list (add project, operator_intervention); TRD-005 6h→9h (11→17 aggregates); overall 134h→141h | Pi Agent |
-| 2026-07-27 | 1.0.2 | TRD-005 9h→12h (+3h buffer); Sprint 1 29h→32h; overall 141h→144h; critical path 18h→21h | Pi Agent |
-| 2026-07-27 | 1.0.3 | Design readiness gate: estimate confidence 3→4; overall 3.75→4.0; frontmatter and scorecard updated to PASS | Pi Agent |
+| 2026-07-27 | 1.0.1 | Fix TRD-005 aggregate list (add project, operator_intervention); TRD-005 6h→9h (11→17 aggregates); overall 141h→144h | Pi Agent |
+| 2026-07-27 | 1.0.2 | TRD-005 9h→12h (+3h buffer); overall 144h→147h; critical path 18h→21h | Pi Agent |
+| 2026-07-27 | 1.0.3 | Estimate confidence 3→4; overall 3.75→4.0 PASS; scorecard and frontmatter updated | Pi Agent |
 

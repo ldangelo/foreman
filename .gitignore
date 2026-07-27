@@ -1,0 +1,48 @@
+# App artifacts
+/_build
+/buck-out
+/bin
+
+# Backend (Elixir)
+/packages/foreman_server/_build
+/packages/foreman_server/deps
+/packages/foreman_server/erl_crash.dump
+/packages/foreman_server/*.ez
+
+# Language server
+/.elixir_ls
+
+# Phoenix
+/tmp
+
+# Node (if mixed frontend)
+/node_modules
+/dist
+
+# Editor/IDE
+/.vscode
+/.idea
+*.iml
+.env.local
+
+# macOS
+.DS_Store
+
+# Terraform (if used)
+/.terraform
+
+# Coverage reports
+/cover
+/excover
+
+# Certs / secrets (never commit)
+/*.pem
+/*.key
+/secrets/
+
+# Crash dumps
+erl_crash.dump
+*.dump
+
+# macOS quarantine artifacts
+.Compatibility*
