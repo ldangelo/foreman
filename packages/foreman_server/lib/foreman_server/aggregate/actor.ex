@@ -25,7 +25,8 @@ defmodule ForemanServer.Aggregate.Actor do
   4. Actor generates a correlation `ref = make_ref()` and sends
      `{:append, aggregate_id, event_data_list, expected_version, ref, self()}` to CommandRouter.
   5. Actor waits in selective `receive` for `{:append_ok, ^ref, count}` or `{:error, ^ref, reason}`.
-     Using `^ref` ensures stale/foreign replies cannot satisfy the receive.
+     Using `^ref` ensures only the matching reply satisfies the receive;
+     stale/foreign replies remain queued and are handled later.
   6. CommandRouter appends events and replies with the same `ref`.
   7. Actor applies confirmed events and:
      - On success: bumps version by 1, returns `{:reply, {:ok, event_spec}, new_state}`
