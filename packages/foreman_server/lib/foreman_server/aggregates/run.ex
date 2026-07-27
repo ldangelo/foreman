@@ -30,12 +30,12 @@ defmodule ForemanServer.Aggregates.Run do
       :task_id,
       :status,
       :terminal?,
+      :last_sequence,
       phase_status: %{},
       worker_status: %{},
       retry_history: []
     ]
   end
-
   @impl true
   def initial_state,
     do: %State{
@@ -44,6 +44,7 @@ defmodule ForemanServer.Aggregates.Run do
       task_id: nil,
       status: nil,
       terminal?: false,
+      last_sequence: 0,
       phase_status: %{},
       worker_status: %{},
       retry_history: []
@@ -79,18 +80,26 @@ defmodule ForemanServer.Aggregates.Run do
           state
           | status: "completed",
             terminal?: true,
-            run_id: Aggregate.get(payload, :run_id)
+            run_id: Aggregate.get(payload, :run_id),
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
       "RunFailed" ->
-        %State{state | status: "failed", terminal?: true, run_id: Aggregate.get(payload, :run_id)}
+        %State{
+          state
+          | status: "failed",
+            terminal?: true,
+            run_id: Aggregate.get(payload, :run_id),
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
+        }
 
       "RunBlocked" ->
         %State{
           state
           | status: "blocked",
             terminal?: true,
-            run_id: Aggregate.get(payload, :run_id)
+            run_id: Aggregate.get(payload, :run_id),
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
       "RunDeleted" ->
@@ -167,17 +176,28 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # run.complete — AC2 sequence guard
+  def handle_command(state, %{type: "run.complete", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- require_sequence(state, Aggregate.get(payload, :sequence)),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunCompleted",
+         payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
+  # run.fail / run.block — no sequence guard
   def handle_command(state, %{type: type, payload: payload})
-      when type in ["run.complete", "run.fail", "run.block"] do
+      when type in ["run.fail", "run.block"] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
-      event_type =
-        %{
-          "run.complete" => "RunCompleted",
-          "run.fail" => "RunFailed",
-          "run.block" => "RunBlocked"
-        }[type]
+      event_type = %{"run.fail" => "RunFailed", "run.block" => "RunBlocked"}[type]
 
       {:ok,
        %{
@@ -317,8 +337,16 @@ defmodule ForemanServer.Aggregates.Run do
   defp require_absent(_state, _run_id), do: :ok
 
   defp require_exists(%State{exists?: true, run_id: run_id}, run_id), do: :ok
-  defp require_exists(_state, run_id), do: {:error, {:not_found, :run, run_id}}
+  defp require_exists(%State{}, run_id), do: {:error, {:not_found, :run, run_id}}
 
+  defp require_sequence(%State{last_sequence: last_sequence}, sequence)
+       when is_integer(sequence) and sequence == last_sequence + 1,
+       do: :ok
+  defp require_sequence(%State{last_sequence: last_sequence}, sequence)
+       when is_integer(sequence) and sequence > last_sequence + 1,
+       do: {:error, :out_of_order}
+  defp require_sequence(%State{}, nil), do: :ok
+  defp require_sequence(%State{}, _sequence), do: {:error, :out_of_order}
   # NOTE: MapSet.member? is not guard-safe in older Elixir; using literal type guard
   defp reject_terminal_mutation(%State{status: status})
        when status in ["completed", "failed", "blocked", "cancelled", "deleted"],

@@ -1,5 +1,6 @@
 defmodule ForemanServer.Aggregate do
   alias Elixir.EventStore
+  alias EventStore.EventData, as: EventData
 
   @moduledoc """
   Behaviour for stateless aggregate modules.
@@ -97,12 +98,15 @@ defmodule ForemanServer.Aggregate do
 
   Handles:
   - `RecordedEvent{data: payload}`                  — from stream replay (TermSerializer)
+  - `EventData{data: payload}`                     — from append path (TermOrJsonSerializer)
   - `%{payload: payload}`                          — from handle_command output
   - `%{"payload": payload}`                        — JSON-decoded map (TermSerializer)
   - A plain map itself                             — for already-decoded events
   """
   @spec event_payload(any()) :: map()
   def event_payload(%EventStore.RecordedEvent{data: data}) when is_map(data), do: data
+  def event_payload(%EventData{data: data}) when is_map(data), do: data
+  def event_payload(%EventData{}), do: raise("EventData.data is not a decoded map")
   def event_payload(%{payload: payload}), do: payload
   def event_payload(%{"payload" => payload}), do: payload
   def event_payload(map) when is_map(map), do: map
@@ -166,8 +170,6 @@ defmodule ForemanServer.Aggregate do
         {module.initial_state(), 0}
 
       {:ok, events} ->
-        # Enum.reduce: (element, accumulator) → apply_event is (state, event).
-        # Fold state and count in one pass — no separate length/enumerate.
         {state, version} =
           Enum.reduce(events, {module.initial_state(), 0}, fn event, {state, n} ->
             {module.apply_event(state, event), n + 1}

@@ -1,4 +1,5 @@
 defmodule ForemanServer.Aggregate.Actor do
+  import Bitwise
   @moduledoc """
   Supervised GenServer that holds aggregate state and stream version.
 
@@ -35,6 +36,7 @@ defmodule ForemanServer.Aggregate.Actor do
 
   alias ForemanServer.{Aggregate, CommandRouter}
   alias EventStore.EventData
+  alias ForemanServer.EventStore
 
   use GenServer
 
@@ -90,33 +92,60 @@ defmodule ForemanServer.Aggregate.Actor do
   def handle_call({:command, cmd}, _from, state) do
     aggregate_module = state.aggregate_module
     aggregate_id = state.aggregate_id
-    # Capture version BEFORE handle_command — external appends while parked
-    # must not shift the baseline for this command's append.
     expected_version = state.version
 
-    case aggregate_module.handle_command(state.module_state, cmd) do
-      {:ok, nil} ->
-        {:reply, {:ok, nil}, state}
+    # -------------------------------------------------------------------------
+    # AC2: Idempotent command handling via deterministic event_id.
+    # event_id is derived from {aggregate_id, command_id}. We pre-check the
+    # aggregate's stream for this event_id BEFORE handle_command to avoid
+    # hitting terminal-state rejection paths on duplicate commands.
+    #
+    # read_event_by_id is NOT used here — it queries columns that do not exist
+    # in the current EventStore v0.14+ schema (event_number, stream_uuid,
+    # stream_version were dropped from the events table). read_stream_forward
+    # works correctly and is used instead.
+    # -------------------------------------------------------------------------
+    event_id =
+      case cmd do
+        %{command_id: command_id} when is_binary(command_id) ->
+          derive_event_id(aggregate_id, command_id)
+        _ ->
+          nil
+      end
 
-      {:ok, event_spec} when is_map(event_spec) ->
-        event_data = normalize_to_event_data(event_spec)
-        ref = make_ref()
+    # Pre-check for duplicate: if this event_id already exists in the stream,
+    # return the existing event as an idempotent success — skip handle_command
+    # to avoid terminal-state rejections on stale state reads.
+    if event_id && duplicate_in_stream?(aggregate_id, event_id) do
+      {:reply, {:ok, existing_event_spec(aggregate_id, event_id)}, state}
+    else
+      case aggregate_module.handle_command(state.module_state, cmd) do
+        {:ok, nil} ->
+          {:reply, {:ok, nil}, state}
 
-        send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()})
+        {:ok, event_spec} when is_map(event_spec) ->
+          event_data = normalize_to_event_data(event_spec, event_id)
+          ref = make_ref()
 
-        receive do
-          {:append_ok, ^ref, _event_count} ->
-            new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
-            new_version = state.version + 1
-            {:reply, {:ok, event_spec},
-             %{state | module_state: new_module_state, version: new_version}}
+          send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()})
 
-          {:error, ^ref, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+          receive do
+            {:append_ok, ^ref, _event_count} ->
+              new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
+              new_version = state.version + 1
+              {:reply, {:ok, to_string_keys(event_spec)},
+               %{state | module_state: new_module_state, version: new_version}}
 
-      {:error, _reason} = error ->
-        {:reply, error, state}
+            {:error, ^ref, :duplicate_event} ->
+              {:reply, {:ok, existing_event_spec(aggregate_id, event_id)}, state}
+
+            {:error, ^ref, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
     end
   end
 
@@ -125,10 +154,81 @@ defmodule ForemanServer.Aggregate.Actor do
   # -------------------------------------------------------------------------
 
   # Convert event_spec map to %EventData{} for append.
-  defp normalize_to_event_data(%{stream_id: _stream_id, event_type: event_type, payload: payload}) do
-    %EventData{event_type: event_type, data: payload}
+  # When event_id is provided (commands with command_id), it is set on the
+  # %EventData{} so EventStore uses it as the persisted event_id — enabling
+  # database-level deduplication via the events_pkey unique constraint.
+  defp normalize_to_event_data(%{stream_id: _stream_id, event_type: event_type, payload: payload}, event_id) do
+    %EventData{event_id: event_id, event_type: event_type, data: payload}
   end
 
   # Already an %EventData{} — pass through (defensive for test fixtures).
-  defp normalize_to_event_data(%EventData{} = ed), do: ed
+  defp normalize_to_event_data(%EventData{} = ed, _event_id), do: ed
+  # -------------------------------------------------------------------------
+  # Helpers: event_spec format conversion for caller-facing returns
+  # -------------------------------------------------------------------------
+
+  # Recursively convert atom-keyed maps to string-keyed maps (for event_spec).
+  defp to_string_keys(%{__struct__: _} = struct) do
+    struct
+    |> Map.from_struct()
+    |> to_string_keys()
+  end
+
+  defp to_string_keys(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn
+      {k, v}, acc when is_atom(k) ->
+        Map.put(acc, Atom.to_string(k), to_string_keys(v))
+
+      {k, v}, acc when is_binary(k) ->
+        Map.put(acc, k, to_string_keys(v))
+    end)
+  end
+
+  defp to_string_keys(other), do: other
+  # Convert a stored %RecordedEvent{} to an event_spec map with string keys.
+  # Used for returning existing events on duplicate idempotent hits.
+  defp recorded_event_to_event_spec(recorded) do
+    %{"stream_id" => recorded.stream_uuid, "event_type" => recorded.event_type,
+      "payload" => recorded.data}
+  end
+
+  # -------------------------------------------------------------------------
+  # AC2: Deterministic event_id and idempotency
+  # -------------------------------------------------------------------------
+
+  # Derive a deterministic event_id from {aggregate_id, command_id}.
+  # Uses SHA-256 to produce a valid 32-hex-char UUID string.
+  # The same {aggregate_id, command_id} always produces the same event_id.
+  defp derive_event_id(aggregate_id, command_id) do
+    <<first16::binary-size(16), _::binary>> = :crypto.hash(:sha256, aggregate_id <> command_id)
+    <<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8, b8::8,
+      b9::8, b10::8, b11::8, b12::8, b13::8, b14::8, b15::8>> =
+      first16
+
+    b6 = bor(band(b6, 0x0F), 0x40)
+    b8 = bor(band(b8, 0x3F), 0x80)
+
+    Elixir.EventStore.UUID.binary_to_string!(<<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8,
+                                     b8::8, b9::8, b10::8, b11::8, b12::8, b13::8, b14::8, b15::8>>)
+  end
+
+  # Check if an event with the given event_id already exists in the aggregate's stream.
+  # Uses read_stream_forward (works with current EventStore schema) instead of
+  # the broken read_event_by_id (queries non-existent event_number column).
+  defp duplicate_in_stream?(aggregate_id, event_id) do
+    case EventStore.read_stream_forward(aggregate_id, 0, 100) do
+      {:ok, events} ->
+        Enum.any?(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end)
+      {:error, _} ->
+        false
+    end
+  end
+
+  # Find and return the event_spec for an existing event by its event_id.
+  # Reads the aggregate's stream and returns the matching event's spec.
+  defp existing_event_spec(aggregate_id, event_id) do
+    {:ok, events} = EventStore.read_stream_forward(aggregate_id, 0, 100)
+    recorded = Enum.find(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end)
+    recorded_event_to_event_spec(recorded)
+  end
 end
