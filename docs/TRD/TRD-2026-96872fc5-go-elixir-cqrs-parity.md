@@ -102,7 +102,7 @@ Node: prompt file loading + hash reporting (per REQ-003 boundary)
 
 ---
 
-**TRD-001** — Enumerate authoritative event vocabulary | 2h | [satisfies REQ-010] [satisfies AC-010-1]
+- [ ] **TRD-001** — Enumerate authoritative event vocabulary | 2h | [satisfies REQ-010] [satisfies AC-010-1]
 
 Create `docs/architecture/authoritative-events.md` listing every domain event emitted by any aggregate: event name, module path, fields with types, emitted by which aggregate's handle_command, consumed by which aggregate's apply_event. This is the authoritative list used to generate the typed structs.
 
@@ -112,7 +112,7 @@ Create `docs/architecture/authoritative-events.md` listing every domain event em
 
 ---
 
-**TRD-002** — Add @enforce_keys and @type t to existing event structs | 3h | [satisfies REQ-010] [satisfies AC-010-1, AC-010-3] [depends: TRD-001]
+- [ ] **TRD-002** — Add @enforce_keys and @type t to existing event structs | 3h | [satisfies REQ-010] [satisfies AC-010-1, AC-010-3] [depends: TRD-001]
 
 For each of the 10 existing event modules in `lib/foreman_server/events/`, add `@enforce_keys` with required field names, add `@type t :: %__MODULE__{}` spec, and move `@derive Jason.Encoder` before the `defstruct`. Remove no longer needed fields; add any missing fields identified by TRD-001.
 
@@ -122,7 +122,7 @@ For each of the 10 existing event modules in `lib/foreman_server/events/`, add `
 
 ---
 
-**TRD-003** — Implement EventCodec module with dual-read path | 4h | [satisfies REQ-010] [satisfies AC-010-4, AC-010-5, AC-010-6] [depends: TRD-002]
+- [ ] **TRD-003** — Implement EventCodec module with dual-read path | 4h | [satisfies REQ-010] [satisfies AC-010-4, AC-010-5, AC-010-6] [depends: TRD-002]
 
 Create `lib/foreman_server/event_codec.ex`. Each authoritative event type has two clause families:
 - **Typed pass-through:** `decode!(%TypedEvent{})` — returns the struct unchanged if module name matches event_type string; raises otherwise.
@@ -138,7 +138,7 @@ Include versioned envelope handling: `{"v": 1, "data": %TypedEvent{}}` dispatche
 
 ---
 
-**TRD-004** — Migrate Aggregate.handle_command return to typed_event | 4h | [satisfies REQ-010] [satisfies AC-010-2] [depends: TRD-002]
+- [ ] **TRD-004** — Migrate Aggregate.handle_command return to typed_event | 4h | [satisfies REQ-010] [satisfies AC-010-2] [depends: TRD-002]
 
 Update `ForemanServer.Aggregate` behaviour: change `handle_command` callback return from `{:ok, event_spec :: map()}` to `{:ok, typed_event}` where typed_event is a struct from events/. Actor.build_envelope/1 uses typed_event's module name as the event_type string for persistence.
 
@@ -148,7 +148,7 @@ Update `ForemanServer.Aggregate` behaviour: change `handle_command` callback ret
 
 ---
 
-**TRD-005** — Migrate all aggregate apply_event to typed struct pattern-match | 12h | [satisfies REQ-010] [satisfies AC-010-3] [depends: TRD-002]
+- [ ] **TRD-005** — Migrate all aggregate apply_event to typed struct pattern-match | 12h | [satisfies REQ-010] [satisfies AC-010-3] [depends: TRD-002]
 
 Update every aggregate's apply_event/2: replace `case Aggregate.event_type(event)` string switch with direct typed struct pattern-match clauses. Remove the catch-all `_ -> state` fallback that silently swallows unknown events (unknown events should raise).
 
@@ -161,7 +161,7 @@ Affected aggregates: run, task, phase, worker, scheduler, planning_flow, recover
 
 ---
 
-**TRD-006** — Add versioned event envelope migration path | 3h | [satisfies REQ-010] [satisfies AC-010-2, AC-010-4, AC-010-5] [depends: TRD-003]
+- [ ] **TRD-006** — Add versioned event envelope migration path | 3h | [satisfies REQ-010] [satisfies AC-010-2, AC-010-4, AC-010-5] [depends: TRD-003]
 
 Extend EventStore recording to wrap events in a versioned envelope on write: `{%{version: 1, event: typed_event}, metadata}`. Extend EventCodec to read both v=0 (legacy map) and v=1 (typed) envelopes. During transition, EventStore can read old stream items without v wrapper by detecting the absence of the version field.
 
@@ -172,7 +172,7 @@ Extend EventStore recording to wrap events in a versioned envelope on write: `{%
 
 ---
 
-**TRD-007** — Architecture test: no string-based apply_event | 2h | [satisfies REQ-010] [satisfies AC-010-3, AC-009-3]
+- [ ] **TRD-007** — Architecture test: no string-based apply_event | 2h | [satisfies REQ-010] [satisfies AC-010-3, AC-009-3]
 
 Create `test/architecture/event_typing_test.exs` (or extend existing architecture test). Scan all .ex files under lib/foreman_server/aggregates/ for string-based `case Aggregate.event_type(event)` or `event_type(event) == "..."` patterns. Test fails if any are found after TRD-005 completion.
 
@@ -182,7 +182,7 @@ Create `test/architecture/event_typing_test.exs` (or extend existing architectur
 
 ---
 
-**TRD-001-TEST** — Verify typed event architecture | 2h | [verifies TRD-001, TRD-002, TRD-003, TRD-004, TRD-005, TRD-006, TRD-007] [satisfies REQ-010] [depends: TRD-001, TRD-002, TRD-003, TRD-004, TRD-005, TRD-006, TRD-007]
+- [ ] **TRD-001-TEST** — Verify typed event architecture | 2h | [verifies TRD-001, TRD-002, TRD-003, TRD-004, TRD-005, TRD-006, TRD-007] [satisfies REQ-010] [depends: TRD-001, TRD-002, TRD-003, TRD-004, TRD-005, TRD-006, TRD-007]
 
 Integration test: dispatch commands that produce every authoritative event type; verify EventCodec decodes and re-encodes them correctly; verify apply_event pattern-matching on typed structs; verify legacy v=0 envelopes are readable; verify unknown keys raise.
 
@@ -198,7 +198,7 @@ Integration test: dispatch commands that produce every authoritative event type;
 
 ---
 
-**TRD-008** — Scaffold Phoenix endpoint and router | 3h | [satisfies REQ-001] [satisfies AC-001-1, AC-001-4]
+- [ ] **TRD-008** — Scaffold Phoenix endpoint and router | 3h | [satisfies REQ-001] [satisfies AC-001-1, AC-001-4]
 
 Create `ForemanServerWeb.Endpoint` in `lib/foreman_server_web/`. Define `ApiRouter` with `POST /api/commands` and `GET /api/...` routes. Register endpoint in Application supervisor tree. Add basic 404 and error handling Plug.
 
@@ -208,7 +208,7 @@ Create `ForemanServerWeb.Endpoint` in `lib/foreman_server_web/`. Define `ApiRout
 
 ---
 
-**TRD-009** — Implement POST /api/commands | 4h | [satisfies REQ-001] [satisfies AC-001-1, AC-001-3, AC-001-4] [depends: TRD-008]
+- [ ] **TRD-009** — Implement POST /api/commands | 4h | [satisfies REQ-001] [satisfies AC-001-1, AC-001-3, AC-001-4] [depends: TRD-008]
 
 Create `CommandController.create/2` that accepts a JSON command payload, validates basic structure (has command_type, aggregate_id, payload keys), routes to `CommandRouter.dispatch/1`, and returns 200 with `{"ok": true, "event_id": "..."}` or 400/500 with error map. Network partitions return a 503 with a clear error message.
 
@@ -219,7 +219,7 @@ Create `CommandController.create/2` that accepts a JSON command payload, validat
 
 ---
 
-**TRD-010** — Implement GET /api/... read endpoints | 4h | [satisfies REQ-001] [satisfies AC-001-2, AC-001-3] [depends: TRD-008]
+- [ ] **TRD-010** — Implement GET /api/... read endpoints | 4h | [satisfies REQ-001] [satisfies AC-001-2, AC-001-3] [depends: TRD-008]
 
 Create read controllers for project, task, run, worker, phase. Each controller queries ProjectionStore and returns JSON. Single-entity lookups: `GET /api/projects/:id`, `GET /api/runs/:id` (includes PR state and current phase per AC-002-3). List/status views: `GET /api/projects`, `GET /api/runs?status=active`.
 
@@ -230,7 +230,7 @@ Create read controllers for project, task, run, worker, phase. Each controller q
 
 ---
 
-**TRD-011** — HTTP security: no bypass paths | 2h | [satisfies REQ-001] [satisfies AC-001-4]
+- [ ] **TRD-011** — HTTP security: no bypass paths | 2h | [satisfies REQ-001] [satisfies AC-001-4]
 
 Phoenix router rejects any request that would bypass aggregate actors or CommandRouter. No plug or route may directly call EventStore.append_to_stream or emit events. Architecture test from TRD-007 covers this; add explicit router-level guard Plug that returns 403 if a request's path+method combination is not in the allowed set.
 
@@ -240,7 +240,7 @@ Phoenix router rejects any request that would bypass aggregate actors or Command
 
 ---
 
-**TRD-008-TEST** — HTTP router integration tests | 3h | [verifies TRD-008, TRD-009, TRD-010, TRD-011] [satisfies REQ-001, REQ-009] [depends: TRD-008, TRD-009, TRD-010, TRD-011]
+- [ ] **TRD-008-TEST** — HTTP router integration tests | 3h | [verifies TRD-008, TRD-009, TRD-010, TRD-011] [satisfies REQ-001, REQ-009] [depends: TRD-008, TRD-009, TRD-010, TRD-011]
 
 Test all HTTP paths: POST /api/commands happy path and error paths; GET /api/{projects,tasks,runs,workers,phases} single and list; network partition error handling; bypass rejection. Use bypass or Plug.Conn test helpers.
 
@@ -256,7 +256,7 @@ Test all HTTP paths: POST /api/commands happy path and error paths; GET /api/{pr
 
 ---
 
-**TRD-012** — Define Postgres projection schema and migration | 2h | [satisfies REQ-002] [satisfies AC-002-1, AC-002-2]
+- [ ] **TRD-012** — Define Postgres projection schema and migration | 2h | [satisfies REQ-002] [satisfies AC-002-1, AC-002-2]
 
 Create Ecto migration for projection tables: `projection_projects`, `projection_tasks`, `projection_runs`, `projection_workers`, `projection_phases`. Each table has a uuid primary key matching the aggregate ID, the full projected state as JSONB, and a last_event_version column for optimistic concurrency.
 
@@ -266,7 +266,7 @@ Create Ecto migration for projection tables: `projection_projects`, `projection_
 
 ---
 
-**TRD-013** — Implement Project projection | 2h | [satisfies REQ-002] [satisfies AC-002-1] [depends: TRD-012]
+- [ ] **TRD-013** — Implement Project projection | 2h | [satisfies REQ-002] [satisfies AC-002-1] [depends: TRD-012]
 
 Build `ForemanServer.ProjectionHandlers.ProjectHandler` that subscribes to Project aggregate events (ProjectRegistered, ProjectArchived) and writes to projection_projects. Wire into ProjectionStore supervisor.
 
@@ -276,7 +276,7 @@ Build `ForemanServer.ProjectionHandlers.ProjectHandler` that subscribes to Proje
 
 ---
 
-**TRD-014** — Implement Task, Run, Worker, Phase projections | 6h | [satisfies REQ-002] [satisfies AC-002-1, AC-002-2] [depends: TRD-012]
+- [ ] **TRD-014** — Implement Task, Run, Worker, Phase projections | 6h | [satisfies REQ-002] [satisfies AC-002-1, AC-002-2] [depends: TRD-012]
 
 Build handlers for task, run, worker, phase projections. Each handler subscribes to its aggregate's event stream and updates the corresponding projection table. Run projection includes pr_url, pr_state, current_phase fields per AC-002-3.
 
@@ -286,7 +286,7 @@ Build handlers for task, run, worker, phase projections. Each handler subscribes
 
 ---
 
-**TRD-015** — Projection rebuild from event stream | 4h | [satisfies REQ-002] [satisfies AC-002-2] [depends: TRD-013, TRD-014]
+- [ ] **TRD-015** — Projection rebuild from event stream | 4h | [satisfies REQ-002] [satisfies AC-002-2] [depends: TRD-013, TRD-014]
 
 Implement `ProjectionStore.rebuild/0` and per-entity variants (`ProjectionStore.rebuild(:runs)`). On startup (or explicit rebuild command), replay the entire event stream and reconstruct all projection tables. ProjectionStore.init/1 calls rebuild/0.
 
@@ -296,7 +296,7 @@ Implement `ProjectionStore.rebuild/0` and per-entity variants (`ProjectionStore.
 
 ---
 
-**TRD-016** — Incremental projection: per-entity deployability | 1h | [satisfies REQ-002] [satisfies AC-002-1] [depends: TRD-012]
+- [ ] **TRD-016** — Incremental projection: per-entity deployability | 1h | [satisfies REQ-002] [satisfies AC-002-1] [depends: TRD-012]
 
 Ensure each entity's projection can be built and deployed independently: `ProjectionStore.rebuild(:projects)`, `rebuild(:runs)`, etc. Each projection has its own Ecto schema and handler module that can be tested in isolation before others are complete.
 
@@ -305,7 +305,7 @@ Ensure each entity's projection can be built and deployed independently: `Projec
 
 ---
 
-**TRD-012-TEST** — Projection rebuild tests | 3h | [verifies TRD-012, TRD-013, TRD-014, TRD-015, TRD-016] [satisfies REQ-002, REQ-009] [depends: TRD-013, TRD-014, TRD-015]
+- [ ] **TRD-012-TEST** — Projection rebuild tests | 3h | [verifies TRD-012, TRD-013, TRD-014, TRD-015, TRD-016] [satisfies REQ-002, REQ-009] [depends: TRD-013, TRD-014, TRD-015]
 
 Test projection rebuild: append a representative sequence of events for project, task, run, worker, phase; call rebuild; assert projection state matches expected fixture. Test live update vs rebuild equivalence. Test idempotency (rebuild twice produces same result).
 
@@ -320,7 +320,7 @@ Test projection rebuild: append a representative sequence of events for project,
 
 ---
 
-**TRD-017** — Workflow YAML interpreter | 3h | [satisfies REQ-003] [satisfies AC-003-1] [depends: TRD-001]
+- [ ] **TRD-017** — Workflow YAML interpreter | 3h | [satisfies REQ-003] [satisfies AC-003-1] [depends: TRD-001]
 
 Create `ForemanServer.Workflow.Interpreter`. Loads workflow YAML from configured path. Parses phase sequence. For each phase, resolves prompt content (via TRD-018) and emits a PhaseDispatched command. Sequences phases in order defined in YAML.
 
@@ -330,7 +330,7 @@ Create `ForemanServer.Workflow.Interpreter`. Loads workflow YAML from configured
 
 ---
 
-**TRD-018** — Prompt resolver: override-first/bundled-fallback | 3h | [satisfies REQ-003] [satisfies AC-003-2] [depends: TRD-017]
+- [ ] **TRD-018** — Prompt resolver: override-first/bundled-fallback | 3h | [satisfies REQ-003] [satisfies AC-003-2] [depends: TRD-017]
 
 Create `ForemanServer.Workflow.PromptResolver`. Given (workflow, phase) pair: check override path (`~/.foreman/prompts/{workflow}/{phase}.md`) first; if exists, return override content. Else check bundled path (`{bundle}/prompts/{workflow}/{phase}.md`); if exists, return bundled content. If neither exists, return error with clear message.
 
@@ -341,7 +341,7 @@ Create `ForemanServer.Workflow.PromptResolver`. Given (workflow, phase) pair: ch
 
 ---
 
-**TRD-019** — Template variable substitution | 2h | [satisfies REQ-003] [satisfies AC-003-3] [depends: TRD-018]
+- [ ] **TRD-019** — Template variable substitution | 2h | [satisfies REQ-003] [satisfies AC-003-3] [depends: TRD-018]
 
 Extend `PromptResolver` with `render/2`. Accepts prompt content string and a variables map. Substitutes `{{variable_name}}` placeholders with values from the map. Variables include: run_id, task_id, project_id, phase_name, workflow_name, timestamp. Unrecognized placeholders cause an error (no silent drop).
 
@@ -351,7 +351,7 @@ Extend `PromptResolver` with `render/2`. Accepts prompt content string and a var
 
 ---
 
-**TRD-020** — Content-addressed prompt artifact storage | 3h | [satisfies REQ-003] [satisfies AC-003-4] [depends: TRD-019]
+- [ ] **TRD-020** — Content-addressed prompt artifact storage | 3h | [satisfies REQ-003] [satisfies AC-003-4] [depends: TRD-019]
 
 After rendering, compute SHA-256 hash of rendered content. Store `{hash, rendered_content, metadata}` in a prompt artifacts table or ETS-backed store. The hash becomes the artifact ID used in PhaseDispatched event. On replay, content is fetched by hash — never re-rendered.
 
@@ -361,7 +361,7 @@ After rendering, compute SHA-256 hash of rendered content. Store `{hash, rendere
 
 ---
 
-**TRD-021** — Stale asset detection and fast-fail | 2h | [satisfies REQ-003] [satisfies AC-003-5] [depends: TRD-017]
+- [ ] **TRD-021** — Stale asset detection and fast-fail | 2h | [satisfies REQ-003] [satisfies AC-003-5] [depends: TRD-017]
 
 Node reports file hashes of prompt files to Elixir on load. `Workflow.Interpreter` compares reported hashes against the hashes of the last-known-good renderings. If any hash has changed since the last render, dispatch fails fast with `{:error, :stale_assets, changed_files: [...]}` before any phase executes.
 
@@ -371,7 +371,7 @@ Node reports file hashes of prompt files to Elixir on load. `Workflow.Interprete
 
 ---
 
-**TRD-022** — foreman init --force runtime refresh | 2h | [satisfies REQ-003] [satisfies AC-003-6] [depends: TRD-021]
+- [ ] **TRD-022** — foreman init --force runtime refresh | 2h | [satisfies REQ-003] [satisfies AC-003-6] [depends: TRD-021]
 
 Support `POST /api/commands` with a `RuntimeRefresh` command type. Clears the last-known-good hash registry, forces Node to reload all prompt files and report fresh hashes. No phases execute during refresh; subsequent dispatch uses fresh hashes.
 
@@ -381,7 +381,7 @@ Support `POST /api/commands` with a `RuntimeRefresh` command type. Clears the la
 
 ---
 
-**TRD-017-TEST** — Workflow runtime tests | 3h | [verifies TRD-017, TRD-018, TRD-019, TRD-020, TRD-021, TRD-022] [satisfies REQ-003, REQ-009] [depends: TRD-017, TRD-018, TRD-019, TRD-020, TRD-021, TRD-022]
+- [ ] **TRD-017-TEST** — Workflow runtime tests | 3h | [verifies TRD-017, TRD-018, TRD-019, TRD-020, TRD-021, TRD-022] [satisfies REQ-003, REQ-009] [depends: TRD-017, TRD-018, TRD-019, TRD-020, TRD-021, TRD-022]
 
 Test: 3-phase workflow executes all phases in order. Override-first precedence (TRD-018). Template variable substitution (TRD-019). Artifact storage and retrieval (TRD-020). Stale asset fast-fail (TRD-021). Runtime refresh (TRD-022). Replay by artifact hash (TRD-020).
 
@@ -397,7 +397,7 @@ Test: 3-phase workflow executes all phases in order. Override-first precedence (
 
 ---
 
-**TRD-023** — Overwatch runtime: process supervision | 4h | [satisfies REQ-004] [satisfies AC-004-1, AC-004-3] [depends: TRD-001]
+- [ ] **TRD-023** — Overwatch runtime: process supervision | 4h | [satisfies REQ-004] [satisfies AC-004-1, AC-004-3] [depends: TRD-001]
 
 Create `ForemanServer.Overwatch` supervisor and worker tracker GenServer. When Overwatch.LaunchWorker.run/1 is called, it spawns a worker process under Overwatch's supervision tree. The tracker GenServer maintains a map of worker_pid → {run_id, phase, started_at}. Workers are supervised with :permanent restart so zombie workers are cleaned up.
 
@@ -407,7 +407,7 @@ Create `ForemanServer.Overwatch` supervisor and worker tracker GenServer. When O
 
 ---
 
-**TRD-024** — Worker heartbeat and liveness | 2h | [satisfies REQ-004] [satisfies AC-004-1] [depends: TRD-023]
+- [ ] **TRD-024** — Worker heartbeat and liveness | 2h | [satisfies REQ-004] [satisfies AC-004-1] [depends: TRD-023]
 
 Workers send periodic heartbeat messages to the Overwatch tracker. Tracker records last_heartbeat_at. If no heartbeat is received within a configurable timeout (default 30s), the worker is considered stale. Overwatch emits WorkerHeartbeatMissed through the aggregate command path.
 
@@ -417,7 +417,7 @@ Workers send periodic heartbeat messages to the Overwatch tracker. Tracker recor
 
 ---
 
-**TRD-025** — Worker exit/failure updates run projection | 3h | [satisfies REQ-004] [satisfies AC-004-2] [depends: TRD-023]
+- [ ] **TRD-025** — Worker exit/failure updates run projection | 3h | [satisfies REQ-004] [satisfies AC-004-2] [depends: TRD-023]
 
 When Overwatch detects worker exit (normal exit, crash, or timeout), it dispatches WorkerExited or WorkerFailed through CommandRouter. The Run aggregate's handle_command processes these and applies the exit state to the run projection via the Phase aggregate.
 
@@ -427,7 +427,7 @@ When Overwatch detects worker exit (normal exit, crash, or timeout), it dispatch
 
 ---
 
-**TRD-026** — Worker command routing (no direct writes) | 2h | [satisfies REQ-004] [satisfies AC-004-3]
+- [ ] **TRD-026** — Worker command routing (no direct writes) | 2h | [satisfies REQ-004] [satisfies AC-004-3]
 
 All worker-related state changes (launch, heartbeat, exit, failure) emit events through CommandRouter only. Overwatch never calls EventStore.append_to_stream directly. Architecture test from TRD-007 enforces this.
 
@@ -436,7 +436,7 @@ All worker-related state changes (launch, heartbeat, exit, failure) emit events 
 
 ---
 
-**TRD-023-TEST** — Worker lifecycle tests | 3h | [verifies TRD-023, TRD-024, TRD-025, TRD-026] [satisfies REQ-004, REQ-009] [depends: TRD-023, TRD-024, TRD-025, TRD-026]
+- [ ] **TRD-023-TEST** — Worker lifecycle tests | 3h | [verifies TRD-023, TRD-024, TRD-025, TRD-026] [satisfies REQ-004, REQ-009] [depends: TRD-023, TRD-024, TRD-025, TRD-026]
 
 Test: worker launch → tracked in registry; heartbeat missed → WorkerHeartbeatMissed emitted; worker exit → run phase status updated; worker crash → WorkerFailed routes through CommandRouter (not direct write); zombie worker cleanup after restart.
 
@@ -451,7 +451,7 @@ Test: worker launch → tracked in registry; heartbeat missed → WorkerHeartbea
 
 ---
 
-**TRD-027** — PR association with run | 2h | [satisfies REQ-005] [satisfies AC-005-1]
+- [ ] **TRD-027** — PR association with run | 2h | [satisfies REQ-005] [satisfies AC-005-1]
 
 Add `Run.associate_pr/2` command that stores a PR URL or GitHub PR ID on the run aggregate. Emits `PrAssociated` event. Run projection includes pr_url and pr_github_id fields.
 
@@ -460,7 +460,7 @@ Add `Run.associate_pr/2` command that stores a PR URL or GitHub PR ID on the run
 
 ---
 
-**TRD-028** — GitHub webhook receiver | 3h | [satisfies REQ-005] [satisfies AC-005-2, AC-005-3] [depends: TRD-027]
+- [ ] **TRD-028** — GitHub webhook receiver | 3h | [satisfies REQ-005] [satisfies AC-005-2, AC-005-3] [depends: TRD-027]
 
 Create `POST /api/webhooks/github` endpoint. Validates webhook signature (github HMAC-SHA256 header). Parses PR state change event. Maps GitHub PR state (open, closed, merged) to internal PR state. Dispatches PrStateChanged through CommandRouter.
 
@@ -470,7 +470,7 @@ Create `POST /api/webhooks/github` endpoint. Validates webhook signature (github
 
 ---
 
-**TRD-029** — PR state → run projection update | 2h | [satisfies REQ-005] [satisfies AC-005-2, AC-005-3] [depends: TRD-028]
+- [ ] **TRD-029** — PR state → run projection update | 2h | [satisfies REQ-005] [satisfies AC-005-2, AC-005-3] [depends: TRD-028]
 
 Handle PrStateChanged in the Run aggregate's handle_command. Validate that the PR is actually associated with the run. Update run's pr_state field. Emit PrStateTransitioned event. Projection store reflects new state.
 
@@ -480,7 +480,7 @@ Handle PrStateChanged in the Run aggregate's handle_command. Validate that the P
 
 ---
 
-**TRD-027-TEST** — PR lifecycle tests | 2h | [verifies TRD-027, TRD-028, TRD-029] [satisfies REQ-005, REQ-009] [depends: TRD-027, TRD-028, TRD-029]
+- [ ] **TRD-027-TEST** — PR lifecycle tests | 2h | [verifies TRD-027, TRD-028, TRD-029] [satisfies REQ-005, REQ-009] [depends: TRD-027, TRD-028, TRD-029]
 
 Test: PR association; webhook signature validation (valid/invalid); GitHub state → internal state mapping; PrStateChanged routes through CommandRouter; run projection reflects PR state; unknown PR ID returns error.
 
@@ -495,7 +495,7 @@ Test: PR association; webhook signature validation (valid/invalid); GitHub state
 
 ---
 
-**TRD-030** — PlanningFlow aggregate routing | 3h | [satisfies REQ-006] [satisfies AC-006-1, AC-006-2]
+- [ ] **TRD-030** — PlanningFlow aggregate routing | 3h | [satisfies REQ-006] [satisfies AC-006-1, AC-006-2]
 
 Create `ForemanServer.Aggregates.PlanningFlow` (if not already existing) or wire existing module. Route `plan.prd` and `plan.trd` command types through CommandRouter to PlanningFlow aggregate. handle_command emits PlanningFlowStarted, then command/trace events.
 
@@ -505,7 +505,7 @@ Create `ForemanServer.Aggregates.PlanningFlow` (if not already existing) or wire
 
 ---
 
-**TRD-031** — Planning trace → run association | 2h | [satisfies REQ-006] [satisfies AC-006-3]
+- [ ] **TRD-031** — Planning trace → run association | 2h | [satisfies REQ-006] [satisfies AC-006-3]
 
 Add a `PlanTraceAssociated` event and handle it in the Run aggregate. When a run references a planning trace ID, associate it. Run projection includes the planning_trace_id field.
 
@@ -514,7 +514,7 @@ Add a `PlanTraceAssociated` event and handle it in the Run aggregate. When a run
 
 ---
 
-**TRD-030-TEST** — Planning flow tests | 2h | [verifies TRD-030, TRD-031] [satisfies REQ-006, REQ-009] [depends: TRD-030, TRD-031]
+- [ ] **TRD-030-TEST** — Planning flow tests | 2h | [verifies TRD-030, TRD-031] [satisfies REQ-006, REQ-009] [depends: TRD-030, TRD-031]
 
 Test: plan.prd routes successfully; plan.trd routes successfully; PlanningFlowStarted is appended; trace events are appended; run association works; duplicate planning commands are idempotent.
 
@@ -529,7 +529,7 @@ Test: plan.prd routes successfully; plan.trd routes successfully; PlanningFlowSt
 
 ---
 
-**TRD-032** — Migration import command routing | 2h | [satisfies REQ-007] [satisfies AC-007-1]
+- [ ] **TRD-032** — Migration import command routing | 2h | [satisfies REQ-007] [satisfies AC-007-1]
 
 Wire migration import commands (e.g. ImportProject, ImportTask, ImportRun) through CommandRouter. Create or extend the relevant aggregate to handle import commands idempotently (by external_id). Emit ImportCompleted event.
 
@@ -539,7 +539,7 @@ Wire migration import commands (e.g. ImportProject, ImportTask, ImportRun) throu
 
 ---
 
-**TRD-033** — Webhook-first inbox endpoint | 3h | [satisfies REQ-007] [satisfies AC-007-2]
+- [ ] **TRD-033** — Webhook-first inbox endpoint | 3h | [satisfies REQ-007] [satisfies AC-007-2]
 
 Create `POST /api/webhooks/inbox` for external system push triggers. Validates source (configurable secret/token). Routes to CommandRouter as InboxTriggerReceived. Stores delivery metadata (received_at, source, correlation_id).
 
@@ -549,7 +549,7 @@ Create `POST /api/webhooks/inbox` for external system push triggers. Validates s
 
 ---
 
-**TRD-034** — Pull fallback for unsupported systems | 3h | [satisfies REQ-007] [satisfies AC-007-2]
+- [ ] **TRD-034** — Pull fallback for unsupported systems | 3h | [satisfies REQ-007] [satisfies AC-007-2]
 
 Implement `Inbox.Poller` GenServer that polls configured external systems on a schedule for systems that don't support webhooks. Poller polls, deduplicates by last-seen cursor, and dispatches InboxTriggerReceived through CommandRouter for new items.
 
@@ -559,7 +559,7 @@ Implement `Inbox.Poller` GenServer that polls configured external systems on a s
 
 ---
 
-**TRD-035** — Ingestion deduplication | 2h | [satisfies REQ-007] [satisfies AC-007-3]
+- [ ] **TRD-035** — Ingestion deduplication | 2h | [satisfies REQ-007] [satisfies AC-007-3]
 
 Implement dedupe by correlation_id: InboxStore keeps a dedupe window (configurable, default 24h). On InboxTriggerReceived, if correlation_id exists in window, reject as duplicate. Use an ETS table or Postgres table with TTL for the dedupe window.
 
@@ -569,7 +569,7 @@ Implement dedupe by correlation_id: InboxStore keeps a dedupe window (configurab
 
 ---
 
-**TRD-032-TEST** — Ingestion tests | 2h | [verifies TRD-032, TRD-033, TRD-034, TRD-035] [satisfies REQ-007, REQ-009] [depends: TRD-032, TRD-033, TRD-034, TRD-035]
+- [ ] **TRD-032-TEST** — Ingestion tests | 2h | [verifies TRD-032, TRD-033, TRD-034, TRD-035] [satisfies REQ-007, REQ-009] [depends: TRD-032, TRD-033, TRD-034, TRD-035]
 
 Test: import command idempotency; webhook delivery metadata; dedupe rejection of duplicates; dedupe window expiry; pull polling fetches new items; no duplicates from polling.
 
@@ -584,7 +584,7 @@ Test: import command idempotency; webhook delivery metadata; dedupe rejection of
 
 ---
 
-**TRD-036** — Recovery detection: interrupted run identification | 3h | [satisfies REQ-008] [satisfies AC-008-1, AC-008-2]
+- [ ] **TRD-036** — Recovery detection: interrupted run identification | 3h | [satisfies REQ-008] [satisfies AC-008-1, AC-008-2]
 
 On server startup, `Recovery.detect_interrupted_runs/0` scans active runs (runs with status != terminal and last_event_time > now - grace_period). For each interrupted run, dispatches RecoveryDetected through CommandRouter. Run aggregate's handle_command processes RecoveryDetected and emits RunRecoveryEvent with outcome:detected.
 
@@ -594,7 +594,7 @@ On server startup, `Recovery.detect_interrupted_runs/0` scans active runs (runs 
 
 ---
 
-**TRD-037** — Recovery outcomes: resumed or resolved | 3h | [satisfies REQ-008] [satisfies AC-008-1, AC-008-4] [depends: TRD-036]
+- [ ] **TRD-037** — Recovery outcomes: resumed or resolved | 3h | [satisfies REQ-008] [satisfies AC-008-1, AC-008-4] [depends: TRD-036]
 
 After RecoveryDetected, a recovery operator or automated process dispatches RecoveryResume or RecoveryResolve. Run aggregate processes these and emits RunRecoveryEvent with outcome=:resumed or outcome=:resolved. No duplicate processing occurs (idempotency key on run_id).
 
@@ -604,7 +604,7 @@ After RecoveryDetected, a recovery operator or automated process dispatches Reco
 
 ---
 
-**TRD-038** — Scheduler runtime: fire-and-track | 3h | [satisfies REQ-008] [satisfies AC-008-3]
+- [ ] **TRD-038** — Scheduler runtime: fire-and-track | 3h | [satisfies REQ-008] [satisfies AC-008-3]
 
 Create `ForemanServer.Scheduler` GenServer. When a scheduled time fires, dispatch SchedulerIntentRecorded through CommandRouter (records that an intent exists). Worker, on pickup, dispatches WorkerConfirmedExecution. Scheduler tracks confirmed intents. No second fire is emitted for the same scheduled item.
 
@@ -614,7 +614,7 @@ Create `ForemanServer.Scheduler` GenServer. When a scheduled time fires, dispatc
 
 ---
 
-**TRD-039** — Restart recovery: no double-dispatch | 2h | [satisfies REQ-008] [satisfies AC-008-2] [depends: TRD-038]
+- [ ] **TRD-039** — Restart recovery: no double-dispatch | 2h | [satisfies REQ-008] [satisfies AC-008-2] [depends: TRD-038]
 
 After restart, Scheduler.detect_unconfirmed_intents/0 identifies SchedulerIntentRecorded events with no corresponding WorkerConfirmedExecution. For each unconfirmed intent, either re-emit or mark as stale with SchedulerIntentStale event. Grace period prevents false positives during normal operation.
 
@@ -624,7 +624,7 @@ After restart, Scheduler.detect_unconfirmed_intents/0 identifies SchedulerIntent
 
 ---
 
-**TRD-036-TEST** — Recovery and scheduler tests | 3h | [verifies TRD-036, TRD-037, TRD-038, TRD-039] [satisfies REQ-008, REQ-009] [depends: TRD-036, TRD-037, TRD-038, TRD-039]
+- [ ] **TRD-036-TEST** — Recovery and scheduler tests | 3h | [verifies TRD-036, TRD-037, TRD-038, TRD-039] [satisfies REQ-008, REQ-009] [depends: TRD-036, TRD-037, TRD-038, TRD-039]
 
 Test: interrupted run detection on startup; recovery events with :detected, :resumed, :resolved outcomes; scheduler fire-and-track (intent recorded → confirmed); no double-dispatch after restart; idempotency on recovery resume.
 
@@ -639,7 +639,7 @@ Test: interrupted run detection on startup; recovery events with :detected, :res
 
 ---
 
-**TRD-040** — End-to-end happy path test | 3h | [satisfies REQ-009] [satisfies AC-009-1] [depends: TRD-009, TRD-010, TRD-012, TRD-013, TRD-014, TRD-015]
+- [ ] **TRD-040** — End-to-end happy path test | 3h | [satisfies REQ-009] [satisfies AC-009-1] [depends: TRD-009, TRD-010, TRD-012, TRD-013, TRD-014, TRD-015]
 
 Test the complete closed-loop path: register project → create task → start run → verify task/run projections are queryable → verify run status. Uses real EventStore (test sandbox) and ProjectionStore.
 
@@ -648,7 +648,7 @@ Test the complete closed-loop path: register project → create task → start r
 
 ---
 
-**TRD-041** — Architecture test suite: Article IX enforcement | 2h | [satisfies REQ-009] [satisfies AC-009-3] [depends: TRD-007]
+- [ ] **TRD-041** — Architecture test suite: Article IX enforcement | 2h | [satisfies REQ-009] [satisfies AC-009-3] [depends: TRD-007]
 
 Run the architecture test from TRD-007 in CI. Expand to also scan for any direct `append_to_stream` calls outside CommandRouter, any `Map.merge` in `apply_event` (vs `%State{state | ...}`), and any `struct!/1` or `struct/2` calls in aggregate apply_event.
 
@@ -658,7 +658,7 @@ Run the architecture test from TRD-007 in CI. Expand to also scan for any direct
 
 ---
 
-**TRD-040-TEST** — Coverage report and gap analysis | 2h | [satisfies REQ-009] [satisfies AC-009-1, AC-009-2] [depends: TRD-040, TRD-041]
+- [ ] **TRD-040-TEST** — Coverage report and gap analysis | 2h | [satisfies REQ-009] [satisfies AC-009-1, AC-009-2] [depends: TRD-040, TRD-041]
 
 Generate Mix coverage report. Identify any REQ without at least one integration test covering its primary AC. Add missing tests until all Must/Should REQs have ≥1 integration test covering the primary AC.
 
