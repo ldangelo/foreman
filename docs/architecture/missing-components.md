@@ -244,8 +244,25 @@ The full loop includes multi-phase runs, worker exit, and failure handling.
 has not been tested via HTTP.
 
 ---
+### 6. Workflow + Prompt Runtime — Domain Parity
 
-### 6. PR Monitor + VCS Workflow — Domain Parity
+**What must exist:**
+- YAML workflow defines ordered phase names; `WorkflowInterpreter` maps phase names to execution steps
+- Prompt resolver: given `(workflow, phase)`, selects the end-user override or bundled prompt via the existing resolution chain; validates against required phase markers
+- Prompt loader: reads the selected prompt file, renders `{{variable}}` templates with context inputs (run id, project id, phase id, etc.)
+- Rendered prompt (or a content-addressed artifact of it) stored and replayed as-is on restart/resumption — a hash alone only detects drift
+- Immutable workflow and prompt content hashes captured in run/phase events at execution start
+- `foreman init --force` refresh of installed workflows/prompts (verified in `main`'s `src/cli/commands/init.ts`)
+- Dispatch staleness gate: `foreman run` fails fast if installed workflow/prompt hashes are stale (documented in AGENTS.md; `Doctor.checkWorkflows()` exists on `main` but is not wired as a dispatch gate)
+- `Phase` aggregate enforces phase lifecycle and invariants; the prompt resolver handles override resolution, loading, and rendering — phase behavior is not hardcoded in the aggregate
+
+**Why:** `main` has two separate prompt/workflow systems. The Node CLI has `prompt-loader.ts` (`loadPrompt`, `renderTemplate`, `checkStalePrompts`, `REQUIRED_PHASES`, `installBundledPrompts`). The Elixir `WorkflowInterpreter` loads YAML with a `prompt` field but treats it as inline string metadata and does not call the Node CLI loader. Bridging them requires: the Elixir side adopts the `(workflow, phase)` prompt resolution, renders with context, stores the rendered content (or a content-addressed artifact) for replay, and captures hashes in events. `foreman init --force` is verified in `main`'s `init.ts`.
+
+**Gap:** No `WorkflowInterpreter` on the slice. No prompt resolver wired to the Elixir backend. No template rendering on the Elixir side. No immutable rendered prompt or content-addressed artifact stored for replay. No dispatch staleness gate.
+
+**Dependency:** Item 1 (HTTP API), Item 3 (ProjectionStore), Item 5 (Run/Phase loop) must be complete before this can be tested end-to-end.
+
+### 7. PR Monitor + VCS Workflow — Domain Parity
 
 **What must work:**
 - After `run.complete`, the system monitors a GitHub PR URL
@@ -266,7 +283,7 @@ the PR → run → merge workflow.
 
 ---
 
-### 7. Planning Flow Commands — Domain Parity
+### 8. Planning Flow Commands — Domain Parity
 
 **What must work:**
 - `command_type: "plan.prd"` or `"plan.trd"` triggers planning flow
@@ -282,7 +299,7 @@ No HTTP command path for planning commands.
 
 ---
 
-### 8. Migration Import — Domain Parity
+### 9. Migration Import — Domain Parity
 
 **What must work:**
 - `command_type: "migration.import"` ingests a migration payload
@@ -297,7 +314,7 @@ If removed, existing data cannot be imported into the new system.
 
 ---
 
-### 9. Inbox + External Triggers — Domain Parity
+### 10. Inbox + External Triggers — Domain Parity
 
 **What must work:**
 - External systems can trigger runs via an inbox endpoint
@@ -311,7 +328,7 @@ If removed, existing data cannot be imported into the new system.
 
 ---
 
-### 10. Recovery Engine — Domain Parity
+### 11. Recovery Engine — Domain Parity
 
 **What must work:**
 - After a server restart, the recovery engine detects interrupted runs
@@ -326,7 +343,7 @@ state. Production use requires it.
 
 ---
 
-### 11. Scheduler Runtime — Domain Parity
+### 12. Scheduler Runtime — Domain Parity
 
 **What must work:**
 - `Scheduler` GenServer ticks periodically
@@ -345,7 +362,7 @@ started in the application. `scheduler_test.exs` is absent.
 
 Production-readiness components that `main` has and the new system must have.
 
-### 12. EventStore Schema + Database Migrations — Operational
+### 13. EventStore Schema + Database Migrations — Operational
 
 **What must exist:**
 - EventStore tables created via `mix.event_store.init` or explicit migration scripts
@@ -357,7 +374,7 @@ Works in dev; not production-safe.
 
 ---
 
-### 13. RuntimeSafety Validation — Operational
+### 14. RuntimeSafety Validation — Operational
 
 **What must exist:**
 - `ForemanServer.RuntimeSafety.validate!/0` runs at application startup
@@ -370,7 +387,7 @@ Works in dev; not production-safe.
 
 ---
 
-### 14. RuntimeInfo + Adapter Selection — Operational
+### 15. RuntimeInfo + Adapter Selection — Operational
 
 **What must exist:**
 - `ForemanServer.RuntimeInfo` selects between `:postgres` and `:memory` EventStore adapters
@@ -384,7 +401,7 @@ Without it, switching environments requires code changes.
 
 ---
 
-### 15. Ecto Repo + Postgres-Backed Projections — Operational
+### 16. Ecto Repo + Postgres-Backed Projections — Operational
 
 **What must exist:**
 - `ForemanServer.Repo` (Ecto) for direct database access
@@ -399,7 +416,7 @@ projections. Production requires persistence.
 
 ---
 
-### 16. Provider Registry — Operational
+### 17. Provider Registry — Operational
 
 **What must exist:**
 - `ForemanServer.ProviderRegistry` tracks configured providers (VCS, CI, etc.)
@@ -441,25 +458,26 @@ Phase 1 — Core Platform
 Phase 2 — Domain Capability Parity
   4. Worker Lifecycle (Overwatch + heartbeat projection)
   5. Run → Phase → Worker Closed Loop
-  6. PR Monitor + VCS Workflow  ← depends on 1, 3, 5
-  7. Planning Flow Commands      ← depends on 1, 2, 3
-  8. Migration Import           ← depends on 1, 2, 3
-  9. Inbox + External Triggers  ← depends on 1, 2, 3
- 10. Recovery Engine             ← depends on 1, 2, 3, 4
- 11. Scheduler Runtime           ← depends on 1, 2, 3
+  6. Workflow + Prompt Runtime
+  7. PR Monitor + VCS Workflow  ← depends on 1, 3, 5, 6
+  8. Planning Flow Commands      ← depends on 1, 2, 3
+  9. Migration Import           ← depends on 1, 2, 3
+ 10. Inbox + External Triggers  ← depends on 1, 2, 3
+ 11. Recovery Engine             ← depends on 1, 2, 3, 4
+ 12. Scheduler Runtime           ← depends on 1, 2, 3
         ↓
 Phase 3 — Operational Robustness
- 12. EventStore Schema + Migrations
- 13. RuntimeSafety Validation
- 14. RuntimeInfo + Adapter Selection
- 15. Ecto Repo + Postgres-Backed Projections
- 16. Provider Registry
+ 13. EventStore Schema + Migrations
+ 14. RuntimeSafety Validation
+ 15. RuntimeInfo + Adapter Selection
+ 16. Ecto Repo + Postgres-Backed Projections
+ 17. Provider Registry
 ```
 
 **Dependency rule:** A component can be started when all components it depends on are
 complete. Items within the same phase can be developed in parallel by separate agents.
-
 ---
+
 
 ## Test Coverage Required
 
@@ -477,18 +495,24 @@ replaced for the new architecture:
 | `worker_protocol_test.exs` | 4, 5 |
 | `worker_launcher_test.exs` | 4 |
 | `overwatch_test.exs` | 4 |
-| `pr_monitor_test.exs` | 6 |
-| `pr_gate_test.exs` | 6 |
-| `planning_flow_test.exs` | 7 |
-| `migration_importer_test.exs` | 8 |
-| `inbox_test.exs` | 9 |
-| `integration_ingestion_test.exs` | 9 |
-| `attach_bridge_test.exs` | 9 |
-| `recovery_engine_test.exs` | 10 |
-| `scheduler_test.exs` | 11 |
-| `runtime_safety_test.exs` | 13 |
-| `runtime_info_test.exs` | 14 |
-| `provider_registry_test.exs` | 16 |
+| `workflow_interpreter_test.exs` | 6 |
+| `prompt_loader_test.exs` | 6 |
+| `prompt_render_replay_test.exs` | 6 |
+| `pr_monitor_test.exs` | 7 |
+| `pr_gate_test.exs` | 7 |
+| `planning_flow_test.exs` | 8 |
+| `migration_importer_test.exs` | 9 |
+| `inbox_test.exs` | 10 |
+| `integration_ingestion_test.exs` | 10 |
+| `attach_bridge_test.exs` | 10 |
+| `recovery_engine_test.exs` | 11 |
+| `scheduler_test.exs` | 12 |
+| `runtime_safety_test.exs` | 14 |
+| `runtime_info_test.exs` | 15 |
+| `provider_registry_test.exs` | 17 |
+| `foreman_init_fresh_test.go` | 6 |
+| `foreman_run_staleness_test.go` | 6 |
+| `foreman_prompt_override_e2e_test.go` | 6 |
 
 **Note:** `vcs_adapter_test.exs` tests the old Node VCS adapter. VCS is now Go's domain;
 that test is replaced by Go tests in the `cmd/foreman` package.

@@ -55,22 +55,16 @@ and security checks. The slice's router dispatches only to `ForemanServer.Aggreg
 | | `main` | `slices/go-elixir-cqrs` |
 |---|---|---|
 | `events/` directory | ✗ | ✓ (10 modules) |
-| Literal-string event types in aggregates | ~70 distinct | all lack typed structs (except Phase static-map subset) |
-| Phase static-map event types | `PhaseFailed`, `PhaseTimedOut`, `PhaseRetried`, `PhaseSkipped` | same — no structs |
-| Worker open-ended forwarding | `event_type` from command payload | same — no struct possible |
+| Events emitted from `handle_command` (literal `event_type: "…"`) | no typed modules | ~70 distinct types emitted; 10 have fielded modules, none use `@enforce_keys` or `@type t` |
+| Events recognized on replay in `apply_event` (cross-aggregate) | same as emitted (no events/) | `Worker.apply_event` recognizes 6 cross-aggregate types not emitted by Worker: `ToolCallFinished`, `AssistantMessage`, `WorkerStdout`, `WorkerStderr`, `RunCompleted`, `RunFailed` |
+| Worker forwarding channel | unknown from grep | open — `Worker.handle_command` reads `event_type` directly from command payload; any string accepted; full vocabulary unstatable |
+| Phase static-map event types | emitted but untyped | `PhaseFailed`, `PhaseTimedOut`, `PhaseRetried`, `PhaseSkipped` — emitted via static map, no module |
 | Typed structs with `@enforce_keys` | ✗ | ✗ — no event module uses it |
 | Typed structs with `@type t` | ✗ | ✗ — no event module uses it |
 | `@derive Jason.Encoder` | ✗ | ✓ — 9 of 10 event modules |
+| `EventCodec` module | ✗ | ✗ — does not exist |
 
-**Gap:** `events/` has 10 typed struct modules. Against the ~70 literal string event types
-emitted by aggregates: the 10 modules cover a subset, but the count is not precisely
-establishable from source alone — `Worker` accepts an arbitrary `event_type` from the
-command payload (open-ended channel), `Phase` derives 4 event types via static map
-(`PhaseFailed`, `PhaseTimedOut`, `PhaseRetried`, `PhaseSkipped`) that are not in
-`events/`, and `ToolCall` computes `ToolCallApproved`/`ToolCallDenied` from conditionals.
-No event module uses `@enforce_keys` or `@type t`. All `apply_event` implementations use
-string-keyed `case Aggregate.event_type(event)` switching. `EventCodec` does not exist.
-Article IX is not implemented.
+**Gap:** `events/` has 10 typed struct modules but none have `@enforce_keys` or `@type t`. Against the ~70 distinct event types emitted from `handle_command` across all aggregates, the 10 modules cover a subset. The Worker forwarding channel (`worker.record` → `event_type: event_type`) accepts any string — the authoritative vocabulary is open-ended and cannot be enumerated statically until the channel is closed. `Worker.apply_event` additionally recognizes 6 cross-aggregate event types on replay. `Phase` derives 4 types via static map with no module. `EventCodec` does not exist. Article IX is not implemented.
 ### 2c. Command Router
 
 | | `main` | `slices/go-elixir-cqrs` |
@@ -131,9 +125,36 @@ Every other entity (`Task`, `Run`, `Worker`, `Phase`) has no read model on the s
 projection are absent. The `Worker` aggregate exists on the slice but is not exercised
 by any test.
 
----
+## 5. Workflow + Prompt Runtime
 
-## 5. HTTP API
+| Feature | `main` | `slices/go-elixir-cqrs` |
+|---|---|---|
+| `WorkflowInterpreter` module | ✓ (259 lines, YAML loader) | ✗ |
+| YAML workflow with `phase_order` list | ✓ | ✗ |
+| Per-phase `prompt` field in YAML (inline string metadata only) | ✓ | ✗ |
+| Per-phase `command` / builtin (`/…`) support | ✓ | ✗ |
+| Prompt file loader (`loadPrompt(phase, vars, workflow, projectRoot)`) | ✓ (Node CLI; Elixir `WorkflowInterpreter` does not use it) | ✗ |
+| Elixir `WorkflowInterpreter` integration with prompt loader | ✗ | ✗ |
+| Template renderer (`renderTemplate` — `{{variable}}` substitution) | ✓ (Node CLI) | ✗ |
+| Prompt resolver selects override/bundled prompt for `(workflow, phase)` | ✓ (Node CLI; not wired to Elixir) | ✗ |
+| Workflow staleness detection (`checkWorkflows` in `Doctor`) | ✓ (via `foreman doctor`) | ✗ |
+| Dispatch staleness gate (`foreman run` fails fast on stale) | ✗ (AGENTS.md policy only; not wired in dispatch path) | ✗ |
+| `foreman init --force` refresh | ✓ (in `src/cli/commands/init.ts`) | ✗ |
+| Immutable rendered prompt or content-addressed artifact stored for replay | ✗ | ✗ |
+| Content/content-addressed hash captured in run/phase events | ✗ | ✗ |
+
+**Gap:** `main` has a full prompt subsystem in the Node CLI (`prompt-loader.ts`: `loadPrompt`, `renderTemplate`,
+`checkStalePrompts`, `REQUIRED_PHASES`). It resolves the end-user override or bundled prompt for a given
+`(workflow, phase)` pair, validates it against required phase markers, and renders it with context inputs.
+The Elixir `WorkflowInterpreter` is a separate system: it loads YAML workflows with a `prompt` field but treats
+it as inline string metadata, not a file reference, and does not call the Node CLI loader. Aggregates (`Phase`)
+enforce phase lifecycle and invariants; the prompt resolver handles override resolution, loading, and rendering.
+A hash alone only detects drift — determinism requires the rendered prompt content (or a content-addressed
+artifact) to be stored and replayed as-is. Neither branch captures rendered prompt content in events.
+`foreman init --force` is verified in `main`'s `init.ts`. Staleness detection exists as `Doctor.checkWorkflows()`
+but is not a dispatch gate.
+
+## 6. HTTP API
 
 | Feature | `main` | `slices/go-elixir-cqrs` |
 |---|---|---|
@@ -145,7 +166,7 @@ by any test.
 
 ---
 
-## 6. Integrations
+## 7. Integrations
 
 | Feature | `main` | `slices/go-elixir-cqrs` |
 |---|---|---|
@@ -178,7 +199,7 @@ but is not routed in the command path.
 
 ---
 
-## 8. Recovery / Scheduler / Operations
+## 9. Recovery / Scheduler / Operations
 
 | Feature | `main` | `slices/go-elixir-cqrs` |
 |---|---|---|
@@ -195,7 +216,7 @@ exists but is not started in the application and has no routing path.
 
 ---
 
-## 9. Tests
+## 10. Tests
 
 | Category | `main` | `slices/go-elixir-cqrs` |
 |---|---|---|
@@ -246,19 +267,20 @@ to select between `:postgres`/`:memory` adapters and multiple VCS adapters.
 3. **Command categories** — Planning, migration, inbox, external trigger paths are absent
 
 ### High (operational requirements)
-4. **Typed event structs** — 10 event modules exist (~14% of ~70+ enumerated emitted types); `Worker.apply_event` also recognizes cross-aggregate events (`ToolCallFinished`, `AssistantMessage`, `WorkerStdout`, `WorkerStderr`, `RunCompleted`, `RunFailed`) not emitted by Worker. `Worker.handle_command` forwards arbitrary `event_type` from the command payload — the full authoritative set cannot be enumerated statically. No `@enforce_keys` or `@type t` anywhere. `EventCodec` does not exist. Article IX not implemented.
-5. **EventStore schema** — Main uses Ecto/Repo migrations; slice uses raw `schema: "public"`
-6. **Worker runtime** — `Overwatch`, heartbeats, worker projection absent
-7. **Tests** — 28 test files missing; no regression safety for any feature outside AC1/AC2
+4. **Typed event structs** — 10 event modules exist (~14% of ~70+ enumerated emitted types); `Worker.apply_event` also recognizes cross-aggregate events (`ToolCallFinished`, `AssistantMessage`, `WorkerStdout`, `WorkerStderr`, `RunCompleted`, `RunFailed`) not emitted by Worker. `Worker.handle_command` forwards arbitrary `event_type` from the command payload. No `@enforce_keys` or `@type t` anywhere. `EventCodec` does not exist. Article IX not implemented.
+5. **Workflow + Prompt Runtime** — `main` has `prompt-loader.ts` (`loadPrompt`, `renderTemplate`, `checkStalePrompts`, `REQUIRED_PHASES`, `installBundledPrompts`) in the Node CLI and `WorkflowInterpreter` (259 lines, YAML) in Elixir — two separate systems. The Elixir side treats `prompt` as inline string metadata and does not call the Node CLI loader. Aggregates (`Phase`) enforce lifecycle; the prompt resolver handles override resolution, loading, and rendering. A hash alone only detects drift — determinism requires the rendered prompt or content-addressed artifact stored for replay. Neither branch captures rendered prompt content in events. `foreman init --force` verified in `init.ts`. `Doctor.checkWorkflows()` exists but is not a dispatch gate.
+6. **EventStore schema** — Main uses Ecto/Repo migrations; slice uses raw `schema: "public"`
+7. **Worker runtime** — `Overwatch`, heartbeats, worker projection absent
+8. **Tests** — 28 test files missing; no regression safety for any feature outside AC1/AC2
 
 ### Medium (future capability)
-8. **PrMonitor / VCS** — PR gates and VCS integration not started
-9. **Recovery / Scheduler** — Scheduler aggregate present but not started or routed; no recovery engine
-10. **RuntimeSafety / RuntimeInfo** — Environment adapter selection absent
-11. **Ecto Repo** — No database-backed read models or schema migrations
+9. **PrMonitor / VCS** — PR gates and VCS integration not started
+10. **Recovery / Scheduler** — Scheduler aggregate present but not started or routed; no recovery engine
+11. **RuntimeSafety / RuntimeInfo** — Environment adapter selection absent
+12. **Ecto Repo** — No database-backed read models or schema migrations
 
 ---
 
-*Generated: 2026-07-27 | Branch: `slices/go-elixir-cqrs` @ `6489b3d2`*
+*Generated: 2026-07-27 | Based on gap analysis @ `6489b3d2`*
 *See [missing-components.md](./missing-components.md) for every component that must be built,
 migrated, or explicitly replaced for the new architecture to be functionally equivalent to `main`.*
