@@ -55,14 +55,14 @@ and security checks. The slice's router dispatches only to `ForemanServer.Aggreg
 | | `main` | `slices/go-elixir-cqrs` |
 |---|---|---|
 | `events/` directory | ✗ | ✓ (10 modules) |
-| Literal-string event types in aggregates | ~37 distinct | all lack typed structs (except Phase static-map subset) |
+| Literal-string event types in aggregates | ~70 distinct | all lack typed structs (except Phase static-map subset) |
 | Phase static-map event types | `PhaseFailed`, `PhaseTimedOut`, `PhaseRetried`, `PhaseSkipped` | same — no structs |
 | Worker open-ended forwarding | `event_type` from command payload | same — no struct possible |
 | Typed structs with `@enforce_keys` | ✗ | ✗ — no event module uses it |
 | Typed structs with `@type t` | ✗ | ✗ — no event module uses it |
 | `@derive Jason.Encoder` | ✗ | ✓ — 9 of 10 event modules |
 
-**Gap:** `events/` has 10 typed struct modules. Against the ~37 literal string event types
+**Gap:** `events/` has 10 typed struct modules. Against the ~70 literal string event types
 emitted by aggregates: the 10 modules cover a subset, but the count is not precisely
 establishable from source alone — `Worker` accepts an arbitrary `event_type` from the
 command payload (open-ended channel), `Phase` derives 4 event types via static map
@@ -246,7 +246,7 @@ to select between `:postgres`/`:memory` adapters and multiple VCS adapters.
 3. **Command categories** — Planning, migration, inbox, external trigger paths are absent
 
 ### High (operational requirements)
-4. **Typed event structs** — 10 event modules exist but cover only a subset of ~37 literal event types. `Worker` forwards arbitrary `event_type` from the command payload (open-ended). `Phase` emits 4 static-map types (`PhaseFailed`, `PhaseTimedOut`, `PhaseRetried`, `PhaseSkipped`) with no struct. No event module uses `@enforce_keys` or `@type t`. `EventCodec` does not exist. `apply_event` uses string-keyed `case` switching throughout. Article IX not implemented.
+4. **Typed event structs** — 10 event modules exist (~14% of ~70+ enumerated emitted types); `Worker.apply_event` also recognizes cross-aggregate events (`ToolCallFinished`, `AssistantMessage`, `WorkerStdout`, `WorkerStderr`, `RunCompleted`, `RunFailed`) not emitted by Worker. `Worker.handle_command` forwards arbitrary `event_type` from the command payload — the full authoritative set cannot be enumerated statically. No `@enforce_keys` or `@type t` anywhere. `EventCodec` does not exist. Article IX not implemented.
 5. **EventStore schema** — Main uses Ecto/Repo migrations; slice uses raw `schema: "public"`
 6. **Worker runtime** — `Overwatch`, heartbeats, worker projection absent
 7. **Tests** — 28 test files missing; no regression safety for any feature outside AC1/AC2
@@ -259,4 +259,6 @@ to select between `:postgres`/`:memory` adapters and multiple VCS adapters.
 
 ---
 
-*Generated: 2026-07-27 | Branch: `slices/go-elixir-cqrs` @ `2ce56919`*
+*Generated: 2026-07-27 | Branch: `slices/go-elixir-cqrs` @ `6489b3d2`*
+*See [missing-components.md](./missing-components.md) for every component that must be built,
+migrated, or explicitly replaced for the new architecture to be functionally equivalent to `main`.*
