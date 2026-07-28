@@ -228,7 +228,6 @@ defmodule ForemanServer.EventCodec do
   defp event_type_to_module!("project_updated"), do: ForemanServer.Events.ProjectUpdated
   defp event_type_to_module!("project_archived"), do: ForemanServer.Events.ProjectArchived
   defp event_type_to_module!("project_reactivated"), do: ForemanServer.Events.ProjectReactivated
-  defp event_type_to_module!("run_started"), do: ForemanServer.Events.RunStarted
   defp event_type_to_module!("run_updated"), do: ForemanServer.Events.RunUpdated
   defp event_type_to_module!("run_completed"), do: ForemanServer.Events.RunCompleted
   defp event_type_to_module!("run_failed"), do: ForemanServer.Events.RunFailed
@@ -293,6 +292,23 @@ defmodule ForemanServer.EventCodec do
   defp event_type_to_module!(other) do
     raise ArgumentError,
       message: "EventCodec.decode!/2: unknown event type string: #{inspect(other)}"
+  end
+
+  # -------------------------------------------------------------------
+  # Module → event_type string mapping (inverse of event_type_to_module!)
+  # -------------------------------------------------------------------
+
+  @doc """
+  Convert a typed event module to its snake_case event_type string.
+  E.g. `ForemanServer.Events.RunStarted` → `"run_started"`.
+  Used by the Actor to derive `event_type` from a typed event struct.
+  """
+  @spec module_to_event_type(module()) :: String.t()
+  def module_to_event_type(module) do
+    module
+    |> Module.split()
+    |> List.last()
+    |> Macro.underscore()
   end
 
   # -------------------------------------------------------------------

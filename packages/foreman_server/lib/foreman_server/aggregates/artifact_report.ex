@@ -68,10 +68,11 @@ defmodule ForemanServer.Aggregates.ArtifactReport do
          {:ok, phase_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id) do
       {:ok,
-       %{
-         stream_id: "artifact_report:#{escape(run_id)}:#{escape(phase_id)}",
-         event_type: "PhaseReportProduced",
-         payload: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
+       %ForemanServer.Events.PhaseReportProduced{
+         run_id: run_id,
+         phase_id: phase_id,
+         report_id: Aggregate.get(payload, :report_id),
+         metadata: Aggregate.get(payload, :metadata)
        }}
     end
   end
@@ -82,10 +83,12 @@ defmodule ForemanServer.Aggregates.ArtifactReport do
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
          :ok <- reject_duplicate_final_verdict(state, payload) do
       {:ok,
-       %{
-         stream_id: "artifact_report:#{escape(run_id)}:#{escape(phase_id)}",
-         event_type: "PhaseVerdict",
-         payload: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
+       %ForemanServer.Events.PhaseVerdict{
+         run_id: run_id,
+         phase_id: phase_id,
+         verdict: Aggregate.get(payload, :verdict),
+         status: Aggregate.get(payload, :status),
+         final: Aggregate.get(payload, :final, true)
        }}
     end
   end

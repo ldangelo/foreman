@@ -69,10 +69,9 @@ defmodule ForemanServer.Aggregates.Phase do
          :ok <- require_absent(state),
          :ok <- reject_terminal(state) do
       {:ok,
-       %{
-         stream_id: "phase:#{run_id}:#{phase_id}",
-         event_type: "PhaseStarted",
-         payload: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
+       %ForemanServer.Events.PhaseStarted{
+         run_id: run_id,
+         phase_id: phase_id
        }}
     end
   end
@@ -84,21 +83,16 @@ defmodule ForemanServer.Aggregates.Phase do
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
          :ok <- require_started(state, type),
          :ok <- reject_terminal_for_non_retry(state, type) do
-      event_type =
-        %{
-          "phase.complete" => "PhaseCompleted",
-          "phase.fail" => "PhaseFailed",
-          "phase.timeout" => "PhaseTimedOut",
-          "phase.retry" => "PhaseRetried",
-          "phase.skip" => "PhaseSkipped"
-        }[type]
+      event =
+        case type do
+          "phase.complete" -> %ForemanServer.Events.PhaseCompleted{run_id: run_id, phase_id: phase_id}
+          "phase.fail" -> %ForemanServer.Events.PhaseFailed{run_id: run_id, phase_id: phase_id}
+          "phase.timeout" -> %ForemanServer.Events.PhaseTimedOut{run_id: run_id, phase_id: phase_id}
+          "phase.retry" -> %ForemanServer.Events.PhaseRetried{run_id: run_id, phase_id: phase_id}
+          "phase.skip" -> %ForemanServer.Events.PhaseSkipped{run_id: run_id, phase_id: phase_id}
+        end
 
-      {:ok,
-       %{
-         stream_id: "phase:#{run_id}:#{phase_id}",
-         event_type: event_type,
-         payload: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
-       }}
+      {:ok, event}
     end
   end
 

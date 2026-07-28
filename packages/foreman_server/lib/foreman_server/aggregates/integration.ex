@@ -61,10 +61,9 @@ defmodule ForemanServer.Aggregates.Integration do
            Aggregate.required_binary(Aggregate.get(payload, :dedupe_key), :dedupe_key),
          :ok <- require_new(state, dedupe_key) do
       {:ok,
-       %{
-         stream_id: "integration:#{dedupe_key}",
-         event_type: "IntegrationCommandIngested",
-         payload: Map.put_new(payload, :idempotency_key, dedupe_key)
+       %ForemanServer.Events.IntegrationCommandIngested{
+         dedupe_key: dedupe_key,
+         config: Aggregate.get(payload, :config)
        }}
     end
   end
@@ -73,10 +72,9 @@ defmodule ForemanServer.Aggregates.Integration do
     with {:ok, dedupe_key} <-
            Aggregate.required_binary(Aggregate.get(payload, :dedupe_key), :dedupe_key) do
       {:ok,
-       %{
-         stream_id: "integration:#{dedupe_key}",
-         event_type: "IntegrationConfigured",
-         payload: payload
+       %ForemanServer.Events.IntegrationConfigured{
+         dedupe_key: dedupe_key,
+         config: Aggregate.get(payload, :config)
        }}
     end
   end
@@ -85,13 +83,14 @@ defmodule ForemanServer.Aggregates.Integration do
       when type in ["integration.sync.request", "integration.sync.complete"] do
     with {:ok, dedupe_key} <-
            Aggregate.required_binary(Aggregate.get(payload, :dedupe_key), :dedupe_key) do
-      event_type =
-        %{
-          "integration.sync.request" => "IntegrationSyncRequested",
-          "integration.sync.complete" => "IntegrationSyncCompleted"
-        }[type]
+      event =
+        if type == "integration.sync.request" do
+          %ForemanServer.Events.IntegrationSyncRequested{dedupe_key: dedupe_key}
+        else
+          %ForemanServer.Events.IntegrationSyncCompleted{dedupe_key: dedupe_key}
+        end
 
-      {:ok, %{stream_id: "integration:#{dedupe_key}", event_type: event_type, payload: payload}}
+      {:ok, event}
     end
   end
 

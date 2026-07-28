@@ -49,10 +49,8 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
     with {:ok, flow_id} <- flow_id(payload),
          :ok <- require_absent(state) do
       {:ok,
-       %{
-         stream_id: "planning:#{escape(flow_id)}",
-         event_type: "PlanningFlowStarted",
-         payload: Map.put(payload, :flow_id, flow_id)
+       %ForemanServer.Events.PlanningFlowStarted{
+         flow_id: flow_id
        }}
     end
   end
@@ -61,10 +59,8 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
     with {:ok, flow_id} <- flow_id(payload),
          :ok <- require_active(state) do
       {:ok,
-       %{
-         stream_id: "planning:#{escape(flow_id)}",
-         event_type: "PlanningFlowCommand",
-         payload: Map.put(payload, :flow_id, flow_id)
+       %ForemanServer.Events.PlanningFlowCommand{
+         flow_id: flow_id
        }}
     end
   end
@@ -73,10 +69,8 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
     with {:ok, flow_id} <- flow_id(payload),
          :ok <- require_active(state) do
       {:ok,
-       %{
-         stream_id: "planning:#{escape(flow_id)}",
-         event_type: "PlanningTraceLinked",
-         payload: Map.put(payload, :flow_id, flow_id)
+       %ForemanServer.Events.PlanningTraceLinked{
+         flow_id: flow_id
        }}
     end
   end
@@ -85,10 +79,8 @@ defmodule ForemanServer.Aggregates.PlanningFlow do
     with {:ok, flow_id} <- flow_id(payload),
          :ok <- require_active(state) do
       {:ok,
-       %{
-         stream_id: "planning:#{escape(flow_id)}",
-         event_type: "PlanningFlowCompleted",
-         payload: Map.put(payload, :flow_id, flow_id)
+       %ForemanServer.Events.PlanningFlowCompleted{
+         flow_id: flow_id
        }}
     end
   end

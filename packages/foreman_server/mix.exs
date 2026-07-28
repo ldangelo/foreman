@@ -20,6 +20,10 @@ defmodule ForemanServer.MixProject do
       # EventStore persistence
       {:eventstore, "~> 1.3"},
 
+      # Commanded + EventStore adapter (EventStore "via Commanded adapter")
+      {:commanded, "~> 1.4"},
+      {:commanded_eventstore_adapter, "~> 1.4"},
+
       # Phoenix HTTP boundary
       {:phoenix, "~> 1.7"},
       {:plug_cowboy, "~> 2.6"},

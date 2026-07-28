@@ -79,9 +79,12 @@ defmodule ForemanServer.Aggregate do
   # RecordedEvent structs — match BEFORE the generic struct clause
   def event_type(%EventStore.RecordedEvent{event_type: type}), do: type
   def event_type(%CommandedRecordedEvent{event_type: type}), do: type
-  # Typed domain event struct — derive event_type from module name
+  # Typed domain event struct — use the module name as-is (CamelCase), matching
+  # the event_type strings used in apply_event case statements. The snake_case
+  # form (from Macro.underscore) is reserved for event_type strings in the
+  # EventCodec mapping tables.
   def event_type(%{__struct__: _} = struct) when is_map(struct) do
-    Module.split(struct.__struct__) |> List.last() |> Macro.underscore()
+    struct.__struct__ |> Module.split() |> List.last()
   end
 
   def event_type(%{event_type: type}), do: type

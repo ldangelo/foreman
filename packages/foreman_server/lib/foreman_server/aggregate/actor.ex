@@ -132,7 +132,12 @@ defmodule ForemanServer.Aggregate.Actor do
             {:append_ok, ^ref, _event_count} ->
               new_module_state = aggregate_module.apply_event(state.module_state, typed_event)
               new_version = state.version + 1
-              {:reply, {:ok, typed_event},
+              event_spec = %{
+                "event_type" => ForemanServer.Aggregate.event_type(typed_event),
+                "stream_id" => aggregate_id,
+                "payload" => to_string_keys(typed_event)
+              }
+              {:reply, {:ok, event_spec},
                %{state | module_state: new_module_state, version: new_version}}
 
             {:error, ^ref, :duplicate_event} ->
@@ -173,9 +178,10 @@ defmodule ForemanServer.Aggregate.Actor do
   # Internal
   # -------------------------------------------------------------------------
 
-  # Typed struct — derive event_type from module name, struct becomes data
+  # Typed struct — derive CamelCase event_type via Aggregate.event_type (matching
+  # apply_event case statements), struct becomes data.
   defp normalize_to_event_data(%{__struct__: _} = struct, event_id) do
-    event_type = EventCodec.module_to_event_type(struct.__struct__)
+    event_type = Aggregate.event_type(struct)
     %EventData{event_id: event_id, event_type: event_type, data: struct}
   end
 
@@ -210,17 +216,27 @@ defmodule ForemanServer.Aggregate.Actor do
   defp to_string_keys(other), do: other
   # Convert a stored %RecordedEvent{} to an event_spec map with string keys.
   # Handles both raw EventStore.RecordedEvent (from tests) and
-  # Commanded.EventStore.RecordedEvent (from Commanded.EventStore.stream_forward,
-  # which carries event_id via metadata enrichment by EventStoreAdapter).
+  # Commanded.EventStore.RecordedEvent (from Commanded.EventStore.stream_forward).
+  # The 'payload' field carries the inner event (unwrapped from %EventData{}).
   defp recorded_event_to_event_spec(nil), do: nil
+
+  # Raw EventStore.RecordedEvent with stream_id field
   defp recorded_event_to_event_spec(%{stream_id: stream_id, event_type: et, data: d} = recorded) do
     event_id = Map.get(recorded, :event_id)
-    spec = %{"stream_id" => stream_id, "event_type" => et, "payload" => d}
+    payload = unwrap_payload(d) |> to_string_keys()
+    spec = %{"stream_id" => stream_id, "event_type" => et, "payload" => payload}
     if event_id, do: Map.put(spec, "event_id", event_id), else: spec
   end
+
+  # CommandedRecordedEvent with stream_uuid field
   defp recorded_event_to_event_spec(%{stream_uuid: su, event_type: et, data: d}) do
-    %{"stream_id" => su, "event_type" => et, "payload" => d}
+    payload = unwrap_payload(d) |> to_string_keys()
+    %{"stream_id" => su, "event_type" => et, "payload" => payload}
   end
+
+  # Unwrap %EventData{} to extract inner event; pass-through for plain maps (legacy).
+  defp unwrap_payload(%EventData{data: inner}), do: inner
+  defp unwrap_payload(other), do: other
 
   # -------------------------------------------------------------------------
   # AC2: Deterministic event_id and idempotency

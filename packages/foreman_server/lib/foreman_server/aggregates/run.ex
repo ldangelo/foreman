@@ -139,10 +139,9 @@ defmodule ForemanServer.Aggregates.Run do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_absent(state, run_id) do
       {:ok,
-       %{
-         stream_id: "run:#{run_id}",
-         event_type: "RunStarted",
-         payload: payload |> Map.put(:run_id, run_id) |> Map.put(:status, "in_progress")
+       %ForemanServer.Events.RunStarted{
+         run_id: run_id,
+         task_id: Aggregate.get(payload, :task_id)
        }}
     end
   end
@@ -152,13 +151,9 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
       {:ok,
-       %{
-         stream_id: "run:#{run_id}",
-         event_type: "RunUpdated",
-         payload:
-           payload
-           |> Map.put(:run_id, run_id)
-           |> drop_lifecycle_fields()
+       %ForemanServer.Events.RunUpdated{
+         run_id: run_id,
+         task_id: Aggregate.get(payload, :task_id)
        }}
     end
   end
@@ -167,12 +162,7 @@ defmodule ForemanServer.Aggregates.Run do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- allow_delete_on_terminal(state) do
-      {:ok,
-       %{
-         stream_id: "run:#{run_id}",
-         event_type: "RunDeleted",
-         payload: Map.put(payload, :run_id, run_id)
-       }}
+      {:ok, %ForemanServer.Events.RunDeleted{run_id: run_id}}
     end
   end
 
@@ -183,57 +173,117 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_sequence(state, Aggregate.get(payload, :sequence)),
          :ok <- reject_terminal_mutation(state) do
       {:ok,
-       %{
-         stream_id: "run:#{run_id}",
-         event_type: "RunCompleted",
-         payload: Map.put(payload, :run_id, run_id)
+       %ForemanServer.Events.RunCompleted{
+         run_id: run_id,
+         sequence: Aggregate.get(payload, :sequence)
        }}
     end
   end
 
-  # run.fail / run.block — no sequence guard
-  def handle_command(state, %{type: type, payload: payload})
-      when type in ["run.fail", "run.block"] do
+  # run.fail — no sequence guard
+  def handle_command(state, %{type: "run.fail", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
-      event_type = %{"run.fail" => "RunFailed", "run.block" => "RunBlocked"}[type]
+      {:ok, %ForemanServer.Events.RunFailed{run_id: run_id}}
+    end
+  end
 
+  # run.block — no sequence guard
+  def handle_command(state, %{type: "run.block", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok, %ForemanServer.Events.RunBlocked{run_id: run_id}}
+    end
+  end
+
+  def handle_command(state, %{type: "run.pr.update", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.update"),
+         :ok <- require_pr_payload("run.pr.update", payload) do
       {:ok,
-       %{
-         stream_id: "run:#{run_id}",
-         event_type: event_type,
-         payload: Map.put(payload, :run_id, run_id)
+       %ForemanServer.Events.PrUpdated{
+         run_id: run_id,
+         project_id: Aggregate.get(payload, :project_id),
+         task_id: Aggregate.get(payload, :task_id),
+         pr_url: Aggregate.get(payload, :pr_url),
+         branch_name: Aggregate.get(payload, :branch_name),
+         head_sha: Aggregate.get(payload, :head_sha),
+         base_branch: Aggregate.get(payload, :base_branch),
+         phase: Aggregate.get(payload, :phase)
        }}
     end
   end
 
-  def handle_command(state, %{type: type, payload: payload})
-      when type in [
-             "run.pr.update",
-             "run.pr.ready",
-             "run.pr.retarget",
-             "run.pr.reset",
-             "run.pr.merge"
-           ] do
-    event_type =
-      %{
-        "run.pr.update" => "PrUpdated",
-        "run.pr.ready" => "PrReady",
-        "run.pr.retarget" => "PrRetargeted",
-        "run.pr.reset" => "PrReset",
-        "run.pr.merge" => "PrMerged"
-      }[type]
-
+  def handle_command(state, %{type: "run.pr.ready", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
-         :ok <- allow_pr_lifecycle_on_terminal_runs(state, type),
-         :ok <- require_pr_payload(type, payload) do
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.ready"),
+         :ok <- require_pr_payload("run.pr.ready", payload) do
       {:ok,
-       %{
-         stream_id: "run:#{run_id}",
-         event_type: event_type,
-         payload: Map.put(payload, :run_id, run_id)
+       %ForemanServer.Events.PrReady{
+         run_id: run_id,
+         project_id: Aggregate.get(payload, :project_id),
+         task_id: Aggregate.get(payload, :task_id),
+         pr_url: Aggregate.get(payload, :pr_url),
+         branch_name: Aggregate.get(payload, :branch_name),
+         head_sha: Aggregate.get(payload, :head_sha),
+         base_branch: Aggregate.get(payload, :base_branch)
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "run.pr.retarget", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.retarget"),
+         :ok <- require_pr_payload("run.pr.retarget", payload) do
+      {:ok,
+       %ForemanServer.Events.PrRetargeted{
+         run_id: run_id,
+         project_id: Aggregate.get(payload, :project_id),
+         task_id: Aggregate.get(payload, :task_id),
+         pr_url: Aggregate.get(payload, :pr_url),
+         branch_name: Aggregate.get(payload, :branch_name),
+         old_base_branch: Aggregate.get(payload, :old_base_branch),
+         new_base_branch: Aggregate.get(payload, :new_base_branch),
+         head_sha: Aggregate.get(payload, :head_sha)
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "run.pr.reset", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.reset"),
+         :ok <- require_pr_payload("run.pr.reset", payload) do
+      {:ok,
+       %ForemanServer.Events.PrReset{
+         run_id: run_id,
+         project_id: Aggregate.get(payload, :project_id),
+         task_id: Aggregate.get(payload, :task_id),
+         pr_url: Aggregate.get(payload, :pr_url),
+         branch_name: Aggregate.get(payload, :branch_name),
+         action: Aggregate.get(payload, :action),
+         reason: Aggregate.get(payload, :reason)
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "run.pr.merge", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.merge"),
+         :ok <- require_pr_payload("run.pr.merge", payload) do
+      {:ok,
+       %ForemanServer.Events.PrMerged{
+         run_id: run_id,
+         project_id: Aggregate.get(payload, :project_id),
+         task_id: Aggregate.get(payload, :task_id),
+         pr_url: Aggregate.get(payload, :pr_url),
+         branch_name: Aggregate.get(payload, :branch_name)
        }}
     end
   end
@@ -272,20 +322,6 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
-  defp drop_lifecycle_fields(payload) do
-    Map.drop(payload, [
-      :status,
-      "status",
-      :terminal?,
-      "terminal?",
-      :completed_at,
-      "completed_at",
-      :failed_at,
-      "failed_at",
-      :blocked_at,
-      "blocked_at"
-    ])
-  end
 
   defp require_pr_payload(type, payload) do
     required =

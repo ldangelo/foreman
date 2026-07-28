@@ -47,10 +47,8 @@ defmodule ForemanServer.Aggregates.ImportMigration do
     with {:ok, import_id} <- import_id(payload),
          :ok <- require_absent(state) do
       {:ok,
-       %{
-         stream_id: "migration:#{escape(import_id)}",
-         event_type: "MigrationImportStarted",
-         payload: put_import_id(payload, import_id)
+       %ForemanServer.Events.MigrationImportStarted{
+         import_id: import_id
        }}
     end
   end
@@ -60,10 +58,9 @@ defmodule ForemanServer.Aggregates.ImportMigration do
          :ok <- require_active(state),
          :ok <- reject_duplicate_record(state, record_id(payload)) do
       {:ok,
-       %{
-         stream_id: "migration:#{escape(import_id)}",
-         event_type: "MigrationRecordImported",
-         payload: put_import_id(payload, import_id)
+       %ForemanServer.Events.MigrationRecordImported{
+         import_id: import_id,
+         record_id: record_id(payload)
        }}
     end
   end
@@ -72,10 +69,8 @@ defmodule ForemanServer.Aggregates.ImportMigration do
     with {:ok, import_id} <- import_id(payload),
          :ok <- require_active(state) do
       {:ok,
-       %{
-         stream_id: "migration:#{escape(import_id)}",
-         event_type: "MigrationImportCompleted",
-         payload: put_import_id(payload, import_id)
+       %ForemanServer.Events.MigrationImportCompleted{
+         import_id: import_id
        }}
     end
   end

@@ -84,22 +84,17 @@ defmodule ForemanServer.Aggregates.Recovery do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_observation_for_action(state, type),
          :ok <- reject_resolved(state) do
-      event_type =
-        %{
-          "recovery.observe_external_worker" => "WorkerRecoveryObserved",
-          "recovery.require" => "WorkerRecoveryRequired",
-          "recovery.reattach" => "WorkerReattached",
-          "recovery.restart" => "WorkerRestarted",
-          "recovery.needs_operator" => "NeedsOperator",
-          "recovery.resolve" => "RecoveryResolved"
-        }[type]
+      event =
+        case type do
+          "recovery.observe_external_worker" -> %ForemanServer.Events.WorkerRecoveryObserved{run_id: run_id}
+          "recovery.require" -> %ForemanServer.Events.WorkerRecoveryRequired{run_id: run_id}
+          "recovery.reattach" -> %ForemanServer.Events.WorkerReattached{run_id: run_id}
+          "recovery.restart" -> %ForemanServer.Events.WorkerRestarted{run_id: run_id}
+          "recovery.needs_operator" -> %ForemanServer.Events.NeedsOperator{run_id: run_id}
+          "recovery.resolve" -> %ForemanServer.Events.RecoveryResolved{run_id: run_id}
+        end
 
-      {:ok,
-       %{
-         stream_id: "recovery:#{run_id}",
-         event_type: event_type,
-         payload: Map.put(payload, :run_id, run_id)
-       }}
+      {:ok, event}
     end
   end
 

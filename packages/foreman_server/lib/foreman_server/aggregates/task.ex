@@ -104,28 +104,21 @@ defmodule ForemanServer.Aggregates.Task do
          :ok <- validate_status(Aggregate.get(payload, :status, "open")),
          :ok <- validate_project_allows_tasks(Aggregate.get(payload, :project_id)) do
       {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskCreated",
-         payload: %{
-           task_id: task_id,
-           project_id: Aggregate.get(payload, :project_id),
-           title: Aggregate.get(payload, :title, task_id),
-           description: Aggregate.get(payload, :description),
-           priority: Aggregate.get(payload, :priority),
-           status: Aggregate.get(payload, :status, "open"),
-           dependencies: Aggregate.get(payload, :dependencies, []),
-           task_type: Aggregate.get(payload, :task_type) || Aggregate.get(payload, :type),
-           source: Aggregate.get(payload, :source),
-           external_id: Aggregate.get(payload, :external_id),
-           external_link: Aggregate.get(payload, :external_link),
-           dedupe_key: Aggregate.get(payload, :dedupe_key),
-           integration_event_type: Aggregate.get(payload, :integration_event_type),
-           planning_run_id: Aggregate.get(payload, :planning_run_id),
-           planning_kind: Aggregate.get(payload, :planning_kind),
-           planning_phase_id: Aggregate.get(payload, :planning_phase_id),
-           trace_event_id: Aggregate.get(payload, :trace_event_id)
-         }
+       %ForemanServer.Events.TaskCreated{
+         task_id: task_id,
+         project_id: Aggregate.get(payload, :project_id),
+         title: Aggregate.get(payload, :title, task_id),
+         description: Aggregate.get(payload, :description),
+         priority: Aggregate.get(payload, :priority),
+         status: Aggregate.get(payload, :status, "open"),
+         dependencies: Aggregate.get(payload, :dependencies, []),
+         task_type: Aggregate.get(payload, :task_type) || Aggregate.get(payload, :type),
+         source: Aggregate.get(payload, :source),
+         external_id: Aggregate.get(payload, :external_id),
+         external_link: Aggregate.get(payload, :external_link),
+         dedupe_key: Aggregate.get(payload, :dedupe_key),
+         integration_event_type: Aggregate.get(payload, :integration_event_type),
+         planning_run_id: Aggregate.get(payload, :planning_run_id)
        }}
     end
   end
@@ -141,10 +134,9 @@ defmodule ForemanServer.Aggregates.Task do
          :ok <- require_exists(state, task_id),
          :ok <- allow_transition(state, status) do
       {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskUpdated",
-         payload: %{task_id: task_id, status: status}
+       %ForemanServer.Events.TaskUpdated{
+         task_id: task_id,
+         status: status
        }}
     end
   end
@@ -155,10 +147,9 @@ defmodule ForemanServer.Aggregates.Task do
          :ok <- validate_status(Aggregate.get(payload, :status)),
          :ok <- allow_transition(state, Aggregate.get(payload, :status)) do
       {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskUpdated",
-         payload: Map.put(payload, :task_id, task_id)
+       %ForemanServer.Events.TaskUpdated{
+         task_id: task_id,
+         status: Aggregate.get(payload, :status)
        }}
     end
   end
@@ -168,14 +159,12 @@ defmodule ForemanServer.Aggregates.Task do
          :ok <- require_exists(state, task_id),
          {:ok, body} <- Aggregate.required_binary(Aggregate.get(payload, :body), :body) do
       {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskAnnotated",
-         payload: %{
-           task_id: task_id,
-           body: body,
-           author: Aggregate.get(payload, :author)
-         }
+       %ForemanServer.Events.TaskAnnotated{
+         task_id: task_id,
+         body: body,
+         author: Aggregate.get(payload, :author),
+         created_at: Aggregate.get(payload, :created_at),
+         metadata: Aggregate.get(payload, :metadata)
        }}
     end
   end
@@ -187,10 +176,9 @@ defmodule ForemanServer.Aggregates.Task do
          :ok <- require_exists(state, task_id),
          :ok <- reject_self_dependency(task_id, depends_on) do
       {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskDependencyAdded",
-         payload: %{task_id: task_id, depends_on: depends_on}
+       %ForemanServer.Events.TaskDependencyAdded{
+         task_id: task_id,
+         depends_on: depends_on
        }}
     end
   end

@@ -54,10 +54,9 @@ defmodule ForemanServer.Aggregates.Attachment do
          :ok <- require_open(state),
          :ok <- reject_requested(state) do
       {:ok,
-       %{
-         stream_id: stream_id(payload, run_id),
-         event_type: "AttachRequested",
-         payload: Map.put(payload, :run_id, run_id)
+       %ForemanServer.Events.AttachRequested{
+         run_id: run_id,
+         worker_id: Aggregate.get(payload, :worker_id, "default")
        }}
     end
   end
@@ -66,10 +65,9 @@ defmodule ForemanServer.Aggregates.Attachment do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_open(state) do
       {:ok,
-       %{
-         stream_id: stream_id(payload, run_id),
-         event_type: "AttachUnsupported",
-         payload: Map.put(payload, :run_id, run_id)
+       %ForemanServer.Events.AttachUnsupported{
+         run_id: run_id,
+         worker_id: Aggregate.get(payload, :worker_id, "default")
        }}
     end
   end

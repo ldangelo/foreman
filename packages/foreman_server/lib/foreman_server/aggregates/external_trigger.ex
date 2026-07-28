@@ -43,10 +43,8 @@ defmodule ForemanServer.Aggregates.ExternalTrigger do
     with {:ok, trigger_id} <- trigger_id(payload),
          :ok <- require_absent(state) do
       {:ok,
-       %{
-         stream_id: "external:#{escape(trigger_id)}",
-         event_type: "ExternalTriggerCommand",
-         payload: Map.put(payload, :trigger_id, trigger_id)
+       %ForemanServer.Events.ExternalTriggerCommand{
+         trigger_id: trigger_id
        }}
     end
   end
@@ -56,10 +54,8 @@ defmodule ForemanServer.Aggregates.ExternalTrigger do
          :ok <- require_existing(state),
          :ok <- reject_accepted(state) do
       {:ok,
-       %{
-         stream_id: "external:#{escape(trigger_id)}",
-         event_type: "CommandAccepted",
-         payload: Map.put(payload, :trigger_id, trigger_id)
+       %ForemanServer.Events.CommandAccepted{
+         trigger_id: trigger_id
        }}
     end
   end
@@ -68,10 +64,8 @@ defmodule ForemanServer.Aggregates.ExternalTrigger do
     with {:ok, trigger_id} <- trigger_id(payload),
          :ok <- require_existing(state) do
       {:ok,
-       %{
-         stream_id: "external:#{escape(trigger_id)}",
-         event_type: "ExternalWorkerObserved",
-         payload: Map.put(payload, :trigger_id, trigger_id)
+       %ForemanServer.Events.ExternalWorkerObserved{
+         trigger_id: trigger_id
        }}
     end
   end

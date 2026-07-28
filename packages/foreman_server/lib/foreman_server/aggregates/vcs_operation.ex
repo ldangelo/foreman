@@ -100,23 +100,18 @@ defmodule ForemanServer.Aggregates.VcsOperation do
            Aggregate.required_binary(Aggregate.get(payload, :operation_id), :operation_id),
          :ok <- require_existing_operation_for_terminal(state, type),
          :ok <- reject_terminal(state, type) do
-      event_type =
-        %{
-          "vcs.worktree.create" => "WorktreeCreated",
-          "vcs.worktree.clean" => "WorktreeCleaned",
-          "vcs.merge.request" => "VcsMergeRequested",
-          "vcs.pr.observe" => "PrGateObserved",
-          "vcs.pr.merge" => "VcsPrMerged",
-          "vcs.merge.fail" => "MergeFailed",
-          "vcs.merge.block" => "MergeBlocked"
-        }[type]
+      event =
+        case type do
+          "vcs.worktree.create" -> %ForemanServer.Events.WorktreeCreated{operation_id: operation_id}
+          "vcs.worktree.clean" -> %ForemanServer.Events.WorktreeCleaned{operation_id: operation_id}
+          "vcs.merge.request" -> %ForemanServer.Events.VcsMergeRequested{operation_id: operation_id}
+          "vcs.pr.observe" -> %ForemanServer.Events.PrGateObserved{operation_id: operation_id}
+          "vcs.pr.merge" -> %ForemanServer.Events.VcsPrMerged{operation_id: operation_id}
+          "vcs.merge.fail" -> %ForemanServer.Events.MergeFailed{operation_id: operation_id}
+          "vcs.merge.block" -> %ForemanServer.Events.MergeBlocked{operation_id: operation_id}
+        end
 
-      {:ok,
-       %{
-         stream_id: "vcs:#{operation_id}",
-         event_type: event_type,
-         payload: Map.put(payload, :operation_id, operation_id)
-       }}
+      {:ok, event}
     end
   end
 

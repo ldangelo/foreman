@@ -72,10 +72,11 @@ defmodule ForemanServer.Aggregates.InboxThread do
          {:ok, body} <- Aggregate.required_binary(Aggregate.get(payload, :body), :body),
          :ok <- require_absent(state, message_id) do
       {:ok,
-       %{
-         stream_id: "inbox:#{run_id}",
-         event_type: "InboxMessageAppended",
-         payload: Map.merge(payload, %{run_id: run_id, message_id: message_id, body: body})
+       %ForemanServer.Events.InboxMessageAppended{
+         run_id: run_id,
+         message_id: message_id,
+         body: body,
+         metadata: Aggregate.get(payload, :metadata)
        }}
     end
   end
@@ -88,11 +89,11 @@ defmodule ForemanServer.Aggregates.InboxThread do
            Aggregate.required_binary(Aggregate.get(payload, :delivery_status), :delivery_status),
          :ok <- require_message(state, message_id) do
       {:ok,
-       %{
-         stream_id: "inbox:#{run_id}",
-         event_type: "InboxDeliveryUpdated",
-         payload:
-           Map.merge(payload, %{run_id: run_id, message_id: message_id, delivery_status: status})
+       %ForemanServer.Events.InboxDeliveryUpdated{
+         run_id: run_id,
+         message_id: message_id,
+         delivery_status: status,
+         metadata: Aggregate.get(payload, :metadata)
        }}
     end
   end

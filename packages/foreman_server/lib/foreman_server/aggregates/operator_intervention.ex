@@ -59,15 +59,14 @@ defmodule ForemanServer.Aggregates.OperatorIntervention do
       when type in ["operator.needs", "operator.interrupt"] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- reject_active(state) do
-      event_type =
-        if type == "operator.needs", do: "NeedsOperator", else: "HumanInterruptionRecorded"
+      event =
+        if type == "operator.needs" do
+          %ForemanServer.Events.NeedsOperator{run_id: run_id}
+        else
+          %ForemanServer.Events.HumanInterruptionRecorded{run_id: run_id}
+        end
 
-      {:ok,
-       %{
-         stream_id: "operator:#{escape(run_id)}",
-         event_type: event_type,
-         payload: Map.put(payload, :run_id, run_id)
-       }}
+      {:ok, event}
     end
   end
 
@@ -75,10 +74,8 @@ defmodule ForemanServer.Aggregates.OperatorIntervention do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_active(state) do
       {:ok,
-       %{
-         stream_id: "operator:#{escape(run_id)}",
-         event_type: "InteractiveRecoveryResumed",
-         payload: Map.put(payload, :run_id, run_id)
+       %ForemanServer.Events.InteractiveRecoveryResumed{
+         run_id: run_id
        }}
     end
   end

@@ -85,10 +85,13 @@ defmodule ForemanServer.Aggregates.Project do
          :ok <- require_absent(state, project_id),
          :ok <- validate_status(Aggregate.get(payload, :status, "active")) do
       {:ok,
-       %{
-         stream_id: "project:#{project_id}",
-         event_type: "ProjectRegistered",
-         payload: Map.merge(payload, %{project_id: project_id, path: path})
+       %ForemanServer.Events.ProjectRegistered{
+         project_id: project_id,
+         path: path,
+         status: Aggregate.get(payload, :status, "active"),
+         default_branch: Aggregate.get(payload, :default_branch, "main"),
+         config: Aggregate.get(payload, :config),
+         health: Aggregate.get(payload, :health)
        }}
     end
   end
@@ -98,10 +101,13 @@ defmodule ForemanServer.Aggregates.Project do
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
          :ok <- require_exists(state, project_id) do
       {:ok,
-       %{
-         stream_id: "project:#{project_id}",
-         event_type: "ProjectUpdated",
-         payload: Map.merge(payload, %{project_id: project_id})
+       %ForemanServer.Events.ProjectUpdated{
+         project_id: project_id,
+         name: Aggregate.get(payload, :name),
+         status: Aggregate.get(payload, :status),
+         default_branch: Aggregate.get(payload, :default_branch),
+         config: Aggregate.get(payload, :config),
+         health: Aggregate.get(payload, :health)
        }}
     end
   end
@@ -111,12 +117,7 @@ defmodule ForemanServer.Aggregates.Project do
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
          :ok <- require_exists(state, project_id),
          :ok <- validate_archive(state) do
-      {:ok,
-       %{
-         stream_id: "project:#{project_id}",
-         event_type: "ProjectArchived",
-         payload: Map.merge(payload, %{project_id: project_id})
-       }}
+      {:ok, %ForemanServer.Events.ProjectArchived{project_id: project_id}}
     end
   end
 
@@ -125,12 +126,7 @@ defmodule ForemanServer.Aggregates.Project do
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
          :ok <- require_exists(state, project_id),
          :ok <- validate_reactivate(state) do
-      {:ok,
-       %{
-         stream_id: "project:#{project_id}",
-         event_type: "ProjectReactivated",
-         payload: Map.merge(payload, %{project_id: project_id})
-       }}
+      {:ok, %ForemanServer.Events.ProjectReactivated{project_id: project_id}}
     end
   end
 

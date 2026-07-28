@@ -68,10 +68,11 @@ defmodule ForemanServer.Aggregates.ToolCall do
     with {:ok, tool_call_id} <- tool_call_id(payload),
          :ok <- require_absent(state) do
       {:ok,
-       %{
-         stream_id: stream_id(payload, tool_call_id),
-         event_type: "ToolCallRequested",
-         payload: Map.put(payload, :tool_call_id, tool_call_id)
+       %ForemanServer.Events.ToolCallRequested{
+         tool_call_id: tool_call_id,
+         tool_name: Aggregate.get(payload, :tool_name),
+         input: Aggregate.get(payload, :input),
+         run_id: Aggregate.get(payload, :run_id)
        }}
     end
   end
@@ -80,14 +81,14 @@ defmodule ForemanServer.Aggregates.ToolCall do
       when type in ["tool.approve", "tool.deny"] do
     with {:ok, tool_call_id} <- tool_call_id(payload),
          :ok <- require_status(state, ["requested"]) do
-      event_type = if type == "tool.approve", do: "ToolCallApproved", else: "ToolCallDenied"
+      event =
+        if type == "tool.approve" do
+          %ForemanServer.Events.ToolCallApproved{tool_call_id: tool_call_id}
+        else
+          %ForemanServer.Events.ToolCallDenied{tool_call_id: tool_call_id}
+        end
 
-      {:ok,
-       %{
-         stream_id: stream_id(payload, tool_call_id),
-         event_type: event_type,
-         payload: Map.put(payload, :tool_call_id, tool_call_id)
-       }}
+      {:ok, event}
     end
   end
 
@@ -95,10 +96,10 @@ defmodule ForemanServer.Aggregates.ToolCall do
     with {:ok, tool_call_id} <- tool_call_id(payload),
          :ok <- require_status(state, ["requested", "approved"]) do
       {:ok,
-       %{
-         stream_id: stream_id(payload, tool_call_id),
-         event_type: "ToolCallFinished",
-         payload: Map.put(payload, :tool_call_id, tool_call_id)
+       %ForemanServer.Events.ToolCallFinished{
+         tool_call_id: tool_call_id,
+         worker_id: Aggregate.get(payload, :worker_id),
+         run_id: Aggregate.get(payload, :run_id)
        }}
     end
   end

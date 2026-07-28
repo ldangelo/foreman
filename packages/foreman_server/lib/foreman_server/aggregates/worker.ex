@@ -130,22 +130,17 @@ defmodule ForemanServer.Aggregates.Worker do
            Aggregate.required_binary(Aggregate.get(payload, :worker_id), :worker_id),
          :ok <- validate_next_sequence(state, Aggregate.get(payload, :sequence)),
          :ok <- allow_after_terminal(state, type) do
-      event_type =
-        %{
-          "worker.start" => "WorkerStarted",
-          "worker.heartbeat" => "WorkerHeartbeat",
-          "worker.exit" => "WorkerExited",
-          "worker.message" => "AssistantMessage",
-          "worker.stdout.append" => "WorkerStdout",
-          "worker.stderr.append" => "WorkerStderr"
-        }[type]
+      event =
+        case type do
+          "worker.start" -> %ForemanServer.Events.WorkerStarted{run_id: run_id, worker_id: worker_id}
+          "worker.heartbeat" -> %ForemanServer.Events.WorkerHeartbeat{run_id: run_id, worker_id: worker_id}
+          "worker.exit" -> %ForemanServer.Events.WorkerExited{run_id: run_id, worker_id: worker_id}
+          "worker.message" -> %ForemanServer.Events.AssistantMessage{run_id: run_id, worker_id: worker_id}
+          "worker.stdout.append" -> %ForemanServer.Events.WorkerStdout{run_id: run_id, worker_id: worker_id}
+          "worker.stderr.append" -> %ForemanServer.Events.WorkerStderr{run_id: run_id, worker_id: worker_id}
+        end
 
-      {:ok,
-       %{
-         stream_id: "worker:#{run_id}:#{worker_id}",
-         event_type: event_type,
-         payload: Map.merge(payload, %{run_id: run_id, worker_id: worker_id})
-       }}
+      {:ok, event}
     end
   end
 

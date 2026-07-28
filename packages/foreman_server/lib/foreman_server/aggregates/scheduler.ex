@@ -69,10 +69,8 @@ defmodule ForemanServer.Aggregates.Scheduler do
     project_id = Aggregate.get(payload, :project_id, "global")
 
     {:ok,
-     %{
-       stream_id: "scheduler:#{project_id}",
-       event_type: "SchedulerTicked",
-       payload: Map.put_new(payload, :project_id, project_id)
+     %ForemanServer.Events.SchedulerTicked{
+       project_id: project_id
      }}
   end
 
@@ -82,10 +80,9 @@ defmodule ForemanServer.Aggregates.Scheduler do
       project_id = Aggregate.get(payload, :project_id, "global")
 
       {:ok,
-       %{
-         stream_id: "scheduler:#{project_id}",
-         event_type: "SchedulerTaskClaimed",
-         payload: Map.merge(payload, %{project_id: project_id, task_id: task_id})
+       %ForemanServer.Events.SchedulerTaskClaimed{
+         task_id: task_id,
+         project_id: project_id
        }}
     end
   end
@@ -95,10 +92,9 @@ defmodule ForemanServer.Aggregates.Scheduler do
       project_id = Aggregate.get(payload, :project_id, "global")
 
       {:ok,
-       %{
-         stream_id: "scheduler:#{project_id}",
-         event_type: "SchedulerTaskSkipped",
-         payload: Map.merge(payload, %{project_id: project_id, task_id: task_id})
+       %ForemanServer.Events.SchedulerTaskSkipped{
+         task_id: task_id,
+         project_id: project_id
        }}
     end
   end
