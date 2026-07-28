@@ -4,20 +4,24 @@ defmodule ForemanServer.CommandRouter do
 
   All commands from all ingress paths (Phoenix HTTP, worker protocol, overwatch)
   must eventually route through this module. Only this module (or its private
-  helpers) call `EventStore.append_to_stream`.
+  helpers) call `Commanded.EventStore.append_to_stream` via the adapter.
 
   ## Actor ↔ CommandRouter protocol
 
-  1. Actor sends `{:append, aggregate_id, event_data_list, expected_version, actor_pid}`.
-     The `event_data_list` is a list of pre-normalized `%EventData{}` structs.
-  2. CommandRouter appends via `EventStore.append_to_stream(stream_uuid, expected_version, event_data_list)`.
+  1. Actor sends `{:append, aggregate_id, event_data_list, expected_version, ref, actor_pid}`.
+     The `event_data_list` is a list of `%EventStore.EventData{}` structs produced by
+     `Actor.normalize_to_event_data`, each carrying a deterministic `event_id`.
+  2. CommandRouter calls `Commanded.EventStore.append_to_stream(stream_uuid, expected_version, event_data_list)`.
+     The `EventStoreAdapter` receives the raw `%EventStore.EventData{}` list and appends
+     directly to `ForemanServer.EventStore`, preserving `event_id` in the database.
      Returns `:ok` on success.
   3. CommandRouter sends result back to `actor_pid`:
-     - `{:append_ok, event_count}` on success
-     - `{:append_error, reason}` on conflict or other failure
+     - `{:append_ok, ref, event_count}` on success
+     - `{:error, ref, reason}` on conflict or other failure
   """
 
-  alias ForemanServer.{EventStore, Aggregate.Actor}
+  alias ForemanServer.CommandedApplication
+  alias ForemanServer.Aggregate.Actor
   use GenServer
 
   @doc """
@@ -39,24 +43,20 @@ defmodule ForemanServer.CommandRouter do
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
-  # -------------------------------------------------------------------------
-  # GenServer callbacks
-  # -------------------------------------------------------------------------
-
-
   @impl true
   def init(_init_arg) do
     {:ok, %{}}
   end
 
   @impl true
-  def handle_info({:append, aggregate_id, event_data_list, expected_version, ref, actor_pid}, state) do
+  def handle_info(
+        {:append, aggregate_id, event_data_list, expected_version, ref, actor_pid},
+        state
+      ) do
     result = append_events(aggregate_id, expected_version, event_data_list)
 
     case result do
       :ok ->
-        # Apply confirmed events to projection store before notifying actor.
-        # This keeps the projection synchronous with the command path.
         _ = ForemanServer.ProjectionStore.apply_events(event_data_list)
         send(actor_pid, {:append_ok, ref, length(event_data_list)})
 
@@ -67,14 +67,18 @@ defmodule ForemanServer.CommandRouter do
     {:noreply, state}
   end
 
-  # -------------------------------------------------------------------------
-  # Internal
-  # -------------------------------------------------------------------------
-
-  # event_data_list is already a list of %EventData{} — pass through directly.
-  # EventStore.append_to_stream/4 returns :ok on success.
-  defp append_events(aggregate_id, expected_version, event_data_list) when is_list(event_data_list) do
-    case EventStore.append_to_stream(aggregate_id, expected_version, event_data_list) do
+  # Append events via the Commanded path.
+  # Passes raw %EventStore.EventData{} structs (with event_id) unchanged.
+  # The EventStoreAdapter.append_to_stream receives these and calls
+  # ForemanServer.EventStore.append_to_stream directly, preserving event_id.
+  defp append_events(aggregate_id, expected_version, event_data_list)
+       when is_list(event_data_list) do
+    case Commanded.EventStore.append_to_stream(
+           CommandedApplication,
+           aggregate_id,
+           expected_version,
+           event_data_list
+         ) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
     end
@@ -86,5 +90,7 @@ defmodule ForemanServer.CommandRouter do
   defp aggregate_module_for("worker:" <> _), do: ForemanServer.Aggregates.Worker
   defp aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
   defp aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
-  defp aggregate_module_for(aggregate_id), do: raise("Unknown aggregate_id prefix: #{aggregate_id}")
+
+  defp aggregate_module_for(aggregate_id),
+    do: raise("Unknown aggregate_id prefix: #{aggregate_id}")
 end

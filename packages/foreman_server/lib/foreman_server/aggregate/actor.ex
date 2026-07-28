@@ -34,9 +34,8 @@ defmodule ForemanServer.Aggregate.Actor do
      - On conflict/error: version unchanged, returns `{:reply, {:error, reason}, old_state}`
   """
 
-  alias ForemanServer.{Aggregate, CommandRouter}
-  alias EventStore.EventData
-  alias ForemanServer.EventStore
+  alias ForemanServer.{Aggregate, CommandRouter, EventCodec}
+  alias EventStore.EventData, as: EventData
 
   use GenServer
 
@@ -123,7 +122,28 @@ defmodule ForemanServer.Aggregate.Actor do
         {:ok, nil} ->
           {:reply, {:ok, nil}, state}
 
+        {:ok, %{__struct__: _} = typed_event} ->
+          event_data = normalize_to_event_data(typed_event, event_id)
+          ref = make_ref()
+
+          send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()})
+
+          receive do
+            {:append_ok, ^ref, _event_count} ->
+              new_module_state = aggregate_module.apply_event(state.module_state, typed_event)
+              new_version = state.version + 1
+              {:reply, {:ok, typed_event},
+               %{state | module_state: new_module_state, version: new_version}}
+
+            {:error, ^ref, :duplicate_event} ->
+              {:reply, {:ok, existing_event_spec(aggregate_id, event_id)}, state}
+
+            {:error, ^ref, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+
         {:ok, event_spec} when is_map(event_spec) ->
+          # Legacy map spec path — kept during migration
           event_data = normalize_to_event_data(event_spec, event_id)
           ref = make_ref()
 
@@ -153,10 +173,13 @@ defmodule ForemanServer.Aggregate.Actor do
   # Internal
   # -------------------------------------------------------------------------
 
-  # Convert event_spec map to %EventData{} for append.
-  # When event_id is provided (commands with command_id), it is set on the
-  # %EventData{} so EventStore uses it as the persisted event_id — enabling
-  # database-level deduplication via the events_pkey unique constraint.
+  # Typed struct — derive event_type from module name, struct becomes data
+  defp normalize_to_event_data(%{__struct__: _} = struct, event_id) do
+    event_type = EventCodec.module_to_event_type(struct.__struct__)
+    %EventData{event_id: event_id, event_type: event_type, data: struct}
+  end
+
+  # Legacy map spec with stream_id, event_type, payload
   defp normalize_to_event_data(%{stream_id: _stream_id, event_type: event_type, payload: payload}, event_id) do
     %EventData{event_id: event_id, event_type: event_type, data: payload}
   end
@@ -186,10 +209,17 @@ defmodule ForemanServer.Aggregate.Actor do
 
   defp to_string_keys(other), do: other
   # Convert a stored %RecordedEvent{} to an event_spec map with string keys.
-  # Used for returning existing events on duplicate idempotent hits.
-  defp recorded_event_to_event_spec(recorded) do
-    %{"stream_id" => recorded.stream_uuid, "event_type" => recorded.event_type,
-      "payload" => recorded.data}
+  # Handles both raw EventStore.RecordedEvent (from tests) and
+  # Commanded.EventStore.RecordedEvent (from Commanded.EventStore.stream_forward,
+  # which carries event_id via metadata enrichment by EventStoreAdapter).
+  defp recorded_event_to_event_spec(nil), do: nil
+  defp recorded_event_to_event_spec(%{stream_id: stream_id, event_type: et, data: d} = recorded) do
+    event_id = Map.get(recorded, :event_id)
+    spec = %{"stream_id" => stream_id, "event_type" => et, "payload" => d}
+    if event_id, do: Map.put(spec, "event_id", event_id), else: spec
+  end
+  defp recorded_event_to_event_spec(%{stream_uuid: su, event_type: et, data: d}) do
+    %{"stream_id" => su, "event_type" => et, "payload" => d}
   end
 
   # -------------------------------------------------------------------------
@@ -216,7 +246,7 @@ defmodule ForemanServer.Aggregate.Actor do
   # Uses read_stream_forward (works with current EventStore schema) instead of
   # the broken read_event_by_id (queries non-existent event_number column).
   defp duplicate_in_stream?(aggregate_id, event_id) do
-    case EventStore.read_stream_forward(aggregate_id, 0, 100) do
+    case ForemanServer.EventStore.read_stream_forward(aggregate_id, 0, 100, []) do
       {:ok, events} ->
         Enum.any?(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end)
       {:error, _} ->
@@ -227,7 +257,7 @@ defmodule ForemanServer.Aggregate.Actor do
   # Find and return the event_spec for an existing event by its event_id.
   # Reads the aggregate's stream and returns the matching event's spec.
   defp existing_event_spec(aggregate_id, event_id) do
-    {:ok, events} = EventStore.read_stream_forward(aggregate_id, 0, 100)
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward(aggregate_id, 0, 100, [])
     recorded = Enum.find(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end)
     recorded_event_to_event_spec(recorded)
   end

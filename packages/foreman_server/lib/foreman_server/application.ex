@@ -3,8 +3,8 @@ defmodule ForemanServer.Application do
   OTP application for ForemanServer.
 
   Starts:
-  - EventStore (Postgrex-backed event log — single source of truth)
-  - Aggregator supervisor (Registry + aggregate Actor children, `:permanent` restart)
+  - CommandedApplication (Commanded.EventStore adapter → owns EventStore)
+  - Aggregator supervisor (Registry + aggregate Actor children, :permanent restart)
   - CommandRouter (GenServer — sole append point)
   """
 
@@ -13,8 +13,9 @@ defmodule ForemanServer.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # EventStore must be started first (ProjectionStore subscribes to it).
-      ForemanServer.EventStore,
+      # Commanded application must start before CommandRouter uses it.
+      # Its adapter child owns and starts ForemanServer.EventStore.
+      ForemanServer.CommandedApplication,
       # ProjectionStore subscribes to EventStore and maintains read model.
       ForemanServer.ProjectionStore,
       # Aggregator starts the Registry and supervises Actor children.
