@@ -177,10 +177,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] New `SharedInbox` module under `foreman_server/inbox/`
   - [ ] `InboxItemCorrelationId` behaviour: `correlation_id(command_or_payload) :: String.t()`
 
-- [ ] **TRD-002** ProjectRegistry | 4h | [satisfies REQ-016] | Validates: AC-016-2 | AC: Given a project process registers, when it calls `ProjectRegistry.register/2`, then the canonical name-to-pid map is updated; lookup by project_id returns the pid; unregister on termination
-  - [ ] `ProjectRegistry` GenServer with `register/2`, `unregister/1`, `lookup/1`
-  - [ ] Uses `Registry` under `:project_registry` registry
-  - [ ] `via(project_id)` helper for `GenServer.start_link`
+- [x] **TRD-002** ProjectRegistry | 4h | [satisfies REQ-016] | Validates: AC-016-2 | AC: Given a project process registers, when it calls `ProjectRegistry.register/2`, then the canonical name-to-pid map is updated; lookup by project_id returns the pid; unregister on termination
+  - [x] `ProjectRegistry` GenServer with `register/2`, `unregister/1`, `lookup/1`
+  - [x] Uses `Registry` under `:project_registry` registry
+  - [x] `via(project_id)` helper for `GenServer.start_link`
 
 - [ ] **TRD-003** ProjectSupervisor | 3h | [satisfies REQ-016] | Validates: AC-016-1 | AC: Given a project is registered, when `ProjectSupervisor.start_project/1` is called, then it starts the full project process tree under this supervisor; crashed project processes are restarted
   - [ ] `ProjectSupervisor` OTP supervisor — `restart: :permanent`, strategy `:one_for_one`
