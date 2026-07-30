@@ -204,7 +204,19 @@ defmodule ForemanServer.Aggregates.Run do
       end
     end
   end
-
+  def handle_command(state, %{type: "run.phase.nudge", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state),
+         {:ok, phase_id} <- Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "PhaseNudged",
+         payload: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
+       }}
+    end
+  end
   def handle_command(state, %{type: type, payload: payload})
       when type in ["run.fail", "run.block"] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
@@ -220,7 +232,6 @@ defmodule ForemanServer.Aggregates.Run do
        }}
     end
   end
-
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "run.pr.update",

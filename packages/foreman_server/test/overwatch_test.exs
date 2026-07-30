@@ -52,7 +52,7 @@ defmodule ForemanServer.OverwatchTest do
     assert decision.action == "deny"
     assert decision.reason =~ "directory"
 
-    events = EventStore.stream("run:run-1")
+    events = EventStore.stream("tool_call:run-1:tool-1")
     assert Enum.any?(events, &(&1.event_type == "ToolCallRequested"))
     assert Enum.any?(events, &(&1.event_type == "ToolCallDenied"))
 

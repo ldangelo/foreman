@@ -3,6 +3,7 @@ defmodule ForemanServer.WorkerProtocol do
 
   alias ForemanServer.{
     Aggregate,
+    CommandRouter,
     EventStore,
     ProjectionStore,
     ProviderRegistry,
@@ -117,20 +118,20 @@ defmodule ForemanServer.WorkerProtocol do
     idempotency_key = "#{event_type}:#{payload.run_id}:#{payload.worker_id}:#{payload.sequence}"
 
     case validate_sequence(stream_id, payload.sequence, idempotency_key) do
-      {:ok, expected_version} ->
-        with :ok <- reject_event_after_terminal_run(event_type, payload.run_id),
-             {:ok, event} <-
-               EventStore.append(%{
-                 stream_id: stream_id,
-                 event_type: event_type,
-                 payload: Map.put(payload, :observed_at, DateTime.utc_now()),
-                 expected_stream_version: expected_version,
-                 metadata: %{
-                   correlation_id: payload.run_id,
-                   idempotency_key: idempotency_key
-                 }
-               }) do
-          {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
+      {:ok, _expected_version} ->
+        # observed_at must be preserved — add before routing so downstream consumers have it
+        enriched_payload = Map.put(payload, :observed_at, DateTime.utc_now())
+
+        with :ok <- reject_event_after_terminal_run(event_type, payload.run_id) do
+          CommandRouter.handle(%{
+            command_id: idempotency_key,
+            command_type: "worker.record",
+            payload: Map.put(enriched_payload, :event_type, event_type)
+          })
+          |> case do
+            {:ok, result} -> {:ok, result}
+            {:error, reason} -> {:error, reason}
+          end
         end
 
       {:duplicate, event} ->

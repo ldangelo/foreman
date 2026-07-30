@@ -72,6 +72,21 @@ defmodule ForemanServer.Aggregates.Phase do
       "PhaseSkipped" ->
         %State{state | status: "skipped", terminal?: true}
 
+      "PhaseNudged" ->
+        nudge_count = Aggregate.get(payload, :nudge_count, 0)
+        message = Aggregate.get(payload, :message)
+
+        new_status =
+          Map.put(state.phase_status, "last_nudge", %{count: nudge_count, message: message})
+
+        %State{
+          state
+          | exists?: true,
+            run_id: Aggregate.get(payload, :run_id) || state.run_id,
+            phase_id: Aggregate.get(payload, :phase_id) || state.phase_id,
+            phase_status: new_status
+        }
+
       _ ->
         state
     end
@@ -118,6 +133,23 @@ defmodule ForemanServer.Aggregates.Phase do
     end
   end
 
+  def handle_command(_state, %{type: "phase.nudge", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, phase_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id) do
+      {:ok,
+       %{
+         stream_id: "phase:#{run_id}:#{phase_id}",
+         event_type: "PhaseNudged",
+         payload:
+           Map.merge(payload, %{
+             run_id: run_id,
+             phase_id: phase_id,
+             source: Aggregate.get(payload, :source, "elixir_overwatch")
+           })
+       }}
+    end
+  end
   def handle_command(_state, _command), do: :unhandled
 
   defp require_absent(%State{exists?: false}), do: :ok

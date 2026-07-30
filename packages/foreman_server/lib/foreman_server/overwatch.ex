@@ -8,7 +8,7 @@ defmodule ForemanServer.Overwatch do
 
   use GenServer
 
-  alias ForemanServer.{Event, EventStore, Inbox}
+  alias ForemanServer.{CommandRouter, Event, Inbox}
 
   @stale_intervals 2
   @max_nudges 3
@@ -46,14 +46,65 @@ defmodule ForemanServer.Overwatch do
     phase_id = fetch(input, :phase_id) || fetch(input, :phase) || "unknown"
     tool_name = normalize_tool(fetch(input, :tool_name) || fetch(input, :toolName))
     args = fetch(input, :args) || %{}
+    # Stable tool_call_id: use caller-supplied value if present, otherwise derive
+    # from input fields.  When sequence is absent, include an args-hash component
+    # to avoid collisions when the same tool is called multiple times with different
+    # arguments within a single run/phase/worker scope.
+    tool_call_id = fetch(input, :tool_call_id) || fetch(input, :toolCallId) ||
+                     if is_nil(fetch(input, :sequence)) do
+                       args_binary = :erlang.term_to_binary(args, [{:compressed, 0}])
+                       args_hash = Base.encode16(:crypto.hash(:sha256, args_binary), case: :lower) |> String.slice(0, 12)
+                       "#{fetch(input, :worker_id)}:#{phase_id}:#{tool_name}:args#{args_hash}"
+                     else
+                       "#{fetch(input, :worker_id)}:#{phase_id}:#{tool_name}:#{fetch(input, :sequence)}"
+                     end
+
+    decision_cmd = fn allowed ->
+      cmd_type = if allowed, do: "tool.approve", else: "tool.deny"
+      %{
+        command_id: "tool:#{run_id}:#{tool_call_id}:#{cmd_type}",
+        command_type: cmd_type,
+        payload: %{
+          run_id: run_id,
+          phase_id: phase_id,
+          tool_call_id: tool_call_id,
+          tool_name: tool_name,
+          allowed: allowed,
+          action: nil,
+          reason: nil,
+          message: nil
+        }
+      }
+    end
 
     with {:ok, run_id} <- required_binary(run_id, :run_id),
          {:ok, tool_name} <- required_binary(tool_name, :tool_name),
-         :ok <- append_requested(input, run_id, phase_id, tool_name, args) do
+         {:ok, _result} <-
+           CommandRouter.handle(%{
+             command_id: "tool:#{run_id}:#{tool_call_id}:request",
+             command_type: "tool.request",
+             payload: %{
+               run_id: run_id,
+               phase_id: phase_id,
+               tool_call_id: tool_call_id,
+               tool_name: tool_name,
+               args: args,
+               worker_id: fetch(input, :worker_id)
+             }
+           }) do
       decision = decide_tool(phase_id, tool_name, args)
-      append_decision(input, run_id, phase_id, tool_name, args, decision)
-      maybe_send_tool_nudge(run_id, phase_id, tool_name, decision)
-      {:ok, decision}
+
+      case CommandRouter.handle(decision_cmd.(decision.allowed)
+               |> put_in([:payload, :action], decision.action)
+               |> put_in([:payload, :reason], decision.reason)
+               |> put_in([:payload, :message], decision.message)) do
+        {:ok, _result} ->
+          maybe_send_tool_nudge(run_id, phase_id, tool_name, decision)
+          {:ok, decision}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -351,48 +402,23 @@ defmodule ForemanServer.Overwatch do
 
   defp dangerous_command?(_), do: false
 
-  defp append_requested(input, run_id, phase_id, tool_name, args) do
-    EventStore.append(%{
-      stream_id: "run:#{run_id}",
-      event_type: "ToolCallRequested",
-      payload: base_payload(input, run_id, phase_id, tool_name, args),
-      metadata: %{correlation_id: run_id}
-    })
-    |> case do
-      {:ok, _event} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp append_decision(input, run_id, phase_id, tool_name, args, decision) do
-    event_type = if decision.allowed, do: "ToolCallApproved", else: "ToolCallDenied"
-
-    EventStore.append(%{
-      stream_id: "run:#{run_id}",
-      event_type: event_type,
-      payload:
-        base_payload(input, run_id, phase_id, tool_name, args)
-        |> Map.put(:allowed, decision.allowed)
-        |> Map.put(:action, decision.action)
-        |> Map.put(:reason, decision.reason)
-        |> Map.put(:message, decision.message),
-      metadata: %{correlation_id: run_id}
-    })
-  end
 
   defp append_phase_nudge(run_id, phase_id, reason, nudge_count) do
-    EventStore.append(%{
-      stream_id: "run:#{run_id}",
-      event_type: "PhaseNudged",
+    CommandRouter.handle(%{
+      command_id: "nudge:#{run_id}:#{phase_id}:#{nudge_count}",
+      command_type: "run.phase.nudge",
       payload: %{
         run_id: run_id,
         phase_id: phase_id,
         message: reason,
         nudge_count: nudge_count,
         source: "elixir_overwatch"
-      },
-      metadata: %{correlation_id: run_id}
+      }
     })
+    |> case do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp maybe_send_tool_nudge(run_id, phase_id, tool_name, %{allowed: false, reason: reason}) do
@@ -418,18 +444,6 @@ defmodule ForemanServer.Overwatch do
     })
   end
 
-  defp base_payload(input, run_id, phase_id, tool_name, args) do
-    %{
-      run_id: run_id,
-      task_id: fetch(input, :task_id),
-      phase_id: phase_id,
-      worker_id: fetch(input, :worker_id),
-      sequence: fetch(input, :sequence),
-      tool_call_id: fetch(input, :tool_call_id) || fetch(input, :toolCallId),
-      tool_name: tool_name,
-      args: args
-    }
-  end
 
   defp normalize_tool(tool) when is_binary(tool), do: String.downcase(tool)
   defp normalize_tool(tool), do: tool
