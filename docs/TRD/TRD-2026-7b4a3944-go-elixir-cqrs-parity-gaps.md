@@ -221,11 +221,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Idempotent duplicate command handling via `command_id` (already in `Actor` — verify)
 
 - [ ] **TRD-009** Run aggregate | 6h | [satisfies REQ-004] | Validates: AC-004-1, AC-004-2, AC-004-3, AC-004-4 | AC: Given a run is active, when `CompleteRun` dispatched on a terminal run, then `RunAlreadyCompleted` event is appended and state unchanged (idempotent); given run aggregate restarts, when `Aggregate.load/2` is called, then full stream is replayed and correct terminal/non-terminal state is restored
-  - [ ] `ForemanServer.Aggregates.Run.State` struct
-  - [ ] `handle_command/2` for `StartRun`, `CompleteRun`, `FailRun`, `CancelRun`
-  - [ ] `apply_event/2` using `%State{state | ...}` updates
-  - [ ] `RunAlreadyCompleted` domain event for idempotent complete
-  - [ ] Replay via `Aggregate.load/2` restores state correctly (verify with test)
+  - [x] `ForemanServer.Aggregates.Run.State` struct with fixed fields (`run_id`, `task_id`, `project_id`, `current_phase`, `phase_order`, PR fields) and dynamic maps (`phase_status`, `worker_status`, `retry_history`)
+  - [x] `handle_command/2` for `StartRun`, `CompleteRun`, `FailRun`
+  - [ ] `handle_command/2` for `CancelRun` (`run.cancel`/`RunCancelled` not in codebase)
+  - [x] `apply_event/2` using `%State{state | ...}` updates — no `Map.merge`
+  - [x] `RunAlreadyCompleted` spec emitted (state unchanged) when `run.complete` routes against a terminal run; `apply_event` for `RunAlreadyCompleted` is a no-op
+  - [x] Replay via `Aggregate.load/2` restores terminal and non-terminal state correctly (4 tests)
 
 - [ ] **TRD-010** BoardItemStateMachine aggregate | 4h | [satisfies REQ-006] | Validates: AC-006-1, AC-006-2 | AC: Given an invalid status transition (e.g., `closed` → `in_progress`), when the command is dispatched, then it is rejected with `:invalid_transition` error
   - [ ] `ForemanServer.Aggregates.BoardItemStateMachine.State` struct
