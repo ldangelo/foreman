@@ -701,4 +701,139 @@ defmodule ForemanServer.AggregateTest do
                phase_id: "phase-race"
              })
   end
+
+  # ─── TRD-009: Run aggregate State struct ────────────────────────────────────────
+
+  test "Run aggregate folds RunStarted and produces %Run.State{}" do
+    events = [
+      %{
+        event_type: "RunStarted",
+        payload: %{
+          run_id: "run-struct",
+          task_id: "task-struct",
+          project_id: "proj-struct",
+          current_phase: "build",
+          phase_order: ["build", "test", "deploy"]
+        }
+      },
+      %{
+        event_type: "PhaseCompleted",
+        payload: %{run_id: "run-struct", phase_id: "build", status: "completed"}
+      }
+    ]
+
+    state = Aggregate.fold(Run, events)
+
+    assert %ForemanServer.Aggregates.Run.State{} = state
+    assert state.exists? == true
+    assert state.run_id == "run-struct"
+    assert state.task_id == "task-struct"
+    assert state.project_id == "proj-struct"
+    assert state.status == "in_progress"
+    assert state.terminal? == false
+    assert state.current_phase == "build"
+    assert state.phase_order == ["build", "test", "deploy"]
+    assert state.phase_status == %{"build" => "completed"}
+  end
+
+  test "Run rejects run.complete when already completed (idempotent RunAlreadyCompleted)" do
+    # Start a run and complete it
+    assert {:ok, spec} =
+             AggregateRouter.route("run.start", %{
+               run_id: "run-idempotent",
+               task_id: "task-idem"
+             })
+
+    assert {:ok, _} = EventStore.append(spec)
+
+    assert {:ok, complete_spec} =
+             AggregateRouter.route("run.complete", %{
+               run_id: "run-idempotent"
+             })
+
+    assert {:ok, _} = EventStore.append(complete_spec)
+
+    # Load from store to confirm terminal state
+    {state, _version} = ForemanServer.Aggregate.load(Run, "run:run-idempotent")
+
+    assert state.status == "completed"
+    assert state.terminal? == true
+
+    # Route run.complete again — should return RunAlreadyCompleted spec
+    assert {:ok, spec2} =
+             AggregateRouter.route("run.complete", %{
+               run_id: "run-idempotent"
+             })
+
+    assert spec2.event_type == "RunAlreadyCompleted"
+
+    # Append spec2 and verify: version increments, state unchanged
+    assert {:ok, _} = EventStore.append(spec2)
+
+    {state2, version2} = ForemanServer.Aggregate.load(Run, "run:run-idempotent")
+
+    assert state2.status == "completed"
+    assert state2.terminal? == true
+    assert version2 == 3
+  end
+
+  test "Run rejects run.fail on already-failed run" do
+    assert {:ok, spec} =
+             AggregateRouter.route("run.start", %{
+               run_id: "run-fail-idem",
+               task_id: "task-fail"
+             })
+
+    assert {:ok, _} = EventStore.append(spec)
+
+    assert {:ok, fail_spec} =
+             AggregateRouter.route("run.fail", %{
+               run_id: "run-fail-idem"
+             })
+
+    assert {:ok, _} = EventStore.append(fail_spec)
+
+    # Route run.complete on failed run — should return RunAlreadyCompleted
+    assert {:ok, spec2} =
+             AggregateRouter.route("run.complete", %{
+               run_id: "run-fail-idem"
+             })
+
+    assert spec2.event_type == "RunAlreadyCompleted"
+
+    # Append spec2 and verify: version increments, state unchanged
+    assert {:ok, _} = EventStore.append(spec2)
+
+    {state2, version2} = ForemanServer.Aggregate.load(Run, "run:run-fail-idem")
+
+    assert state2.status == "failed"
+    assert state2.terminal? == true
+    assert version2 == 3
+  end
+
+  test "Aggregate.load/2 replays run stream and restores terminal state" do
+    # Seed a completed run directly
+    assert {:ok, spec} =
+             AggregateRouter.route("run.start", %{
+               run_id: "run-replay",
+               task_id: "task-replay"
+             })
+
+    assert {:ok, _} = EventStore.append(spec)
+
+    assert {:ok, complete_spec} =
+             AggregateRouter.route("run.complete", %{
+               run_id: "run-replay"
+             })
+
+    assert {:ok, _} = EventStore.append(complete_spec)
+
+    # Simulate actor restart: load from event store
+    {state, version} = ForemanServer.Aggregate.load(Run, "run:run-replay")
+
+    assert state.exists? == true
+    assert state.status == "completed"
+    assert state.terminal? == true
+    assert version == 2
+  end
 end
