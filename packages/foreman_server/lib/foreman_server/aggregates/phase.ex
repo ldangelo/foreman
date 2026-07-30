@@ -4,8 +4,31 @@ defmodule ForemanServer.Aggregates.Phase do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @moduledoc false
+    defstruct [:exists?, :run_id, :phase_id, :status, :attempt, :terminal?, phase_status: %{}]
+
+    @type t :: %__MODULE__{
+            exists?: boolean(),
+            run_id: String.t() | nil,
+            phase_id: String.t() | nil,
+            status: String.t() | nil,
+            attempt: non_neg_integer(),
+            terminal?: boolean(),
+            phase_status: %{optional(String.t()) => term()}
+          }
+  end
+
   @impl true
-  def initial_state, do: %{exists?: false, status: nil, attempt: 0}
+  def initial_state,
+    do: %State{
+      exists?: false,
+      run_id: nil,
+      phase_id: nil,
+      status: nil,
+      attempt: 0,
+      terminal?: false
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -13,27 +36,41 @@ defmodule ForemanServer.Aggregates.Phase do
 
     case Aggregate.event_type(event) do
       "PhaseStarted" ->
-        state |> Map.merge(payload) |> Map.put(:exists?, true) |> Map.put(:status, "in_progress")
+        run_id = Aggregate.get(payload, :run_id)
+        phase_id = Aggregate.get(payload, :phase_id)
+
+        %State{
+          state
+          | exists?: true,
+            run_id: run_id,
+            phase_id: phase_id,
+            status: "in_progress",
+            attempt: 0,
+            terminal?: false
+        }
 
       "PhaseCompleted" ->
-        state |> Map.merge(payload) |> Map.put(:status, "completed") |> Map.put(:terminal?, true)
+        %State{state | status: "completed", terminal?: true}
 
       "PhaseFailed" ->
-        state |> Map.merge(payload) |> Map.put(:status, "failed") |> Map.put(:terminal?, true)
+        %State{state | status: "failed", terminal?: true}
 
       "PhaseTimedOut" ->
-        state |> Map.merge(payload) |> Map.put(:status, "timed_out") |> Map.put(:terminal?, true)
+        %State{state | status: "timed_out", terminal?: true}
 
       "PhaseRetried" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.update(:attempt, 1, &(&1 + 1))
-        |> Map.put(:status, "retrying")
-        |> Map.put(:terminal?, false)
+        current_attempt = Aggregate.get(payload, :attempt) || state.attempt
+
+        %State{
+          state
+          | exists?: true,
+            status: "retrying",
+            attempt: current_attempt + 1,
+            terminal?: false
+        }
 
       "PhaseSkipped" ->
-        state |> Map.merge(payload) |> Map.put(:status, "skipped") |> Map.put(:terminal?, true)
+        %State{state | status: "skipped", terminal?: true}
 
       _ ->
         state
@@ -61,7 +98,7 @@ defmodule ForemanServer.Aggregates.Phase do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, phase_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
-         :ok <- require_started(state, type),
+         :ok <- require_started(state),
          :ok <- reject_terminal_for_non_retry(state, type) do
       event_type =
         %{
@@ -83,19 +120,20 @@ defmodule ForemanServer.Aggregates.Phase do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp require_absent(%{exists?: true}), do: {:error, :phase_already_started}
-  defp require_absent(_state), do: :ok
+  defp require_absent(%State{exists?: false}), do: :ok
+  defp require_absent(%State{}), do: {:error, :phase_already_started}
 
-  defp require_started(%{exists?: true}, _type), do: :ok
-  defp require_started(_state, _type), do: {:error, :phase_not_started}
+  defp require_started(%State{exists?: true}), do: :ok
+  defp require_started(%State{}), do: {:error, :phase_not_started}
 
-  defp reject_terminal(%{terminal?: true}), do: {:error, :phase_terminal}
-  defp reject_terminal(_state), do: :ok
+  defp reject_terminal(%State{terminal?: true}), do: {:error, :phase_terminal}
+  defp reject_terminal(%State{}), do: :ok
 
-  defp reject_terminal_for_non_retry(%{status: status}, "phase.retry")
+  defp reject_terminal_for_non_retry(%State{status: status}, "phase.retry")
        when status in ["failed", "timed_out", "retrying"],
        do: :ok
 
-  defp reject_terminal_for_non_retry(_state, "phase.retry"), do: {:error, :phase_not_retryable}
+  defp reject_terminal_for_non_retry(%State{}, "phase.retry"), do: {:error, :phase_not_retryable}
+  defp reject_terminal_for_non_retry(state, "phase.retry"), do: reject_terminal(state)
   defp reject_terminal_for_non_retry(state, _type), do: reject_terminal(state)
 end

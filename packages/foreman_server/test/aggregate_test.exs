@@ -586,4 +586,119 @@ defmodule ForemanServer.AggregateTest do
                payload: %{flow_id: "plan-done"}
              })
   end
+
+  test "Phase aggregate folds PhaseStarted, PhaseCompleted, and handles retry/terminal transitions" do
+    events = [
+      %{
+        event_type: "PhaseStarted",
+        payload: %{run_id: "run-1", phase_id: "phase-1"}
+      },
+      %{
+        event_type: "PhaseRetried",
+        payload: %{run_id: "run-1", phase_id: "phase-1"}
+      },
+      %{
+        event_type: "PhaseCompleted",
+        payload: %{run_id: "run-1", phase_id: "phase-1"}
+      }
+    ]
+
+    state = Aggregate.fold(Phase, events)
+
+    assert %Phase.State{} = state
+    assert state.exists? == true
+    assert state.run_id == "run-1"
+    assert state.phase_id == "phase-1"
+    assert state.status == "completed"
+    assert state.terminal? == true
+    assert state.attempt == 1
+  end
+
+  test "Phase exists? is true even when PhaseStarted has no run_id (partial/imported event)" do
+    events = [
+      %{
+        event_type: "PhaseStarted",
+        payload: %{phase_id: "phase-no-run"}
+      }
+    ]
+
+    state = Aggregate.fold(Phase, events)
+
+    assert %Phase.State{} = state
+    assert state.exists? == true
+    assert state.phase_id == "phase-no-run"
+    # Subsequent phase.start must reject as already started
+    assert {:error, :phase_already_started} =
+             Phase.handle_command(state, %{
+               type: "phase.start",
+               payload: %{run_id: "run-x", phase_id: "phase-no-run"}
+             })
+  end
+
+  test "Phase rejects phase.start when already started" do
+    events = [
+      %{
+        event_type: "PhaseStarted",
+        payload: %{run_id: "run-phase-dup", phase_id: "phase-dup"}
+      }
+    ]
+
+    state = Aggregate.fold(Phase, events)
+
+    assert {:error, :phase_already_started} =
+             Phase.handle_command(state, %{
+               type: "phase.start",
+               payload: %{run_id: "run-phase-dup", phase_id: "phase-dup"}
+             })
+  end
+
+  test "Phase rejects phase.complete when not started" do
+    state = Phase.initial_state()
+
+    assert {:error, :phase_not_started} =
+             Phase.handle_command(state, %{
+               type: "phase.complete",
+               payload: %{run_id: "run-none", phase_id: "phase-none"}
+             })
+  end
+
+  test "AC-005-3: two phase.complete commands race — second append fails with expected_version conflict" do
+    # Seed PhaseStarted into EventStore so the stream exists with version 1
+    assert {:ok, start_spec} =
+             AggregateRouter.route("phase.start", %{
+               run_id: "run-race",
+               phase_id: "phase-race"
+             })
+
+    assert {:ok, %{stream_version: 1}} = EventStore.append(start_spec)
+
+    # Route two phase.complete specs against the same stream — both get expected_version: 1
+    assert {:ok, spec1} =
+             AggregateRouter.route("phase.complete", %{
+               run_id: "run-race",
+               phase_id: "phase-race"
+             })
+
+    assert {:ok, spec2} =
+             AggregateRouter.route("phase.complete", %{
+               run_id: "run-race",
+               phase_id: "phase-race"
+             })
+
+    assert spec1.expected_stream_version == 1
+    assert spec2.expected_stream_version == 1
+
+    # First append succeeds; stream version becomes 2
+    assert {:ok, _} = EventStore.append(spec1)
+
+    # Second append fails with conflict (stream version is now 2, spec still expects 1)
+    assert {:error, {:conflict, [expected: 1, actual: 2]}} = EventStore.append(spec2)
+
+    # Fresh route: router loads terminal state from store, returns phase_terminal
+    assert {:error, :phase_terminal} =
+             AggregateRouter.route("phase.complete", %{
+               run_id: "run-race",
+               phase_id: "phase-race"
+             })
+  end
 end
