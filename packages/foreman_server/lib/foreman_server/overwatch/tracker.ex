@@ -1,0 +1,179 @@
+defmodule ForemanServer.Overwatch.Tracker do
+  @moduledoc """
+  Worker liveness tracker: manages 60-second heartbeat timeouts and Process.monitor
+  DOWN cleanup for all live workers.
+
+  State keyed by `{run_id, worker_id}` to avoid cross-run collisions.
+
+  Two independent tokens per entry:
+  - `session_token` — bumped on re-track. Any timeout from a previous pid under the
+    same key carries a stale session_token and is ignored.
+  - `heartbeat_gen` — incremented on each heartbeat reset. Any queued timeout from
+    before the heartbeat carries a stale heartbeat_gen and is ignored.
+
+  DOWN messages for unknown monitor refs are a silent no-op.
+
+  The tracked `worker_pid` is verified on every heartbeat: a delayed heartbeat from
+  an old (re-tracked) pid is silently ignored.
+  """
+
+  use GenServer
+
+  alias ForemanServer.WorkerProtocol
+
+  @heartbeat_timeout_ms 60_000
+
+  @type worker_key :: {String.t(), String.t()}
+
+  # ─── Client API (delegated from ForemanServer.Overwatch) ─────────────────────
+
+  @spec track(pid(), String.t(), String.t(), String.t(), module()) :: :ok
+  def track(pid, run_id, worker_id, phase_id, worker_module) do
+    GenServer.cast(__MODULE__, {:track, pid, run_id, worker_id, phase_id, worker_module})
+  end
+
+  @spec worker_heartbeat(pid(), String.t(), String.t(), integer(), DateTime.t()) :: :ok
+  def worker_heartbeat(pid, run_id, worker_id, sequence, observed_at) do
+    GenServer.cast(__MODULE__, {:heartbeat, pid, run_id, worker_id, sequence, observed_at})
+  end
+
+  # ─── GenServer ───────────────────────────────────────────────────────────────
+
+  def start_link(_opts \\ []) do
+    GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
+  end
+
+  @impl true
+  def init(:ok) do
+    {:ok, %{session_token_counter: 0, workers: %{}}}
+  end
+
+  # ─── :track ────────────────────────────────────────────────────────────────
+
+  @impl true
+  def handle_cast({:track, pid, run_id, worker_id, phase_id, _worker_module}, state) do
+    key = {run_id, worker_id}
+
+    # Tear down any prior timer/monitor for this key before registering the new pid.
+    # This prevents an old DOWN or queued timeout from the previous worker from
+    # interfering with the new one.
+    state =
+      with %{timer_ref: old_timer, monitor_ref: old_ref} <- Map.get(state.workers, key) do
+        if is_reference(old_timer), do: Process.cancel_timer(old_timer)
+        if is_reference(old_ref), do: Process.demonitor(old_ref, [:flush])
+        update_in(state.workers, &Map.delete(&1, key))
+      else
+        _ -> state
+      end
+
+    # Bump session token so any pending timeout from a previous worker under this key
+    # is permanently ignored.
+    session_token = state.session_token_counter + 1
+
+    timer_ref =
+      Process.send_after(self(), {:worker_timeout, key, session_token, 0}, @heartbeat_timeout_ms)
+
+    monitor_ref = Process.monitor(pid)
+
+    entry = %{
+      run_id: run_id,
+      worker_id: worker_id,
+      phase_id: phase_id,
+      worker_pid: pid,
+      timer_ref: timer_ref,
+      session_token: session_token,
+      heartbeat_gen: 0,
+      monitor_ref: monitor_ref,
+      started_at: DateTime.utc_now()
+    }
+
+    workers = Map.put(state.workers, key, entry)
+    {:noreply, %{state | session_token_counter: session_token, workers: workers}}
+  end
+
+  # ─── :heartbeat ────────────────────────────────────────────────────────────
+
+  @impl true
+  def handle_cast({:heartbeat, pid, run_id, worker_id, sequence, observed_at}, state) do
+    key = {run_id, worker_id}
+
+    # Verify the pid matches the currently tracked worker. A stale heartbeat
+    # from an old pid (before re-track) is silently ignored.
+    with %{worker_pid: ^pid, timer_ref: old_timer,
+           session_token: session_token, heartbeat_gen: old_gen} <-
+           Map.get(state.workers, key) do
+      # Always cancel the old timer and start a fresh one, regardless of emit outcome.
+      # Concurrent/duplicate heartbeats may produce out-of-order or duplicate errors;
+      # we do not let those prevent liveness tracking.
+      if is_reference(old_timer), do: Process.cancel_timer(old_timer)
+
+      # Emit heartbeat through WorkerProtocol so sequence validation applies.
+      _ = WorkerProtocol.emit("WorkerHeartbeat", %{
+        run_id: run_id,
+        worker_id: worker_id,
+        sequence: sequence,
+        observed_at: observed_at,
+        pid: pid
+      })
+
+      # Start a fresh timer with incremented heartbeat_gen (same session_token).
+      new_gen = old_gen + 1
+      new_timer_ref =
+        Process.send_after(self(), {:worker_timeout, key, session_token, new_gen}, @heartbeat_timeout_ms)
+
+      entry = %{state.workers[key] | timer_ref: new_timer_ref, heartbeat_gen: new_gen}
+      {:noreply, %{state | workers: Map.put(state.workers, key, entry)}}
+    else
+      _ -> {:noreply, state}
+    end
+  end
+
+  # ─── :DOWN ─────────────────────────────────────────────────────────────────
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    # Silent no-op if the monitor ref is unknown (e.g. from a previous pid under
+    # the same key that was already re-tracked and demonitored).
+    case Enum.find(state.workers, fn {_key, w} -> w.monitor_ref == ref end) do
+      {key, entry} ->
+        if is_reference(entry.timer_ref), do: Process.cancel_timer(entry.timer_ref)
+
+        # Emit may fail if the run is already terminal; log and continue cleanup.
+        _ = WorkerProtocol.emit("WorkerExited", %{
+          run_id: entry.run_id,
+          worker_id: entry.worker_id,
+          sequence: nil,
+          reason: reason,
+          exited_at: DateTime.utc_now()
+        })
+
+        {:noreply, update_in(state.workers, &Map.delete(&1, key))}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
+  # ─── :worker_timeout ───────────────────────────────────────────────────────
+
+  @impl true
+  def handle_info({:worker_timeout, key, session_token, heartbeat_gen}, state) do
+    with %{session_token: ^session_token, heartbeat_gen: ^heartbeat_gen,
+           run_id: run_id, worker_id: worker_id} <- Map.get(state.workers, key) do
+      # Emit may fail if the run is already terminal; log and continue cleanup.
+      _ = WorkerProtocol.emit("WorkerUnresponsive", %{
+        run_id: run_id,
+        worker_id: worker_id,
+        sequence: nil,
+        reason: "no heartbeat for #{@heartbeat_timeout_ms}ms",
+        detected_at: DateTime.utc_now()
+      })
+
+      {:noreply, update_in(state.workers, &Map.delete(&1, key))}
+    else
+      # One or both tokens stale — heartbeat or re-track arrived before this message
+      # was processed; ignore it silently.
+      _ -> {:noreply, state}
+    end
+  end
+end

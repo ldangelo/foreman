@@ -20,19 +20,20 @@ defmodule ForemanServer.Application do
 
     children =
       repo_children() ++
-        [
-          {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
-          {Registry, keys: :unique, name: :project_registry},
-          {ProjectionStore, []},
-          {Overwatch, []},
-          {EventStore, []},
-          {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
-          {DynamicSupervisor,
-           strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
-          {ProjectRegistry, []},
-          {Scheduler, []},
-          {PrMonitor, []}
-        ] ++ http_children()
+      [
+        {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
+        {Registry, keys: :unique, name: :project_registry},
+        {ProjectionStore, []},
+        {Overwatch, []},
+        {Overwatch.Tracker, :ok},
+        {Overwatch.WorkerSupervisor, []},
+        {EventStore, []},
+        {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
+        {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
+        {ProjectRegistry, []},
+        {Scheduler, []},
+        {PrMonitor, []}
+      ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]
     Supervisor.start_link(children, opts)

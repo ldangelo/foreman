@@ -392,7 +392,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] `StreamGapDetector`: projection version vs. stream version; emit `StreamGapDetected` on mismatch; `CommandRouter` consults this detector before each append and refuses appends for flagged streams
 
 - [ ] **TRD-011-TEST** Overwatch test coverage | 4h | [verifies TRD-011] [depends: TRD-011, TRD-012] [satisfies REQ-020, REQ-001, REQ-002] | Validates: AC-001-1–AC-001-5, AC-002-1, AC-002-2, AC-020-2, AC-020-5 | Implementation AC: Given worker lifecycle events are emitted, when `Overwatch` is tested in isolation, then `WorkerHeartbeat` and `WorkerExited` events are routed through `CommandRouter` and the run projection reflects the correct state; AC1 (supervised actor) and AC2 (idempotency) tests pass
-  - [ ] Test: `track_worker/5` → `WorkerStarted` event appended
+  - [ ] Test: `start_phase/2` → full `WorkerStarted` event appended (session_id, adapter, prompt_path, tool_names, artifact_paths); `WorkerProtocol.emit/2` via `Tracker` → `WorkerHeartbeat/Exited/Unresponsive` through `CommandRouter`
   - [ ] Test: heartbeat timeout (60s) → `WorkerUnresponsive` event
   - [ ] Test: crash loop (3 restarts/5 min) → `WorkerCrashed` + run paused
   - [ ] Test: worker restart → no duplicate work (command dedup)

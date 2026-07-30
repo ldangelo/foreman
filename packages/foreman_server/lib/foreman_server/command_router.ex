@@ -122,9 +122,7 @@ defmodule ForemanServer.CommandRouter do
   def handle(%{command_id: command_id, command_type: command_type} = command)
       when is_binary(command_id) and is_binary(command_type) do
     payload =
-      command
-      |> Map.get(:payload, %{})
-      |> normalize_payload()
+      normalize_payload(command_type, Map.get(command, :payload, %{}))
       |> Map.put_new(:command_id, command_id)
 
     metadata = normalize_metadata(command)
@@ -504,6 +502,18 @@ defmodule ForemanServer.CommandRouter do
     ) || "external-trigger:#{System.unique_integer([:positive])}"
   end
 
+  # worker.record: explicit allowlist of known top-level keys.  No dynamic
+  # atomization — prevents atom-exhaustion from arbitrary input keys.
+  defp normalize_payload("worker.record", map) when is_map(map) do
+    Enum.reduce(known_worker_payload_keys(), %{}, fn key, acc ->
+      case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
+        nil -> acc
+        value -> Map.put(acc, key, value)
+      end
+    end)
+  end
+
+  # Generic command: filter whole wrapper to known top-level keys.
   defp normalize_payload(map) when is_map(map) do
     Enum.reduce(known_keys(), %{}, fn key, acc ->
       case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
@@ -514,6 +524,22 @@ defmodule ForemanServer.CommandRouter do
   end
 
   defp normalize_payload(_), do: %{}
+
+  # Typed-command path: dispatch to worker.record or generic.
+  defp normalize_payload(command_type, map) when is_map(map) do
+    if command_type == "worker.record" do
+      normalize_payload("worker.record", map)
+    else
+      Enum.reduce(known_keys(), %{}, fn key, acc ->
+        case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
+          nil -> acc
+          value -> Map.put(acc, key, value)
+        end
+      end)
+    end
+  end
+
+  defp normalize_payload(_, _), do: %{}
 
   defp known_keys do
     [
@@ -612,6 +638,56 @@ defmodule ForemanServer.CommandRouter do
       :sender_agent_type,
       :recipient_agent_type,
       :worker_supports_receiving
+    ]
+  end
+  # Top-level keys that worker.record payloads must preserve.
+  # No dynamic atomization — prevents atom-exhaustion from arbitrary input.
+  # Covers: start_phase, heartbeat, ingest_event, Tracker lifecycle events.
+  defp known_worker_payload_keys do
+    [
+      # Core identity
+      :run_id,
+      :worker_id,
+      :phase_id,
+      :project_id,
+      :task_id,
+      # Sequence and timing
+      :sequence,
+      :observed_at,
+      :exited_at,
+      :detected_at,
+      # Session / adapter
+      :session_id,
+      :adapter,
+      :pid,
+      # Env (WorkerStarted from start_phase)
+      :prepared_env,
+      :prepared_env_keys,
+      :stripped_env_keys,
+      :scoped_secret_keys,
+      # Prompt
+      :prompt_path,
+      # Tools
+      :tool_names,
+      :tool_call_id,
+      :tool_name,
+      # Artifacts / reports
+      :artifact_paths,
+      :report_paths,
+      # Status / output
+      :status,
+      :output,
+      :message,
+      :exit_code,
+      # Attach / details (open nested maps — preserved as-is)
+      :attach,
+      :details,
+      # Reason (Tracker: WorkerExited / WorkerUnresponsive)
+      :reason,
+      # Command envelope
+      :event_type,
+      :correlation_id,
+      :command_id
     ]
   end
 end

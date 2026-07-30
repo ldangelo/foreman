@@ -827,6 +827,56 @@ defmodule ForemanServer.ProjectionStore do
       put_active_worker_status(run, worker_id, "heartbeat")
     end)
   end
+  defp apply_domain_event(
+        projection,
+        %{
+          type: "WorkerExited",
+          payload: %{run_id: run_id} = payload
+        },
+        _mode
+      ) do
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      run
+      |> put_terminal_worker_status(payload, "exited")
+      |> Map.put(:updated_at, DateTime.utc_now())
+    end)
+  end
+
+  defp apply_domain_event(
+        projection,
+        %{
+          type: "WorkerUnresponsive",
+          payload: %{run_id: run_id} = payload
+        },
+        _mode
+      ) do
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      run
+      |> put_terminal_worker_status(payload, "unresponsive")
+      |> Map.put(:updated_at, DateTime.utc_now())
+    end)
+  end
+
+  defp apply_domain_event(
+        projection,
+        %{
+          type: "WorkerCrashed",
+          payload: %{run_id: run_id} = payload
+        },
+        _mode
+      ) do
+    projection
+    |> put_worker_sequence(payload)
+    |> update_run(run_id, fn run ->
+      run
+      |> put_terminal_worker_status(payload, "crashed")
+      |> Map.put(:updated_at, DateTime.utc_now())
+    end)
+  end
 
   defp apply_domain_event(
          projection,

@@ -113,13 +113,43 @@ defmodule ForemanServer.WorkerProtocol do
     Map.new(env, fn {key, _value} -> {key, "[REDACTED]"} end)
   end
 
+  @doc """
+  Public emit path for internal Overwatch components (Tracker, LaunchWorker).
+
+  - For `WorkerStarted` the caller **must** supply `sequence: 0`.
+  - For all other events nil-sequence is auto-filled via `next_sequence/1` before
+    sequence validation so the aggregate's idempotency guard is respected.
+  - Returns `{:ok, result}` on success, `{:error, reason}` on failure,
+    or `{:ok, %{event: _, projection: _}}` on duplicate.
+  """
+  @spec emit(String.t(), map()) :: {:ok, map()} | {:error, term()}
+
+  def emit("WorkerStarted", payload) do
+    append_worker_event("WorkerStarted", Map.put(payload, :sequence, 0))
+  end
+
+  def emit(event_type, payload) do
+    payload =
+      case Map.get(payload, :sequence) do
+        nil -> Map.put(payload, :sequence, next_sequence_for(payload))
+        _ -> payload
+      end
+
+    append_worker_event(event_type, payload)
+  end
+
+  defp next_sequence_for(payload) do
+    stream_id = "worker:#{payload.run_id}:#{payload.worker_id}"
+    {state, _version} = Aggregate.load(Worker, stream_id)
+    Worker.next_sequence(state)
+  end
+  # Private helper called by public emit/2 and internal functions.
   defp append_worker_event(event_type, payload) do
     stream_id = "worker:#{payload.run_id}:#{payload.worker_id}"
     idempotency_key = "#{event_type}:#{payload.run_id}:#{payload.worker_id}:#{payload.sequence}"
 
     case validate_sequence(stream_id, payload.sequence, idempotency_key) do
       {:ok, _expected_version} ->
-        # observed_at must be preserved — add before routing so downstream consumers have it
         enriched_payload = Map.put(payload, :observed_at, DateTime.utc_now())
 
         with :ok <- reject_event_after_terminal_run(event_type, payload.run_id) do

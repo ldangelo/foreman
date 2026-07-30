@@ -73,6 +73,46 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert snapshot.runs["run-worker-fixture"].phase_status["developer"] == "completed"
     assert snapshot.runs["run-worker-fixture"].artifact_paths == ["docs/reports/worker.md"]
   end
+  test "WorkerStarted payload preserves session_id, prompt_path, tool_names, and artifact_paths through normalize_payload" do
+    # Verify that known_worker_payload_keys normalization in CommandRouter does not
+    # strip these fields from worker.record payloads.
+    :ok = Application.put_env(:foreman_server, :auth_token, "secret")
+
+    on_exit(fn -> Application.delete_env(:foreman_server, :auth_token) end)
+
+    payload = %{
+      "run_id" => "run-normalize-test",
+      "worker_id" => "worker-normalize-1",
+      "phase_id" => "tester",
+      "adapter" => "pi_sdk",
+      "session_id" => "session-normalize-1",
+      "prompt_path" => ".foreman/prompts/test.md",
+      "tool_names" => ["read", "edit", "bash"],
+      "artifact_paths" => ["out.md"]
+    }
+
+    assert post_json("/worker/v1/phases/tester/start", payload).status == 202
+
+    started_event =
+      ForemanServer.EventStore.stream("worker:run-normalize-test:worker-normalize-1")
+      |> Enum.find(&(&1.event_type == "WorkerStarted"))
+
+    assert started_event, "WorkerStarted event must be persisted"
+
+    p = started_event.payload
+
+    # Core identity
+    assert p.run_id == "run-normalize-test"
+    assert p.worker_id == "worker-normalize-1"
+    assert p.phase_id == "tester"
+
+    # Metadata fields that old normalize_payload stripped — must survive
+    assert p.session_id == "session-normalize-1"
+    assert p.prompt_path == ".foreman/prompts/test.md"
+    assert p.tool_names == ["read", "edit", "bash"]
+    assert p.artifact_paths == ["out.md"]
+    assert p.sequence == 0
+  end
 
   test "worker terminal events authoritatively update run and task projections", %{
     fixture: fixture

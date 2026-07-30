@@ -5,10 +5,30 @@ defmodule ForemanServer.Overwatch do
   Watches worker events to steer stale phases with Agent Mail and owns the
   synchronous tool policy gate workers call before executing tools.
   """
+  # ─── Worker lifecycle client API ─────────────────────────────────────────────
+  # Thin delegation to sibling Overwatch processes.  These live here (not in a
+  # separate module) to keep the worker startup path simple for callers.
 
+  alias ForemanServer.Overwatch.{Tracker, WorkerSupervisor}
+
+  @spec track_worker(pid(), String.t(), String.t(), String.t(), module()) :: :ok
+  def track_worker(pid, run_id, worker_id, phase_id, worker_module) do
+    Tracker.track(pid, run_id, worker_id, phase_id, worker_module)
+  end
+
+  @spec worker_heartbeat(pid(), String.t(), String.t(), integer(), DateTime.t()) :: :ok
+  def worker_heartbeat(pid, run_id, worker_id, sequence, observed_at) do
+    Tracker.worker_heartbeat(pid, run_id, worker_id, sequence, observed_at)
+  end
+
+  @spec start_worker(String.t(), String.t(), String.t(), module(), map()) ::
+          {:ok, pid()} | :ignore | {:error, term()}
+  def start_worker(run_id, worker_id, phase_id, worker_module, env_opts \\ %{}) do
+    WorkerSupervisor.start_worker(run_id, worker_id, phase_id, worker_module, env_opts)
+  end
   use GenServer
 
-  alias ForemanServer.{CommandRouter, Event, Inbox}
+  alias ForemanServer.{CommandRouter, Event, Inbox, Overwatch.Tracker}
 
   @stale_intervals 2
   @max_nudges 3
