@@ -213,9 +213,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 **Shippable State:** Phases can be started and completed with optimistic concurrency; runs can transition through active/terminal states with idempotent complete; board items enforce valid status transitions.
 
 - [ ] **TRD-008** Phase aggregate | 5h | [satisfies REQ-005] | Validates: AC-005-1, AC-005-2, AC-005-3 | AC: Given a phase is active, when `StartPhase` is dispatched, then `PhaseStarted` is appended and state transitions to active; given two `CompletePhase` commands race, when the second append uses wrong expected version, then append fails with concurrency conflict and actor retries with correct version
-  - [ ] `ForemanServer.Aggregates.Phase.State` struct
-  - [ ] `handle_command/2` for `StartPhase`, `CompletePhase`, `FailPhase`, `SkipPhase`
-  - [ ] `apply_event/2` using `%State{state | ...}` — no `Map.merge`
+  - [x] `ForemanServer.Aggregates.Phase.State` struct (includes `exists?` — `PhaseStarted` without `run_id` still marks `exists?: true`)
+  - [x] `handle_command/2` for `StartPhase`, `CompletePhase`, `FailPhase`, `SkipPhase`
+  - [x] `apply_event/2` using `%State{state | ...}` — no `Map.merge`
+  - [x] AC-005-3 router+EventStore concurrency test: two `phase.complete` specs routed before append, first succeeds, second gets `{:conflict, [expected: 1, actual: 2]}`, fresh route sees terminal state
   - [ ] Optimistic concurrency in `Actor` (already handles expected_version conflict — verify with AC-005-3 test)
   - [ ] Idempotent duplicate command handling via `command_id` (already in `Actor` — verify)
 
