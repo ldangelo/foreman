@@ -4,10 +4,45 @@ defmodule ForemanServer.Aggregates.Project do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys []
+    defstruct [
+      :exists?,
+      :project_id,
+      :path,
+      :status,
+      :default_branch,
+      :config,
+      :health,
+      :archived?
+    ]
+
+    @type t :: %__MODULE__{
+            exists?: boolean,
+            project_id: String.t() | nil,
+            path: String.t() | nil,
+            status: String.t() | nil,
+            default_branch: String.t() | nil,
+            config: map(),
+            health: map(),
+            archived?: boolean
+          }
+  end
+
   @valid_statuses MapSet.new(["active", "paused", "archived"])
 
   @impl true
-  def initial_state, do: %{exists?: false, status: nil, config: %{}}
+  def initial_state,
+    do: %State{
+      exists?: false,
+      project_id: nil,
+      path: nil,
+      status: nil,
+      default_branch: nil,
+      config: %{},
+      health: %{},
+      archived?: false
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -15,35 +50,46 @@ defmodule ForemanServer.Aggregates.Project do
 
     case Aggregate.event_type(event) do
       "ProjectRegistered" ->
-        state
-        |> Map.merge(%{
-          exists?: true,
-          project_id: Aggregate.get(payload, :project_id),
-          path: Aggregate.get(payload, :path),
-          status: Aggregate.get(payload, :status, "active"),
-          default_branch: Aggregate.get(payload, :default_branch, "main"),
-          config: Aggregate.get(payload, :config, %{}),
-          health: Aggregate.get(payload, :health, %{ok: true}),
-          archived?: false
-        })
+        %State{
+          state
+          | exists?: true,
+            project_id: Aggregate.get(payload, :project_id),
+            path: Aggregate.get(payload, :path),
+            status: Aggregate.get(payload, :status, "active"),
+            default_branch: Aggregate.get(payload, :default_branch, "main"),
+            config: Aggregate.get(payload, :config, %{}),
+            health: Aggregate.get(payload, :health, %{ok: true}),
+            archived?: false
+        }
 
       "ProjectUpdated" ->
-        config = Map.merge(Map.get(state, :config, %{}), Aggregate.get(payload, :config, %{}))
+        config = Map.merge(state.config, Aggregate.get(payload, :config, %{}))
 
         config =
           if name = Aggregate.get(payload, :name), do: Map.put(config, :name, name), else: config
 
-        state
-        |> Aggregate.put_if(:status, Aggregate.get(payload, :status))
-        |> Aggregate.put_if(:default_branch, Aggregate.get(payload, :default_branch))
-        |> Aggregate.put_if(:health, Aggregate.get(payload, :health))
-        |> Map.put(:config, config)
+        s1 =
+          if(status = Aggregate.get(payload, :status),
+            do: %State{state | status: status},
+            else: state
+          )
+
+        s2 =
+          if(db = Aggregate.get(payload, :default_branch),
+            do: %State{s1 | default_branch: db},
+            else: s1
+          )
+
+        s3 =
+          if(health = Aggregate.get(payload, :health), do: %State{s2 | health: health}, else: s2)
+
+        %State{s3 | config: config}
 
       "ProjectArchived" ->
-        state |> Map.put(:status, "archived") |> Map.put(:archived?, true)
+        %State{state | status: "archived", archived?: true}
 
       "ProjectReactivated" ->
-        state |> Map.put(:status, "active") |> Map.put(:archived?, false)
+        %State{state | status: "active", archived?: false}
 
       _ ->
         state
@@ -124,13 +170,13 @@ defmodule ForemanServer.Aggregates.Project do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp require_absent(%{exists?: true}, project_id),
+  defp require_absent(%State{exists?: true}, project_id),
     do: {:error, {:already_exists, :project, project_id}}
 
-  defp require_absent(_state, _project_id), do: :ok
+  defp require_absent(%State{}, _project_id), do: :ok
 
-  defp require_exists(%{exists?: true}, _project_id), do: :ok
-  defp require_exists(_state, project_id), do: {:error, {:not_found, :project, project_id}}
+  defp require_exists(%State{exists?: true}, _project_id), do: :ok
+  defp require_exists(%State{}, project_id), do: {:error, {:not_found, :project, project_id}}
 
   defp validate_status(nil), do: :ok
 

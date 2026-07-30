@@ -35,6 +35,38 @@ defmodule ForemanServer.AggregateTest do
     :ok
   end
 
+  test "project aggregate State struct is built by fold from ProjectRegistered and updated by ProjectUpdated" do
+    events = [
+      %{
+        event_type: "ProjectRegistered",
+        payload: %{
+          project_id: "proj-struct",
+          path: "/tmp/proj-struct",
+          status: "active",
+          default_branch: "develop",
+          config: %{key: "val"},
+          health: %{ok: false}
+        }
+      },
+      %{
+        event_type: "ProjectUpdated",
+        payload: %{project_id: "proj-struct", status: "paused", config: %{extra: "added"}}
+      },
+      %{event_type: "ProjectArchived", payload: %{project_id: "proj-struct"}}
+    ]
+
+    state = Aggregate.fold(Project, events)
+
+    assert %Project.State{} = state
+    assert state.exists? == true
+    assert state.project_id == "proj-struct"
+    assert state.path == "/tmp/proj-struct"
+    assert state.status == "archived"
+    assert state.default_branch == "develop"
+    assert state.config == %{key: "val", extra: "added"}
+    assert state.archived? == true
+  end
+
   test "project aggregate rejects duplicate registrations and validates updates" do
     assert {:ok, %{event: %{event_type: "ProjectRegistered"}}} =
              CommandRouter.handle(%{
