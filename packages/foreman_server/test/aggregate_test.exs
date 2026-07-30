@@ -2,6 +2,7 @@ defmodule ForemanServer.AggregateTest do
   use ExUnit.Case
 
   alias ForemanServer.{Aggregate, AggregateRouter, CommandRouter, EventStore}
+  alias ForemanServer.Inbox.SharedInbox
 
   alias ForemanServer.Aggregates.{
     InboxThread,
@@ -33,6 +34,15 @@ defmodule ForemanServer.AggregateTest do
 
     assert :ok = Application.start(:foreman_server)
     :ok
+  end
+
+  # Fixed impl for SharedInbox dedupe test — stable correlation_id
+  defmodule SharedInboxDedupeImpl do
+    @behaviour ForemanServer.Inbox.InboxItemCorrelationId
+    @correlation_id "dedupe-test-correlation-#{:rand.uniform(999_999)}"
+
+    @impl true
+    def correlation_id(_payload), do: @correlation_id
   end
 
   test "project aggregate State struct is built by fold from ProjectRegistered and updated by ProjectUpdated" do
@@ -362,6 +372,49 @@ defmodule ForemanServer.AggregateTest do
              })
 
     assert delivery_spec.event_type == "InboxDeliveryUpdated"
+  end
+
+  test "SharedInbox.ingest/2 emits InboxItemStarted then InboxItemDeduped for same correlation_id" do
+    impl = SharedInboxDedupeImpl
+
+    payload1 = %{
+      run_id: "run-shared-inbox-dedupe-#{:rand.uniform(999_999)}",
+      source: "test-source",
+      body: "first delivery attempt"
+    }
+
+    # First ingest — should start the item
+    assert {:ok, %{event: started_event}} =
+             SharedInbox.ingest(impl, payload1)
+
+    assert started_event.event_type == "InboxItemStarted"
+    assert started_event.payload.correlation_id == impl.correlation_id(payload1)
+
+    Process.sleep(50)
+
+    # Stream must have exactly one InboxItemStarted
+    inbox_events = EventStore.stream("inbox:#{payload1.run_id}")
+    started_events = Enum.filter(inbox_events, &(&1.event_type == "InboxItemStarted"))
+    assert length(started_events) == 1
+
+    # Second ingest with same correlation_id — should dedupe without re-processing
+    payload2 = Map.put(payload1, :body, "retry with same correlation_id")
+
+    assert {:ok, %{event: deduped_event, existing_item: existing}} =
+             SharedInbox.ingest(impl, payload2)
+
+    assert deduped_event.event_type == "InboxItemDeduped"
+    assert deduped_event.payload.correlation_id == impl.correlation_id(payload1)
+
+    # existing_item carries the original InboxItemStarted payload (the "existing delivery status")
+    assert existing.correlation_id == impl.correlation_id(payload1)
+    assert existing.payload.run_id == payload1.run_id
+
+    # Verify dedupe hit: no second InboxItemStarted started, exactly one deduped event
+    Process.sleep(50)
+    final_events = EventStore.stream("inbox:#{payload1.run_id}")
+    assert Enum.count(final_events, &(&1.event_type == "InboxItemStarted")) == 1
+    assert Enum.count(final_events, &(&1.event_type == "InboxItemDeduped")) == 1
   end
 
   test "worker aggregate folds imported worker events and validates sequence" do

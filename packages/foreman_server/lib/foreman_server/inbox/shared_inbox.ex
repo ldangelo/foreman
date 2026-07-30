@@ -2,26 +2,34 @@ defmodule ForemanServer.Inbox.SharedInbox do
   @moduledoc """
   Unified ingestion gateway for both attach-bridge and external-trigger sources.
 
-  Both sources route through this facade; the correlation-id behaviour
-  (attached by implementing `InboxItemCorrelationId`) provides a stable
-  dedupe key so at-least-once delivery and retry do not produce duplicates.
+  Normalizes incoming items (via the `InboxItemCorrelationId` behaviour) then
+  delegates routing to `Inbox.Poller`, which dispatches to `CommandRouter`.
   """
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.{EventStore, Inbox.Poller}
 
   @doc """
-  Submits an inbox item for dedupe checking and potential append.
+  Normalizes an incoming item and routes it through the inbox poller.
 
   `impl` is the module implementing `InboxItemCorrelationId`.
 
-  Returns `{:ok, event}` on success, `{:error, reason}` on failure.
+  Returns `{:ok, %{event: event}}` on success or dedupe hit.  On a dedupe hit,
+  `existing_item` is the latest `InboxItemStarted` payload for that correlation_id
+  within the run stream — the "existing delivery status".
   """
-  @spec ingest(module(), map()) :: {:ok, map()} | {:error, term()}
+  @spec ingest(module(), map()) :: {:ok, %{event: map()}} | {:error, term()}
   def ingest(impl, payload) when is_atom(impl) and is_map(payload) do
     with {:ok, correlation_id} <- derive_correlation_id(impl, payload),
          {:ok, source} <- derive_source(impl, payload),
-         {:ok, event} <- dispatch(correlation_id, source, payload) do
-      {:ok, event}
+         {:ok, %{event: event}} <- Poller.submit(correlation_id, source, payload) do
+      result = %{event: event}
+
+      if event.event_type == "InboxItemDeduped" do
+        Map.put(result, :existing_item, find_existing_item(correlation_id, payload))
+      else
+        result
+      end
+      |> then(&{:ok, &1})
     end
   end
 
@@ -39,21 +47,22 @@ defmodule ForemanServer.Inbox.SharedInbox do
     if source != "", do: {:ok, source}, else: {:error, :missing_source}
   end
 
-  # Flatten run_id out of payload so CommandRouter -> InboxThread sees it.
-  # The original item payload (run context, body, etc.) stays at payload.payload.
-  defp dispatch(correlation_id, source, payload) do
+  # Reverse-scans the stream for the latest InboxItemStarted matching correlation_id.
+  defp find_existing_item(correlation_id, payload) do
     run_id = Map.get(payload, :run_id) || Map.get(payload, "run_id")
-    command = %{
-      command_id: Map.get(payload, :idempotency_key) || "InboxItem:#{correlation_id}",
-      command_type: "inbox.item.start",
-      payload: %{
-        run_id: run_id,
-        correlation_id: correlation_id,
-        source: source,
-        payload: payload
-      }
-    }
+    stream_id = "inbox:#{run_id}"
 
-    CommandRouter.handle(command)
+    events = EventStore.stream(stream_id)
+
+    events
+    |> Enum.reverse()
+    |> Enum.find(fn e ->
+      e.event_type == "InboxItemStarted" and
+        e.payload.correlation_id == correlation_id
+    end)
+    |> case do
+      nil -> nil
+      event -> event.payload
+    end
   end
 end
