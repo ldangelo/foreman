@@ -432,6 +432,61 @@ defmodule ForemanServer.AggregateTest do
     assert state.assistant_messages == 1
   end
 
+  describe "legacy worker event replay" do
+    # Regression: typed structs registered in EventCodec must tolerate legacy-shaped
+    # payloads (no adapter, no sequence) without raising in from_payload/1, since
+    # existing streams were written before the typed-struct migration.
+    alias ForemanServer.Event
+
+    defp worker_event(type, payload) do
+      %Event{
+        event_id: Ecto.UUID.generate(),
+        stream_id: "worker-legacy:#{Ecto.UUID.generate()}",
+        stream_version: 1,
+        event_type: type,
+        schema_version: 1,
+        payload: payload,
+        metadata: %{},
+        occurred_at: DateTime.utc_now(),
+        correlation_id: Ecto.UUID.generate()
+      }
+    end
+
+    test "WorkerStarted without adapter or sequence does not raise" do
+      evt = worker_event("WorkerStarted", %{"run_id" => "r", "worker_id" => "w", "phase_id" => "p"})
+      state = Aggregate.fold(Worker, [evt])
+      assert state.exists? == true
+      assert state.run_id == "r"
+      assert state.worker_id == "w"
+    end
+
+    test "WorkerStdout without sequence does not raise" do
+      evt = worker_event("WorkerStdout", %{"run_id" => "r", "worker_id" => "w", "content" => "hi"})
+      assert Aggregate.fold(Worker, [evt])
+    end
+
+    test "WorkerStderr without sequence does not raise" do
+      evt = worker_event("WorkerStderr", %{"run_id" => "r", "worker_id" => "w", "content" => "err"})
+      assert Aggregate.fold(Worker, [evt])
+    end
+
+    test "AssistantMessage without sequence does not raise" do
+      evt = worker_event("AssistantMessage", %{"run_id" => "r", "worker_id" => "w", "message" => "hi"})
+      assert Aggregate.fold(Worker, [evt])
+    end
+
+    test "typed WorkerStarted with adapter and sequence preserves all fields" do
+      evt = worker_event("WorkerStarted", %{
+        "run_id" => "r", "worker_id" => "w", "phase_id" => "p",
+        "adapter" => "exec", "sequence" => 3
+      })
+      state = Aggregate.fold(Worker, [evt])
+      assert state.exists? == true
+      assert state.adapter == "exec"
+      assert state.last_sequence == 3
+    end
+  end
+
   test "scheduler, vcs, recovery, and integration aggregates tolerate historical replay" do
     scheduler =
       Aggregate.fold(Scheduler, [

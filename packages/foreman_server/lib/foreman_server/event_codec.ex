@@ -3,10 +3,21 @@ defmodule ForemanServer.EventCodec do
 
   alias ForemanServer.Event
 
-  @inbox_events %{
+  @typed_events %{
     "BoardItemStatusChanged" => ForemanServer.Events.BoardItemStatusChanged,
     "InboxItemStarted" => ForemanServer.Events.InboxItemStarted,
-    "InboxItemDeduped" => ForemanServer.Events.InboxItemDeduped
+    "InboxItemDeduped" => ForemanServer.Events.InboxItemDeduped,
+    # Worker stream events
+    "WorkerStarted" => ForemanServer.Events.WorkerStarted,
+    "WorkerHeartbeat" => ForemanServer.Events.WorkerHeartbeat,
+    "WorkerStdout" => ForemanServer.Events.WorkerStdout,
+    "WorkerStderr" => ForemanServer.Events.WorkerStderr,
+    "AssistantMessage" => ForemanServer.Events.AssistantMessage,
+    # ToolCallFinished excluded: emitted by both worker stream and ToolCall aggregate
+    # with incompatible payloads — handled via legacy fallback in Worker.apply_event
+    "WorkerExited" => ForemanServer.Events.WorkerExited,
+    "WorkerUnresponsive" => ForemanServer.Events.WorkerUnresponsive,
+    "WorkerCrashed" => ForemanServer.Events.WorkerCrashed
   }
 
   @spec encode(Event.t()) :: binary()
@@ -65,7 +76,7 @@ defmodule ForemanServer.EventCodec do
   """
   @spec decode!(String.t(), map()) :: struct() | map()
   def decode!(event_type, payload) when is_binary(event_type) and is_map(payload) do
-    case Map.fetch(@inbox_events, event_type) do
+    case Map.fetch(@typed_events, event_type) do
       {:ok, struct_module} ->
         cond do
           is_struct(payload, struct_module) ->
@@ -81,6 +92,7 @@ defmodule ForemanServer.EventCodec do
         end
 
       :error ->
+        # Unknown event type — return payload unchanged for legacy aggregate replay
         payload
     end
   end

@@ -27,6 +27,110 @@ defmodule ForemanServer.Aggregates.Worker do
   @impl true
   def initial_state, do: %State{exists?: false, last_sequence: -1, status: nil}
 
+  # ══════════════════════════════════════════════════════════════════════════════
+  # apply_event — three clause groups
+  #
+  #   Group 1 — Envelope unwrappers (for replay via Aggregate.decode_for_fold):
+  #     %ForemanServer.Event{payload: %WorkerX{}} → direct typed clause
+  #
+  #   Group 2 — Direct typed struct clauses (tests and direct calls):
+  #     %WorkerX{} → state mutation + update_sequence
+  #
+  #   Group 3 — Legacy fallback (plain-map payloads, cross-domain events,
+  #     pre-migration stored events):
+  #     any event → string-type case + Aggregate.get field access
+  # ══════════════════════════════════════════════════════════════════════════════
+
+  # ── Group 1: Envelope unwrappers ─────────────────────────────────────────────
+  @impl true
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerStarted{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerHeartbeat{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.ToolCallFinished{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.AssistantMessage{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerStdout{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerStderr{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerExited{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerUnresponsive{} = e}),
+    do: apply_event(state, e)
+
+  def apply_event(state, %ForemanServer.Event{payload: %ForemanServer.Events.WorkerCrashed{} = e}),
+    do: apply_event(state, e)
+
+  # ── Group 2: Direct typed struct clauses ────────────────────────────────────
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerStarted{} = e) do
+    state
+    |> update_sequence(e)
+    |> then(fn s ->
+      %State{s |
+        exists?: true,
+        run_id: e.run_id,
+        worker_id: e.worker_id,
+        phase_id: e.phase_id,
+        adapter: e.adapter,
+        status: "running",
+        terminal?: false
+      }
+    end)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerHeartbeat{} = e) do
+    %State{state | status: "heartbeat"} |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.ToolCallFinished{} = e) do
+    %State{state | tool_events: state.tool_events + 1, status: "running"}
+    |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.AssistantMessage{} = e) do
+    %State{state | assistant_messages: state.assistant_messages + 1, status: "running"}
+    |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerStdout{} = e) do
+    %State{state | status: "running"} |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerStderr{} = e) do
+    %State{state | status: "running"} |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerExited{} = e) do
+    %State{state | status: "terminal", terminal?: true} |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerUnresponsive{} = e) do
+    %State{state | status: "unresponsive", terminal?: true} |> update_sequence(e)
+  end
+
+  @impl true
+  def apply_event(state, %ForemanServer.Events.WorkerCrashed{} = e) do
+    %State{state | status: "crashed", terminal?: true} |> update_sequence(e)
+  end
+
+  # ── Group 3: Legacy fallback ────────────────────────────────────────────────
   @impl true
   def apply_event(state, event) do
     payload = Aggregate.event_payload(event)
@@ -50,16 +154,10 @@ defmodule ForemanServer.Aggregates.Worker do
         %State{state | status: "heartbeat"}
 
       "ToolCallFinished" ->
-        %State{state |
-          tool_events: state.tool_events + 1,
-          status: "running"
-        }
+        %State{state | tool_events: state.tool_events + 1, status: "running"}
 
       "AssistantMessage" ->
-        %State{state |
-          assistant_messages: state.assistant_messages + 1,
-          status: "running"
-        }
+        %State{state | assistant_messages: state.assistant_messages + 1, status: "running"}
 
       "WorkerStdout" ->
         %State{state | status: "running"}
