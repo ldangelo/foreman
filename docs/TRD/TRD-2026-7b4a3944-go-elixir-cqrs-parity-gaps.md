@@ -202,10 +202,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Routes normalized item to `Inbox.Poller`
   - [x] Tests: dedupe hit returns existing status without re-processing (`InboxItemStarted` count stays 1, `InboxItemDeduped` count grows)
 
-- [ ] **TRD-007** PlanningFlow aggregate | 3h | [satisfies REQ-017] | Validates: AC-017-1, AC-017-2 | AC: Given `plan.prd` or `plan.trd` command is dispatched, when `PlanningFlow.handle_command/2` processes it, then `PlanningFlowStarted` event is appended through CommandRouter; trace events append through existing aggregate infrastructure
-  - [ ] `ForemanServer.Aggregates.PlanningFlow.State` struct
-  - [ ] `handle_command/2` for planning commands
-  - [ ] `apply_event/2` using `%State{state | ...}` updates
+- [x] **TRD-007** PlanningFlow aggregate | 3h | [satisfies REQ-017] | Validates: AC-017-1, AC-017-2 | AC: Given `plan.prd` or `plan.trd` command is dispatched, when `PlanningFlow.handle_command/2` processes it, then `PlanningFlowStarted` event is appended through CommandRouter; trace events append through existing aggregate infrastructure
+  - [x] `ForemanServer.Aggregates.PlanningFlow.State` struct
+  - [x] `handle_command/2` for planning commands
+  - [x] `apply_event/2` using `%State{state | ...}` updates
 
 ---
 
