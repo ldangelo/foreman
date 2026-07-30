@@ -65,6 +65,7 @@ defmodule ForemanServer.ProjectRegistry do
     end
   end
 
+  @impl true
   def handle_call(:active_project_ids, _from, state) do
     project_ids =
       Registry.select(:project_registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
@@ -78,9 +79,6 @@ defmodule ForemanServer.ProjectRegistry do
       {:ok, pid} ->
         {:reply, {:ok, pid}, put_in(state.projects[project.id], project)}
 
-      {:error, {:already_started, pid}} ->
-        {:reply, {:ok, pid}, put_in(state.projects[project.id], project)}
-
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
@@ -90,18 +88,10 @@ defmodule ForemanServer.ProjectRegistry do
     Enum.reduce(projects, state, fn project, acc ->
       case start_project(project) do
         {:ok, _pid} -> put_in(acc.projects[project.id], project)
-        {:error, {:already_started, _pid}} -> put_in(acc.projects[project.id], project)
         {:error, reason} -> raise "failed to start project #{project.id}: #{inspect(reason)}"
       end
     end)
   end
 
-  defp start_project(%Project{status: :inactive}), do: {:error, :inactive_project}
-
-  defp start_project(%Project{} = project) do
-    DynamicSupervisor.start_child(
-      ForemanServer.ProjectDynamicSupervisor,
-      {ProjectSupervisor, project}
-    )
-  end
+  defp start_project(%Project{} = project), do: ProjectSupervisor.start_project(project)
 end
