@@ -182,20 +182,20 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Uses `Registry` under `:project_registry` registry
   - [x] `via(project_id)` helper for `GenServer.start_link`
 
-- [ ] **TRD-003** ProjectSupervisor | 3h | [satisfies REQ-016] | Validates: AC-016-1 | AC: Given a project is registered, when `ProjectSupervisor.start_project/1` is called, then it starts the full project process tree under this supervisor; crashed project processes are restarted
-  - [ ] `ProjectSupervisor` OTP supervisor — `restart: :permanent`, strategy `:one_for_one`
-  - [ ] `start_project/1` starts the project aggregate actor under this supervisor
-  - [ ] Monitors `ProjectRegistry` for pid→process mapping
+- [x] **TRD-003** ProjectSupervisor | 3h | [satisfies REQ-016] | Validates: AC-016-1 | AC: Given a project is registered, when `ProjectSupervisor.start_project/1` is called, then it starts the full project process tree under this supervisor; crashed project processes are restarted
+  - [x] `ProjectSupervisor` OTP supervisor — `restart: :permanent`, strategy `:one_for_one`
+  - [x] `start_project/1` starts the project aggregate actor under this supervisor
+  - [x] Monitors `ProjectRegistry` for pid→process mapping
 
-- [ ] **TRD-004** ProjectStore | 4h | [satisfies REQ-016] | Validates: AC-016-3 | AC: Given project configuration is persisted, when `ProjectStore.save/2` is called, then a `ProjectRegistered` or `ProjectUpdated` event is appended through CommandRouter and projected via ProjectionStore
-  - [ ] `ProjectStore` module — appends events via `CommandRouter`
-  - [ ] `ProjectStore.list/0` reads from `ProjectionStore`
-  - [ ] `ProjectStore.get/1` reads a single project projection
+- [x] **TRD-004** ProjectStore | 4h | [satisfies REQ-016] | Validates: AC-016-3 | AC: Given project configuration is persisted, when `ProjectStore.save/2` is called, then a `ProjectRegistered` or `ProjectUpdated` event is appended through CommandRouter and projected via ProjectionStore
+  - [x] `ProjectStore` module — appends events via `CommandRouter`
+  - [x] `ProjectStore.list/0` reads from `ProjectionStore`
+  - [x] `ProjectStore.get/1` reads a single project projection
 
-- [ ] **TRD-005** Project aggregate | 3h | [satisfies REQ-016] | Validates: AC-016-1, AC-016-2, AC-016-3 | AC: Given a project aggregate is started, when `RegisterProject` command is dispatched, then `ProjectRegistered` event is appended; `ProjectUpdated` command updates config; aggregate uses `%State{}` struct
-  - [ ] `ForemanServer.Aggregates.Project.State` struct
-  - [ ] `handle_command/2` for `RegisterProject`, `UpdateProject`, `ArchiveProject`
-  - [ ] `apply_event/2` using `%State{state | ...}` updates
+- [x] **TRD-005** Project aggregate | 3h | [satisfies REQ-016] | Validates: AC-016-1, AC-016-2, AC-016-3 | AC: Given a project aggregate is started, when `RegisterProject` command is dispatched, then `ProjectRegistered` event is appended; `ProjectUpdated` command updates config; aggregate uses `%State{}` struct
+  - [x] `ForemanServer.Aggregates.Project.State` struct
+  - [x] `handle_command/2` for `RegisterProject`, `UpdateProject`, `ArchiveProject`
+  - [x] `apply_event/2` using `%State{state | ...}` updates
 
 - [ ] **TRD-006** Integration ingestion via inbox/poller | 3h | [satisfies REQ-007] | Validates: AC-007-2, AC-007-4 | AC: Given an integration ingestion webhook arrives, when it is received, then `SharedInbox.ingest/2` normalizes to an `InboxItem` and routes through `Inbox.Poller`; deduped items emit `InboxItemDeduped` and return existing delivery status
   - [ ] `SharedInbox.ingest/2` calls `InboxItemCorrelationId` behaviour
