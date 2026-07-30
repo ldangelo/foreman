@@ -140,6 +140,48 @@ defmodule ForemanServer.ProjectRegistryTest do
     test "returns a list of active project ids" do
       assert is_list(ProjectRegistry.active_project_ids())
     end
+
+    test "via-registered ProjectSupervisor appears in active_project_ids" do
+      project = %Project{id: "via-active-test", path: "/tmp/test"}
+      pid = start_supervised!({ProjectSupervisor, project})
+      assert is_pid(pid)
+      assert "via-active-test" in ProjectRegistry.active_project_ids()
+    end
+
+    test "direct register appears in active_project_ids and disappears after unregister" do
+      myself = self()
+
+      try do
+        assert "direct-reg-test" not in ProjectRegistry.active_project_ids()
+        assert :ok = ProjectRegistry.register("direct-reg-test", myself)
+        assert "direct-reg-test" in ProjectRegistry.active_project_ids()
+        ProjectRegistry.unregister("direct-reg-test")
+        refute "direct-reg-test" in ProjectRegistry.active_project_ids()
+      after
+        ProjectRegistry.unregister("direct-reg-test")
+      end
+    end
+
+    test "via-registered process disappears from active_project_ids on normal exit" do
+      project = %Project{id: "exit-test", path: "/tmp/test"}
+      {:ok, pid} = ProjectSupervisor.start_link(project)
+
+      assert "exit-test" in ProjectRegistry.active_project_ids()
+      GenServer.stop(pid, :normal)
+
+      # Registry cleanup is async — poll until entry disappears
+      retries = 20
+      result =
+        Enum.reduce_while(1..retries, :error, fn i, _ ->
+          if "exit-test" in ProjectRegistry.active_project_ids() do
+            if i < retries, do: (Process.sleep(5); {:cont, :error}), else: {:halt, {:error, {:still_present, retries}}}
+          else
+            {:halt, :ok}
+          end
+        end)
+
+      assert result == :ok
+    end
   end
 
   describe "integration: via/1 with ProjectSupervisor" do

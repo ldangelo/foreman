@@ -65,9 +65,12 @@ defmodule ForemanServer.ProjectRegistry do
     end
   end
 
-  @impl true
   def handle_call(:active_project_ids, _from, state) do
-    {:reply, Map.keys(state.projects) |> Enum.sort(), state}
+    project_ids =
+      Registry.select(:project_registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+      |> Enum.sort()
+
+    {:reply, project_ids, state}
   end
 
   def handle_call({:ensure_project, %Project{} = project}, _from, state) do
