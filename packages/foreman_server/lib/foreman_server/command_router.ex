@@ -637,7 +637,14 @@ defmodule ForemanServer.CommandRouter do
       :worker_id,
       :sender_agent_type,
       :recipient_agent_type,
-      :worker_supports_receiving
+      :worker_supports_receiving,
+      :sequence,
+      :output,
+      :artifact_paths,
+      :report_paths,
+      :exit_code,
+      :attempt,
+      :failure_reason
     ]
   end
   # Top-level keys that worker.record payloads must preserve.

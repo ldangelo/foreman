@@ -60,8 +60,7 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert event_types == [
              "WorkerStarted",
              "WorkerHeartbeat",
-             "ToolCallFinished",
-             "PhaseCompleted"
+             "ToolCallFinished"
            ]
 
     snapshot = ForemanServer.ProjectionStore.snapshot()
@@ -117,7 +116,13 @@ defmodule ForemanServer.WorkerProtocolTest do
   test "worker terminal events authoritatively update run and task projections", %{
     fixture: fixture
   } do
+    # Pre-seed run so run.fail can find it (run aggregate requires exists check).
+    assert seed_run("run-worker-fixture") == :ok
+
     assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
+
+    # Pre-seed task so task.update can find it (task aggregate requires exists check).
+    assert seed_task("task-1") == :ok
 
     run_failed = %{
       "run_id" => "run-worker-fixture",
@@ -153,7 +158,17 @@ defmodule ForemanServer.WorkerProtocolTest do
       ForemanServer.EventStore.stream("worker:run-worker-fixture:worker-1")
       |> Enum.map(& &1.event_type)
 
-    assert event_types == ["WorkerStarted", "RunFailed", "TaskUpdated"]
+    assert event_types == ["WorkerStarted"]
+
+    # Verify routed RunFailed carries task_id, failure_reason, and reason.
+    run_failed_event =
+      ForemanServer.EventStore.stream("run:run-worker-fixture")
+      |> Enum.find(&(&1.event_type == "RunFailed"))
+
+    assert run_failed_event
+    assert run_failed_event.payload.task_id == "task-1"
+    assert run_failed_event.payload.failure_reason == "max_turns"
+    assert run_failed_event.payload.reason == "max_turns"
 
     snapshot = ForemanServer.ProjectionStore.snapshot()
     assert snapshot.runs["run-worker-fixture"].status == "failed"
@@ -195,6 +210,9 @@ defmodule ForemanServer.WorkerProtocolTest do
   end
 
   test "non-terminal worker events are rejected after run terminal", %{fixture: fixture} do
+    # Pre-seed run so run.fail can find it.
+    assert seed_run("run-worker-fixture") == :ok
+
     assert post_json("/worker/v1/phases/developer/start", fixture["start"]).status == 202
 
     run_failed = %{
@@ -222,7 +240,7 @@ defmodule ForemanServer.WorkerProtocolTest do
       ForemanServer.EventStore.stream("worker:run-worker-fixture:worker-1")
       |> Enum.map(& &1.event_type)
 
-    assert event_types == ["WorkerStarted", "RunFailed"]
+    assert event_types == ["WorkerStarted"]
   end
 
   test "out-of-order worker sequence is rejected before projection mutation", %{fixture: fixture} do
@@ -240,6 +258,35 @@ defmodule ForemanServer.WorkerProtocolTest do
     refute Map.has_key?(snapshot.runs["run-worker-fixture"], :tool_events)
   end
 
+  test "run_completed worker event routes to Run aggregate and preserves task_id, failure_reason, and reason" do
+    assert seed_run("run-complete-test") == :ok
+
+    completed = %{
+      "run_id" => "run-complete-test",
+      "project_id" => "proj-1",
+      "phase_id" => "developer",
+      "worker_id" => "worker-complete-1",
+      "type" => "run_completed",
+      "sequence" => 1,
+      "status" => "completed",
+      "details" => %{
+        "task_id" => "task-complete-1",
+        "failure_reason" => "all_done"
+      }
+    }
+
+    assert post_json("/worker/v1/events", completed).status == 202
+
+    completed_event =
+      ForemanServer.EventStore.stream("run:run-complete-test")
+      |> Enum.find(&(&1.event_type == "RunCompleted"))
+
+    assert completed_event
+    assert completed_event.payload.task_id == "task-complete-1"
+    assert completed_event.payload.failure_reason == "all_done"
+    assert completed_event.payload.reason == "all_done"
+  end
+
   defp post_json(path, payload) do
     :post
     |> conn(path, Jason.encode!(payload))
@@ -252,5 +299,29 @@ defmodule ForemanServer.WorkerProtocolTest do
     "test/fixtures/worker-phase-success.json"
     |> File.read!()
     |> Jason.decode!()
+  end
+
+  # Pre-seed a Run aggregate stream so terminal events can find it.
+  defp seed_run(run_id) do
+    {:ok, _} =
+      ForemanServer.CommandRouter.handle(%{
+        command_id: "test-seed:#{run_id}",
+        command_type: "run.start",
+        payload: %{run_id: run_id}
+      })
+
+    :ok
+  end
+
+  # Pre-seed a Task aggregate stream so task.update can find it.
+  defp seed_task(task_id) do
+    {:ok, _} =
+      ForemanServer.CommandRouter.handle(%{
+        command_id: "test-seed:task:#{task_id}",
+        command_type: "task.create",
+        payload: %{task_id: task_id, project_id: "proj-1"}
+      })
+
+    :ok
   end
 end

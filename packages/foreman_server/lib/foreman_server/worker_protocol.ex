@@ -36,23 +36,46 @@ defmodule ForemanServer.WorkerProtocol do
              env: Map.get(payload, :env, %{}),
              project_secrets: Map.get(payload, :project_secrets, %{}),
              run_secrets: Map.get(payload, :run_secrets, %{})
+           }),
+         {:ok, _} <- ensure_phase_started(run_id, phase_id),
+         {:ok, worker_result} <-
+           append_worker_event("WorkerStarted", %{
+             run_id: run_id,
+             project_id: Map.get(payload, :project_id, "default"),
+             phase_id: phase_id,
+             worker_id: worker_id,
+             adapter: adapter.id,
+             session_id: Map.get(payload, :session_id),
+             prompt_path: Map.get(payload, :prompt_path),
+             tool_names: Map.get(payload, :tool_names, []),
+             artifact_paths: Map.get(payload, :artifact_paths, []),
+             prepared_env: redact_env(prepared_env.env),
+             prepared_env_keys: prepared_env.env |> Map.keys() |> Enum.sort(),
+             stripped_env_keys: prepared_env.stripped,
+             scoped_secret_keys: prepared_env.scoped_secret_keys,
+             sequence: 0
            }) do
-      append_worker_event("WorkerStarted", %{
-        run_id: run_id,
-        project_id: Map.get(payload, :project_id, "default"),
-        phase_id: phase_id,
-        worker_id: worker_id,
-        adapter: adapter.id,
-        session_id: Map.get(payload, :session_id),
-        prompt_path: Map.get(payload, :prompt_path),
-        tool_names: Map.get(payload, :tool_names, []),
-        artifact_paths: Map.get(payload, :artifact_paths, []),
-        prepared_env: redact_env(prepared_env.env),
-        prepared_env_keys: prepared_env.env |> Map.keys() |> Enum.sort(),
-        stripped_env_keys: prepared_env.stripped,
-        scoped_secret_keys: prepared_env.scoped_secret_keys,
-        sequence: 0
-      })
+      {:ok, worker_result}
+    end
+  end
+
+
+  # Ensure the Phase aggregate stream exists by dispatching phase.start.
+  # Only unexpected errors propagate; :phase_already_started and
+  # :duplicate_idempotency_key are swallowed here.
+  defp ensure_phase_started(run_id, phase_id) do
+    command_id = "phase-start:#{run_id}:#{phase_id}"
+
+    case CommandRouter.handle(%{
+           command_id: command_id,
+           command_type: "phase.start",
+           payload: %{run_id: run_id, phase_id: phase_id}
+         }) do
+      {:ok, _} -> {:ok, :phase_started}
+      {:error, :phase_already_started} -> {:ok, :phase_already_started}
+      {:error, {:phase_already_started, _}} -> {:ok, :phase_already_started}
+      {:error, {:duplicate_idempotency_key, _}} -> {:ok, :duplicate}
+      other -> other
     end
   end
 
@@ -86,26 +109,34 @@ defmodule ForemanServer.WorkerProtocol do
          {:ok, sequence} <- required_integer(Map.get(payload, :sequence), :sequence) do
       event_type = worker_event_type(type)
 
-      details = Map.get(payload, :details, %{})
+      # Phase/Run/Task events route to their own aggregates via CommandRouter.
+      # Worker events (including ToolCallFinished which crosses domains) persist
+      # to the worker stream via append_worker_event.
+      if route_to_aggregate?(event_type) do
+        route_to_aggregate(event_type, run_id, phase_id, worker_id, sequence, payload)
+      else
+        details = Map.get(payload, :details, %{})
 
-      append_worker_event(event_type, %{
-        run_id: run_id,
-        project_id: Map.get(payload, :project_id) || Map.get(details, "project_id"),
-        task_id:
-          Map.get(payload, :task_id) || Map.get(details, "task_id") || Map.get(details, "taskId"),
-        phase_id: phase_id,
-        worker_id: worker_id,
-        sequence: sequence,
-        tool_call_id: Map.get(payload, :tool_call_id),
-        tool_name: Map.get(payload, :tool_name),
-        status: Map.get(payload, :status) || Map.get(details, "status"),
-        output: Map.get(payload, :output),
-        message: Map.get(payload, :message),
-        artifact_paths: Map.get(payload, :artifact_paths, []),
-        report_paths: Map.get(payload, :report_paths, []),
-        exit_code: Map.get(payload, :exit_code),
-        details: details
-      })
+        append_worker_event(event_type, %{
+          run_id: run_id,
+          project_id: Map.get(payload, :project_id) || Map.get(details, "project_id"),
+          task_id:
+            Map.get(payload, :task_id) || Map.get(details, "task_id") ||
+            Map.get(details, "taskId"),
+          phase_id: phase_id,
+          worker_id: worker_id,
+          sequence: sequence,
+          tool_call_id: Map.get(payload, :tool_call_id),
+          tool_name: Map.get(payload, :tool_name),
+          status: Map.get(payload, :status) || Map.get(details, "status"),
+          output: Map.get(payload, :output),
+          message: Map.get(payload, :message),
+          artifact_paths: Map.get(payload, :artifact_paths, []),
+          report_paths: Map.get(payload, :report_paths, []),
+          exit_code: Map.get(payload, :exit_code),
+          details: details
+        })
+      end
     end
   end
 
@@ -116,19 +147,44 @@ defmodule ForemanServer.WorkerProtocol do
   @doc """
   Public emit path for internal Overwatch components (Tracker, LaunchWorker).
 
-  - For `WorkerStarted` the caller **must** supply `sequence: 0`.
-  - For all other events nil-sequence is auto-filled via `next_sequence/1` before
-    sequence validation so the aggregate's idempotency guard is respected.
-  - Returns `{:ok, result}` on success, `{:error, reason}` on failure,
-    or `{:ok, %{event: _, projection: _}}` on duplicate.
-  """
-  @spec emit(String.t(), map()) :: {:ok, map()} | {:error, term()}
+  Accepts either a binary event_type + map payload (legacy path, payload is
+  stringified and wrapped in the envelope by append_worker_event) OR a typed
+  struct as payload — the struct is passed directly through the pipeline and
+  serialized by EventStore.stringify_keys/1 before being written to the stream.
 
-  def emit("WorkerStarted", payload) do
+  For `WorkerStarted` the caller **must** supply `sequence: 0`.
+  For all other events nil-sequence is auto-filled via `next_sequence/1` before
+  sequence validation so the aggregate's idempotency guard is respected.
+
+  Returns `{:ok, result}` on success, `{:error, reason}` on failure,
+  or `{:ok, %{event: _, projection: _}}` on duplicate.
+  """
+  @spec emit(String.t(), map() | struct()) :: {:ok, map()} | {:error, term()}
+
+  def emit(event_type, %_{} = payload) do
+    # Typed struct path: normalize nil-sequence before persisting so the
+    # aggregate's idempotency guard is respected.
+    payload =
+      case Map.get(payload, :sequence) do
+        nil when event_type == "WorkerStarted" ->
+          Map.put(payload, :sequence, 0)
+
+        nil ->
+          Map.put(payload, :sequence, next_sequence_for(payload))
+
+        _ ->
+          payload
+      end
+
+    append_worker_event(event_type, payload)
+  end
+
+  # Map-based legacy path for callers that still pass plain maps.
+  def emit("WorkerStarted", payload) when is_map(payload) do
     append_worker_event("WorkerStarted", Map.put(payload, :sequence, 0))
   end
 
-  def emit(event_type, payload) do
+  def emit(event_type, payload) when is_map(payload) do
     payload =
       case Map.get(payload, :sequence) do
         nil -> Map.put(payload, :sequence, next_sequence_for(payload))
@@ -148,11 +204,16 @@ defmodule ForemanServer.WorkerProtocol do
     stream_id = "worker:#{payload.run_id}:#{payload.worker_id}"
     idempotency_key = "#{event_type}:#{payload.run_id}:#{payload.worker_id}:#{payload.sequence}"
 
-    case validate_sequence(stream_id, payload.sequence, idempotency_key) do
-      {:ok, _expected_version} ->
-        enriched_payload = Map.put(payload, :observed_at, DateTime.utc_now())
+    # 1. Duplicate check: already-recorded events return idempotent OK
+    #    regardless of current terminal state.
+    # 2. Terminal state check: new events after run went terminal are rejected.
+    # 3. Sequence validation: only for genuinely new events.
+    case duplicate_worker_event(stream_id, idempotency_key) do
+      nil ->
+        with :ok <- reject_event_after_terminal_run(event_type, payload.run_id),
+             {:ok, _expected_version} <- validate_sequence(stream_id, payload.sequence, idempotency_key) do
+          enriched_payload = Map.put(payload, :observed_at, DateTime.utc_now())
 
-        with :ok <- reject_event_after_terminal_run(event_type, payload.run_id) do
           CommandRouter.handle(%{
             command_id: idempotency_key,
             command_type: "worker.record",
@@ -164,11 +225,8 @@ defmodule ForemanServer.WorkerProtocol do
           end
         end
 
-      {:duplicate, event} ->
+      event ->
         {:ok, %{event: event, projection: ProjectionStore.snapshot()}}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
@@ -213,7 +271,6 @@ defmodule ForemanServer.WorkerProtocol do
     {state, _version} = Aggregate.load(Worker, "worker:#{run_id}:#{worker_id}")
     Worker.next_sequence(state)
   end
-
   defp worker_event_type("stdout"), do: "WorkerStdout"
   defp worker_event_type("stderr"), do: "WorkerStderr"
   defp worker_event_type("assistant"), do: "AssistantMessage"
@@ -231,6 +288,149 @@ defmodule ForemanServer.WorkerProtocol do
   defp worker_event_type("run_failed"), do: "RunFailed"
   defp worker_event_type("task_updated"), do: "TaskUpdated"
   defp worker_event_type(type), do: Macro.camelize(type)
+
+  @phase_run_task_events MapSet.new([
+    "PhaseCompleted", "PhaseFailed", "PhaseRetried", "PhaseSkipped",
+    "PhaseVerdict", "PhaseNudged",
+    "RunCompleted", "RunFailed",
+    "TaskUpdated"
+  ])
+
+  # Phase/Run/Task events are routed to their own aggregates so the aggregate
+  # can enforce invariants and emit authoritative events into its own stream.
+  defp route_to_aggregate?(event_type) do
+    MapSet.member?(@phase_run_task_events, event_type)
+  end
+
+  defp route_to_aggregate(event_type, run_id, phase_id, worker_id, sequence, payload) do
+    details = Map.get(payload, :details, %{})
+    task_id = Map.get(payload, :task_id) || Map.get(details, "task_id") || Map.get(details, "taskId")
+
+    {command_type, aggregate_payload} =
+      case event_type do
+        "PhaseCompleted" ->
+          {"phase.complete",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             status: Map.get(payload, :status) || Map.get(details, "status"),
+             output: Map.get(payload, :output),
+             artifact_paths: Map.get(payload, :artifact_paths, []),
+             report_paths: Map.get(payload, :report_paths, []),
+             exit_code: Map.get(payload, :exit_code),
+             message: Map.get(payload, :message)
+           }}
+
+        "PhaseFailed" ->
+          {"phase.fail",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             status: Map.get(payload, :status) || Map.get(details, "status"),
+             output: Map.get(payload, :output),
+             artifact_paths: Map.get(payload, :artifact_paths, []),
+             report_paths: Map.get(payload, :report_paths, []),
+             exit_code: Map.get(payload, :exit_code),
+             message: Map.get(payload, :message)
+           }}
+
+        "PhaseRetried" ->
+          {"phase.retry",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             attempt: Map.get(details, "attempt")
+           }}
+
+        "PhaseSkipped" ->
+          {"phase.skip",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             status: Map.get(payload, :status) || Map.get(details, "status")
+           }}
+
+        "PhaseVerdict" ->
+          {"phase.verdict",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             status: Map.get(payload, :status) || Map.get(details, "status")
+           }}
+
+        "PhaseNudged" ->
+          {"phase.nudge",
+           %{run_id: run_id, phase_id: phase_id, worker_id: worker_id, sequence: sequence}}
+
+        "RunCompleted" ->
+          {"run.complete",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             task_id: task_id,
+             status: Map.get(payload, :status) || Map.get(details, "status"),
+             failure_reason: Map.get(details, "failure_reason") || Map.get(payload, :failure_reason),
+             reason:
+               Map.get(details, "reason") || Map.get(payload, :reason) ||
+                 Map.get(details, "failure_reason") || Map.get(payload, :failure_reason),
+             output: Map.get(payload, :output),
+             artifact_paths: Map.get(payload, :artifact_paths, []),
+             exit_code: Map.get(payload, :exit_code)
+           }}
+
+        "RunFailed" ->
+          {"run.fail",
+           %{
+             run_id: run_id,
+             phase_id: phase_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             task_id: task_id,
+             status: Map.get(payload, :status) || Map.get(details, "status"),
+             failure_reason: Map.get(details, "failure_reason") || Map.get(payload, :failure_reason),
+             reason:
+               Map.get(details, "reason") || Map.get(payload, :reason) ||
+                 Map.get(details, "failure_reason") || Map.get(payload, :failure_reason) ||
+                 Map.get(payload, :message),
+             output: Map.get(payload, :output),
+             artifact_paths: Map.get(payload, :artifact_paths, []),
+             exit_code: Map.get(payload, :exit_code)
+           }}
+        "TaskUpdated" ->
+          {"task.update",
+           %{
+             run_id: run_id,
+             task_id: task_id,
+             worker_id: worker_id,
+             sequence: sequence,
+             status: Map.get(payload, :status) || Map.get(details, "status"),
+             output: Map.get(payload, :output)
+           }}
+      end
+
+    command_id = "ingest:#{event_type}:#{run_id}:#{phase_id}:#{worker_id}:#{sequence}"
+
+    case CommandRouter.handle(%{
+           command_id: command_id,
+           command_type: command_type,
+           payload: aggregate_payload
+         }) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
@@ -265,6 +465,7 @@ defmodule ForemanServer.WorkerProtocol do
       :details,
       :env,
       :exit_code,
+      :failure_reason,
       :message,
       :model,
       :output,
@@ -274,6 +475,7 @@ defmodule ForemanServer.WorkerProtocol do
       :project_secrets,
       :prompt_path,
       :provider,
+      :reason,
       :report_paths,
       :run_id,
       :run_secrets,

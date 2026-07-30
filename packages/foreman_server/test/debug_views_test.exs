@@ -34,6 +34,7 @@ defmodule ForemanServer.DebugViewsTest do
 
     assert Enum.map(compact.entries, & &1.stream) == [
              "event",
+             "event",
              "stdout",
              "stderr",
              "assistant",
