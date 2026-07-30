@@ -3,11 +3,11 @@ defmodule ForemanServer.ProjectSupervisor do
 
   use GenServer
 
-  alias ForemanServer.Project
+  alias ForemanServer.{Project, ProjectRegistry}
 
   @spec start_link(Project.t()) :: GenServer.on_start()
   def start_link(%Project{id: id} = project) do
-    GenServer.start_link(__MODULE__, project, name: via(id))
+    GenServer.start_link(__MODULE__, project, name: ProjectRegistry.via(id))
   end
 
   @spec child_spec(Project.t()) :: Supervisor.child_spec()
@@ -23,9 +23,9 @@ defmodule ForemanServer.ProjectSupervisor do
 
   @spec project(String.t()) :: Project.t() | nil
   def project(id) do
-    case GenServer.whereis(via(id)) do
-      nil -> nil
-      pid -> GenServer.call(pid, :project)
+    case ProjectRegistry.lookup(id) do
+      {:ok, pid} -> GenServer.call(pid, :project)
+      :error -> nil
     end
   end
 
@@ -38,6 +38,4 @@ defmodule ForemanServer.ProjectSupervisor do
   def handle_call(:project, _from, project) do
     {:reply, project, project}
   end
-
-  defp via(id), do: {:global, {__MODULE__, id}}
 end

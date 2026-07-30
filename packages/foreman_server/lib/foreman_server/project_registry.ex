@@ -20,6 +20,39 @@ defmodule ForemanServer.ProjectRegistry do
     GenServer.call(__MODULE__, {:ensure_project, project})
   end
 
+  @type project_id :: String.t()
+
+  @spec via(project_id) :: {:via, Registry, {:project_registry, project_id}}
+  def via(project_id) when is_binary(project_id) do
+    {:via, Registry, {:project_registry, project_id}}
+  end
+
+  @spec register(project_id, pid()) :: :ok | {:error, :already_registered | :not_self}
+  def register(project_id, pid) when is_binary(project_id) and is_pid(pid) do
+    if pid == self() do
+      case Registry.register(:project_registry, project_id, pid) do
+        {:ok, _} -> :ok
+        {:error, {:already_registered, _}} -> {:error, :already_registered}
+      end
+    else
+      {:error, :not_self}
+    end
+  end
+
+  @spec unregister(project_id) :: :ok
+  def unregister(project_id) when is_binary(project_id) do
+    Registry.unregister(:project_registry, project_id)
+    :ok
+  end
+
+  @spec lookup(project_id) :: {:ok, pid()} | :error
+  def lookup(project_id) when is_binary(project_id) do
+    case Registry.lookup(:project_registry, project_id) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> :error
+    end
+  end
+
   @impl true
   def init(_opts) do
     case ProjectStore.load_projects() do

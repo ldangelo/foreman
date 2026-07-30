@@ -22,6 +22,7 @@ defmodule ForemanServer.Application do
       repo_children() ++
         [
           {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
+          {Registry, keys: :unique, name: :project_registry},
           {ProjectionStore, []},
           {Overwatch, []},
           {EventStore, []},
