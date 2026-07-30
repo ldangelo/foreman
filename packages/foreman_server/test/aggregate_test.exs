@@ -5,6 +5,7 @@ defmodule ForemanServer.AggregateTest do
   alias ForemanServer.Inbox.SharedInbox
 
   alias ForemanServer.Aggregates.{
+    BoardItemStateMachine,
     InboxThread,
     Integration,
     Phase,
@@ -835,5 +836,263 @@ defmodule ForemanServer.AggregateTest do
     assert state.status == "completed"
     assert state.terminal? == true
     assert version == 2
+  end
+
+  # ─── BoardItemStateMachine ──────────────────────────────────────────────────
+
+  describe "BoardItemStateMachine" do
+    alias ForemanServer.Events.BoardItemStatusChanged
+
+    test "State struct built by fold from BoardItemStatusChanged" do
+      events = [
+        %{
+          event_type: "BoardItemStatusChanged",
+          payload: %{board_item_id: "bi-1", from_status: nil, to_status: "backlog"}
+        },
+        %{
+          event_type: "BoardItemStatusChanged",
+          payload: %{board_item_id: "bi-1", from_status: "backlog", to_status: "in_progress"}
+        }
+      ]
+
+      state = Aggregate.fold(BoardItemStateMachine, events)
+
+      assert %BoardItemStateMachine.State{} = state
+      assert state.exists? == true
+      assert state.board_item_id == "bi-1"
+      assert state.status == "in_progress"
+      assert state.terminal? == false
+    end
+
+    test "State terminal? set when to_status is done" do
+      events = [
+        %{
+          event_type: "BoardItemStatusChanged",
+          payload: %{board_item_id: "bi-2", from_status: nil, to_status: "backlog"}
+        },
+        %{
+          event_type: "BoardItemStatusChanged",
+          payload: %{board_item_id: "bi-2", from_status: "backlog", to_status: "in_progress"}
+        },
+        %{
+          event_type: "BoardItemStatusChanged",
+          payload: %{board_item_id: "bi-2", from_status: "in_progress", to_status: "in_review"}
+        },
+        %{
+          event_type: "BoardItemStatusChanged",
+          payload: %{board_item_id: "bi-2", from_status: "in_review", to_status: "done"}
+        }
+      ]
+
+      state = Aggregate.fold(BoardItemStateMachine, events)
+
+      assert state.status == "done"
+      assert state.terminal? == true
+    end
+
+    test "typed %BoardItemStatusChanged{} struct used in fold" do
+      events = [
+        %BoardItemStatusChanged{
+          board_item_id: "bi-typed",
+          from_status: nil,
+          to_status: "backlog"
+        },
+        %BoardItemStatusChanged{
+          board_item_id: "bi-typed",
+          from_status: "backlog",
+          to_status: "in_progress"
+        }
+      ]
+
+      state = Aggregate.fold(BoardItemStateMachine, events)
+
+      assert state.exists? == true
+      assert state.board_item_id == "bi-typed"
+      assert state.status == "in_progress"
+      assert state.terminal? == false
+    end
+
+    test "done → in_progress returns {:error, :invalid_transition} via router" do
+      # AC-006: terminal done rejects further transitions (e.g., done → in_progress)
+      # Seed a board item and advance it to done via valid transitions
+      assert {:ok, create_spec} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-invalid"})
+
+      assert {:ok, _} = EventStore.append(create_spec)
+
+      assert {:ok, spec1} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-invalid",
+                 to_status: "in_progress"
+               })
+
+      assert {:ok, _} = EventStore.append(spec1)
+
+      assert {:ok, spec2} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-invalid",
+                 to_status: "in_review"
+               })
+
+      assert {:ok, _} = EventStore.append(spec2)
+
+      assert {:ok, spec3} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-invalid",
+                 to_status: "done"
+               })
+
+      assert {:ok, _} = EventStore.append(spec3)
+
+      # done → in_progress is not a valid transition
+      assert {:error, :invalid_transition} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-invalid",
+                 to_status: "in_progress"
+               })
+    end
+
+    test "terminal done rejects further transitions" do
+      assert {:ok, create_spec} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-done"})
+
+      assert {:ok, _} = EventStore.append(create_spec)
+
+      assert {:ok, spec1} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-done",
+                 to_status: "in_progress"
+               })
+
+      assert {:ok, _} = EventStore.append(spec1)
+
+      assert {:ok, spec2} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-done",
+                 to_status: "in_review"
+               })
+
+      assert {:ok, _} = EventStore.append(spec2)
+
+      assert {:ok, spec3} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-done",
+                 to_status: "done"
+               })
+
+      assert {:ok, _} = EventStore.append(spec3)
+
+      # done → in_progress is not a valid transition
+      assert {:error, :invalid_transition} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-done",
+                 to_status: "in_progress"
+               })
+    end
+
+    test "valid transition chain: backlog → in_progress → in_review → done" do
+      assert {:ok, create_spec} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-chain"})
+
+      assert {:ok, _} = EventStore.append(create_spec)
+
+      assert {:ok, spec1} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-chain",
+                 to_status: "in_progress"
+               })
+
+      assert spec1.event_type == "BoardItemStatusChanged"
+      assert {:ok, _} = EventStore.append(spec1)
+
+      assert {:ok, spec2} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-chain",
+                 to_status: "in_review"
+               })
+
+      assert {:ok, _} = EventStore.append(spec2)
+
+      assert {:ok, spec3} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-chain",
+                 to_status: "done"
+               })
+
+      assert {:ok, _} = EventStore.append(spec3)
+    end
+
+    test "backlog → blocked → backlog transition" do
+      assert {:ok, create_spec} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-blocked"})
+
+      assert {:ok, _} = EventStore.append(create_spec)
+
+      assert {:ok, spec1} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-blocked",
+                 to_status: "blocked"
+               })
+
+      assert {:ok, _} = EventStore.append(spec1)
+
+      assert {:ok, spec2} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-blocked",
+                 to_status: "backlog"
+               })
+
+      assert {:ok, _} = EventStore.append(spec2)
+    end
+
+    test "Aggregate.load/2 replays board item stream with typed struct" do
+      assert {:ok, create_spec} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-replay"})
+
+      assert {:ok, _} = EventStore.append(create_spec)
+
+      assert {:ok, spec1} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-replay",
+                 to_status: "in_progress"
+               })
+
+      assert {:ok, _} = EventStore.append(spec1)
+
+      assert {:ok, spec2} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-replay",
+                 to_status: "in_review"
+               })
+
+      assert {:ok, _} = EventStore.append(spec2)
+
+      # Simulate actor restart: load from event store
+      {state, version} = Aggregate.load(BoardItemStateMachine, "board_item:bi-replay")
+
+      assert state.exists? == true
+      assert state.board_item_id == "bi-replay"
+      assert state.status == "in_review"
+      assert state.terminal? == false
+      assert version == 3
+    end
+
+    test "board_item.create returns {:error, {:already_exists, ...}} when exists" do
+      assert {:ok, create_spec} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-dup"})
+
+      assert {:ok, _} = EventStore.append(create_spec)
+
+      assert {:error, {:already_exists, :board_item, "bi-dup"}} =
+               AggregateRouter.route("board_item.create", %{board_item_id: "bi-dup"})
+    end
+
+    test "board_item.transition returns {:error, {:not_found, ...}} when not exists" do
+      assert {:error, {:not_found, :board_item, "bi-none"}} =
+               AggregateRouter.route("board_item.transition", %{
+                 board_item_id: "bi-none",
+                 to_status: "in_progress"
+               })
+    end
   end
 end

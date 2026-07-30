@@ -6,6 +6,7 @@ defmodule ForemanServer.AggregateRouter do
   alias ForemanServer.Aggregates.{
     ArtifactReport,
     Attachment,
+    BoardItemStateMachine,
     ExternalTrigger,
     ImportMigration,
     InboxThread,
@@ -80,11 +81,14 @@ defmodule ForemanServer.AggregateRouter do
       "migration." <> _ ->
         route_migration(command_type, payload)
 
+      "attach." <> _ ->
+        route_attachment(command_type, payload)
+
       "external." <> _ ->
         route_external(command_type, payload)
 
-      "attach." <> _ ->
-        route_attachment(command_type, payload)
+      "board_item." <> _ ->
+        route_board_item(command_type, payload)
 
       _ ->
         :unhandled
@@ -288,6 +292,18 @@ defmodule ForemanServer.AggregateRouter do
       Aggregate.decide(
         Attachment,
         "attach:#{stream_part(run_id)}:#{stream_part(worker_id)}",
+        command_type,
+        payload
+      )
+    end
+  end
+
+  defp route_board_item(command_type, payload) do
+    with {:ok, board_item_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :board_item_id), :board_item_id) do
+      Aggregate.decide(
+        BoardItemStateMachine,
+        "board_item:#{board_item_id}",
         command_type,
         payload
       )

@@ -4,6 +4,7 @@ defmodule ForemanServer.EventCodec do
   alias ForemanServer.Event
 
   @inbox_events %{
+    "BoardItemStatusChanged" => ForemanServer.Events.BoardItemStatusChanged,
     "InboxItemStarted" => ForemanServer.Events.InboxItemStarted,
     "InboxItemDeduped" => ForemanServer.Events.InboxItemDeduped
   }
