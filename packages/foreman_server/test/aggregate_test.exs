@@ -8,6 +8,7 @@ defmodule ForemanServer.AggregateTest do
     InboxThread,
     Integration,
     Phase,
+    PlanningFlow,
     Project,
     Recovery,
     Run,
@@ -501,5 +502,88 @@ defmodule ForemanServer.AggregateTest do
       },
       extra
     )
+  end
+
+  test "PlanningFlow aggregate folds PlanningFlowStarted and updates via PlanningFlowCommand" do
+    events = [
+      %{
+        event_type: "PlanningFlowStarted",
+        payload: %{flow_id: "plan-1", run_id: "run-plan-1", kind: "prd"}
+      },
+      %{
+        event_type: "PlanningFlowCommand",
+        payload: %{flow_id: "plan-1", command: "step-1"}
+      },
+      %{
+        event_type: "PlanningFlowCommand",
+        payload: %{flow_id: "plan-1", command: "step-2"}
+      },
+      %{
+        event_type: "PlanningTraceLinked",
+        payload: %{flow_id: "plan-1", traceability_key: "trace-1", phase_id: "phase-1"}
+      },
+      %{
+        event_type: "PlanningFlowCompleted",
+        payload: %{flow_id: "plan-1"}
+      }
+    ]
+
+    state = Aggregate.fold(PlanningFlow, events)
+
+    assert %PlanningFlow.State{} = state
+    assert state.exists? == true
+    assert state.completed? == true
+    assert state.flow_id == "plan-1"
+    assert length(state.commands) == 2
+    assert Map.has_key?(state.traces, "trace-1")
+    assert state.traces["trace-1"].phase_id == "phase-1"
+  end
+
+  test "PlanningFlow rejects planning.start when already started" do
+    events = [
+      %{
+        event_type: "PlanningFlowStarted",
+        payload: %{flow_id: "plan-dup", run_id: "run-dup"}
+      }
+    ]
+
+    state = Aggregate.fold(PlanningFlow, events)
+
+    assert {:error, :planning_flow_already_started} =
+             PlanningFlow.handle_command(state, %{
+               type: "planning.start",
+               payload: %{flow_id: "plan-dup", run_id: "run-dup"}
+             })
+  end
+
+  test "PlanningFlow rejects planning.complete when not started" do
+    state = PlanningFlow.initial_state()
+
+    assert {:error, :planning_flow_not_started} =
+             PlanningFlow.handle_command(state, %{
+               type: "planning.complete",
+               payload: %{flow_id: "plan-none"}
+             })
+  end
+
+  test "PlanningFlow rejects planning.complete when already completed" do
+    events = [
+      %{
+        event_type: "PlanningFlowStarted",
+        payload: %{flow_id: "plan-done", run_id: "run-done"}
+      },
+      %{
+        event_type: "PlanningFlowCompleted",
+        payload: %{flow_id: "plan-done"}
+      }
+    ]
+
+    state = Aggregate.fold(PlanningFlow, events)
+
+    assert {:error, :planning_flow_completed} =
+             PlanningFlow.handle_command(state, %{
+               type: "planning.complete",
+               payload: %{flow_id: "plan-done"}
+             })
   end
 end
