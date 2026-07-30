@@ -197,10 +197,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] `handle_command/2` for `RegisterProject`, `UpdateProject`, `ArchiveProject`
   - [x] `apply_event/2` using `%State{state | ...}` updates
 
-- [ ] **TRD-006** Integration ingestion via inbox/poller | 3h | [satisfies REQ-007] | Validates: AC-007-2, AC-007-4 | AC: Given an integration ingestion webhook arrives, when it is received, then `SharedInbox.ingest/2` normalizes to an `InboxItem` and routes through `Inbox.Poller`; deduped items emit `InboxItemDeduped` and return existing delivery status
-  - [ ] `SharedInbox.ingest/2` calls `InboxItemCorrelationId` behaviour
-  - [ ] Routes normalized item to `Inbox.Poller`
-  - [ ] Tests: dedupe hit returns existing status without re-processing
+- [x] **TRD-006** Integration ingestion via inbox/poller | 3h | [satisfies REQ-007] | Validates: AC-007-2, AC-007-4 | AC: Given an integration ingestion webhook arrives, when it is received, then `SharedInbox.ingest/2` normalizes to an `InboxItem` and routes through `Inbox.Poller`; deduped items emit `InboxItemDeduped` and return existing delivery status
+  - [x] `SharedInbox.ingest/2` calls `InboxItemCorrelationId` behaviour
+  - [x] Routes normalized item to `Inbox.Poller`
+  - [x] Tests: dedupe hit returns existing status without re-processing (`InboxItemStarted` count stays 1, `InboxItemDeduped` count grows)
 
 - [ ] **TRD-007** PlanningFlow aggregate | 3h | [satisfies REQ-017] | Validates: AC-017-1, AC-017-2 | AC: Given `plan.prd` or `plan.trd` command is dispatched, when `PlanningFlow.handle_command/2` processes it, then `PlanningFlowStarted` event is appended through CommandRouter; trace events append through existing aggregate infrastructure
   - [ ] `ForemanServer.Aggregates.PlanningFlow.State` struct
