@@ -1,9 +1,13 @@
 defmodule ForemanServer.ProjectStore do
   @moduledoc """
-  Loads configured projects from a durable term file or application config.
+  Event-sourced project persistence via CommandRouter + ProjectionStore.
 
-  The file format uses `:erlang.term_to_binary/1` so this shell can stay
-  dependency-free until the Postgres-backed store lands in TRD-003.
+  - `save/2` appends `ProjectRegistered` or `ProjectUpdated` through
+    CommandRouter; projected via ProjectionStore.
+  - `get/1` and `list/0` read from ProjectionStore.
+
+  `load_projects/0` and `save_projects/1` are the legacy boot-loading path
+  backed by a durable term file; they are orthogonal to the CQRS APIs above.
   """
 
   alias ForemanServer.Project
@@ -63,4 +67,46 @@ defmodule ForemanServer.ProjectStore do
   defp store_path(opts \\ []) do
     ForemanServer.RuntimeInfo.project_store_path(opts)
   end
+  alias ForemanServer.CommandRouter
+  alias ForemanServer.ProjectionStore
+
+  @doc """
+  Saves a project by appending a `ProjectRegistered` or `ProjectUpdated` event
+  through CommandRouter.  The event is projected via ProjectionStore.
+
+  Dispatches `"project.register"` for new projects or `"project.update"` when
+  the project already exists (checked via ProjectionStore).
+  """
+  @spec save(Project.t(), Keyword.t()) :: {:ok, map()} | {:error, term()}
+  def save(%Project{} = project, opts \\ []) do
+    command_id =
+      Keyword.get(opts, :command_id, "project-store-#{project.id}-#{System.unique_integer([:positive])}")
+
+    existing = ProjectionStore.project(project.id)
+    command_type = if existing, do: "project.update", else: "project.register"
+
+    payload = %{
+      project_id: project.id,
+      path: project.path,
+      status: Atom.to_string(project.status),
+      default_branch: project.default_branch,
+      config: project.config,
+      health: project.health
+    }
+
+    CommandRouter.handle(%{
+      command_id: command_id,
+      command_type: command_type,
+      payload: payload,
+      metadata: %{source: "project_store"}
+    })
+  end
+
+  @doc "Reads a single project projection by id."
+  @spec get(String.t()) :: map() | nil
+  def get(project_id), do: ProjectionStore.project(project_id)
+
+  @doc "Lists all project projections sorted by project_id."
+  @spec list() :: [map()]
+  def list, do: ProjectionStore.project_list()
 end
