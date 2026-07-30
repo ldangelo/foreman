@@ -228,13 +228,14 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] `RunAlreadyCompleted` spec emitted (state unchanged) when `run.complete` routes against a terminal run; `apply_event` for `RunAlreadyCompleted` is a no-op
   - [x] Replay via `Aggregate.load/2` restores terminal and non-terminal state correctly (4 tests)
 
-- [ ] **TRD-010** BoardItemStateMachine aggregate | 4h | [satisfies REQ-006] | Validates: AC-006-1, AC-006-2 | AC: Given an invalid status transition (e.g., `closed` → `in_progress`), when the command is dispatched, then it is rejected with `:invalid_transition` error
-  - [ ] `ForemanServer.Aggregates.BoardItemStateMachine.State` struct
-  - [ ] Valid transitions: `backlog → in_progress → in_review → done`; `backlog → blocked → backlog`; `done` is terminal
-  - [ ] `handle_command/2` enforces transition table
-  - [ ] `apply_event/2` using `%State{state | ...}` updates
-  - [ ] Test: invalid transition returns `{:error, :invalid_transition}`
-
+- [x] **TRD-010** BoardItemStateMachine aggregate | 4h | [satisfies REQ-006] | Validates: AC-006-1, AC-006-2 | AC: Given an invalid status transition (e.g., `closed` → `in_progress`), when the command is dispatched, then it is rejected with `:invalid_transition` error
+  - [x] `ForemanServer.Aggregates.BoardItemStateMachine.State` struct with `exists?`, `board_item_id`, `status`, `terminal?`
+  - [x] Valid transitions: `backlog → in_progress → in_review → done`; `backlog → blocked → backlog`; `done` is terminal
+  - [x] `handle_command/2`: `board_item.create` (require_absent), `board_item.transition` (require_exists + valid_transition guard)
+  - [x] `apply_event/2` using `%State{state | ...}` updates — typed struct clause, unwrap clause, legacy map fallback
+  - [x] BoardItemStatusChanged event struct registered in EventCodec for typed replay
+  - [x] AggregateRouter: `board_item.*` → `BoardItemStateMachine`
+  - [x] Test: invalid transition `done → in_progress` returns `{:error, :invalid_transition}` via router; terminal done rejects; valid chains; `Aggregate.load/2` replay
 ---
 
 ### PR 3: Overwatch Worker Runtime + Crash Loop + Env Isolation
