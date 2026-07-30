@@ -1,0 +1,51 @@
+defmodule ForemanServer.Events.InboxItemDeduped do
+  @moduledoc "Emitted when an inbox item is rejected as a duplicate."
+
+  @enforce_keys [:correlation_id, :source, :timestamp]
+  @type t :: %__MODULE__{
+          correlation_id: String.t(),
+          source: String.t(),
+          timestamp: DateTime.t()
+        }
+  @derive Jason.Encoder
+  defstruct [:correlation_id, :source, timestamp: DateTime.utc_now()]
+
+  @doc "Constructs the struct from a plain map payload with explicit field mapping."
+  @spec from_payload(map()) :: t()
+  def from_payload(payload) when is_map(payload) do
+    correlation_id = require_binary(payload, :correlation_id, "correlation_id")
+    source = require_binary(payload, :source, "source")
+
+    %__MODULE__{
+      correlation_id: correlation_id,
+      source: source,
+      timestamp: normalize_timestamp(payload)
+    }
+  end
+
+  defp require_binary(payload, atom_key, string_key) do
+    value = Map.get(payload, atom_key) || Map.get(payload, string_key)
+    if is_binary(value) and value != "", do: value,
+      else: raise("#{inspect(atom_key)}/#{inspect(string_key)} is required and must be a non-empty string, got: #{inspect(value)}")
+  end
+
+  defp normalize_timestamp(payload) do
+    raw =
+      Map.get(payload, :timestamp) ||
+      Map.get(payload, "timestamp") ||
+      DateTime.utc_now()
+
+    case raw do
+      %DateTime{} -> raw
+      raw when is_binary(raw) -> parse_iso8601(raw)
+      _ -> DateTime.utc_now()
+    end
+  end
+
+  defp parse_iso8601(binary) do
+    case DateTime.from_iso8601(binary) do
+      {:ok, dt, _utc_offset} -> dt
+      {:error, _reason} -> DateTime.utc_now()
+    end
+  end
+end

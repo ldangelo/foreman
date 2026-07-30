@@ -29,8 +29,26 @@ defmodule ForemanServer.Aggregate do
 
   @spec fold(module(), [ForemanServer.Event.t() | map()]) :: state()
   def fold(module, events) when is_atom(module) and is_list(events) do
-    Enum.reduce(events, module.initial_state(), &module.apply_event(&2, &1))
+    Enum.reduce(events, module.initial_state(), fn event, state ->
+      decoded = decode_for_fold(event)
+      module.apply_event(state, decoded)
+    end)
   end
+
+  # Decode a raw event for apply_event:
+  # - %Event{} payload → typed struct (InboxItemStarted, InboxItemDeduped, etc.) via EventCodec
+  # - plain map → pass through unchanged (existing aggregate replay)
+  # Decode a raw event for apply_event:
+  # - %ForemanServer.Event{} payload → typed struct via EventCodec.decode!/2
+  # - plain map → pass through unchanged (existing aggregate replay)
+  defp decode_for_fold(%ForemanServer.Event{event_type: event_type, payload: payload} = event)
+      when is_binary(event_type) and is_map(payload) do
+    decoded_payload = ForemanServer.EventCodec.decode!(event_type, payload)
+    # Preserve the full event envelope; only the payload slot changes
+    %{event | payload: decoded_payload}
+  end
+
+  defp decode_for_fold(event), do: event
 
   @spec decide(module(), String.t(), String.t(), map()) ::
           {:ok, event_spec()} | {:error, term()} | :unhandled

@@ -25,5 +25,6 @@ config :foreman_server, ForemanServer.Repo,
 # read the env at call time, so the next request after an env change
 # picks up the new value without restart.
 config :foreman_server, :projection_rebuild_timeout_ms, 600_000
+config :foreman_server, :inbox_dedupe_window_seconds, 300
 
 import_config "#{config_env()}.exs"

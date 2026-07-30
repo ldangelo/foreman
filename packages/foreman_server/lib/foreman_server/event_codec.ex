@@ -3,6 +3,11 @@ defmodule ForemanServer.EventCodec do
 
   alias ForemanServer.Event
 
+  @inbox_events %{
+    "InboxItemStarted" => ForemanServer.Events.InboxItemStarted,
+    "InboxItemDeduped" => ForemanServer.Events.InboxItemDeduped
+  }
+
   @spec encode(Event.t()) :: binary()
   def encode(%Event{} = event) do
     event
@@ -50,4 +55,32 @@ defmodule ForemanServer.EventCodec do
   end
 
   def decode(_), do: {:error, :invalid_event_envelope}
+
+  @doc """
+  Decodes a map payload (from Postgres row_to_event) into its typed domain struct.
+  Registered event types call the module's from_payload/1 which explicitly maps
+  known fields. Unknown event types are returned unchanged so existing aggregate
+  replay (which folds plain maps) is not broken.
+  """
+  @spec decode!(String.t(), map()) :: struct() | map()
+  def decode!(event_type, payload) when is_binary(event_type) and is_map(payload) do
+    case Map.fetch(@inbox_events, event_type) do
+      {:ok, struct_module} ->
+        cond do
+          is_struct(payload, struct_module) ->
+            # Typed struct already — module matches event_type, pass through unchanged
+            payload
+
+          is_struct(payload) ->
+            raise "event_type #{inspect(event_type)} but payload is #{inspect(payload.__struct__)}"
+
+          true ->
+            # Plain map — reconstruct the typed domain struct
+            struct_module.from_payload(payload)
+        end
+
+      :error ->
+        payload
+    end
+  end
 end
