@@ -332,6 +332,8 @@ The Elixir server also exposes `POST /webhooks/attach_bridge` for attach-bridge 
 
 The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman records the run PR state as closed and closes the associated task. As a real-time optimization, the server exposes `POST /webhooks/github` for GitHub `pull_request` webhook events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback.
 
+VCS operations surface lifecycle events through `ForemanServer.VcsAdapter`. The `Default` implementation calls the GitHub API using the `:github_token` application setting or `GITHUB_TOKEN` environment variable. Operations: `clone/2` (validates `owner/name` format, returns clone metadata without materializing a workspace), `branch/2`, `create_pr/2`. Each emits `VcsOperationStarted`, then `VcsOperationCompleted` or `VcsOperationFailed` via `CommandRouter`. Transient failures (e.g. network timeout, rate limiting, 5xx) retry up to 3 times with exponential backoff; non-transient failures (401/403 auth rejection, 404 not found, invalid repo format) fail immediately without retry.
+
 External trigger polling (TRD-015) provides a pull-based fallback when push webhooks are unavailable. When enabled, the server polls `external_trigger_endpoint_url` every `external_trigger_poll_interval_seconds` and submits pending triggers through `SharedInbox` for deduplication and routing — the same pipeline used by `POST /webhooks/external_trigger`. Enable via app config:
 ```elixir
 config :foreman_server,

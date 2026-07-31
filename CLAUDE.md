@@ -178,6 +178,7 @@ vcs:
 - [VCS Configuration Guide](docs/guides/vcs-configuration.md) — Config examples, precedence, troubleshooting
 - [Jujutsu Considerations](docs/guides/jujutsu-considerations.md) — Colocated mode, bookmarks, finalize diffs, migration
 
+The Elixir `VcsAdapter` behaviour (`ForemanServer.VcsAdapter`) provides VCS lifecycle events for the Foreman event store. The `Default` implementation calls the GitHub API using the `:github_token` application setting or `GITHUB_TOKEN` environment variable. It surfaces three operations: `clone/2` (validates `owner/name` format and returns clone metadata without materializing a workspace), `branch/2`, and `create_pr/2`. All operations emit `VcsOperationStarted`, then either `VcsOperationCompleted` or `VcsOperationFailed` through `CommandRouter`. Transient failures (e.g. network timeout, rate limiting, 5xx) retry up to 3 times with exponential backoff; non-transient failures (401/403 auth rejection, 404 not found, invalid repo format) fail immediately without retry.
 ## Development Rules
 
 - **TypeScript strict mode** — no `any` escape hatches

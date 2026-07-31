@@ -430,6 +430,7 @@ The server also exposes `POST /webhooks/attach_bridge` for attach-bridge streami
 
 The Elixir server also includes a PR monitor. For runs with recorded GitHub PR URLs, it periodically runs GitHub PR inspection from the registered project path, records merged PR metadata on the run, and updates the associated task to `merged` when GitHub reports `MERGED`. A GitHub closed-but-unmerged PR records the run PR state as closed and closes the associated task. As a real-time optimization, the server exposes `POST /webhooks/github` for GitHub `pull_request` webhook events (HMAC-SHA256 verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback. `foreman server doctor` reports whether the webhook secret is configured.
 
+VCS operations surface lifecycle events through `ForemanServer.VcsAdapter`. The `Default` implementation calls the GitHub API using the `:github_token` application setting or `GITHUB_TOKEN` environment variable. Operations: `clone/2` (validates `owner/name` format, returns clone metadata without materializing a workspace), `branch/2`, `create_pr/2`. Each emits `VcsOperationStarted`, then `VcsOperationCompleted` or `VcsOperationFailed` via `CommandRouter`. Transient failures (e.g. network timeout, rate limiting, 5xx) retry up to 3 times with exponential backoff; non-transient failures (401/403 auth rejection, 404 not found, invalid repo format) fail immediately without retry.
 
 ### `foreman reset`
 
