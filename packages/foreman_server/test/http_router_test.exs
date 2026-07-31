@@ -807,7 +807,7 @@ defmodule ForemanServer.Http.RouterTest do
       Application.put_env(
         :foreman_server,
         :command_handler,
-        ForemanServer.PrMonitorTest.FakeCommandHandler
+        __MODULE__.FakeCommandHandler
       )
 
       Application.put_env(:foreman_server, :pr_monitor_test_pid, self())
@@ -1052,6 +1052,20 @@ defmodule ForemanServer.Http.RouterTest do
       assert conn.status == 200
     end
 
+    defmodule FakeCommandHandler do
+      def handle(command), do: record(command)
+      def handle_command(command), do: record(command)
+
+      defp record(command) do
+        send(
+          Application.fetch_env!(:foreman_server, :pr_monitor_test_pid),
+          {:handled_command, command}
+        )
+
+        {:ok, %{command: command}}
+      end
+    end
+
     defp webhook_payload(action, pr_url, opts) do
       merged = Keyword.get(opts, :merged, false)
 
@@ -1134,5 +1148,131 @@ defmodule ForemanServer.Http.RouterTest do
 
     # Alias for readability in test setup
     defp seed_webhook_pr_run!, do: seed_webhook_pr_run()
+  end
+
+  describe "POST /webhooks/external_trigger" do
+    @run_id "run-webhook-trigger-test"
+
+    setup do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "foreman-webhook-trigger-test-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+
+      Application.stop(:foreman_server)
+      Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+      Application.put_env(:foreman_server, :auth_token, "secret")
+      :ok = Application.start(:foreman_server)
+
+      on_exit(fn ->
+        Application.stop(:foreman_server)
+        Application.delete_env(:foreman_server, :event_log_path)
+        Application.delete_env(:foreman_server, :auth_token)
+        File.rm_rf!(tmp_dir)
+        Application.start(:foreman_server)
+      end)
+
+      :ok
+    end
+
+    test "returns 401 without authorization header" do
+      payload = %{"trigger_id" => "test-trigger-001", "source" => "test"}
+
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", Jason.encode!(payload))
+        |> put_req_header("content-type", "application/json")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    end
+
+    test "returns 401 with invalid bearer token" do
+      payload = %{"trigger_id" => "test-trigger-001", "source" => "test"}
+
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", Jason.encode!(payload))
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer wrong")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "UNAUTHORIZED"
+    end
+
+    test "returns 400 for empty body" do
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", "{}")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer secret")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 400
+    end
+
+    test "returns 400 when body cannot be parsed" do
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", "not-json")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer secret")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 400
+    end
+
+    test "returns 202 and ingests trigger with trigger_id" do
+      payload = %{"run_id" => @run_id, "trigger_id" => "test-trigger-001", "source" => "test"}
+
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", Jason.encode!(payload))
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer secret")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert body["ok"] == true
+      assert body["handled"] == true
+      assert body["event_type"] == "InboxItemStarted"
+    end
+
+    test "returns 202 and ingests trigger with dedupe_key (string keys)" do
+      payload = %{"run_id" => @run_id, "dedupe_key" => "dedupe-trigger-001", "source" => "test"}
+
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", Jason.encode!(payload))
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer secret")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert body["event_type"] == "InboxItemStarted"
+    end
+
+    test "returns 202 and ingests trigger with event_id (atom keys normalized)" do
+      # Internal maps may use atom keys; the correlation id handler normalizes both.
+      payload = %{"run_id" => @run_id, "event_id" => "event-trigger-001", "source" => "test"}
+
+      conn =
+        :post
+        |> conn("/webhooks/external_trigger", Jason.encode!(payload))
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer secret")
+        |> ForemanServer.Http.Router.call(@opts)
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert body["event_type"] == "InboxItemStarted"
+    end
   end
 end

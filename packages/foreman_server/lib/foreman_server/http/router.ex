@@ -9,10 +9,16 @@ defmodule ForemanServer.Http.Router do
   plug(:maybe_parse_body)
   plug(:dispatch)
 
-  # Conditionally apply Plug.Parsers for all routes EXCEPT /webhooks/github.
-  # The webhook route needs the raw request body for HMAC-SHA256 verification.
-  defp maybe_parse_body(%Plug.Conn{path_info: ["webhooks", "github" | _]} = conn, _opts),
-    do: conn
+  # Conditionally apply Plug.Parsers for all routes EXCEPT /webhooks/github and
+  # /webhooks/external_trigger, which need raw request bodies for HMAC verification
+  # or manual JSON decoding respectively.
+  defp maybe_parse_body(
+        %Plug.Conn{path_info: ["webhooks", path | _]}
+        = conn,
+        _opts
+      )
+      when path in ["github", "external_trigger"],
+      do: conn
 
   defp maybe_parse_body(conn, _opts) do
     Plug.Parsers.call(
@@ -539,17 +545,23 @@ defmodule ForemanServer.Http.Router do
 
   post "/webhooks/external_trigger" do
     with :ok <- authorize(conn) do
-      case conn.body_params do
-        %{} = payload when payload != %{} ->
-          case ForemanServer.Inbox.SharedInbox.ingest(
-                 ForemanServer.Inbox.ExternalTriggerCorrelationId,
-                 payload
-               ) do
-            {:ok, %{event: event}} ->
-              send_json(conn, 202, %{ok: true, handled: true, event_type: event.event_type})
+      case read_raw_body(conn) do
+        {:ok, raw_body, _conn} ->
+          case Jason.decode(raw_body) do
+            {:ok, %{} = payload} when payload != %{} ->
+              case ForemanServer.Inbox.SharedInbox.ingest(
+                     ForemanServer.Inbox.ExternalTriggerCorrelationId,
+                     payload
+                   ) do
+                {:ok, %{event: event}} ->
+                  send_json(conn, 202, %{ok: true, handled: true, event_type: event.event_type})
 
-            {:error, reason} ->
-              send_error(conn, 400, "BAD_REQUEST", "invalid trigger: #{inspect(reason)}", false)
+                {:error, reason} ->
+                  send_error(conn, 400, "BAD_REQUEST", "invalid trigger: #{inspect(reason)}", false)
+              end
+
+            _ ->
+              send_error(conn, 400, "BAD_REQUEST", "empty or missing request body", false)
           end
 
         _ ->
