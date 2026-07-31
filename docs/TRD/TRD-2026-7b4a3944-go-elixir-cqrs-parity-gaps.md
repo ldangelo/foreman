@@ -421,10 +421,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: optimistic concurrency conflict → `{:error, :wrong_expected_version}`
 
 - [x] **TRD-008-TEST** Phase aggregate test coverage | 3h | [verifies TRD-008] [depends: TRD-008] [satisfies REQ-005, REQ-020] | Validates: AC-005-1–AC-005-3 | Implementation AC: Given two `CompletePhase` commands race, when the second append uses the wrong expected version, then append fails with concurrency conflict and the actor retries with the correct version
-  - [ ] Test: `StartPhase` → `PhaseStarted`, state transitions to active
-  - [ ] Test: `CompletePhase` → `PhaseCompleted`, state terminal
-  - [ ] Test: concurrent `CompletePhase` → concurrency conflict → retry
-  - [ ] Test: `FailPhase`, `SkipPhase` transitions
+  - [x] Test: `StartPhase` → `PhaseStarted`, state transitions to active
+  - [x] Test: `CompletePhase` → `PhaseCompleted`, state terminal
+  - [x] Test: concurrent `CompletePhase` → concurrency conflict → retry
+  - [x] Test: `FailPhase`, `SkipPhase` transitions
 
 - [ ] **TRD-010-TEST** BoardItemStateMachine test coverage | 2h | [verifies TRD-010] [depends: TRD-010] [satisfies REQ-006, REQ-020] | Validates: AC-006-1, AC-006-2 | Implementation AC: Given invalid status transition (e.g., `closed` → `in_progress`), when the command is dispatched, then `{:error, :invalid_transition}` returned
   - [ ] Test: valid transitions: backlog → in_progress → in_review → done
