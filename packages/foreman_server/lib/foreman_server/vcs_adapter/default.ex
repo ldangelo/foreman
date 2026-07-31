@@ -16,8 +16,9 @@ defmodule ForemanServer.VcsAdapter.Default do
   @impl true
   def clone(input, opts) do
     with {:ok, repo} <- required_binary(value(input, :repo), :repo),
+         {:ok, repo_path} <- repo_path(repo),
          {:ok, path} <- required_binary(value(input, :path), :path),
-         {:ok, body} <- get_json(repo_path(repo), opts) do
+         {:ok, body} <- get_json(repo_path, opts) do
       {:ok,
        %{
          repo: repo,
@@ -33,12 +34,13 @@ defmodule ForemanServer.VcsAdapter.Default do
   @impl true
   def branch(input, opts) do
     with {:ok, repo} <- required_binary(value(input, :repo), :repo),
+         {:ok, repo_path} <- repo_path(repo),
          {:ok, branch} <- required_binary(value(input, :branch), :branch),
          {:ok, base_ref} <- required_binary(value(input, :base_ref, "main"), :base_ref),
-         {:ok, ref_body} <- get_json("#{repo_path(repo)}/git/ref/heads/#{URI.encode_www_form(base_ref)}", opts),
+         {:ok, ref_body} <- get_json("#{repo_path}/git/ref/heads/#{URI.encode_www_form(base_ref)}", opts),
          {:ok, body} <-
            post_json(
-             "#{repo_path(repo)}/git/refs",
+             "#{repo_path}/git/refs",
              %{ref: "refs/heads/#{branch}", sha: get_in(ref_body, ["object", "sha"])} ,
              opts
            ) do
@@ -56,12 +58,13 @@ defmodule ForemanServer.VcsAdapter.Default do
   @impl true
   def create_pr(input, opts) do
     with {:ok, repo} <- required_binary(value(input, :repo), :repo),
+         {:ok, repo_path} <- repo_path(repo),
          {:ok, branch} <- required_binary(value(input, :branch), :branch),
          {:ok, base_branch} <- required_binary(value(input, :base_branch, "main"), :base_branch),
          {:ok, title} <- required_binary(value(input, :title), :title),
          {:ok, body} <-
            post_json(
-             "#{repo_path(repo)}/pulls",
+             "#{repo_path}/pulls",
              %{
                title: title,
                body: value(input, :body),
@@ -157,10 +160,10 @@ defmodule ForemanServer.VcsAdapter.Default do
   defp repo_path(repo) do
     case String.split(repo, "/", parts: 2) do
       [owner, name] when owner != "" and name != "" ->
-        "/repos/#{URI.encode_www_form(owner)}/#{URI.encode_www_form(name)}"
+        {:ok, "/repos/#{URI.encode_www_form(owner)}/#{URI.encode_www_form(name)}"}
 
       _ ->
-        raise ArgumentError, "repo must be owner/name"
+        {:error, :invalid_repo_format}
     end
   end
 

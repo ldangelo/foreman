@@ -143,6 +143,8 @@ defmodule ForemanServer.VcsAdapter do
       {:not_found, _} ->
         %{kind: "not_found", transient?: false, code: nil}
 
+      :invalid_repo_format ->
+        %{kind: "invalid_repo_format", transient?: false, code: nil}
       {:unsupported_vcs_backend, _} ->
         %{kind: "unsupported_backend", transient?: false, code: nil}
 
