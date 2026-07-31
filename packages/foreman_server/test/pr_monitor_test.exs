@@ -62,6 +62,28 @@ defmodule ForemanServer.PrMonitorTest.ResetThenFailCloseCommandHandler do
   defp dispatch(command), do: CommandHandler.handle(command)
 end
 
+defmodule ForemanServer.PrMonitorTest.BarrierCommandHandler do
+  alias ForemanServer.PrMonitor.CommandHandler
+
+  def handle(command), do: dispatch(command)
+  def handle_command(command), do: dispatch(command)
+
+  defp dispatch(command) do
+    test_pid = Application.fetch_env!(:foreman_server, :pr_monitor_test_pid)
+    send(test_pid, {:command_ready, self(), command})
+
+    receive do
+      :continue ->
+        result = CommandHandler.handle(command)
+        send(test_pid, {:command_result, self(), command, result})
+        result
+    after
+      1_000 -> raise "timed out waiting for command barrier release"
+    end
+  end
+end
+
+
 
 defmodule ForemanServer.PrMonitorTest.FailingEventStore do
   def append(_input), do: {:error, :forced_dedupe_failure}
@@ -217,9 +239,10 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
              end)
     end
 
-    test "duplicate delivery returns error without emitting commands" do
+    test "concurrent duplicate deliveries reuse deterministic command ids" do
       :ok = seed_pr_run!()
       delivery_id = "delivery-duplicate-#{:rand.uniform(999_999)}"
+      dedupe_key = "github:webhook:#{delivery_id}"
 
       payload = %{
         "action" => "closed",
@@ -235,19 +258,48 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
         }
       }
 
-      assert {:ok, %{commands_issued: 2}} = PrMonitor.GhWebhookHandler.handle(payload)
+      first = Task.async(fn -> PrMonitor.GhWebhookHandler.handle(payload, ForemanServer.PrMonitorTest.BarrierCommandHandler) end)
+      second = Task.async(fn -> PrMonitor.GhWebhookHandler.handle(payload, ForemanServer.PrMonitorTest.BarrierCommandHandler) end)
 
-      commands_after_first = drain_commands()
-      assert length(commands_after_first) == 2
+      {first_merge_pid, second_merge_pid} = await_command_pair("run.pr.merge")
+      send(first_merge_pid, :continue)
+      send(second_merge_pid, :continue)
 
-      # Same delivery_id should be deduped
-      assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+      assert_receive {:command_result, _, %{command_type: "run.pr.merge"}, {:ok, _}}, 1_000
+      assert_receive {:command_result, _, %{command_type: "run.pr.merge"}, {:ok, _}}, 1_000
 
-      # No new commands should have been emitted
-      refute_receive {:handled_command, _}, 100
+      {first_task_pid, second_task_pid} = await_command_pair("task.update")
+      send(first_task_pid, :continue)
+      send(second_task_pid, :continue)
+
+      assert_receive {:command_result, _, %{command_type: "task.update"}, {:ok, _}}, 1_000
+      assert_receive {:command_result, _, %{command_type: "task.update"}, {:ok, _}}, 1_000
+
+      assert {:ok, %{commands_issued: 2}} = Task.await(first)
+      assert {:ok, %{commands_issued: 2}} = Task.await(second)
+
+      snapshot = ProjectionStore.snapshot()
+      assert snapshot.runs[@run_id].pr_state == "merged"
+      assert snapshot.tasks[@task_id].status == "merged"
+      assert get_in(snapshot, [:integration_dedupe, dedupe_key])
+
+      merge_command_id = deterministic_command_id(delivery_id, "run.pr.merge", "run:#{@run_id}")
+      task_command_id = deterministic_command_id(delivery_id, "task.update", "task:#{@task_id}")
+
+      assert [
+               %{metadata: %{idempotency_key: ^merge_command_id}}
+             ] =
+               EventStore.stream("run:#{@run_id}")
+               |> Enum.filter(&(&1.event_type == "PrMerged"))
+
+      assert [
+               %{metadata: %{idempotency_key: ^task_command_id}}
+             ] =
+               EventStore.stream("task:#{@task_id}")
+               |> Enum.filter(&(&1.event_type == "TaskUpdated" and &1.payload.status == "merged"))
     end
 
-    test "failed command handler does not record dedupe and can be retried" do
+    test "failed command handler records dedupe first and can be retried" do
       :ok = seed_pr_run!()
       delivery_id = "delivery-retry-#{:rand.uniform(999_999)}"
       dedupe_key = "github:webhook:#{delivery_id}"
@@ -273,26 +325,29 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
                )
 
       assert [%{command_type: "run.pr.merge"}] = drain_commands()
-      refute get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
+      assert get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
 
       assert {:ok, %{commands_issued: 2}} =
-               PrMonitor.GhWebhookHandler.handle(
-                 payload,
-                 ForemanServer.PrMonitorTest.FakeCommandHandler
-               )
+               PrMonitor.GhWebhookHandler.handle(payload, PrMonitor.CommandHandler)
 
-      commands = drain_commands()
+      snapshot = ProjectionStore.snapshot()
+      assert snapshot.runs[@run_id].pr_state == "merged"
+      assert snapshot.tasks[@task_id].status == "merged"
 
-      assert Enum.any?(commands, fn c ->
-               c.command_type == "run.pr.merge"
-             end)
+      merge_command_id = deterministic_command_id(delivery_id, "run.pr.merge", "run:#{@run_id}")
+      task_command_id = deterministic_command_id(delivery_id, "task.update", "task:#{@task_id}")
 
-      assert Enum.any?(commands, fn c ->
-               c.command_type == "task.update" and c.payload[:status] == "merged"
-             end)
+      assert [
+               %{metadata: %{idempotency_key: ^merge_command_id}}
+             ] =
+               EventStore.stream("run:#{@run_id}")
+               |> Enum.filter(&(&1.event_type == "PrMerged"))
 
-      assert get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
-      assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+      assert [
+               %{metadata: %{idempotency_key: ^task_command_id}}
+             ] =
+               EventStore.stream("task:#{@task_id}")
+               |> Enum.filter(&(&1.event_type == "TaskUpdated" and &1.payload.status == "merged"))
     end
 
     test "dedupe append failure returns error without recording delivery" do
@@ -326,31 +381,21 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
                  ForemanServer.PrMonitorTest.FakeCommandHandler
                )
 
-      commands = drain_commands()
-
-      assert Enum.any?(commands, fn c ->
-               c.command_type == "run.pr.merge"
-             end)
-
-      assert Enum.any?(commands, fn c ->
-               c.command_type == "task.update" and c.payload[:status] == "merged"
-             end)
-
+      assert drain_commands() == []
       refute get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
 
       Application.delete_env(:foreman_server, :webhook_event_store)
 
       assert {:ok, %{commands_issued: 2}} =
-               PrMonitor.GhWebhookHandler.handle(
-                 payload,
-                 ForemanServer.PrMonitorTest.FakeCommandHandler
-               )
+               PrMonitor.GhWebhookHandler.handle(payload, PrMonitor.CommandHandler)
 
-      assert get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
-      assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+      snapshot = ProjectionStore.snapshot()
+      assert snapshot.runs[@run_id].pr_state == "merged"
+      assert snapshot.tasks[@task_id].status == "merged"
+      assert get_in(snapshot, [:integration_dedupe, dedupe_key])
     end
 
-    test "closed webhook retry finishes task.close after run.pr.reset already succeeded" do
+    test "closed webhook retry reuses deterministic command ids after the dedupe claim" do
       :ok = seed_pr_run!(pr_state: "open")
       delivery_id = "delivery-closed-retry-#{:rand.uniform(999_999)}"
       dedupe_key = "github:webhook:#{delivery_id}"
@@ -376,7 +421,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       snapshot = ProjectionStore.snapshot()
       assert snapshot.runs[@run_id].pr_state == "closed"
       assert snapshot.tasks[@task_id].status == "in_progress"
-      refute get_in(snapshot, [:integration_dedupe, dedupe_key])
+      assert get_in(snapshot, [:integration_dedupe, dedupe_key])
 
       assert {:ok, %{commands_issued: 1}} =
                PrMonitor.GhWebhookHandler.handle(payload, PrMonitor.CommandHandler)
@@ -384,7 +429,21 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       snapshot = ProjectionStore.snapshot()
       assert snapshot.runs[@run_id].pr_state == "closed"
       assert snapshot.tasks[@task_id].status == "closed"
-      assert get_in(snapshot, [:integration_dedupe, dedupe_key])
+
+      reset_command_id = deterministic_command_id(delivery_id, "run.pr.reset", "run:#{@run_id}")
+      close_command_id = deterministic_command_id(delivery_id, "task.close", "task:#{@task_id}")
+
+      assert [
+               %{metadata: %{idempotency_key: ^reset_command_id}}
+             ] =
+               EventStore.stream("run:#{@run_id}")
+               |> Enum.filter(&(&1.event_type == "PrReset"))
+
+      assert [
+               %{metadata: %{idempotency_key: ^close_command_id}}
+             ] =
+               EventStore.stream("task:#{@task_id}")
+               |> Enum.filter(&(&1.event_type == "TaskUpdated" and &1.payload.status == "closed"))
     end
 
 
@@ -525,6 +584,27 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
     after
       50 -> Enum.reverse(commands)
     end
+  end
+
+  defp await_command_pair(command_type) do
+    {first_pid, second_pid} =
+      Enum.reduce(1..2, {nil, nil}, fn _, {first_pid, second_pid} ->
+        receive do
+          {:command_ready, pid, %{command_type: ^command_type}} ->
+            if is_nil(first_pid), do: {pid, second_pid}, else: {first_pid, pid}
+        after
+          1_000 -> flunk("timed out waiting for #{command_type} to reach the barrier")
+        end
+      end)
+
+    {first_pid, second_pid}
+  end
+
+  defp deterministic_command_id(delivery_id, command_type, target_id) do
+    "pr-monitor:" <>
+      (:crypto.hash(:sha256, "#{delivery_id}-#{command_type}-#{target_id}")
+       |> binary_part(0, 16)
+       |> Base.encode16(case: :lower))
   end
 
   defp append!(stream_id, event_type, payload) do

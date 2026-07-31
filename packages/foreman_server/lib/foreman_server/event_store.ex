@@ -77,8 +77,8 @@ defmodule ForemanServer.EventStore do
       if is_binary(stream_id), do: next_stream_version(state.events, stream_id), else: 1
 
     with :ok <- validate_stream_id(stream_id),
-         :ok <- check_expected_version(input, stream_version),
          :ok <- check_idempotency(state.events, input),
+         :ok <- check_expected_version(input, stream_version),
          {:ok, event} <- Event.new(input, stream_version),
          :ok <- persist_event(state.adapter, event) do
       ProjectionStore.apply_event(event)

@@ -303,8 +303,19 @@ defmodule ForemanServer.PrMonitor do
     error -> {:error, error}
   end
 
+  defp handle_command({command_handler, extra_command_fields}, command_type, payload)
+       when is_map(extra_command_fields) do
+    dispatch_command(
+      command_handler,
+      Map.merge(extra_command_fields, %{command_type: command_type, payload: payload})
+    )
+  end
+
   defp handle_command(command_handler, command_type, payload) do
-    command = %{command_type: command_type, payload: payload}
+    dispatch_command(command_handler, %{command_type: command_type, payload: payload})
+  end
+
+  defp dispatch_command(command_handler, command) do
     Code.ensure_loaded(command_handler)
 
     cond do
@@ -487,19 +498,79 @@ defmodule ForemanServer.PrMonitor.CommandHandler do
   alias ForemanServer.CommandRouter
 
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
-  def handle(%{command_type: command_type, payload: payload}) do
-    run_id = Map.get(payload, :run_id) || Map.get(payload, :task_id) || "unknown"
+  def handle(%{command_type: command_type, payload: payload} = command) do
+    target_id = target_aggregate_id(command_type, payload)
 
-    CommandRouter.handle(%{
-      command_id: command_id(command_type, run_id),
-      command_type: command_type,
-      payload: payload
-    })
+    command_id =
+      Map.get(command, :command_id) ||
+        deterministic_command_id(command, command_type, target_id) ||
+        fallback_command_id(command_type, target_id)
+
+    case CommandRouter.handle(%{
+           command_id: command_id,
+           command_type: command_type,
+           payload: payload
+         }) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, {:duplicate_idempotency_key, ^command_id}} ->
+        {:ok, replay_result(command_id, command_type, target_id)}
+
+      {:error, :duplicate_command} ->
+        {:ok, replay_result(command_id, command_type, target_id)}
+
+      {:error, {:duplicate_command, _command_id}} ->
+        {:ok, replay_result(command_id, command_type, target_id)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  defp command_id(command_type, run_id) do
-    unique = System.unique_integer([:positive])
-    "pr-monitor:#{command_type}:#{run_id}:#{unique}"
+  defp deterministic_command_id(command, command_type, target_id) do
+    case delivery_key(command) do
+      delivery_key when is_binary(delivery_key) and delivery_key != "" ->
+        hash = :crypto.hash(:sha256, "#{delivery_key}-#{command_type}-#{target_id}")
+        "pr-monitor:" <> Base.encode16(binary_part(hash, 0, 16), case: :lower)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp delivery_key(command) do
+    Map.get(command, :delivery_id) ||
+      Map.get(command, :delivery_key) ||
+      Map.get(command, :dedupe_key)
+  end
+
+  defp fallback_command_id(command_type, target_id) do
+    "pr-monitor:#{command_type}:#{target_id}:#{System.unique_integer([:positive])}"
+  end
+
+  defp target_aggregate_id("task." <> _rest, payload), do: "task:#{payload_id(payload, :task_id)}"
+  defp target_aggregate_id("run." <> _rest, payload), do: "run:#{payload_id(payload, :run_id)}"
+
+  defp target_aggregate_id(_command_type, payload) do
+    case payload_id(payload, :run_id) do
+      "unknown" -> "task:#{payload_id(payload, :task_id)}"
+      run_id -> "run:#{run_id}"
+    end
+  end
+
+  defp payload_id(payload, key) do
+    value = Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
+    if is_binary(value) and value != "", do: value, else: "unknown"
+  end
+
+  defp replay_result(command_id, command_type, target_id) do
+    %{
+      duplicate: true,
+      command_id: command_id,
+      command_type: command_type,
+      target_id: target_id
+    }
   end
 end
 
@@ -512,8 +583,8 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   (payload parsing vs. `gh` CLI call) and how the matching run is found (snapshot scan
   by `pr_url` or `branch_name`).
 
-  Duplicate deliveries are idempotent via `X-GitHub-Delivery` header dedupe in the
-  existing `integration_dedupe` projection.
+  Duplicate deliveries are claimed in `integration_dedupe` before commands are
+  issued, and command replay is made safe with deterministic command IDs.
   """
 
   alias ForemanServer.ProjectionStore
@@ -538,8 +609,8 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
     to `#{inspect(@default_command_handler)}`.
 
   ## Returns
-  - `{:ok, %{commands_issued: non_neg_integer()}}` on success
-  - `{:error, :duplicate}` if this delivery was already processed
+  - `{:ok, %{commands_issued: non_neg_integer()}}` on success, including
+    safe delivery replays that converge via command idempotency
   - `{:error, :no_matching_run}` if no run matches the PR URL or branch
   - `{:error, reason}` on other failures
   """
@@ -557,22 +628,28 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
             merged: merged,
             is_draft: is_draft
           }} <- parse_payload(payload),
+         {:ok, delivery_id} <- delivery_id(payload),
          {:ok, dedupe_key} <- dedupe_key(payload),
-         :ok <- check_dedupe(dedupe_key),
          {:ok, context} <- find_matching_context(pr_url, branch_name) do
-      observation = normalize_webhook_observation(pr_payload, action, merged, is_draft)
-      observation = ForemanServer.PrMonitor.normalize_observation(observation)
+      case record_dedupe(dedupe_key, context.task_id) do
+        :ok ->
+          observation = normalize_webhook_observation(pr_payload, action, merged, is_draft)
+          observation = ForemanServer.PrMonitor.normalize_observation(observation)
 
-      case ForemanServer.PrMonitor.handle_observation(context, observation, handler) do
-        %{errors: 0} = result ->
-          with :ok <- record_dedupe(dedupe_key, context.task_id) do
-            {:ok, %{commands_issued: result_issued_count(result, context)}}
-          else
-            {:error, reason} -> {:error, {:dedupe_record_failed, reason}}
+          case ForemanServer.PrMonitor.handle_observation(
+                 context,
+                 observation,
+                 {handler, %{delivery_id: delivery_id, dedupe_key: dedupe_key}}
+               ) do
+            %{errors: 0} = result ->
+              {:ok, %{commands_issued: result_issued_count(result, context)}}
+
+            %{errors: errors} = result when errors > 0 ->
+              {:error, {:observation_failed, result}}
           end
 
-        %{errors: errors} = result when errors > 0 ->
-          {:error, {:observation_failed, result}}
+        {:error, reason} ->
+          {:error, {:dedupe_record_failed, reason}}
       end
     end
   end
@@ -648,40 +725,20 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
     {:ok, draft == true}
   end
 
-  # Build dedupe key from X-GitHub-Delivery header / payload delivery_id
-  defp dedupe_key(%{"delivery_id" => id}) when is_binary(id) and id != "",
-    do: {:ok, "github:webhook:#{id}"}
+  # Build the GitHub delivery ID / dedupe key from webhook headers.
+  defp delivery_id(%{"delivery_id" => id}) when is_binary(id) and id != "", do: {:ok, id}
+  defp delivery_id(%{"delivery" => id}) when is_binary(id) and id != "", do: {:ok, id}
+  defp delivery_id(_payload), do: {:error, :missing_delivery_id}
 
-  defp dedupe_key(%{"delivery" => id}) when is_binary(id) and id != "",
-    do: {:ok, "github:webhook:#{id}"}
-
-  defp dedupe_key(_payload), do: {:error, :missing_delivery_id}
-
-  # Check dedupe in the integration_dedupe projection
-  defp check_dedupe(dedupe_key) do
-    snapshot = ProjectionStore.snapshot()
-
-    case get_in(snapshot, [:integration_dedupe, dedupe_key]) do
-      nil -> :ok
-      _existing -> {:error, :duplicate}
+  defp dedupe_key(payload) do
+    with {:ok, id} <- delivery_id(payload) do
+      {:ok, "github:webhook:#{id}"}
     end
   end
 
-  # Record dedupe entry after successful processing
+  # Record the delivery claim before issuing commands. Replays keep running and
+  # rely on deterministic command IDs to collapse duplicate appends into success.
   defp record_dedupe(dedupe_key, task_id) do
-    # Write a lightweight dedupe event so the projection catches it.
-    # We append to an integration stream; the integration_dedupe projection
-    # will record the dedupe_key -> task_id mapping idempotently.
-    snapshot = ProjectionStore.snapshot()
-    existing = get_in(snapshot, [:integration_dedupe, dedupe_key])
-
-    case existing do
-      nil -> try_record_dedupe_event(dedupe_key, task_id)
-      _dedupe_entry -> :ok
-    end
-  end
-
-  defp try_record_dedupe_event(dedupe_key, task_id) do
     case webhook_event_store().append(%{
            stream_id: "integration:#{dedupe_key}",
            event_type: "IntegrationCommandIngested",
@@ -704,8 +761,14 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
              idempotency_key: dedupe_key
            }
          }) do
-      {:ok, _event} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, _event} ->
+        :ok
+
+      {:error, {:duplicate_idempotency_key, ^dedupe_key}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   rescue
     error -> {:error, error}
