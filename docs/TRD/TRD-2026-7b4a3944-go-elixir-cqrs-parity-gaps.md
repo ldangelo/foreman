@@ -440,7 +440,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: trigger webhook delivery status tracked
 
 - [ ] **TRD-034-TEST** PR lifecycle test coverage | 3h | [verifies TRD-016, TRD-017] [depends: TRD-016, TRD-017] [satisfies REQ-009, REQ-010, REQ-020] | Validates: AC-009-1–AC-009-3, AC-010-1, AC-010-2 | Implementation AC: Given run is pending merge and PR status is not `open` and not `merged`, then the PR gate actively blocks run progression; polling fallback reconciles PR state every 5 minutes
-  - [x] Test: `PrAssociated` event appended on PR URL provided
+  - [ ] Test: `PrAssociated` event appended on PR URL provided
   - [ ] Test: GitHub webhook → `PrStateChanged` → projection updated
   - [ ] Test: polling fallback reconciles PR state every 5 minutes
   - [ ] Test: PR not open/merged → `PrGate.check/1` returns `{:error, :pr_not_acceptable}`
