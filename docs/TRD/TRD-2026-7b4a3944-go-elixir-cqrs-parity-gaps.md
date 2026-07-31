@@ -420,7 +420,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: stream replay → correct terminal/non-terminal state
   - [ ] Test: optimistic concurrency conflict → `{:error, :wrong_expected_version}`
 
-- [ ] **TRD-008-TEST** Phase aggregate test coverage | 3h | [verifies TRD-008] [depends: TRD-008] [satisfies REQ-005, REQ-020] | Validates: AC-005-1–AC-005-3 | Implementation AC: Given two `CompletePhase` commands race, when the second append uses the wrong expected version, then append fails with concurrency conflict and the actor retries with the correct version
+- [x] **TRD-008-TEST** Phase aggregate test coverage | 3h | [verifies TRD-008] [depends: TRD-008] [satisfies REQ-005, REQ-020] | Validates: AC-005-1–AC-005-3 | Implementation AC: Given two `CompletePhase` commands race, when the second append uses the wrong expected version, then append fails with concurrency conflict and the actor retries with the correct version
   - [ ] Test: `StartPhase` → `PhaseStarted`, state transitions to active
   - [ ] Test: `CompletePhase` → `PhaseCompleted`, state terminal
   - [ ] Test: concurrent `CompletePhase` → concurrency conflict → retry
