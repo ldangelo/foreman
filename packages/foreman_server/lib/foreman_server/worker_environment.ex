@@ -37,6 +37,7 @@ defmodule ForemanServer.WorkerEnvironment do
        }}
     end
   end
+
   def prepare(_input), do: {:error, {:missing_or_invalid, :environment}}
 
   @doc """
@@ -50,7 +51,8 @@ defmodule ForemanServer.WorkerEnvironment do
   not found or the resulting env fails validation.
   """
   @spec build_env_map(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
-  def build_env_map(project_id, run_id, overrides \\ %{}) when is_binary(project_id) and is_binary(run_id) and is_map(overrides) do
+  def build_env_map(project_id, run_id, overrides \\ %{})
+      when is_binary(project_id) and is_binary(run_id) and is_map(overrides) do
     case ProjectStore.get(project_id) do
       nil ->
         {:error, {:not_found, :project, project_id}}
@@ -61,6 +63,8 @@ defmodule ForemanServer.WorkerEnvironment do
              {:ok, run_secrets} <- string_map(get(config, :run_secrets, %{}), :run_secrets),
              {:ok, validated_overrides} <- string_map(overrides, :overrides) do
           merged_env = Map.merge(project_env, validated_overrides)
+          tombstones =
+            forbidden_tombstones([System.get_env(), merged_env, project_secrets, run_secrets])
 
           case prepare(%{
                  project_id: project_id,
@@ -69,7 +73,7 @@ defmodule ForemanServer.WorkerEnvironment do
                  project_secrets: project_secrets,
                  run_secrets: run_secrets
                }) do
-            {:ok, prepared} -> {:ok, prepared.env}
+            {:ok, prepared} -> {:ok, Map.merge(prepared.env, tombstones)}
             {:error, _} = error -> error
           end
         else
@@ -80,6 +84,7 @@ defmodule ForemanServer.WorkerEnvironment do
         {:error, {:not_found, :project, project_id}}
     end
   end
+
 
   @spec forbidden_key?(String.t()) :: boolean()
   def forbidden_key?(key) when is_binary(key) do
@@ -95,6 +100,21 @@ defmodule ForemanServer.WorkerEnvironment do
 
   defp strip_forbidden(env) do
     Map.reject(env, fn {key, _value} -> forbidden_key?(key) end)
+  end
+
+  defp forbidden_tombstones(collections) do
+    @forbidden_exact
+    |> MapSet.to_list()
+    |> Kernel.++(
+      Enum.flat_map(collections, fn env ->
+        env
+        |> Map.keys()
+        |> Enum.filter(&forbidden_key?/1)
+      end)
+    )
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Map.new(&{&1, nil})
   end
 
   defp scoped_keys(secrets) do

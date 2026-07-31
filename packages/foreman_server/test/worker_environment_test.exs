@@ -57,7 +57,7 @@ defmodule ForemanServer.WorkerEnvironmentTest do
                "DATABASE_URL" => "blocked"
              })
 
-    assert env_map == %{
+    assert Map.reject(env_map, fn {_key, value} -> is_nil(value) end) == %{
              "BASE_ENV" => "task-override",
              "CI" => "true",
              "FOREMAN_PROJECT_ID" => project_id,
@@ -66,7 +66,93 @@ defmodule ForemanServer.WorkerEnvironmentTest do
              "RUN_TOKEN" => "run-secret",
              "TASK_ONLY" => "task-value"
            }
+
+    assert env_map["DATABASE_URL"] == nil
+    assert env_map["GITHUB_TOKEN"] == nil
+    assert env_map["FOREMAN_SERVER_AUTH_TOKEN"] == nil
   end
+
+  test "build_env_map/3 tombstones forbidden host env before spawning a child", %{
+    projects_dir: projects_dir
+  } do
+    project_id = "project-child-env"
+    run_id = "run-child-env"
+
+    forbidden_parent_env = %{
+      "AWS_ACCESS_KEY_ID" => "host-aws-key",
+      "AWS_SESSION_TOKEN" => "host-aws-session",
+      "DATABASE_READONLY_URL" => "ecto://readonly",
+      "DATABASE_URL" => "ecto://primary",
+      "FOREMAN_SERVER_AUTH_TOKEN" => "host-foreman-token",
+      "GITHUB_ACTOR" => "host-gh-actor",
+      "GITHUB_TOKEN" => "host-gh-token",
+      "NPM_TOKEN" => "host-npm-token",
+      "SSH_AUTH_SOCK" => "/tmp/ssh-agent.sock"
+    }
+
+    original_parent_env =
+      Map.new(forbidden_parent_env, fn {key, _value} -> {key, System.get_env(key)} end)
+
+    Enum.each(forbidden_parent_env, fn {key, value} -> System.put_env(key, value) end)
+
+    on_exit(fn ->
+      Enum.each(original_parent_env, fn {key, value} -> restore_env(key, value) end)
+    end)
+
+    register_project(projects_dir, project_id,
+      env: %{
+        "SAFE_ENV" => "safe-value",
+        "AWS_SECRET_ACCESS_KEY" => "project-aws-secret",
+        "DATABASE_SHARD_URL" => "ecto://shard"
+      },
+      project_secrets: %{
+        "GITHUB_APP_PRIVATE_KEY" => "project-gh-secret",
+        "PROJECT_TOKEN" => "project-secret"
+      },
+      run_secrets: %{"RUN_TOKEN" => "run-secret"}
+    )
+
+    assert {:ok, env_map} = WorkerEnvironment.build_env_map(project_id, run_id)
+
+    assert env_map["SAFE_ENV"] == "safe-value"
+    assert env_map["PROJECT_TOKEN"] == "project-secret"
+    assert env_map["RUN_TOKEN"] == "run-secret"
+    assert env_map["FOREMAN_PROJECT_ID"] == project_id
+    assert env_map["FOREMAN_RUN_ID"] == run_id
+    assert env_map["AWS_ACCESS_KEY_ID"] == nil
+    assert env_map["AWS_SECRET_ACCESS_KEY"] == nil
+    assert env_map["DATABASE_READONLY_URL"] == nil
+    assert env_map["DATABASE_SHARD_URL"] == nil
+    assert env_map["FOREMAN_SERVER_AUTH_TOKEN"] == nil
+    assert env_map["GITHUB_ACTOR"] == nil
+    assert env_map["GITHUB_APP_PRIVATE_KEY"] == nil
+
+    assert {child_output, 0} = System.cmd("env", [], env: Map.to_list(env_map))
+
+    assert String.contains?(child_output, "SAFE_ENV=safe-value")
+    assert String.contains?(child_output, "PROJECT_TOKEN=project-secret")
+    assert String.contains?(child_output, "RUN_TOKEN=run-secret")
+    assert String.contains?(child_output, "FOREMAN_PROJECT_ID=#{project_id}")
+    assert String.contains?(child_output, "FOREMAN_RUN_ID=#{run_id}")
+
+    for key <- [
+          "AWS_ACCESS_KEY_ID",
+          "AWS_SECRET_ACCESS_KEY",
+          "AWS_SESSION_TOKEN",
+          "DATABASE_READONLY_URL",
+          "DATABASE_SHARD_URL",
+          "DATABASE_URL",
+          "FOREMAN_SERVER_AUTH_TOKEN",
+          "GITHUB_ACTOR",
+          "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_TOKEN",
+          "NPM_TOKEN",
+          "SSH_AUTH_SOCK"
+        ] do
+      refute String.contains?(child_output, "#{key}=")
+    end
+  end
+
 
   test "env maps stay isolated between workers and projects", %{projects_dir: projects_dir} do
     register_project(projects_dir, "project-one",
@@ -223,6 +309,9 @@ defmodule ForemanServer.WorkerEnvironmentTest do
       end
     end)
   end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 
   defp assert_eventually(fun, predicate, attempts \\ 40)
 
