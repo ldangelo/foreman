@@ -27,4 +27,9 @@ config :foreman_server, ForemanServer.Repo,
 config :foreman_server, :projection_rebuild_timeout_ms, 600_000
 config :foreman_server, :inbox_dedupe_window_seconds, 300
 
+# External trigger polling (TRD-015)
+config :foreman_server, :external_trigger_poll_enabled, false
+config :foreman_server, :external_trigger_poll_interval_seconds, 60
+config :foreman_server, :external_trigger_endpoint_url, nil
+
 import_config "#{config_env()}.exs"
