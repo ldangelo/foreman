@@ -5,31 +5,52 @@ defmodule ForemanServer.ProjectionStore do
 
   alias ForemanServer.ProjectionStore.Postgres
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
-  @terminal_task_to_run_status %{
-    "blocked" => "blocked",
-    "closed" => "completed",
-    "conflict" => "failed",
-    "failed" => "failed",
-    "merged" => "merged",
-    "stuck" => "failed"
-  }
-  @irreversible_task_statuses MapSet.new(["closed", "merged"])
-  @task_statuses MapSet.new([
-                   "backlog",
-                   "ready",
-                   "approved",
-                   "in_progress",
-                   "in-progress",
-                   "review",
-                   "merged",
-                   "closed",
-                   "conflict",
-                   "failed",
-                   "stuck",
-                   "blocked",
-                   "cooldown"
-                 ])
+@terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
+@terminal_task_to_run_status %{
+  "blocked" => "blocked",
+  "closed" => "completed",
+  "conflict" => "failed",
+  "failed" => "failed",
+  "merged" => "merged",
+  "stuck" => "failed"
+}
+@irreversible_task_statuses MapSet.new(["closed", "merged"])
+@task_statuses MapSet.new([
+                  "backlog",
+                  "ready",
+                  "approved",
+                  "in_progress",
+                  "in-progress",
+                  "review",
+                  "merged",
+                  "closed",
+                  "conflict",
+                  "failed",
+                  "stuck",
+                  "blocked",
+                  "cooldown"
+                ])
+# Event types that advance the run liveness clock — used to populate
+# run.last_event_time so StuckDetector can detect genuine inactivity.
+@liveness_event_types MapSet.new([
+                         "PhaseStarted",
+                         "PhaseCompleted",
+                         "PhaseFailed",
+                         "PhaseTimedOut",
+                         "PhaseNudged",
+                         "WorkerStarted",
+                         "WorkerHeartbeat",
+                         "WorkerExited",
+                         "WorkerUnresponsive",
+                         "WorkerCrashed",
+                         "WorkerStatusChanged",
+                         "RunStarted",
+                         "RunCompleted",
+                         "RunFailed",
+                         "RunBlocked",
+                         "RunFlaggedStuck",
+                         "RunRetried"
+                       ])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -283,13 +304,35 @@ defmodule ForemanServer.ProjectionStore do
       last_sequence: 0
     }
   end
-
   defp reduce_event(projection, event, mode) do
+    normalized = normalize_event(event)
     projection
-    |> apply_domain_event(normalize_event(event), mode)
+    |> apply_domain_event(normalized, mode)
+    |> touch_run_last_event_time(normalized)
     |> update_checkpoint(event)
     |> recompute_status_counts()
   end
+
+  # Updates last_event_time for runs affected by liveness event types so that
+  # StuckDetector has an accurate inactivity clock.
+  defp touch_run_last_event_time(projection, %{type: type, payload: payload, occurred_at: occurred_at}) do
+    if MapSet.member?(@liveness_event_types, type) do
+      run_id = Map.get(payload, :run_id)
+      occurred = occurred_at || DateTime.utc_now()
+
+      if is_binary(run_id) and run_id != "" do
+        update_run(projection, run_id, fn run ->
+          Map.put(run, :last_event_time, occurred)
+        end)
+      else
+        projection
+      end
+    else
+      projection
+    end
+  end
+
+  defp touch_run_last_event_time(projection, _normalized), do: projection
 
   defp apply_domain_event(
          projection,
@@ -706,6 +749,24 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:updated_at, now)
     end)
     |> maybe_update_task_from_run_terminal(payload, "blocked", now)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "RunFlaggedStuck", payload: %{run_id: run_id}, occurred_at: occurred_at},
+         _mode
+       ) do
+    now = occurred_at || DateTime.utc_now()
+
+    projection
+    |> update_run(run_id, fn run ->
+      run
+      |> Map.put(:status, "stuck")
+      |> Map.put(:updated_at, now)
+    end)
+    |> update_run(run_id, fn run ->
+      Map.put(run, :last_event_time, now)
+    end)
   end
 
   defp apply_domain_event(

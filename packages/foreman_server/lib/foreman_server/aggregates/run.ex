@@ -114,6 +114,9 @@ defmodule ForemanServer.Aggregates.Run do
       "RunBlocked" ->
         %State{state | status: "blocked", terminal?: true}
 
+      "RunFlaggedStuck" ->
+        %State{state | status: "stuck"}
+
       "RunDeleted" ->
         %State{state | status: "deleted", terminal?: true}
 
@@ -243,6 +246,24 @@ defmodule ForemanServer.Aggregates.Run do
          event_type: event_type,
          payload: Map.put(payload, :run_id, run_id)
        }}
+    end
+  end
+
+  # Idempotent: if already stuck, return error so StuckDetector skips telemetry.
+  def handle_command(state, %{type: "run.flag_stuck", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      if state.status == "stuck" do
+        {:error, :already_stuck}
+      else
+        {:ok,
+         %{
+           stream_id: "run:#{run_id}",
+           event_type: "RunFlaggedStuck",
+           payload: Map.put(payload, :run_id, run_id)
+         }}
+      end
     end
   end
 

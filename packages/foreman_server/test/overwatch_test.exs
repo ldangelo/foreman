@@ -31,7 +31,9 @@ defmodule ForemanServer.OverwatchTest do
 
     on_exit(fn ->
       Application.stop(:foreman_server)
+      Application.delete_env(:foreman_server, :event_log_path)
       File.rm(path)
+      {:ok, _} = Application.ensure_all_started(:foreman_server)
     end)
 
     :ok

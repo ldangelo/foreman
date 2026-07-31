@@ -28,6 +28,7 @@ defmodule ForemanServer.Application do
         {Overwatch.Tracker, :ok},
         {Overwatch.WorkerSupervisor, []},
         {EventStore, []},
+        {Overwatch.StuckDetector, []},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
         {ProjectRegistry, []},
