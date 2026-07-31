@@ -1,7 +1,7 @@
 defmodule ForemanServer.AggregateTest do
   use ExUnit.Case
 
-  alias ForemanServer.{Aggregate, AggregateRouter, CommandRouter, EventStore}
+  alias ForemanServer.{Aggregate, AggregateRouter, Aggregate.Actor, CommandRouter, EventStore}
   alias ForemanServer.Inbox.SharedInbox
 
   alias ForemanServer.Aggregates.{
@@ -453,7 +453,9 @@ defmodule ForemanServer.AggregateTest do
     end
 
     test "WorkerStarted without adapter or sequence does not raise" do
-      evt = worker_event("WorkerStarted", %{"run_id" => "r", "worker_id" => "w", "phase_id" => "p"})
+      evt =
+        worker_event("WorkerStarted", %{"run_id" => "r", "worker_id" => "w", "phase_id" => "p"})
+
       state = Aggregate.fold(Worker, [evt])
       assert state.exists? == true
       assert state.run_id == "r"
@@ -461,45 +463,58 @@ defmodule ForemanServer.AggregateTest do
     end
 
     test "WorkerStdout without sequence does not raise" do
-      evt = worker_event("WorkerStdout", %{"run_id" => "r", "worker_id" => "w", "content" => "hi"})
+      evt =
+        worker_event("WorkerStdout", %{"run_id" => "r", "worker_id" => "w", "content" => "hi"})
+
       assert Aggregate.fold(Worker, [evt])
     end
 
     test "WorkerStderr without sequence does not raise" do
-      evt = worker_event("WorkerStderr", %{"run_id" => "r", "worker_id" => "w", "content" => "err"})
+      evt =
+        worker_event("WorkerStderr", %{"run_id" => "r", "worker_id" => "w", "content" => "err"})
+
       assert Aggregate.fold(Worker, [evt])
     end
 
     test "AssistantMessage without sequence does not raise" do
-      evt = worker_event("AssistantMessage", %{"run_id" => "r", "worker_id" => "w", "message" => "hi"})
+      evt =
+        worker_event("AssistantMessage", %{"run_id" => "r", "worker_id" => "w", "message" => "hi"})
+
       assert Aggregate.fold(Worker, [evt])
     end
 
     test "typed WorkerStarted with adapter and sequence preserves all fields" do
-      evt = worker_event("WorkerStarted", %{
-        "run_id" => "r", "worker_id" => "w", "phase_id" => "p",
-        "adapter" => "exec", "sequence" => 3
-      })
+      evt =
+        worker_event("WorkerStarted", %{
+          "run_id" => "r",
+          "worker_id" => "w",
+          "phase_id" => "p",
+          "adapter" => "exec",
+          "sequence" => 3
+        })
+
       state = Aggregate.fold(Worker, [evt])
       assert state.exists? == true
       assert state.adapter == "exec"
       assert state.last_sequence == 3
     end
   end
+
   test "Worker.handle_command emits typed struct payload via EventCodec" do
     # Aggregate.load reads an empty EventStore, so state = initial_state with
     # last_sequence: -1 → next_sequence returns 0. Use sequence: 0 to match.
     {state, _version} = Aggregate.load(Worker, "worker:r:w")
 
-    {:ok, event_spec} = Worker.handle_command(state, %{
-      type: "worker.record",
-      payload: %{
-        run_id: "r",
-        worker_id: "w",
-        event_type: "WorkerHeartbeat",
-        sequence: 0
-      }
-    })
+    {:ok, event_spec} =
+      Worker.handle_command(state, %{
+        type: "worker.record",
+        payload: %{
+          run_id: "r",
+          worker_id: "w",
+          event_type: "WorkerHeartbeat",
+          sequence: 0
+        }
+      })
 
     assert event_spec.stream_id == "worker:r:w"
     assert event_spec.event_type == "WorkerHeartbeat"
@@ -790,6 +805,66 @@ defmodule ForemanServer.AggregateTest do
              })
   end
 
+  describe "Phase Actor command_id deduplication" do
+    test "duplicate phase.retry with same command_id returns error and does not append a second event" do
+      stream_id = "phase:dedup-run:dedup-phase"
+
+      # Seed PhaseStarted and PhaseFailed directly into EventStore so phase is in a
+      # retryable state (status "failed") before Actor issues commands
+      assert {:ok, start_spec} =
+               AggregateRouter.route("phase.start", %{
+                 run_id: "dedup-run",
+                 phase_id: "dedup-phase"
+               })
+
+      assert {:ok, %{stream_version: 1}} = EventStore.append(start_spec)
+
+      # Append PhaseFailed directly so status becomes "failed" (retryable)
+      assert {:ok, _} =
+               EventStore.append(%{
+                 stream_id: stream_id,
+                 event_type: "PhaseFailed",
+                 payload: %{run_id: "dedup-run", phase_id: "dedup-phase", reason: "test-fail"}
+               })
+
+      # Spawn a Phase actor — loads stream at version 2, status is "failed"
+      {:ok, pid} = Actor.start_link(Phase, stream_id)
+      assert %{status: "failed", attempt: 0} = Actor.current_state(pid)
+
+      # First retry with command_id "retry-1" — succeeds, status becomes "retrying", attempt becomes 1
+      cid = "phase-retry-cid-#{:rand.uniform(999_999)}"
+
+      assert {:ok, %{event: _event}} =
+               Actor.command(
+                 pid,
+                 "phase.retry",
+                 %{run_id: "dedup-run", phase_id: "dedup-phase"},
+                 cid
+               )
+
+      assert %{status: "retrying", attempt: 1} = Actor.current_state(pid)
+
+      # Count events before the duplicate call
+      stream_events = fn -> EventStore.stream(stream_id) |> Enum.count() end
+      count_before = stream_events.()
+
+      # Second retry with SAME command_id — deduplicated by EventStore, returns error, no second event
+      assert {:error, {:duplicate_idempotency_key, ^cid}} =
+               Actor.command(
+                 pid,
+                 "phase.retry",
+                 %{run_id: "dedup-run", phase_id: "dedup-phase"},
+                 cid
+               )
+
+      # State unchanged after dedup hit
+      assert %{status: "retrying", attempt: 1} = Actor.current_state(pid)
+
+      # Only one PhaseRetried appended (not two)
+      assert stream_events.() == count_before
+    end
+  end
+
   # ─── TRD-009: Run aggregate State struct ────────────────────────────────────────
 
   test "Run aggregate folds RunStarted and produces %Run.State{}" do
@@ -864,7 +939,81 @@ defmodule ForemanServer.AggregateTest do
     assert state2.terminal? == true
     assert version2 == 3
   end
+  test "StartRun produces active non-terminal state (status: in_progress, terminal?: false)" do
+    assert {:ok, spec} =
+             AggregateRouter.route("run.start", %{
+               run_id: "run-active-state",
+               task_id: "task-active"
+             })
 
+    assert {:ok, _} = EventStore.append(spec)
+
+    # Assert active non-terminal state after RunStarted
+    {state, version} = ForemanServer.Aggregate.load(Run, "run:run-active-state")
+    assert state.status == "in_progress"
+    assert state.terminal? == false
+    assert version == 1
+  end
+  test "Aggregate.load/2 replays non-terminal run stream and restores in_progress state" do
+    stream_id = "run:run-nonterm"
+
+    # Append RunStarted directly to EventStore so the stream exists
+    assert {:ok, start_spec} =
+             AggregateRouter.route("run.start", %{
+               run_id: "run-nonterm",
+               task_id: "task-nonterm"
+             })
+
+    assert {:ok, %{stream_version: 1}} = EventStore.append(start_spec)
+
+    # Append a PhaseStarted to keep run non-terminal
+    assert {:ok, _} =
+             EventStore.append(%{
+               stream_id: stream_id,
+               event_type: "PhaseStarted",
+               payload: %{run_id: "run-nonterm", phase_id: "phase-a", status: "in_progress"}
+             })
+
+    # Aggregate.load/2 replays and restores non-terminal in_progress state
+    {state_replay, version} = ForemanServer.Aggregate.load(Run, stream_id)
+    assert state_replay.status == "in_progress"
+    assert state_replay.terminal? == false
+    assert version == 2
+  end
+
+
+  test "AC-004-4: two run.complete commands race — second append fails with expected_version conflict" do
+    # Seed RunStarted so stream exists at version 1
+    assert {:ok, start_spec} =
+             AggregateRouter.route("run.start", %{
+               run_id: "run-race",
+               task_id: "task-race"
+             })
+
+    assert {:ok, %{stream_version: 1}} = EventStore.append(start_spec)
+
+    # Route two run.complete specs against the same stream — both get expected_version: 1
+    assert {:ok, spec1} =
+             AggregateRouter.route("run.complete", %{run_id: "run-race"})
+
+    assert {:ok, spec2} =
+             AggregateRouter.route("run.complete", %{run_id: "run-race"})
+
+    assert spec1.expected_stream_version == 1
+    assert spec2.expected_stream_version == 1
+
+    # First append succeeds; stream version becomes 2
+    assert {:ok, _} = EventStore.append(spec1)
+
+    # Second append fails with conflict (stream is now version 2, spec still expects 1)
+    assert {:error, {:conflict, [expected: 1, actual: 2]}} = EventStore.append(spec2)
+
+    # Fresh route: loads terminal state from store, run.complete on terminal returns RunAlreadyCompleted spec
+    assert {:ok, spec3} =
+             AggregateRouter.route("run.complete", %{run_id: "run-race"})
+
+    assert spec3.event_type == "RunAlreadyCompleted"
+  end
   test "Run rejects run.fail on already-failed run" do
     assert {:ok, spec} =
              AggregateRouter.route("run.start", %{
