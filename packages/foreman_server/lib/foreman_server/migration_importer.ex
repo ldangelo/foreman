@@ -8,8 +8,7 @@ defmodule ForemanServer.MigrationImporter do
   as migration records until dedicated first-class projections exist.
   """
 
-  alias ForemanServer.EventStore
-
+  alias ForemanServer.{CommandRouter, EventStore}
   @spec import(map()) :: {:ok, map()} | {:error, term()}
   def import(input) when is_map(input) do
     with {:ok, normalized} <- validate_input(input),
@@ -24,6 +23,27 @@ defmodule ForemanServer.MigrationImporter do
   end
 
   def import(_input), do: {:error, {:missing_or_invalid, :payload}}
+
+  @spec process(map()) :: {:ok, map()} | {:error, term()}
+  def process(input) when is_map(input) do
+    command_id =
+      Map.get(input, :command_id) || Map.get(input, "command_id") ||
+        Map.get(input, :migration_id) || Map.get(input, "migration_id")
+
+    with {:ok, command_id} <- required_binary(command_id, :migration_id) do
+      correlation_id =
+        Map.get(input, :correlation_id) || Map.get(input, "correlation_id") || command_id
+
+      CommandRouter.handle(%{
+        command_id: command_id,
+        command_type: "migration.import",
+        correlation_id: correlation_id,
+        payload: input
+      })
+    end
+  end
+
+  def process(_input), do: {:error, {:missing_or_invalid, :payload}}
 
   defp execute_import(input, migration_id, source) do
     metadata = %{

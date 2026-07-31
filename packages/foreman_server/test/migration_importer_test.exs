@@ -214,6 +214,17 @@ defmodule ForemanServer.MigrationImporterTest do
     assert ProjectionStore.snapshot().migration_imports["migration-http-1"].status == "completed"
   end
 
+  test "process/1 dispatches migration imports through the command router" do
+    assert {:ok, %{migration: %{status: "completed"}, event: event}} =
+             MigrationImporter.process(legacy_payload("migration-process-1"))
+
+    assert event.event_type == "MigrationImportCompleted"
+
+    migration_events = EventStore.stream("migration:migration-process-1")
+    assert Enum.any?(migration_events, &(&1.event_type == "MigrationImportStarted"))
+    assert Enum.any?(migration_events, &(&1.event_type == "MigrationImportCompleted"))
+  end
+
   defp assert_validation_without_events(payload, reason) do
     before_events = EventStore.all()
     assert {:error, ^reason} = MigrationImporter.import(payload)

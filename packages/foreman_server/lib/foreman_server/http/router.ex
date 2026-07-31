@@ -9,17 +9,16 @@ defmodule ForemanServer.Http.Router do
   plug(:maybe_parse_body)
   plug(:dispatch)
 
-  # Conditionally apply Plug.Parsers for all routes EXCEPT /webhooks/github and
-  # /webhooks/external_trigger, which need raw request bodies for HMAC verification
-  # or manual JSON decoding respectively.
+  # Conditionally apply Plug.Parsers for all routes EXCEPT /webhooks/github,
+  # /webhooks/external_trigger, and /webhooks/attach_bridge, which need raw
+  # request bodies for HMAC verification or manual JSON decoding.
   defp maybe_parse_body(
         %Plug.Conn{path_info: ["webhooks", path | _]}
         = conn,
         _opts
       )
-      when path in ["github", "external_trigger"],
+      when path in ["github", "external_trigger", "attach_bridge"],
       do: conn
-
   defp maybe_parse_body(conn, _opts) do
     Plug.Parsers.call(
       conn,
@@ -558,6 +557,39 @@ defmodule ForemanServer.Http.Router do
 
                 {:error, reason} ->
                   send_error(conn, 400, "BAD_REQUEST", "invalid trigger: #{inspect(reason)}", false)
+              end
+
+            _ ->
+              send_error(conn, 400, "BAD_REQUEST", "empty or missing request body", false)
+          end
+
+        _ ->
+          send_error(conn, 400, "BAD_REQUEST", "empty or missing request body", false)
+      end
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "invalid or missing auth token", false)
+    end
+  end
+
+  post "/webhooks/attach_bridge" do
+    with :ok <- authorize(conn) do
+      case read_raw_body(conn) do
+        {:ok, raw_body, _conn} ->
+          case Jason.decode(raw_body) do
+            {:ok, %{} = payload} when payload != %{} ->
+              case ForemanServer.Inbox.AttachBridgeAdapter.ingest(payload) do
+                {:ok, %{event: event}} ->
+                  send_json(conn, 202, %{ok: true, handled: true, event_type: event.event_type})
+
+                {:error, reason} ->
+                  send_error(
+                    conn,
+                    400,
+                    "BAD_REQUEST",
+                    "invalid attach bridge payload: #{inspect(reason)}",
+                    false
+                  )
               end
 
             _ ->
