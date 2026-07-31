@@ -268,12 +268,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 4: Unified Ingestion + External Triggers + PR Lifecycle + Recovery + VCS
 **Shippable State:** Webhook payloads are normalized and routed through Inbox.Poller; external triggers are polled when push webhooks are unavailable; PR associations sync via GitHub webhooks with polling fallback; recovery scanner detects interrupted runs and re-dispatches; VCS operations route through an abstraction with retry.
 
-- [ ] **TRD-014** Attach-bridge ingestion adapter | 3h | [satisfies REQ-007] | Validates: AC-007-1, AC-007-3 | AC: Given an attach-bridge webhook arrives, when it is received, then `AttachBridgeAdapter.normalize/1` transforms the payload into an `InboxItem`; specialized attach-bridge behaviour (streaming metadata, connection lifecycle) is preserved in the adapter before normalization; given a migration import is dispatched, when it is processed, then it routes through `CommandRouter` and appends migration events
-  - [ ] `AttachBridgeAdapter.normalize/1`: converts attach-bridge payload → `InboxItem`
-  - [ ] Preserves streaming metadata in adapter state before normalization
-  - [ ] `AttachBridgeAdapter.ingest/1`: calls `SharedInbox.ingest/2`
-  - [ ] Migration imports: `MigrationImporter.process/1` → `CommandRouter.dispatch/2`
-  - [ ] Dedup by correlation_id (from `SharedInbox` schema)
+- [x] **TRD-014** Attach-bridge ingestion adapter | 3h | [satisfies REQ-007] | Validates: AC-007-1, AC-007-3 | AC: Given an attach-bridge webhook arrives, when it is received, then `AttachBridgeAdapter.normalize/1` transforms the payload into an `InboxItem`; specialized attach-bridge behaviour (streaming metadata, connection lifecycle) is preserved in the adapter before normalization; given a migration import is dispatched, when it is processed, then it routes through `CommandRouter` and appends migration events
+  - [x] `AttachBridgeAdapter.normalize/1`: converts attach-bridge payload → `InboxItem`
+  - [x] Preserves streaming metadata in adapter state before normalization
+  - [x] `AttachBridgeAdapter.ingest/1`: calls `SharedInbox.ingest/2`
+  - [x] Migration imports: `MigrationImporter.process/1` → `CommandRouter.dispatch/2`
+  - [x] Dedup by correlation_id (from `SharedInbox` schema)
 
 - [ ] **TRD-015** External trigger polling (pull fallback) | 3h | [satisfies REQ-008] | Validates: AC-008-1, AC-008-2 | AC: Given an external system cannot push webhooks, when a pull-based inbox poll is configured, then the poller periodically fetches pending triggers; given external trigger webhook arrives, when it is received, then it is routed to the appropriate handler and delivery status is tracked
   - [ ] `TriggerPoller` GenServer: configurable interval, calls external trigger endpoint
