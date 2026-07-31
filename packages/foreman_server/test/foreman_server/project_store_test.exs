@@ -81,7 +81,8 @@ defmodule ForemanServer.ProjectStoreTest do
       # Second: update via ProjectStore.save — default_branch is updatable, path is not
       updated_project = %Project{
         id: project_id,
-        path: "/tmp/updated",  # path change won't persist (not in ProjectUpdated handler)
+        # path change won't persist (not in ProjectUpdated handler)
+        path: "/tmp/updated",
         status: :active,
         default_branch: "develop",
         config: %{key: "value"},

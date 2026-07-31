@@ -286,6 +286,45 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert completed_event.payload.failure_reason == "all_done"
     assert completed_event.payload.reason == "all_done"
   end
+  test "WorkerProtocol.emit/2 with nil sequence auto-fills next sequence and stores typed struct" do
+    # Seed the worker stream with WorkerStarted so the aggregate has a sequence baseline.
+    started = %ForemanServer.Events.WorkerStarted{
+      run_id: "emit-typed-test",
+      worker_id: "w1",
+      phase_id: "developer",
+      adapter: "test",
+      sequence: 0
+    }
+    assert {:ok, _} = ForemanServer.WorkerProtocol.emit("WorkerStarted", started)
+
+    # Emit a typed WorkerHeartbeat with nil sequence — emit/2 must auto-fill via
+    # next_sequence/1 from the Worker's current state in the event store.
+    heartbeat = %ForemanServer.Events.WorkerHeartbeat{
+      run_id: "emit-typed-test",
+      worker_id: "w1",
+      sequence: nil
+    }
+    assert {:ok, _} = ForemanServer.WorkerProtocol.emit("WorkerHeartbeat", heartbeat)
+
+    # Read the persisted event back and verify.
+    events = ForemanServer.EventStore.stream("worker:emit-typed-test:w1")
+    assert length(events) == 2
+
+    [%{event_type: "WorkerStarted", payload: started_payload},
+     %{event_type: "WorkerHeartbeat", payload: hb_payload}] = events
+
+    # Persisted payload must be a typed struct, not a plain map.
+    assert is_struct(started_payload, ForemanServer.Events.WorkerStarted)
+    assert is_struct(hb_payload, ForemanServer.Events.WorkerHeartbeat)
+    assert hb_payload.run_id == "emit-typed-test"
+    assert hb_payload.worker_id == "w1"
+
+    # Sequence was auto-filled to 1 (next after WorkerStarted's 0).
+    assert hb_payload.sequence == 1
+
+    # :event_type is a command-layer key — must not be in the stored payload.
+    refute Map.has_key?(hb_payload, :event_type)
+  end
 
   defp post_json(path, payload) do
     :post

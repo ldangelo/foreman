@@ -42,7 +42,7 @@ defmodule ForemanServer.Aggregate do
   # - %ForemanServer.Event{} payload → typed struct via EventCodec.decode!/2
   # - plain map → pass through unchanged (existing aggregate replay)
   defp decode_for_fold(%ForemanServer.Event{event_type: event_type, payload: payload} = event)
-      when is_binary(event_type) and is_map(payload) do
+       when is_binary(event_type) and is_map(payload) do
     decoded_payload = ForemanServer.EventCodec.decode!(event_type, payload)
     # Preserve the full event envelope; only the payload slot changes
     %{event | payload: decoded_payload}

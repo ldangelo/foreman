@@ -486,6 +486,38 @@ defmodule ForemanServer.AggregateTest do
       assert state.last_sequence == 3
     end
   end
+  test "Worker.handle_command emits typed struct payload via EventCodec" do
+    # Aggregate.load reads an empty EventStore, so state = initial_state with
+    # last_sequence: -1 → next_sequence returns 0. Use sequence: 0 to match.
+    {state, _version} = Aggregate.load(Worker, "worker:r:w")
+
+    {:ok, event_spec} = Worker.handle_command(state, %{
+      type: "worker.record",
+      payload: %{
+        run_id: "r",
+        worker_id: "w",
+        event_type: "WorkerHeartbeat",
+        sequence: 0
+      }
+    })
+
+    assert event_spec.stream_id == "worker:r:w"
+    assert event_spec.event_type == "WorkerHeartbeat"
+
+    # Payload must be a typed struct, not a plain map.
+    assert is_struct(event_spec.payload, ForemanServer.Events.WorkerHeartbeat)
+    assert event_spec.payload.run_id == "r"
+    assert event_spec.payload.worker_id == "w"
+    assert event_spec.payload.sequence == 0
+
+    # :event_type is a command-layer key — it must not survive into the stored payload.
+    refute Map.has_key?(event_spec.payload, :event_type)
+
+    # Verify EventCodec.decode! round-trips correctly: given the typed struct
+    # payload and the event_type string, decode! returns the same struct.
+    decoded = ForemanServer.EventCodec.decode!(event_spec.event_type, event_spec.payload)
+    assert is_struct(decoded, ForemanServer.Events.WorkerHeartbeat)
+  end
 
   test "scheduler, vcs, recovery, and integration aggregates tolerate historical replay" do
     scheduler =

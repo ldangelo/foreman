@@ -8,7 +8,8 @@ defmodule ForemanServer.Events.AssistantMessage do
           project_id: String.t() | nil,
           task_id: String.t() | nil,
           phase_id: String.t() | nil,
-          output: map() | nil,
+          output: String.t() | map() | nil,
+          message: String.t() | nil,
           details: map(),
           sequence: non_neg_integer()
         }
@@ -20,6 +21,7 @@ defmodule ForemanServer.Events.AssistantMessage do
     :task_id,
     :phase_id,
     :output,
+    :message,
     :details,
     sequence: 0
   ]
@@ -33,6 +35,7 @@ defmodule ForemanServer.Events.AssistantMessage do
       task_id: get(payload, :task_id),
       phase_id: get(payload, :phase_id),
       output: get(payload, :output),
+      message: get(payload, :message),
       details: get(payload, :details, %{}),
       sequence: get(payload, :sequence, 0)
     }

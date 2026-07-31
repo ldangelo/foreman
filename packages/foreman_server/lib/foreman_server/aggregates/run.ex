@@ -295,12 +295,6 @@ defmodule ForemanServer.Aggregates.Run do
 
   # ─── apply_opt: conditional struct field update, returns %State{} ─────────────
   defp apply_opt(s, _field, nil), do: s
-  defp apply_opt(s, :exists?, v), do: %State{s | exists?: v}
-  defp apply_opt(s, :run_id, v), do: %State{s | run_id: v}
-  defp apply_opt(s, :task_id, v), do: %State{s | task_id: v}
-  defp apply_opt(s, :project_id, v), do: %State{s | project_id: v}
-  defp apply_opt(s, :status, v), do: %State{s | status: v}
-  defp apply_opt(s, :terminal?, v), do: %State{s | terminal?: v}
   defp apply_opt(s, :current_phase, v), do: %State{s | current_phase: v}
   defp apply_opt(s, :phase_order, v), do: %State{s | phase_order: v}
   defp apply_opt(s, :worktree_path, v), do: %State{s | worktree_path: v}

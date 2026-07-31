@@ -249,7 +249,15 @@ defmodule ForemanServer.EventStore do
     :ok
   end
 
+  # %DateTime{} must come FIRST since DateTime is itself a struct; specific
+  # clause converts to ISO8601 string before the generic struct clause.
   defp stringify_keys(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  # Non-DateTime structs (typed domain events) are converted to plain maps via
+  # Map.from_struct/1 so Enum.map can iterate their fields.
+  defp stringify_keys(value) when is_struct(value) do
+    value |> Map.from_struct() |> stringify_keys()
+  end
 
   defp stringify_keys(value) when is_map(value) do
     value
@@ -259,6 +267,11 @@ defmodule ForemanServer.EventStore do
 
   defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
   defp stringify_keys(value), do: value
+
+  # Same struct issue for atomize_keys.
+  defp atomize_keys(value) when is_struct(value) do
+    value |> Map.from_struct() |> atomize_keys()
+  end
 
   defp atomize_keys(value) when is_map(value) do
     value

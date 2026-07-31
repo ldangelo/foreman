@@ -25,15 +25,20 @@ defmodule ForemanServer.Events.InboxItemDeduped do
 
   defp require_binary(payload, atom_key, string_key) do
     value = Map.get(payload, atom_key) || Map.get(payload, string_key)
-    if is_binary(value) and value != "", do: value,
-      else: raise("#{inspect(atom_key)}/#{inspect(string_key)} is required and must be a non-empty string, got: #{inspect(value)}")
+
+    if is_binary(value) and value != "",
+      do: value,
+      else:
+        raise(
+          "#{inspect(atom_key)}/#{inspect(string_key)} is required and must be a non-empty string, got: #{inspect(value)}"
+        )
   end
 
   defp normalize_timestamp(payload) do
     raw =
       Map.get(payload, :timestamp) ||
-      Map.get(payload, "timestamp") ||
-      DateTime.utc_now()
+        Map.get(payload, "timestamp") ||
+        DateTime.utc_now()
 
     case raw do
       %DateTime{} -> raw

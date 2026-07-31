@@ -67,6 +67,7 @@ defmodule ForemanServer.ProjectStore do
   defp store_path(opts \\ []) do
     ForemanServer.RuntimeInfo.project_store_path(opts)
   end
+
   alias ForemanServer.CommandRouter
   alias ForemanServer.ProjectionStore
 
@@ -80,7 +81,11 @@ defmodule ForemanServer.ProjectStore do
   @spec save(Project.t(), Keyword.t()) :: {:ok, map()} | {:error, term()}
   def save(%Project{} = project, opts \\ []) do
     command_id =
-      Keyword.get(opts, :command_id, "project-store-#{project.id}-#{System.unique_integer([:positive])}")
+      Keyword.get(
+        opts,
+        :command_id,
+        "project-store-#{project.id}-#{System.unique_integer([:positive])}"
+      )
 
     existing = ProjectionStore.project(project.id)
     command_type = if existing, do: "project.update", else: "project.register"

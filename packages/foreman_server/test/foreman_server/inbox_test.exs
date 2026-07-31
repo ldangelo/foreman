@@ -59,6 +59,7 @@ defmodule ForemanServer.InboxItemTest do
 
     test "missing correlation_id raises" do
       payload = %{source: "bridge"}
+
       assert_raise RuntimeError, ~r/correlation_id.*required/, fn ->
         InboxItemStarted.from_payload(payload)
       end
@@ -66,6 +67,7 @@ defmodule ForemanServer.InboxItemTest do
 
     test "empty source raises" do
       payload = %{correlation_id: "corr-5", source: ""}
+
       assert_raise RuntimeError, ~r/source.*required/, fn ->
         InboxItemStarted.from_payload(payload)
       end
@@ -148,19 +150,21 @@ defmodule ForemanServer.InboxItemTest do
 
   describe "Aggregate.fold/2 — typed struct replay" do
     test "typed struct payload reconstructed via EventCodec and envelope preserved" do
-      {:ok, event} = ForemanServer.Event.new(
-        %{
-          stream_id: "inbox:test",
-          event_type: "InboxItemStarted",
-          payload: InboxItemStarted.from_payload(%{
-            correlation_id: "fold-corr",
-            source: "test",
-            timestamp: ~U[2026-07-29T12:00:00Z],
-            payload: %{"key" => "value"}
-          })
-        },
-        1
-      )
+      {:ok, event} =
+        ForemanServer.Event.new(
+          %{
+            stream_id: "inbox:test",
+            event_type: "InboxItemStarted",
+            payload:
+              InboxItemStarted.from_payload(%{
+                correlation_id: "fold-corr",
+                source: "test",
+                timestamp: ~U[2026-07-29T12:00:00Z],
+                payload: %{"key" => "value"}
+              })
+          },
+          1
+        )
 
       final_state = Aggregate.fold(InboxThread, [event])
 
@@ -169,14 +173,19 @@ defmodule ForemanServer.InboxItemTest do
     end
 
     test "plain-map legacy payload passes through unchanged (backward compat)" do
-      {:ok, event} = ForemanServer.Event.new(
-        %{
-          stream_id: "inbox:test",
-          event_type: "InboxItemStarted",
-          payload: %{"correlation_id" => "legacy-corr", "source" => "legacy", "timestamp" => "2026-07-29T12:00:00Z"}
-        },
-        1
-      )
+      {:ok, event} =
+        ForemanServer.Event.new(
+          %{
+            stream_id: "inbox:test",
+            event_type: "InboxItemStarted",
+            payload: %{
+              "correlation_id" => "legacy-corr",
+              "source" => "legacy",
+              "timestamp" => "2026-07-29T12:00:00Z"
+            }
+          },
+          1
+        )
 
       final_state = Aggregate.fold(InboxThread, [event])
 
@@ -212,7 +221,7 @@ defmodule ForemanServer.InboxItemTest do
       command = %{
         type: "inbox.item.start",
         payload: %{
-          run_id: "run-1",
+          run_id: "run-1"
           # missing correlation_id and source
         }
       }
@@ -304,16 +313,21 @@ defmodule ForemanServer.SharedInboxTest do
   describe "SharedInbox.ingest/2 error paths" do
     test "invalid (empty) correlation_id → error" do
       payload = %{"correlation_id" => "", "source" => "bridge", "run_id" => "run-1"}
-      assert {:error, {:invalid_correlation_id, ValidImpl}} = SharedInbox.ingest(ValidImpl, payload)
+
+      assert {:error, {:invalid_correlation_id, ValidImpl}} =
+               SharedInbox.ingest(ValidImpl, payload)
     end
 
     test "nil correlation_id → error" do
       payload = %{"correlation_id" => nil, "source" => "bridge", "run_id" => "run-1"}
-      assert {:error, {:invalid_correlation_id, ValidImpl}} = SharedInbox.ingest(ValidImpl, payload)
+
+      assert {:error, {:invalid_correlation_id, ValidImpl}} =
+               SharedInbox.ingest(ValidImpl, payload)
     end
 
     test "module not implementing InboxItemCorrelationId → error" do
       payload = %{"source" => "bridge", "run_id" => "run-1"}
+
       assert {:error, {:not_inbox_correlation_id_impl, MissingCallbackImpl}} =
                SharedInbox.ingest(MissingCallbackImpl, payload)
     end

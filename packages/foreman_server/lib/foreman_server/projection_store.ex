@@ -219,10 +219,6 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, tasks, projection}
   end
 
-  @spec board(String.t()) :: map()
-  def board(project_id) do
-    GenServer.call(__MODULE__, {:board, project_id})
-  end
 
   @impl true
   def handle_call({:board, project_id}, _from, projection) do
@@ -237,6 +233,11 @@ defmodule ForemanServer.ProjectionStore do
       |> normalize_board_output()
 
     {:reply, result, projection}
+  end
+
+  @spec board(String.t()) :: map()
+  def board(project_id) do
+    GenServer.call(__MODULE__, {:board, project_id})
   end
 
   defp persist_changes(old_projection, new_projection, event) do
@@ -641,7 +642,7 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:completed_at, now)
       |> Map.put(:totalDurationMs, total_duration_ms)
     end)
-    |> maybe_update_task_from_run_terminal(payload, "completed", now)
+    |> maybe_update_task_from_run_terminal(payload, "closed", now)
   end
 
   defp apply_domain_event(

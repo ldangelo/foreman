@@ -10,7 +10,11 @@ defmodule ForemanServer.Aggregates.InboxThread do
   # correlation_index: %{correlation_id => timestamp} — dedupe lookups
   defmodule State do
     defstruct [:messages, :correlation_index]
-    @type t :: %__MODULE__{messages: %{optional(String.t()) => map()}, correlation_index: %{optional(String.t()) => DateTime.t()}}
+
+    @type t :: %__MODULE__{
+            messages: %{optional(String.t()) => map()},
+            correlation_index: %{optional(String.t()) => DateTime.t()}
+          }
   end
 
   @impl true
@@ -32,12 +36,13 @@ defmodule ForemanServer.Aggregates.InboxThread do
   def apply_event(state, %InboxItemStarted{} = event) do
     %State{
       state
-      | messages: Map.put(state.messages, event.correlation_id, %{
-          correlation_id: event.correlation_id,
-          source: event.source,
-          payload: event.payload,
-          timestamp: event.timestamp
-        }),
+      | messages:
+          Map.put(state.messages, event.correlation_id, %{
+            correlation_id: event.correlation_id,
+            source: event.source,
+            payload: event.payload,
+            timestamp: event.timestamp
+          }),
         correlation_index: Map.put(state.correlation_index, event.correlation_id, event.timestamp)
     }
   end
@@ -60,6 +65,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
         # Reconstruct from map for migration path
         message_id = Aggregate.get(payload, :correlation_id)
         ts = Map.get(payload, :timestamp) || DateTime.utc_now()
+
         %State{
           state
           | messages: Map.put(state.messages, message_id, payload),
@@ -78,7 +84,11 @@ defmodule ForemanServer.Aggregates.InboxThread do
       "InboxDeliveryUpdated" ->
         message_id = Aggregate.get(payload, :message_id)
         existing = Map.get(state.messages, message_id, %{message_id: message_id})
-        %State{state | messages: Map.put(state.messages, message_id, Map.merge(existing, payload))}
+
+        %State{
+          state
+          | messages: Map.put(state.messages, message_id, Map.merge(existing, payload))
+        }
 
       _ ->
         state
@@ -88,25 +98,35 @@ defmodule ForemanServer.Aggregates.InboxThread do
   # ─── handle_command ──────────────────────────────────────────────────────
   @impl true
   def handle_command(state, %{type: "inbox.item.start", payload: payload}) do
-    with {:ok, run_id}     <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
-         {:ok, correlation_id} <- Aggregate.required_binary(Aggregate.get(payload, :correlation_id), :correlation_id),
-         {:ok, source}     <- Aggregate.required_binary(Aggregate.get(payload, :source), :source) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, correlation_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :correlation_id), :correlation_id),
+         {:ok, source} <- Aggregate.required_binary(Aggregate.get(payload, :source), :source) do
       now = Map.get(payload, :timestamp) || DateTime.utc_now()
+
       case dedupe_decision(state, correlation_id, now) do
         :duplicate ->
-          {:ok, %{
-            stream_id: "inbox:#{run_id}",
-            event_type: "InboxItemDeduped",
-            payload: %{correlation_id: correlation_id, source: source, timestamp: now}
-          }}
+          {:ok,
+           %{
+             stream_id: "inbox:#{run_id}",
+             event_type: "InboxItemDeduped",
+             payload: %{correlation_id: correlation_id, source: source, timestamp: now}
+           }}
 
         :accept ->
           item_payload = Aggregate.get(payload, :payload, %{})
-          {:ok, %{
-            stream_id: "inbox:#{run_id}",
-            event_type: "InboxItemStarted",
-            payload: %{correlation_id: correlation_id, source: source, payload: item_payload, timestamp: now}
-          }}
+
+          {:ok,
+           %{
+             stream_id: "inbox:#{run_id}",
+             event_type: "InboxItemStarted",
+             payload: %{
+               correlation_id: correlation_id,
+               source: source,
+               payload: item_payload,
+               timestamp: now
+             }
+           }}
       end
     end
   end
@@ -149,6 +169,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
   defp dedupe_decision(state, correlation_id, now) do
     window_seconds = dedupe_window_seconds()
     cutoff = DateTime.add(now, -window_seconds, :second)
+
     case Map.fetch(state.correlation_index, correlation_id) do
       {:ok, last_seen} ->
         if DateTime.compare(last_seen, cutoff) == :gt, do: :duplicate, else: :accept

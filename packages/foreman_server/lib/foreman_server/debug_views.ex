@@ -443,6 +443,7 @@ defmodule ForemanServer.DebugViews do
 
   defp sanitize_value(%DateTime{} = value), do: value
   defp sanitize_value(%NaiveDateTime{} = value), do: value
+  defp sanitize_value(%_{} = struct), do: struct |> Map.from_struct() |> sanitize_value()
 
   defp sanitize_value(value) when is_map(value) do
     Map.new(value, fn {key, item} ->

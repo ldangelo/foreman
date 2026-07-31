@@ -188,11 +188,19 @@ defmodule ForemanServer.Aggregates.Worker do
            Aggregate.required_binary(Aggregate.get(payload, :event_type), :event_type),
          :ok <- validate_next_sequence(state, Aggregate.get(payload, :sequence)),
          :ok <- allow_after_terminal(state, event_type) do
+      # Decode the command payload into a typed struct (via from_payload/1 for known
+      # event types, or leave as map for unknown/legacy).  Strip command-only
+      # :event_type before storing — it lives in the envelope, not the payload.
+      decoded_payload =
+        payload
+        |> then(&ForemanServer.EventCodec.decode!(event_type, &1))
+        |> Map.delete(:event_type)
+
       {:ok,
        %{
          stream_id: "worker:#{run_id}:#{worker_id}",
          event_type: event_type,
-         payload: Map.merge(payload, %{run_id: run_id, worker_id: worker_id})
+         payload: Map.merge(decoded_payload, %{run_id: run_id, worker_id: worker_id})
        }}
     end
   end
