@@ -63,11 +63,11 @@ defmodule ForemanServer.Overwatch.StuckDetector do
     end)
   end
 
-  # Active = not in a terminal status and not already stuck.
+  # Active = not in a terminal or operator-paused status and not already stuck.
   defp active_non_stuck_runs(runs) do
     Enum.filter(runs, fn {_run_id, run} ->
       status = Map.get(run, :status, "")
-      status not in ["completed", "failed", "blocked", "merged", "deleted", "stuck"]
+      status not in ["completed", "failed", "blocked", "merged", "deleted", "paused", "stuck"]
     end)
   end
 

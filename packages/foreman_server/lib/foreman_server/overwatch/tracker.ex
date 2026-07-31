@@ -166,8 +166,8 @@ defmodule ForemanServer.Overwatch.Tracker do
             exited_at: DateTime.utc_now()
           })
 
-        # AC-002-1: 4th abnormal exit → WorkerCrashed + run.block.
-        # AC-002-2: If run is terminal, WorkerCrashed.emit fails → skip run.block.
+        # AC-002-1: 4th abnormal exit → WorkerCrashed + run.pause.
+        # AC-002-2: If run is terminal, WorkerCrashed.emit fails → skip run.pause.
         # Crash history is recorded only for abnormal exits; clean exits are not crashes.
         state =
           if abnormal_exit?(reason) do
@@ -194,8 +194,8 @@ defmodule ForemanServer.Overwatch.Tracker do
                 {:ok, _} ->
                   _ =
                     CommandRouter.handle(%{
-                      command_id: "run.block:#{entry.run_id}:#{entry.worker_id}:#{now_ms}",
-                      command_type: "run.block",
+                      command_id: "run.pause:#{entry.run_id}:#{entry.worker_id}:#{now_ms}",
+                      command_type: "run.pause",
                       payload: %{
                         run_id: entry.run_id,
                         reason: "worker crash loop detected"

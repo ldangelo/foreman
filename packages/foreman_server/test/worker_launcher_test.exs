@@ -435,6 +435,61 @@ defmodule ForemanServer.WorkerLauncherTest do
            end)
   end
 
+  test "paused run suppresses fallback failure when worker launcher exits later", %{
+    bin_dir: bin_dir,
+    project_dir: project_dir
+  } do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    sleep 0.1
+    echo '[PIPELINE] FAILED ($1.23)'
+    echo '[PHASE: DEVELOPER] FAILED: Phase exceeded maxTurns (120)'
+    exit 1
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{
+      task_id: "task-paused",
+      project_id: "project-a",
+      project_path: project_dir,
+      task_type: "feature"
+    }
+
+    run_id = "00000000-0000-0000-0000-000000000004"
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "RunStarted",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, task_id: "task-paused", current_phase: "developer"}
+      })
+
+    assert {:ok, _} = WorkerLauncher.launch(task, run_id, ["developer"])
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, &(&1.event_type == "WorkerLaunchRequested"))
+    end)
+
+    {:ok, _} =
+      EventStore.append(%{
+        event_type: "RunPaused",
+        stream_id: "run:#{run_id}",
+        payload: %{run_id: run_id, reason: "worker crash loop detected"}
+      })
+
+    assert_eventually(fn -> EventStore.stream("worker-launch:#{run_id}") end, fn events ->
+      Enum.any?(events, fn event ->
+        event.event_type == "WorkerProcessExited" && event.payload.exit_code == 1
+      end)
+    end)
+
+    refute Enum.any?(EventStore.stream("worker-launch:#{run_id}"), &(&1.event_type == "RunFailed"))
+    assert ProjectionStore.snapshot().runs[run_id].status == "paused"
+  end
+
   test "zero-exit failed worker output records diagnostic fallback failure", %{
     bin_dir: bin_dir,
     project_dir: project_dir

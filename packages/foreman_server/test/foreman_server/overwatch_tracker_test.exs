@@ -1,8 +1,24 @@
 defmodule ForemanServer.Overwatch.TrackerTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.EventStore
+  alias ForemanServer.{EventStore, Overwatch, ProjectionStore}
   alias ForemanServer.Overwatch.Tracker
+  defmodule TestWorker do
+    use GenServer
+
+    def start_link(opts) when is_map(opts) do
+      GenServer.start_link(__MODULE__, opts)
+    end
+
+    @impl true
+    def init(opts) do
+      if notify = Map.get(opts, :notify) do
+        send(notify, {:test_worker_started, self()})
+      end
+
+      {:ok, opts}
+    end
+  end
 
   setup do
     Application.stop(:foreman_server)
@@ -71,7 +87,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     Agent.stop(worker_pid)
   end
 
-  test "worker_heartbeat cancels old timer and starts new timer with incremented heartbeat_gen" do
+  test "worker_heartbeat cancels old timer, routes through CommandRouter, and updates projection state" do
     {:ok, worker_pid} = Agent.start_link(fn -> :ok end)
     :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
 
@@ -79,9 +95,40 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     %{timer_ref: old_ref, heartbeat_gen: 0} = :sys.get_state(Tracker).workers[key]
 
     :ok = Tracker.worker_heartbeat(worker_pid, "run-1", "worker-1", 1, DateTime.utc_now())
+    Process.sleep(50)
 
     %{timer_ref: new_ref, heartbeat_gen: 1} = :sys.get_state(Tracker).workers[key]
     assert new_ref != old_ref
+
+    heartbeat_event =
+      EventStore.stream("worker:run-1:worker-1")
+      |> Enum.find(&(&1.event_type == "WorkerHeartbeat"))
+
+    assert heartbeat_event
+    assert heartbeat_event.metadata.source == "node-cli-boundary"
+    assert heartbeat_event.metadata.idempotency_key == "WorkerHeartbeat:run-1:worker-1:1"
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.worker_heartbeats["run-1:worker-1"].sequence == 1
+    assert snapshot.runs["run-1"].worker_status["worker-1"] == "heartbeat"
+
+    Agent.stop(worker_pid)
+  end
+  test "duplicate heartbeat sequence is idempotent and does not append duplicate work" do
+    {:ok, worker_pid} = Agent.start_link(fn -> :ok end)
+    :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
+
+    observed_at = DateTime.utc_now()
+    :ok = Tracker.worker_heartbeat(worker_pid, "run-1", "worker-1", 1, observed_at)
+    :ok = Tracker.worker_heartbeat(worker_pid, "run-1", "worker-1", 1, observed_at)
+    Process.sleep(50)
+
+    events = EventStore.stream("worker:run-1:worker-1")
+    assert Enum.count(events, &(&1.event_type == "WorkerHeartbeat")) == 1
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.worker_heartbeats["run-1:worker-1"].sequence == 1
+    assert snapshot.runs["run-1"].worker_status["worker-1"] == "heartbeat"
 
     Agent.stop(worker_pid)
   end
@@ -172,7 +219,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
   # ─── DOWN handler ─────────────────────────────────────────────────────────────
 
-  test "DOWN message removes worker and emits WorkerExited" do
+  test "DOWN message removes worker, routes WorkerExited via CommandRouter, and marks projection exited" do
     {:ok, worker_pid} = Agent.start_link(fn -> :ok end)
     :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
 
@@ -183,8 +230,15 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
     refute Map.has_key?(:sys.get_state(Tracker).workers, {"run-1", "worker-1"})
 
-    events = EventStore.stream("worker:run-1:worker-1")
-    assert Enum.any?(events, &(&1.event_type == "WorkerExited"))
+    exited_event =
+      EventStore.stream("worker:run-1:worker-1")
+      |> Enum.find(&(&1.event_type == "WorkerExited"))
+
+    assert exited_event
+    assert exited_event.metadata.source == "node-cli-boundary"
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.runs["run-1"].worker_status["worker-1"] == "exited"
   end
 
   test "DOWN for unknown monitor ref is a silent no-op" do
@@ -217,7 +271,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
   # ─── Timeout: WorkerUnresponsive + WorkerRecoveryRequired emitted ─────────────────
 
-  test "timeout message emits WorkerUnresponsive and WorkerRecoveryRequired, removes entry" do
+  test "timeout message emits WorkerUnresponsive, dispatches recovery, and marks projection unresponsive" do
     {:ok, worker_pid} = Agent.start_link(fn -> :ok end)
     :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
 
@@ -229,13 +283,20 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
     refute Map.has_key?(:sys.get_state(Tracker).workers, key)
 
-    events = EventStore.stream("worker:run-1:worker-1")
-    assert Enum.any?(events, &(&1.event_type == "WorkerUnresponsive"))
+    unresponsive_event =
+      EventStore.stream("worker:run-1:worker-1")
+      |> Enum.find(&(&1.event_type == "WorkerUnresponsive"))
+
+    assert unresponsive_event
+    assert unresponsive_event.metadata.source == "node-cli-boundary"
 
     recovery_events = EventStore.stream("recovery:run-1")
     assert Enum.any?(recovery_events, &(&1.event_type == "WorkerRecoveryRequired"))
     req = Enum.find(recovery_events, &(&1.event_type == "WorkerRecoveryRequired"))
     assert req.payload.phase_id == "explorer"
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.runs["run-1"].worker_status["worker-1"] == "unresponsive"
 
     Agent.stop(worker_pid)
   end
@@ -302,7 +363,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     end
   end
 
-  test "4th abnormal exit within 5-minute window emits WorkerCrashed and RunBlocked" do
+  test "4th abnormal exit within 5-minute window emits WorkerCrashed, pauses the run, and updates projections" do
     key = {"run-1", "worker-1"}
 
     # Cycles 1-4 (kill): each DOWN records a crash timestamp.
@@ -315,11 +376,24 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       wait_for_gone(Tracker, key)
     end
 
-    # Give event handlers time to persist.
     Process.sleep(50)
 
-    assert Enum.any?(EventStore.stream("worker:run-1:worker-1"), &(&1.event_type == "WorkerCrashed"))
-    assert Enum.any?(EventStore.stream("run:run-1"), &(&1.event_type == "RunBlocked"))
+    crashed_event =
+      EventStore.stream("worker:run-1:worker-1")
+      |> Enum.find(&(&1.event_type == "WorkerCrashed"))
+
+    paused_event =
+      EventStore.stream("run:run-1")
+      |> Enum.find(&(&1.event_type == "RunPaused"))
+
+    assert crashed_event
+    assert crashed_event.metadata.source == "node-cli-boundary"
+    assert paused_event
+    assert paused_event.payload.reason == "worker crash loop detected"
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.runs["run-1"].status == "paused"
+    assert snapshot.runs["run-1"].worker_status["worker-1"] == "crashed"
   end
 
   test "3 abnormal exits within 5-minute window does not emit WorkerCrashed" do
@@ -369,7 +443,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     Agent.stop(wp2)
   end
 
-  test "4th crash on already-terminal run emits neither WorkerCrashed nor RunBlocked" do
+  test "4th crash on already-terminal run emits neither WorkerCrashed nor RunPaused" do
     # Mark run-1 as terminal so WorkerProtocol.emit/2 rejects all events.
     {:ok, _} = ForemanServer.CommandRouter.handle(%{
       command_id: "complete-run-1",
@@ -393,7 +467,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     wait_for(Tracker, key, & &1 != nil)
 
     refute Enum.any?(EventStore.stream("worker:run-1:worker-1"), &(&1.event_type == "WorkerCrashed"))
-    refute Enum.any?(EventStore.stream("run:run-1"), &(&1.event_type == "RunBlocked"))
+    refute Enum.any?(EventStore.stream("run:run-1"), &(&1.event_type == "RunPaused"))
 
     Agent.stop(wp)
   end
@@ -458,5 +532,45 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
     Agent.stop(worker_pid1)
     Agent.stop(worker_pid2)
+  end
+  test "WorkerSupervisor restarts a crashed worker and re-registers the tracker slot" do
+    key = {"run-1", "worker-1"}
+
+    assert {:ok, worker_pid1} =
+             Overwatch.start_worker(
+               "run-1",
+               "worker-1",
+               "explorer",
+               TestWorker,
+               %{notify: self()}
+             )
+
+    receive do
+      {:test_worker_started, ^worker_pid1} -> :ok
+    after
+      1_000 -> flunk("initial supervised worker did not start")
+    end
+
+    wait_for(Tracker, key, fn
+      %{worker_pid: ^worker_pid1} -> true
+      _ -> false
+    end)
+
+    Process.exit(worker_pid1, :kill)
+
+    worker_pid2 =
+      receive do
+        {:test_worker_started, pid} when pid != worker_pid1 -> pid
+      after
+        1_000 -> flunk("restarted supervised worker did not register")
+      end
+
+    wait_for(Tracker, key, fn
+      %{worker_pid: ^worker_pid2, session_token: 2} -> true
+      _ -> false
+    end)
+
+    assert worker_pid2 != worker_pid1
+    GenServer.stop(worker_pid2)
   end
 end

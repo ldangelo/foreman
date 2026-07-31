@@ -5,7 +5,7 @@ defmodule ForemanServer.ProjectionStore do
 
   alias ForemanServer.ProjectionStore.Postgres
 
-@terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
+@terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged", "paused"])
 @terminal_task_to_run_status %{
   "blocked" => "blocked",
   "closed" => "completed",
@@ -48,6 +48,7 @@ defmodule ForemanServer.ProjectionStore do
                          "RunCompleted",
                          "RunFailed",
                          "RunBlocked",
+                         "RunPaused",
                          "RunFlaggedStuck",
                          "RunRetried"
                        ])
@@ -749,6 +750,20 @@ defmodule ForemanServer.ProjectionStore do
       |> Map.put(:updated_at, now)
     end)
     |> maybe_update_task_from_run_terminal(payload, "blocked", now)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{type: "RunPaused", payload: %{run_id: run_id}, occurred_at: occurred_at},
+         _mode
+       ) do
+    now = occurred_at || DateTime.utc_now()
+
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.put(:status, "paused")
+      |> Map.put(:updated_at, now)
+    end)
   end
 
   defp apply_domain_event(

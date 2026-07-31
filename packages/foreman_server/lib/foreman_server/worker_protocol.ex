@@ -12,7 +12,7 @@ defmodule ForemanServer.WorkerProtocol do
 
   alias ForemanServer.Aggregates.Worker
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked"])
+  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "paused"])
   @after_terminal_run_events MapSet.new(["RunCompleted", "RunFailed", "TaskUpdated"])
 
   @spec start_phase(String.t(), map()) :: {:ok, map()} | {:error, term()}

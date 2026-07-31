@@ -146,7 +146,7 @@ defmodule ForemanServer.WorkerLauncher do
   defp append_missing_terminal_event(task, run_id, workflow, exit_code, output) do
     run = get_in(ForemanServer.ProjectionStore.snapshot(), [:runs, run_id]) || %{}
 
-    unless Map.get(run, :status) in ["completed", "failed", "blocked"] do
+    unless Map.get(run, :status) in ["completed", "failed", "blocked", "paused"] do
       inferred = infer_terminal_failure(output)
 
       unless bridge_completed_successfully?(exit_code, inferred) or

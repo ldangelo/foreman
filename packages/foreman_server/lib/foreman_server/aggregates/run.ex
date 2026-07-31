@@ -114,6 +114,9 @@ defmodule ForemanServer.Aggregates.Run do
       "RunBlocked" ->
         %State{state | status: "blocked", terminal?: true}
 
+      "RunPaused" ->
+        %State{state | status: "paused", terminal?: false}
+
       "RunFlaggedStuck" ->
         %State{state | status: "stuck"}
 
@@ -234,11 +237,11 @@ defmodule ForemanServer.Aggregates.Run do
   end
 
   def handle_command(state, %{type: type, payload: payload})
-      when type in ["run.fail", "run.block"] do
+      when type in ["run.fail", "run.block", "run.pause"] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
-      event_type = %{"run.fail" => "RunFailed", "run.block" => "RunBlocked"}[type]
+      event_type = %{"run.fail" => "RunFailed", "run.block" => "RunBlocked", "run.pause" => "RunPaused"}[type]
 
       {:ok,
        %{

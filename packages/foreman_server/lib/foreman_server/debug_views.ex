@@ -41,6 +41,7 @@ defmodule ForemanServer.DebugViews do
                           "RunCompleted",
                           "RunFailed",
                           "RunBlocked",
+                          "RunPaused",
                           "PhaseStarted",
                           "PhaseCompleted",
                           "PhaseFailed",
@@ -319,7 +320,7 @@ defmodule ForemanServer.DebugViews do
     do: {%{state | run_started: true}, nil}
 
   defp apply_timeline_entry(state, %{type: type} = entry)
-       when type in ["RunCompleted", "RunFailed", "RunBlocked"] do
+       when type in ["RunCompleted", "RunFailed", "RunBlocked", "RunPaused"] do
     anomaly =
       cond do
         not state.run_started -> anomaly(entry, "run_terminal_before_start")
