@@ -514,36 +514,24 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 
 ```yaml
 team:
-  lead:
-    agent: tech-lead-orchestrator
-    owns: [task-selection, architecture-review, final-approval]
-  builders:
-    - agent: backend-developer  # default/fallback — no agent registry discovered
-      domains: [elixir_cqrs, otp, postgres, phoenix, vcs]
-      tasks: [TRD-001, TRD-002, TRD-003, TRD-004, TRD-005, TRD-006, TRD-007, TRD-008, TRD-009, TRD-010, TRD-011, TRD-012, TRD-013, TRD-014, TRD-015, TRD-016, TRD-017, TRD-018, TRD-019, TRD-020, TRD-021]
-      owns: [implementation]
-    - agent: frontend-developer  # default/fallback — no agent registry discovered
-      domains: [phoenix, frontend]
-      tasks: [TRD-026]
-      owns: [implementation]
-    - agent: infrastructure-developer  # default/fallback — no agent registry discovered
-      domains: [devops, postgres]
-      tasks: [TRD-022, TRD-023, TRD-024]
-      owns: [implementation]
-    - agent: release-agent  # default/fallback — no agent registry discovered
-      domains: [observability, planning]
-      tasks: [TRD-025, TRD-027, TRD-040, TRD-041]
-      owns: [implementation]
-    - agent: qa-orchestrator  # default/fallback — no agent registry discovered
-      domains: [testing]
-      tasks: [TRD-011-TEST, TRD-013-TEST, TRD-019-TEST, TRD-009-TEST, TRD-008-TEST, TRD-010-TEST, TRD-033-TEST, TRD-034-TEST, TRD-035-TEST, TRD-036-TEST, TRD-037-TEST, TRD-007-TEST, TRD-025-TEST, TRD-026-TEST, TRD-027-TEST, TRD-040-TEST, TRD-041-TEST]
-      owns: [test-execution]
-  reviewer:
-    agent: code-reviewer  # default/fallback — Complex tier
-    owns: [pull-request-review, architecture-gate]
-  qa:
-    agent: qa-orchestrator  # default/fallback — Complex tier
-    owns: [test-planning, test-execution, quality-sign-off]
+  roles:
+    - name: lead
+      agent: tech-lead-orchestrator
+      owns: [task-selection, architecture-review, final-approval]
+    - name: builder
+      agents:
+        - backend-developer  # tasks: TRD-001–TRD-021; domains: elixir_cqrs, otp, postgres, phoenix, vcs
+        - frontend-developer  # tasks: TRD-026; domains: phoenix, frontend
+        - infrastructure-developer  # tasks: TRD-022–TRD-024; domains: devops, postgres
+        - release-agent  # tasks: TRD-025, TRD-027, TRD-040, TRD-041; domains: observability, planning
+        - qa-orchestrator  # tasks: TRD-011-TEST, TRD-013-TEST, TRD-019-TEST, TRD-009-TEST, TRD-008-TEST, TRD-010-TEST, TRD-033-TEST, TRD-034-TEST, TRD-035-TEST, TRD-036-TEST, TRD-037-TEST, TRD-007-TEST, TRD-025-TEST, TRD-026-TEST, TRD-027-TEST, TRD-040-TEST, TRD-041-TEST; domains: testing
+      owns: [implementation, test-execution]
+    - name: reviewer
+      agent: code-reviewer
+      owns: [pull-request-review, architecture-gate]
+    - name: qa
+      agent: qa-orchestrator
+      owns: [test-planning, test-execution, quality-sign-off]
 ```
 
 ## Sprint Planning
