@@ -30,6 +30,25 @@ defmodule ForemanServer.PrMonitorTest.FakeCommandHandler do
   end
 end
 
+defmodule ForemanServer.PrMonitorTest.AlwaysFailingCommandHandler do
+  def handle(command), do: fail(command)
+  def handle_command(command), do: fail(command)
+
+  defp fail(command) do
+    send(
+      Application.fetch_env!(:foreman_server, :pr_monitor_test_pid),
+      {:handled_command, command}
+    )
+
+    {:error, {:forced_failure, command.command_type}}
+  end
+end
+
+
+defmodule ForemanServer.PrMonitorTest.FailingEventStore do
+  def append(_input), do: {:error, :forced_dedupe_failure}
+end
+
 defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
   use ExUnit.Case
 
@@ -67,6 +86,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       Application.delete_env(:foreman_server, :event_log_path)
       Application.delete_env(:foreman_server, :pr_monitor_test_pid)
       Application.delete_env(:foreman_server, :command_handler)
+      Application.delete_env(:foreman_server, :webhook_event_store)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
@@ -208,6 +228,110 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       # No new commands should have been emitted
       refute_receive {:handled_command, _}, 100
     end
+
+    test "failed command handler does not record dedupe and can be retried" do
+      :ok = seed_pr_run!()
+      delivery_id = "delivery-retry-#{:rand.uniform(999_999)}"
+      dedupe_key = "github:webhook:#{delivery_id}"
+
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => delivery_id,
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "closed",
+          "merged" => true,
+          "merged_at" => "2026-07-22T10:00:00Z",
+          "merge_commit_sha" => "merge-sha-retry",
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:error, {:observation_failed, %{errors: 1}}} =
+               PrMonitor.GhWebhookHandler.handle(
+                 payload,
+                 ForemanServer.PrMonitorTest.AlwaysFailingCommandHandler
+               )
+
+      assert [%{command_type: "run.pr.merge"}] = drain_commands()
+      refute get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
+
+      assert {:ok, %{commands_issued: 2}} =
+               PrMonitor.GhWebhookHandler.handle(
+                 payload,
+                 ForemanServer.PrMonitorTest.FakeCommandHandler
+               )
+
+      commands = drain_commands()
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "run.pr.merge"
+             end)
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "task.update" and c.payload[:status] == "merged"
+             end)
+
+      assert get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
+      assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+    end
+
+    test "dedupe append failure returns error without recording delivery" do
+      :ok = seed_pr_run!()
+      delivery_id = "delivery-dedupe-error-#{:rand.uniform(999_999)}"
+      dedupe_key = "github:webhook:#{delivery_id}"
+
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => delivery_id,
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "closed",
+          "merged" => true,
+          "merged_at" => "2026-07-22T10:00:00Z",
+          "merge_commit_sha" => "merge-sha-dedupe-error",
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      Application.put_env(
+        :foreman_server,
+        :webhook_event_store,
+        ForemanServer.PrMonitorTest.FailingEventStore
+      )
+
+      assert {:error, {:dedupe_record_failed, :forced_dedupe_failure}} =
+               PrMonitor.GhWebhookHandler.handle(
+                 payload,
+                 ForemanServer.PrMonitorTest.FakeCommandHandler
+               )
+
+      commands = drain_commands()
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "run.pr.merge"
+             end)
+
+      assert Enum.any?(commands, fn c ->
+               c.command_type == "task.update" and c.payload[:status] == "merged"
+             end)
+
+      refute get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
+
+      Application.delete_env(:foreman_server, :webhook_event_store)
+
+      assert {:ok, %{commands_issued: 2}} =
+               PrMonitor.GhWebhookHandler.handle(
+                 payload,
+                 ForemanServer.PrMonitorTest.FakeCommandHandler
+               )
+
+      assert get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
+      assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+    end
+
 
     test "no matching run returns error gracefully" do
       payload = %{
@@ -684,6 +808,7 @@ defmodule ForemanServer.PrMonitorTest do
     assert close_payload.task_id == @task_id
   end
 
+
   test "closed open and draft observations never mark the task merged" do
     observations =
       [:closed, :open, :draft]
@@ -760,6 +885,7 @@ defmodule ForemanServer.PrMonitorTest do
       0 -> Enum.reverse(commands)
     end
   end
+
 
   defp seed_recorded_pr!(attrs) do
     run_id = Keyword.get(attrs, :run_id, @run_id)

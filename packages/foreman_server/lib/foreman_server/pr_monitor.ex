@@ -171,9 +171,6 @@ defmodule ForemanServer.PrMonitor do
       terminal_task_status?(Map.get(context, :task_status)) ->
         %{empty_summary() | skipped: 1}
 
-      context.pr_state == "closed" ->
-        %{empty_summary() | closed: 1}
-
       true ->
         payload =
           context
@@ -193,6 +190,7 @@ defmodule ForemanServer.PrMonitor do
         end
     end
   end
+
 
   def handle_observation(context, %{state: :draft} = observation, command_handler) do
     if context.pr_state == "draft" do
@@ -504,7 +502,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
   alias ForemanServer.EventStore
 
   @default_command_handler ForemanServer.PrMonitor.CommandHandler
-
+  @default_event_store EventStore
   @spec handle(map(), module() | nil) :: {:ok, map()} | {:error, term()}
   @doc """
   Process a GitHub `pull_request` webhook payload.
@@ -544,21 +542,20 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
          {:ok, dedupe_key} <- dedupe_key(payload),
          :ok <- check_dedupe(dedupe_key),
          {:ok, context} <- find_matching_context(pr_url, branch_name) do
-      # Normalize observation from the webhook payload, mirroring GhChecker.observe_pr/2 output
       observation = normalize_webhook_observation(pr_payload, action, merged, is_draft)
-      # Call parent PrMonitor module functions by their full module path.
       observation = ForemanServer.PrMonitor.normalize_observation(observation)
 
-      result =
-        ForemanServer.PrMonitor.handle_observation(
-          context,
-          observation,
-          handler
-        )
+      case ForemanServer.PrMonitor.handle_observation(context, observation, handler) do
+        %{errors: 0} = result ->
+          with :ok <- record_dedupe(dedupe_key, context.task_id) do
+            {:ok, %{commands_issued: result_issued_count(result)}}
+          else
+            {:error, reason} -> {:error, {:dedupe_record_failed, reason}}
+          end
 
-      record_dedupe(dedupe_key, context.task_id)
-
-      {:ok, %{commands_issued: result_issued_count(result)}}
+        %{errors: errors} = result when errors > 0 ->
+          {:error, {:observation_failed, result}}
+      end
     end
   end
 
@@ -660,44 +657,44 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
     snapshot = ProjectionStore.snapshot()
     existing = get_in(snapshot, [:integration_dedupe, dedupe_key])
 
-    unless existing do
-      # Emit IntegrationCommandIngested so the projection stores the dedupe key.
-      # This mirrors the pattern in IntegrationIngestion but scoped to webhook events.
-      :ok = try_record_dedupe_event(dedupe_key, task_id)
+    case existing do
+      nil -> try_record_dedupe_event(dedupe_key, task_id)
+      _dedupe_entry -> :ok
     end
   end
 
   defp try_record_dedupe_event(dedupe_key, task_id) do
-    {:ok, _event} =
-      EventStore.append(%{
-        stream_id: "integration:#{dedupe_key}",
-        event_type: "IntegrationCommandIngested",
-        payload: %{
-          source: "github",
-          external_id: dedupe_key,
-          project_id: nil,
-          event_type: "pull_request",
-          occurred_at: DateTime.utc_now(),
-          payload: %{},
-          idempotency_key: dedupe_key,
-          dedupe_key: dedupe_key,
-          external_link: nil,
-          task_id: task_id,
-          command_type: "webhook"
-        },
-        metadata: %{
-          source: "gh-webhook-handler",
-          correlation_id: dedupe_key,
-          idempotency_key: dedupe_key
-        }
-      })
-
-    :ok
+    case webhook_event_store().append(%{
+           stream_id: "integration:#{dedupe_key}",
+           event_type: "IntegrationCommandIngested",
+           payload: %{
+             source: "github",
+             external_id: dedupe_key,
+             project_id: nil,
+             event_type: "pull_request",
+             occurred_at: DateTime.utc_now(),
+             payload: %{},
+             idempotency_key: dedupe_key,
+             dedupe_key: dedupe_key,
+             external_link: nil,
+             task_id: task_id,
+             command_type: "webhook"
+           },
+           metadata: %{
+             source: "gh-webhook-handler",
+             correlation_id: dedupe_key,
+             idempotency_key: dedupe_key
+           }
+         }) do
+      {:ok, _event} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   rescue
-    _error ->
-      # If event store append fails (e.g. no event log), skip dedupe recording.
-      # The handler already returned success to GitHub; GitHub will not retry.
-      :ok
+    error -> {:error, error}
+  end
+
+  defp webhook_event_store do
+    Application.get_env(:foreman_server, :webhook_event_store, @default_event_store)
   end
 
   # Find the run context matching this PR by pr_url or branch_name.
