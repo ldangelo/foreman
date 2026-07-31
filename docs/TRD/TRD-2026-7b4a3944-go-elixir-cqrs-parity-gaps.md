@@ -391,14 +391,14 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] **Run limit (REQ-022):** `CommandRouter` routes `StartRun` through the **project-level owner** (either `Project` aggregate or a dedicated `ProjectRunLimit` aggregate) that atomically increments and checks `active_run_count` before emitting `RunStarted` — **never** a projection lookup inside `Run.handle_command`
   - [ ] `StreamGapDetector`: projection version vs. stream version; emit `StreamGapDetected` on mismatch; `CommandRouter` consults this detector before each append and refuses appends for flagged streams
 
-- [ ] **TRD-011-TEST** Overwatch test coverage | 4h | [verifies TRD-011] [depends: TRD-011, TRD-012] [satisfies REQ-020, REQ-001, REQ-002] | Validates: AC-001-1–AC-001-5, AC-002-1, AC-002-2, AC-020-2, AC-020-5 | Implementation AC: Given worker lifecycle events are emitted, when `Overwatch` is tested in isolation, then `WorkerHeartbeat` and `WorkerExited` events are routed through `CommandRouter` and the run projection reflects the correct state; AC1 (supervised actor) and AC2 (idempotency) tests pass
-  - [ ] Test: `start_phase/2` → full `WorkerStarted` event appended (session_id, adapter, prompt_path, tool_names, artifact_paths); `WorkerProtocol.emit/2` via `Tracker` → `WorkerHeartbeat/Exited/Unresponsive` through `CommandRouter`
-  - [ ] Test: heartbeat timeout (60s) → `WorkerUnresponsive` event
-  - [ ] Test: crash loop (3 restarts/5 min) → `WorkerCrashed` + run paused
-  - [ ] Test: worker restart → no duplicate work (command dedup)
-  - [ ] Test: orphan worker → slot released
-  - [ ] AC1: supervised actor survives restart (link to `ac1_aggregate_actor_test.exs`)
-  - [ ] AC2: idempotent duplicate command (link to `ac2_duplicate_out_of_order_test.exs`)
+- [x] **TRD-011-TEST** Overwatch test coverage | 4h | [verifies TRD-011] [depends: TRD-011, TRD-012] [satisfies REQ-020, REQ-001, REQ-002] | Validates: AC-001-1–AC-001-5, AC-002-1, AC-002-2, AC-020-2, AC-020-5 | Implementation AC: Given worker lifecycle events are emitted, when `Overwatch` is tested in isolation, then `WorkerHeartbeat` and `WorkerExited` events are routed through `CommandRouter` and the run projection reflects the correct state; AC1 (supervised actor) and AC2 (idempotency) tests pass
+  - [x] Test: `start_phase/2` → full `WorkerStarted` event appended (session_id, adapter, prompt_path, tool_names, artifact_paths); `WorkerProtocol.emit/2` via `Tracker` → `WorkerHeartbeat/Exited/Unresponsive` through `CommandRouter`
+  - [x] Test: heartbeat timeout (60s) → `WorkerUnresponsive` event
+  - [x] Test: crash loop (3 restarts/5 min) → `WorkerCrashed` + run paused
+  - [x] Test: worker restart → no duplicate work (command dedup)
+  - [x] Test: orphan worker → slot released
+  - [x] AC1: supervised actor survives restart (link to `ac1_aggregate_actor_test.exs`)
+  - [x] AC2: idempotent duplicate command (link to `ac2_duplicate_out_of_order_test.exs`)
 
 - [ ] **TRD-013-TEST** Worker environment isolation test | 2h | [verifies TRD-013] [depends: TRD-013] [satisfies REQ-003] | Validates: AC-003-1, AC-003-2 | Implementation AC: Given a worker is launched, when it starts, then it receives the complete environment map from the project's registered configuration; given config changes while worker is running, when a new worker is launched, then new config values take effect; mid-run config changes do not apply without restart
   - [ ] Test: `WorkerEnvironment.build_env_map/1` returns a complete map for a registered project
