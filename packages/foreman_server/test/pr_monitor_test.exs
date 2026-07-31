@@ -44,6 +44,24 @@ defmodule ForemanServer.PrMonitorTest.AlwaysFailingCommandHandler do
   end
 end
 
+defmodule ForemanServer.PrMonitorTest.ResetThenFailCloseCommandHandler do
+  alias ForemanServer.PrMonitor.CommandHandler
+
+  def handle(command), do: dispatch(command)
+  def handle_command(command), do: dispatch(command)
+
+  defp dispatch(%{command_type: "task.close"} = command) do
+    send(
+      Application.fetch_env!(:foreman_server, :pr_monitor_test_pid),
+      {:handled_command, command}
+    )
+
+    {:error, :forced_task_close_failure}
+  end
+
+  defp dispatch(command), do: CommandHandler.handle(command)
+end
+
 
 defmodule ForemanServer.PrMonitorTest.FailingEventStore do
   def append(_input), do: {:error, :forced_dedupe_failure}
@@ -330,6 +348,43 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
 
       assert get_in(ProjectionStore.snapshot(), [:integration_dedupe, dedupe_key])
       assert {:error, :duplicate} = PrMonitor.GhWebhookHandler.handle(payload)
+    end
+
+    test "closed webhook retry finishes task.close after run.pr.reset already succeeded" do
+      :ok = seed_pr_run!(pr_state: "open")
+      delivery_id = "delivery-closed-retry-#{:rand.uniform(999_999)}"
+      dedupe_key = "github:webhook:#{delivery_id}"
+
+      payload = %{
+        "action" => "closed",
+        "delivery_id" => delivery_id,
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "closed",
+          "merged" => false,
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:error, {:observation_failed, %{errors: 1}}} =
+               PrMonitor.GhWebhookHandler.handle(
+                 payload,
+                 ForemanServer.PrMonitorTest.ResetThenFailCloseCommandHandler
+               )
+
+      snapshot = ProjectionStore.snapshot()
+      assert snapshot.runs[@run_id].pr_state == "closed"
+      assert snapshot.tasks[@task_id].status == "in_progress"
+      refute get_in(snapshot, [:integration_dedupe, dedupe_key])
+
+      assert {:ok, %{commands_issued: 1}} =
+               PrMonitor.GhWebhookHandler.handle(payload, PrMonitor.CommandHandler)
+
+      snapshot = ProjectionStore.snapshot()
+      assert snapshot.runs[@run_id].pr_state == "closed"
+      assert snapshot.tasks[@task_id].status == "closed"
+      assert get_in(snapshot, [:integration_dedupe, dedupe_key])
     end
 
 
@@ -808,6 +863,40 @@ defmodule ForemanServer.PrMonitorTest do
     assert close_payload.task_id == @task_id
   end
 
+  test "closed retry closes the task after reset already marked the run closed" do
+    seed_recorded_pr!(pr_state: "open")
+
+    observation = %{
+      state: :closed,
+      url: @pr_url,
+      head_ref_oid: "head-sha",
+      head_ref_name: "foreman/task-pr-monitor",
+      base_ref_name: "main"
+    }
+
+    assert %{errors: 1} =
+             PrMonitor.handle_observation(
+               context_from_snapshot(@run_id),
+               observation,
+               ForemanServer.PrMonitorTest.ResetThenFailCloseCommandHandler
+             )
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.runs[@run_id].pr_state == "closed"
+    assert snapshot.tasks[@task_id].status == "in_progress"
+
+    assert %{closed: 1, errors: 0} =
+             PrMonitor.handle_observation(
+               context_from_snapshot(@run_id),
+               observation,
+               PrMonitor.CommandHandler
+             )
+
+    snapshot = ProjectionStore.snapshot()
+    assert snapshot.runs[@run_id].pr_state == "closed"
+    assert snapshot.tasks[@task_id].status == "closed"
+  end
+
 
   test "closed open and draft observations never mark the task merged" do
     observations =
@@ -884,6 +973,27 @@ defmodule ForemanServer.PrMonitorTest do
     after
       0 -> Enum.reverse(commands)
     end
+  end
+
+  defp context_from_snapshot(run_id) do
+    snapshot = ProjectionStore.snapshot()
+    run = Map.fetch!(snapshot.runs, run_id)
+    task_id = Map.fetch!(run, :task_id)
+    task = Map.fetch!(snapshot.tasks, task_id)
+    project_id = Map.get(run, :project_id) || Map.get(task, :project_id)
+    project = Map.fetch!(snapshot.projects, project_id)
+
+    %{
+      run_id: Map.fetch!(run, :run_id),
+      task_id: task_id,
+      task_status: Map.get(task, :status),
+      project_id: project_id,
+      project_path: Map.fetch!(project, :path),
+      pr_url: Map.fetch!(run, :pr_url),
+      pr_state: Map.fetch!(run, :pr_state),
+      branch_name: Map.fetch!(run, :branch_name),
+      phase: Map.get(run, :current_phase) || "pr-monitor"
+    }
   end
 
 

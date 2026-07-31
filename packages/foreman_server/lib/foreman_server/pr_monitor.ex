@@ -171,23 +171,11 @@ defmodule ForemanServer.PrMonitor do
       terminal_task_status?(Map.get(context, :task_status)) ->
         %{empty_summary() | skipped: 1}
 
-      true ->
-        payload =
-          context
-          |> common_payload(observation)
-          |> Map.put(:action, "closed")
-          |> Map.put(:reason, "GitHub reports PR closed without merge")
+      context.pr_state == "closed" ->
+        close_recorded_pr_task(context, command_handler)
 
-        with {:ok, _} <- handle_command(command_handler, "run.pr.reset", payload),
-             {:ok, _} <-
-               handle_command(command_handler, "task.close", %{
-                 task_id: context.task_id,
-                 project_id: context.project_id
-               }) do
-          %{empty_summary() | closed: 1}
-        else
-          {:error, _reason} -> %{empty_summary() | errors: 1}
-        end
+      true ->
+        reset_and_close_recorded_pr_task(context, observation, command_handler)
     end
   end
 
@@ -239,6 +227,36 @@ defmodule ForemanServer.PrMonitor do
   end
 
   def handle_observation(_context, _observation, _command_handler), do: empty_summary()
+
+  defp reset_and_close_recorded_pr_task(context, observation, command_handler) do
+    payload =
+      context
+      |> common_payload(observation)
+      |> Map.put(:action, "closed")
+      |> Map.put(:reason, "GitHub reports PR closed without merge")
+
+    with {:ok, _} <- handle_command(command_handler, "run.pr.reset", payload),
+         {:ok, _} <- close_task(context, command_handler) do
+      %{empty_summary() | closed: 1}
+    else
+      {:error, _reason} -> %{empty_summary() | errors: 1}
+    end
+  end
+
+  defp close_recorded_pr_task(context, command_handler) do
+    with {:ok, _} <- close_task(context, command_handler) do
+      %{empty_summary() | closed: 1}
+    else
+      {:error, _reason} -> %{empty_summary() | errors: 1}
+    end
+  end
+
+  defp close_task(context, command_handler) do
+    handle_command(command_handler, "task.close", %{
+      task_id: context.task_id,
+      project_id: context.project_id
+    })
+  end
 
   defp update_pr(command_handler, command_type, payload) do
     required = [:branch_name, :head_sha, :base_branch]
@@ -548,7 +566,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
       case ForemanServer.PrMonitor.handle_observation(context, observation, handler) do
         %{errors: 0} = result ->
           with :ok <- record_dedupe(dedupe_key, context.task_id) do
-            {:ok, %{commands_issued: result_issued_count(result)}}
+            {:ok, %{commands_issued: result_issued_count(result, context)}}
           else
             {:error, reason} -> {:error, {:dedupe_record_failed, reason}}
           end
@@ -751,6 +769,7 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
     %{
       run_id: run_id,
       task_id: task_id,
+      task_status: Map.get(task, :status),
       project_id: project_id,
       project_path: Map.get(project, :path),
       pr_url: Map.get(run, :pr_url),
@@ -817,12 +836,13 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
 
   defp get_single_field(_not_map, _key), do: nil
 
-  defp result_issued_count(%{merged: n}) when n > 0, do: 2
-  defp result_issued_count(%{closed: n}) when n > 0, do: 2
-  defp result_issued_count(%{updated: n}) when n > 0, do: 1
-  defp result_issued_count(%{skipped: n}) when n > 0, do: 0
-  defp result_issued_count(%{errors: n}) when n > 0, do: 0
-  defp result_issued_count(_), do: 0
+  defp result_issued_count(%{merged: n}, _context) when n > 0, do: 2
+  defp result_issued_count(%{closed: n}, %{pr_state: "closed"}) when n > 0, do: 1
+  defp result_issued_count(%{closed: n}, _context) when n > 0, do: 2
+  defp result_issued_count(%{updated: n}, _context) when n > 0, do: 1
+  defp result_issued_count(%{skipped: n}, _context) when n > 0, do: 0
+  defp result_issued_count(%{errors: n}, _context) when n > 0, do: 0
+  defp result_issued_count(_, _context), do: 0
 
   # Constant-time string comparison to avoid timing attacks on HMAC verification.
   defp safe_string_compare(a, b), do: Plug.Crypto.secure_compare(a, b)
