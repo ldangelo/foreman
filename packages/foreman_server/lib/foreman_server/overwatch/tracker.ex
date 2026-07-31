@@ -45,7 +45,7 @@ defmodule ForemanServer.Overwatch.Tracker do
 
   @impl true
   def init(:ok) do
-    {:ok, %{session_token_counter: 0, workers: %{}}}
+    {:ok, %{session_token_counter: 0, workers: %{}, crash_history: %{}}}
   end
 
   # ─── :track ────────────────────────────────────────────────────────────────
@@ -137,6 +137,14 @@ defmodule ForemanServer.Overwatch.Tracker do
       _ -> {:noreply, state}
     end
   end
+  # ─── Private ────────────────────────────────────────────────────────────────
+
+  # Returns true for truly abnormal exits that indicate a crash loop.
+  # Excludes OTP's graceful shutdown signals (:normal, :shutdown, {:shutdown, _}).
+  defp abnormal_exit?(:normal), do: false
+  defp abnormal_exit?(:shutdown), do: false
+  defp abnormal_exit?({:shutdown, _}), do: false
+  defp abnormal_exit?(_), do: true
 
   # ─── :DOWN ─────────────────────────────────────────────────────────────────
 
@@ -157,6 +165,56 @@ defmodule ForemanServer.Overwatch.Tracker do
             reason: reason,
             exited_at: DateTime.utc_now()
           })
+
+        # AC-002-1: 4th abnormal exit → WorkerCrashed + run.block.
+        # AC-002-2: If run is terminal, WorkerCrashed.emit fails → skip run.block.
+        # Crash history is recorded only for abnormal exits; clean exits are not crashes.
+        state =
+          if abnormal_exit?(reason) do
+            now_ms = System.monotonic_time(:millisecond)
+            window_ms = 5 * 60 * 1_000
+
+            timestamps =
+              state.crash_history
+              |> Map.get(key, [])
+              |> Enum.filter(fn ts -> now_ms - ts < window_ms end)
+              |> then(fn existing -> [now_ms | existing] end)
+
+            crash_history = Map.put(state.crash_history, key, timestamps)
+
+            if length(timestamps) > 3 do
+              case WorkerProtocol.emit("WorkerCrashed", %{
+                     run_id: entry.run_id,
+                     worker_id: entry.worker_id,
+                     phase_id: entry.phase_id,
+                     sequence: nil,
+                     reason: "exceeded crash threshold (4 in 5 min)",
+                     detected_at: DateTime.utc_now()
+                   }) do
+                {:ok, _} ->
+                  _ =
+                    CommandRouter.handle(%{
+                      command_id: "run.block:#{entry.run_id}:#{entry.worker_id}:#{now_ms}",
+                      command_type: "run.block",
+                      payload: %{
+                        run_id: entry.run_id,
+                        reason: "worker crash loop detected"
+                      }
+                    })
+
+                {:error, _} ->
+                  :ok
+              end
+
+              # Clear history after emit to prevent re-triggering on next crash.
+              Map.delete(crash_history, key)
+            else
+              crash_history
+            end
+            |> then(fn ch -> %{state | crash_history: ch} end)
+          else
+            state
+          end
 
         {:noreply, update_in(state.workers, &Map.delete(&1, key))}
 

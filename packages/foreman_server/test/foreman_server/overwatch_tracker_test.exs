@@ -268,6 +268,169 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
     Agent.stop(worker_pid)
   end
+  # ─── Crash loop detection ────────────────────────────────────────────────────
+
+  # Polls Tracker state until pred.(state) is true or timeout fires.
+  defp wait_for(Tracker, key, pred), do: wait_for(Tracker, key, pred, 20)
+  defp wait_for(Tracker, key, pred, attempts) do
+    if pred.(:sys.get_state(Tracker).workers[key]) do
+      :ok
+    else
+      if attempts > 0 do
+        Process.sleep(5)
+        wait_for(Tracker, key, pred, attempts - 1)
+      else
+        flunk("timeout waiting for Tracker #{inspect(key)}")
+      end
+    end
+  end
+
+  # Polls until Tracker no longer holds the key (real DOWN processed).
+  defp wait_for_gone(Tracker, key), do: wait_for_gone(Tracker, key, 20)
+  defp wait_for_gone(Tracker, key, attempts) do
+    if Map.has_key?(:sys.get_state(Tracker).workers, key) do
+      if attempts > 0 do
+        Process.sleep(5)
+        wait_for_gone(Tracker, key, attempts - 1)
+      else
+        flunk("timeout waiting for Tracker #{inspect(key)} to disappear")
+      end
+    else
+      :ok
+    end
+  end
+
+  test "4th abnormal exit within 5-minute window emits WorkerCrashed and RunBlocked" do
+    key = {"run-1", "worker-1"}
+
+    # Cycles 1-4 (kill): each DOWN records a crash timestamp.
+    # After the 4th DOWN records, timestamps = [t4, t3, t2, t1], length = 4 > 3 → emit.
+    for _ <- 1..4 do
+      {:ok, wp} = Agent.start(fn -> :ok end)
+      :ok = Tracker.track(wp, "run-1", "worker-1", "explorer", Agent)
+      wait_for(Tracker, key, & &1 != nil)
+      Process.exit(wp, :kill)
+      wait_for_gone(Tracker, key)
+    end
+
+    # Give event handlers time to persist.
+    Process.sleep(50)
+
+    assert Enum.any?(EventStore.stream("worker:run-1:worker-1"), &(&1.event_type == "WorkerCrashed"))
+    assert Enum.any?(EventStore.stream("run:run-1"), &(&1.event_type == "RunBlocked"))
+  end
+
+  test "3 abnormal exits within 5-minute window does not emit WorkerCrashed" do
+    key = {"run-1", "worker-1"}
+
+    for _ <- 1..3 do
+      {:ok, wp} = Agent.start(fn -> :ok end)
+      :ok = Tracker.track(wp, "run-1", "worker-1", "explorer", Agent)
+      wait_for(Tracker, key, & &1 != nil)
+      Process.exit(wp, :kill)
+      wait_for_gone(Tracker, key)
+    end
+
+    Process.sleep(50)
+
+    refute Enum.any?(EventStore.stream("worker:run-1:worker-1"), &(&1.event_type == "WorkerCrashed"))
+  end
+
+  test "normal re-track does not increment crash history; 2 subsequent crashes stay under threshold" do
+    key = {"run-1", "worker-1"}
+
+    # Clean exit: Agent.stop (not a crash) then re-track.
+    {:ok, wp1} = Agent.start(fn -> :ok end)
+    :ok = Tracker.track(wp1, "run-1", "worker-1", "explorer", Agent)
+    wait_for(Tracker, key, & &1 != nil)
+    Agent.stop(wp1, :normal)
+    wait_for_gone(Tracker, key)
+
+    {:ok, wp2} = Agent.start(fn -> :ok end)
+    :ok = Tracker.track(wp2, "run-1", "worker-1", "explorer", Agent)
+    wait_for(Tracker, key, & &1 != nil)
+
+    # Two crashes — history has only 2 entries (clean stop didn't add one).
+    for _ <- 1..2 do
+      {:ok, wp} = Agent.start(fn -> :ok end)
+      :ok = Tracker.track(wp, "run-1", "worker-1", "explorer", Agent)
+      wait_for(Tracker, key, & &1 != nil)
+      Process.exit(wp, :kill)
+      wait_for_gone(Tracker, key)
+    end
+
+    Process.sleep(50)
+
+    # Below threshold of 4 — no crash loop.
+    refute Enum.any?(EventStore.stream("worker:run-1:worker-1"), &(&1.event_type == "WorkerCrashed"))
+
+    Agent.stop(wp2)
+  end
+
+  test "4th crash on already-terminal run emits neither WorkerCrashed nor RunBlocked" do
+    # Mark run-1 as terminal so WorkerProtocol.emit/2 rejects all events.
+    {:ok, _} = ForemanServer.CommandRouter.handle(%{
+      command_id: "complete-run-1",
+      command_type: "run.complete",
+      payload: %{run_id: "run-1"}
+    })
+
+    key = {"run-1", "worker-1"}
+
+    for _ <- 1..4 do
+      {:ok, wp} = Agent.start(fn -> :ok end)
+      :ok = Tracker.track(wp, "run-1", "worker-1", "explorer", Agent)
+      wait_for(Tracker, key, & &1 != nil)
+      Process.exit(wp, :kill)
+      wait_for_gone(Tracker, key)
+    end
+
+    # 5th track: would trigger crash-loop detection if not gated on terminal run.
+    {:ok, wp} = Agent.start(fn -> :ok end)
+    :ok = Tracker.track(wp, "run-1", "worker-1", "explorer", Agent)
+    wait_for(Tracker, key, & &1 != nil)
+
+    refute Enum.any?(EventStore.stream("worker:run-1:worker-1"), &(&1.event_type == "WorkerCrashed"))
+    refute Enum.any?(EventStore.stream("run:run-1"), &(&1.event_type == "RunBlocked"))
+
+    Agent.stop(wp)
+  end
+  # ─── Orphan detection ────────────────────────────────────────────────────────
+
+  test "orphan worker (linked parent dies) releases slot for re-registration" do
+    key = {"run-1", "worker-1"}
+    test_pid = self()
+
+    # Spawn (unlinked) parent that starts a linked Agent child, then sends child pid.
+    parent_pid =
+      spawn(fn ->
+        {:ok, agent_pid} = Agent.start_link(fn -> :ok end)
+        send(test_pid, {:worker, agent_pid})
+
+        Process.sleep(:infinity)
+      end)
+
+    worker_pid =
+      receive do
+        {:worker, pid} -> pid
+      after
+        1_000 -> flunk("worker pid not received from parent")
+      end
+
+    :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
+    wait_for(Tracker, key, & &1 != nil)
+
+    # Kill the parent — linked child (Agent) gets EXIT and dies, Tracker receives DOWN.
+    Process.exit(parent_pid, :kill)
+    wait_for_gone(Tracker, key)
+
+    # Slot is released: a new worker can track the same key.
+    {:ok, wp2} = Agent.start(fn -> :ok end)
+    :ok = Tracker.track(wp2, "run-1", "worker-1", "explorer", Agent)
+    wait_for(Tracker, key, & &1 != nil)
+
+    Agent.stop(wp2)
+  end
 
   # ─── Re-track after crash ────────────────────────────────────────────────────
 
