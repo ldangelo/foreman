@@ -286,12 +286,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Dispatches `PrAssociated` command through `CommandRouter`
   - [x] `PrAssociated` event: `%PrAssociated{run_id, pr_url, pr_number}`
 
-- [ ] **TRD-017** PR monitor + GitHub webhook | 5h | [satisfies REQ-009, REQ-010] | Validates: AC-009-2, AC-009-3, AC-010-1, AC-010-2 | AC: Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
-  - [ ] `PrMonitor` GenServer: polls GitHub API every 5 minutes for associated PRs
-  - [ ] `Webhooks.Github` existing — verify it handles `pr_merged`, `pr_closed`, `pr reopened`, `pr_sync_conflict` events
-  - [ ] `PrGate` module: `check(run_id) :: :ok | {:error, :pr_not_acceptable}`
-  - [ ] `PrGate` blocks `Run` aggregate from transitioning to merge-pending if PR not open/merged
-  - [ ] Polling fallback: `PrMonitor.poll/0` every 5 minutes
+- [x] **TRD-017** PR monitor + GitHub webhook | 5h | [satisfies REQ-009, REQ-010] | Validates: AC-009-2, AC-009-3, AC-010-1, AC-010-2 | AC: Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
+  - [x] `PrMonitor` GenServer: polls GitHub API every 5 minutes for associated PRs
+  - [x] `Webhooks.Github` existing — verify it handles `pr_merged`, `pr_closed`, `pr reopened`, `pr_sync_conflict` events
+  - [x] `PrGate` module: `check(run_id) :: :ok | {:error, :pr_not_acceptable}`
+  - [x] `PrGate` blocks `Run` aggregate from transitioning to merge-pending if PR not open/merged
+  - [x] Polling fallback: `PrMonitor.poll/0` every 5 minutes
 
 - [ ] **TRD-018** VCS adapter abstraction | 5h | [satisfies REQ-013] | Validates: AC-013-1, AC-013-2, AC-013-3 | AC: Given VCS operation is dispatched, when it fails transiently, then it retries up to 3 times with exponential backoff; non-transient failures (auth rejection, not found) are not retried; VCS adapter emits `VcsOperationStarted`, `VcsOperationCompleted`, or `VcsOperationFailed` through `CommandRouter`
   - [ ] `VcsAdapter` behaviour: `clone/2`, `branch/2`, `create_pr/2`
