@@ -82,3 +82,6 @@ Execution safety rules:
 - Treat "implemented" as meaning: relevant tests/build passed and the work has a concrete commit hash on the branch/workspace that will be used for the rerun.
 - Do not benchmark or rerun tasks from a dirty or ambiguous controller workspace state.
 - If a task reset, branch cleanup, or workspace cleanup is about to happen while important work is only in the working copy, checkpoint it first via commit or patch export.
+## Webhook Intake
+
+The Elixir server exposes `POST /webhooks/attach_bridge` for attach-bridge streaming metadata and connection lifecycle events (connected/disconnected). Auth via `Authorization: Bearer <FOREMAN_SERVER_AUTH_TOKEN>` when the server token is configured (loopback requests are permitted without it). `AttachBridgeAdapter` normalizes payloads: explicit `correlation_id` or `event_id` is preferred as the dedupe key; the fallback composite key includes run_id:worker_id:phase_id:connection_id:session_id:lifecycle, preserving separate items for each lifecycle transition.

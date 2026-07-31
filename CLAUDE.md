@@ -135,6 +135,8 @@ After finalize: worker enqueues/reports merge readiness via Elixir-backed paths;
 
 The Elixir server also runs PR reconciliation: recorded GitHub PR URLs are checked periodically, GitHub `MERGED` records `run.pr.merge`, and the associated task is updated to `merged`. GitHub closed-without-merge closes both the run PR state and the associated task. As a real-time optimization, the server also exposes `POST /webhooks/github` for GitHub pull_request webhook events (HMAC-SHA256 verification via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback.
 
+Attach-bridge webhooks (`POST /webhooks/attach_bridge`) ingest streaming metadata and connection lifecycle events (connected/disconnected) from external attach-bridge integrations. Auth via `Authorization: Bearer <FOREMAN_SERVER_AUTH_TOKEN>` when the server token is configured (loopback requests are permitted without it). `AttachBridgeAdapter` normalizes payloads: explicit `correlation_id` or `event_id` is preferred as the dedupe key; the fallback composite key includes run_id:worker_id:phase_id:connection_id:session_id:lifecycle, preserving separate items for each lifecycle transition.
+
 ## VCS Backend Abstraction (PRD-2026-004)
 
 Foreman abstracts all VCS operations behind a `VcsBackend` interface so that orchestration code is decoupled from the concrete VCS tool. Two built-in implementations ship with Foreman:
