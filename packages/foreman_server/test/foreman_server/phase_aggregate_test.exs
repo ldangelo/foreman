@@ -88,6 +88,64 @@ defmodule ForemanServer.PhaseAggregateTest do
              EventStore.stream(stream_id) |> Enum.map(& &1.event_type)
   end
 
+  test "phase.fail appends PhaseFailed and actor state becomes terminal" do
+    stream_id = "phase:run-fail:lint"
+    {:ok, pid} = Actor.start_link(Phase, stream_id)
+
+    assert {:ok, %{event: %{event_type: "PhaseStarted"}}} =
+             Actor.command(
+               pid,
+               "phase.start",
+               %{run_id: "run-fail", phase_id: "lint"},
+               "phase-start:run-fail:lint"
+             )
+
+    assert {:ok, %{event: event}} =
+             Actor.command(
+               pid,
+               "phase.fail",
+               %{run_id: "run-fail", phase_id: "lint", reason: "lint failed"},
+               "phase-fail:run-fail:lint"
+             )
+
+    assert event.event_type == "PhaseFailed"
+    assert event.stream_version == 2
+
+    assert %Phase.State{status: "failed", terminal?: true} = Actor.current_state(pid)
+
+    assert ["PhaseStarted", "PhaseFailed"] ==
+             EventStore.stream(stream_id) |> Enum.map(& &1.event_type)
+  end
+
+  test "phase.skip appends PhaseSkipped and actor state becomes terminal" do
+    stream_id = "phase:run-skip:docs"
+    {:ok, pid} = Actor.start_link(Phase, stream_id)
+
+    assert {:ok, %{event: %{event_type: "PhaseStarted"}}} =
+             Actor.command(
+               pid,
+               "phase.start",
+               %{run_id: "run-skip", phase_id: "docs"},
+               "phase-start:run-skip:docs"
+             )
+
+    assert {:ok, %{event: event}} =
+             Actor.command(
+               pid,
+               "phase.skip",
+               %{run_id: "run-skip", phase_id: "docs", reason: "not needed"},
+               "phase-skip:run-skip:docs"
+             )
+
+    assert event.event_type == "PhaseSkipped"
+    assert event.stream_version == 2
+
+    assert %Phase.State{status: "skipped", terminal?: true} = Actor.current_state(pid)
+
+    assert ["PhaseStarted", "PhaseSkipped"] ==
+             EventStore.stream(stream_id) |> Enum.map(& &1.event_type)
+  end
+
   test "AC-005-3: stale routed CompletePhase conflicts and fresh routing sees terminal state" do
     assert {:ok, start_spec} =
              AggregateRouter.route("phase.start", %{run_id: "run-race", phase_id: "qa"})
