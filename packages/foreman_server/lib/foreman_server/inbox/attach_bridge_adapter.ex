@@ -69,7 +69,7 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapter do
   end
 
   defp explicit_correlation_id(payload) do
-    first_present(payload, [:correlation_id, :event_id, :connection_id, :session_id])
+    first_present(payload, [:correlation_id, :event_id])
   end
 
   defp lifecycle_correlation_id(payload) do
@@ -77,16 +77,19 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapter do
     worker_id = fetch(payload, :worker_id) || "worker"
     phase_id = fetch(payload, :phase_id) || "phase"
 
-    session_or_connection =
-      fetch(payload, :connection_id) || fetch_nested(payload, :connection, :connection_id) ||
-        fetch(payload, :session_id)
+    connection_id = fetch(payload, :connection_id) || fetch_nested(payload, :connection, :connection_id)
+
+    session_id =
+      fetch(payload, :session_id) || fetch_nested(payload, :streaming_metadata, :session_id) ||
+        fetch_nested(payload, :attach_bridge, :session_id)
 
     lifecycle =
       fetch(payload, :lifecycle) || fetch_nested(payload, :connection, :lifecycle) ||
-        fetch(payload, :event_type) || fetch(payload, :type) || fetch(payload, :status)
+        fetch(payload, :event_type) || fetch(payload, :type) || fetch_nested(payload, :connection, :state) ||
+        fetch(payload, :state) || fetch(payload, :status)
 
-    if present?(run_id) and Enum.any?([session_or_connection, lifecycle], &present?/1) do
-      [run_id, worker_id, phase_id, session_or_connection || "session", lifecycle || "event"]
+    if present?(run_id) and Enum.any?([connection_id, session_id, lifecycle], &present?/1) do
+      [run_id, worker_id, phase_id, connection_id || "connection", session_id || "session", lifecycle || "event"]
       |> Enum.map(&to_string/1)
       |> Enum.join(":")
       |> prefix()
@@ -114,7 +117,8 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapter do
     |> put_present(
       :lifecycle,
       fetch(connection, :lifecycle) || fetch(input, :lifecycle) || fetch(input, :event_type) ||
-        fetch(input, :type)
+        fetch(input, :type) || fetch(connection, :state) || fetch(input, :state) ||
+        fetch(input, :status)
     )
     |> put_present(
       :connected_at,

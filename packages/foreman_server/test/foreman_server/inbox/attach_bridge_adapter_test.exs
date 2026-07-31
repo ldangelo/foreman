@@ -3,7 +3,7 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapterTest do
   import Plug.Test
   import Plug.Conn, only: [put_req_header: 3]
 
-  alias ForemanServer.EventStore
+  alias ForemanServer.{EventStore, ProjectionStore}
   alias ForemanServer.Inbox.AttachBridgeAdapter
 
   @router_opts ForemanServer.Http.Router.init([])
@@ -116,12 +116,64 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapterTest do
     assert deduped_event.payload.source == "attach-bridge"
   end
 
-  defp attach_bridge_payload(run_id, event_id) do
-    %{
+  test "ingest/1 keeps connected and disconnected lifecycle events as separate inbox items without event ids" do
+    run_id = "run-attach-lifecycle"
+    connected_payload =
+      attach_bridge_payload(run_id, nil, %{
+        "event_type" => nil,
+        "status" => nil,
+        "connection" => %{"lifecycle" => nil}
+      })
+
+    disconnected_payload =
+      attach_bridge_payload(run_id, nil, %{
+        "event_type" => nil,
+        "status" => nil,
+        "timestamp" => "2026-07-31T10:05:05Z",
+        "connection" => %{
+          "state" => "disconnected",
+          "lifecycle" => nil,
+          "closed_at" => "2026-07-31T10:05:00Z",
+          "reason" => "worker-detached"
+        }
+      })
+
+    assert {:ok, %{event: connected_event}} = AttachBridgeAdapter.ingest(connected_payload)
+    assert {:ok, %{event: disconnected_event}} = AttachBridgeAdapter.ingest(disconnected_payload)
+
+    assert connected_event.event_type == "InboxItemStarted"
+    assert disconnected_event.event_type == "InboxItemStarted"
+    refute connected_event.payload.correlation_id == disconnected_event.payload.correlation_id
+    assert connected_event.payload.correlation_id =~ ":conn-1:session-1:connected"
+    assert disconnected_event.payload.correlation_id =~ ":conn-1:session-1:disconnected"
+
+    events = EventStore.stream("inbox:#{run_id}")
+    assert Enum.count(events, &(&1.event_type == "InboxItemStarted")) == 2
+    assert Enum.count(events, &(&1.event_type == "InboxItemDeduped")) == 0
+
+    persisted_items =
+      ProjectionStore.snapshot().inbox_messages
+      |> Map.values()
+      |> Enum.filter(&(&1.run_id == run_id))
+
+    assert Enum.count(persisted_items) == 2
+
+    assert Enum.map(persisted_items, & &1.correlation_id) |> MapSet.new() ==
+             MapSet.new([
+               connected_event.payload.correlation_id,
+               disconnected_event.payload.correlation_id
+             ])
+
+    assert Enum.map(persisted_items, & &1.payload.attach_bridge.connection.lifecycle) |> MapSet.new() ==
+             MapSet.new(["connected", "disconnected"])
+  end
+
+
+  defp attach_bridge_payload(run_id, event_id, overrides \\ %{}) do
+    base_payload = %{
       "run_id" => run_id,
       "worker_id" => "worker-1",
       "phase_id" => "developer",
-      "event_id" => event_id,
       "event_type" => "connection.connected",
       "timestamp" => "2026-07-31T10:00:05Z",
       "status" => "connected",
@@ -140,5 +192,18 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapterTest do
         "reason" => "worker-attached"
       }
     }
+
+    payload =
+      if is_nil(event_id) do
+        base_payload
+      else
+        Map.put(base_payload, "event_id", event_id)
+      end
+
+    Map.merge(payload, overrides, fn
+      "connection", base, override when is_map(base) and is_map(override) -> Map.merge(base, override)
+      "streaming_metadata", base, override when is_map(base) and is_map(override) -> Map.merge(base, override)
+      _key, _base, override -> override
+    end)
   end
 end
