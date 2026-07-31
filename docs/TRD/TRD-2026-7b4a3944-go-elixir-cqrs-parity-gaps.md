@@ -257,11 +257,11 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] On threshold exceeded: emit `WorkerCrashed`, pause run via `RunPaused` event
   - [ ] Orphan detection: `Process.monitor` on worker pid; on `DOWN` with `:noconnection` or parent death, release slot
 
-- [ ] **TRD-013** Worker environment isolation | 3h | [satisfies REQ-003] | Validates: AC-003-1, AC-003-2 | AC: Given a worker is launched, when it starts, then it receives a complete environment map from project's registered configuration; given config changes while worker is running, when new worker is launched for same run, then new config values take effect; config changes do not apply mid-run without worker restart
-  - [ ] `WorkerEnvironment` module: `build_env_map(project_id) :: map()`
-  - [ ] Sources config from project's registered configuration via `ProjectStore`
-  - [ ] Environment map passed to `LaunchWorker.spawn/3` as startup options
-  - [ ] No mid-run injection — worker reads env once at startup
+- [x] **TRD-013** Worker environment isolation | 3h | [satisfies REQ-003] | Validates: AC-003-1, AC-003-2 | AC: Given a worker is launched, when it starts, then it receives a complete environment map from project's registered configuration; given config changes while worker is running, when new worker is launched for same run, then new config values take effect; config changes do not apply mid-run without worker restart
+  - [x] `WorkerEnvironment` module: `build_env_map(project_id) :: map()`
+  - [x] Sources config from project's registered configuration via `ProjectStore`
+  - [x] Environment map passed to `LaunchWorker.spawn/3` as startup options
+  - [x] No mid-run injection — worker reads env once at startup
 
 ---
 
@@ -400,10 +400,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] AC1: supervised actor survives restart (link to `ac1_aggregate_actor_test.exs`)
   - [x] AC2: idempotent duplicate command (link to `ac2_duplicate_out_of_order_test.exs`)
 
-- [ ] **TRD-013-TEST** Worker environment isolation test | 2h | [verifies TRD-013] [depends: TRD-013] [satisfies REQ-003] | Validates: AC-003-1, AC-003-2 | Implementation AC: Given a worker is launched, when it starts, then it receives the complete environment map from the project's registered configuration; given config changes while worker is running, when a new worker is launched, then new config values take effect; mid-run config changes do not apply without restart
-  - [ ] Test: `WorkerEnvironment.build_env_map/1` returns a complete map for a registered project
-  - [ ] Test: env map contains no leakage from other workers
-  - [ ] Test: changed project config takes effect on next worker launch for same run
+- [x] **TRD-013-TEST** Worker environment isolation test | 2h | [verifies TRD-013] [satisfies REQ-003] | Validates: AC-003-1, AC-003-2 | Implementation AC: Given a worker is launched, when it starts, then it receives the complete environment map from the project's registered configuration; given config changes while worker is running, when a new worker is launched for same run, then new config values take effect; mid-run config changes do not apply without restart
+  - [x] Test: `WorkerEnvironment.build_env_map/1` returns a complete map for a registered project
+  - [x] Test: env map contains no leakage from other workers
+  - [x] Test: changed project config takes effect on next worker launch for same run
 
 - [ ] **TRD-019-TEST** Recovery scanner + stuck-run test coverage | 3h | [verifies TRD-019, TRD-020, TRD-021] [depends: TRD-019, TRD-020, TRD-021] [satisfies REQ-011, REQ-012, REQ-020] | Validates: AC-011-1–AC-011-4, AC-012-1, AC-020-3, AC-020-5 | Implementation AC: Given recovery scanner runs on startup, when interrupted runs are detected, then `RecoveryDetected` events are emitted through `CommandRouter` and runs resume idempotently; stuck run (15 min inactive) surfaces `RunFlaggedStuck` and telemetry
   - [ ] Test: startup scan → `RunRecoveryEvent` for interrupted run
