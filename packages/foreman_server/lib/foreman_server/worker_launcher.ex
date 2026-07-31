@@ -2,13 +2,16 @@ defmodule ForemanServer.WorkerLauncher do
   @moduledoc "Launches the Node/Pi worker bridge for scheduler-claimed tasks."
 
   alias ForemanServer.EventStore
+  alias ForemanServer.WorkerEnvironment
 
   @spec launch(map(), String.t(), [String.t()]) :: {:ok, map()} | {:error, term()}
   def launch(task, run_id, phases) when is_map(task) and is_binary(run_id) do
     task_id = Map.fetch!(task, :task_id)
 
-    with {:ok, project_path} <- project_path(task),
-         {:ok, foreman} <- foreman_executable() do
+    with {:ok, project_id} <- project_id(task),
+         {:ok, project_path} <- project_path(task),
+         {:ok, foreman} <- foreman_executable(),
+         {:ok, prepared_env} <- WorkerEnvironment.build_env_map(project_id, run_id) do
       workflow = workflow_name(task)
 
       args = [
@@ -35,7 +38,7 @@ defmodule ForemanServer.WorkerLauncher do
             System.cmd(foreman, args,
               cd: project_path,
               stderr_to_stdout: true,
-              env: worker_env()
+              env: merged_env(prepared_env, worker_env())
             )
 
           append("WorkerProcessExited", task, run_id, %{
@@ -52,22 +55,32 @@ defmodule ForemanServer.WorkerLauncher do
       {:ok, %{pid: pid, workflow: workflow}}
     end
   end
+  defp project_id(task) do
+    case Map.get(task, :project_id) do
+      id when is_binary(id) and id != "" -> {:ok, id}
+      _ -> {:error, :missing_project_id}
+    end
+  end
 
   defp project_path(task) do
-    project_id = Map.get(task, :project_id)
+    case Map.get(task, :project_path) do
+      path when is_binary(path) ->
+        {:ok, path}
 
-    cond do
-      is_binary(Map.get(task, :project_path)) ->
-        {:ok, Map.get(task, :project_path)}
+      _ ->
+        case project_id(task) do
+          {:error, _} = error ->
+            error
 
-      is_binary(project_id) ->
-        case ForemanServer.ProjectionStore.project(project_id) do
-          %{path: path} when is_binary(path) -> {:ok, path}
-          _ -> {:error, {:missing_project_path, project_id}}
+          {:ok, project_id} ->
+            case ForemanServer.ProjectionStore.project(project_id) do
+              %{path: path} when is_binary(path) ->
+                {:ok, path}
+
+              _ ->
+                {:error, {:missing_project_path, project_id}}
+            end
         end
-
-      true ->
-        {:error, :missing_project_id}
     end
   end
 
@@ -105,6 +118,14 @@ defmodule ForemanServer.WorkerLauncher do
       end
 
     env
+  end
+
+  # Builds the final env list for System.cmd by merging project/prepared env
+  # under worker_env() vars so Foreman control-plane settings take precedence.
+  defp merged_env(prepared_env, worker_env_list) when is_map(prepared_env) and is_list(worker_env_list) do
+    prepared_env
+    |> Map.merge(Map.new(worker_env_list))
+    |> Map.to_list()
   end
 
   defp maybe_put_env(env, key) do

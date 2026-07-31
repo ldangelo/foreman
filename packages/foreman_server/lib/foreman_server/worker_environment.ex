@@ -1,5 +1,6 @@
 defmodule ForemanServer.WorkerEnvironment do
   @moduledoc "Prepares scoped worker environment variables without leaking forbidden host secrets."
+  alias ForemanServer.ProjectStore
 
   @forbidden_exact MapSet.new(~w(
     AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
@@ -36,8 +37,49 @@ defmodule ForemanServer.WorkerEnvironment do
        }}
     end
   end
-
   def prepare(_input), do: {:error, {:missing_or_invalid, :environment}}
+
+  @doc """
+  Builds the worker env map for a launched process by sourcing the project's
+  registered config from ProjectStore and piping it through `prepare/1`.
+
+  `overrides` are merged last so callers (e.g. task-level env) take precedence
+  over project defaults without mutating stored config.
+
+  Returns `{:ok, env_map}` on success; `{:error, reason}` if the project is
+  not found or the resulting env fails validation.
+  """
+  @spec build_env_map(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def build_env_map(project_id, run_id, overrides \\ %{}) when is_binary(project_id) and is_binary(run_id) and is_map(overrides) do
+    case ProjectStore.get(project_id) do
+      nil ->
+        {:error, {:not_found, :project, project_id}}
+
+      %{config: config} when is_map(config) ->
+        with {:ok, project_env} <- string_map(get(config, :env, %{}), :env),
+             {:ok, project_secrets} <- string_map(get(config, :project_secrets, %{}), :project_secrets),
+             {:ok, run_secrets} <- string_map(get(config, :run_secrets, %{}), :run_secrets),
+             {:ok, validated_overrides} <- string_map(overrides, :overrides) do
+          merged_env = Map.merge(project_env, validated_overrides)
+
+          case prepare(%{
+                 project_id: project_id,
+                 run_id: run_id,
+                 env: merged_env,
+                 project_secrets: project_secrets,
+                 run_secrets: run_secrets
+               }) do
+            {:ok, prepared} -> {:ok, prepared.env}
+            {:error, _} = error -> error
+          end
+        else
+          {:error, _} = error -> error
+        end
+
+      _ ->
+        {:error, {:not_found, :project, project_id}}
+    end
+  end
 
   @spec forbidden_key?(String.t()) :: boolean()
   def forbidden_key?(key) when is_binary(key) do

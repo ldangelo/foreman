@@ -1,7 +1,7 @@
 defmodule ForemanServer.WorkerLauncherTest do
   use ExUnit.Case
 
-  alias ForemanServer.{EventStore, ProjectionStore, WorkerLauncher}
+  alias ForemanServer.{EventStore, ProjectStore, ProjectionStore, Project, WorkerLauncher}
 
   setup do
     tmp_dir =
@@ -30,6 +30,25 @@ defmodule ForemanServer.WorkerLauncherTest do
     end)
 
     assert :ok = Application.start(:foreman_server)
+    project = %Project{
+      id: "project-a",
+      path: project_dir,
+      config: %{
+        env: %{
+          "MY_CUSTOM_VAR" => "from-project",
+          "CI" => "true",
+          "FOREMAN_SERVER_URL" => "http://malicious-override.example.com",
+          "GITHUB_TOKEN" => "should-be-stripped"
+        },
+        project_secrets: %{
+          "API_KEY" => "proj-secret-123"
+        },
+        run_secrets: %{
+          "RUN_TOKEN" => "run-secret-456"
+        }
+      }
+    }
+    assert {:ok, _} = ProjectStore.save(project)
     {:ok, bin_dir: bin_dir, project_dir: project_dir}
   end
 
@@ -74,6 +93,57 @@ defmodule ForemanServer.WorkerLauncherTest do
     )
   end
 
+  test "worker launch receives project env vars and Foreman vars take precedence", %{
+    bin_dir: bin_dir,
+    project_dir: project_dir
+  } do
+    foreman = Path.join(bin_dir, "foreman")
+
+    File.write!(foreman, """
+    #!/usr/bin/env sh
+    echo "custom_var=${MY_CUSTOM_VAR:-unset}"
+    echo "ci=${CI:-unset}"
+    echo "github_token=${GITHUB_TOKEN:-unset}"
+    echo "api_key=${API_KEY:-unset}"
+    echo "run_token=${RUN_TOKEN:-unset}"
+    echo "foreman_url=${FOREMAN_SERVER_URL:-unset}"
+    echo "foreman_token=${FOREMAN_WORKER_EVENT_TOKEN:-unset}"
+    exit 0
+    """)
+
+    File.chmod!(foreman, 0o755)
+
+    task = %{
+      task_id: "task-env-isolation",
+      project_id: "project-a",
+      project_path: project_dir,
+      task_type: "feature"
+    }
+
+    assert {:ok, _} =
+             WorkerLauncher.launch(task, "00000000-0000-0000-0000-000000000003", ["developer"])
+
+    assert_eventually(
+      fn -> EventStore.stream("worker-launch:00000000-0000-0000-0000-000000000003") end,
+      fn events ->
+        Enum.any?(events, fn event ->
+          event.event_type == "WorkerProcessExited" &&
+            # Project env vars sourced from project config
+            String.contains?(event.payload.output, "custom_var=from-project") &&
+            String.contains?(event.payload.output, "ci=true") &&
+            # Project/run secrets injected
+            String.contains?(event.payload.output, "api_key=proj-secret-123") &&
+            String.contains?(event.payload.output, "run_token=run-secret-456") &&
+            # Forbidden key from project config is stripped
+            not String.contains?(event.payload.output, "github_token=should-be-stripped") &&
+            String.contains?(event.payload.output, "github_token=unset") &&
+            # Foreman control vars win over malicious project config
+            String.contains?(event.payload.output, "foreman_url=http://127.0.0.1:") and
+              not String.contains?(event.payload.output, "malicious-override")
+        end)
+      end
+    )
+  end
   test "worker fallback failure uses output phase instead of stale projection phase", %{
     bin_dir: bin_dir,
     project_dir: project_dir
