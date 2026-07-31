@@ -119,4 +119,23 @@ defmodule ForemanServer.CommandRouterTest do
                payload: %{run_id: "run-no-task", task_id: "missing-task"}
              })
   end
+
+  test "string-key VCS lifecycle commands preserve operation identifiers" do
+    assert {:ok, %{event: event, projection: projection}} =
+             CommandRouter.handle(%{
+               command_id: "cmd-vcs-start-string",
+               command_type: "vcs.operation.start",
+               payload: %{
+                 "operation_id" => "op-string",
+                 "operation" => "clone",
+                 "repo" => "acme/widgets",
+                 "path" => "/tmp/acme/widgets"
+               }
+             })
+
+    assert event.event_type == "VcsOperationStarted"
+    assert event.stream_id == "vcs:op-string"
+    assert projection.vcs_operations["op-string"].operation == "clone"
+    assert projection.vcs_operations["op-string"].status == "started"
+  end
 end

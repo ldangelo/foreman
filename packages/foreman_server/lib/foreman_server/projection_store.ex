@@ -1065,6 +1065,33 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_domain_event(
          projection,
          %{
+           type: type,
+           payload: %{operation_id: operation_id} = payload
+         },
+         _mode
+       )
+       when type in ["VcsOperationStarted", "VcsOperationCompleted", "VcsOperationFailed"] do
+    status =
+      case type do
+        "VcsOperationStarted" -> "started"
+        "VcsOperationCompleted" -> "completed"
+        "VcsOperationFailed" -> "failed"
+      end
+
+    existing = get_in(projection, [:vcs_operations, operation_id]) || %{}
+
+    put_in(
+      projection,
+      [:vcs_operations, operation_id],
+      existing
+      |> Map.merge(payload)
+      |> Map.put(:event_type, type)
+      |> Map.put(:status, status)
+    )
+  end
+  defp apply_domain_event(
+         projection,
+         %{
            type: "WorktreeCreated",
            payload: %{run_id: run_id} = payload
          },

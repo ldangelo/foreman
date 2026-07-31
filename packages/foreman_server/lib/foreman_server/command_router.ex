@@ -502,44 +502,43 @@ defmodule ForemanServer.CommandRouter do
     ) || "external-trigger:#{System.unique_integer([:positive])}"
   end
 
-  # worker.record: explicit allowlist of known top-level keys.  No dynamic
-  # atomization — prevents atom-exhaustion from arbitrary input keys.
-  defp normalize_payload("worker.record", map) when is_map(map) do
-    Enum.reduce(known_worker_payload_keys(), %{}, fn key, acc ->
-      case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
-        nil -> acc
-        value -> Map.put(acc, key, value)
-      end
-    end)
-  end
-
   # Generic command: filter whole wrapper to known top-level keys.
-  defp normalize_payload(map) when is_map(map) do
-    Enum.reduce(known_keys(), %{}, fn key, acc ->
-      case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
-        nil -> acc
-        value -> Map.put(acc, key, value)
-      end
-    end)
-  end
-
+  defp normalize_payload(map) when is_map(map), do: filter_payload(map, known_keys())
   defp normalize_payload(_), do: %{}
+
+  # worker.record: explicit allowlist of known top-level keys. No dynamic
+  # atomization — prevents atom-exhaustion from arbitrary input keys.
+  defp normalize_payload("worker.record", map) when is_map(map),
+    do: filter_payload(map, known_worker_payload_keys())
 
   # Typed-command path: dispatch to worker.record or generic.
   defp normalize_payload(command_type, map) when is_map(map) do
     if command_type == "worker.record" do
       normalize_payload("worker.record", map)
     else
-      Enum.reduce(known_keys(), %{}, fn key, acc ->
-        case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
-          nil -> acc
-          value -> Map.put(acc, key, value)
-        end
-      end)
+      filter_payload(map, known_keys())
     end
   end
 
   defp normalize_payload(_, _), do: %{}
+
+  defp filter_payload(map, keys) do
+    Enum.reduce(keys, %{}, fn key, acc ->
+      case fetch_known_value(map, key) do
+        :error -> acc
+        {:ok, nil} -> acc
+        {:ok, value} -> Map.put(acc, key, value)
+      end
+    end)
+  end
+
+  defp fetch_known_value(map, key) do
+    cond do
+      Map.has_key?(map, key) -> {:ok, Map.get(map, key)}
+      Map.has_key?(map, Atom.to_string(key)) -> {:ok, Map.get(map, Atom.to_string(key))}
+      true -> :error
+    end
+  end
 
   defp known_keys do
     [
@@ -654,7 +653,20 @@ defmodule ForemanServer.CommandRouter do
       :exit_code,
       :worktree_path,
       :attempt,
-      :failure_reason
+      :failure_reason,
+      :operation_id,
+      :operation,
+      :result,
+      :error,
+      :max_attempts,
+      :retryable,
+      :backend,
+      :workspace_id,
+      :project_path,
+      :target,
+      :stale_policy,
+      :stale,
+      :effects
     ]
   end
 
