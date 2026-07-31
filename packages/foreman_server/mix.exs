@@ -9,7 +9,8 @@ defmodule ForemanServer.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       ecto_repos: [ForemanServer.Repo],
-      post_compile: :copy_bundled_workflows
+      post_compile: :copy_bundled_workflows,
+      releases: releases()
     ]
   end
 
@@ -29,6 +30,16 @@ defmodule ForemanServer.MixProject do
       {:jason, "~> 1.4"},
       {:plug, "~> 1.18"},
       {:postgrex, ">= 0.0.0"}
+    ]
+  end
+
+  defp releases do
+    [
+      foreman_server: [
+        config_providers: [
+          {ForemanServer.SecretsProvider, {:env, "FOREMAN_SERVER_SECRETS_FILE"}}
+        ]
+      ]
     ]
   end
 

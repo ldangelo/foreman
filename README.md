@@ -141,7 +141,7 @@ Foreman includes a checked-in local development environment:
 - `compose.yaml` — shared local Postgres + Hindsight stack
 - `.envrc` — direnv hook that loads Devbox and starts the local containers when you enter the repository
 
-The shared Postgres service uses `pgvector/pgvector:pg16`, exposes the compose-managed Foreman database on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides it), and also creates a separate `hindsight` database with the `vector` extension enabled. Foreman itself uses `DATABASE_URL` from `.env` or the process environment; check `.env` before starting or restarting the server. Hindsight connects to the compose Postgres container over Docker's internal network.
+The shared Postgres service uses `pgvector/pgvector:pg16`, exposes the compose-managed Foreman database on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides it), and also creates a separate `hindsight` database with the `vector` extension enabled. Foreman itself uses `DATABASE_URL` from `.env` or the process environment; check `.env` before starting or restarting the server. Hindsight connects to the compose Postgres container over Docker's internal network. For production releases, set `FOREMAN_SERVER_SECRETS_FILE` to a `.env`-style file to inject `DATABASE_URL`, `FOREMAN_SERVER_EVENT_STORE_ADAPTER`, and `FOREMAN_SERVER_REPO_URL` via the `SecretsProvider` config provider (see `config/prod.exs`).
 
 ### Prerequisites
 

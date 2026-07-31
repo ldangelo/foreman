@@ -79,6 +79,8 @@ Use Foreman when you want multiple AI agents working safely on one repository wi
 
 In this repository, `direnv allow` loads Devbox, sources `.env`, and starts the checked-in Docker Compose stack when you enter the directory. Foreman uses `DATABASE_URL` from `.env` or the process environment. The compose stack's fresh/default Foreman Postgres endpoint is `127.0.0.1:55432/foreman`, while Hindsight uses the separate `hindsight` database inside the same container.
 
+For production deployments, secrets can be loaded via `FOREMAN_SERVER_SECRETS_FILE` pointing to a `.env`-style file. See `config/prod.exs` for the supported keys (`DATABASE_URL`, `FOREMAN_SERVER_EVENT_STORE_ADAPTER`, `FOREMAN_SERVER_REPO_URL`). If unset or pointing to a missing file, the provider is a no-op and app config is used as-is.
+
 Useful commands:
 
 ```bash

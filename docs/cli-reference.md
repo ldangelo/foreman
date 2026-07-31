@@ -16,6 +16,18 @@ foreman <command> --help    # Show command-specific help
 
 This repository's Devbox/direnv setup starts Docker Compose services before you run Foreman locally. `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. `.envrc` sources `.env`, and Foreman CLI/server commands use `DATABASE_URL` from `.env` or the process environment. If `DATABASE_URL` is unset, the compose-managed Foreman database is exposed on `127.0.0.1:55432` by default; Hindsight uses a separate `hindsight` database in the same container.
 
+### Production Deployment
+
+For production releases, set `FOREMAN_SERVER_SECRETS_FILE` to a `.env`-style file path containing one or more of:
+
+| Variable | Config key | Notes |
+|---------|-----------|-------|
+| `DATABASE_URL` | `:foreman_server, :database_url` | Full Postgres connection string |
+| `FOREMAN_SERVER_EVENT_STORE_ADAPTER` | `:foreman_server, :event_store_adapter` | `postgres` or `term` (atom) |
+| `FOREMAN_SERVER_REPO_URL` | `:foreman_server, ForemanServer.Repo, :url` | Ecto Repo connection override |
+
+If `FOREMAN_SERVER_SECRETS_FILE` is unset or points to a missing file, the provider is a no-op and app/config defaults are used. See `config/prod.exs` for the full provider contract.
+
 ### Domain Groups and Deprecated Aliases
 
 `foreman --help` groups commands by domain:
