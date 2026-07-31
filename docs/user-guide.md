@@ -330,6 +330,14 @@ Merge-capable workflows checkpoint draft PRs after successful mutating phases, t
 
 The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman records the run PR state as closed and closes the associated task. As a real-time optimization, the server exposes `POST /webhooks/github` for GitHub `pull_request` webhook events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback when the webhook is not configured.
 
+External trigger polling (TRD-015) provides a pull-based fallback when push webhooks are unavailable. When enabled, the server polls `external_trigger_endpoint_url` every `external_trigger_poll_interval_seconds` and submits pending triggers through `SharedInbox` for deduplication and routing — the same pipeline used by `POST /webhooks/external_trigger`. Enable via app config:
+```elixir
+config :foreman_server,
+  external_trigger_poll_enabled: true,
+  external_trigger_poll_interval_seconds: 60,
+  external_trigger_endpoint_url: "https://your-trigger-source/triggers"
+```
+
 
 ```bash
 foreman merge
