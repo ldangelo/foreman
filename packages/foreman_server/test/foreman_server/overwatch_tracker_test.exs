@@ -34,8 +34,12 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       stream_id: "worker:run-1:worker-1",
       event_type: "WorkerStarted",
       payload: %{
-        run_id: "run-1", worker_id: "worker-1", phase_id: "explorer",
-        sequence: 0, adapter: "default", project_id: "proj"
+        run_id: "run-1",
+        worker_id: "worker-1",
+        phase_id: "explorer",
+        sequence: 0,
+        adapter: "default",
+        project_id: "proj"
       },
       metadata: %{correlation_id: "test"}
     })
@@ -156,6 +160,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     # No WorkerHeartbeat event must be appended for the stale pid.
     events = EventStore.stream("worker:run-1:worker-1")
     worker_heartbeat_count = Enum.count(events, &(&1.event_type == "WorkerHeartbeat"))
+
     assert worker_heartbeat_count == 0,
            "WorkerHeartbeat must not be emitted for stale pid, got #{worker_heartbeat_count} events"
 
@@ -208,9 +213,9 @@ defmodule ForemanServer.Overwatch.TrackerTest do
     Agent.stop(worker_pid)
   end
 
-  # ─── Timeout: WorkerUnresponsive emitted ──────────────────────────────────────
+  # ─── Timeout: WorkerUnresponsive + WorkerRecoveryRequired emitted ─────────────────
 
-  test "timeout message emits WorkerUnresponsive and removes entry" do
+  test "timeout message emits WorkerUnresponsive and WorkerRecoveryRequired, removes entry" do
     {:ok, worker_pid} = Agent.start_link(fn -> :ok end)
     :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
 
@@ -224,6 +229,42 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
     events = EventStore.stream("worker:run-1:worker-1")
     assert Enum.any?(events, &(&1.event_type == "WorkerUnresponsive"))
+
+    recovery_events = EventStore.stream("recovery:run-1")
+    assert Enum.any?(recovery_events, &(&1.event_type == "WorkerRecoveryRequired"))
+    req = Enum.find(recovery_events, &(&1.event_type == "WorkerRecoveryRequired"))
+    assert req.payload.phase_id == "explorer"
+
+    Agent.stop(worker_pid)
+  end
+
+  test "timeout on already-terminal run emits neither WorkerUnresponsive nor WorkerRecoveryRequired" do
+    # Mark run-1 as completed so WorkerProtocol.emit/2 rejects the event.
+    {:ok, _} =
+      ForemanServer.CommandRouter.handle(%{
+        command_id: "complete-run-1",
+        command_type: "run.complete",
+        payload: %{run_id: "run-1"}
+      })
+
+    {:ok, worker_pid} = Agent.start_link(fn -> :ok end)
+    :ok = Tracker.track(worker_pid, "run-1", "worker-1", "explorer", Agent)
+
+    key = {"run-1", "worker-1"}
+    send(Tracker, {:worker_timeout, key, 1, 0})
+    Process.sleep(50)
+
+    # Worker entry still cleaned up.
+    refute Map.has_key?(:sys.get_state(Tracker).workers, key)
+
+    # WorkerUnresponsive was rejected: run is terminal, WorkerProtocol.emit/2 returns
+    # {:error, {:run_not_active, _}} and emits nothing.
+    events = EventStore.stream("worker:run-1:worker-1")
+    refute Enum.any?(events, &(&1.event_type == "WorkerUnresponsive"))
+
+    # No WorkerRecoveryRequired either — gating on {:ok, _} prevents dispatch.
+    recovery_events = EventStore.stream("recovery:run-1")
+    refute Enum.any?(recovery_events, &(&1.event_type == "WorkerRecoveryRequired"))
 
     Agent.stop(worker_pid)
   end

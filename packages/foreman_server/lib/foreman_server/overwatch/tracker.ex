@@ -19,7 +19,7 @@ defmodule ForemanServer.Overwatch.Tracker do
 
   use GenServer
 
-  alias ForemanServer.WorkerProtocol
+  alias ForemanServer.{CommandRouter, WorkerProtocol}
 
   @heartbeat_timeout_ms 60_000
 
@@ -99,8 +99,12 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     # Verify the pid matches the currently tracked worker. A stale heartbeat
     # from an old pid (before re-track) is silently ignored.
-    with %{worker_pid: ^pid, timer_ref: old_timer,
-           session_token: session_token, heartbeat_gen: old_gen} <-
+    with %{
+           worker_pid: ^pid,
+           timer_ref: old_timer,
+           session_token: session_token,
+           heartbeat_gen: old_gen
+         } <-
            Map.get(state.workers, key) do
       # Always cancel the old timer and start a fresh one, regardless of emit outcome.
       # Concurrent/duplicate heartbeats may produce out-of-order or duplicate errors;
@@ -108,18 +112,24 @@ defmodule ForemanServer.Overwatch.Tracker do
       if is_reference(old_timer), do: Process.cancel_timer(old_timer)
 
       # Emit heartbeat through WorkerProtocol so sequence validation applies.
-      _ = WorkerProtocol.emit("WorkerHeartbeat", %{
-        run_id: run_id,
-        worker_id: worker_id,
-        sequence: sequence,
-        observed_at: observed_at,
-        pid: pid
-      })
+      _ =
+        WorkerProtocol.emit("WorkerHeartbeat", %{
+          run_id: run_id,
+          worker_id: worker_id,
+          sequence: sequence,
+          observed_at: observed_at,
+          pid: pid
+        })
 
       # Start a fresh timer with incremented heartbeat_gen (same session_token).
       new_gen = old_gen + 1
+
       new_timer_ref =
-        Process.send_after(self(), {:worker_timeout, key, session_token, new_gen}, @heartbeat_timeout_ms)
+        Process.send_after(
+          self(),
+          {:worker_timeout, key, session_token, new_gen},
+          @heartbeat_timeout_ms
+        )
 
       entry = %{state.workers[key] | timer_ref: new_timer_ref, heartbeat_gen: new_gen}
       {:noreply, %{state | workers: Map.put(state.workers, key, entry)}}
@@ -139,13 +149,14 @@ defmodule ForemanServer.Overwatch.Tracker do
         if is_reference(entry.timer_ref), do: Process.cancel_timer(entry.timer_ref)
 
         # Emit may fail if the run is already terminal; log and continue cleanup.
-        _ = WorkerProtocol.emit("WorkerExited", %{
-          run_id: entry.run_id,
-          worker_id: entry.worker_id,
-          sequence: nil,
-          reason: reason,
-          exited_at: DateTime.utc_now()
-        })
+        _ =
+          WorkerProtocol.emit("WorkerExited", %{
+            run_id: entry.run_id,
+            worker_id: entry.worker_id,
+            sequence: nil,
+            reason: reason,
+            exited_at: DateTime.utc_now()
+          })
 
         {:noreply, update_in(state.workers, &Map.delete(&1, key))}
 
@@ -158,16 +169,38 @@ defmodule ForemanServer.Overwatch.Tracker do
 
   @impl true
   def handle_info({:worker_timeout, key, session_token, heartbeat_gen}, state) do
-    with %{session_token: ^session_token, heartbeat_gen: ^heartbeat_gen,
-           run_id: run_id, worker_id: worker_id} <- Map.get(state.workers, key) do
-      # Emit may fail if the run is already terminal; log and continue cleanup.
-      _ = WorkerProtocol.emit("WorkerUnresponsive", %{
-        run_id: run_id,
-        worker_id: worker_id,
-        sequence: nil,
-        reason: "no heartbeat for #{@heartbeat_timeout_ms}ms",
-        detected_at: DateTime.utc_now()
-      })
+    with %{
+           session_token: ^session_token,
+           heartbeat_gen: ^heartbeat_gen,
+           run_id: run_id,
+           worker_id: worker_id,
+           phase_id: phase_id
+         } <- Map.get(state.workers, key) do
+      # Emit may fail if the run is already terminal; only trigger recovery after
+      # WorkerUnresponsive is confirmed persisted, so aggregate idempotency applies.
+      case WorkerProtocol.emit("WorkerUnresponsive", %{
+             run_id: run_id,
+             worker_id: worker_id,
+             sequence: nil,
+             reason: "no heartbeat for #{@heartbeat_timeout_ms}ms",
+             detected_at: DateTime.utc_now()
+           }) do
+        {:ok, _} ->
+          _ =
+            CommandRouter.handle(%{
+              command_id: "recovery.require:#{run_id}:#{worker_id}:#{session_token}",
+              command_type: "recovery.require",
+              payload: %{
+                run_id: run_id,
+                worker_id: worker_id,
+                phase_id: phase_id,
+                reason: "no heartbeat for #{@heartbeat_timeout_ms}ms"
+              }
+            })
+
+        {:error, _} ->
+          :ok
+      end
 
       {:noreply, update_in(state.workers, &Map.delete(&1, key))}
     else
