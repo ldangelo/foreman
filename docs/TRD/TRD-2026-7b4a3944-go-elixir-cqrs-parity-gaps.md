@@ -293,12 +293,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] `PrGate` blocks `Run` aggregate from transitioning to merge-pending if PR not open/merged
   - [x] Polling fallback: `PrMonitor.poll/0` every 5 minutes
 
-- [ ] **TRD-018** VCS adapter abstraction | 5h | [satisfies REQ-013] | Validates: AC-013-1, AC-013-2, AC-013-3 | AC: Given VCS operation is dispatched, when it fails transiently, then it retries up to 3 times with exponential backoff; non-transient failures (auth rejection, not found) are not retried; VCS adapter emits `VcsOperationStarted`, `VcsOperationCompleted`, or `VcsOperationFailed` through `CommandRouter`
-  - [ ] `VcsAdapter` behaviour: `clone/2`, `branch/2`, `create_pr/2`
-  - [ ] `VcsAdapter.Default` implementation (GitHub API)
-  - [ ] Retry: 3× exponential backoff; transient detection via error classification
-  - [ ] Events: `VcsOperationStarted`, `VcsOperationCompleted`, `VcsOperationFailed`
-  - [ ] All VCS operations route through `CommandRouter`
+- [x] **TRD-018** VCS adapter abstraction | 5h | [satisfies REQ-013] | Validates: AC-013-1, AC-013-2, AC-013-3 | AC: Given VCS operation is dispatched, when it fails transiently, then it retries up to 3 times with exponential backoff; non-transient failures (auth rejection, not found) are not retried; VCS adapter emits `VcsOperationStarted`, `VcsOperationCompleted`, or `VcsOperationFailed` through `CommandRouter`
+  - [x] `VcsAdapter` behaviour: `clone/2`, `branch/2`, `create_pr/2`
+  - [x] `VcsAdapter.Default` implementation (GitHub API)
+  - [x] Retry: 3× exponential backoff; transient detection via error classification
+  - [x] Events: `VcsOperationStarted`, `VcsOperationCompleted`, `VcsOperationFailed`
+  - [x] All VCS operations route through `CommandRouter`
 
 - [ ] **TRD-019** Recovery scanner expansion | 4h | [satisfies REQ-011] | Validates: AC-011-1, AC-011-2, AC-011-3, AC-011-4 | AC: Given server restarts, when `Recovery` GenServer starts, then it scans `ProjectionStore` for interrupted runs and emits recovery events with explicit outcomes; given server restart with pending scheduled fire (intent recorded but pickup unconfirmed), when recovery runs, then fire is re-dispatched to new worker; idempotency preserved via aggregate version and command dedup
   - [ ] Existing `Recovery` GenServer: expand `do_detect/0` to emit `RunRecoveryEvent` through `CommandRouter`
