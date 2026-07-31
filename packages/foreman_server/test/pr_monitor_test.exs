@@ -30,6 +30,22 @@ defmodule ForemanServer.PrMonitorTest.FakeCommandHandler do
   end
 end
 
+defmodule ForemanServer.PrMonitorTest.RecordingCommandHandler do
+  alias ForemanServer.PrMonitor.CommandHandler
+
+  def handle(command), do: record_and_dispatch(command)
+  def handle_command(command), do: record_and_dispatch(command)
+
+  defp record_and_dispatch(command) do
+    send(
+      Application.fetch_env!(:foreman_server, :pr_monitor_test_pid),
+      {:handled_command, command}
+    )
+
+    CommandHandler.handle(command)
+  end
+end
+
 defmodule ForemanServer.PrMonitorTest.AlwaysFailingCommandHandler do
   def handle(command), do: fail(command)
   def handle_command(command), do: fail(command)
@@ -758,6 +774,57 @@ defmodule ForemanServer.PrMonitorTest do
     assert merge_payload.merged_at == merged_at
     assert task_payload.task_id == @task_id
     assert task_payload.status == "merged"
+  end
+
+  test "closed recorded PR is polled and reconciled to merged when GitHub reports merged" do
+    Application.put_env(:foreman_server, :pr_monitor,
+      enabled: false,
+      checker: @checker,
+      command_handler: ForemanServer.PrMonitorTest.RecordingCommandHandler,
+      interval_ms: 300_000
+    )
+
+    seed_recorded_pr!(pr_state: "closed", task_status: "closed")
+
+    merged_at = "2026-07-31T10:11:12Z"
+
+    put_observations(%{
+      @pr_url =>
+        {:ok,
+         %{
+           state: :merged,
+           url: @pr_url,
+           merged_at: merged_at,
+           merge_commit_sha: "merge-sha-closed",
+           head_ref_oid: "head-sha-closed",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
+    })
+
+    assert {:ok, %{merged: 1, errors: 0}} = PrMonitor.tick_once()
+    assert_receive {:checked_pr, @project_path, @pr_url}
+
+    assert_receive {:handled_command,
+                    %{
+                      command_type: "run.pr.merge",
+                      payload: merge_payload
+                    }}
+
+    assert_receive {:handled_command,
+                    %{
+                      command_type: "task.update",
+                      payload: task_payload
+                    }}
+
+    snapshot = ProjectionStore.snapshot()
+
+    assert merge_payload.pr_url == @pr_url
+    assert merge_payload.merged_at == merged_at
+    assert task_payload.task_id == @task_id
+    assert task_payload.status == "merged"
+    assert snapshot.runs[@run_id].pr_state == "merged"
+    assert snapshot.tasks[@task_id].status == "merged"
   end
 
   test "REST-shaped CLOSED + merged_at observation is normalized to :merged and reconciled" do

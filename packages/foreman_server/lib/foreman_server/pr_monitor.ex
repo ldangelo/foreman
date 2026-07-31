@@ -6,7 +6,7 @@ defmodule ForemanServer.PrMonitor do
   alias ForemanServer.ProjectionStore
 
   @default_interval_ms 300_000
-  @terminal_pr_states MapSet.new(["merged", "closed"])
+  @terminal_pr_states MapSet.new(["merged"])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
