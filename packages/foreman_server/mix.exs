@@ -17,7 +17,7 @@ defmodule ForemanServer.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger, :ecto_sql],
+      extra_applications: [:logger, :ecto_sql, :inets, :ssl],
       mod: {ForemanServer.Application, []}
     ]
   end

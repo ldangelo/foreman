@@ -537,6 +537,31 @@ defmodule ForemanServer.Http.Router do
     end
   end
 
+  post "/webhooks/external_trigger" do
+    with :ok <- authorize(conn) do
+      case conn.body_params do
+        %{} = payload when payload != %{} ->
+          case ForemanServer.Inbox.SharedInbox.ingest(
+                 ForemanServer.Inbox.ExternalTriggerCorrelationId,
+                 payload
+               ) do
+            {:ok, %{event: event}} ->
+              send_json(conn, 202, %{ok: true, handled: true, event_type: event.event_type})
+
+            {:error, reason} ->
+              send_error(conn, 400, "BAD_REQUEST", "invalid trigger: #{inspect(reason)}", false)
+          end
+
+        _ ->
+          send_error(conn, 400, "BAD_REQUEST", "empty or missing request body", false)
+      end
+    else
+      {:error, :unauthorized} ->
+        send_error(conn, 401, "UNAUTHORIZED", "invalid or missing auth token", false)
+    end
+  end
+
+
   match _ do
     send_error(conn, 404, "UNSUPPORTED", "route not found", false)
   end

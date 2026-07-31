@@ -1185,6 +1185,47 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_domain_event(
          projection,
          %{
+           type: "InboxItemStarted",
+           payload: %{correlation_id: correlation_id, run_id: run_id} = payload
+         },
+         _mode
+       ) do
+    message =
+      payload
+      |> Map.put(:event_type, "InboxItemStarted")
+      |> Map.put(:message_id, correlation_id)
+      |> Map.put(:delivery_status, "started")
+
+    projection
+    |> put_in([:inbox_messages, correlation_id], message)
+    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [correlation_id]) end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "InboxItemDeduped",
+           payload: %{correlation_id: correlation_id, run_id: run_id} = payload
+         },
+         _mode
+       ) do
+    existing = get_in(projection, [:inbox_messages, correlation_id]) || %{}
+
+    message =
+      existing
+      |> Map.merge(payload)
+      |> Map.put(:event_type, "InboxItemDeduped")
+      |> Map.put(:message_id, correlation_id)
+      |> Map.put(:delivery_status, "deduped")
+
+    projection
+    |> put_in([:inbox_messages, correlation_id], message)
+    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [correlation_id]) end)
+  end
+
+  defp apply_domain_event(
+         projection,
+         %{
            type: "IntegrationCommandIngested",
            payload: %{dedupe_key: dedupe_key} = payload
          },

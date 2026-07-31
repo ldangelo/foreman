@@ -39,6 +39,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
       | messages:
           Map.put(state.messages, event.correlation_id, %{
             correlation_id: event.correlation_id,
+            run_id: event.run_id,
             source: event.source,
             payload: event.payload,
             timestamp: event.timestamp
@@ -110,7 +111,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
            %{
              stream_id: "inbox:#{run_id}",
              event_type: "InboxItemDeduped",
-             payload: %{correlation_id: correlation_id, source: source, timestamp: now}
+             payload: %{correlation_id: correlation_id, run_id: run_id, source: source, timestamp: now}
            }}
 
         :accept ->
@@ -122,6 +123,7 @@ defmodule ForemanServer.Aggregates.InboxThread do
              event_type: "InboxItemStarted",
              payload: %{
                correlation_id: correlation_id,
+               run_id: run_id,
                source: source,
                payload: item_payload,
                timestamp: now

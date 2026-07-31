@@ -5,6 +5,7 @@ defmodule ForemanServer.Application do
 
   alias ForemanServer.{
     EventStore,
+    Inbox.TriggerPoller,
     Overwatch,
     ProjectionStore,
     PrMonitor,
@@ -33,7 +34,8 @@ defmodule ForemanServer.Application do
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
         {ProjectRegistry, []},
         {Scheduler, []},
-        {PrMonitor, []}
+        {PrMonitor, []},
+        {TriggerPoller, []}
       ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]

@@ -13,6 +13,7 @@ defmodule ForemanServer.InboxItemTest do
     test "atom keys" do
       payload = %{
         correlation_id: "corr-1",
+        run_id: "run-from-payload-1",
         source: "attach-bridge",
         timestamp: ~U[2026-07-29T12:00:00Z],
         payload: %{"foo" => "bar"}
@@ -28,6 +29,7 @@ defmodule ForemanServer.InboxItemTest do
     test "string keys" do
       payload = %{
         "correlation_id" => "corr-2",
+        "run_id" => "run-from-payload-2",
         "source" => "external-trigger",
         "timestamp" => "2026-07-29T12:00:00Z",
         "payload" => %{"baz" => 42}
@@ -42,6 +44,7 @@ defmodule ForemanServer.InboxItemTest do
     test "ISO8601 string timestamp normalised to DateTime" do
       payload = %{
         correlation_id: "corr-3",
+        run_id: "run-from-payload-3",
         source: "test",
         timestamp: "2026-07-29T14:30:00Z"
       }
@@ -51,7 +54,7 @@ defmodule ForemanServer.InboxItemTest do
     end
 
     test "payload defaults to %{} when absent" do
-      payload = %{correlation_id: "corr-4", source: "test"}
+      payload = %{correlation_id: "corr-4", run_id: "run-from-payload-4", source: "test"}
       event = InboxItemStarted.from_payload(payload)
       assert event.payload == %{}
       assert event.timestamp != nil
@@ -66,7 +69,7 @@ defmodule ForemanServer.InboxItemTest do
     end
 
     test "empty source raises" do
-      payload = %{correlation_id: "corr-5", source: ""}
+      payload = %{correlation_id: "corr-5", run_id: "run-from-payload-5", source: ""}
 
       assert_raise RuntimeError, ~r/source.*required/, fn ->
         InboxItemStarted.from_payload(payload)
@@ -78,6 +81,7 @@ defmodule ForemanServer.InboxItemTest do
     test "string keys and ISO8601 timestamp" do
       payload = %{
         "correlation_id" => "dedupe-1",
+        "run_id" => "run-dedupe-1",
         "source" => "bridge",
         "timestamp" => "2026-07-29T09:00:00Z"
       }
@@ -99,6 +103,7 @@ defmodule ForemanServer.InboxItemTest do
     test "InboxItemStarted populates messages and correlation_index", %{state: state} do
       event = %InboxItemStarted{
         correlation_id: "corr-1",
+        run_id: "test-run-1",
         source: "bridge",
         timestamp: ~U[2026-07-29T12:00:00Z],
         payload: %{"run_id" => "run-99"}
@@ -108,22 +113,21 @@ defmodule ForemanServer.InboxItemTest do
       assert is_map(new_state.messages["corr-1"])
       assert new_state.correlation_index["corr-1"] == ~U[2026-07-29T12:00:00Z]
     end
-
     test "InboxItemDeduped updates only correlation_index", %{state: state} do
       event = %InboxItemDeduped{
         correlation_id: "corr-1",
+        run_id: "test-run-1",
         source: "bridge",
         timestamp: ~U[2026-07-29T12:00:00Z]
       }
-
       new_state = InboxThread.apply_event(state, event)
       assert new_state.messages == %{}
       assert new_state.correlation_index["corr-1"] == ~U[2026-07-29T12:00:00Z]
     end
-
     test "envelope-unwrapping: %Event{payload: %InboxItemStarted{}}", %{state: state} do
       inner = %InboxItemStarted{
         correlation_id: "corr-env",
+        run_id: "test-run-env",
         source: "test",
         timestamp: ~U[2026-07-29T12:00:00Z],
         payload: %{}
@@ -158,6 +162,7 @@ defmodule ForemanServer.InboxItemTest do
             payload:
               InboxItemStarted.from_payload(%{
                 correlation_id: "fold-corr",
+                run_id: "run-fold",
                 source: "test",
                 timestamp: ~U[2026-07-29T12:00:00Z],
                 payload: %{"key" => "value"}
@@ -180,6 +185,7 @@ defmodule ForemanServer.InboxItemTest do
             event_type: "InboxItemStarted",
             payload: %{
               "correlation_id" => "legacy-corr",
+              "run_id" => "run-legacy",
               "source" => "legacy",
               "timestamp" => "2026-07-29T12:00:00Z"
             }
@@ -240,6 +246,7 @@ defmodule ForemanServer.EventCodecMismatchTest do
     test "InboxItemDeduped struct under InboxItemStarted event_type raises" do
       wrong_struct = %InboxItemDeduped{
         correlation_id: "corr-wrong",
+        run_id: "run-wrong-1",
         source: "test",
         timestamp: ~U[2026-07-29T12:00:00Z]
       }
@@ -248,10 +255,10 @@ defmodule ForemanServer.EventCodecMismatchTest do
         EventCodec.decode!("InboxItemStarted", wrong_struct)
       end
     end
-
     test "InboxItemStarted struct under InboxItemDeduped event_type raises" do
       wrong_struct = %InboxItemStarted{
         correlation_id: "corr-wrong",
+        run_id: "run-wrong-2",
         source: "test",
         timestamp: ~U[2026-07-29T12:00:00Z],
         payload: %{}
@@ -261,10 +268,10 @@ defmodule ForemanServer.EventCodecMismatchTest do
         EventCodec.decode!("InboxItemDeduped", wrong_struct)
       end
     end
-
     test "matching typed struct passes through unchanged" do
       matching = %InboxItemStarted{
         correlation_id: "corr-ok",
+        run_id: "run-ok",
         source: "test",
         timestamp: ~U[2026-07-29T12:00:00Z],
         payload: %{}
@@ -273,10 +280,10 @@ defmodule ForemanServer.EventCodecMismatchTest do
       result = EventCodec.decode!("InboxItemStarted", matching)
       assert result == matching
     end
-
     test "plain map is reconstructed via from_payload" do
       plain = %{
         "correlation_id" => "corr-map",
+        "run_id" => "run-map",
         "source" => "bridge",
         "timestamp" => "2026-07-29T12:00:00Z"
       }

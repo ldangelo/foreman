@@ -28,6 +28,17 @@ For production releases, set `FOREMAN_SERVER_SECRETS_FILE` to a `.env`-style fil
 
 If `FOREMAN_SERVER_SECRETS_FILE` is unset or points to a missing file, the provider is a no-op and app/config defaults are used. See `config/prod.exs` for the full provider contract.
 
+### External Trigger Polling
+
+These keys are read via `Application.get_env(:foreman_server, :key)` and set via Elixir application config:
+
+| Config key | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `:external_trigger_poll_enabled` | boolean | `false` | Enable external trigger polling |
+| `:external_trigger_poll_interval_seconds` | integer | `60` | Poll interval in seconds |
+| `:external_trigger_endpoint_url` | string | `nil` | Pull endpoint URL for trigger polling |
+
+
 ### Domain Groups and Deprecated Aliases
 
 `foreman --help` groups commands by domain:
