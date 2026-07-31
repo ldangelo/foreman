@@ -20,6 +20,8 @@ defmodule ForemanServer.Aggregates.Run do
       :branch,
       :base_ref,
       :pr_url,
+      :pr_number,
+      :association_id,
       :head_sha,
       :base_branch,
       phase_status: %{},
@@ -40,6 +42,8 @@ defmodule ForemanServer.Aggregates.Run do
             branch: String.t() | nil,
             base_ref: String.t() | nil,
             pr_url: String.t() | nil,
+            pr_number: String.t() | nil,
+            association_id: String.t() | nil,
             head_sha: String.t() | nil,
             base_branch: String.t() | nil,
             phase_status: %{optional(String.t()) => String.t()},
@@ -94,6 +98,12 @@ defmodule ForemanServer.Aggregates.Run do
         |> apply_opt(:pr_url, Aggregate.get(payload, :pr_url))
         |> apply_opt(:head_sha, Aggregate.get(payload, :head_sha))
         |> apply_opt(:base_branch, Aggregate.get(payload, :base_branch))
+
+      "PrAssociated" ->
+        %State{state | exists?: true}
+        |> apply_opt(:pr_url, Aggregate.get(payload, :pr_url))
+        |> apply_opt(:pr_number, Aggregate.get(payload, :pr_number))
+        |> apply_opt(:association_id, Aggregate.get(payload, :association_id))
 
       "RunCompleted" ->
         %State{state | status: "completed", terminal?: true}
@@ -204,11 +214,13 @@ defmodule ForemanServer.Aggregates.Run do
       end
     end
   end
+
   def handle_command(state, %{type: "run.phase.nudge", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state),
-         {:ok, phase_id} <- Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id) do
+         {:ok, phase_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
@@ -217,6 +229,7 @@ defmodule ForemanServer.Aggregates.Run do
        }}
     end
   end
+
   def handle_command(state, %{type: type, payload: payload})
       when type in ["run.fail", "run.block"] do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
@@ -232,6 +245,7 @@ defmodule ForemanServer.Aggregates.Run do
        }}
     end
   end
+
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "run.pr.update",
@@ -258,6 +272,29 @@ defmodule ForemanServer.Aggregates.Run do
          stream_id: "run:#{run_id}",
          event_type: event_type,
          payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "pr.associate", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- require_status(state, "completed"),
+         {:ok, pr_url} <- Aggregate.required_binary(Aggregate.get(payload, :pr_url), :pr_url),
+         {:ok, pr_number} <-
+           Aggregate.required_binary(Aggregate.get(payload, :pr_number), :pr_number) do
+      association_id = "#{run_id}:#{pr_url}"
+
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "PrAssociated",
+         payload: %{
+           run_id: run_id,
+           pr_url: pr_url,
+           pr_number: pr_number,
+           association_id: association_id
+         }
        }}
     end
   end
@@ -301,6 +338,8 @@ defmodule ForemanServer.Aggregates.Run do
   defp apply_opt(s, :branch, v), do: %State{s | branch: v}
   defp apply_opt(s, :base_ref, v), do: %State{s | base_ref: v}
   defp apply_opt(s, :pr_url, v), do: %State{s | pr_url: v}
+  defp apply_opt(s, :pr_number, v), do: %State{s | pr_number: v}
+  defp apply_opt(s, :association_id, v), do: %State{s | association_id: v}
   defp apply_opt(s, :head_sha, v), do: %State{s | head_sha: v}
   defp apply_opt(s, :base_branch, v), do: %State{s | base_branch: v}
 
@@ -370,6 +409,12 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp require_exists(%State{exists?: true}, _run_id), do: :ok
   defp require_exists(%State{}, run_id), do: {:error, {:not_found, :run, run_id}}
+
+  defp require_status(%State{status: status}, expected) do
+    if status == expected,
+      do: :ok,
+      else: {:error, {:invalid_run_status, expected, status}}
+  end
 
   defp reject_terminal_mutation(%State{status: status}) do
     if MapSet.member?(@terminal_statuses, status),

@@ -17,7 +17,8 @@ defmodule ForemanServer.EventCodec do
     # with incompatible payloads — handled via legacy fallback in Worker.apply_event
     "WorkerExited" => ForemanServer.Events.WorkerExited,
     "WorkerUnresponsive" => ForemanServer.Events.WorkerUnresponsive,
-    "WorkerCrashed" => ForemanServer.Events.WorkerCrashed
+    "WorkerCrashed" => ForemanServer.Events.WorkerCrashed,
+    "PrAssociated" => ForemanServer.Events.PrAssociated
   }
 
   @spec encode(Event.t()) :: binary()

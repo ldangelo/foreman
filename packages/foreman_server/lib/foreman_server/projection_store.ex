@@ -219,7 +219,6 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, tasks, projection}
   end
 
-
   @impl true
   def handle_call({:board, project_id}, _from, projection) do
     result =
@@ -596,6 +595,25 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  defp apply_domain_event(
+         projection,
+         %{
+           type: "PrAssociated",
+           payload: %{run_id: run_id} = payload
+         },
+         _mode
+       ) do
+    association_id = "#{run_id}:#{Map.get(payload, :pr_url, "")}"
+
+    update_run(projection, run_id, fn run ->
+      run
+      |> Map.put(:pr_url, Map.get(payload, :pr_url, Map.get(run, :pr_url)))
+      |> Map.put(:pr_number, Map.get(payload, :pr_number, Map.get(run, :pr_number)))
+      |> Map.put(:pr_state, Map.get(payload, :pr_state, Map.get(run, :pr_state, "open")))
+      |> Map.put(:association_id, association_id)
+    end)
+  end
+
   defp apply_domain_event(projection, %{type: "RunDeleted", payload: %{run_id: run_id}}, _mode) do
     update_in(projection, [:runs], &Map.delete(&1 || %{}, run_id))
   end
@@ -828,14 +846,15 @@ defmodule ForemanServer.ProjectionStore do
       put_active_worker_status(run, worker_id, "heartbeat")
     end)
   end
+
   defp apply_domain_event(
-        projection,
-        %{
-          type: "WorkerExited",
-          payload: %{run_id: run_id} = payload
-        },
-        _mode
-      ) do
+         projection,
+         %{
+           type: "WorkerExited",
+           payload: %{run_id: run_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
@@ -846,13 +865,13 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(
-        projection,
-        %{
-          type: "WorkerUnresponsive",
-          payload: %{run_id: run_id} = payload
-        },
-        _mode
-      ) do
+         projection,
+         %{
+           type: "WorkerUnresponsive",
+           payload: %{run_id: run_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->
@@ -863,13 +882,13 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_domain_event(
-        projection,
-        %{
-          type: "WorkerCrashed",
-          payload: %{run_id: run_id} = payload
-        },
-        _mode
-      ) do
+         projection,
+         %{
+           type: "WorkerCrashed",
+           payload: %{run_id: run_id} = payload
+         },
+         _mode
+       ) do
     projection
     |> put_worker_sequence(payload)
     |> update_run(run_id, fn run ->

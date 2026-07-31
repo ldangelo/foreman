@@ -90,6 +90,9 @@ defmodule ForemanServer.AggregateRouter do
       "board_item." <> _ ->
         route_board_item(command_type, payload)
 
+      "pr.associate" ->
+        route_run(command_type, payload)
+
       _ ->
         :unhandled
     end

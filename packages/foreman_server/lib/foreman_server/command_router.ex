@@ -623,6 +623,8 @@ defmodule ForemanServer.CommandRouter do
       :new_base_branch,
       :phase,
       :pr_url,
+      :pr_number,
+      :association_id,
       :reason,
       :message,
       :workflows,
@@ -647,6 +649,7 @@ defmodule ForemanServer.CommandRouter do
       :failure_reason
     ]
   end
+
   # Top-level keys that worker.record payloads must preserve.
   # No dynamic atomization — prevents atom-exhaustion from arbitrary input.
   # Covers: start_phase, heartbeat, ingest_event, Tracker lifecycle events.

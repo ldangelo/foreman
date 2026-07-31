@@ -281,10 +281,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Delivery status tracked in projection store
   - [ ] Webhook ingestion same path: `TriggerWebhookController` → `SharedInbox.ingest/2`
 
-- [ ] **TRD-016** PR association | 2h | [satisfies REQ-009] | Validates: AC-009-1 | AC: Given a run completes, when operator provides PR URL or identity, then `PrAssociate.store/2` stores the association and emits `PrAssociated` through `CommandRouter`
-  - [ ] `PrAssociate` module: `store(run_id, pr_url) :: {:ok, pr_association_id}`
-  - [ ] Dispatches `PrAssociated` command through `CommandRouter`
-  - [ ] `PrAssociated` event: `%PrAssociated{run_id, pr_url, pr_number}`
+- [x] **TRD-016** PR association | 2h | [satisfies REQ-009] | Validates: AC-009-1 | AC: Given a run completes, when operator provides PR URL or identity, then `PrAssociate.store/2` stores the association and emits `PrAssociated` through `CommandRouter`
+  - [x] `PrAssociate` module: `store(run_id, pr_url) :: {:ok, pr_association_id}`
+  - [x] Dispatches `PrAssociated` command through `CommandRouter`
+  - [x] `PrAssociated` event: `%PrAssociated{run_id, pr_url, pr_number}`
 
 - [ ] **TRD-017** PR monitor + GitHub webhook | 5h | [satisfies REQ-009, REQ-010] | Validates: AC-009-2, AC-009-3, AC-010-1, AC-010-2 | AC: Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
   - [ ] `PrMonitor` GenServer: polls GitHub API every 5 minutes for associated PRs
@@ -440,7 +440,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: trigger webhook delivery status tracked
 
 - [ ] **TRD-034-TEST** PR lifecycle test coverage | 3h | [verifies TRD-016, TRD-017] [depends: TRD-016, TRD-017] [satisfies REQ-009, REQ-010, REQ-020] | Validates: AC-009-1–AC-009-3, AC-010-1, AC-010-2 | Implementation AC: Given run is pending merge and PR status is not `open` and not `merged`, then the PR gate actively blocks run progression; polling fallback reconciles PR state every 5 minutes
-  - [ ] Test: `PrAssociated` event appended on PR URL provided
+  - [x] Test: `PrAssociated` event appended on PR URL provided
   - [ ] Test: GitHub webhook → `PrStateChanged` → projection updated
   - [ ] Test: polling fallback reconciles PR state every 5 minutes
   - [ ] Test: PR not open/merged → `PrGate.check/1` returns `{:error, :pr_not_acceptable}`
