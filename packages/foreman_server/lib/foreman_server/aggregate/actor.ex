@@ -2,11 +2,10 @@ defmodule ForemanServer.Aggregate.Actor do
   @moduledoc """
   OTP actor that owns one aggregate stream.
 
-  Rehydrates state via `Aggregate.load/2` on startup, dispatches commands through
-  `CommandRouter.handle/1`, and reloads from the event store after each confirmed
-  append.  The router derives the stream from the payload; if it differs from the
-  actor's cached stream the reload will reveal the mismatch rather than silently
-  corrupting local state.
+  Rehydrates state via `Aggregate.load/2` on startup, validates commands against the
+  actor's cached aggregate state, and appends with the cached stream version. When a
+  concurrent writer wins the race, the actor reloads once and re-runs the command
+  against the authoritative event-store state before replying.
 
   Supervision: `restart: :permanent` via the owning supervisor — a crashed actor is
   always restarted and rehydrates before processing the next command.
@@ -30,8 +29,7 @@ defmodule ForemanServer.Aggregate.Actor do
   use GenServer
   require Logger
 
-  alias ForemanServer.Aggregate
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.{Aggregate, EventStore, ProjectionStore}
 
   # ------------------------------------------------------------------
   # Client
@@ -68,25 +66,93 @@ defmodule ForemanServer.Aggregate.Actor do
   end
 
   def handle_call({:command, command_type, payload, command_id}, _from, s) do
-    cmd = %{
-      command_id: command_id,
-      command_type: command_type,
-      payload: payload
-    }
+    case execute_command(s, command_type, payload, command_id) do
+      {:ok, result, next_state} ->
+        {:reply, {:ok, result}, next_state}
 
-    case CommandRouter.handle(cmd) do
-      {:ok, result} ->
-        # Router confirmed the append.  Reload so the actor's cached state matches
-        # the authoritative event-store stream.  If the router resolved a different
-        # stream than s.stream_id the reload will pull the correct events.
-        {new_state, new_version} = Aggregate.load(s.module, s.stream_id)
-        Logger.debug("[Aggregate.Actor] stream=#{s.stream_id} version=#{new_version}")
-        {:reply, {:ok, result}, %{s | state: new_state, version: new_version}}
-
-      {:error, reason} ->
+      {:error, reason, next_state} ->
         Logger.warning("[Aggregate.Actor] command failed",
           command_type: command_type, reason: reason)
-        {:reply, {:error, reason}, s}
+
+        {:reply, {:error, reason}, next_state}
+    end
+  end
+
+  defp execute_command(s, command_type, payload, command_id) do
+    payload = Map.put_new(payload, :command_id, command_id)
+
+    with {:ok, event_spec} <- s.module.handle_command(s.state, %{type: command_type, payload: payload}),
+         {:ok, result, next_state} <- append_event(s, event_spec, command_id) do
+      {:ok, result, next_state}
+    else
+      {:error, {:conflict, _details}} ->
+        retry_after_conflict(s, command_type, payload, command_id)
+
+      {:error, reason} ->
+        {:error, reason, s}
+
+      :unhandled ->
+        {:error, :unhandled, s}
+    end
+  end
+
+  defp retry_after_conflict(s, command_type, payload, command_id) do
+    {fresh_state, fresh_version} = Aggregate.load(s.module, s.stream_id)
+    refreshed = %{s | state: fresh_state, version: fresh_version}
+
+    Logger.debug("[Aggregate.Actor] retrying after conflict",
+      stream_id: s.stream_id,
+      command_type: command_type,
+      version: fresh_version
+    )
+
+    case refreshed.module.handle_command(fresh_state, %{type: command_type, payload: payload}) do
+      {:ok, event_spec} ->
+        case append_event(refreshed, event_spec, command_id) do
+          {:ok, result, next_state} -> {:ok, result, next_state}
+          {:error, reason} -> {:error, reason, refreshed}
+        end
+
+      {:error, reason} ->
+        {:error, reason, refreshed}
+
+      :unhandled ->
+        {:error, :unhandled, refreshed}
+    end
+  end
+
+  defp append_event(s, event_spec, command_id) do
+    stream_id = Map.fetch!(event_spec, :stream_id)
+
+    append_input =
+      %{
+        stream_id: stream_id,
+        event_type: Map.fetch!(event_spec, :event_type),
+        payload:
+          event_spec
+          |> Map.fetch!(:payload)
+          |> Map.put_new(:command_id, command_id)
+          |> Map.put_new(:updated_at, DateTime.utc_now()),
+        metadata: %{
+          correlation_id: command_id,
+          source: "aggregate_actor",
+          idempotency_key: command_id
+        },
+        correlation_id: command_id,
+        expected_stream_version: Map.get(event_spec, :expected_stream_version, s.version)
+      }
+
+    case EventStore.append(append_input) do
+      {:ok, event} ->
+        {new_state, new_version} = Aggregate.load(s.module, s.stream_id)
+        Logger.debug("[Aggregate.Actor] stream=#{s.stream_id} version=#{new_version}")
+
+        {:ok,
+         %{event: event, audit_events: [], projection: ProjectionStore.snapshot()},
+         %{s | state: new_state, version: new_version}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
