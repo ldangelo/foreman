@@ -2,7 +2,7 @@ defmodule ForemanServer.Aggregates.Run do
   @moduledoc "Run aggregate: validates run lifecycle commands and folds legacy run/worker phase events."
   @behaviour ForemanServer.Aggregate
 
-  alias ForemanServer.Aggregate
+  alias ForemanServer.{Aggregate, PrGate}
 
   defmodule State do
     @moduledoc false
@@ -24,6 +24,7 @@ defmodule ForemanServer.Aggregates.Run do
       :association_id,
       :head_sha,
       :base_branch,
+      :pr_state,
       phase_status: %{},
       worker_status: %{},
       retry_history: []
@@ -46,6 +47,7 @@ defmodule ForemanServer.Aggregates.Run do
             association_id: String.t() | nil,
             head_sha: String.t() | nil,
             base_branch: String.t() | nil,
+            pr_state: String.t() | nil,
             phase_status: %{optional(String.t()) => String.t()},
             worker_status: %{optional(String.t()) => String.t()},
             retry_history: [map()]
@@ -98,12 +100,14 @@ defmodule ForemanServer.Aggregates.Run do
         |> apply_opt(:pr_url, Aggregate.get(payload, :pr_url))
         |> apply_opt(:head_sha, Aggregate.get(payload, :head_sha))
         |> apply_opt(:base_branch, Aggregate.get(payload, :base_branch))
+        |> apply_opt(:pr_state, pr_state_for_event(type, payload, state))
 
       "PrAssociated" ->
         %State{state | exists?: true}
         |> apply_opt(:pr_url, Aggregate.get(payload, :pr_url))
         |> apply_opt(:pr_number, Aggregate.get(payload, :pr_number))
         |> apply_opt(:association_id, Aggregate.get(payload, :association_id))
+        |> apply_opt(:pr_state, Aggregate.get(payload, :pr_state) || state.pr_state || "open")
 
       "RunCompleted" ->
         %State{state | status: "completed", terminal?: true}
@@ -176,7 +180,8 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(state, %{type: "run.update", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
-         :ok <- reject_terminal_mutation(state) do
+         :ok <- reject_terminal_mutation(state),
+         :ok <- allow_merge_pending_transition(run_id, payload) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
@@ -366,6 +371,8 @@ defmodule ForemanServer.Aggregates.Run do
   defp apply_opt(s, :association_id, v), do: %State{s | association_id: v}
   defp apply_opt(s, :head_sha, v), do: %State{s | head_sha: v}
   defp apply_opt(s, :base_branch, v), do: %State{s | base_branch: v}
+  defp apply_opt(s, :pr_state, v), do: %State{s | pr_state: v}
+
 
   defp drop_lifecycle_fields(payload) do
     Map.drop(payload, [
@@ -415,6 +422,32 @@ defmodule ForemanServer.Aggregates.Run do
     do: {:error, {:invalid_pr_reset_action, action}}
 
   defp validate_pr_reset_action(_type, _action), do: :ok
+
+  defp pr_state_for_event("PrUpdated", payload, state),
+    do: Aggregate.get(payload, :pr_state) || state.pr_state
+
+  defp pr_state_for_event("PrReady", _payload, _state), do: "open"
+  defp pr_state_for_event("PrReset", _payload, _state), do: "closed"
+  defp pr_state_for_event("PrMerged", _payload, _state), do: "merged"
+  defp pr_state_for_event("PrRetargeted", _payload, state), do: state.pr_state
+
+  defp allow_merge_pending_transition(run_id, payload) do
+    if merge_pending_transition?(payload) do
+      PrGate.check(run_id)
+    else
+      :ok
+    end
+  end
+
+  defp merge_pending_transition?(payload) do
+    current_phase = Aggregate.get(payload, :current_phase)
+    phase_id = Aggregate.get(payload, :phase_id)
+    status = Aggregate.get(payload, :status)
+
+    current_phase in ["merge-pending", "merge_pending"] or
+      phase_id in ["merge-pending", "merge_pending"] or
+      status in ["merge-pending", "merge_pending"]
+  end
 
   defp allow_pr_lifecycle_on_terminal_runs(_state, type)
        when type in [

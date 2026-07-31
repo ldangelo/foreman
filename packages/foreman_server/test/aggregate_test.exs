@@ -1,7 +1,7 @@
 defmodule ForemanServer.AggregateTest do
   use ExUnit.Case
 
-  alias ForemanServer.{Aggregate, AggregateRouter, Aggregate.Actor, CommandRouter, EventStore}
+  alias ForemanServer.{Aggregate, AggregateRouter, Aggregate.Actor, CommandRouter, EventStore, ProjectionStore}
   alias ForemanServer.Inbox.SharedInbox
 
   alias ForemanServer.Aggregates.{
@@ -349,6 +349,37 @@ defmodule ForemanServer.AggregateTest do
              )
   end
 
+  test "PrGate blocks merge-pending transitions unless the PR is open or merged" do
+    seed_run_pr_state!("run-merge-pending-draft", "draft")
+
+    assert {:error, :pr_not_acceptable} =
+             AggregateRouter.route("run.update", %{
+               run_id: "run-merge-pending-draft",
+               current_phase: "merge-pending"
+             })
+
+    seed_run_pr_state!("run-merge-pending-open", "open")
+
+    assert {:ok, %{event_type: "RunUpdated", payload: open_payload}} =
+             AggregateRouter.route("run.update", %{
+               run_id: "run-merge-pending-open",
+               current_phase: "merge-pending"
+             })
+
+    assert open_payload.current_phase == "merge-pending"
+
+    seed_run_pr_state!("run-merge-pending-merged", "merged")
+
+    assert {:ok, %{event_type: "RunUpdated", payload: merged_payload}} =
+             AggregateRouter.route("run.update", %{
+               run_id: "run-merge-pending-merged",
+               current_phase: "merge-pending"
+             })
+
+    assert merged_payload.current_phase == "merge-pending"
+  end
+
+
   test "inbox aggregate validates duplicate messages and delivery targets" do
     assert {:ok, spec} =
              AggregateRouter.route("inbox.send", %{
@@ -594,6 +625,65 @@ defmodule ForemanServer.AggregateTest do
 
     assert {:ok, _event} = EventStore.append(spec)
   end
+
+  defp seed_run_pr_state!(run_id, pr_state) do
+    started_run!(run_id)
+
+    payload =
+      case pr_state do
+        "open" ->
+          %{
+            run_id: run_id,
+            project_id: "project-1",
+            task_id: "task-1",
+            pr_url: "https://github.com/acme/foreman/pull/#{run_id}",
+            branch_name: "foreman/task-1",
+            head_sha: "head-#{run_id}",
+            base_branch: "main"
+          }
+
+        "merged" ->
+          %{
+            run_id: run_id,
+            project_id: "project-1",
+            task_id: "task-1",
+            pr_url: "https://github.com/acme/foreman/pull/#{run_id}",
+            branch_name: "foreman/task-1"
+          }
+
+        other ->
+          %{
+            run_id: run_id,
+            project_id: "project-1",
+            task_id: "task-1",
+            pr_url: "https://github.com/acme/foreman/pull/#{run_id}",
+            branch_name: "foreman/task-1",
+            head_sha: "head-#{run_id}",
+            base_branch: "main",
+            phase: "developer",
+            pr_state: other
+          }
+      end
+
+    {command_type, expected_state} =
+      case pr_state do
+        "open" -> {"run.pr.ready", "open"}
+        "merged" -> {"run.pr.merge", "merged"}
+        "closed" -> {"run.pr.reset", "closed"}
+        other -> {"run.pr.update", other}
+      end
+
+    payload =
+      case command_type do
+        "run.pr.reset" -> Map.merge(payload, %{action: "closed", reason: "closed by test"})
+        _ -> payload
+      end
+
+    assert {:ok, spec} = AggregateRouter.route(command_type, payload)
+    assert {:ok, _event} = EventStore.append(spec)
+    assert ProjectionStore.snapshot().runs[run_id].pr_state == expected_state
+  end
+
 
   defp pr_payload(extra) do
     Map.merge(

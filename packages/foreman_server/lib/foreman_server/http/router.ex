@@ -621,7 +621,7 @@ defmodule ForemanServer.Http.Router do
                     payload
                   end
 
-                case ForemanServer.PrMonitor.GhWebhookHandler.handle(payload_with_delivery) do
+                case ForemanServer.Webhooks.Github.process(payload_with_delivery) do
                   {:ok, %{commands_issued: count}} ->
                     send_json(conn, 200, %{ok: true, handled: true, commands_issued: count})
 
@@ -666,7 +666,7 @@ defmodule ForemanServer.Http.Router do
   end
 
   defp verify_signature(secret, signature, raw_body, conn) do
-    if ForemanServer.PrMonitor.GhWebhookHandler.verify_signature(raw_body, signature, secret) do
+    if ForemanServer.Webhooks.Github.verify_signature(raw_body, signature, secret) do
       {:ok, conn}
     else
       {:error, send_error(conn, 401, "UNAUTHORIZED", "invalid webhook signature", false)}

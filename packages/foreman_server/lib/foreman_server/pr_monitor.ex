@@ -5,7 +5,7 @@ defmodule ForemanServer.PrMonitor do
 
   alias ForemanServer.ProjectionStore
 
-  @default_interval_ms 60_000
+  @default_interval_ms 300_000
   @terminal_pr_states MapSet.new(["merged", "closed"])
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -17,6 +17,10 @@ defmodule ForemanServer.PrMonitor do
   def tick_once do
     run_once(monitor_config([]))
   end
+
+  @spec poll() :: {:ok, map()}
+  def poll, do: tick_once()
+
 
   @spec state() :: map()
   def state, do: GenServer.call(__MODULE__, :state)
@@ -206,6 +210,22 @@ defmodule ForemanServer.PrMonitor do
     end
   end
 
+  def handle_observation(context, %{state: :conflicted} = observation, command_handler) do
+    if context.pr_state == "conflicted" do
+      empty_summary()
+    else
+      payload =
+        context
+        |> common_payload(observation)
+        |> Map.put(:pr_state, "conflicted")
+        |> Map.put(:phase, context.phase)
+        |> maybe_put(:head_sha, Map.get(observation, :head_ref_oid))
+        |> maybe_put(:base_branch, Map.get(observation, :base_ref_name))
+
+      update_pr(command_handler, "run.pr.update", payload)
+    end
+  end
+
   def handle_observation(context, %{state: :open} = observation, command_handler) do
     if context.pr_state == "open" do
       empty_summary()
@@ -253,10 +273,10 @@ defmodule ForemanServer.PrMonitor do
 
     normalized in ["closed", "merged", "completed", "done"]
   end
-
   defp terminal_task_status?(_status), do: false
-
   defp call_checker(checker, project_path, pr_url) do
+    Code.ensure_loaded(checker)
+
     cond do
       function_exported?(checker, :observe_pr, 2) -> checker.observe_pr(project_path, pr_url)
       function_exported?(checker, :check_pr, 2) -> checker.check_pr(project_path, pr_url)
@@ -269,6 +289,7 @@ defmodule ForemanServer.PrMonitor do
 
   defp handle_command(command_handler, command_type, payload) do
     command = %{command_type: command_type, payload: payload}
+    Code.ensure_loaded(command_handler)
 
     cond do
       function_exported?(command_handler, :handle, 1) ->
@@ -293,13 +314,15 @@ defmodule ForemanServer.PrMonitor do
   # return `:merged` when state is CLOSED and merged_at is set.
   def normalize_observation(observation) do
     merged_at = get_field(observation, :merged_at)
+    merge_state_status = merge_state_status(observation)
 
     %{
       state:
         normalize_state(
           get_field(observation, :state),
           get_field(observation, :is_draft),
-          merged_at
+          merged_at,
+          merge_state_status
         ),
       url: get_field(observation, :url),
       merged_at: merged_at,
@@ -313,29 +336,59 @@ defmodule ForemanServer.PrMonitor do
 
   # GitHub reports `state=CLOSED` for both merged (with merged_at) and
   # closed-without-merge (merged_at is nil). Distinguish via merged_at.
-  defp normalize_state(:closed, _is_draft, merged_at) when not is_nil(merged_at), do: :merged
-  defp normalize_state("CLOSED", _is_draft, merged_at) when not is_nil(merged_at), do: :merged
-  defp normalize_state("closed", _is_draft, merged_at) when not is_nil(merged_at), do: :merged
-  defp normalize_state(:merged, _is_draft, _merged_at), do: :merged
-  defp normalize_state("MERGED", _is_draft, _merged_at), do: :merged
-  defp normalize_state("merged", _is_draft, _merged_at), do: :merged
-  defp normalize_state(:closed, _is_draft, _merged_at), do: :closed
-  defp normalize_state("CLOSED", _is_draft, _merged_at), do: :closed
-  defp normalize_state("closed", _is_draft, _merged_at), do: :closed
-  defp normalize_state(:draft, _is_draft, _merged_at), do: :draft
-  defp normalize_state(:open, true, _merged_at), do: :draft
-  defp normalize_state(:open, _is_draft, _merged_at), do: :open
-  defp normalize_state("OPEN", true, _merged_at), do: :draft
-  defp normalize_state("OPEN", _is_draft, _merged_at), do: :open
-  defp normalize_state("open", true, _merged_at), do: :draft
-  defp normalize_state("open", _is_draft, _merged_at), do: :open
-  defp normalize_state(state, _is_draft, _merged_at), do: state
+  defp normalize_state(:closed, _is_draft, merged_at, _merge_state_status)
+       when not is_nil(merged_at),
+       do: :merged
+
+  defp normalize_state("CLOSED", _is_draft, merged_at, _merge_state_status)
+       when not is_nil(merged_at),
+       do: :merged
+
+  defp normalize_state("closed", _is_draft, merged_at, _merge_state_status)
+       when not is_nil(merged_at),
+       do: :merged
+
+  defp normalize_state(:merged, _is_draft, _merged_at, _merge_state_status), do: :merged
+  defp normalize_state("MERGED", _is_draft, _merged_at, _merge_state_status), do: :merged
+  defp normalize_state("merged", _is_draft, _merged_at, _merge_state_status), do: :merged
+  defp normalize_state(:closed, _is_draft, _merged_at, _merge_state_status), do: :closed
+  defp normalize_state("CLOSED", _is_draft, _merged_at, _merge_state_status), do: :closed
+  defp normalize_state("closed", _is_draft, _merged_at, _merge_state_status), do: :closed
+  defp normalize_state(:conflicted, _is_draft, _merged_at, _merge_state_status), do: :conflicted
+  defp normalize_state("CONFLICTED", _is_draft, _merged_at, _merge_state_status), do: :conflicted
+  defp normalize_state("conflicted", _is_draft, _merged_at, _merge_state_status), do: :conflicted
+  defp normalize_state(:draft, _is_draft, _merged_at, _merge_state_status), do: :draft
+  defp normalize_state(:open, true, _merged_at, _merge_state_status), do: :draft
+  defp normalize_state(:open, _is_draft, _merged_at, merge_state_status)
+       when merge_state_status in [:dirty, "DIRTY", "dirty", "CONFLICTING", "conflicting"],
+       do: :conflicted
+
+  defp normalize_state(:open, _is_draft, _merged_at, _merge_state_status), do: :open
+  defp normalize_state("OPEN", true, _merged_at, _merge_state_status), do: :draft
+
+  defp normalize_state("OPEN", _is_draft, _merged_at, merge_state_status)
+       when merge_state_status in [:dirty, "DIRTY", "dirty", "CONFLICTING", "conflicting"],
+       do: :conflicted
+
+  defp normalize_state("OPEN", _is_draft, _merged_at, _merge_state_status), do: :open
+  defp normalize_state("open", true, _merged_at, _merge_state_status), do: :draft
+
+  defp normalize_state("open", _is_draft, _merged_at, merge_state_status)
+       when merge_state_status in [:dirty, "DIRTY", "dirty", "CONFLICTING", "conflicting"],
+       do: :conflicted
+
+  defp normalize_state("open", _is_draft, _merged_at, _merge_state_status), do: :open
+  defp normalize_state(state, _is_draft, _merged_at, _merge_state_status), do: state
 
   defp merge_commit_sha(observation) do
     case get_field(observation, :merge_commit) do
       %{} = commit -> get_field(commit, :oid)
       _ -> nil
     end
+  end
+
+  defp merge_state_status(observation) do
+    get_field(observation, :merge_state_status) || get_field(observation, :mergeable_state)
   end
 
   defp get_field(map, key) when is_map(map) do
@@ -398,7 +451,7 @@ defmodule ForemanServer.PrMonitor.GhChecker do
       "view",
       pr_url,
       "--json",
-      "state,mergedAt,url,headRefOid,baseRefName,headRefName,isDraft,mergeCommit",
+      "state,mergedAt,url,headRefOid,baseRefName,headRefName,isDraft,mergeCommit,mergeStateStatus",
       "--jq",
       "."
     ]
@@ -712,25 +765,37 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandler do
 
   # Convert webhook payload to the same normalized shape that GhChecker.observe_pr/2 returns.
   defp normalize_webhook_observation(pr_payload, action, merged, is_draft) do
+    merge_state_status =
+      get_field(pr_payload, "merge_state_status") || get_field(pr_payload, "mergeable_state")
+
     %{
-      state: state_from_webhook(action, merged, is_draft),
+      state: state_from_webhook(action, merge_state_status, merged, is_draft),
       url: get_field(pr_payload, "html_url") || get_field(pr_payload, "url"),
       merged_at: get_field(pr_payload, "merged_at"),
       merge_commit_sha: merge_commit_sha(pr_payload),
+      merge_state_status: merge_state_status,
       head_ref_oid: get_field(pr_payload, ["head", "sha"]) || get_field(pr_payload, "head_sha"),
       head_ref_name: get_field(pr_payload, ["head", "ref"]) || get_field(pr_payload, "head_ref"),
       base_ref_name: get_field(pr_payload, ["base", "ref"]) || get_field(pr_payload, "base_ref")
     }
   end
 
-  defp state_from_webhook("closed", true, _is_draft), do: :merged
-  defp state_from_webhook("closed", false, _is_draft), do: :closed
-  defp state_from_webhook(_action, _merged, true), do: :draft
-  defp state_from_webhook("opened", _merged, _is_draft), do: :open
-  defp state_from_webhook("synchronize", _merged, _is_draft), do: :open
-  defp state_from_webhook("ready_for_review", _merged, _is_draft), do: :open
-  defp state_from_webhook("converted_to_draft", _merged, _is_draft), do: :draft
-  defp state_from_webhook(_action, _merged, _is_draft), do: :open
+  defp state_from_webhook("closed", _merge_state_status, true, _is_draft), do: :merged
+  defp state_from_webhook("closed", _merge_state_status, false, _is_draft), do: :closed
+  defp state_from_webhook("pr_sync_conflict", _merge_state_status, _merged, _is_draft), do: :conflicted
+  defp state_from_webhook("conflicted", _merge_state_status, _merged, _is_draft), do: :conflicted
+  defp state_from_webhook(_action, _merge_state_status, _merged, true), do: :draft
+
+  defp state_from_webhook(_action, merge_state_status, _merged, _is_draft)
+       when merge_state_status in ["DIRTY", "dirty", "CONFLICTING", "conflicting"],
+       do: :conflicted
+
+  defp state_from_webhook("opened", _merge_state_status, _merged, _is_draft), do: :open
+  defp state_from_webhook("reopened", _merge_state_status, _merged, _is_draft), do: :open
+  defp state_from_webhook("synchronize", _merge_state_status, _merged, _is_draft), do: :open
+  defp state_from_webhook("ready_for_review", _merge_state_status, _merged, _is_draft), do: :open
+  defp state_from_webhook("converted_to_draft", _merge_state_status, _merged, _is_draft), do: :draft
+  defp state_from_webhook(_action, _merge_state_status, _merged, _is_draft), do: :open
 
   defp merge_commit_sha(pr_payload) do
     case get_field(pr_payload, "merge_commit") do

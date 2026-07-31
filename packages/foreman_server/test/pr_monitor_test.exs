@@ -272,6 +272,49 @@ defmodule ForemanServer.PrMonitor.GhWebhookHandlerTest do
       commands = drain_commands()
       assert Enum.any?(commands, fn c -> c.command_type == "run.pr.ready" end)
     end
+
+    test "Webhooks.Github.process/1 reopens a closed PR in the run projection" do
+      :ok = seed_pr_run!(pr_state: "closed")
+      Application.put_env(:foreman_server, :command_handler, ForemanServer.PrMonitor.CommandHandler)
+
+      payload = %{
+        "action" => "reopened",
+        "delivery_id" => "delivery-reopened-#{:rand.uniform(999_999)}",
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "open",
+          "merged" => false,
+          "draft" => false,
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 1}} = ForemanServer.Webhooks.Github.process(payload)
+      assert ProjectionStore.snapshot().runs[@run_id].pr_state == "open"
+    end
+
+    test "Webhooks.Github.process/1 marks conflicting PRs in the run projection" do
+      :ok = seed_pr_run!(pr_state: "open")
+      Application.put_env(:foreman_server, :command_handler, ForemanServer.PrMonitor.CommandHandler)
+
+      payload = %{
+        "action" => "synchronize",
+        "delivery_id" => "delivery-conflicted-#{:rand.uniform(999_999)}",
+        "pull_request" => %{
+          "html_url" => @pr_url,
+          "state" => "open",
+          "merged" => false,
+          "draft" => false,
+          "mergeable_state" => "dirty",
+          "head" => %{"ref" => "foreman/task-webhook-test", "sha" => "head-sha-webhook"},
+          "base" => %{"ref" => "main"}
+        }
+      }
+
+      assert {:ok, %{commands_issued: 1}} = ForemanServer.Webhooks.Github.process(payload)
+      assert ProjectionStore.snapshot().runs[@run_id].pr_state == "conflicted"
+    end
   end
 
   describe "verify_signature/3" do
@@ -347,7 +390,7 @@ defmodule ForemanServer.PrMonitorTest do
       enabled: false,
       checker: @checker,
       command_handler: @command_handler,
-      interval_ms: 60_000
+      interval_ms: 300_000
     )
 
     assert :ok = Application.start(:foreman_server)
@@ -677,6 +720,33 @@ defmodule ForemanServer.PrMonitorTest do
              %{command_type: "task.update", payload: %{status: "merged"}} -> true
              _command -> false
            end)
+  end
+
+  test "poll/0 reconciles PR state through the five-minute fallback interval" do
+    seed_recorded_pr!(pr_state: "draft")
+
+    Application.put_env(:foreman_server, :pr_monitor,
+      enabled: false,
+      checker: @checker,
+      command_handler: ForemanServer.PrMonitor.CommandHandler,
+      interval_ms: 300_000
+    )
+
+    put_observations(%{
+      @pr_url =>
+        {:ok,
+         %{
+           state: "OPEN",
+           url: @pr_url,
+           head_ref_oid: "head-sha-poll",
+           head_ref_name: "foreman/task-pr-monitor",
+           base_ref_name: "main"
+         }}
+    })
+
+    assert PrMonitor.state().interval_ms == 300_000
+    assert {:ok, %{updated: 1, errors: 0}} = PrMonitor.poll()
+    assert ProjectionStore.snapshot().runs[@run_id].pr_state == "open"
   end
 
   defp put_observations(observations) do

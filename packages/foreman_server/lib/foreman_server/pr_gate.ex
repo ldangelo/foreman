@@ -3,6 +3,9 @@ defmodule ForemanServer.PrGate do
 
   alias ForemanServer.{EventStore, ProjectionStore, VcsAdapter}
 
+  @acceptable_pr_states MapSet.new(["open", "merged"])
+
+
   @spec observe(map()) :: {:ok, map()} | {:error, term()}
   def observe(input) when is_map(input) do
     input = atomize_keys(input)
@@ -24,6 +27,19 @@ defmodule ForemanServer.PrGate do
       })
     end
   end
+
+  @spec check(String.t()) :: :ok | {:error, :pr_not_acceptable}
+  def check(run_id) when is_binary(run_id) and run_id != "" do
+    pr_state = get_in(ProjectionStore.snapshot(), [:runs, run_id, :pr_state])
+
+    if MapSet.member?(@acceptable_pr_states, pr_state) do
+      :ok
+    else
+      {:error, :pr_not_acceptable}
+    end
+  end
+
+  def check(_run_id), do: {:error, :pr_not_acceptable}
 
   @spec merge(map()) :: {:ok, map()} | {:error, term()}
   def merge(input) when is_map(input) do
