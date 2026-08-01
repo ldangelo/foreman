@@ -439,12 +439,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: `TriggerPoller` periodic fetch
   - [ ] Test: trigger webhook delivery status tracked
 
-- [ ] **TRD-034-TEST** PR lifecycle test coverage | 3h | [verifies TRD-016, TRD-017] [depends: TRD-016, TRD-017] [satisfies REQ-009, REQ-010, REQ-020] | Validates: AC-009-1–AC-009-3, AC-010-1, AC-010-2 | Implementation AC: Given run is pending merge and PR status is not `open` and not `merged`, then the PR gate actively blocks run progression; polling fallback reconciles PR state every 5 minutes
-  - [ ] Test: `PrAssociated` event appended on PR URL provided
-  - [ ] Test: GitHub webhook → `PrStateChanged` → projection updated
-  - [ ] Test: polling fallback reconciles PR state every 5 minutes
-  - [ ] Test: PR not open/merged → `PrGate.check/1` returns `{:error, :pr_not_acceptable}`
-  - [ ] Test: `PrGate` blocks run from transitioning to merge-pending
+- [x] **TRD-034-TEST** PR lifecycle test coverage | 3h | [verifies TRD-016, TRD-017] [depends: TRD-016, TRD-017] [satisfies REQ-009, REQ-010, REQ-020] | Validates: AC-009-1–AC-009-3, AC-010-1, AC-010-2 | Implementation AC: Given run is pending merge and PR status is not `open` and not `merged`, then the PR gate actively blocks run progression; polling fallback reconciles PR state every 5 minutes
+  - [x] Test: `PrAssociated` event appended on PR URL provided
+  - [x] Test: GitHub webhook → `PrUpdated` → projection updated
+  - [x] Test: polling fallback reconciles PR state every 5 minutes
+  - [x] Test: PR not open/merged → `PrGate.check/1` returns `{:error, :pr_not_acceptable}`
+  - [x] Test: `PrGate` blocks run from transitioning to merge-pending
 
 - [ ] **TRD-035-TEST** VCS adapter test coverage | 2h | [verifies TRD-018] [depends: TRD-018] [satisfies REQ-013, REQ-020] | Validates: AC-013-1–AC-013-3 | Implementation AC: Given VCS operation fails transiently, when retried, then 3 retries with exponential backoff occur; non-transient failures are not retried; events are emitted through `CommandRouter`
   - [ ] Test: transient failure → 3 retries with exponential backoff
