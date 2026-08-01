@@ -9,8 +9,8 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
   @run_id "run-poller-001"
 
   setup do
-    tmp_dir =
-      Path.join(System.tmp_dir!(), "foreman-poller-test-#{System.unique_integer([:positive])}")
+    suffix = Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    tmp_dir = Path.join(System.tmp_dir!(), "foreman-poller-test-#{suffix}")
 
     File.mkdir_p!(tmp_dir)
 
@@ -19,11 +19,14 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
     :ok = Application.start(:foreman_server)
 
     # Register a minimal test project so CommandRouter.resolve_project/1 succeeds.
-    {:ok, project} = ForemanServer.Project.new(%{id: @project_id, path: @project_path, config: %{}})
+    {:ok, project} =
+      ForemanServer.Project.new(%{id: @project_id, path: @project_path, config: %{}})
+
     {:ok, _} = ForemanServer.ProjectStore.save(project)
 
     on_exit(fn ->
       Application.stop(:foreman_server)
+      File.rm_rf!(tmp_dir)
       Application.delete_env(:foreman_server, :event_log_path)
       Application.delete_env(:foreman_server, :external_trigger_poll_enabled)
       Application.delete_env(:foreman_server, :external_trigger_poll_interval_seconds)
@@ -46,7 +49,10 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
   end
 
   defp loop_fn(:empty, _listen_socket), do: fn socket -> accept_loop(socket, &respond_ok/0) end
-  defp loop_fn(:triggers, _listen_socket), do: fn socket -> accept_loop_with_triggers(socket, @run_id) end
+
+  defp loop_fn(:triggers, _listen_socket),
+    do: fn socket -> accept_loop_with_triggers(socket, @run_id) end
+
   defp loop_fn(:status_500, _listen_socket), do: fn socket -> accept_loop_500(socket) end
 
   defp accept_loop(listen_socket, responder) do
@@ -102,6 +108,7 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
 
   defp respond_ok do
     body = Jason.encode!(%{triggers: []})
+
     """
     HTTP/1.1 200 OK\r
     Content-Type: application/json\r
@@ -120,6 +127,7 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
     }
 
     body = Jason.encode!(%{triggers: [trigger]})
+
     """
     HTTP/1.1 200 OK\r
     Content-Type: application/json\r
@@ -134,7 +142,12 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
   test "inert when enabled is false (endpoint never called)" do
     Application.put_env(:foreman_server, :external_trigger_poll_enabled, false)
     Application.put_env(:foreman_server, :external_trigger_poll_interval_seconds, 60)
-    Application.put_env(:foreman_server, :external_trigger_endpoint_url, "http://127.0.0.1:9999/none")
+
+    Application.put_env(
+      :foreman_server,
+      :external_trigger_endpoint_url,
+      "http://127.0.0.1:9999/none"
+    )
 
     # Stop app, restart so poller picks up new config.
     Application.stop(:foreman_server)
@@ -169,7 +182,12 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
 
     Application.put_env(:foreman_server, :external_trigger_poll_enabled, true)
     Application.put_env(:foreman_server, :external_trigger_poll_interval_seconds, 3600)
-    Application.put_env(:foreman_server, :external_trigger_endpoint_url, "http://127.0.0.1:#{port}/triggers")
+
+    Application.put_env(
+      :foreman_server,
+      :external_trigger_endpoint_url,
+      "http://127.0.0.1:#{port}/triggers"
+    )
 
     Application.stop(:foreman_server)
     :ok = Application.start(:foreman_server)
@@ -193,7 +211,8 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
     assert first.payload.correlation_id == "trigger-#{@run_id}"
 
     # Sub-item 3: delivery_status tracked in projection store
-    assert ProjectionStore.snapshot().inbox_messages["trigger-#{@run_id}"].delivery_status == "started"
+    assert ProjectionStore.snapshot().inbox_messages["trigger-#{@run_id}"].delivery_status ==
+             "started"
 
     :gen_tcp.close(listen_socket)
   end
@@ -203,7 +222,12 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
 
     Application.put_env(:foreman_server, :external_trigger_poll_enabled, true)
     Application.put_env(:foreman_server, :external_trigger_poll_interval_seconds, 1)
-    Application.put_env(:foreman_server, :external_trigger_endpoint_url, "http://127.0.0.1:#{port}/triggers")
+
+    Application.put_env(
+      :foreman_server,
+      :external_trigger_endpoint_url,
+      "http://127.0.0.1:#{port}/triggers"
+    )
 
     Application.stop(:foreman_server)
     :ok = Application.start(:foreman_server)
@@ -231,7 +255,12 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
 
     Application.put_env(:foreman_server, :external_trigger_poll_enabled, true)
     Application.put_env(:foreman_server, :external_trigger_poll_interval_seconds, 3600)
-    Application.put_env(:foreman_server, :external_trigger_endpoint_url, "http://127.0.0.1:#{port}/triggers")
+
+    Application.put_env(
+      :foreman_server,
+      :external_trigger_endpoint_url,
+      "http://127.0.0.1:#{port}/triggers"
+    )
 
     Application.stop(:foreman_server)
     :ok = Application.start(:foreman_server)
@@ -245,5 +274,4 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
 
     :gen_tcp.close(listen_socket)
   end
-
 end
