@@ -7,13 +7,24 @@ defmodule ForemanServer.Http.Endpoint do
     ip = Keyword.get(opts, :ip, {127, 0, 0, 1})
     validate_remote_access!(ip)
 
+    plug =
+      if debug_errors?() do
+        ForemanServer.Http.DevRouter
+      else
+        ForemanServer.Http.Router
+      end
+
     Bandit.child_spec(
-      plug: ForemanServer.Http.Router,
+      plug: plug,
       scheme: :http,
       ip: ip,
       port: port,
       startup_log: false
     )
+  end
+
+  defp debug_errors? do
+    Application.get_env(:foreman_server, :debug_errors, false)
   end
 
   defp validate_remote_access!(ip) do

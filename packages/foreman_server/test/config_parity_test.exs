@@ -1,0 +1,116 @@
+defmodule ForemanServer.ConfigParityTest do
+  @moduledoc """
+  Verifies config/dev.exs satisfies TRD-022 AC-014-1:
+  Given config/dev.exs is absent, when application starts in dev mode,
+  then all required runtime configuration is present and loadable.
+  """
+  use ExUnit.Case, async: false
+
+  @dev_config_path Path.join(__DIR__, "../config/config.exs") |> Path.expand()
+
+  setup do
+    original_env = %{
+      "DATABASE_URL" => System.get_env("DATABASE_URL"),
+      "FOREMAN_SERVER_HTTP_ENABLED" => System.get_env("FOREMAN_SERVER_HTTP_ENABLED")
+    }
+
+    System.delete_env("DATABASE_URL")
+    System.delete_env("FOREMAN_SERVER_HTTP_ENABLED")
+
+    on_exit(fn ->
+      for {k, v} <- original_env, v != nil, do: System.put_env(k, v)
+    end)
+
+    :ok
+  end
+
+  describe "dev.exs — foreman_server config (via Config.Reader, env: :dev)" do
+    test "EventStore adapter is :postgres in dev" do
+      assert get_foreman_config([:event_store_adapter]) == :postgres
+    end
+
+    test "Repo URL falls back to local dev compose stack when no DATABASE_URL" do
+      url = get_foreman_config([ForemanServer.Repo, :url])
+      assert url != nil
+      assert url =~ "localhost:55432" || url =~ "127.0.0.1:55432"
+      assert url =~ "/foreman_dev"
+    end
+
+    test "HTTP enabled flag is true in dev" do
+      assert get_foreman_config([:http_enabled]) == true
+    end
+
+    test "debug_errors is true in dev (Plug.Debugger active)" do
+      assert get_foreman_config([:debug_errors]) == true
+    end
+
+    test "scheduler worker_launcher consumed by Recovery.scheduler_env/2" do
+      launcher = get_foreman_config([:scheduler, :worker_launcher])
+      assert launcher == ForemanServer.WorkerLauncher
+    end
+
+    test "explicit dev HTTP port 4766 is set" do
+      assert get_foreman_config([:http_port]) == 4766
+    end
+  end
+
+  describe "dev.exs — logger (top-level, not under :foreman_server)" do
+    test "logger level is :debug for verbose dev logging" do
+      assert get_logger_level() == :debug
+    end
+  end
+
+  describe "Endpoint — router selection driven by consumed :debug_errors config" do
+    test "debug_errors=true selects DevRouter" do
+      original = Application.get_env(:foreman_server, :debug_errors)
+
+      on_exit(fn ->
+        if is_nil(original) do
+          Application.delete_env(:foreman_server, :debug_errors)
+        else
+          Application.put_env(:foreman_server, :debug_errors, original)
+        end
+      end)
+
+      Application.put_env(:foreman_server, :debug_errors, true)
+
+      spec = ForemanServer.Http.Endpoint.child_spec(port: 0)
+      assert {Bandit, :start_link, [options]} = spec.start
+      assert options[:plug] == ForemanServer.Http.DevRouter
+    end
+
+    test "debug_errors=false selects plain Router" do
+      original = Application.get_env(:foreman_server, :debug_errors)
+
+      on_exit(fn ->
+        if is_nil(original) do
+          Application.delete_env(:foreman_server, :debug_errors)
+        else
+          Application.put_env(:foreman_server, :debug_errors, original)
+        end
+      end)
+
+      Application.put_env(:foreman_server, :debug_errors, false)
+
+      spec = ForemanServer.Http.Endpoint.child_spec(port: 0)
+      assert {Bandit, :start_link, [options]} = spec.start
+      assert options[:plug] == ForemanServer.Http.Router
+    end
+  end
+
+  # ─── helpers ────────────────────────────────────────────────────────────────
+
+  defp get_foreman_config(path) do
+    @dev_config_path
+    |> Config.Reader.read!(env: :dev)
+    |> Keyword.get(:foreman_server, [])
+    |> get_in(path)
+  end
+
+  defp get_logger_level do
+    @dev_config_path
+    |> Config.Reader.read!(env: :dev)
+    |> Keyword.get(:logger, [])
+    |> Keyword.get(:level)
+  end
+end

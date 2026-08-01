@@ -139,10 +139,13 @@ curl -fsSL https://raw.githubusercontent.com/ldangelo/foreman/main/install.sh | 
 Foreman includes a checked-in local development environment:
 
 - `devbox.json` — reproducible local shell with Node 20, PostgreSQL client tools, git, jq, and helper scripts
-- `compose.yaml` — shared local Postgres + Hindsight stack
-- `.envrc` — direnv hook that loads Devbox and starts the local containers when you enter the repository
+- `.envrc` — direnv exports variables from `.env`; check `.env` before starting the server
+- `compose.yaml` — shared local Postgres stack that provisions three databases:
+    - `foreman` — default application database (`.env.example` `DATABASE_URL` default)
+    - `foreman_dev` — dev EventStore/Repo database (`config/dev.exs` fallback when `DATABASE_URL` is unset)
+    - `hindsight` — pgvector database for the Hindsight service
 
-The shared Postgres service uses `pgvector/pgvector:pg16`, exposes the compose-managed Foreman database on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides it), and also creates a separate `hindsight` database with the `vector` extension enabled. Foreman itself uses `DATABASE_URL` from `.env` or the process environment; check `.env` before starting or restarting the server. Hindsight connects to the compose Postgres container over Docker's internal network. For production releases, set `FOREMAN_SERVER_SECRETS_FILE` to a `.env`-style file to inject `DATABASE_URL`, `FOREMAN_SERVER_EVENT_STORE_ADAPTER`, and `FOREMAN_SERVER_REPO_URL` via the `SecretsProvider` config provider (see `config/prod.exs`).
+The shared Postgres service uses `pgvector/pgvector:pg16`, exposes `foreman` on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides the port), and also creates the `hindsight` database with the `vector` extension. Foreman uses `DATABASE_URL` from `.env` or the process environment; check `.env` before starting the server. For production releases, set `FOREMAN_SERVER_SECRETS_FILE` to a `.env`-style file to inject `DATABASE_URL`, `FOREMAN_SERVER_EVENT_STORE_ADAPTER`, and `FOREMAN_SERVER_REPO_URL` via the `SecretsProvider` config provider (see `config/prod.exs`).
 
 ### Prerequisites
 

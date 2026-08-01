@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
+# ── foreman_dev ───────────────────────────────────────────────────────────────
+foreman_dev_db="foreman_dev"
+if ! psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -tAc "SELECT 1 FROM pg_database WHERE datname = '${foreman_dev_db}'" | grep -q 1; then
+  createdb --username "$POSTGRES_USER" "$foreman_dev_db"
+fi
+
+# ── hindsight ─────────────────────────────────────────────────────────────────
 hindsight_db="${HINDSIGHT_DB_NAME:-hindsight}"
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
