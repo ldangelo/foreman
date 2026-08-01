@@ -16,8 +16,8 @@ npx tsc --noEmit       # type check only
 npx vitest run <file>  # run a single test file
 devbox run dev:up    # start shared Postgres + Hindsight dev containers
 devbox run db:up     # start only shared pgvector Postgres
-# Foreman reads DATABASE_URL from .env/process env; compose's fresh/default Postgres port is 127.0.0.1:55432 (FOREMAN_POSTGRES_PORT overrides)
-
+# Foreman reads DATABASE_URL from .env/process env; compose provisions
+# foreman (default) and foreman_dev (dev fallback via config/dev.exs) on 127.0.0.1:55432
 # CLI (after build or via tsx)
 foreman init           # Initialize project and register it with the Elixir backend
 foreman run            # Tick Elixir scheduler for ready-task dispatch
