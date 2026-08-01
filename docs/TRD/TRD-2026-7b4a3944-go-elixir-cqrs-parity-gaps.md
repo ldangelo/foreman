@@ -430,13 +430,13 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: invalid transition → `{:error, :invalid_transition}`
   - [ ] Test: terminal state (done) rejects further transitions
 
-- [ ] **TRD-033-TEST** Unified ingestion + external trigger test coverage | 3h | [verifies TRD-001, TRD-006, TRD-014, TRD-015] [depends: TRD-001, TRD-006, TRD-014, TRD-015] [satisfies REQ-007, REQ-008, REQ-020] | Validates: AC-007-1–AC-007-4, AC-008-1, AC-008-2 | Implementation AC: Given duplicate ingestion event arrives, when the dedupe window is checked, then the duplicate is rejected and delivery status tracked; given pull-based poll is configured, when external system cannot push, then the poller periodically fetches pending triggers
-  - [ ] Test: attach-bridge webhook → normalized `InboxItem` → deduplicated
-  - [ ] Test: integration ingestion webhook → routed through `Inbox.Poller`
-  - [ ] Test: migration import → `CommandRouter` → `MigrationImportStarted`
-  - [ ] Test: dedupe hit → `InboxItemDeduped`, no re-processing
-  - [ ] Test: `TriggerPoller` periodic fetch
-  - [ ] Test: trigger webhook delivery status tracked
+- [x] **TRD-033-TEST** Unified ingestion + external trigger test coverage | 3h | [verifies TRD-001, TRD-006, TRD-014, TRD-015] [depends: TRD-001, TRD-006, TRD-014, TRD-015] [satisfies REQ-007, REQ-008, REQ-020] | Validates: AC-007-1–AC-007-4, AC-008-1, AC-008-2 | Implementation AC: Given duplicate ingestion event arrives, when the dedupe window is checked, then the duplicate is rejected and delivery status tracked; given pull-based poll is configured, when external system cannot push, then the poller periodically fetches pending triggers
+  - [x] Test: attach-bridge webhook → normalized `InboxItem` → deduplicated
+  - [x] Test: integration ingestion webhook → routed through `Inbox.Poller`
+  - [x] Test: migration import → `CommandRouter` → `MigrationImportStarted`
+  - [x] Test: dedupe hit → `InboxItemDeduped`, no re-processing
+  - [x] Test: `TriggerPoller` periodic fetch
+  - [x] Test: trigger webhook delivery status tracked
 
 - [x] **TRD-034-TEST** PR lifecycle test coverage | 3h | [verifies TRD-016, TRD-017] [depends: TRD-016, TRD-017] [satisfies REQ-009, REQ-010, REQ-020] | Validates: AC-009-1–AC-009-3, AC-010-1, AC-010-2 | Implementation AC: Given run is pending merge and PR status is not `open` and not `merged`, then the PR gate actively blocks run progression; polling fallback reconciles PR state every 5 minutes
   - [x] Test: `PrAssociated` event appended on PR URL provided
