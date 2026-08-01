@@ -450,6 +450,57 @@ defmodule ForemanServer.AggregateTest do
     assert Enum.count(final_events, &(&1.event_type == "InboxItemDeduped")) == 1
   end
 
+  test "InboxThread dedupe window boundary: within window → deduped, outside → accepted" do
+    window_sec = 5
+    original_window = Application.fetch_env(:foreman_server, :inbox_dedupe_window_seconds)
+    :ok = Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, window_sec)
+
+    on_exit(fn ->
+      case original_window do
+        {:ok, val} -> Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, val)
+        :error -> Application.delete_env(:foreman_server, :inbox_dedupe_window_seconds)
+      end
+    end)
+
+    correlation_id = "boundary-dedupe-#{:rand.uniform(999_999)}"
+    t0 = DateTime.utc_now()
+    run_id = "run-boundary-#{:rand.uniform(999_999)}"
+
+    # Seed correlation_index with t0 (fixed — the "last seen" time)
+    state = %InboxThread.State{
+      messages: %{},
+      correlation_index: %{correlation_id => t0}
+    }
+
+    # t0 + window - 1: still within window → deduped
+    # handle_command uses payload.timestamp || utc_now(), so we pass it explicitly
+    cmd_within = %{
+      type: "inbox.item.start",
+      payload: %{
+        run_id: run_id,
+        correlation_id: correlation_id,
+        source: "test",
+        payload: %{},
+        timestamp: DateTime.add(t0, window_sec - 1, :second)
+      }
+    }
+    assert {:ok, %{event_type: "InboxItemDeduped"}} = InboxThread.handle_command(state, cmd_within)
+
+    # t0 + window: exactly at cutoff → outside window → accepted
+    # cutoff = (t0 + window) - window = t0; t0 > t0 is false → accept
+    cmd_at = %{
+      type: "inbox.item.start",
+      payload: %{
+        run_id: run_id,
+        correlation_id: correlation_id,
+        source: "test",
+        payload: %{},
+        timestamp: DateTime.add(t0, window_sec, :second)
+      }
+    }
+    assert {:ok, %{event_type: "InboxItemStarted"}} = InboxThread.handle_command(state, cmd_at)
+  end
+
   test "worker aggregate folds imported worker events and validates sequence" do
     events = [
       %{event_type: "WorkerStarted", payload: %{run_id: "run", worker_id: "w", sequence: 0}},
