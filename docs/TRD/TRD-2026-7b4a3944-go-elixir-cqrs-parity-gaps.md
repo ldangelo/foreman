@@ -170,13 +170,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 1: Shared Inbox Schema + Project Infrastructure
 **Shippable State:** Projects can be registered and supervised; a shared inbox command/event schema is available for both ingestion paths and external triggers.
 
-- [ ] **TRD-001** SharedInbox command and event schema | 2h | [satisfies ARCH] | Validates: — | AC: Define `StartInboxItem` command struct, `InboxItemStarted` event struct, `InboxItemCorrelationId` behaviour for dedupe; both attach-bridge ingestion and external trigger polling depend on this schema — not on each other
-  - [ ] `InboxItemStarted` event: `%InboxItemStarted{correlation_id, source, payload, timestamp}`
-  - [ ] `InboxItemDeduped` event: `%InboxItemDeduped{correlation_id, source}`
-  - [ ] Dedupe window configurable via `:inbox_dedupe_window_seconds`
-  - [ ] New `SharedInbox` module under `foreman_server/inbox/`
-  - [ ] `InboxItemCorrelationId` behaviour: `correlation_id(command_or_payload) :: String.t()`
-
+- [x] **TRD-001** SharedInbox command and event schema | 2h | [satisfies ARCH] | Validates: — | AC: Define `StartInboxItem` command struct, `InboxItemStarted` event struct, `InboxItemCorrelationId` behaviour for dedupe; both attach-bridge ingestion and external trigger polling depend on this schema — not on each other
+  - [x] `InboxItemStarted` event: `%InboxItemStarted{correlation_id, source, payload, timestamp}`
+  - [x] `InboxItemDeduped` event: `%InboxItemDeduped{correlation_id, source}`
+  - [x] Dedupe window configurable via `:inbox_dedupe_window_seconds`
+  - [x] New `SharedInbox` module under `foreman_server/inbox/`
+  - [x] `InboxItemCorrelationId` behaviour: `correlation_id(command_or_payload) :: String.t()`
 - [x] **TRD-002** ProjectRegistry | 4h | [satisfies REQ-016] | Validates: AC-016-2 | AC: Given a project process registers, when it calls `ProjectRegistry.register/2`, then the canonical name-to-pid map is updated; lookup by project_id returns the pid; unregister on termination
   - [x] `ProjectRegistry` GenServer with `register/2`, `unregister/1`, `lookup/1`
   - [x] Uses `Registry` under `:project_registry` registry
