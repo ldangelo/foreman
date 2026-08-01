@@ -306,13 +306,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Fire-and-track: `ScheduledFireConfirmed` on worker pickup; `ScheduledFireSkipped` if abandoned
   - [x] Idempotency: existing Actor command deduplication covers this (verify)
 
-- [ ] **TRD-020** Stuck-run detection | 2h | [satisfies REQ-012] | Validates: AC-012-1 | AC: Given a run is active, when no phase or worker events have been appended for 15 minutes, then run is flagged `Stuck` in projection and alert is surfaced
-  - [ ] `StuckDetector` GenServer: periodic scan, configurable via `:stuck_run_check_interval_seconds`
-  - [ ] Scans active runs in `ProjectionStore`; checks `last_event_time`
-  - [ ] 15-minute threshold (resolved per AC-012-1)
-  - [ ] On stuck detection: emit `RunFlaggedStuck` event through `CommandRouter`
-  - [ ] Alert surface: `Telemetry.execute([:foreman, :run, :stuck], %{run_id: run_id})`
-
+- [x] **TRD-020** Stuck-run detection | 2h | [satisfies REQ-012] | Validates: AC-012-1 | AC: Given a run is active, when no phase or worker events have been appended for 15 minutes, then run is flagged `Stuck` in projection and alert is surfaced
+  - [x] `StuckDetector` GenServer: periodic scan, configurable via `:stuck_run_check_interval_seconds`
+  - [x] Scans active runs in `ProjectionStore`; checks `last_event_time`
+  - [x] 15-minute threshold (resolved per AC-012-1)
+  - [x] On stuck detection: emit `RunFlaggedStuck` event through `CommandRouter`
+  - [x] Alert surface: `Telemetry.execute([:foreman, :run, :stuck], %{run_id: run_id})`
 - [x] **TRD-021** Scheduler runtime | 5h | [satisfies REQ-011] | Validates: AC-011-3 | AC: Given a scheduled fire is due, when scheduler dispatches, then it records intent (`ScheduledFireRecorded`) and worker confirms on pickup (`ScheduledFireConfirmed`); no fire is lost if scheduler crashes between record and pickup
   - [x] `Scheduler.Runtime` GenServer: fires scheduled tasks
   - [x] `record_intent/2`: appends `ScheduledFireRecorded` event
