@@ -13,6 +13,17 @@ defmodule ForemanServer.WorkflowInterpreter do
     end
   end
 
+  @spec load!(String.t()) :: workflow()
+  def load!(path) when is_binary(path) do
+    case load_file(path) do
+      {:ok, workflow} ->
+        workflow
+
+      {:error, reason} ->
+        raise ArgumentError, "failed to load workflow #{path}: #{format_error(reason)}"
+    end
+  end
+
   @spec load_yaml(String.t()) :: {:ok, workflow()} | {:error, term()}
   def load_yaml(content) when is_binary(content) do
     content
@@ -23,10 +34,12 @@ defmodule ForemanServer.WorkflowInterpreter do
   @spec compile(map()) :: {:ok, workflow()} | {:error, term()}
   def compile(%{} = raw) do
     phases = Enum.map(Map.get(raw, :phases, []), &normalize_phase/1)
+    task_phases = Map.get(raw, :task_phases, [])
+    final_phases = Map.get(raw, :final_phases, [])
 
-    if phases == [] do
-      {:error, :workflow_requires_phases}
-    else
+    with :ok <- validate_phases_present(phases),
+         :ok <- validate_phase_references(task_phases, :task_phases, phases),
+         :ok <- validate_phase_references(final_phases, :final_phases, phases) do
       {:ok,
        %{
          name: Map.get(raw, :name, "workflow"),
@@ -37,8 +50,8 @@ defmodule ForemanServer.WorkflowInterpreter do
          artifacts: Map.new(phases, &{&1.name, &1.artifact}),
          mail_hooks: Map.new(phases, &{&1.name, &1.mail}),
          builtins: Enum.filter(phases, &builtin_phase?/1),
-         task_phases: Map.get(raw, :task_phases, []),
-         final_phases: Map.get(raw, :final_phases, [])
+         task_phases: task_phases,
+         final_phases: final_phases
        }}
     end
   end
@@ -158,6 +171,47 @@ defmodule ForemanServer.WorkflowInterpreter do
     |> Enum.map(& &1.retry_on_fail)
     |> Enum.max(fn -> 0 end)
   end
+
+  defp validate_phases_present([]), do: {:error, :workflow_requires_phases}
+  defp validate_phases_present(_phases), do: :ok
+
+  defp validate_phase_references(references, section, phases) when is_list(references) do
+    phase_names = MapSet.new(Enum.map(phases, & &1.name))
+
+    Enum.reduce_while(references, :ok, fn reference, :ok ->
+      cond do
+        not is_binary(reference) or reference == "" ->
+          {:halt, {:error, {:workflow_invalid_phase_reference, section, reference}}}
+
+        MapSet.member?(phase_names, reference) ->
+          {:cont, :ok}
+
+        true ->
+          {:halt,
+           {:error,
+            {:workflow_missing_phase, section, reference, Enum.sort(MapSet.to_list(phase_names))}}}
+      end
+    end)
+  end
+
+  defp validate_phase_references(references, section, _phases),
+    do: {:error, {:workflow_invalid_phase_list, section, references}}
+
+  defp format_error(:workflow_requires_phases), do: "workflow requires at least one phase"
+
+  defp format_error({:workflow_invalid_phase_list, section, value}) do
+    "#{section} must be a list of phase names, got: #{inspect(value)}"
+  end
+
+  defp format_error({:workflow_invalid_phase_reference, section, value}) do
+    "#{section} contains an invalid phase reference: #{inspect(value)}"
+  end
+
+  defp format_error({:workflow_missing_phase, section, reference, available}) do
+    "#{section} references missing required phase #{inspect(reference)}; available phases: #{Enum.join(available, ", ")}"
+  end
+
+  defp format_error(reason), do: inspect(reason)
 
   defp builtin_phase?(phase),
     do: is_binary(phase.command) and String.starts_with?(phase.command, "/")
