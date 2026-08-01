@@ -456,11 +456,11 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: `ProjectRegistry` lookup returns correct pid
   - [ ] Test: project config persisted via event store, read via `ProjectionStore`
 
-- [ ] **TRD-037-TEST** Config parity test coverage | 2h | [verifies TRD-022, TRD-023, TRD-024] [depends: TRD-022, TRD-023, TRD-024] [satisfies REQ-014, REQ-020] | Validates: AC-014-1–AC-014-3 | Implementation AC: Given dev, test, and prod configs exist, when the application starts in each environment, then the correct configuration is loaded; in prod, secrets are sourced from a secrets manager
-  - [ ] Test: dev config loads without errors
-  - [ ] Test: test config uses memory EventStore adapter
-  - [ ] Test: prod config uses `Config.provider` for secrets manager
-  - [ ] Test: missing required secret raises on startup
+- [x] **TRD-037-TEST** Config parity test coverage | 2h | [verifies TRD-022, TRD-023, TRD-024] [depends: TRD-022, TRD-023, TRD-024] [satisfies REQ-014, REQ-020] | Validates: AC-014-1–AC-014-3 | Implementation AC: Given dev, test, and prod configs exist, when the application starts in each environment, then the correct configuration is loaded; in prod, secrets are sourced from a secrets manager
+  - [x] Test: dev config loads without errors
+  - [x] Test: test config uses memory EventStore adapter
+  - [x] Test: prod config uses `Config.provider` for secrets manager
+  - [x] Test: missing required secret raises on startup
 
 - [ ] **TRD-007-TEST** PlanningFlow test coverage | 2h | [verifies TRD-007] [depends: TRD-007] [satisfies REQ-017] | Validates: AC-017-1, AC-017-2 | Implementation AC: Given `plan.prd` or `plan.trd` command is dispatched, when `PlanningFlow` processes it, then `PlanningFlowStarted` event is appended; trace events append through the existing aggregate infrastructure
   - [ ] Test: `plan.prd` command → `PlanningFlowStarted` event appended
