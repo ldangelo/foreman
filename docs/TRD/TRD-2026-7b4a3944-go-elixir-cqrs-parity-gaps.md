@@ -275,11 +275,11 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Migration imports: `MigrationImporter.process/1` → `CommandRouter.dispatch/2`
   - [x] Dedup by correlation_id (from `SharedInbox` schema)
 
-- [ ] **TRD-015** External trigger polling (pull fallback) | 3h | [satisfies REQ-008] | Validates: AC-008-1, AC-008-2 | AC: Given an external system cannot push webhooks, when a pull-based inbox poll is configured, then the poller periodically fetches pending triggers; given external trigger webhook arrives, when it is received, then it is routed to the appropriate handler and delivery status is tracked
-  - [ ] `TriggerPoller` GenServer: configurable interval, calls external trigger endpoint
-  - [ ] Fetches pending triggers, normalizes via `SharedInbox`
-  - [ ] Delivery status tracked in projection store
-  - [ ] Webhook ingestion same path: `TriggerWebhookController` → `SharedInbox.ingest/2`
+- [x] **TRD-015** External trigger polling (pull fallback) | 3h | [satisfies REQ-008] | Validates: AC-008-1, AC-008-2 | AC: Given an external system cannot push webhooks, when a pull-based inbox poll is configured, then the poller periodically fetches pending triggers; given external trigger webhook arrives, when it is received, then it is routed to the appropriate handler and delivery status is tracked
+  - [x] `TriggerPoller` GenServer: configurable interval, calls external trigger endpoint
+  - [x] Fetches pending triggers, normalizes via `SharedInbox`
+  - [x] Delivery status tracked in projection store
+  - [x] Webhook ingestion via `POST /webhooks/external_trigger` → `SharedInbox.ingest/2`
 
 - [x] **TRD-016** PR association | 2h | [satisfies REQ-009] | Validates: AC-009-1 | AC: Given a run completes, when operator provides PR URL or identity, then `PrAssociate.store/2` stores the association and emits `PrAssociated` through `CommandRouter`
   - [x] `PrAssociate` module: `store(run_id, pr_url) :: {:ok, pr_association_id}`
