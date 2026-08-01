@@ -14,8 +14,7 @@ foreman <command> --help    # Show command-specific help
 
 ### Local Development Services
 
-If `DATABASE_URL` is unset, `config/dev.exs` falls back to `127.0.0.1:55432/foreman_dev`; `.env.example` defaults to `127.0.0.1:55432/foreman`. The compose stack provisions both `foreman` and `foreman_dev` databases, plus the `hindsight` pgvector database.
-
+If `DATABASE_URL` is unset, `config/dev.exs` falls back to `127.0.0.1:55432/foreman_dev`; `.env.example` defaults to `127.0.0.1:55432/foreman`. The compose stack provisions both `foreman` and `foreman_dev` on first `docker compose up` (fresh volume); `foreman_dev` is not created on restart.
 `devbox run dev:up` starts shared Postgres plus Hindsight; `devbox run db:up` starts only the shared pgvector Postgres container. `.envrc` sources `.env`, and Foreman CLI/server commands use `DATABASE_URL` from `.env` or the process environment.
 
 ### Production Deployment

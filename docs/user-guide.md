@@ -77,7 +77,7 @@ Use Foreman when you want multiple AI agents working safely on one repository wi
 
 ## Local Development Environment
 
-Foreman uses `DATABASE_URL` from `.env` or the process environment. If unset, `config/dev.exs` falls back to `foreman_dev` on `127.0.0.1:55432`; `.env.example` defaults to `foreman` on the same port. The compose stack provisions both `foreman` and `foreman_dev` databases, plus the `hindsight` pgvector database. Run migrations with `foreman db migrate` when switching environments.
+Foreman uses `DATABASE_URL` from `.env` or the process environment. If unset, `config/dev.exs` falls back to `foreman_dev` on `127.0.0.1:55432`; `.env.example` defaults to `foreman` on the same port. The compose stack provisions both `foreman` and `foreman_dev` on first `docker compose up` (fresh volume); `foreman_dev` is not created on restart. Run dev migrations with `cd packages/foreman_server && MIX_ENV=dev mix ecto.migrate`.
 
 For production deployments, secrets can be loaded via `FOREMAN_SERVER_SECRETS_FILE` pointing to a `.env`-style file. See `config/prod.exs` for the supported keys (`DATABASE_URL`, `FOREMAN_SERVER_EVENT_STORE_ADAPTER`, `FOREMAN_SERVER_REPO_URL`). If unset or pointing to a missing file, the provider is a no-op and app config is used as-is.
 
