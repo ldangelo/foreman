@@ -24,8 +24,8 @@ defmodule ForemanServer.Operations.Manual do
   @doc """
   Forces a run to complete by dispatching a `run.complete` command through
   the CommandRouter. If the run is already terminal, `RunAlreadyCompleted`
-  is appended idempotently. The appropriate completion event is determined
-  by the Run aggregate.
+  is appended without changing aggregate state. The appropriate completion
+  event is determined by the Run aggregate.
   """
   @spec force_complete(String.t()) :: {:ok, map()} | {:error, term()}
   def force_complete(run_id) when is_binary(run_id) do

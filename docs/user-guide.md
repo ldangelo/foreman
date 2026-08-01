@@ -204,7 +204,7 @@ If `foreman server` is running, the `ForemanServer.Operations.Inspect` and `Fore
 - `ForemanServer.Operations.Inspect.run_state(run_id)` — reads a single run entry from the projection store snapshot; returns `nil` if the run is unknown.
 - `ForemanServer.Operations.Inspect.list_active_runs()` — returns all non-terminal runs (excludes `completed`, `failed`, `blocked`, `merged`, `paused`).
 - `ForemanServer.Operations.Manual.mark_recovered(run_id)` — dispatches `run.recover` (outcome: `"recovered"`) through `CommandRouter`, appending a `RunRecoveryEvent` to the run stream.
-- `ForemanServer.Operations.Manual.force_complete(run_id)` — dispatches `run.complete` through `CommandRouter`. If the run is already terminal, appends `RunAlreadyCompleted` idempotently; otherwise emits `RunCompleted`.
+- `ForemanServer.Operations.Manual.force_complete(run_id)` — dispatches `run.complete` through `CommandRouter`. If the run is already terminal, appends `RunAlreadyCompleted` without changing aggregate state; otherwise emits `RunCompleted`.
 
 Troubleshooting sequence for Elixir-backed state:
 1. Check whether the expected durable event exists (`RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, etc.).
