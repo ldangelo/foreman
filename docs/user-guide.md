@@ -342,7 +342,7 @@ config :foreman_server,
   external_trigger_endpoint_url: "https://your-trigger-source/triggers"
 ```
 
-**Startup recovery**: On every app boot, `Recovery` GenServer automatically scans `ProjectionStore` for interrupted runs and emits `RunRecoveryEvent` through `CommandRouter`. It also scans for pending scheduler fire intents whose pickup was never confirmed before restart — these are marked `SchedulerIntentStale` and either re-dispatched (with a fresh worker launch) or explicitly `ScheduledFireSkipped` if the work is terminal or abandoned. Repeated scans in the same application boot do not duplicate recovery effects (boot-scoped command IDs and the pre-boot timestamp cutoff dedupe effects). `ScheduledFireConfirmed` is emitted when a worker confirms pickup via `WorkerStarted`.
+**Startup recovery**: `ForemanServer.Scheduler.Runtime` is the single supervised scheduler GenServer. On dispatch it calls `record_intent/2` which appends `ScheduledFireRecorded` before launching the worker; `Scheduler.Runtime` observes `WorkerStarted` via `handle_event/1` and calls `confirm_execution/1` to append `ScheduledFireConfirmed`. On app boot, `Recovery` GenServer scans `ProjectionStore` for interrupted runs and emits `RunRecoveryEvent` through `CommandRouter`. It also scans for pending scheduler fire intents whose pickup was never confirmed — these are marked `SchedulerIntentStale` and then `Runtime.record_intent/2` records a new attempt and `worker_launcher.launch/3` separately starts a fresh worker, or `ScheduledFireSkipped` is appended if the work is terminal or abandoned. Repeated scans in the same application boot do not duplicate recovery effects (boot-scoped command IDs and the pre-boot timestamp cutoff dedupe effects).
 
 
 ```bash
