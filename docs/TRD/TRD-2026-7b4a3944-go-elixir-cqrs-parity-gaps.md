@@ -314,11 +314,11 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] On stuck detection: emit `RunFlaggedStuck` event through `CommandRouter`
   - [ ] Alert surface: `Telemetry.execute([:foreman, :run, :stuck], %{run_id: run_id})`
 
-- [ ] **TRD-021** Scheduler runtime | 5h | [satisfies REQ-011] | Validates: AC-011-3 | AC: Given a scheduled fire is due, when scheduler dispatches, then it records intent (`ScheduledFireRecorded`) and worker confirms on pickup (`ScheduledFireConfirmed`); no fire is lost if scheduler crashes between record and pickup
-  - [ ] `Scheduler.Runtime` GenServer: fires scheduled tasks
-  - [ ] `record_intent/2`: appends `ScheduledFireRecorded` event
-  - [ ] Worker confirms via `confirm_execution/1`: appends `ScheduledFireConfirmed`
-  - [ ] Crash between record and confirm: `Recovery.detect_unconfirmed_intents/0` re-dispatches
+- [x] **TRD-021** Scheduler runtime | 5h | [satisfies REQ-011] | Validates: AC-011-3 | AC: Given a scheduled fire is due, when scheduler dispatches, then it records intent (`ScheduledFireRecorded`) and worker confirms on pickup (`ScheduledFireConfirmed`); no fire is lost if scheduler crashes between record and pickup
+  - [x] `Scheduler.Runtime` GenServer: fires scheduled tasks
+  - [x] `record_intent/2`: appends `ScheduledFireRecorded` event
+  - [x] Worker confirms via `confirm_execution/1`: appends `ScheduledFireConfirmed`
+  - [x] Crash between record and confirm: `Recovery.detect_unconfirmed_intents/0` re-dispatches
 
 ---
 
