@@ -7,6 +7,8 @@ defmodule ForemanServer.ConfigParityTest do
   use ExUnit.Case, async: false
 
   @dev_config_path Path.join(__DIR__, "../config/config.exs") |> Path.expand()
+  @test_config_path Path.join(__DIR__, "../config/config.exs") |> Path.expand()
+  @mix_exs_path Path.join(__DIR__, "../mix.exs") |> Path.expand()
 
   setup do
     original_env = %{
@@ -193,6 +195,67 @@ defmodule ForemanServer.ConfigParityTest do
     end
   end
 
+  describe "test.exs — foreman_server config (TRD-037 S2)" do
+    test "test config uses :memory EventStore adapter" do
+      adapter =
+        @test_config_path
+        |> Config.Reader.read!(env: :test)
+        |> Keyword.get(:foreman_server, [])
+        |> Keyword.get(:event_store_adapter)
+
+      assert adapter == :memory
+    end
+  end
+
+  describe "prod release config wires SecretsProvider (TRD-037 S3)" do
+    test "SecretsProvider is in the foreman_server release config_providers" do
+      mix_content = File.read!(@mix_exs_path)
+
+      # Verify the foreman_server release block contains config_providers with SecretsProvider
+      assert mix_content =~ "config_providers",
+             "mix.exs must define config_providers for foreman_server release"
+      assert mix_content =~ "SecretsProvider",
+             "mix.exs must wire ForemanServer.SecretsProvider in release config_providers"
+      assert mix_content =~ "FOREMAN_SERVER_SECRETS_FILE",
+             "SecretsProvider must be wired with FOREMAN_SERVER_SECRETS_FILE env var"
+
+      # Verify SecretsProvider and foreman_server are in the same release block
+      # (i.e., SecretsProvider appears inside the foreman_server: [...] release def)
+      foreman_server_block =
+        Regex.run(~r/foreman_server:\s*\[([^\]]*)\]/s, mix_content, capture: :all_but_first)
+        |> hd_or_empty()
+
+      refute foreman_server_block == "",
+             "SecretsProvider must be inside the foreman_server release block"
+      assert foreman_server_block =~ "SecretsProvider",
+             "SecretsProvider must be inside the foreman_server release block"
+    end
+  end
+
+  describe "SecretsProvider is a no-op when secrets file is missing (TRD-037 S4)" do
+    test "SecretsProvider.load returns config unchanged when file does not exist" do
+      absent_path = "/tmp/foreman-test-nonexistent-secrets-#{:rand.uniform(999_999)}"
+      refute File.exists?(absent_path)
+
+      # read_secrets returns [] for missing files; load then merges empty list = no change
+      original_config = [foreman_server: [http_port: 1234]]
+      result = ForemanServer.SecretsProvider.load(original_config, absent_path)
+
+      assert result == original_config,
+             "SecretsProvider must be a no-op when secrets file is absent"
+    end
+
+    test "SecretsProvider.load is a no-op when env var is unset" do
+      System.delete_env("FOREMAN_SERVER_SECRETS_FILE")
+
+      original_config = [foreman_server: [http_port: 5678]]
+      result = ForemanServer.SecretsProvider.load(original_config, {:env, "FOREMAN_SERVER_SECRETS_FILE"})
+
+      assert result == original_config,
+             "SecretsProvider must be a no-op when FOREMAN_SERVER_SECRETS_FILE is unset"
+    end
+  end
+
   # ─── helpers ────────────────────────────────────────────────────────────────
 
   defp get_foreman_config(path) do
@@ -208,4 +271,8 @@ defmodule ForemanServer.ConfigParityTest do
     |> Keyword.get(:logger, [])
     |> Keyword.get(:level)
   end
+
+  defp hd_or_empty(nil), do: ""
+  defp hd_or_empty([]), do: ""
+  defp hd_or_empty([h | _]), do: h
 end

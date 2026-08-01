@@ -105,6 +105,7 @@ defmodule ForemanServer.EventStore do
   defp adapter do
     case ForemanServer.RuntimeInfo.event_store_adapter() do
       :term -> {:term, ForemanServer.RuntimeInfo.event_log_path()}
+      :memory -> :memory
       :postgres -> :postgres
     end
   end
@@ -126,12 +127,14 @@ defmodule ForemanServer.EventStore do
         raise "failed to load foreman_events: #{inspect(reason)}"
     end
   end
+  defp load_events(:memory) do
+    []
+  end
 
   defp load_events({:term, path}) do
     File.mkdir_p!(Path.dirname(path))
     replay(path)
   end
-
   defp row_to_event([
          event_id,
          stream_id,
@@ -189,6 +192,10 @@ defmodule ForemanServer.EventStore do
 
   defp persist_event({:term, path}, %Event{} = event) do
     File.write(path, EventCodec.encode(event) <> "\n", [:append])
+  end
+
+  defp persist_event(:memory, %Event{}) do
+    :ok
   end
 
   defp validate_stream_id(stream_id) when is_binary(stream_id) and stream_id != "", do: :ok

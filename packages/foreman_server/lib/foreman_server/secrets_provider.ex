@@ -101,6 +101,7 @@ defmodule ForemanServer.SecretsProvider do
     case value do
       "postgres" -> :postgres
       "term" -> :term
+      "memory" -> :memory
       _ -> raise "invalid FOREMAN_SERVER_EVENT_STORE_ADAPTER: #{value}"
     end
   end

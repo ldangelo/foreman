@@ -396,6 +396,7 @@ defmodule ForemanServer.AttachBridgeTest do
   defp restart_app(tmp_dir) do
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    Application.put_env(:foreman_server, :event_store_adapter, :term)
     Application.put_env(:foreman_server, :auth_token, "secret")
     assert :ok = Application.start(:foreman_server)
   end

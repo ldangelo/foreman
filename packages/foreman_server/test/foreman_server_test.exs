@@ -11,10 +11,12 @@ defmodule ForemanServerTest do
 
     project_store_path = Path.join(tmp_dir, "projects.term")
     event_log_path = Path.join(tmp_dir, "events.term.log")
+    previous_event_store_adapter = Application.get_env(:foreman_server, :event_store_adapter)
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :project_store_path, project_store_path)
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    Application.put_env(:foreman_server, :event_store_adapter, :term)
 
     Application.put_env(:foreman_server, :scheduler,
       auto_tick: false,
@@ -25,6 +27,9 @@ defmodule ForemanServerTest do
       Application.stop(:foreman_server)
       Application.delete_env(:foreman_server, :project_store_path)
       Application.delete_env(:foreman_server, :event_log_path)
+      if previous_event_store_adapter,
+        do: Application.put_env(:foreman_server, :event_store_adapter, previous_event_store_adapter),
+        else: Application.delete_env(:foreman_server, :event_store_adapter)
       Application.delete_env(:foreman_server, :scheduler)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)

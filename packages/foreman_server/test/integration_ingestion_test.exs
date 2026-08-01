@@ -12,14 +12,19 @@ defmodule ForemanServer.IntegrationIngestionTest do
 
     File.mkdir_p!(tmp_dir)
     event_log_path = Path.join(tmp_dir, "events.term.log")
+    previous_event_store_adapter = Application.get_env(:foreman_server, :event_store_adapter)
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    Application.put_env(:foreman_server, :event_store_adapter, :term)
     assert :ok = Application.start(:foreman_server)
 
     on_exit(fn ->
       Application.stop(:foreman_server)
       Application.delete_env(:foreman_server, :event_log_path)
+      if previous_event_store_adapter,
+        do: Application.put_env(:foreman_server, :event_store_adapter, previous_event_store_adapter),
+        else: Application.delete_env(:foreman_server, :event_store_adapter)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
@@ -261,6 +266,7 @@ defmodule ForemanServer.IntegrationIngestionTest do
 
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    Application.put_env(:foreman_server, :event_store_adapter, :term)
     assert :ok = Application.start(:foreman_server)
 
     snapshot = ProjectionStore.snapshot()

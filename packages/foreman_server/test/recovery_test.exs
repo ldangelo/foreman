@@ -342,7 +342,9 @@ defmodule ForemanServer.RecoveryTest do
   defp restart_app!(tmp_dir, opts \\ []) do
     _ = Application.stop(:foreman_server)
 
-    Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
+    event_log_path = Path.join(tmp_dir, "events.term.log")
+    Application.put_env(:foreman_server, :event_log_path, event_log_path)
+    Application.put_env(:foreman_server, :event_store_adapter, :term)
     Application.put_env(:foreman_server, :project_store_path, Path.join(tmp_dir, "projects.term"))
 
     worker_launcher =

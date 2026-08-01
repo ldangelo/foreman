@@ -62,11 +62,14 @@ defmodule ForemanServer.RuntimeInfo do
     if mix_env() == "test", do: @test_http_port, else: @user_http_port
   end
 
-  @spec event_store_adapter() :: :term | :postgres
+  @spec event_store_adapter() :: :term | :memory | :postgres
   def event_store_adapter do
     case System.get_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER") do
       "term" ->
         :term
+
+      "memory" ->
+        :memory
 
       "postgres" ->
         :postgres
