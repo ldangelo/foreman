@@ -120,7 +120,7 @@ defmodule ForemanServer.OperationsHelpersTest do
     assert event.payload.run_id == run_id
   end
 
-  test "force_complete/1 is idempotent on already-completed run" do
+  test "force_complete/1 returns RunAlreadyCompleted for already-completed run" do
     run_id = "idempotent-#{unique_id()}"
 
     {:ok, _} =
