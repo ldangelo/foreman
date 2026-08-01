@@ -358,13 +358,13 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 6: Debug Views + Operations Helpers
 **Shippable State:** LiveView debug pages show real-time run/phase/worker state; operators can inspect and manipulate run state via CommandRouter-backed commands.
 
-- [ ] **TRD-026** LiveView debug pages | 5h | [satisfies REQ-018] | Validates: AC-018-1 | AC: Given `debug_views.ex` is absent, when application runs in dev mode, then LiveView provides real-time interactive debug pages for run/phase/worker state diagnostics; LiveView is required (not optional)
-  - [ ] `ForemanServerWeb.Debug.RunLive`: live view for run state
-  - [ ] `ForemanServerWeb.Debug.PhaseLive`: live view for phase state
-  - [ ] `ForemanServerWeb.Debug.WorkerLive`: live view for worker status
-  - [ ] Phoenix Presence for real-time updates
-  - [ ] Routes under `/debug/runs`, `/debug/phases`, `/debug/workers`
-  - [ ] Dev-mode only (guard in router)
+- [x] **TRD-026** LiveView debug pages | 5h | [satisfies REQ-018] | Validates: AC-018-1 | AC: Given `debug_views.ex` is absent, when application runs in dev mode, then LiveView provides real-time interactive debug pages for run/phase/worker state diagnostics; LiveView is required (not optional)
+  - [x] `ForemanServerWeb.Debug.RunLive`: live view for run state
+  - [x] `ForemanServerWeb.Debug.PhaseLive`: live view for phase state
+  - [x] `ForemanServerWeb.Debug.WorkerLive`: live view for worker status
+  - [x] Phoenix Presence for real-time updates
+  - [x] Routes under `/debug/runs`, `/debug/phases`, `/debug/workers`
+  - [x] Dev-mode only (guard in router)
 
 - [ ] **TRD-027** Operations helpers | 3h | [satisfies REQ-019] | Validates: AC-019-1 | AC: Given `operations.ex` is absent, when an operator needs to inspect or manipulate run state, then operations helpers are available through `CommandRouter`-backed commands — not direct state manipulation
   - [ ] `Operations.Inspect.run_state/1`: reads from `ProjectionStore`

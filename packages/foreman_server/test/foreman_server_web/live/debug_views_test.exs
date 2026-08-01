@@ -1,7 +1,6 @@
 defmodule ForemanServerWeb.DebugViewsTest do
   use ExUnit.Case, async: false
-  use Phoenix.ConnTest
-
+  import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
   alias ForemanServer.{EventStore, WorkerProtocol}
@@ -17,6 +16,12 @@ defmodule ForemanServerWeb.DebugViewsTest do
 
     File.mkdir_p!(tmp_dir)
 
+    previous_env = [
+      event_log_path: Application.get_env(:foreman_server, :event_log_path),
+      project_store_path: Application.get_env(:foreman_server, :project_store_path),
+      debug_live_views_enabled: Application.get_env(:foreman_server, :debug_live_views_enabled)
+    ]
+
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
     Application.put_env(:foreman_server, :project_store_path, Path.join(tmp_dir, "projects.term"))
@@ -27,9 +32,15 @@ defmodule ForemanServerWeb.DebugViewsTest do
 
     on_exit(fn ->
       Application.stop(:foreman_server)
-      Application.delete_env(:foreman_server, :event_log_path)
-      Application.delete_env(:foreman_server, :project_store_path)
-      Application.delete_env(:foreman_server, :debug_live_views_enabled)
+
+      Enum.each(previous_env, fn {key, value} ->
+        if is_nil(value) do
+          Application.delete_env(:foreman_server, key)
+        else
+          Application.put_env(:foreman_server, key, value)
+        end
+      end)
+
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
@@ -44,6 +55,14 @@ defmodule ForemanServerWeb.DebugViewsTest do
     assert html =~ "run-live"
     assert html =~ "developer"
     assert html =~ "in_progress"
+  end
+
+  test "/debug/runs page includes live socket bootstrap assets" do
+    conn = get(build_conn(), "/debug/runs")
+    html = html_response(conn, 200)
+
+    assert html =~ ~s(name="csrf-token")
+    assert html =~ ~s(src="/debug-live.js")
   end
 
   test "/debug/phases page renders phase state" do

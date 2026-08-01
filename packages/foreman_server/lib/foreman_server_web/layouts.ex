@@ -3,7 +3,7 @@ defmodule ForemanServerWeb.Layouts do
 
   use Phoenix.Component
 
-  attr :inner_content, :any, required: true
+  attr(:inner_content, :any, required: true)
 
   def root(assigns) do
     ~H"""
@@ -12,7 +12,10 @@ defmodule ForemanServerWeb.Layouts do
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="csrf-token" content={Plug.CSRFProtection.get_csrf_token()} />
         <title>Foreman debug</title>
+        <script defer src="/debug-live.js">
+        </script>
         <style>
           :root {
             color-scheme: dark;
@@ -42,7 +45,7 @@ defmodule ForemanServerWeb.Layouts do
     """
   end
 
-  attr :inner_content, :any, required: true
+  attr(:inner_content, :any, required: true)
 
   def app(assigns) do
     ~H"""
