@@ -27,16 +27,17 @@ defmodule ForemanServer.Application do
       repo_children() ++
         [
           {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
-          {Registry, keys: :unique, name: :project_registry},
-          {Phoenix.PubSub, name: ForemanServer.PubSub},
+          {Registry, keys: :unique, name: :project_registry}
+        ] ++
+        [
           {ProjectionStore, []},
-          {ForemanServerWeb.Endpoint, []},
-          {ForemanServerWeb.Presence, []},
           {Overwatch, []},
           {Overwatch.Tracker, :ok},
           {Overwatch.WorkerSupervisor, []},
-          {EventStore, []},
-          {ForemanServerWeb.Debug.PresenceBridge, []},
+          {EventStore, []}
+        ] ++
+        debug_children() ++
+        [
           {Overwatch.StuckDetector, []},
           {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
           {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
@@ -53,6 +54,19 @@ defmodule ForemanServer.Application do
 
   defp repo_children do
     if postgres_event_store?(), do: [Repo], else: []
+  end
+
+  defp debug_children do
+    if Application.get_env(:foreman_server, :debug_live_views_enabled, false) do
+      [
+        {Phoenix.PubSub, name: ForemanServer.PubSub},
+        {ForemanServerWeb.Endpoint, []},
+        {ForemanServerWeb.Presence, []},
+        {ForemanServerWeb.Debug.PresenceBridge, []}
+      ]
+    else
+      []
+    end
   end
 
   defp postgres_event_store? do

@@ -105,6 +105,55 @@ defmodule ForemanServerWeb.DebugViewsTest do
     assert conn.resp_body =~ "Not Found"
   end
 
+  test "Endpoint config has loopback check_origin and pubsub_server" do
+    endpoint_config = Application.get_env(:foreman_server, ForemanServerWeb.Endpoint)
+
+    assert Keyword.get(endpoint_config, :pubsub_server) == ForemanServer.PubSub,
+           "Endpoint must have pubsub_server configured for LiveView channel joins"
+
+    check_origin = Keyword.get(endpoint_config, :check_origin)
+    assert is_list(check_origin), "check_origin must be a list"
+    assert "//localhost" in check_origin, "localhost must be in check_origin allowlist"
+    assert "//127.0.0.1" in check_origin, "127.0.0.1 must be in check_origin allowlist"
+    refute false in check_origin, "check_origin must not contain broad false"
+  end
+
+  test "disabled debug_live_views_enabled omits debug processes from startup" do
+    Application.stop(:foreman_server)
+    Application.put_env(:foreman_server, :debug_live_views_enabled, false)
+    :ok = Application.start(:foreman_server)
+
+    try do
+      refute Process.whereis(ForemanServer.PubSub),
+             "PubSub must not be started when debug_live_views_enabled=false"
+
+      refute Process.whereis(ForemanServerWeb.Endpoint),
+             "ForemanServerWeb.Endpoint must not be started when debug_live_views_enabled=false"
+
+      refute Process.whereis(ForemanServerWeb.Presence),
+             "Presence must not be started when debug_live_views_enabled=false"
+
+      refute Process.whereis(ForemanServerWeb.Debug.PresenceBridge),
+             "PresenceBridge must not be started when debug_live_views_enabled=false"
+    after
+      Application.stop(:foreman_server)
+      Application.put_env(:foreman_server, :debug_live_views_enabled, true)
+      Application.start(:foreman_server)
+    end
+  end
+
+  test "Endpoint pubsub_server is reachable for real channel joins" do
+    endpoint = ForemanServerWeb.Endpoint
+
+    assert is_atom(endpoint.config(:pubsub_server)),
+           "pubsub_server must be configured (raises ArgumentError in channel join if nil)"
+
+    pubsub_name = endpoint.config(:pubsub_server)
+
+    assert Process.whereis(pubsub_name),
+           "PubSub #{inspect(pubsub_name)} must be running for channel joins"
+  end
+
   defp seed_debug_run do
     assert {:ok, _event} =
              append_run_event("RunStarted", %{
@@ -162,7 +211,7 @@ defmodule ForemanServerWeb.DebugViewsTest do
         flunk("condition not met within #{timeout_ms}ms")
       else
         Process.sleep(interval_ms)
-        do_assert_eventually(fun, timeout_ms, interval_ms, started_at)
+        do_assert_eventually(fun, timeout_ms, interval_ms, now)
       end
     end
   end

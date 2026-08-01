@@ -38,6 +38,7 @@ config :foreman_server, ForemanServerWeb.Endpoint,
   live_view: [signing_salt: "foreman-debug-live"],
   secret_key_base:
     "9bLTb2hQK4KWR2b6zJK4r7GAPiAz4Jt4K9WQ2hBf5d7Hk3Lm8NvPq2Ys6CxDg1Za",
-  server: false
-
+  server: false,
+  pubsub_server: ForemanServer.PubSub,
+  check_origin: ["//localhost", "//127.0.0.1"]
 import_config "#{config_env()}.exs"
