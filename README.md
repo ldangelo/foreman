@@ -144,6 +144,7 @@ Foreman includes a checked-in local development environment:
     - `foreman` — default application database (`.env.example` `DATABASE_URL` default)
     - `foreman_dev` — dev EventStore/Repo database (`config/dev.exs` fallback when `DATABASE_URL` is unset; created automatically only on first `docker compose up`, not on restart)
     - `hindsight` — pgvector database for the Hindsight service
+
 The shared Postgres service uses `pgvector/pgvector:pg16`, exposes `foreman` on `127.0.0.1:55432` by default (`FOREMAN_POSTGRES_PORT` overrides the port), and also creates the `hindsight` database with the `vector` extension. Foreman uses `DATABASE_URL` from `.env` or the process environment; check `.env` before starting the server. For production releases, set `FOREMAN_SERVER_SECRETS_FILE` to a `.env`-style file to inject `DATABASE_URL`, `FOREMAN_SERVER_EVENT_STORE_ADAPTER`, and `FOREMAN_SERVER_REPO_URL` via the `SecretsProvider` config provider (see `config/prod.exs`).
 
 ### Prerequisites
