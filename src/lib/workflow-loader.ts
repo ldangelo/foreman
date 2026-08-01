@@ -42,6 +42,7 @@ import {
   mkdirSync,
   copyFileSync,
   readdirSync,
+  writeFileSync,
 } from "node:fs";
 import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -934,6 +935,102 @@ export function installBundledWorkflows(
   }
 
   return { installed, skipped };
+}
+
+const REMOTE_WORKFLOW_TEMPLATE_URL_ENV = "FOREMAN_WORKFLOW_TEMPLATE_URL";
+const REMOTE_WORKFLOW_NAMES = ["bug", "default", "epic", "feature", "smoke", "task"] as const;
+
+export type InstallRemoteWorkflowsResult =
+  | { ok: true; installed: string[]; fromRemote: string[] }
+  | {
+      ok: false;
+      reason: "no_url_configured" | "http_error" | "write_error";
+      message: string;
+    };
+
+
+export async function installRemoteWorkflows(
+  httpFetch: typeof globalThis.fetch = globalThis.fetch,
+): Promise<InstallRemoteWorkflowsResult> {
+  const baseUrl = process.env[REMOTE_WORKFLOW_TEMPLATE_URL_ENV]?.trim();
+  if (!baseUrl) {
+    return {
+      ok: false,
+      reason: "no_url_configured",
+      message: `${REMOTE_WORKFLOW_TEMPLATE_URL_ENV} not set`,
+    };
+  }
+
+  const workflowUrls = REMOTE_WORKFLOW_NAMES.map((workflowName) => ({
+    workflowName,
+    workflowUrl: `${baseUrl.replace(/\/+$/, "")}/${workflowName}.yaml`,
+  }));
+
+  if (typeof httpFetch !== "function") {
+    return {
+      ok: false,
+      reason: "http_error",
+      message: `Failed to fetch ${workflowUrls[0]?.workflowUrl ?? baseUrl}: fetch is not available`,
+    };
+  }
+
+  let fetchedWorkflows: Array<{ workflowName: string; content: string }>;
+  try {
+    fetchedWorkflows = await Promise.all(
+      workflowUrls.map(async ({ workflowName, workflowUrl }) => {
+        let response: Response;
+        try {
+          response = await httpFetch(workflowUrl);
+        } catch (error) {
+          throw new Error(
+            `Failed to fetch ${workflowUrl}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch ${workflowUrl}: HTTP ${response.status}`);
+        }
+
+        return {
+          workflowName,
+          content: await response.text(),
+        };
+      }),
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "http_error",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const workflowsDir = getForemanHomePath("workflows");
+  try {
+    mkdirSync(workflowsDir, { recursive: true });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "write_error",
+      message: `Failed to write ${workflowsDir}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  for (const { workflowName, content } of fetchedWorkflows) {
+    const workflowPath = join(workflowsDir, `${workflowName}.yaml`);
+    try {
+      writeFileSync(workflowPath, content);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "write_error",
+        message: `Failed to write ${workflowPath}: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  const installed = fetchedWorkflows.map(({ workflowName }) => workflowName);
+  return { ok: true, installed, fromRemote: installed };
 }
 
 /**

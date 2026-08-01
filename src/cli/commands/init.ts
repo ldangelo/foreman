@@ -9,7 +9,11 @@ import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ForemanStore } from "../../lib/store.js";
 import { installBundledPrompts, installBundledSkills } from "../../lib/prompt-loader.js";
-import { installBundledWorkflows, BUNDLED_WORKFLOW_NAMES } from "../../lib/workflow-loader.js";
+import {
+  installBundledWorkflows,
+  installRemoteWorkflows,
+  BUNDLED_WORKFLOW_NAMES,
+} from "../../lib/workflow-loader.js";
 import { foremanBackendMode } from "../../lib/backend-mode.js";
 import { registerProjectInElixir } from "./project-task-support.js";
 import { encrypt } from "../../lib/encryption.js";
@@ -339,10 +343,32 @@ export const initCommand = new Command("init")
     // Install bundled workflow configs to ~/.foreman/workflows/
     const workflowSpinner = ora("Installing workflow configs...").start();
     try {
-      const { installed: workflowsInstalled, skipped: workflowsSkipped } = installBundledWorkflows(projectDir, force);
-      if (workflowsInstalled.length > 0) {
+      const {
+        installed: workflowsInstalled,
+        skipped: workflowsSkipped,
+      } = installBundledWorkflows(projectDir, force);
+      let remoteInstalled: string[] = [];
+      let fromRemote: string[] = [];
+      let remoteFailureMessage: string | null = null;
+
+      if (workflowsInstalled.length === 0 && workflowsSkipped.length === 0) {
+        const remoteResult = await installRemoteWorkflows();
+        if (remoteResult.ok) {
+          remoteInstalled = remoteResult.fromRemote;
+          fromRemote = remoteResult.fromRemote;
+        } else {
+          remoteFailureMessage = remoteResult.message;
+          workflowSpinner.warn(`Remote workflow fallback failed: ${remoteResult.message}`);
+        }
+      }
+
+      const allInstalled = [...workflowsInstalled, ...remoteInstalled];
+      if (remoteFailureMessage) {
+        // Spinner already warned above; nothing else to report.
+      } else if (allInstalled.length > 0) {
+        const remoteSuffix = fromRemote.length > 0 ? " from remote fallback" : "";
         workflowSpinner.succeed(
-          `Installed ${workflowsInstalled.length} workflow config(s) to ~/.foreman/workflows/`,
+          `Installed ${allInstalled.length} workflow config(s) to ~/.foreman/workflows${remoteSuffix}`,
         );
       } else if (workflowsSkipped.length > 0) {
         workflowSpinner.info(

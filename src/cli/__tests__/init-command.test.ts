@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type * as WorkflowLoaderModule from "../../lib/workflow-loader.js";
+
+const STANDARD_REMOTE_WORKFLOWS = ["bug", "default", "epic", "feature", "smoke", "task"] as const;
 
 const {
   mockEnsureCliPostgresPool,
@@ -9,6 +12,7 @@ const {
   mockInstallBundledPrompts,
   mockInstallBundledSkills,
   mockInstallBundledWorkflows,
+  mockInstallRemoteWorkflows,
   mockForemanBackendMode,
   mockRegistryList,
   mockRegistryAdd,
@@ -22,6 +26,7 @@ const {
   mockInstallBundledPrompts: vi.fn(),
   mockInstallBundledSkills: vi.fn(),
   mockInstallBundledWorkflows: vi.fn(),
+  mockInstallRemoteWorkflows: vi.fn(),
   mockForemanBackendMode: vi.fn(),
   mockRegistryList: vi.fn(),
   mockRegistryAdd: vi.fn(),
@@ -45,10 +50,17 @@ vi.mock("../../lib/prompt-loader.js", () => ({
   installBundledSkills: (...args: unknown[]) => mockInstallBundledSkills(...args),
 }));
 
-vi.mock("../../lib/workflow-loader.js", () => ({
-  installBundledWorkflows: (...args: unknown[]) => mockInstallBundledWorkflows(...args),
-  BUNDLED_WORKFLOW_NAMES: ["default", "epic", "smoke"],
-}));
+vi.mock("../../lib/workflow-loader.js", async () => {
+  const actual = await vi.importActual<typeof WorkflowLoaderModule>(
+    "../../lib/workflow-loader.js",
+  );
+
+  return {
+    ...actual,
+    installBundledWorkflows: (...args: unknown[]) => mockInstallBundledWorkflows(...args),
+    installRemoteWorkflows: (...args: unknown[]) => mockInstallRemoteWorkflows(...args),
+  };
+});
 
 vi.mock("../../lib/backend-mode.js", () => ({
   foremanBackendMode: (...args: unknown[]) => mockForemanBackendMode(...args),
@@ -136,6 +148,11 @@ describe("init command", () => {
     process.env.FOREMAN_MASTER_KEY = Buffer.alloc(32, 1).toString("base64");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockInstallRemoteWorkflows.mockResolvedValue({
+      ok: false,
+      reason: "no_url_configured",
+      message: "FOREMAN_WORKFLOW_TEMPLATE_URL not set",
+    });
     exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit(${code ?? ""})`);
     }) as never);
@@ -144,6 +161,9 @@ describe("init command", () => {
   afterEach(() => {
     process.chdir(originalCwd);
     delete process.env.FOREMAN_MASTER_KEY;
+    delete process.env.FOREMAN_HOME;
+    delete process.env.FOREMAN_WORKFLOW_TEMPLATE_URL;
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
     tempDirs.length = 0;
@@ -242,6 +262,188 @@ describe("init command", () => {
 
     expect(exitSpy).not.toHaveBeenCalled();
     expect(mockRegistryList).not.toHaveBeenCalled();
+  });
+
+  it("calls remote workflow install and returns the no-url fallback when bundled install is empty and no remote URL is configured", async () => {
+    const projectDir = makeTempProject("noremoteurl");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    mockInstallBundledWorkflows.mockReturnValue({ installed: [], skipped: [] });
+
+    await invokeInit({});
+
+    expect(mockInstallRemoteWorkflows).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(foremanHome, "workflows"))).toBe(false);
+  });
+
+  it("does not call remote workflow install when bundled workflows already installed", async () => {
+    const projectDir = makeTempProject("bundledsuccess");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows";
+    mockInstallBundledWorkflows.mockReturnValue({ installed: ["default.yaml"], skipped: [] });
+
+    await invokeInit({});
+
+    expect(mockInstallRemoteWorkflows).not.toHaveBeenCalled();
+    expect(existsSync(join(foremanHome, "workflows"))).toBe(false);
+  });
+
+  it("calls remote workflow install and preserves written files when bundled workflows are unavailable", async () => {
+    const projectDir = makeTempProject("remotesuccess");
+    const foremanHome = join(projectDir, ".foreman-home");
+    const workflowsDir = join(foremanHome, "workflows");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows/";
+    mockInstallBundledWorkflows.mockReturnValue({ installed: [], skipped: [] });
+    mockInstallRemoteWorkflows.mockImplementation(async () => {
+      mkdirSync(workflowsDir, { recursive: true });
+      for (const workflowName of STANDARD_REMOTE_WORKFLOWS) {
+        writeFileSync(
+          join(workflowsDir, `${workflowName}.yaml`),
+          [
+            `name: ${workflowName}`,
+            "phases:",
+            "  - name: developer",
+            "    prompt: developer.md",
+          ].join("\n"),
+        );
+      }
+
+      const installed = [...STANDARD_REMOTE_WORKFLOWS];
+      return { ok: true, installed, fromRemote: installed };
+    });
+
+    await invokeInit({});
+
+    expect(mockInstallRemoteWorkflows).toHaveBeenCalledTimes(1);
+    expect(readdirSync(workflowsDir).sort()).toEqual(
+      [...STANDARD_REMOTE_WORKFLOWS].map((name) => `${name}.yaml`),
+    );
+    expect(readFileSync(join(workflowsDir, "bug.yaml"), "utf8")).toContain("name: bug");
+    expect(readFileSync(join(workflowsDir, "task.yaml"), "utf8")).toContain("name: task");
+  });
+
+  it("calls remote workflow install but leaves no files when remote fallback reports an HTTP failure", async () => {
+    const projectDir = makeTempProject("remotefail");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows";
+    mockInstallBundledWorkflows.mockReturnValue({ installed: [], skipped: [] });
+    mockInstallRemoteWorkflows.mockResolvedValue({
+      ok: false,
+      reason: "http_error",
+      message: "Failed to fetch https://example.test/workflows/smoke.yaml: HTTP 404",
+    });
+
+    await invokeInit({});
+
+    expect(mockInstallRemoteWorkflows).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(foremanHome, "workflows"))).toBe(false);
+  });
+
+  it("returns a tagged no-url result when the remote template URL is not configured", async () => {
+    const projectDir = makeTempProject("remoteimplnourl");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+
+    const { installRemoteWorkflows } = await vi.importActual<typeof WorkflowLoaderModule>(
+      "../../lib/workflow-loader.js",
+    );
+
+    const result = await installRemoteWorkflows();
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "no_url_configured",
+      message: "FOREMAN_WORKFLOW_TEMPLATE_URL not set",
+    });
+    expect(existsSync(join(foremanHome, "workflows"))).toBe(false);
+  });
+
+  it("fetches remote workflows with the expected URLs and writes them on success", async () => {
+    const projectDir = makeTempProject("remoteimplsuccess");
+    const foremanHome = join(projectDir, ".foreman-home");
+    const workflowsDir = join(foremanHome, "workflows");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows/";
+
+    const { installRemoteWorkflows } = await vi.importActual<typeof WorkflowLoaderModule>(
+      "../../lib/workflow-loader.js",
+    );
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      const workflowName = url.split("/").pop()?.replace(/\.yaml$/, "") ?? "unknown";
+      return new Response(
+        [
+          `name: ${workflowName}`,
+          "phases:",
+          "  - name: developer",
+          "    prompt: developer.md",
+        ].join("\n"),
+        { status: 200 },
+      );
+    });
+
+    const result = await installRemoteWorkflows(fetchMock as typeof globalThis.fetch);
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(
+      STANDARD_REMOTE_WORKFLOWS.map(
+        (workflowName) => `https://example.test/workflows/${workflowName}.yaml`,
+      ),
+    );
+    expect(result).toEqual({
+      ok: true,
+      installed: [...STANDARD_REMOTE_WORKFLOWS],
+      fromRemote: [...STANDARD_REMOTE_WORKFLOWS],
+    });
+    expect(readdirSync(workflowsDir).sort()).toEqual(
+      [...STANDARD_REMOTE_WORKFLOWS].map((workflowName) => `${workflowName}.yaml`),
+    );
+  });
+
+  it("returns a tagged HTTP error with the failing URL and writes no files when any remote fetch fails", async () => {
+    const projectDir = makeTempProject("remoteimplfail");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows";
+
+    const { installRemoteWorkflows } = await vi.importActual<typeof WorkflowLoaderModule>(
+      "../../lib/workflow-loader.js",
+    );
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("/smoke.yaml")) {
+        return new Response("missing", { status: 404 });
+      }
+
+      const workflowName = url.split("/").pop()?.replace(/\.yaml$/, "") ?? "unknown";
+      return new Response(
+        [
+          `name: ${workflowName}`,
+          "phases:",
+          "  - name: developer",
+          "    prompt: developer.md",
+        ].join("\n"),
+        { status: 200 },
+      );
+    });
+
+    const result = await installRemoteWorkflows(fetchMock as typeof globalThis.fetch);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "http_error",
+    });
+    expect(result.message).toContain("https://example.test/workflows/smoke.yaml");
+    expect(existsSync(join(foremanHome, "workflows"))).toBe(false);
   });
 
   it("fails closed when Elixir project registration errors", async () => {

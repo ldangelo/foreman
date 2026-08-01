@@ -74,15 +74,19 @@ Initialize Foreman in a project. Creates `.foreman/`, installs default workflow 
 ```bash
 foreman init                      # Initialize with auto-detected name
 foreman init -n my-project        # Initialize with explicit name
-foreman init --force              # Reinstall prompt, workflow, and bundled skill files after source edits
+foreman init --force              # Overwrite existing prompt, workflow, and bundled Pi skill files when reinstalling
 foreman init --wizard             # Interactive setup wizard that writes .foreman/config.yaml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-n, --name <name>` | Project name (default: directory name) |
-| `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
+| `--force` | Overwrite existing prompt, workflow, and bundled Pi skill files when reinstalling. Run this after editing bundled source prompts/workflows/skills so installed runtime copies do not drift. |
 | `--wizard` | Prompt for VCS backend, workflow template, issue tracker (`jira` or `github`), optional service credentials, then write `.foreman/config.yaml` |
+
+If the bundled workflow templates are absent and `FOREMAN_WORKFLOW_TEMPLATE_URL` is set,
+`foreman init` fetches the 6 standard workflows (`bug`, `default`, `epic`, `feature`, `smoke`, `task`)
+from that base URL. All 6 must be reachable; if any fails, no files are installed.
 
 ### `foreman project`
 
