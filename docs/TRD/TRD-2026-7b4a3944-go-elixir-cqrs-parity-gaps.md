@@ -324,13 +324,13 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 5: Configuration Parity + Workflow Templates
 **Shippable State:** The application starts correctly in dev, test, and prod environments; workflow templates are bundled and installable via `foreman init`.
 
-- [ ] **TRD-022** Config/dev.exs | 2h | [satisfies REQ-014] | Validates: AC-014-1 | AC: Given `config/dev.exs` is absent, when application starts in dev mode, then all required runtime configuration is present and loadable — EventStore, ProjectionStore, Phoenix endpoint, Overwatch
-  - [ ] Import base `config.exs`
-  - [ ] Dev EventStore: `localhost:55432`, verbose logging
-  - [ ] Dev Repo: `localhost:55432/foreman_dev`
-  - [ ] Phoenix dev endpoint: port 4766, `debug_errors: true`
-  - [ ] Overwatch: enabled, verbose logging
-  - [ ] Worker launcher: enabled
+- [x] **TRD-022** Config/dev.exs | 2h | [satisfies REQ-014] | Validates: AC-014-1 | AC: Given `config/dev.exs` is absent, when application starts in dev mode, then all required runtime configuration is present and loadable — EventStore, ProjectionStore, Phoenix endpoint, Overwatch
+  - [x] Import base `config.exs`
+  - [x] Dev EventStore: `localhost:55432`, verbose logging
+  - [x] Dev Repo: `localhost:55432/foreman_dev`
+  - [x] Phoenix dev endpoint: port 4766, `debug_errors: true`
+  - [x] Overwatch: enabled, verbose logging
+  - [x] Worker launcher: enabled
 
 - [ ] **TRD-023** Config/test.exs | 1h | [satisfies REQ-014] | Validates: AC-014-2 | AC: Given `config/test.exs` is absent, when tests run, then test environment uses an appropriate test adapter (memory EventStore) and test-specific configuration
   - [ ] Import base `config.exs`
