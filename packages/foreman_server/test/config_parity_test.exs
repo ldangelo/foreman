@@ -13,11 +13,13 @@ defmodule ForemanServer.ConfigParityTest do
   setup do
     original_env = %{
       "DATABASE_URL" => System.get_env("DATABASE_URL"),
-      "FOREMAN_SERVER_HTTP_ENABLED" => System.get_env("FOREMAN_SERVER_HTTP_ENABLED")
+      "FOREMAN_SERVER_HTTP_ENABLED" => System.get_env("FOREMAN_SERVER_HTTP_ENABLED"),
+      "FOREMAN_SERVER_SECRETS_FILE" => System.get_env("FOREMAN_SERVER_SECRETS_FILE")
     }
 
     System.delete_env("DATABASE_URL")
     System.delete_env("FOREMAN_SERVER_HTTP_ENABLED")
+    System.delete_env("FOREMAN_SERVER_SECRETS_FILE")
 
     on_exit(fn ->
       for {k, v} <- original_env, v != nil, do: System.put_env(k, v)
