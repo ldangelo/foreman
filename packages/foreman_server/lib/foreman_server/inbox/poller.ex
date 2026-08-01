@@ -9,6 +9,7 @@ defmodule ForemanServer.Inbox.Poller do
   """
 
   alias ForemanServer.CommandRouter
+  alias ForemanServer.Commands.StartInboxItem
 
   @doc """
   Submits a normalized inbox item for dedupe checking and potential append.
@@ -21,6 +22,9 @@ defmodule ForemanServer.Inbox.Poller do
       when is_binary(correlation_id) and is_binary(source) and is_map(payload) do
     run_id = Map.get(payload, :run_id) || Map.get(payload, "run_id")
 
+    # SharedInbox schema: both ingestion paths normalize to typed command struct
+    item = %StartInboxItem{correlation_id: correlation_id, source: source, payload: payload}
+
     command = %{
       # unique per delivery attempt — EventStore idempotency is per attempt,
       # not per item; InboxThread dedupes on correlation_id instead
@@ -28,9 +32,9 @@ defmodule ForemanServer.Inbox.Poller do
       command_type: "inbox.item.start",
       payload: %{
         run_id: run_id,
-        correlation_id: correlation_id,
-        source: source,
-        payload: payload
+        correlation_id: item.correlation_id,
+        source: item.source,
+        payload: item.payload
       }
     }
 
