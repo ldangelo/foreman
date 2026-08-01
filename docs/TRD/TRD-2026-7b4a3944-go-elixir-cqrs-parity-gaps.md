@@ -346,12 +346,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Secrets from `System.fetch_env!/1` or `Config.provider` for secrets manager
   - [ ] `灌 Security` note: Vault, AWS SM, or equivalent in prod; env vars in dev/test
 
-- [ ] **TRD-025** Workflow YAML templates | 3h | [satisfies REQ-015] | Validates: AC-015-1, AC-015-2 | AC: Given `priv/defaults/workflows/` is absent, when `foreman init` runs, then the 6 standard workflow templates are installed; if bundled copy is unavailable, a fallback download from remote source is attempted; given a workflow template is missing a required phase, when interpreter loads it, then it fails fast with clear error
-  - [ ] 6 templates: discover, assess, plan, implement, verify, release (or equivalents)
-  - [ ] Each template: valid YAML, required phases defined
-  - [ ] `WorkflowTemplate.Installer.install/1`: copies bundled templates to `~/.foreman/workflows/`
-  - [ ] `WorkflowTemplate.Installer.fetch_remote/1`: fallback download (URL from app env)
-  - [ ] `Workflow.Interpreter.load!/1`: raises on missing required phase
+- [x] **TRD-025** Workflow YAML templates | 3h | [satisfies REQ-015] | Validates: AC-015-1, AC-015-2 | AC: Given `priv/defaults/workflows/` is absent, when `foreman init` runs, then the 6 standard workflow templates are installed; if bundled copy is unavailable, a fallback download from remote source is attempted; given a workflow template is missing a required phase, when interpreter loads it, then it fails fast with clear error
+  - [x] 6 templates: discover, assess, plan, implement, verify, release (or equivalents)
+  - [x] Each template: valid YAML, required phases defined
+  - [x] `WorkflowTemplate.Installer.install/1`: copies bundled templates to `~/.foreman/workflows/`
+  - [x] `WorkflowTemplate.Installer.fetch_remote/1`: fallback download (URL from app env)
+  - [x] `Workflow.Interpreter.load!/1`: raises on missing required phase
 
 ---
 
