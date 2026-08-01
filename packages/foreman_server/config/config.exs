@@ -32,4 +32,12 @@ config :foreman_server, :external_trigger_poll_enabled, false
 config :foreman_server, :external_trigger_poll_interval_seconds, 60
 config :foreman_server, :external_trigger_endpoint_url, nil
 
+config :foreman_server, ForemanServerWeb.Endpoint,
+  url: [host: "localhost"],
+  http: [ip: {127, 0, 0, 1}, port: 4766],
+  live_view: [signing_salt: "foreman-debug-live"],
+  secret_key_base:
+    "9bLTb2hQK4KWR2b6zJK4r7GAPiAz4Jt4K9WQ2hBf5d7Hk3Lm8NvPq2Ys6CxDg1Za",
+  server: false
+
 import_config "#{config_env()}.exs"

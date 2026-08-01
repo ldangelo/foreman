@@ -44,6 +44,10 @@ defmodule ForemanServer.ConfigParityTest do
       assert get_foreman_config([:debug_errors]) == true
     end
 
+    test "debug LiveView pages are enabled in dev" do
+      assert get_foreman_config([:debug_live_views_enabled]) == true
+    end
+
     test "scheduler worker_launcher consumed by Recovery.scheduler_env/2" do
       launcher = get_foreman_config([:scheduler, :worker_launcher])
       assert launcher == ForemanServer.WorkerLauncher
@@ -109,18 +113,52 @@ defmodule ForemanServer.ConfigParityTest do
     end
   end
 
-  describe "Endpoint — router selection driven by consumed :debug_errors config" do
-    test "debug_errors=true selects DevRouter" do
-      original = Application.get_env(:foreman_server, :debug_errors)
+  describe "Endpoint — router selection driven by consumed debug config" do
+    test "debug_live_views_enabled=true selects the Phoenix endpoint" do
+      original_live = Application.get_env(:foreman_server, :debug_live_views_enabled)
+      original_errors = Application.get_env(:foreman_server, :debug_errors)
 
       on_exit(fn ->
-        if is_nil(original) do
+        if is_nil(original_live) do
+          Application.delete_env(:foreman_server, :debug_live_views_enabled)
+        else
+          Application.put_env(:foreman_server, :debug_live_views_enabled, original_live)
+        end
+
+        if is_nil(original_errors) do
           Application.delete_env(:foreman_server, :debug_errors)
         else
-          Application.put_env(:foreman_server, :debug_errors, original)
+          Application.put_env(:foreman_server, :debug_errors, original_errors)
         end
       end)
 
+      Application.put_env(:foreman_server, :debug_live_views_enabled, true)
+      Application.put_env(:foreman_server, :debug_errors, true)
+
+      spec = ForemanServer.Http.Endpoint.child_spec(port: 0)
+      assert {Bandit, :start_link, [options]} = spec.start
+      assert options[:plug] == ForemanServerWeb.Endpoint
+    end
+
+    test "debug_errors=true selects DevRouter when LiveView debug pages are disabled" do
+      original_live = Application.get_env(:foreman_server, :debug_live_views_enabled)
+      original_errors = Application.get_env(:foreman_server, :debug_errors)
+
+      on_exit(fn ->
+        if is_nil(original_live) do
+          Application.delete_env(:foreman_server, :debug_live_views_enabled)
+        else
+          Application.put_env(:foreman_server, :debug_live_views_enabled, original_live)
+        end
+
+        if is_nil(original_errors) do
+          Application.delete_env(:foreman_server, :debug_errors)
+        else
+          Application.put_env(:foreman_server, :debug_errors, original_errors)
+        end
+      end)
+
+      Application.put_env(:foreman_server, :debug_live_views_enabled, false)
       Application.put_env(:foreman_server, :debug_errors, true)
 
       spec = ForemanServer.Http.Endpoint.child_spec(port: 0)
@@ -128,17 +166,25 @@ defmodule ForemanServer.ConfigParityTest do
       assert options[:plug] == ForemanServer.Http.DevRouter
     end
 
-    test "debug_errors=false selects plain Router" do
-      original = Application.get_env(:foreman_server, :debug_errors)
+    test "debug_errors=false selects plain Router when LiveView debug pages are disabled" do
+      original_live = Application.get_env(:foreman_server, :debug_live_views_enabled)
+      original_errors = Application.get_env(:foreman_server, :debug_errors)
 
       on_exit(fn ->
-        if is_nil(original) do
+        if is_nil(original_live) do
+          Application.delete_env(:foreman_server, :debug_live_views_enabled)
+        else
+          Application.put_env(:foreman_server, :debug_live_views_enabled, original_live)
+        end
+
+        if is_nil(original_errors) do
           Application.delete_env(:foreman_server, :debug_errors)
         else
-          Application.put_env(:foreman_server, :debug_errors, original)
+          Application.put_env(:foreman_server, :debug_errors, original_errors)
         end
       end)
 
+      Application.put_env(:foreman_server, :debug_live_views_enabled, false)
       Application.put_env(:foreman_server, :debug_errors, false)
 
       spec = ForemanServer.Http.Endpoint.child_spec(port: 0)

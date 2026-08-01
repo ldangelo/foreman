@@ -25,23 +25,27 @@ defmodule ForemanServer.Application do
 
     children =
       repo_children() ++
-      [
-        {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
-        {Registry, keys: :unique, name: :project_registry},
-        {ProjectionStore, []},
-        {Overwatch, []},
-        {Overwatch.Tracker, :ok},
-        {Overwatch.WorkerSupervisor, []},
-        {EventStore, []},
-        {Overwatch.StuckDetector, []},
-        {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
-        {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
-        {ProjectRegistry, []},
-        {Scheduler.Runtime, []},
-        {Recovery, [boot_id: boot_id, boot_started_at: boot_started_at]},
-        {PrMonitor, []},
-        {TriggerPoller, []}
-      ] ++ http_children()
+        [
+          {Registry, keys: :duplicate, name: ForemanServer.InboxRegistry},
+          {Registry, keys: :unique, name: :project_registry},
+          {Phoenix.PubSub, name: ForemanServer.PubSub},
+          {ProjectionStore, []},
+          {ForemanServerWeb.Endpoint, []},
+          {ForemanServerWeb.Presence, []},
+          {Overwatch, []},
+          {Overwatch.Tracker, :ok},
+          {Overwatch.WorkerSupervisor, []},
+          {EventStore, []},
+          {ForemanServerWeb.Debug.PresenceBridge, []},
+          {Overwatch.StuckDetector, []},
+          {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
+          {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
+          {ProjectRegistry, []},
+          {Scheduler.Runtime, []},
+          {Recovery, [boot_id: boot_id, boot_started_at: boot_started_at]},
+          {PrMonitor, []},
+          {TriggerPoller, []}
+        ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]
     Supervisor.start_link(children, opts)

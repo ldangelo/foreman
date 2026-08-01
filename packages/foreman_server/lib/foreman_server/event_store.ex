@@ -240,6 +240,10 @@ defmodule ForemanServer.EventStore do
   end
 
   defp notify_event_consumers(%Event{} = event) do
+    if Process.whereis(ForemanServer.PubSub) do
+      Phoenix.PubSub.broadcast(ForemanServer.PubSub, "debug:events", {:debug_event, event})
+    end
+
     if Process.whereis(ForemanServer.Scheduler) do
       ForemanServer.Scheduler.handle_event(event)
     end

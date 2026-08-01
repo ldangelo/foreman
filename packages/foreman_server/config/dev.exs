@@ -21,6 +21,7 @@ config :foreman_server, ForemanServer.Repo,
 config :foreman_server,
   http_enabled: true,
   debug_errors: true,
+  debug_live_views_enabled: true,
   http_port: 4766
 
 # ── Overwatch / Scheduler ─────────────────────────────────────────────────────

@@ -8,12 +8,11 @@ defmodule ForemanServer.Http.Endpoint do
     validate_remote_access!(ip)
 
     plug =
-      if debug_errors?() do
-        ForemanServer.Http.DevRouter
-      else
-        ForemanServer.Http.Router
+      cond do
+        debug_live_views_enabled?() -> ForemanServerWeb.Endpoint
+        debug_errors?() -> ForemanServer.Http.DevRouter
+        true -> ForemanServer.Http.Router
       end
-
     Bandit.child_spec(
       plug: plug,
       scheme: :http,
@@ -25,6 +24,10 @@ defmodule ForemanServer.Http.Endpoint do
 
   defp debug_errors? do
     Application.get_env(:foreman_server, :debug_errors, false)
+  end
+
+  defp debug_live_views_enabled? do
+    Application.get_env(:foreman_server, :debug_live_views_enabled, false)
   end
 
   defp validate_remote_access!(ip) do

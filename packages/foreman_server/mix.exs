@@ -28,6 +28,10 @@ defmodule ForemanServer.MixProject do
       {:bandit, "~> 1.8"},
       {:ecto_sql, "~> 3.12"},
       {:jason, "~> 1.4"},
+      {:phoenix, "~> 1.7"},
+      {:phoenix_html, "~> 4.2"},
+      {:phoenix_live_view, "~> 1.1"},
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:plug, "~> 1.18"},
       {:postgrex, ">= 0.0.0"}
     ]
