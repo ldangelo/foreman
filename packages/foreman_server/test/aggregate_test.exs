@@ -1,7 +1,15 @@
 defmodule ForemanServer.AggregateTest do
   use ExUnit.Case
 
-  alias ForemanServer.{Aggregate, AggregateRouter, Aggregate.Actor, CommandRouter, EventStore, ProjectionStore}
+  alias ForemanServer.{
+    Aggregate,
+    AggregateRouter,
+    Aggregate.Actor,
+    CommandRouter,
+    EventStore,
+    ProjectionStore
+  }
+
   alias ForemanServer.Inbox.SharedInbox
 
   alias ForemanServer.Aggregates.{
@@ -379,7 +387,6 @@ defmodule ForemanServer.AggregateTest do
     assert merged_payload.current_phase == "merge-pending"
   end
 
-
   test "inbox aggregate validates duplicate messages and delivery targets" do
     assert {:ok, spec} =
              AggregateRouter.route("inbox.send", %{
@@ -484,7 +491,9 @@ defmodule ForemanServer.AggregateTest do
         timestamp: DateTime.add(t0, window_sec - 1, :second)
       }
     }
-    assert {:ok, %{event_type: "InboxItemDeduped"}} = InboxThread.handle_command(state, cmd_within)
+
+    assert {:ok, %{event_type: "InboxItemDeduped"}} =
+             InboxThread.handle_command(state, cmd_within)
 
     # t0 + window: exactly at cutoff → outside window → accepted
     # cutoff = (t0 + window) - window = t0; t0 > t0 is false → accept
@@ -498,6 +507,7 @@ defmodule ForemanServer.AggregateTest do
         timestamp: DateTime.add(t0, window_sec, :second)
       }
     }
+
     assert {:ok, %{event_type: "InboxItemStarted"}} = InboxThread.handle_command(state, cmd_at)
   end
 
@@ -734,7 +744,6 @@ defmodule ForemanServer.AggregateTest do
     assert {:ok, _event} = EventStore.append(spec)
     assert ProjectionStore.snapshot().runs[run_id].pr_state == expected_state
   end
-
 
   defp pr_payload(extra) do
     Map.merge(
@@ -1040,7 +1049,7 @@ defmodule ForemanServer.AggregateTest do
     assert state.phase_status == %{"build" => "completed"}
   end
 
-  test "Run rejects run.complete when already completed (idempotent RunAlreadyCompleted)" do
+  test "Run rejects run.complete when already completed (RunAlreadyCompleted)" do
     # Start a run and complete it
     assert {:ok, spec} =
              AggregateRouter.route("run.start", %{
@@ -1080,6 +1089,7 @@ defmodule ForemanServer.AggregateTest do
     assert state2.terminal? == true
     assert version2 == 3
   end
+
   test "StartRun produces active non-terminal state (status: in_progress, terminal?: false)" do
     assert {:ok, spec} =
              AggregateRouter.route("run.start", %{
@@ -1095,6 +1105,7 @@ defmodule ForemanServer.AggregateTest do
     assert state.terminal? == false
     assert version == 1
   end
+
   test "Aggregate.load/2 replays non-terminal run stream and restores in_progress state" do
     stream_id = "run:run-nonterm"
 
@@ -1121,7 +1132,6 @@ defmodule ForemanServer.AggregateTest do
     assert state_replay.terminal? == false
     assert version == 2
   end
-
 
   test "AC-004-4: two run.complete commands race — second append fails with expected_version conflict" do
     # Seed RunStarted so stream exists at version 1
@@ -1155,6 +1165,7 @@ defmodule ForemanServer.AggregateTest do
 
     assert spec3.event_type == "RunAlreadyCompleted"
   end
+
   test "Run rejects run.fail on already-failed run" do
     assert {:ok, spec} =
              AggregateRouter.route("run.start", %{
