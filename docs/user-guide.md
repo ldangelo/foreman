@@ -200,6 +200,11 @@ foreman server stop
 ```
 
 The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. `foreman server status` distinguishes the durable event store, persisted/in-memory projection store, and project config store. With `FOREMAN_SERVER_EVENT_STORE_ADAPTER=postgres` and `DATABASE_URL`, project/task/run/inbox read models persist in Postgres projection tables; term mode keeps projections in memory and rebuilds from the term event log. If server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` before calling doctor/metrics endpoints. Run debug views surface the first inconsistent event transition when a status anomaly appears and include timeline payload/file-change fields for Cockpit fallback rendering. In dev mode, LiveView debug pages are available at `/debug/runs` (live run state), `/debug/phases` (live phase state), and `/debug/workers` (Phoenix Presence-backed worker liveness); these routes are dev-only and guarded by the `DebugOnly` plug in the router.
+If `foreman server` is running, the `ForemanServer.Operations.Inspect` and `ForemanServer.Operations.Manual` helpers are available to operators for run-state inspection and intervention. All `Manual` operations dispatch through `CommandRouter` so they are subject to the same append deduplication, aggregate logic, and projection updates as automated flows — no direct state mutation occurs.
+- `ForemanServer.Operations.Inspect.run_state(run_id)` — reads a single run entry from the projection store snapshot; returns `nil` if the run is unknown.
+- `ForemanServer.Operations.Inspect.list_active_runs()` — returns all non-terminal runs (excludes `completed`, `failed`, `blocked`, `merged`, `paused`).
+- `ForemanServer.Operations.Manual.mark_recovered(run_id)` — dispatches `run.recover` (outcome: `"recovered"`) through `CommandRouter`, appending a `RunRecoveryEvent` to the run stream.
+- `ForemanServer.Operations.Manual.force_complete(run_id)` — dispatches `run.complete` through `CommandRouter`. If the run is already terminal, appends `RunAlreadyCompleted` idempotently; otherwise emits `RunCompleted`.
 
 Troubleshooting sequence for Elixir-backed state:
 1. Check whether the expected durable event exists (`RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, etc.).

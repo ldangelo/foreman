@@ -366,12 +366,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Routes under `/debug/runs`, `/debug/phases`, `/debug/workers`
   - [x] Dev-mode only (guard in router)
 
-- [ ] **TRD-027** Operations helpers | 3h | [satisfies REQ-019] | Validates: AC-019-1 | AC: Given `operations.ex` is absent, when an operator needs to inspect or manipulate run state, then operations helpers are available through `CommandRouter`-backed commands — not direct state manipulation
-  - [ ] `Operations.Inspect.run_state/1`: reads from `ProjectionStore`
-  - [ ] `Operations.Manual.mark_recovered/1`: dispatches `RecoveryDetected` through `CommandRouter`
-  - [ ] `Operations.Manual.force_complete/1`: dispatches `CompleteRun` through `CommandRouter`
-  - [ ] `Operations.Inspect.list_active_runs/0`: returns list from `ProjectionStore`
-  - [ ] All ops route through `CommandRouter` — no direct state reads/writes
+- [x] **TRD-027** Operations helpers | 3h | [satisfies REQ-019] | Validates: AC-019-1 | AC: Given `operations.ex` is absent, when an operator needs to inspect or manipulate run state, then operations helpers are available through `CommandRouter`-backed commands — not direct state manipulation
+  - [x] `Operations.Inspect.run_state/1`: reads from `ProjectionStore`
+  - [x] `Operations.Manual.mark_recovered/1`: dispatches `RecoveryDetected` through `CommandRouter`
+  - [x] `Operations.Manual.force_complete/1`: dispatches `CompleteRun` through `CommandRouter`
+  - [x] `Operations.Inspect.list_active_runs/0`: returns list from `ProjectionStore`
+  - [x] All ops route through `CommandRouter` — no direct state reads/writes
 
 ---
 

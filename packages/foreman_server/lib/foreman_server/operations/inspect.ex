@@ -4,12 +4,12 @@ defmodule ForemanServer.Operations.Inspect do
   alias ForemanServer.ProjectionStore
 
   @terminal_statuses MapSet.new([
-                        "completed",
-                        "failed",
-                        "blocked",
-                        "merged",
-                        "paused"
-                      ])
+                       "completed",
+                       "failed",
+                       "blocked",
+                       "merged",
+                       "paused"
+                     ])
 
   @doc """
   Returns the full run projection entry for a given run_id, or nil if not found.
