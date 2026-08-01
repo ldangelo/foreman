@@ -13,6 +13,12 @@ defmodule ForemanServer.AttachBridgeTest do
 
     File.mkdir_p!(tmp_dir)
 
+    prior = %{
+      event_log_path: Application.get_env(:foreman_server, :event_log_path),
+      event_store_adapter: Application.get_env(:foreman_server, :event_store_adapter),
+      auth_token: Application.get_env(:foreman_server, :auth_token)
+    }
+
     Application.stop(:foreman_server)
     Application.put_env(:foreman_server, :event_log_path, Path.join(tmp_dir, "events.term.log"))
     Application.put_env(:foreman_server, :event_store_adapter, :term)
@@ -21,8 +27,12 @@ defmodule ForemanServer.AttachBridgeTest do
 
     on_exit(fn ->
       Application.stop(:foreman_server)
-      Application.delete_env(:foreman_server, :event_log_path)
-      Application.delete_env(:foreman_server, :auth_token)
+      for {k, v} <- prior, v != nil do
+        Application.put_env(:foreman_server, k, v)
+      end
+      for k <- [:event_log_path, :event_store_adapter, :auth_token] do
+        if is_nil(prior[k]), do: Application.delete_env(:foreman_server, k)
+      end
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
