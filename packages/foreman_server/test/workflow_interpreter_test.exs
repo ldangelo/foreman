@@ -171,6 +171,69 @@ defmodule ForemanServer.WorkflowInterpreterTest do
     end)
   end
 
+  test "fetch_remote/1 calls HTTP client and installs templates" do
+    previous_url = Application.get_env(:foreman_server, :workflow_template_url)
+    Application.put_env(:foreman_server, :workflow_template_url, "https://example.test/workflows")
+
+    on_exit(fn ->
+      if is_nil(previous_url) do
+        Application.delete_env(:foreman_server, :workflow_template_url)
+      else
+        Application.put_env(:foreman_server, :workflow_template_url, previous_url)
+      end
+    end)
+
+    with_temporary_home(fn home_dir ->
+      parent = self()
+
+      http_client = fn url ->
+        send(parent, {:fetch_remote_call, url})
+
+        name =
+          url
+          |> Path.basename(".yaml")
+
+        {:ok,
+         """
+         name: #{name}
+         phases:
+           - name: developer
+             prompt: developer.md
+         """}
+      end
+
+      assert {:ok, installed} =
+               Installer.fetch_remote(
+                 http_client: http_client,
+                 target_dir: Path.join([home_dir, ".foreman", "workflows"])
+               )
+
+      assert installed == template_names()
+
+      for name <- template_names() do
+        assert_received {:fetch_remote_call, fetched_url}
+        assert fetched_url == "https://example.test/workflows/#{name}.yaml"
+      end
+    end)
+  end
+
+  test "fetch_remote/1 returns error when URL not configured" do
+    previous_url = Application.delete_env(:foreman_server, :workflow_template_url)
+
+    on_exit(fn ->
+      if is_nil(previous_url) do
+        Application.delete_env(:foreman_server, :workflow_template_url)
+      else
+        Application.put_env(:foreman_server, :workflow_template_url, previous_url)
+      end
+    end)
+
+    with_temporary_home(fn home_dir ->
+      assert {:error, :workflow_template_url_not_configured} =
+               Installer.fetch_remote(target_dir: Path.join([home_dir, ".foreman", "workflows"]))
+    end)
+  end
+
   test "bash and builtin phases convert output and exit status into phase events" do
     bash = %{name: "smoke", command: "printf ok", artifact: "docs/reports/smoke.txt"}
 
