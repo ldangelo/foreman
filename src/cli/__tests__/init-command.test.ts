@@ -314,12 +314,13 @@ describe("init command", () => {
       }
 
       const installed = [...STANDARD_REMOTE_WORKFLOWS];
-      return { ok: true, installed, fromRemote: installed };
+      return { ok: true, installed, skipped: [], fromRemote: installed };
     });
 
     await invokeInit({});
 
     expect(mockInstallRemoteWorkflows).toHaveBeenCalledTimes(1);
+    expect(mockInstallRemoteWorkflows).toHaveBeenCalledWith(globalThis.fetch, false);
     expect(readdirSync(workflowsDir).sort()).toEqual(
       [...STANDARD_REMOTE_WORKFLOWS].map((name) => `${name}.yaml`),
     );
@@ -401,6 +402,7 @@ describe("init command", () => {
     expect(result).toEqual({
       ok: true,
       installed: [...STANDARD_REMOTE_WORKFLOWS],
+      skipped: [],
       fromRemote: [...STANDARD_REMOTE_WORKFLOWS],
     });
     expect(readdirSync(workflowsDir).sort()).toEqual(
@@ -444,6 +446,71 @@ describe("init command", () => {
     });
     expect(result.message).toContain("https://example.test/workflows/smoke.yaml");
     expect(existsSync(join(foremanHome, "workflows"))).toBe(false);
+  });
+
+  it("skips existing files when force=false and returns them in skipped list", async () => {
+    const projectDir = makeTempProject("remoteskip");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows";
+
+    const { installRemoteWorkflows } = await vi.importActual<typeof WorkflowLoaderModule>(
+      "../../lib/workflow-loader.js",
+    );
+
+    // Pre-create a workflow file to verify it is NOT overwritten
+    const workflowDir = join(foremanHome, "workflows");
+    mkdirSync(workflowDir, { recursive: true });
+    writeFileSync(join(workflowDir, "bug.yaml"), "preexisting content");
+
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      // All fetches succeed so we can test the skip logic
+      return new Response(`${String(input)} content`);
+    });
+
+    // force=false → should skip bug.yaml (already exists), write others
+    const result = await installRemoteWorkflows(fetchMock as typeof globalThis.fetch, false);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.skipped).toContain("bug");
+      expect(result.installed).not.toContain("bug");
+    }
+    // Verify preexisting file was NOT overwritten
+    expect(readFileSync(join(workflowDir, "bug.yaml"), "utf8")).toBe("preexisting content");
+  });
+
+  it("overwrites existing files when force=true and returns them in installed list", async () => {
+    const projectDir = makeTempProject("remoteforce");
+    const foremanHome = join(projectDir, ".foreman-home");
+    process.chdir(projectDir);
+    process.env.FOREMAN_HOME = foremanHome;
+    process.env.FOREMAN_WORKFLOW_TEMPLATE_URL = "https://example.test/workflows";
+
+    const { installRemoteWorkflows } = await vi.importActual<typeof WorkflowLoaderModule>(
+      "../../lib/workflow-loader.js",
+    );
+
+    // Pre-create a workflow file to verify it IS overwritten
+    const workflowDir = join(foremanHome, "workflows");
+    mkdirSync(workflowDir, { recursive: true });
+    writeFileSync(join(workflowDir, "bug.yaml"), "preexisting content");
+
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      return new Response(`${String(input)} content`);
+    });
+
+    // force=true → should overwrite bug.yaml and report it in installed
+    const result = await installRemoteWorkflows(fetchMock as typeof globalThis.fetch, true);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.skipped).not.toContain("bug");
+      expect(result.installed).toContain("bug");
+    }
+    // Verify file was overwritten
+    expect(readFileSync(join(workflowDir, "bug.yaml"), "utf8")).toContain("bug.yaml content");
   });
 
   it("fails closed when Elixir project registration errors", async () => {

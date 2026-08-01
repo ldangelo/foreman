@@ -349,30 +349,33 @@ export const initCommand = new Command("init")
       } = installBundledWorkflows(projectDir, force);
       let remoteInstalled: string[] = [];
       let fromRemote: string[] = [];
+      let remoteSkipped: string[] = [];
       let remoteFailureMessage: string | null = null;
 
       if (workflowsInstalled.length === 0 && workflowsSkipped.length === 0) {
-        const remoteResult = await installRemoteWorkflows();
+        const remoteResult = await installRemoteWorkflows(globalThis.fetch, force);
         if (remoteResult.ok) {
-          remoteInstalled = remoteResult.fromRemote;
+          remoteInstalled = remoteResult.installed;
           fromRemote = remoteResult.fromRemote;
+          remoteSkipped = remoteResult.skipped;
         } else {
           remoteFailureMessage = remoteResult.message;
-          workflowSpinner.warn(`Remote workflow fallback failed: ${remoteResult.message}`);
         }
       }
 
       const allInstalled = [...workflowsInstalled, ...remoteInstalled];
+      const allSkipped = [...workflowsSkipped, ...remoteSkipped];
+
       if (remoteFailureMessage) {
-        // Spinner already warned above; nothing else to report.
+        workflowSpinner.warn(`Remote workflow fallback failed: ${remoteFailureMessage}`);
       } else if (allInstalled.length > 0) {
         const remoteSuffix = fromRemote.length > 0 ? " from remote fallback" : "";
         workflowSpinner.succeed(
           `Installed ${allInstalled.length} workflow config(s) to ~/.foreman/workflows${remoteSuffix}`,
         );
-      } else if (workflowsSkipped.length > 0) {
+      } else if (allSkipped.length > 0) {
         workflowSpinner.info(
-          `Workflow configs already installed (${workflowsSkipped.length} skipped). Use --force to overwrite.`,
+          `Workflow configs already installed (${allSkipped.length} skipped). Use --force to overwrite.`,
         );
       } else {
         workflowSpinner.succeed("Workflow configs installed");

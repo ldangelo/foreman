@@ -941,16 +941,16 @@ const REMOTE_WORKFLOW_TEMPLATE_URL_ENV = "FOREMAN_WORKFLOW_TEMPLATE_URL";
 const REMOTE_WORKFLOW_NAMES = ["bug", "default", "epic", "feature", "smoke", "task"] as const;
 
 export type InstallRemoteWorkflowsResult =
-  | { ok: true; installed: string[]; fromRemote: string[] }
+  | { ok: true; installed: string[]; skipped: string[]; fromRemote: string[] }
   | {
       ok: false;
       reason: "no_url_configured" | "http_error" | "write_error";
       message: string;
     };
 
-
 export async function installRemoteWorkflows(
   httpFetch: typeof globalThis.fetch = globalThis.fetch,
+  force = false,
 ): Promise<InstallRemoteWorkflowsResult> {
   const baseUrl = process.env[REMOTE_WORKFLOW_TEMPLATE_URL_ENV]?.trim();
   if (!baseUrl) {
@@ -1016,10 +1016,17 @@ export async function installRemoteWorkflows(
     };
   }
 
+  const installed: string[] = [];
+  const skipped: string[] = [];
   for (const { workflowName, content } of fetchedWorkflows) {
     const workflowPath = join(workflowsDir, `${workflowName}.yaml`);
+    if (!force && existsSync(workflowPath)) {
+      skipped.push(workflowName);
+      continue;
+    }
     try {
       writeFileSync(workflowPath, content);
+      installed.push(workflowName);
     } catch (error) {
       return {
         ok: false,
@@ -1028,9 +1035,7 @@ export async function installRemoteWorkflows(
       };
     }
   }
-
-  const installed = fetchedWorkflows.map(({ workflowName }) => workflowName);
-  return { ok: true, installed, fromRemote: installed };
+  return { ok: true, installed, skipped, fromRemote: installed };
 }
 
 /**

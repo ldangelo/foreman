@@ -128,7 +128,7 @@ Use `foreman sling trd <path>` to create epics with child tasks from a TRD docum
 
 ### Workflows
 
-A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: mutating phases can opt into draft PR checkpoints with `checkpointPr: true`, and final PR gates remain explicit `create-pr`, `pr-wait`, and `merge` phases. Top-level `merge:` and `pr:` tags are rejected.
+A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. If the bundled directory is absent and `FOREMAN_WORKFLOW_TEMPLATE_URL` is set, `foreman init` fetches all six standard workflows from that base URL. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: mutating phases can opt into draft PR checkpoints with `checkpointPr: true`, and final PR gates remain explicit `create-pr`, `pr-wait`, and `merge` phases. Top-level `merge:` and `pr:` tags are rejected.
 
 Important phase reports:
 
