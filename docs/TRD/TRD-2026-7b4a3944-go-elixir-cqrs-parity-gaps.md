@@ -403,13 +403,13 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Test: env map contains no leakage from other workers
   - [x] Test: changed project config takes effect on next worker launch for same run
 
-- [ ] **TRD-019-TEST** Recovery scanner + stuck-run test coverage | 3h | [verifies TRD-019, TRD-020, TRD-021] [depends: TRD-019, TRD-020, TRD-021] [satisfies REQ-011, REQ-012, REQ-020] | Validates: AC-011-1–AC-011-4, AC-012-1, AC-020-3, AC-020-5 | Implementation AC: Given recovery scanner runs on startup, when interrupted runs are detected, then `RecoveryDetected` events are emitted through `CommandRouter` and runs resume idempotently; stuck run (15 min inactive) surfaces `RunFlaggedStuck` and telemetry
-  - [ ] Test: startup scan → `RunRecoveryEvent` for interrupted run
-  - [ ] Test: duplicate recovery dispatch → idempotent (existing AC2 covers this)
-  - [ ] Test: `detect_unconfirmed_intents/0` → stale intent re-dispatched
-  - [ ] Test: stuck run (15 min inactive) → `RunFlaggedStuck` event + `[:foreman, :run, :stuck]` telemetry
-  - [ ] Test: fire-and-track — intent recorded, worker confirms, no fire lost on scheduler crash
-  - [ ] Expand existing `recovery_test.exs`
+- [x] **TRD-019-TEST** Recovery scanner + stuck-run test coverage | 3h | [verifies TRD-019, TRD-020, TRD-021] [depends: TRD-019, TRD-020, TRD-021] [satisfies REQ-011, REQ-012, REQ-020] | Validates: AC-011-1–AC-011-4, AC-012-1, AC-020-3, AC-020-5 | Implementation AC: Given recovery scanner runs on startup, when interrupted runs are detected, then `RecoveryDetected` events are emitted through `CommandRouter` and runs resume idempotently; stuck run (15 min inactive) surfaces `RunFlaggedStuck` and telemetry
+  - [x] Test: startup scan → `RunRecoveryEvent` for interrupted run
+  - [x] Test: duplicate recovery dispatch → idempotent (existing AC2 covers this)
+  - [x] Test: `detect_unconfirmed_intents/0` → stale intent re-dispatched
+  - [x] Test: stuck run (15 min inactive) → `RunFlaggedStuck` event + `[:foreman, :run, :stuck]` telemetry
+  - [x] Test: fire-and-track — intent recorded, worker confirms, no fire lost on scheduler crash
+  - [x] Expand existing `recovery_test.exs`
 
 - [ ] **TRD-009-TEST** Run aggregate test coverage | 4h | [verifies TRD-009] [depends: TRD-009] [satisfies REQ-004, REQ-020] | Validates: AC-004-1–AC-004-4 | Implementation AC: Given `CompleteRun` on a terminal run, when dispatched, then `RunAlreadyCompleted` event appended and state unchanged; given run aggregate restarts, when `Aggregate.load/2` called, then correct terminal/non-terminal state restored; AC1 and AC2 tests green
   - [ ] Test: `StartRun` → initial state `{:active, terminal?: false}`
