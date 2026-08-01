@@ -2,6 +2,7 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{EventStore, Inbox.TriggerPoller}
+  alias ForemanServer.ProjectionStore
 
   @project_id "poller-test-proj"
   @project_path "/tmp/poller-test-proj"
@@ -190,6 +191,9 @@ defmodule ForemanServer.Inbox.TriggerPollerTest do
 
     first = hd(started)
     assert first.payload.correlation_id == "trigger-#{@run_id}"
+
+    # Sub-item 3: delivery_status tracked in projection store
+    assert ProjectionStore.snapshot().inbox_messages["trigger-#{@run_id}"].delivery_status == "started"
 
     :gen_tcp.close(listen_socket)
   end
