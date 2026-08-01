@@ -159,25 +159,6 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
-  defp do_rebuild(events) do
-    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
-
-    case persist_all(rebuilt) do
-      :ok -> {:ok, rebuilt}
-      {:ok, _result} -> {:ok, rebuilt}
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:unexpected_persist_result, other}}
-    end
-  end
-
-  # Give the outer GenServer.call a small cushion over the internal
-  # Task.yield timeout. At the deadline, both fire near-simultaneously;
-  # the cushion lets the handler's internal nil branch fire first and
-  # reply with {:error, :rebuild_timeout} so the caller gets a clean
-  # structured error rather than a GenServer.call :exit timeout. For
-  # non-integer timeouts (e.g. :infinity) no cushion is added.
-  defp with_timeout_cushion(timeout) when is_integer(timeout) and timeout > 0, do: timeout + 1_000
-  defp with_timeout_cushion(timeout), do: timeout
 
   def handle_call(:snapshot, _from, projection) do
     {:reply, projection, projection}
@@ -255,6 +236,25 @@ defmodule ForemanServer.ProjectionStore do
 
     {:reply, result, projection}
   end
+  defp do_rebuild(events) do
+    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
+
+    case persist_all(rebuilt) do
+      :ok -> {:ok, rebuilt}
+      {:ok, _result} -> {:ok, rebuilt}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_persist_result, other}}
+    end
+  end
+
+  # Give the outer GenServer.call a small cushion over the internal
+  # Task.yield timeout. At the deadline, both fire near-simultaneously;
+  # the cushion lets the handler's internal nil branch fire first and
+  # reply with {:error, :rebuild_timeout} so the caller gets a clean
+  # structured error rather than a GenServer.call :exit timeout. For
+  # non-integer timeouts (e.g. :infinity) no cushion is added.
+  defp with_timeout_cushion(timeout) when is_integer(timeout) and timeout > 0, do: timeout + 1_000
+  defp with_timeout_cushion(timeout), do: timeout
 
   @spec board(String.t()) :: map()
   def board(project_id) do
@@ -280,10 +280,11 @@ defmodule ForemanServer.ProjectionStore do
       tasks: %{},
       runs: %{},
       scheduler_skips: %{},
+      scheduler_intents: %{},
       worker_sequences: %{},
       worker_heartbeats: %{},
       recovery_events: [],
-      worktrees: %{},
+      run_recoveries: %{},
       vcs_operations: %{},
       pr_gates: %{},
       merge_failures: %{},
@@ -664,6 +665,23 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_domain_event(
          projection,
+         %{type: "RunRecoveryEvent", payload: %{run_id: run_id} = payload},
+         _mode
+       ) do
+    entry = Map.put(payload, :event_type, "RunRecoveryEvent")
+
+    projection
+    |> update_in([:run_recoveries, run_id], &((&1 || []) ++ [entry]))
+    |> update_run(run_id, fn run ->
+      run
+      |> Map.put(:last_recovery_outcome, Map.get(payload, :outcome))
+      |> Map.update(:recovery_history, [entry], &(&1 ++ [entry]))
+    end)
+  end
+
+
+  defp apply_domain_event(
+         projection,
          %{type: "CliEventLogged", payload: %{run_id: run_id} = payload},
          _mode
        )
@@ -1019,6 +1037,21 @@ defmodule ForemanServer.ProjectionStore do
        ) do
     put_in(projection, [:scheduler_skips, task_id], payload)
   end
+
+  defp apply_domain_event(
+         projection,
+         %{type: type, payload: %{fire_id: fire_id} = payload},
+         _mode
+       )
+       when type in [
+              "ScheduledFireRecorded",
+              "ScheduledFireConfirmed",
+              "SchedulerIntentStale",
+              "ScheduledFireSkipped"
+            ] do
+    update_scheduler_intent(projection, fire_id, type, payload)
+  end
+
 
   defp apply_domain_event(projection, %{type: type, payload: payload}, _mode)
        when type in [
@@ -1643,6 +1676,32 @@ defmodule ForemanServer.ProjectionStore do
     entry = Map.put(payload, :event_type, type)
     update_in(projection, [:logs_by_run, run_id], &((&1 || []) ++ [entry]))
   end
+
+  defp update_scheduler_intent(projection, fire_id, type, payload) do
+    status =
+      case type do
+        "ScheduledFireRecorded" -> "recorded"
+        "ScheduledFireConfirmed" -> "confirmed"
+        "SchedulerIntentStale" -> "stale"
+        "ScheduledFireSkipped" -> "skipped"
+      end
+
+    existing = get_in(projection, [:scheduler_intents, fire_id]) || %{fire_id: fire_id, history: []}
+
+    entry =
+      payload
+      |> Map.put(:event_type, type)
+      |> Map.put(:status, status)
+
+    intent =
+      existing
+      |> Map.merge(payload)
+      |> Map.put(:status, status)
+      |> Map.put(:history, (Map.get(existing, :history) || []) ++ [entry])
+
+    put_in(projection, [:scheduler_intents, fire_id], intent)
+  end
+
 
   defp maybe_notify_inbox_watchers(:live, run_id, message),
     do: notify_inbox_watchers(run_id, message)

@@ -10,6 +10,7 @@ defmodule ForemanServer.Application do
     ProjectionStore,
     PrMonitor,
     ProjectRegistry,
+    Recovery,
     Repo,
     RuntimeSafety,
     Scheduler
@@ -18,6 +19,9 @@ defmodule ForemanServer.Application do
   @impl true
   def start(_type, _args) do
     RuntimeSafety.validate!()
+
+    boot_started_at = DateTime.utc_now()
+    boot_id = boot_id()
 
     children =
       repo_children() ++
@@ -34,6 +38,7 @@ defmodule ForemanServer.Application do
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
         {ProjectRegistry, []},
         {Scheduler, []},
+        {Recovery, [boot_id: boot_id, boot_started_at: boot_started_at]},
         {PrMonitor, []},
         {TriggerPoller, []}
       ] ++ http_children()
@@ -60,5 +65,21 @@ defmodule ForemanServer.Application do
     else
       []
     end
+  end
+
+  defp boot_id do
+    bytes = :crypto.strong_rand_bytes(16)
+    <<a::32, b::16, c::16, d::16, e::48>> = bytes
+
+    Enum.join(
+      [
+        Base.encode16(<<a::32>>, case: :lower),
+        Base.encode16(<<b::16>>, case: :lower),
+        Base.encode16(<<c::16>>, case: :lower),
+        Base.encode16(<<d::16>>, case: :lower),
+        Base.encode16(<<e::48>>, case: :lower)
+      ],
+      "-"
+    )
   end
 end

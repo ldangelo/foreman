@@ -3,7 +3,7 @@ defmodule ForemanServer.Scheduler do
 
   use GenServer
 
-  alias ForemanServer.{EventStore, ProjectionStore, WorkflowInterpreter}
+  alias ForemanServer.{CommandRouter, EventStore, ProjectionStore, WorkflowInterpreter}
 
   @default_phases []
   @default_tick_interval_ms 5_000
@@ -78,6 +78,8 @@ defmodule ForemanServer.Scheduler do
 
   @impl true
   def handle_cast({:event_appended, event}, %{event_triggered_ticks: true} = state) do
+    confirm_scheduled_fire(event)
+
     if dispatch_trigger_event?(event) do
       result = dispatch(state)
       {:noreply, %{state | last_tick: result, last_event_id: event_id(event)}}
@@ -86,8 +88,10 @@ defmodule ForemanServer.Scheduler do
     end
   end
 
-  def handle_cast({:event_appended, event}, state),
-    do: {:noreply, %{state | last_event_id: event_id(event)}}
+  def handle_cast({:event_appended, event}, state) do
+    confirm_scheduled_fire(event)
+    {:noreply, %{state | last_event_id: event_id(event)}}
+  end
 
   @impl true
   def handle_info(:tick, %{auto_tick: true, tick_interval_ms: interval_ms} = state) do
@@ -170,6 +174,7 @@ defmodule ForemanServer.Scheduler do
 
   defp claim_task(task, phases, worker_launcher) do
     run_id = uuid()
+    fire_id = scheduled_fire_id(run_id)
     effective_phases = get_effective_phases(task, phases)
 
     with {:ok, _event} <-
@@ -197,6 +202,7 @@ defmodule ForemanServer.Scheduler do
                idempotency_key: "run-start:#{run_id}"
              }
            }),
+         {:ok, _result} <- record_fire_intent(task, run_id, fire_id, effective_phases),
          {:ok, _launch} <- worker_launcher.launch(task, run_id, effective_phases) do
       {:ok, run_id}
     end
@@ -218,6 +224,47 @@ defmodule ForemanServer.Scheduler do
 
     {claimed, skipped ++ [payload], active_count, project_counts}
   end
+
+  defp record_fire_intent(task, run_id, fire_id, phases) do
+    CommandRouter.handle(%{
+      command_id: "scheduler-fire-record:#{fire_id}:1",
+      command_type: "scheduler.fire.record",
+      payload: %{
+        fire_id: fire_id,
+        run_id: run_id,
+        task_id: task.task_id,
+        project_id: Map.get(task, :project_id),
+        phase_id: List.first(phases),
+        phase_order: phases,
+        attempt: 1
+      }
+    })
+  end
+
+  defp confirm_scheduled_fire(%{event_type: "WorkerStarted", payload: payload}) do
+    run_id = Map.get(payload, :run_id)
+    worker_id = Map.get(payload, :worker_id)
+
+    if is_binary(run_id) and run_id != "" and is_binary(worker_id) and worker_id != "" do
+      _ =
+        CommandRouter.handle(%{
+          command_id: "scheduler-fire-confirm:#{scheduled_fire_id(run_id)}:#{worker_id}",
+          command_type: "scheduler.fire.confirm",
+          payload: %{
+            fire_id: scheduled_fire_id(run_id),
+            run_id: run_id,
+            worker_id: worker_id,
+            phase_id: Map.get(payload, :phase_id)
+          }
+        })
+
+      :ok
+    else
+      :ok
+    end
+  end
+
+  defp confirm_scheduled_fire(_event), do: :ok
 
   defp active_runs do
     snapshot = ProjectionStore.snapshot()
@@ -298,6 +345,8 @@ defmodule ForemanServer.Scheduler do
       "-"
     )
   end
+
+  defp scheduled_fire_id(run_id), do: run_id
 
   # Get effective phases for a task:
   # 1. If task has explicit phases, use them

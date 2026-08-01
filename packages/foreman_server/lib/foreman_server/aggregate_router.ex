@@ -201,8 +201,19 @@ defmodule ForemanServer.AggregateRouter do
   end
 
   defp route_scheduler(command_type, payload) do
-    project_id = Aggregate.get(payload, :project_id, "global")
-    Aggregate.decide(Scheduler, "scheduler:#{stream_part(project_id)}", command_type, payload)
+    fire_id = Aggregate.get(payload, :fire_id)
+
+    if is_binary(fire_id) and fire_id != "" and scheduler_fire_command?(command_type) do
+      Aggregate.decide(
+        Scheduler,
+        "scheduler_fire:#{stream_part(fire_id)}",
+        command_type,
+        payload
+      )
+    else
+      project_id = Aggregate.get(payload, :project_id, "global")
+      Aggregate.decide(Scheduler, "scheduler:#{stream_part(project_id)}", command_type, payload)
+    end
   end
 
   defp route_vcs(command_type, payload) do
@@ -350,6 +361,17 @@ defmodule ForemanServer.AggregateRouter do
   defp first_present(payload, keys) do
     Enum.find_value(keys, &Aggregate.get(payload, &1))
   end
+
+  defp scheduler_fire_command?(command_type)
+       when command_type in [
+              "scheduler.fire.record",
+              "scheduler.fire.confirm",
+              "scheduler.fire.skip",
+              "scheduler.intent.stale"
+            ],
+       do: true
+
+  defp scheduler_fire_command?(_command_type), do: false
 
   defp stream_part(value) when is_binary(value), do: String.replace(value, ":", "%3A")
   defp stream_part(value), do: value

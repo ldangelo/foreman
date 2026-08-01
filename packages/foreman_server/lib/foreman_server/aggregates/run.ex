@@ -275,6 +275,19 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  def handle_command(state, %{type: "run.recover", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         {:ok, outcome} <- Aggregate.required_binary(Aggregate.get(payload, :outcome), :outcome) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunRecoveryEvent",
+         payload: payload |> Map.put(:run_id, run_id) |> Map.put(:outcome, outcome)
+       }}
+    end
+  end
+
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "run.pr.update",
