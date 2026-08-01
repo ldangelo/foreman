@@ -37,7 +37,7 @@ defmodule ForemanServer.Application do
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.RunDynamicSupervisor},
         {DynamicSupervisor, strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
         {ProjectRegistry, []},
-        {Scheduler, []},
+        {Scheduler.Runtime, []},
         {Recovery, [boot_id: boot_id, boot_started_at: boot_started_at]},
         {PrMonitor, []},
         {TriggerPoller, []}

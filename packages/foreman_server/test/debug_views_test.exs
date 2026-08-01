@@ -1,7 +1,7 @@
 defmodule ForemanServer.DebugViewsTest do
   use ExUnit.Case
 
-  alias ForemanServer.{DebugViews, EventStore, WorkerProtocol}
+  alias ForemanServer.{DebugViews, EventStore, Recovery, WorkerProtocol}
 
   setup do
     tmp_dir =
@@ -101,6 +101,7 @@ defmodule ForemanServer.DebugViewsTest do
     Application.put_env(:foreman_server, :event_log_path, event_log_path)
     assert :ok = Application.start(:foreman_server)
 
+    assert {:ok, _} = Recovery.detect()
     assert {:ok, logs} = DebugViews.logs("run-purge", mode: :compact)
 
     assert [%{message: "event-backed stdout survives"}] =
@@ -108,11 +109,13 @@ defmodule ForemanServer.DebugViewsTest do
 
     assert {:ok, report} = DebugViews.report("run-purge")
     assert report.status == "in_progress"
-    assert report.summary.event_count == 2
+    assert report.summary.event_count == 3
+    assert report.summary.last_event == "RunRecoveryEvent"
     assert log_file in report.artifact_paths
 
     assert {:ok, debug} = DebugViews.debug_timeline("run-purge")
-    assert debug.summary.event_count == 2
+    assert debug.summary.event_count == 3
+    assert debug.summary.last_event == "RunRecoveryEvent"
     assert log_file in debug.artifacts
   end
 

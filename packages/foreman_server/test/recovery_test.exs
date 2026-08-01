@@ -12,6 +12,44 @@ defmodule ForemanServer.RecoveryTest.TrackingLauncher do
   end
 end
 
+defmodule ForemanServer.RecoveryTest.RuntimeCrashLauncher do
+  alias ForemanServer.EventStore
+
+  def launch(task, run_id, phases) do
+    test_pid = Application.get_env(:foreman_server, :recovery_test_pid)
+    mode = Application.get_env(:foreman_server, :runtime_crash_mode, :crash_once)
+
+    case mode do
+      :crash_once ->
+        Application.put_env(:foreman_server, :runtime_crash_mode, :recover)
+
+        if is_pid(test_pid) do
+          send(test_pid, {:runtime_crash, Map.get(task, :task_id), run_id, phases, self()})
+        end
+
+        Process.exit(self(), :kill)
+
+      :recover ->
+        phase_id = List.first(phases)
+        worker_id = "worker-#{phase_id || "phase"}"
+
+        if is_pid(test_pid) do
+          send(test_pid, {:launch, :recover, Map.get(task, :task_id), run_id, phases, self()})
+        end
+
+        {:ok, _event} =
+          EventStore.append(%{
+            stream_id: "worker:#{run_id}:#{worker_id}",
+            event_type: "WorkerStarted",
+            payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id, sequence: 0},
+            metadata: %{correlation_id: run_id, idempotency_key: "worker-start:#{run_id}:#{worker_id}"}
+          })
+
+        {:ok, %{run_id: run_id, phases: phases}}
+    end
+  end
+end
+
 defmodule ForemanServer.RecoveryTest do
   use ExUnit.Case
 
@@ -30,6 +68,7 @@ defmodule ForemanServer.RecoveryTest do
       Application.delete_env(:foreman_server, :project_store_path)
       Application.delete_env(:foreman_server, :scheduler)
       Application.delete_env(:foreman_server, :recovery_test_pid)
+      Application.delete_env(:foreman_server, :runtime_crash_mode)
       File.rm_rf!(tmp_dir)
       Application.start(:foreman_server)
     end)
@@ -175,6 +214,51 @@ defmodule ForemanServer.RecoveryTest do
 
       intent.status == "confirmed" and
         Enum.map(intent.history, & &1.event_type) == [
+          "ScheduledFireRecorded",
+          "ScheduledFireConfirmed"
+        ]
+    end)
+  end
+  test "scheduler runtime restart re-dispatches and confirms recorded fire without restarting recovery", %{
+    tmp_dir: tmp_dir
+  } do
+    restart_app!(tmp_dir,
+      worker_launcher: ForemanServer.RecoveryTest.RuntimeCrashLauncher,
+      recovery_test_pid: self()
+    )
+
+    Application.put_env(:foreman_server, :runtime_crash_mode, :crash_once)
+
+    recovery_pid = Process.whereis(Recovery)
+    scheduler_pid = Process.whereis(Scheduler)
+
+    create_task("task-runtime-crash", %{project_id: "alpha", status: "ready"})
+
+    assert catch_exit(
+             Scheduler.tick(
+               default_phases: ["dev"],
+               worker_launcher: ForemanServer.RecoveryTest.RuntimeCrashLauncher
+             )
+           )
+
+    assert_receive {:runtime_crash, "task-runtime-crash", run_id, ["dev"], ^scheduler_pid}, 500
+
+    assert_eventually(fn ->
+      restarted_pid = Process.whereis(Scheduler)
+      is_pid(restarted_pid) and restarted_pid != scheduler_pid
+    end)
+
+    assert Process.whereis(Recovery) == recovery_pid
+    assert_receive {:launch, :recover, "task-runtime-crash", ^run_id, ["dev"], _runtime_pid}, 1_000
+
+    assert_eventually(fn ->
+      intent = ProjectionStore.snapshot().scheduler_intents[run_id]
+
+      intent.status == "confirmed" and
+        intent.attempt == 2 and
+        Enum.map(intent.history, & &1.event_type) == [
+          "ScheduledFireRecorded",
+          "SchedulerIntentStale",
           "ScheduledFireRecorded",
           "ScheduledFireConfirmed"
         ]

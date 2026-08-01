@@ -286,6 +286,7 @@ defmodule ForemanServer.ProjectionStore do
       recovery_events: [],
       run_recoveries: %{},
       vcs_operations: %{},
+      worktrees: %{},
       pr_gates: %{},
       merge_failures: %{},
       inbox_messages: %{},

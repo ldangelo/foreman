@@ -46,7 +46,32 @@ defmodule ForemanServer.SchedulerTest do
 
     assert [%{event_type: "RunStarted", payload: payload}] = EventStore.stream("run:#{run_id}")
     assert payload.phase_order == ["dev", "qa"]
+    assert [%{event_type: "ScheduledFireRecorded", payload: fire_payload}] =
+             EventStore.stream("scheduler_fire:#{run_id}")
+    assert fire_payload.run_id == run_id
+    assert ProjectionStore.snapshot().scheduler_intents[run_id].status == "recorded"
     refute Enum.any?(EventStore.stream("run:#{run_id}"), &(&1.event_type == "PhaseStarted"))
+  end
+
+  test "confirm_execution/1 appends scheduled fire confirmation for worker pickup" do
+    create_task("task-confirm-runtime", %{project_id: "alpha", status: "ready"})
+
+    assert {:ok, %{claimed: [%{run_id: run_id}]}} = Scheduler.tick(default_phases: ["dev"])
+
+    assert {:ok, _confirmed} =
+             Scheduler.confirm_execution(%{
+               run_id: run_id,
+               worker_id: "worker-dev",
+               phase_id: "dev"
+             })
+
+    intent = ProjectionStore.snapshot().scheduler_intents[run_id]
+    assert intent.status == "confirmed"
+
+    assert Enum.map(intent.history, & &1.event_type) == [
+             "ScheduledFireRecorded",
+             "ScheduledFireConfirmed"
+           ]
   end
 
   test "global capacity leaves extra ready tasks queued and records skip reason" do

@@ -4,6 +4,7 @@ defmodule ForemanServer.Recovery do
   use GenServer
 
   alias ForemanServer.{CommandRouter, ProjectionStore}
+  alias ForemanServer.Scheduler.Runtime
 
   @recoverable_run_statuses MapSet.new(["in_progress", "stuck"])
   @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged", "paused"])
@@ -19,9 +20,15 @@ defmodule ForemanServer.Recovery do
     GenServer.call(__MODULE__, :detect)
   end
 
-  @spec detect_unconfirmed_intents() :: {:ok, map()}
-  def detect_unconfirmed_intents do
-    GenServer.call(__MODULE__, :detect_unconfirmed_intents)
+  @spec detect_unconfirmed_intents(keyword()) :: {:ok, map()}
+  def detect_unconfirmed_intents(opts \\ []) do
+    case Keyword.get(opts, :older_than) do
+      %DateTime{} = older_than ->
+        GenServer.call(__MODULE__, {:detect_unconfirmed_intents, older_than})
+
+      _ ->
+        GenServer.call(__MODULE__, :detect_unconfirmed_intents)
+    end
   end
 
   @impl true
@@ -43,6 +50,10 @@ defmodule ForemanServer.Recovery do
 
   def handle_call(:detect_unconfirmed_intents, _from, state) do
     {:reply, {:ok, do_detect_unconfirmed_intents(state)}, state}
+  end
+
+  def handle_call({:detect_unconfirmed_intents, older_than}, _from, state) do
+    {:reply, {:ok, do_detect_unconfirmed_intents(state, ProjectionStore.snapshot(), older_than)}, state}
   end
 
   @impl true
@@ -68,10 +79,16 @@ defmodule ForemanServer.Recovery do
     }
   end
 
-  defp do_detect_unconfirmed_intents(state, snapshot \\ ProjectionStore.snapshot()) do
+  defp do_detect_unconfirmed_intents(
+         state,
+         snapshot \\ ProjectionStore.snapshot(),
+         older_than \\ nil
+       ) do
+    cutoff = older_than || state.boot_started_at
+
     snapshot.scheduler_intents
     |> Map.values()
-    |> Enum.filter(&recoverable_pending_intent?(&1, state.boot_started_at))
+    |> Enum.filter(&recoverable_pending_intent?(&1, cutoff))
     |> Enum.map(&recover_unconfirmed_intent(&1, snapshot, state))
     |> summarize_intent_results()
   end
@@ -133,18 +150,12 @@ defmodule ForemanServer.Recovery do
              boot_id: state.boot_id
            }, state),
          {:ok, _recorded} <-
-           emit_command(%{
-             command_id: "recovery:#{state.boot_id}:fire-record:#{fire_id}:#{next_attempt}",
-             command_type: "scheduler.fire.record",
-             payload: %{
-               fire_id: fire_id,
-               run_id: run_id,
-               task_id: task_id,
-               project_id: Map.get(task, :project_id),
-               phase_id: List.first(phase_order),
-               phase_order: phase_order,
-               attempt: next_attempt
-             }
+           Runtime.record_intent(task, %{
+             fire_id: fire_id,
+             run_id: run_id,
+             phase_id: List.first(phase_order),
+             phase_order: phase_order,
+             attempt: next_attempt
            }),
          {:ok, launch_result} <- state.worker_launcher.launch(task, run_id, phase_order) do
       %{
