@@ -208,7 +208,7 @@ defmodule ForemanServer.Aggregates.Run do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id) do
       if MapSet.member?(@terminal_statuses, state.status) do
-        # Idempotent: run is already terminal — append RunAlreadyCompleted, state unchanged
+        # Appends RunAlreadyCompleted without changing aggregate state; state unchanged
         {:ok,
          %{
            stream_id: "run:#{run_id}",
@@ -246,7 +246,10 @@ defmodule ForemanServer.Aggregates.Run do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
-      event_type = %{"run.fail" => "RunFailed", "run.block" => "RunBlocked", "run.pause" => "RunPaused"}[type]
+      event_type =
+        %{"run.fail" => "RunFailed", "run.block" => "RunBlocked", "run.pause" => "RunPaused"}[
+          type
+        ]
 
       {:ok,
        %{
@@ -385,7 +388,6 @@ defmodule ForemanServer.Aggregates.Run do
   defp apply_opt(s, :head_sha, v), do: %State{s | head_sha: v}
   defp apply_opt(s, :base_branch, v), do: %State{s | base_branch: v}
   defp apply_opt(s, :pr_state, v), do: %State{s | pr_state: v}
-
 
   defp drop_lifecycle_fields(payload) do
     Map.drop(payload, [
