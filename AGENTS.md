@@ -7,6 +7,8 @@ Runtime prompt/workflow safety: after editing bundled source workflows or prompt
 
 Local development uses the checked-in Devbox/direnv Docker Compose stack: `devbox run dev:up` starts shared pgvector Postgres plus Hindsight. `.envrc` sources `.env`; treat `.env`'s `DATABASE_URL` as the source of truth for Foreman. The compose stack's fresh/default Postgres port is `127.0.0.1:55432`, but local checkouts may intentionally point `DATABASE_URL` elsewhere.
 
+**Startup recovery**: On every app boot, `Recovery` GenServer automatically scans `ProjectionStore` for interrupted runs and emits `RunRecoveryEvent` through `CommandRouter`. It also scans for pending scheduler fire intents whose pickup was never confirmed before restart — these are marked `SchedulerIntentStale` and either re-dispatched (with a fresh worker launch) or explicitly `ScheduledFireSkipped` if the work is terminal or abandoned. Repeated scans in the same application boot do not duplicate recovery effects (boot-scoped command IDs and the pre-boot timestamp cutoff dedupe effects). `ScheduledFireConfirmed` is emitted when a worker confirms pickup via `WorkerStarted`.
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**

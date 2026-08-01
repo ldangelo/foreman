@@ -260,6 +260,9 @@ foreman debug <task-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
 foreman doctor         # Check native task store/Pi, DB integrity, stale runs/worktrees
 foreman status         # See all active/failed agents
 foreman retry <task>   # Re-run a specific pipeline phase
+```
+
+**Startup recovery**: On every app boot, `Recovery` GenServer automatically scans `ProjectionStore` for interrupted runs and emits `RunRecoveryEvent` through `CommandRouter`. It also scans for pending scheduler fire intents whose pickup was never confirmed before restart — these are marked `SchedulerIntentStale` and either re-dispatched (with a fresh worker launch) or explicitly `ScheduledFireSkipped` if the work is terminal or abandoned. Repeated scans in the same application boot do not duplicate recovery effects (boot-scoped command IDs and the pre-boot timestamp cutoff dedupe effects). `ScheduledFireConfirmed` is emitted when a worker confirms pickup via `WorkerStarted`.
 
 # Agent logs (streamed during run)
 ls ~/.foreman/logs/    # One .log file per runId
