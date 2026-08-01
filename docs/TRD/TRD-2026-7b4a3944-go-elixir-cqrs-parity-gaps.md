@@ -445,11 +445,11 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Test: PR not open/merged → `PrGate.check/1` returns `{:error, :pr_not_acceptable}`
   - [x] Test: `PrGate` blocks run from transitioning to merge-pending
 
-- [ ] **TRD-035-TEST** VCS adapter test coverage | 2h | [verifies TRD-018] [depends: TRD-018] [satisfies REQ-013, REQ-020] | Validates: AC-013-1–AC-013-3 | Implementation AC: Given VCS operation fails transiently, when retried, then 3 retries with exponential backoff occur; non-transient failures are not retried; events are emitted through `CommandRouter`
-  - [ ] Test: transient failure → 3 retries with exponential backoff
-  - [ ] Test: non-transient failure → no retry, `VcsOperationFailed`
-  - [ ] Test: success → `VcsOperationCompleted`
-  - [ ] Test: `VcsOperationStarted` event emitted before operation
+- [x] **TRD-035-TEST** VCS adapter test coverage | 2h | [verifies TRD-018] [depends: TRD-018] [satisfies REQ-013, REQ-020] | Validates: AC-013-1–AC-013-3 | Implementation AC: Given VCS operation fails transiently, when retried, then 3 retries with exponential backoff occur; non-transient failures are not retried; events are emitted through `CommandRouter`
+  - [x] Test: transient failure → 3 retries with exponential backoff
+  - [x] Test: non-transient failure → no retry, `VcsOperationFailed`
+  - [x] Test: success → `VcsOperationCompleted`
+  - [x] Test: `VcsOperationStarted` event emitted before operation
 
 - [ ] **TRD-036-TEST** Project infrastructure test coverage | 3h | [verifies TRD-002, TRD-003, TRD-004, TRD-005] [depends: TRD-002, TRD-003, TRD-004, TRD-005] [satisfies REQ-016, REQ-020] | Validates: AC-016-1–AC-016-3 | Implementation AC: Given `ProjectRegistry` is implemented, when a project process registers, then `ProjectRegistry` maintains the name-to-pid mapping and `ProjectSupervisor` restarts crashed processes; project config is persisted via event store and read via `ProjectionStore`
   - [ ] Test: project registered → `ProjectRegistered` event appended
