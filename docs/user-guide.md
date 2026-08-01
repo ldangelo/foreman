@@ -342,7 +342,7 @@ config :foreman_server,
   external_trigger_endpoint_url: "https://your-trigger-source/triggers"
 ```
 
-On every app boot, `Recovery` GenServer automatically scans `ProjectionStore` for interrupted runs and emits `RunRecoveryEvent` through `CommandRouter`. It also scans for pending scheduler fire intents whose pickup was never confirmed before restart — these are marked `SchedulerIntentStale` and either re-dispatched (with a fresh worker launch) or explicitly `ScheduledFireSkipped` if the work is terminal or abandoned. Repeated scans in the same application boot do not duplicate recovery effects (boot-scoped command IDs and the pre-boot timestamp cutoff dedupe effects). `ScheduledFireConfirmed` is emitted when a worker confirms pickup via `WorkerStarted`.
+**Startup recovery**: On every app boot, `Recovery` GenServer automatically scans `ProjectionStore` for interrupted runs and emits `RunRecoveryEvent` through `CommandRouter`. It also scans for pending scheduler fire intents whose pickup was never confirmed before restart — these are marked `SchedulerIntentStale` and either re-dispatched (with a fresh worker launch) or explicitly `ScheduledFireSkipped` if the work is terminal or abandoned. Repeated scans in the same application boot do not duplicate recovery effects (boot-scoped command IDs and the pre-boot timestamp cutoff dedupe effects). `ScheduledFireConfirmed` is emitted when a worker confirms pickup via `WorkerStarted`.
 
 
 ```bash
