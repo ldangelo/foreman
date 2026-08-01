@@ -42,7 +42,10 @@ defmodule ForemanServer.RecoveryTest.RuntimeCrashLauncher do
             stream_id: "worker:#{run_id}:#{worker_id}",
             event_type: "WorkerStarted",
             payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id, sequence: 0},
-            metadata: %{correlation_id: run_id, idempotency_key: "worker-start:#{run_id}:#{worker_id}"}
+            metadata: %{
+              correlation_id: run_id,
+              idempotency_key: "worker-start:#{run_id}:#{worker_id}"
+            }
           })
 
         {:ok, %{run_id: run_id, phases: phases}}
@@ -57,7 +60,10 @@ defmodule ForemanServer.RecoveryTest do
 
   setup do
     tmp_dir =
-      Path.join(System.tmp_dir!(), "foreman-recovery-scan-test-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "foreman-recovery-scan-test-#{System.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(tmp_dir)
     restart_app!(tmp_dir)
@@ -76,19 +82,34 @@ defmodule ForemanServer.RecoveryTest do
     %{tmp_dir: tmp_dir}
   end
 
-  test "startup scan emits RunRecoveryEvent for interrupted runs and dedupes repeated detect in same boot", %{tmp_dir: tmp_dir} do
+  test "startup scan emits RunRecoveryEvent for interrupted runs and dedupes repeated detect in same boot",
+       %{tmp_dir: tmp_dir} do
     task_id = "task-interrupted"
     run_id = "run-interrupted"
 
     create_task(task_id, %{project_id: "alpha", status: "ready"})
     append_task_updated(task_id, %{status: "in_progress", run_id: run_id})
     append_run_started(run_id, task_id, ["dev"])
-
     restart_app!(tmp_dir)
+
+    # Assert RunRecoveryEvent was emitted through CommandRouter to the run stream
+    assert_eventually(fn ->
+      events = EventStore.stream("run:#{run_id}")
+
+      Enum.any?(events, fn event ->
+        event.event_type == "RunRecoveryEvent" and
+          event.metadata.source == "node-cli-boundary" and
+          event.metadata.idempotency_key == event.payload.command_id and
+          String.starts_with?(event.payload.command_id, "recovery:") and
+          event.payload.outcome == "interrupted_run_detected"
+      end)
+    end)
 
     assert_eventually(fn ->
       recoveries = Map.get(ProjectionStore.snapshot().run_recoveries, run_id, [])
-      length(recoveries) == 1 and Enum.any?(recoveries, &(&1.outcome == "interrupted_run_detected"))
+
+      length(recoveries) == 1 and
+        Enum.any?(recoveries, &(&1.outcome == "interrupted_run_detected"))
     end)
 
     assert {:ok, _result} = Recovery.detect()
@@ -153,7 +174,6 @@ defmodule ForemanServer.RecoveryTest do
       |> Enum.count(&(&1.event_type == "ScheduledFireRecorded"))
 
     assert recorded_events_after_restart == 2
-
   end
 
   test "restart re-dispatches pre-seeded stale intents from an earlier boot", %{tmp_dir: tmp_dir} do
@@ -165,7 +185,12 @@ defmodule ForemanServer.RecoveryTest do
              EventStore.append(%{
                stream_id: "scheduler_fire:#{run_id}",
                event_type: "SchedulerIntentStale",
-               payload: %{fire_id: run_id, run_id: run_id, task_id: "task-preseeded-stale", attempt: 1},
+               payload: %{
+                 fire_id: run_id,
+                 run_id: run_id,
+                 task_id: "task-preseeded-stale",
+                 attempt: 1
+               },
                metadata: %{correlation_id: run_id, idempotency_key: "intent-stale:seed:#{run_id}"}
              })
 
@@ -195,7 +220,6 @@ defmodule ForemanServer.RecoveryTest do
     end)
   end
 
-
   test "worker pickup confirms scheduled fire intent" do
     create_task("task-confirm", %{project_id: "alpha", status: "ready"})
 
@@ -206,7 +230,10 @@ defmodule ForemanServer.RecoveryTest do
                stream_id: "worker:#{run_id}:worker-dev",
                event_type: "WorkerStarted",
                payload: %{run_id: run_id, worker_id: "worker-dev", phase_id: "dev", sequence: 0},
-               metadata: %{correlation_id: run_id, idempotency_key: "worker-start:#{run_id}:worker-dev"}
+               metadata: %{
+                 correlation_id: run_id,
+                 idempotency_key: "worker-start:#{run_id}:worker-dev"
+               }
              })
 
     assert_eventually(fn ->
@@ -219,9 +246,11 @@ defmodule ForemanServer.RecoveryTest do
         ]
     end)
   end
-  test "scheduler runtime restart re-dispatches and confirms recorded fire without restarting recovery", %{
-    tmp_dir: tmp_dir
-  } do
+
+  test "scheduler runtime restart re-dispatches and confirms recorded fire without restarting recovery",
+       %{
+         tmp_dir: tmp_dir
+       } do
     restart_app!(tmp_dir,
       worker_launcher: ForemanServer.RecoveryTest.RuntimeCrashLauncher,
       recovery_test_pid: self()
@@ -249,7 +278,9 @@ defmodule ForemanServer.RecoveryTest do
     end)
 
     assert Process.whereis(Recovery) == recovery_pid
-    assert_receive {:launch, :recover, "task-runtime-crash", ^run_id, ["dev"], _runtime_pid}, 1_000
+
+    assert_receive {:launch, :recover, "task-runtime-crash", ^run_id, ["dev"], _runtime_pid},
+                   1_000
 
     assert_eventually(fn ->
       intent = ProjectionStore.snapshot().scheduler_intents[run_id]
@@ -265,7 +296,9 @@ defmodule ForemanServer.RecoveryTest do
     end)
   end
 
-  test "restart skips stale scheduled fire when the run was already abandoned", %{tmp_dir: tmp_dir} do
+  test "restart skips stale scheduled fire when the run was already abandoned", %{
+    tmp_dir: tmp_dir
+  } do
     create_task("task-skipped", %{project_id: "alpha", status: "ready"})
 
     assert {:ok, %{claimed: [%{run_id: run_id}]}} = Scheduler.tick(default_phases: ["dev"])
@@ -298,7 +331,11 @@ defmodule ForemanServer.RecoveryTest do
 
     assert_eventually(fn ->
       recoveries = Map.get(ProjectionStore.snapshot().run_recoveries, run_id, [])
-      Enum.any?(recoveries, &(&1.outcome == "scheduled_fire_skipped" and &1.reason == "run_completed"))
+
+      Enum.any?(
+        recoveries,
+        &(&1.outcome == "scheduled_fire_skipped" and &1.reason == "run_completed")
+      )
     end)
   end
 
@@ -342,7 +379,10 @@ defmodule ForemanServer.RecoveryTest do
                stream_id: "task:#{task_id}",
                event_type: "TaskUpdated",
                payload: Map.put(payload, :task_id, task_id),
-               metadata: %{correlation_id: task_id, idempotency_key: "task-update:#{task_id}:#{inspect(payload)}"}
+               metadata: %{
+                 correlation_id: task_id,
+                 idempotency_key: "task-update:#{task_id}:#{inspect(payload)}"
+               }
              })
   end
 
