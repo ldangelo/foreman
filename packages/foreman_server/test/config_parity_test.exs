@@ -60,6 +60,55 @@ defmodule ForemanServer.ConfigParityTest do
     end
   end
 
+  describe "dev.exs — derived runtime configuration" do
+    test "ProjectionStore adapter derives :postgres from dev EventStore + database_url config" do
+      # ProjectionStore adapter is derived: :postgres when event_store=:postgres AND database_url is set.
+      # Use the actual dev config values so this test fails if dev.exs changes those inputs.
+      original_adapter_env = System.get_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER")
+      original_event_store_adapter = Application.get_env(:foreman_server, :event_store_adapter)
+      original_database_url = Application.get_env(:foreman_server, :database_url)
+      System.delete_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER")
+
+      try do
+        Application.put_env(
+          :foreman_server,
+          :event_store_adapter,
+          get_foreman_config([:event_store_adapter])
+        )
+
+        Application.put_env(:foreman_server, :database_url, get_foreman_config([:database_url]))
+
+        assert ForemanServer.RuntimeInfo.projection_store_adapter() == :postgres
+      after
+        System.delete_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER")
+
+        if original_adapter_env,
+          do: System.put_env("FOREMAN_SERVER_EVENT_STORE_ADAPTER", original_adapter_env)
+
+        if is_nil(original_event_store_adapter) do
+          Application.delete_env(:foreman_server, :event_store_adapter)
+        else
+          Application.put_env(:foreman_server, :event_store_adapter, original_event_store_adapter)
+        end
+
+        if is_nil(original_database_url) do
+          Application.delete_env(:foreman_server, :database_url)
+        else
+          Application.put_env(:foreman_server, :database_url, original_database_url)
+        end
+      end
+    end
+
+    test "Overwatch GenServer is supervised and alive in the running app" do
+      # {Overwatch, []} is in Application children; assert the named GenServer is alive.
+      spec = ForemanServer.Overwatch.child_spec([])
+      assert is_map(spec)
+      assert spec.id == ForemanServer.Overwatch
+      assert {ForemanServer.Overwatch, :start_link, [_]} = spec.start
+      assert Process.alive?(Process.whereis(ForemanServer.Overwatch))
+    end
+  end
+
   describe "Endpoint — router selection driven by consumed :debug_errors config" do
     test "debug_errors=true selects DevRouter" do
       original = Application.get_env(:foreman_server, :debug_errors)
