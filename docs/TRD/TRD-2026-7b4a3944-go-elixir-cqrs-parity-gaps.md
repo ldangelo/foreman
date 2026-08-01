@@ -219,7 +219,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Optimistic concurrency in `Actor` (already handles expected_version conflict — verify with AC-005-3 test)
   - [ ] Idempotent duplicate command handling via `command_id` (already in `Actor` — verify)
 
-- [ ] **TRD-009** Run aggregate | 6h | [satisfies REQ-004] | Validates: AC-004-1, AC-004-2, AC-004-3, AC-004-4 | AC: Given a run is active, when `CompleteRun` dispatched on a terminal run, then `RunAlreadyCompleted` event is appended and state unchanged (idempotent); given run aggregate restarts, when `Aggregate.load/2` is called, then full stream is replayed and correct terminal/non-terminal state is restored
+- [ ] **TRD-009** Run aggregate | 6h | [satisfies REQ-004] | Validates: AC-004-1, AC-004-2, AC-004-3, AC-004-4 | AC: Given a run is active, when `CompleteRun` dispatched on a terminal run, then `RunAlreadyCompleted` event is appended and aggregate state unchanged; given run aggregate restarts, when `Aggregate.load/2` is called, then full stream is replayed and correct terminal/non-terminal state is restored
   - [x] `ForemanServer.Aggregates.Run.State` struct with fixed fields (`run_id`, `task_id`, `project_id`, `current_phase`, `phase_order`, PR fields) and dynamic maps (`phase_status`, `worker_status`, `retry_history`)
   - [x] `handle_command/2` for `StartRun`, `CompleteRun`, `FailRun`
   - [ ] `handle_command/2` for `CancelRun` (`run.cancel`/`RunCancelled` not in codebase)
