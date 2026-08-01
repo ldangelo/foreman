@@ -300,12 +300,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Events: `VcsOperationStarted`, `VcsOperationCompleted`, `VcsOperationFailed`
   - [x] All VCS operations route through `CommandRouter`
 
-- [ ] **TRD-019** Recovery scanner expansion | 4h | [satisfies REQ-011] | Validates: AC-011-1, AC-011-2, AC-011-3, AC-011-4 | AC: Given server restarts, when `Recovery` GenServer starts, then it scans `ProjectionStore` for interrupted runs and emits recovery events with explicit outcomes; given server restart with pending scheduled fire (intent recorded but pickup unconfirmed), when recovery runs, then fire is re-dispatched to new worker; idempotency preserved via aggregate version and command dedup
-  - [ ] Existing `Recovery` GenServer: expand `do_detect/0` to emit `RunRecoveryEvent` through `CommandRouter`
-  - [ ] `ScheduledFireRecorded` intent: on restart, `detect_unconfirmed_intents/0` finds pending intents
-  - [ ] `detect_unconfirmed_intents/0`: marks stale intents `SchedulerIntentStale`, re-dispatches
-  - [ ] Fire-and-track: `ScheduledFireConfirmed` on worker pickup; `ScheduledFireSkipped` if abandoned
-  - [ ] Idempotency: existing Actor command deduplication covers this (verify)
+- [x] **TRD-019** Recovery scanner expansion | 4h | [satisfies REQ-011] | Validates: AC-011-1, AC-011-2, AC-011-3, AC-011-4 | AC: Given server restarts, when `Recovery` GenServer starts, then it scans `ProjectionStore` for interrupted runs and emits recovery events with explicit outcomes; given server restart with pending scheduled fire (intent recorded but pickup unconfirmed), when recovery runs, then fire is re-dispatched to new worker; idempotency preserved via aggregate version and command dedup
+  - [x] Existing `Recovery` GenServer: expand `do_detect/0` to emit `RunRecoveryEvent` through `CommandRouter`
+  - [x] `ScheduledFireRecorded` intent: on restart, `detect_unconfirmed_intents/0` finds pending intents
+  - [x] `detect_unconfirmed_intents/0`: marks stale intents `SchedulerIntentStale`, re-dispatches
+  - [x] Fire-and-track: `ScheduledFireConfirmed` on worker pickup; `ScheduledFireSkipped` if abandoned
+  - [x] Idempotency: existing Actor command deduplication covers this (verify)
 
 - [ ] **TRD-020** Stuck-run detection | 2h | [satisfies REQ-012] | Validates: AC-012-1 | AC: Given a run is active, when no phase or worker events have been appended for 15 minutes, then run is flagged `Stuck` in projection and alert is surfaced
   - [ ] `StuckDetector` GenServer: periodic scan, configurable via `:stuck_run_check_interval_seconds`
