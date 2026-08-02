@@ -3,7 +3,7 @@ document_id: TRD-2026-7b4a3944
 version: 1.0.0
 status: Draft
 date: 2026-07-29
-prd_reference: PRD-2026-7b4a3944
+prd_reference: ../PRD/PRD-2026-7b4a3944-go-elixir-cqrs-parity-gaps.md
 prd_version: 1.0.1
 architecture_approach: Staged PR Slices (Option C — 7 slices)
 total_tasks: 29
