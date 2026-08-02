@@ -386,4 +386,136 @@ defmodule ForemanServer.CommandRouterRunLimitTest do
 
   defp unique_id(prefix),
     do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
+
+  # Real-timer-driven scheduling test (`for-k1l`). The previous test sends
+  # `:scan` directly; it would still pass if `schedule_scan/0` were
+  # removed from both `init/1` and `handle_info/2`. This test stops and
+  # restarts the sweeper under a short configured interval so the actual
+  # `Process.send_after/3` timer fires, then asserts (a) the leaked slot
+  # is reconciled by the timer's natural wakeup, (b) the counter
+  # advanced, (c) the GenServer remains alive, and (d) `last_run_at`
+  # advances on a second cycle even though no slots remain (proving the
+  # GenServer kept scheduling itself).
+  test "scheduled :scan timer reconciles a leaked slot and reschedules itself" do
+    original_interval =
+      case Application.fetch_env(:foreman_server, :project_run_limit_sweep_interval_ms) do
+        {:ok, value} -> value
+        :error -> :unset
+      end
+
+    short_interval = 50
+    Application.put_env(:foreman_server, :project_run_limit_sweep_interval_ms, short_interval)
+
+    on_exit(fn ->
+      case original_interval do
+        :unset -> Application.delete_env(:foreman_server, :project_run_limit_sweep_interval_ms)
+        value -> Application.put_env(:foreman_server, :project_run_limit_sweep_interval_ms, value)
+      end
+    end)
+
+    supervisor = Process.whereis(ForemanServer.Supervisor)
+    assert is_pid(supervisor)
+
+    # Tear down and re-add the sweeper child so it picks up the short
+    # interval on its next `init/1` (and on every subsequent
+    # `schedule_scan/0` call inside `handle_info(:scan, ...)`).
+    :ok = Supervisor.terminate_child(supervisor, ForemanServer.ProjectRunLimitSweeper)
+
+    {:ok, sweeper_pid} =
+      Supervisor.restart_child(supervisor, ForemanServer.ProjectRunLimitSweeper)
+
+    project_id = unique_id("project")
+    run_id = unique_id("run")
+    slot_stream = "project_run_limit:#{project_id}"
+
+    # Recreate the leaked-slot condition the timer will reconcile.
+    assert {:ok, _} = start_run(project_id, run_id)
+
+    detector = Process.whereis(StreamGapDetector)
+    assert is_pid(detector)
+
+    :sys.replace_state(detector, fn state ->
+      %{state | blocked_streams: MapSet.put(state.blocked_streams, slot_stream)}
+    end)
+
+    assert {:ok, _} =
+             CommandRouter.handle(%{
+               command_id: unique_id("command"),
+               command_type: "run.complete",
+               payload: %{run_id: run_id, project_id: project_id}
+             })
+
+    {state, _} = Aggregate.load(ProjectRunLimit, slot_stream)
+    assert state.active_run_ids == MapSet.new([run_id])
+
+    assert :ok = StreamGapDetector.resolve(slot_stream)
+
+    # Counter on the freshly restarted GenServer starts at 0.
+    pre_state = :sys.get_state(sweeper_pid)
+    assert pre_state.total_released == 0
+
+    # Wait (bounded) for the natural `Process.send_after/3` timer to
+    # fire at least once. We do NOT `send/2 :scan` here — the timer
+    # must be queued by the OS process itself. A generous deadline
+    # absorbs busy-CI scheduling jitter without making the test slow
+    # on quiet hosts.
+    first_deadline_ms = 2_000
+    poll_step_ms = div(short_interval, 5) |> max(5)
+
+    after_first =
+      poll_until(first_deadline_ms, poll_step_ms, sweeper_pid, fn st ->
+        st.total_released >= 1 and is_struct(st.last_run_at, DateTime)
+      end)
+
+    # If the timer fired, the GenServer must still be alive. A bug
+    # that returned the timer ref (or any non-callback tuple) would
+    # have terminated the process.
+    assert Process.alive?(sweeper_pid)
+
+    {state, version} = Aggregate.load(ProjectRunLimit, slot_stream)
+    assert state.active_run_ids == MapSet.new()
+    assert version == 2
+
+    # Wait (bounded) for the rescheduled timer to fire AGAIN. Because
+    # the slot is already released, `total_released` should NOT
+    # advance — but `last_run_at` should, proving the GenServer kept
+    # scheduling itself via `Process.send_after/3`.
+    last_run_before_second = after_first.last_run_at
+
+    after_second =
+      poll_until(first_deadline_ms, poll_step_ms, sweeper_pid, fn st ->
+        DateTime.compare(st.last_run_at, last_run_before_second) == :gt
+      end)
+
+    assert Process.alive?(sweeper_pid)
+    assert after_second.total_released == after_first.total_released
+    assert after_second.last_run_at != last_run_before_second
+  end
+
+  # Polls `:sys.get_state(sweeper_pid)` until `fun.(state)` returns true,
+  # or raises after `deadline_ms`. Bounded polling lets a slow CI
+  # scheduler absorb jitter without making the test slow on quiet hosts.
+  defp poll_until(deadline_ms, step_ms, sweeper_pid, fun) do
+    deadline = monotonic_ms() + deadline_ms
+    do_poll(deadline, step_ms, sweeper_pid, fun)
+  end
+
+  defp do_poll(deadline, step_ms, sweeper_pid, fun) do
+    state = :sys.get_state(sweeper_pid)
+
+    if fun.(state) do
+      state
+    else
+      if monotonic_ms() >= deadline do
+        flunk(
+          "sweeper state did not satisfy predicate within #{deadline} ms; got #{inspect(state)}"
+        )
+      else
+        Process.sleep(step_ms)
+        do_poll(deadline, step_ms, sweeper_pid, fun)
+      end
+    end
+  end
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 end
