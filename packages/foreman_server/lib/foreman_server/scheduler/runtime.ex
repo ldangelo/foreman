@@ -246,33 +246,33 @@ defmodule ForemanServer.Scheduler.Runtime do
     run_id = uuid()
     fire_id = scheduled_fire_id(run_id)
     effective_phases = get_effective_phases(task, phases)
+    project_id = resolve_project_id(task)
 
-    with {:ok, _event} <-
-           EventStore.append(%{
-             stream_id: "task:#{task.task_id}",
-             event_type: "TaskUpdated",
-             payload: %{task_id: task.task_id, status: "in_progress", run_id: run_id},
-             metadata: %{
-               correlation_id: run_id,
-               idempotency_key: "claim:#{task.task_id}:#{run_id}"
-             }
-           }),
-         {:ok, _event} <-
-           EventStore.append(%{
-             stream_id: "run:#{run_id}",
-             event_type: "RunStarted",
-             payload: %{
-               run_id: run_id,
-               task_id: task.task_id,
-               phase_order: effective_phases,
-               workflow: Map.get(task, :workflow) || Map.get(task, :task_type)
-             },
-             metadata: %{
-               correlation_id: run_id,
-               idempotency_key: "run-start:#{run_id}"
-             }
-           }),
-         {:ok, _result} <-
+    payload =
+      Map.merge(task, %{
+        run_id: run_id,
+        task_id: task.task_id,
+        project_id: project_id,
+        phase_order: effective_phases,
+        workflow: Map.get(task, :workflow) || Map.get(task, :task_type)
+      })
+
+    case CommandRouter.handle(%{
+           command_id: "run-start:#{run_id}",
+           command_type: "run.start",
+           payload: payload
+         }) do
+      {:ok, _event} ->
+        finish_claim(task, run_id, fire_id, project_id, effective_phases, worker_launcher)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp finish_claim(task, run_id, fire_id, project_id, effective_phases, worker_launcher) do
+    with {:ok, _} <- emit_task_in_progress(task, run_id),
+         {:ok, _} <-
            record_intent(task, %{
              fire_id: fire_id,
              run_id: run_id,
@@ -282,6 +282,86 @@ defmodule ForemanServer.Scheduler.Runtime do
            }),
          {:ok, _launch} <- worker_launcher.launch(task, run_id, effective_phases) do
       {:ok, run_id}
+    else
+      {:error, reason} ->
+        rollback_claim(task, run_id, project_id, reason)
+        {:error, reason}
+    end
+  end
+
+  defp emit_task_in_progress(task, run_id) do
+    EventStore.append(%{
+      stream_id: "task:#{task.task_id}",
+      event_type: "TaskUpdated",
+      payload: %{task_id: task.task_id, status: "in_progress", run_id: run_id},
+      metadata: %{
+        correlation_id: run_id,
+        idempotency_key: "claim:#{task.task_id}:#{run_id}"
+      }
+    })
+  end
+
+  defp rollback_claim(task, run_id, project_id, reason) do
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        :ok
+
+      true ->
+        _ =
+          CommandRouter.handle(%{
+            command_id: "run-fail-rollback:#{run_id}",
+            command_type: "run.fail",
+            payload: %{
+              run_id: run_id,
+              project_id: project_id,
+              task_id: task.task_id,
+              reason: inspect(reason),
+              reason_type: classify_claim_failure(reason)
+            }
+          })
+
+        emit_task_rollback(task, run_id, reason)
+        :ok
+    end
+  end
+
+  defp emit_task_rollback(task, run_id, reason) do
+    _ =
+      EventStore.append(%{
+        stream_id: "task:#{task.task_id}",
+        event_type: "TaskUpdated",
+        payload: %{
+          task_id: task.task_id,
+          status: "failed",
+          run_id: run_id,
+          reason: inspect(reason),
+          failure_type: "claim_or_launch"
+        },
+        metadata: %{
+          correlation_id: run_id,
+          idempotency_key: "task-rollback:#{task.task_id}:#{run_id}"
+        }
+      })
+
+    :ok
+  end
+
+  defp classify_claim_failure({:error, :run_limit_exceeded}), do: "run_limit_exceeded"
+  defp classify_claim_failure({:error, :project_id_required}), do: "missing_project_id"
+  defp classify_claim_failure(_), do: "claim_or_launch_failure"
+
+  defp resolve_project_id(task) do
+    case Map.get(task, :project_id) do
+      pid when is_binary(pid) and pid != "" ->
+        pid
+
+      _ ->
+        snapshot = ProjectionStore.snapshot()
+
+        case get_in(snapshot.tasks, [task.task_id, :project_id]) do
+          pid when is_binary(pid) and pid != "" -> pid
+          _ -> nil
+        end
     end
   end
 

@@ -46,8 +46,10 @@ defmodule ForemanServer.SchedulerTest do
 
     assert [%{event_type: "RunStarted", payload: payload}] = EventStore.stream("run:#{run_id}")
     assert payload.phase_order == ["dev", "qa"]
+
     assert [%{event_type: "ScheduledFireRecorded", payload: fire_payload}] =
              EventStore.stream("scheduler_fire:#{run_id}")
+
     assert fire_payload.run_id == run_id
     assert ProjectionStore.snapshot().scheduler_intents[run_id].status == "recorded"
     refute Enum.any?(EventStore.stream("run:#{run_id}"), &(&1.event_type == "PhaseStarted"))
@@ -102,6 +104,31 @@ defmodule ForemanServer.SchedulerTest do
     snapshot = ProjectionStore.snapshot()
     assert snapshot.tasks["alpha-2"].status == "ready"
     assert snapshot.scheduler_skips["alpha-2"].reason == "project_capacity_exhausted"
+  end
+
+  test "scheduler dispatches through CommandRouter and respects project run-limit cap" do
+    project_id = "cap-proj-#{System.unique_integer([:positive])}"
+
+    # Prime the project with 100 active runs directly via the router so the
+    # scheduler's `claim_task` is the 101st attempt.
+    Enum.each(1..100, fn i ->
+      run_id = "cap-run-#{System.unique_integer([:positive])}-#{i}"
+
+      {:ok, _} =
+        ForemanServer.CommandRouter.handle(%{
+          command_id: "cap-seed:#{run_id}",
+          command_type: "run.start",
+          payload: %{run_id: run_id, project_id: project_id}
+        })
+    end)
+
+    create_task("task-over-cap", %{project_id: project_id, status: "ready"})
+
+    assert {:ok, %{claimed: [], skipped: [%{task_id: "task-over-cap", reason: reason}]}} =
+             Scheduler.tick(default_phases: ["dev"], max_concurrent: 1)
+
+    assert reason =~ "run_limit_exceeded"
+    assert ProjectionStore.snapshot().tasks["task-over-cap"].status == "ready"
   end
 
   test "periodic tick automatically claims ready tasks" do
