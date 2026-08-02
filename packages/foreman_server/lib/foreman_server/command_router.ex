@@ -465,34 +465,41 @@ defmodule ForemanServer.CommandRouter do
   # a `ProjectRunSlotReleased` compensating event. We audit but do not
   # roll back the canonical terminal event.
   defp run_terminal_saga(command_type, payload, command_id, metadata) do
-    project_id = Map.get(payload, :project_id)
     run_id = Map.get(payload, :run_id)
 
     case do_append(command_type, payload, command_id, metadata, @max_router_retries) do
       {:ok, _event, _enriched} = ok ->
-        if is_binary(project_id) and project_id != "" and
-             is_binary(run_id) and run_id != "" do
-          case release_slot(project_id, run_id, payload, command_id, metadata) do
-            {:ok, _} ->
-              ok
+        case ensure_project_id(Map.get(payload, :project_id), run_id) do
+          {:ok, project_id} when is_binary(run_id) and run_id != "" ->
+            release_payload =
+              payload
+              |> Map.put(:project_id, project_id)
+              |> Map.put(:run_id, run_id)
 
-            {:error, release_reason} ->
-              # Best-effort: do not roll back a successful canonical emit.
-              audit_slot_release_failed(
-                project_id,
-                run_id,
-                command_type,
-                release_reason,
-                command_id,
-                metadata
-              )
+            case release_slot(project_id, run_id, release_payload, command_id, metadata) do
+              {:ok, _} ->
+                ok
 
-              ok
-          end
-        else
-          ok
+              {:error, release_reason} ->
+                # Best-effort: do not roll back a successful canonical emit.
+                audit_slot_release_failed(
+                  project_id,
+                  run_id,
+                  command_type,
+                  release_reason,
+                  command_id,
+                  metadata
+                )
+
+                ok
+            end
+
+          _ ->
+            # No project_id resolvable from payload or run projection; the
+            # ProjectRunLimitSweeper will reconcile this run if a slot was
+            # actually held. Don't roll back the canonical terminal event.
+            ok
         end
-
       {:error, _} = err ->
         # Canonical emit failed (e.g. Run aggregate rejected the transition).
         # No slot to release — the reservation (if any) is the saga's

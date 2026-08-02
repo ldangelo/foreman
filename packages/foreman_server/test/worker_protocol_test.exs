@@ -259,7 +259,16 @@ defmodule ForemanServer.WorkerProtocolTest do
   end
 
   test "run_completed worker event routes to Run aggregate and preserves task_id, failure_reason, and reason" do
+    project_id = "proj-seed:run-complete-test"
     assert seed_run("run-complete-test") == :ok
+
+    # Confirm the run.start saga reserved a slot for this project before
+    # the worker terminal event arrives.
+    initial_slot_events =
+      ForemanServer.EventStore.stream("project_run_limit:#{project_id}")
+      |> Enum.map(& &1.event_type)
+
+    assert "ProjectRunStarted" in initial_slot_events
 
     completed = %{
       "run_id" => "run-complete-test",
@@ -285,6 +294,23 @@ defmodule ForemanServer.WorkerProtocolTest do
     assert completed_event.payload.task_id == "task-complete-1"
     assert completed_event.payload.failure_reason == "all_done"
     assert completed_event.payload.reason == "all_done"
+
+    # Worker terminal payloads omit `project_id`; the saga must resolve it
+    # from the canonical run projection and release the slot synchronously,
+    # not wait on `ProjectRunLimitSweeper`.
+    slot_events =
+      ForemanServer.EventStore.stream("project_run_limit:#{project_id}")
+      |> Enum.map(& &1.event_type)
+
+    assert "ProjectRunCompleted" in slot_events
+
+    {limit_state, _version} =
+      ForemanServer.Aggregate.load(
+        ForemanServer.Aggregates.ProjectRunLimit,
+        "project_run_limit:#{project_id}"
+      )
+
+    assert limit_state.active_run_ids == MapSet.new()
   end
   test "WorkerProtocol.emit/2 with nil sequence auto-fills next sequence and stores typed struct" do
     # Seed the worker stream with WorkerStarted so the aggregate has a sequence baseline.
