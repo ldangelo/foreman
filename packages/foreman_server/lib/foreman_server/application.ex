@@ -35,9 +35,8 @@ defmodule ForemanServer.Application do
 {Overwatch.Tracker, :ok},
           {Overwatch.WorkerSupervisor, []},
           {EventStore, []},
-{ForemanServer.StreamGapDetector, []},
-{ForemanServer.Inbox.SharedInbox, []},
-{ForemanServer.ProjectRunLimitSweeper, []},
+          {ForemanServer.StreamGapDetector, []},
+          {ForemanServer.ProjectRunLimitSweeper, []},
         ] ++
         debug_children() ++
         [
