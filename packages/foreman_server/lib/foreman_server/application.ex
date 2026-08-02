@@ -32,11 +32,11 @@ defmodule ForemanServer.Application do
         [
           {ProjectionStore, []},
           {Overwatch, []},
-{Overwatch.Tracker, :ok},
+          {Overwatch.Tracker, :ok},
           {Overwatch.WorkerSupervisor, []},
           {EventStore, []},
           {ForemanServer.StreamGapDetector, []},
-          {ForemanServer.ProjectRunLimitSweeper, []},
+          {ForemanServer.ProjectRunLimitSweeper, []}
         ] ++
         debug_children() ++
         [

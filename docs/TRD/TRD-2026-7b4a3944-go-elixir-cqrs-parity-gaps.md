@@ -384,10 +384,10 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Emit in overwatch: `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]`
   - [ ] All events use OpenTelemetry semantic conventions where applicable
 
-- [ ] **TRD-041** Event store durability + scale limit enforcement | 3h | [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2 | AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given a project has 100 active runs, when `StartRun` is dispatched, then `:run_limit_exceeded` is returned before `RunStarted` is appended; given a stream gap is detected, when projected count differs from expected, then `StreamGapDetected` event surfaces an alert and `CommandRouter` refuses any further appends to the affected stream until the gap is resolved
-  - [ ] Postgres init script / migration: `data_checksums = on`, `wal_level = replica`
-  - [ ] **Run limit (REQ-022):** `CommandRouter` routes `StartRun` through the **project-level owner** (either `Project` aggregate or a dedicated `ProjectRunLimit` aggregate) that atomically increments and checks `active_run_count` before emitting `RunStarted` — **never** a projection lookup inside `Run.handle_command`
-  - [ ] `StreamGapDetector`: projection version vs. stream version; emit `StreamGapDetected` on mismatch; `CommandRouter` consults this detector before each append and refuses appends for flagged streams
+- [x] **TRD-041** Event store durability + scale limit enforcement | 3h | [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2 | AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given a project has 100 active runs, when `StartRun` is dispatched, then `:run_limit_exceeded` is returned and no canonical `RunStarted` is appended (a `ProjectRunLimitRejected` audit event may be appended); given a stream gap is detected, when projected count differs from expected, then `StreamGapDetected` event surfaces an alert and `CommandRouter` refuses any further appends to the affected stream until the gap is resolved
+  - [x] Postgres init script / migration: `data_checksums = on`, `wal_level = replica`
+  - [x] **Run limit (REQ-022):** `CommandRouter` routes `StartRun` through the **project-level owner** (either `Project` aggregate or a dedicated `ProjectRunLimit` aggregate) that atomically increments and checks `active_run_count` before emitting `RunStarted` — **never** a projection lookup inside `Run.handle_command`
+  - [x] `StreamGapDetector`: projection version vs. stream version; emit `StreamGapDetected` on mismatch; `CommandRouter` consults this detector before each append and refuses appends for flagged streams
 
 - [x] **TRD-011-TEST** Overwatch test coverage | 4h | [verifies TRD-011] [depends: TRD-011, TRD-012] [satisfies REQ-020, REQ-001, REQ-002] | Validates: AC-001-1–AC-001-5, AC-002-1, AC-002-2, AC-020-2, AC-020-5 | Implementation AC: Given worker lifecycle events are emitted, when `Overwatch` is tested in isolation, then `WorkerHeartbeat` and `WorkerExited` events are routed through `CommandRouter` and the run projection reflects the correct state; AC1 (supervised actor) and AC2 (idempotency) tests pass
   - [x] Test: `start_phase/2` → full `WorkerStarted` event appended (session_id, adapter, prompt_path, tool_names, artifact_paths); `WorkerProtocol.emit/2` via `Tracker` → `WorkerHeartbeat/Exited/Unresponsive` through `CommandRouter`
@@ -490,12 +490,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: `[:foreman, :run, :stuck]` emitted when stuck run detected
   - [ ] Test: `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]` emitted on worker lifecycle events
 
-- [ ] **TRD-041-TEST** Event store durability + scale limits test | 3h | [verifies TRD-041] [depends: TRD-041] [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2 | Implementation AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given silent data loss occurs and gap is detected, when the gap is detected, then `StreamGapDetected` event surfaces an alert and further appends to the affected stream are blocked until the gap is resolved; given a project has 100 active runs, when `StartRun` is dispatched, then the aggregate returns `:run_limit_exceeded` before any event is appended
-  - [ ] Test: Postgres init includes `data_checksums = on` (setup script or migration)
-  - [ ] Test: `StreamGapDetected` event surfaces alert when projected count < expected
-  - [ ] Test: gap blocks further appends to affected stream (raises or returns error)
-  - [ ] Test: 100th active run → `StartRun` rejected with `:run_limit_exceeded` before any event appended
-  - [ ] Test: limit enforced at aggregate level (checked in `handle_command`, not in caller)
+- [x] **TRD-041-TEST** Event store durability + scale limits test | 3h | [verifies TRD-041] [depends: TRD-041] [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2 | Implementation AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given silent data loss occurs and gap is detected, when the gap is detected, then `StreamGapDetected` event surfaces an alert and further appends to the affected stream are blocked until the gap is resolved; given a project has 100 active runs, when `StartRun` is dispatched, then the aggregate returns `:run_limit_exceeded` and no canonical `RunStarted` is appended (a `ProjectRunLimitRejected` audit event may be appended)
+  - [x] Test: Postgres init includes `data_checksums = on` (setup script or migration)
+  - [x] Test: `StreamGapDetected` event surfaces alert when projected count < expected
+  - [x] Test: gap blocks further appends to affected stream (raises or returns error)
+  - [x] Test: with 100 active runs for a project, the next `StartRun` is rejected with `:run_limit_exceeded` and no canonical `RunStarted` is appended
+  - [x] Test: limit enforced at aggregate level (checked in `handle_command`, not in caller)
 ---
 ## Team Configuration
 

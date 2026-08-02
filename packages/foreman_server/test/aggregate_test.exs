@@ -220,7 +220,11 @@ defmodule ForemanServer.AggregateTest do
              CommandRouter.handle(%{
                command_id: "run-terminal-delete-1",
                command_type: "run.start",
-               payload: %{run_id: "run-terminal-delete", task_id: "task-terminal", project_id: "proj-terminal"}
+               payload: %{
+                 run_id: "run-terminal-delete",
+                 task_id: "task-terminal",
+                 project_id: "proj-terminal"
+               }
              })
 
     # Fail the run
