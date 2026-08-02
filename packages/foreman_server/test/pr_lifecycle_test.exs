@@ -80,7 +80,7 @@ defmodule ForemanServer.PrLifecycleTest do
              CommandRouter.handle(%{
                command_id: "seed:#{run_id}:start",
                command_type: "run.start",
-               payload: %{run_id: run_id, task_id: task_id}
+               payload: %{run_id: run_id, task_id: task_id, project_id: "proj-#{run_id}"}
              })
 
     assert {:ok, _} =

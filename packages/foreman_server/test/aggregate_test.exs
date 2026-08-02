@@ -183,7 +183,7 @@ defmodule ForemanServer.AggregateTest do
              CommandRouter.handle(%{
                command_id: "run-start-1",
                command_type: "run.start",
-               payload: %{run_id: "run-agg", task_id: "task-agg"}
+               payload: %{run_id: "run-agg", task_id: "task-agg", project_id: "proj-agg"}
              })
 
     assert {:ok, %{event: %{event_type: "RunDeleted"}}} =
@@ -220,7 +220,7 @@ defmodule ForemanServer.AggregateTest do
              CommandRouter.handle(%{
                command_id: "run-terminal-delete-1",
                command_type: "run.start",
-               payload: %{run_id: "run-terminal-delete", task_id: "task-terminal"}
+               payload: %{run_id: "run-terminal-delete", task_id: "task-terminal", project_id: "proj-terminal"}
              })
 
     # Fail the run

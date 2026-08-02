@@ -57,7 +57,7 @@ defmodule ForemanServer.PrAssociateTest do
                CommandRouter.handle(%{
                  command_id: "seed:#{run_id}",
                  command_type: "run.start",
-                 payload: %{run_id: run_id, task_id: task_id}
+                 payload: %{run_id: run_id, task_id: task_id, project_id: "proj-#{run_id}"}
                })
 
       assert {:ok, _} =
@@ -89,7 +89,7 @@ defmodule ForemanServer.PrAssociateTest do
                CommandRouter.handle(%{
                  command_id: "seed:#{run_id}",
                  command_type: "run.start",
-                 payload: %{run_id: run_id, task_id: "task-num"}
+                 payload: %{run_id: run_id, task_id: "task-num", project_id: "proj-#{run_id}"}
                })
 
       assert {:ok, _} =
@@ -112,7 +112,7 @@ defmodule ForemanServer.PrAssociateTest do
                CommandRouter.handle(%{
                  command_id: "seed:#{run_id}",
                  command_type: "run.start",
-                 payload: %{run_id: run_id, task_id: "task-bare"}
+                 payload: %{run_id: run_id, task_id: "task-bare", project_id: "proj-#{run_id}"}
                })
 
       assert {:ok, _} =
@@ -134,7 +134,7 @@ defmodule ForemanServer.PrAssociateTest do
                CommandRouter.handle(%{
                  command_id: "seed:#{run_id}",
                  command_type: "run.start",
-                 payload: %{run_id: run_id, task_id: "task-bad"}
+                 payload: %{run_id: run_id, task_id: "task-bad", project_id: "proj-#{run_id}"}
                })
 
       assert {:ok, _} =
@@ -155,7 +155,7 @@ defmodule ForemanServer.PrAssociateTest do
                CommandRouter.handle(%{
                  command_id: "seed:#{run_id}",
                  command_type: "run.start",
-                 payload: %{run_id: run_id, task_id: "task-incomplete"}
+                 payload: %{run_id: run_id, task_id: "task-incomplete", project_id: "proj-#{run_id}"}
                })
 
       assert {:error, {:invalid_run_status, "completed", "in_progress"}} =
@@ -171,7 +171,7 @@ defmodule ForemanServer.PrAssociateTest do
                CommandRouter.handle(%{
                  command_id: "seed:#{run_id}",
                  command_type: "run.start",
-                 payload: %{run_id: run_id, task_id: "task-idemp"}
+                 payload: %{run_id: run_id, task_id: "task-idemp", project_id: "proj-#{run_id}"}
                })
 
       assert {:ok, _} =

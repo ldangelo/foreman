@@ -346,7 +346,7 @@ defmodule ForemanServer.WorkerProtocolTest do
       ForemanServer.CommandRouter.handle(%{
         command_id: "test-seed:#{run_id}",
         command_type: "run.start",
-        payload: %{run_id: run_id}
+        payload: %{run_id: run_id, project_id: "proj-seed:#{run_id}"}
       })
 
     :ok
