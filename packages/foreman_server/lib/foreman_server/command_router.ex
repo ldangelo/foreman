@@ -254,6 +254,44 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  # TRD-041 / AC-021-3, AC-022-1, AC-022-2 — checked slot append.
+  #
+  # Slot reservation/release use `Aggregate.decide/4` to compute an event
+  # spec OUTSIDE of `do_append/5` (which derives the spec from the
+  # command_type via AggregateRouter). To keep the gap-guard as the
+  # single enforcement point for "no append without a check", slot
+  # operations route through this helper instead of calling
+  # `EventStore.append/1` directly. The helper:
+  #
+  #   * Consults `check_stream_gap/2` with the supplied `command_type`
+  #     so the `stream_gap.detect` exemption still applies (no-op for
+  #     slot ops in practice — they use `run.start`/`run.complete` —
+  #     but consistent with the do_append path).
+  #   * Refuses with `{:error, :stream_gap}` if the slot stream is
+  #     blocked, so the run.start saga propagates the rejection to
+  #     the caller instead of writing a slot to a drift-suspect
+  #     stream.
+  #   * Returns `{:ok, event}` (NOT a 3-tuple) because the slot
+  #     reservation path expects the 2-tuple shape.
+  defp checked_slot_append(command_type, event_spec, command_id, metadata) do
+    append_input =
+      %{
+        stream_id: Map.fetch!(event_spec, :stream_id),
+        event_type: Map.fetch!(event_spec, :event_type),
+        payload:
+          Map.fetch!(event_spec, :payload)
+          |> Map.put_new(:command_id, command_id)
+          |> Map.put_new(:updated_at, DateTime.utc_now()),
+        metadata: metadata,
+        correlation_id: Map.get(metadata, :correlation_id)
+      }
+      |> maybe_put_expected_version(Map.get(event_spec, :expected_stream_version))
+
+    with :ok <- check_stream_gap(command_type, Map.fetch!(append_input, :stream_id)),
+         {:ok, event} <- EventStore.append(append_input) do
+      {:ok, event}
+    end
+  end
 
   defp check_stream_gap("stream_gap.detect", _stream_id), do: :ok
 
@@ -452,7 +490,7 @@ defmodule ForemanServer.CommandRouter do
         {:ok, :already_reserved}
 
       {:ok, spec} ->
-        case EventStore.append(build_slot_append_input(spec, command_id, metadata)) do
+        case checked_slot_append("run.start", spec, command_id, metadata) do
           {:ok, _event} ->
             {:ok, :reserved}
 
@@ -517,7 +555,7 @@ defmodule ForemanServer.CommandRouter do
         {:ok, :already_released}
 
       {:ok, spec} ->
-        case EventStore.append(build_slot_append_input(spec, command_id, metadata)) do
+        case checked_slot_append("run.complete", spec, command_id, metadata) do
           {:ok, _event} ->
             {:ok, :released}
 
@@ -549,23 +587,6 @@ defmodule ForemanServer.CommandRouter do
 
       {:error, _} = err ->
         err
-    end
-  end
-
-  defp build_slot_append_input(spec, command_id, metadata) do
-    payload = Map.put_new(spec.payload, :command_id, command_id)
-
-    base = %{
-      stream_id: spec.stream_id,
-      event_type: spec.event_type,
-      payload: payload,
-      metadata: metadata,
-      correlation_id: Map.get(metadata, :correlation_id)
-    }
-
-    case Map.get(spec, :expected_stream_version) do
-      nil -> base
-      v -> Map.put(base, :expected_stream_version, v)
     end
   end
 
@@ -605,20 +626,28 @@ defmodule ForemanServer.CommandRouter do
         audited_at: DateTime.utc_now()
       )
 
-    append_input = %{
+    event_spec = %{
       stream_id: "project_run_limit:#{project_id}",
       event_type: "ProjectRunSlotReleaseFailed",
-      payload: audit_payload,
-      metadata: metadata,
-      correlation_id: Map.get(metadata, :correlation_id)
+      payload: audit_payload
     }
 
     # Best-effort. Will be reconciled by the eventual slot-leak sweeper
-    # (out of scope for this bead).
-    case EventStore.append(append_input) do
-      {:ok, _} -> :ok
-      {:error, _} -> :ok
-    end
+    # (out of scope for this bead). The append is also gap-guarded:
+    # writing an audit event onto a drift-suspect slot stream would
+    # only deepen the drift, so we route through
+    # `checked_slot_append/4`. If the guard refuses, the audit is
+    # silently dropped — the canonical terminal event has already
+    # landed, so the operator still has the run-stream record.
+    _ =
+      checked_slot_append(
+        "project_run_limit.audit_slot_release_failed",
+        event_spec,
+        command_id,
+        metadata
+      )
+
+    :ok
   end
 
   defp domain_event("project.register", payload) do
@@ -800,7 +829,7 @@ defp domain_event("stream_gap.detect", payload) do
 
     if is_binary(affected_stream_id) and affected_stream_id != "" do
       {:ok, "StreamGapDetected", Map.put(payload, :affected_stream_id, affected_stream_id),
-       affected_stream_id}
+       "stream_gap_alerts"}
     else
       {:error, :affected_stream_id_required}
     end
@@ -1189,7 +1218,12 @@ defp domain_event("stream_gap.detect", payload) do
       # Command envelope
       :event_type,
       :correlation_id,
-      :command_id
+      :command_id,
+      :recipient_agent_type,
+      :worker_supports_receiving,
+      :affected_stream_id,
+      :projected_version,
+      :actual_version
     ]
   end
 end
