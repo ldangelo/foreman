@@ -176,6 +176,35 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  def handle(%{command_id: command_id, command_type: "project_run_limit.reconcile"} = command)
+      when is_binary(command_id) do
+    payload = normalize_payload(Map.get(command, :payload, %{}))
+
+    if not is_map(payload) do
+      {:error, :invalid_payload}
+    else
+      payload = Map.put_new(payload, :command_id, command_id)
+      metadata = normalize_metadata(command)
+
+      project_id = Map.get(payload, :project_id)
+      run_id = Map.get(payload, :run_id)
+
+      cond do
+        not (is_binary(project_id) and project_id != "") ->
+          {:error, {:missing_or_invalid, :project_id}}
+
+        not (is_binary(run_id) and run_id != "") ->
+          {:error, {:missing_or_invalid, :run_id}}
+
+        true ->
+          case reconcile_slot(project_id, run_id, payload, command_id, metadata) do
+            {:ok, status} -> {:ok, status}
+            {:error, _} = err -> err
+          end
+      end
+    end
+  end
+
   def handle(%{command_id: command_id, command_type: command_type} = command)
       when is_binary(command_id) and is_binary(command_type) do
     payload =
@@ -430,9 +459,11 @@ defmodule ForemanServer.CommandRouter do
   #      `project_run_limit:<project_id>`.
   #
   # Slot release is best-effort after a successful canonical emit: the run
-  # is already terminal in its own stream, so a missed slot release is a
-  # recoverable leak (eventual reconciliation). We audit but do not roll
-  # back the canonical terminal event.
+  # is already terminal in its own stream, so a missed slot release is
+  # reconciled by `ProjectRunLimitSweeper`, which scans slot streams,
+  # checks `Run.terminal?` against the canonical run stream, and emits
+  # a `ProjectRunSlotReleased` compensating event. We audit but do not
+  # roll back the canonical terminal event.
   defp run_terminal_saga(command_type, payload, command_id, metadata) do
     project_id = Map.get(payload, :project_id)
     run_id = Map.get(payload, :run_id)
@@ -590,6 +621,59 @@ defmodule ForemanServer.CommandRouter do
     end
   end
 
+  # TRD-041-FOLLOWUP (`for-k1l`): compensating release path invoked by
+  # `ProjectRunLimitSweeper`. Bypasses the canonical run stream entirely
+  # (no `RunCompleted` / `RunFailed` / `RunCancelled` appended to
+  # `run:<run_id>`) and emits `ProjectRunSlotReleased` on the slot stream
+  # only. Idempotent — same retry contract as `release_slot/6`.
+  defp reconcile_slot(
+         project_id,
+         run_id,
+         payload,
+         command_id,
+         metadata,
+         retries_left \\ @max_slot_retries
+       ) do
+    stream_id = "project_run_limit:#{project_id}"
+
+    case Aggregate.decide(
+           ForemanServer.Aggregates.ProjectRunLimit,
+           stream_id,
+           "project_run_limit.reconcile",
+           payload
+         ) do
+      :unhandled ->
+        {:ok, :already_released}
+
+      {:ok, spec} ->
+        case checked_slot_append(
+               "project_run_limit.reconcile",
+               spec,
+               command_id,
+               metadata
+             ) do
+          {:ok, _event} ->
+            {:ok, :released}
+
+          {:error, :wrong_expected_version} when retries_left > 0 ->
+            reconcile_slot(
+              project_id,
+              run_id,
+              payload,
+              command_id,
+              metadata,
+              retries_left - 1
+            )
+
+          {:error, _} = err ->
+            err
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   defp audit_run_limit_rejected(project_id, run_id, payload, command_id, metadata) do
     audit_payload =
       payload
@@ -631,14 +715,15 @@ defmodule ForemanServer.CommandRouter do
       event_type: "ProjectRunSlotReleaseFailed",
       payload: audit_payload
     }
-
-    # Best-effort. Will be reconciled by the eventual slot-leak sweeper
-    # (out of scope for this bead). The append is also gap-guarded:
-    # writing an audit event onto a drift-suspect slot stream would
-    # only deepen the drift, so we route through
-    # `checked_slot_append/4`. If the guard refuses, the audit is
-    # silently dropped — the canonical terminal event has already
-    # landed, so the operator still has the run-stream record.
+    # Best-effort audit. The reconciliation path is `ProjectRunLimitSweeper`,
+    # which scans slot streams for canonical-terminal runs and emits
+    # `ProjectRunSlotReleased` compensating events on the slot stream
+    # itself. The audit is also gap-guarded: writing an audit event onto a
+    # drift-suspect slot stream would only deepen the drift, so we route
+    # through `checked_slot_append/4`. If the guard refuses, the audit is
+    # silently dropped — the canonical terminal event has already landed,
+    # so the operator still has the run-stream record, and the sweeper
+    # picks up the leaked slot on its next pass.
     _ =
       checked_slot_append(
         "project_run_limit.audit_slot_release_failed",

@@ -44,7 +44,6 @@ defmodule ForemanServer.EventStore do
   def all do
     GenServer.call(__MODULE__, :all)
   end
-
   @spec stream(String.t()) :: [event()]
   def stream(stream_id) when is_binary(stream_id) do
     GenServer.call(__MODULE__, {:stream, stream_id})
@@ -55,6 +54,13 @@ defmodule ForemanServer.EventStore do
     GenServer.call(__MODULE__, {:stream_version, stream_id})
   end
 
+  # TRD-041-FOLLOWUP (`for-k1l`): distinct stream_ids whose stream_id begins with
+  # `prefix`. Used by `ProjectRunLimitSweeper` to discover slot streams whose
+  # project projection may be missing (e.g. failed-compensation leaks).
+  @spec list_streams(String.t()) :: [String.t()]
+  def list_streams(prefix) when is_binary(prefix) do
+    GenServer.call(__MODULE__, {:list_streams, prefix})
+  end
   @spec rebuild_projections() :: {:ok, map()} | {:error, term()}
   def rebuild_projections do
     GenServer.call(__MODULE__, :rebuild_projections, rebuild_timeout_ms())
@@ -117,6 +123,10 @@ defmodule ForemanServer.EventStore do
       end
 
     {:reply, version, state}
+  end
+
+  def handle_call({:list_streams, prefix}, _from, state) do
+    {:reply, list_streams(state.adapter, state.events, prefix), state}
   end
 
   def handle_call(:rebuild_projections, _from, state) do
@@ -192,6 +202,26 @@ defmodule ForemanServer.EventStore do
       {:error, _reason} -> 0
     end
   end
+
+  defp list_streams(:postgres, _events, prefix) do
+    case SQL.query(
+           Repo,
+           "SELECT DISTINCT stream_id FROM foreman_events WHERE stream_id LIKE $1 ORDER BY stream_id ASC",
+           [prefix <> "%"]
+         ) do
+      {:ok, %{rows: rows}} -> Enum.map(rows, fn [stream_id] -> stream_id end)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp list_streams(_adapter, events, prefix) when is_list(events) and is_binary(prefix) do
+    events
+    |> Enum.map(& &1.stream_id)
+    |> Enum.filter(&(is_binary(&1) and String.starts_with?(&1, prefix)))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
 
   defp persist_event(:postgres, %Event{} = event) do
     params = [
