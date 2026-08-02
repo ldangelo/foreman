@@ -244,9 +244,11 @@ defmodule ForemanServer.CommandRouterRunLimitTest do
       %{state | blocked_streams: MapSet.put(state.blocked_streams, slot_stream)}
     end)
 
-    # 3. run.complete writes RunCompleted to run:<id> (gap-exempt for
-    #    that stream) but the saga's slot-release append is refused by
-    #    the gap-guard. The slot is now leaked.
+    # 3. run.complete writes RunCompleted to run:<id> — that stream is
+    #    not blocked, so the canonical terminal lands normally. The
+    #    saga's slot-release append is refused by the gap-guard on
+    #    project_run_limit:<project>, so the slot is now leaked.
+    #    The audit append is also gap-guarded and silently drops.
     assert {:ok, _} =
              CommandRouter.handle(%{
                command_id: unique_id("command"),
