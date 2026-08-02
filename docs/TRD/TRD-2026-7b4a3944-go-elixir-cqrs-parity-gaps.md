@@ -271,7 +271,8 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 4: Unified Ingestion + External Triggers + PR Lifecycle + Recovery + VCS
 **Shippable State:** Webhook payloads are normalized and routed through Inbox.Poller; external triggers are polled when push webhooks are unavailable; PR associations sync via GitHub webhooks with polling fallback; recovery scanner detects interrupted runs and re-dispatches; VCS operations route through an abstraction with retry.
 
-- [x] **TRD-014** Attach-bridge ingestion adapter | 3h | [satisfies REQ-007] | Validates: AC-007-1, AC-007-3 | AC: Given an attach-bridge webhook arrives, when it is received, then `AttachBridgeAdapter.normalize/1` transforms the payload into an `InboxItem`; specialized attach-bridge behaviour (streaming metadata, connection lifecycle) is preserved in the adapter before normalization; given a migration import is dispatched, when it is processed, then it routes through `CommandRouter` and appends migration events
+- [x] **TRD-014** Attach-bridge ingestion adapter | 3h | [satisfies REQ-007] | Validates: AC-007-1, AC-007-3
+  - AC: Given an attach-bridge webhook arrives, when it is received, then `AttachBridgeAdapter.normalize/1` transforms the payload into an `InboxItem`; specialized attach-bridge behaviour (streaming metadata, connection lifecycle) is preserved in the adapter before normalization; given a migration import is dispatched, when it is processed, then it routes through `CommandRouter` and appends migration events
   - [x] `AttachBridgeAdapter.normalize/1`: converts attach-bridge payload → `InboxItem`
   - [x] Preserves streaming metadata in adapter state before normalization
   - [x] `AttachBridgeAdapter.ingest/1`: calls `SharedInbox.ingest/2`
@@ -289,7 +290,8 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Dispatches `PrAssociated` command through `CommandRouter`
   - [x] `PrAssociated` event: `%PrAssociated{run_id, pr_url, pr_number}`
 
-- [x] **TRD-017** PR monitor + GitHub webhook | 5h | [satisfies REQ-009, REQ-010] | Validates: AC-009-2, AC-009-3, AC-010-1, AC-010-2 | AC: Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
+- [x] **TRD-017** PR monitor + GitHub webhook | 5h | [satisfies REQ-009, REQ-010] | Validates: AC-009-2, AC-009-3, AC-010-1, AC-010-2
+  - AC: Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
   - [x] `PrMonitor` GenServer: polls GitHub API every 5 minutes for associated PRs
   - [x] `Webhooks.Github` existing — verify it handles `pr_merged`, `pr_closed`, `pr reopened`, `pr_sync_conflict` events
   - [x] `PrGate` module: `check(run_id) :: :ok | {:error, :pr_not_acceptable}`
@@ -303,7 +305,8 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Events: `VcsOperationStarted`, `VcsOperationCompleted`, `VcsOperationFailed`
   - [x] All VCS operations route through `CommandRouter`
 
-- [x] **TRD-019** Recovery scanner expansion | 4h | [satisfies REQ-011] | Validates: AC-011-1, AC-011-2, AC-011-3, AC-011-4 | AC: Given server restarts, when `Recovery` GenServer starts, then it scans `ProjectionStore` for interrupted runs and emits recovery events with explicit outcomes; given server restart with pending scheduled fire (intent recorded but pickup unconfirmed), when recovery runs, then fire is re-dispatched to new worker; idempotency preserved via aggregate version and command dedup
+- [x] **TRD-019** Recovery scanner expansion | 4h | [satisfies REQ-011] | Validates: AC-011-1, AC-011-2, AC-011-3, AC-011-4
+  - AC: Given server restarts, when `Recovery` GenServer starts, then it scans `ProjectionStore` for interrupted runs and emits recovery events with explicit outcomes; given server restart with pending scheduled fire (intent recorded but pickup unconfirmed), when recovery runs, then fire is re-dispatched to new worker; idempotency preserved via aggregate version and command dedup
   - [x] Existing `Recovery` GenServer: expand `do_detect/0` to emit `RunRecoveryEvent` through `CommandRouter`
   - [x] `ScheduledFireRecorded` intent: on restart, `detect_unconfirmed_intents/0` finds pending intents
   - [x] `detect_unconfirmed_intents/0`: marks stale intents `SchedulerIntentStale`, re-dispatches
@@ -381,14 +384,16 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 
 ### PR 7: Test Parity + NFR Implementation
 **Shippable State:** All absent domain modules have corresponding test coverage; telemetry events fire on command dispatch and aggregate rehydration; hard run limit (100 per project) is enforced at the aggregate level.
-- [ ] **TRD-040** Telemetry event emission | 3h | [satisfies REQ-023] | Validates: AC-023-1, AC-023-2 | AC: Given a command is dispatched through `CommandRouter`, when the command is processed, then `[:foreman, :command, :dispatch]` telemetry event is emitted with `duration_ms`, `append_latency_ms`, `status`, and `aggregate_id`; given an aggregate `Actor` restarts and completes rehydration via `Aggregate.load/2`, when rehydration finishes, then `[:foreman, :aggregate, :rehydrated]` telemetry event is emitted with `event_count`; `[:foreman, :run, :stuck]` fires when stuck run detected; `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]` fire on worker lifecycle transitions
+- [ ] **TRD-040** Telemetry event emission | 3h | [satisfies REQ-023] | Validates: AC-023-1, AC-023-2
+  - AC: Given a command is dispatched through `CommandRouter`, when the command is processed, then `[:foreman, :command, :dispatch]` telemetry event is emitted with `duration_ms`, `append_latency_ms`, `status`, and `aggregate_id`; given an aggregate `Actor` restarts and completes rehydration via `Aggregate.load/2`, when rehydration finishes, then `[:foreman, :aggregate, :rehydrated]` telemetry event is emitted with `event_count`; `[:foreman, :run, :stuck]` fires when stuck run detected; `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]` fire on worker lifecycle transitions
   - [ ] Emit in `CommandRouter.dispatch/1`: `duration_ms`, `append_latency_ms`, `status`, `aggregate_id`
   - [ ] Emit in `Aggregate.Actor` after `Aggregate.load/2` completes: `[:foreman, :aggregate, :rehydrated]` with `event_count`
   - [ ] Emit in stuck-run detector: `[:foreman, :run, :stuck]` with `run_id`
   - [ ] Emit in overwatch: `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]`
   - [ ] All events use OpenTelemetry semantic conventions where applicable
 
-- [x] **TRD-041** Event store durability + scale limit enforcement | 3h | [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2 | AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given a project has 100 active runs, when `StartRun` is dispatched, then `:run_limit_exceeded` is returned and no canonical `RunStarted` is appended (a `ProjectRunLimitRejected` audit event may be appended); given a stream gap is detected, when projected count differs from expected, then `StreamGapDetected` event surfaces an alert and `CommandRouter` refuses any further appends to the affected stream until the gap is resolved
+- [x] **TRD-041** Event store durability + scale limit enforcement | 3h | [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2
+  - AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given a project has 100 active runs, when `StartRun` is dispatched, then `:run_limit_exceeded` is returned and no canonical `RunStarted` is appended (a `ProjectRunLimitRejected` audit event may be appended); given a stream gap is detected, when projected count differs from expected, then `StreamGapDetected` event surfaces an alert and `CommandRouter` refuses any further appends to the affected stream until the gap is resolved
   - [x] Postgres init script / migration: `data_checksums = on`, `wal_level = replica`
   - [x] **Run limit (REQ-022):** `CommandRouter` routes `StartRun` through the **project-level owner** (either `Project` aggregate or a dedicated `ProjectRunLimit` aggregate) that atomically increments and checks `active_run_count` before emitting `RunStarted` — **never** a projection lookup inside `Run.handle_command`
   - [x] `StreamGapDetector`: projection version vs. stream version; emit `StreamGapDetected` on mismatch; `CommandRouter` consults this detector before each append and refuses appends for flagged streams
@@ -494,7 +499,8 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [ ] Test: `[:foreman, :run, :stuck]` emitted when stuck run detected
   - [ ] Test: `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]` emitted on worker lifecycle events
 
-- [x] **TRD-041-TEST** Event store durability + scale limits test | 3h | [verifies TRD-041] [depends: TRD-041] [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2 | Implementation AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given silent data loss occurs and gap is detected, when the gap is detected, then `StreamGapDetected` event surfaces an alert and further appends to the affected stream are blocked until the gap is resolved; given a project has 100 active runs, when `StartRun` is dispatched, then the aggregate returns `:run_limit_exceeded` and no canonical `RunStarted` is appended (a `ProjectRunLimitRejected` audit event may be appended)
+- [x] **TRD-041-TEST** Event store durability + scale limits test | 3h | [verifies TRD-041] [depends: TRD-041] [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2
+  - Implementation AC: Given Postgres is initialized, when the database is created, then `data_checksums = on` and `wal_level = replica` are enabled; given silent data loss occurs and gap is detected, when the gap is detected, then `StreamGapDetected` event surfaces an alert and further appends to the affected stream are blocked until the gap is resolved; given a project has 100 active runs, when `StartRun` is dispatched, then the aggregate returns `:run_limit_exceeded` and no canonical `RunStarted` is appended (a `ProjectRunLimitRejected` audit event may be appended)
   - [x] Test: Postgres init includes `data_checksums = on` (setup script or migration)
   - [x] Test: `StreamGapDetected` event surfaces alert when projected count < expected
   - [x] Test: gap blocks further appends to affected stream (raises or returns error)
