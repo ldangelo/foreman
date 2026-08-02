@@ -19,7 +19,6 @@ defmodule ForemanServer.EventStoreDurabilityTest do
   # Compose.yaml: line-anchored so comments cannot satisfy the assertion.
   test "compose.yaml enables data_checksums via POSTGRES_INITDB_ARGS" do
     compose = File.read!(@compose_path)
-
     assert compose =~ ~r/^\s*POSTGRES_INITDB_ARGS:\s*--data-checksums\s*$/m,
            "compose.yaml must set `POSTGRES_INITDB_ARGS: --data-checksums` " <>
              "so `initdb` enables page-level checksums at cluster init."

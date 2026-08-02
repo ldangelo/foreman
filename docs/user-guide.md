@@ -89,7 +89,30 @@ devbox run db:up           # start only Postgres
 devbox run hindsight:logs  # tail Hindsight logs
 ```
 
+### Postgres durability settings
+
+The compose Postgres service (`pgvector/pgvector:pg16`) is configured so a **fresh** data volume starts with `data_checksums = on` and `wal_level = replica`:
+
+- `data_checksums = on` is set at cluster initialization via the compose service `POSTGRES_INITDB_ARGS: --data-checksums` (in `compose.yaml`). PostgreSQL 16 does **not** expose `data_checksums` as a GUC; `ALTER SYSTEM SET data_checksums` is rejected at runtime.
+- `wal_level = replica` is set by `packages/foreman_server/priv/repo/init.sql`, which the compose service mounts directly into the container's `/docker-entrypoint-initdb.d` (single source of truth; not duplicated under `docker/postgres/init`).
+
+**Existing volumes are not retroactively upgraded.** `data_checksums` can only be set at `initdb` time. To pick up the checksum setting on a volume that was created before this wiring landed, you must destroy and re-create the volume:
+
+```bash
+devbox run db:reset   # DESTRUCTIVE: runs `docker compose down -v`
+                       # — deletes the compose Postgres volume including the
+                       #   Foreman and Hindsight databases.
+```
+
+Treat `db:reset` as a one-time migration step. Verify the cluster is durable once the stack is back up:
+
+```bash
+docker compose exec postgres psql -U postgres -d foreman -tAc "SHOW data_checksums; SHOW wal_level;"
+# expected: on / replica
+```
+
 Set `FOREMAN_DIRENV_AUTO_COMPOSE=0` before entering the repository to opt out of automatic container startup. Hindsight serves its API at <http://localhost:8888> and control plane at <http://localhost:9999>.
+
 
 ## Core Concepts
 
