@@ -2,6 +2,7 @@ defmodule ForemanServer.CommandRouter do
   @moduledoc "Command boundary for server-side project/task mutations."
 
   alias ForemanServer.{
+    Aggregate,
     AggregateRouter,
     EventStore,
     Inbox,
@@ -30,7 +31,8 @@ defmodule ForemanServer.CommandRouter do
                    "blocked",
                    "cooldown"
                  ])
-
+@max_router_retries 3
+  @max_slot_retries 100
   @spec handle(map()) :: {:ok, map()} | {:error, term()}
   def handle(%{"command_type" => command_type} = command)
       when command_type in @planning_command_types do
@@ -119,6 +121,61 @@ defmodule ForemanServer.CommandRouter do
     |> handle_external_trigger(metadata)
   end
 
+  def handle(%{command_id: command_id, command_type: "run.start"} = command)
+      when is_binary(command_id) do
+    payload = normalize_payload(Map.get(command, :payload, %{}))
+
+    if not is_map(payload) do
+      {:error, :invalid_payload}
+    else
+      payload = Map.put_new(payload, :command_id, command_id)
+      metadata = normalize_metadata(command)
+
+      case run_start_saga(payload, command_id, metadata) do
+        {:ok, event, enriched_payload} ->
+          case maybe_audit(command, event.event_type, enriched_payload) do
+            {:ok, audit_events} ->
+              {:ok,
+               %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
+
+            error ->
+              error
+          end
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  def handle(%{command_id: command_id, command_type: command_type} = command)
+      when is_binary(command_id) and
+             command_type in ["run.complete", "run.fail", "run.cancel"] do
+    payload = normalize_payload(Map.get(command, :payload, %{}))
+
+    if not is_map(payload) do
+      {:error, :invalid_payload}
+    else
+      payload = Map.put_new(payload, :command_id, command_id)
+      metadata = normalize_metadata(command)
+
+      case run_terminal_saga(command_type, payload, command_id, metadata) do
+        {:ok, event, enriched_payload} ->
+          case maybe_audit(command, event.event_type, enriched_payload) do
+            {:ok, audit_events} ->
+              {:ok,
+               %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
+
+            error ->
+              error
+          end
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
   def handle(%{command_id: command_id, command_type: command_type} = command)
       when is_binary(command_id) and is_binary(command_type) do
     payload =
@@ -162,6 +219,316 @@ defmodule ForemanServer.CommandRouter do
   defp legacy_domain_event(command_type, payload) do
     with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload) do
       {:ok, %{event_type: event_type, payload: event_payload, stream_id: stream_id}}
+    end
+  end
+
+  # TRD-041 / AC-022-1, AC-022-2 — run.start saga.
+  #
+  #   1. Reserve a slot in `project_run_limit:<project_id>` via
+  #      `Aggregate.decide(ProjectRunLimit, ..., "run.start", payload)`.
+  #        * `{:ok, spec}` — fresh slot acquired by THIS call; append it.
+  #        * `:unhandled` — slot was already counted for this run_id (idempotent
+  #          re-dispatch). No new slot; do NOT compensate later.
+  #        * `{:error, :run_limit_exceeded}` — project is at the 100-active cap.
+  #          Append a `ProjectRunLimitRejected` audit event and return the error.
+  #        * `{:error, _}` — bubble up.
+  #   2. Append the canonical `RunStarted` to `run:<run_id>` (Run aggregate).
+  #   3. On canonical failure, release the slot ONLY if THIS call acquired it.
+  #
+  # The slot stream is multi-writer (concurrent `run.start`s from the
+  # scheduler). `Aggregate.decide` re-loads state on every call, so a
+  # `:wrong_expected_version` from EventStore.append is recovered by
+  # re-deciding against the latest state — the re-decide may now return
+  # success, `:unhandled` (the run_id was inserted by a racing writer), or
+  # `:run_limit_exceeded` (a racing writer filled the cap). All three are
+  # correct resolutions; we surface them honestly.
+  defp run_start_saga(payload, command_id, metadata) do
+    project_id = Map.get(payload, :project_id)
+    run_id = Map.get(payload, :run_id)
+
+    with {:ok, run_id} <- ensure_run_id(run_id, payload),
+         {:ok, project_id} <- ensure_project_id(project_id, run_id),
+         payload = Map.merge(payload, %{run_id: run_id, project_id: project_id}) do
+      case reserve_slot(project_id, run_id, payload, command_id, metadata) do
+        {:ok, :reserved} ->
+          case canonical_existing_run(run_id, project_id) do
+            {:ok, _event, _enriched} = existing ->
+              existing
+
+            {:error, {:missing_canonical_run, ^run_id}} ->
+              case do_append("run.start", payload, command_id, metadata, @max_router_retries) do
+                {:ok, _event, _enriched} = ok ->
+                  ok
+
+                {:error, _reason} = err ->
+                  release_slot(project_id, run_id, payload, command_id, metadata)
+                  err
+              end
+
+            {:error, _} = err ->
+              release_slot(project_id, run_id, payload, command_id, metadata)
+              err
+          end
+
+        {:ok, :already_reserved} ->
+          canonical_existing_run(run_id, project_id)
+
+        {:error, :run_limit_exceeded} = err ->
+          audit_run_limit_rejected(project_id, run_id, payload, command_id, metadata)
+          err
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  defp ensure_run_id(nil, _payload), do: {:error, :run_id_required}
+  defp ensure_run_id("", _payload), do: {:error, :run_id_required}
+
+  defp ensure_run_id(run_id, _payload) when is_binary(run_id), do: {:ok, run_id}
+
+  defp ensure_project_id(nil, run_id) do
+    case ProjectionStore.run(run_id) do
+      %{project_id: project_id} when is_binary(project_id) and project_id != "" ->
+        {:ok, project_id}
+
+      _ ->
+        {:error, :project_id_required}
+    end
+  end
+
+  defp ensure_project_id("", run_id), do: ensure_project_id(nil, run_id)
+
+  defp ensure_project_id(project_id, _run_id)
+       when is_binary(project_id) and project_id != "",
+       do: {:ok, project_id}
+
+  defp canonical_existing_run(run_id, project_id) do
+    case ProjectionStore.run(run_id) do
+      %{project_id: ^project_id, status: "in_progress"} = run ->
+        case EventStore.stream("run:#{run_id}") do
+          [event | _] -> {:ok, event, run}
+          [] -> {:error, {:missing_canonical_run, run_id}}
+        end
+
+      %{project_id: existing_project_id} when is_binary(existing_project_id) ->
+        {:error, {:run_identity_conflict, run_id, existing_project_id}}
+
+      _ ->
+        {:error, {:missing_canonical_run, run_id}}
+    end
+  end
+
+  # TRD-041 / AC-022-2 — run.complete / run.fail / run.cancel saga.
+  #
+  #   1. Emit the canonical `RunCompleted` / `RunFailed` / `RunCancelled` to
+  #      `run:<run_id>` (Run aggregate).
+  #   2. On canonical success, release the slot in
+  #      `project_run_limit:<project_id>`.
+  #
+  # Slot release is best-effort after a successful canonical emit: the run
+  # is already terminal in its own stream, so a missed slot release is a
+  # recoverable leak (eventual reconciliation). We audit but do not roll
+  # back the canonical terminal event.
+  defp run_terminal_saga(command_type, payload, command_id, metadata) do
+    project_id = Map.get(payload, :project_id)
+    run_id = Map.get(payload, :run_id)
+
+    case do_append(command_type, payload, command_id, metadata, @max_router_retries) do
+      {:ok, _event, _enriched} = ok ->
+        if is_binary(project_id) and project_id != "" and
+             is_binary(run_id) and run_id != "" do
+          case release_slot(project_id, run_id, payload, command_id, metadata) do
+            {:ok, _} ->
+              ok
+
+            {:error, release_reason} ->
+              # Best-effort: do not roll back a successful canonical emit.
+              audit_slot_release_failed(
+                project_id,
+                run_id,
+                command_type,
+                release_reason,
+                command_id,
+                metadata
+              )
+
+              ok
+          end
+        else
+          ok
+        end
+
+      {:error, _} = err ->
+        # Canonical emit failed (e.g. Run aggregate rejected the transition).
+        # No slot to release — the reservation (if any) is the saga's
+        # responsibility; the start saga's compensation handles that path.
+        err
+    end
+  end
+
+  defp reserve_slot(
+         project_id,
+         run_id,
+         payload,
+         command_id,
+         metadata,
+         retries_left \\ @max_slot_retries
+       ) do
+    stream_id = "project_run_limit:#{project_id}"
+
+    case Aggregate.decide(
+           ForemanServer.Aggregates.ProjectRunLimit,
+           stream_id,
+           "run.start",
+           payload
+         ) do
+      :unhandled ->
+        {:ok, :already_reserved}
+
+      {:ok, spec} ->
+        case EventStore.append(build_slot_append_input(spec, command_id, metadata)) do
+          {:ok, _event} ->
+            {:ok, :reserved}
+
+          {:error, :wrong_expected_version} when retries_left > 0 ->
+            # A concurrent reservation advanced the stream. Re-decide against
+            # the freshest state; that may yield :reserved, :already_reserved,
+            # or :run_limit_exceeded depending on what the other writer did.
+            reserve_slot(
+              project_id,
+              run_id,
+              payload,
+              command_id,
+              metadata,
+              retries_left - 1
+            )
+
+          {:error, :run_limit_exceeded} = err ->
+            err
+
+          {:error, _} = err ->
+            err
+        end
+
+      {:error, :run_limit_exceeded} = err ->
+        err
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp release_slot(
+         project_id,
+         run_id,
+         payload,
+         command_id,
+         metadata,
+         retries_left \\ @max_slot_retries
+       ) do
+    stream_id = "project_run_limit:#{project_id}"
+
+    case Aggregate.decide(
+           ForemanServer.Aggregates.ProjectRunLimit,
+           stream_id,
+           "run.complete",
+           payload
+         ) do
+      :unhandled ->
+        {:ok, :already_released}
+
+      {:ok, spec} ->
+        case EventStore.append(build_slot_append_input(spec, command_id, metadata)) do
+          {:ok, _event} ->
+            {:ok, :released}
+
+          {:error, :wrong_expected_version} when retries_left > 0 ->
+            release_slot(
+              project_id,
+              run_id,
+              payload,
+              command_id,
+              metadata,
+              retries_left - 1
+            )
+
+          {:error, _} = err ->
+            err
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp build_slot_append_input(spec, command_id, metadata) do
+    payload = Map.put_new(spec.payload, :command_id, command_id)
+
+    base = %{
+      stream_id: spec.stream_id,
+      event_type: spec.event_type,
+      payload: payload,
+      metadata: metadata,
+      correlation_id: Map.get(metadata, :correlation_id)
+    }
+
+    case Map.get(spec, :expected_stream_version) do
+      nil -> base
+      v -> Map.put(base, :expected_stream_version, v)
+    end
+  end
+
+  defp audit_run_limit_rejected(project_id, run_id, payload, command_id, metadata) do
+    audit_payload =
+      payload
+      |> Map.put(:project_id, project_id)
+      |> Map.put(:run_id, run_id)
+      |> Map.put(:command_id, command_id)
+      |> Map.put(:rejected_at, DateTime.utc_now())
+      |> Map.put(:reason, "run_limit_exceeded")
+
+    append_input = %{
+      stream_id: "project_run_limit:#{project_id}",
+      event_type: "RunLimitRejected",
+      payload: audit_payload,
+      metadata: metadata,
+      correlation_id: Map.get(metadata, :correlation_id)
+    }
+
+    # Best-effort audit. The ProjectRunLimit aggregate treats RunLimitRejected
+    # as a no-op (unknown event type) so it does not perturb the slot count.
+    case EventStore.append(append_input) do
+      {:ok, _} -> :ok
+      {:error, _} -> :ok
+    end
+  end
+
+  defp audit_slot_release_failed(project_id, run_id, command_type, reason, command_id, metadata) do
+    audit_payload =
+      Map.new(
+        project_id: project_id,
+        run_id: run_id,
+        command_type: command_type,
+        reason: inspect(reason),
+        command_id: command_id,
+        audited_at: DateTime.utc_now()
+      )
+
+    append_input = %{
+      stream_id: "project_run_limit:#{project_id}",
+      event_type: "ProjectRunSlotReleaseFailed",
+      payload: audit_payload,
+      metadata: metadata,
+      correlation_id: Map.get(metadata, :correlation_id)
+    }
+
+    # Best-effort. Will be reconciled by the eventual slot-leak sweeper
+    # (out of scope for this bead).
+    case EventStore.append(append_input) do
+      {:ok, _} -> :ok
+      {:error, _} -> :ok
     end
   end
 
@@ -582,8 +949,10 @@ defmodule ForemanServer.CommandRouter do
       :path,
       :payload,
       :phase_id,
+
       :plan_type,
       :planning_kind,
+      :workflow,
       :planning_phase_id,
       :planning_run_id,
       :project_id,
@@ -634,6 +1003,8 @@ defmodule ForemanServer.CommandRouter do
       :pr_number,
       :association_id,
       :reason,
+      :reason_type,
+      :failure_type,
       :message,
       :workflows,
       :adapter,
