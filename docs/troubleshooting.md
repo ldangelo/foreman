@@ -70,6 +70,19 @@ Deprecated aliases are hidden from help and print replacements when used:
 
 Legacy TypeScript delegation was removed after the Elixir cutover. Operator commands now either use Elixir-backed workflows or report removal with replacement guidance.
 
+### Slot leak — `project_run_limit` stays at the cap after runs terminate
+
+**Symptoms:** `Aggregate.load(ProjectRunLimit, "project_run_limit:<project>")` shows non-empty `active_run_ids` for runs whose canonical `run:<id>` stream is already terminal (`RunCompleted` / `RunFailed` / `RunCancelled`). New `run.start` commands in that project begin returning `{:error, :run_limit_exceeded}` even though every run has terminated.
+
+**Why it happens:** `run_terminal_saga` in `CommandRouter` writes the canonical terminal event to `run:<id>` through the normal router path (`do_append/5`), then best-effort appends the slot release to `project_run_limit:<project>` through `checked_slot_append/4`. Both appends call `check_stream_gap/2`. If the gap-guard refuses the slot append (because `project_run_limit:<project>` is in the detector's `blocked_streams` set — the run stream itself isn't blocked, so the canonical terminal lands), the canonical run is terminal but the slot is leaked. The audit append is also gap-guarded and silently drops — it must not deepen the drift on a suspect stream.
+
+**Recovery — required operator sequence (use fully qualified module names in IEx):**
+
+1. **Repair the projection drift** that caused the detector to block the slot stream in the first place. The event store is the source of truth; the projection can be rebuilt from it.
+2. **Unblock the slot stream** with `ForemanServer.StreamGapDetector.resolve("project_run_limit:<project>")`. Without this step, every subsequent slot append — including the sweeper's compensating event — is itself gap-refused, so the sweep is a no-op for that stream until the gap is resolved.
+3. **Trigger reconciliation.** Either wait for the next periodic sweep (default every five minutes; configurable via `:foreman_server, :project_run_limit_sweep_interval_ms` in `config.exs`) or invoke `ForemanServer.ProjectRunLimitSweeper.sweep_once()` for an immediate one-shot.
+
+The sweeper enumerates `project_run_limit:*` streams via `ForemanServer.EventStore.list_streams("project_run_limit:")`, replays each aggregate (`ForemanServer.Aggregate.load(ForemanServer.Aggregates.ProjectRunLimit, stream_id)`) to find `active_run_ids`, and for each run_id replays `run:<id>` to read the canonical `terminal?` flag (NOT `ForemanServer.ProjectionStore.run/1.status`, which lags and which deliberately leaves `PrMerged` nonterminal). When terminal, it dispatches `project_run_limit.reconcile` through `ForemanServer.CommandRouter.handle/1`, which emits `ProjectRunSlotReleased` — a compensating event distinct from the normal `ProjectRunCompleted` so the audit trail shows the recovery path. Both the command and the event are idempotent: repeated sweeps are safe.
 ---
 
 ## Agent Issues

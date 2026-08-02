@@ -715,15 +715,19 @@ defmodule ForemanServer.CommandRouter do
       event_type: "ProjectRunSlotReleaseFailed",
       payload: audit_payload
     }
-    # Best-effort audit. The reconciliation path is `ProjectRunLimitSweeper`,
-    # which scans slot streams for canonical-terminal runs and emits
-    # `ProjectRunSlotReleased` compensating events on the slot stream
-    # itself. The audit is also gap-guarded: writing an audit event onto a
-    # drift-suspect slot stream would only deepen the drift, so we route
-    # through `checked_slot_append/4`. If the guard refuses, the audit is
-    # silently dropped — the canonical terminal event has already landed,
-    # so the operator still has the run-stream record, and the sweeper
-    # picks up the leaked slot on its next pass.
+    # Best-effort audit. The canonical reconciliation path is
+    # `ProjectRunLimitSweeper`, which scans slot streams for canonical-
+    # terminal runs and emits `ProjectRunSlotReleased` compensating
+    # events on the slot stream itself. The audit is also gap-guarded:
+    # writing an audit event onto a drift-suspect slot stream would
+    # only deepen the drift, so we route through `checked_slot_append/4`.
+    # If the guard refuses, the audit is silently dropped — the canonical
+    # terminal event has already landed, so the operator still has the
+    # run-stream record. The sweeper can only reconcile AFTER the
+    # underlying gap is repaired and `StreamGapDetector.resolve/1`
+    # unblocks the slot stream; until then the sweep's compensating
+    # append is itself gap-refused and the slot stays leaked.
+
     _ =
       checked_slot_append(
         "project_run_limit.audit_slot_release_failed",

@@ -446,6 +446,10 @@ If no docs need updating, `DOCUMENTATION_REPORT.md` must explain why.
 - Do not manually mutate active worktrees unless you intend to take ownership of that run.
 - Keep workflow changes synchronized between bundled defaults and active project overrides when both are in use.
 
+### Slot leaks under `project_run_limit`
+
+If a project stops accepting new `run.start` commands with `:run_limit_exceeded` even though every prior run is terminal, the slot release append may have been refused by the gap-guard. A periodic sweeper (`ForemanServer.ProjectRunLimitSweeper`, default every five minutes) reconciles leaked slots via a distinct `ProjectRunSlotReleased` event — but only AFTER the underlying gap is repaired and the slot stream is unblocked with `ForemanServer.StreamGapDetector.resolve/1`. See the [Slot leak troubleshooting entry](./troubleshooting.md#slot-leak--project_run_limit-stays-at-the-cap-after-runs-terminate) for the full operator sequence and the exact IEx calls.
+
 ## Troubleshooting Quick Links
 
 - Command syntax: [CLI Reference](./cli-reference.md)
