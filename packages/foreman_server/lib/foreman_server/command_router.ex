@@ -184,6 +184,32 @@ defmodule ForemanServer.CommandRouter do
 
     metadata = normalize_metadata(command)
 
+    case do_append(command_type, payload, command_id, metadata, @max_router_retries) do
+      {:ok, event, enriched_payload} ->
+        case maybe_audit(command, event.event_type, enriched_payload) do
+          {:ok, audit_events} ->
+            {:ok,
+             %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
+
+          error ->
+            error
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  def handle(_command), do: {:error, :invalid_command}
+
+  # Bounded retry for optimistic concurrency conflicts. On
+  # :wrong_expected_version we re-call command_event/2 which routes through
+  # AggregateRouter → Aggregate.decide/4; that re-loads the current state and
+  # either returns a fresh spec (with the new expected_stream_version) OR a
+  # logical rejection such as :phase_terminal — both are correct resolutions.
+  # Also gates on the stream-gap detector (TRD-041 / AC-021-3) so a
+  # detected gap blocks further appends on the affected stream.
+  defp do_append(command_type, payload, command_id, metadata, retries_left) do
     with {:ok, event_spec} <- command_event(command_type, payload),
          event_type = Map.fetch!(event_spec, :event_type),
          enriched_payload =
@@ -200,13 +226,51 @@ defmodule ForemanServer.CommandRouter do
              correlation_id: Map.get(metadata, :correlation_id)
            }
            |> maybe_put_expected_version(Map.get(event_spec, :expected_stream_version)),
-         {:ok, event} <- EventStore.append(append_input),
-         {:ok, audit_events} <- maybe_audit(command, event_type, enriched_payload) do
-      {:ok, %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
+         :ok <- check_stream_gap(command_type, Map.fetch!(append_input, :stream_id)),
+         {:ok, event} <- EventStore.append(append_input) do
+      {:ok, event, enriched_payload}
+    else
+      {:error, :wrong_expected_version} when retries_left > 0 ->
+        do_append(command_type, payload, command_id, metadata, retries_left - 1)
+
+      {:error, :wrong_expected_version} ->
+        # Retries exhausted — surface the original conflict atom so callers
+        # see the same shape they always did. TRD-008 / TRD-008-TEST's
+        # contract is "append fails with concurrency conflict"; callers
+        # must keep observing :wrong_expected_version for that case.
+        {:error, :wrong_expected_version}
+
+      # EventStore on this tree returns `{:conflict, [expected: x, actual: y]}`
+      # until 05dee032 (refactor) lands; treat that as a retryable conflict too
+      # so the run-limit saga can re-decide against the fresh slot state.
+      {:error, {:conflict, _}} when retries_left > 0 ->
+        do_append(command_type, payload, command_id, metadata, retries_left - 1)
+
+      {:error, {:conflict, _}} ->
+        {:error, :wrong_expected_version}
+
+      {:error, _} = other ->
+        other
     end
   end
 
-  def handle(_command), do: {:error, :invalid_command}
+
+  defp check_stream_gap("stream_gap.detect", _stream_id), do: :ok
+
+  defp check_stream_gap(_command_type, stream_id) do
+    case run_gap_check(stream_id) do
+      :blocked -> {:error, :stream_gap}
+      _ -> :ok
+    end
+  end
+
+  defp run_gap_check(stream_id) do
+    if Process.whereis(ForemanServer.StreamGapDetector) do
+      ForemanServer.StreamGapDetector.check(stream_id)
+    else
+      :ok
+    end
+  end
 
   defp command_event(command_type, payload) do
     case AggregateRouter.route(command_type, payload) do
@@ -289,7 +353,7 @@ defmodule ForemanServer.CommandRouter do
   defp ensure_run_id(run_id, _payload) when is_binary(run_id), do: {:ok, run_id}
 
   defp ensure_project_id(nil, run_id) do
-    case ProjectionStore.run(run_id) do
+    case ForemanServer.Operations.Inspect.run_state(run_id) do
       %{project_id: project_id} when is_binary(project_id) and project_id != "" ->
         {:ok, project_id}
 
@@ -305,7 +369,7 @@ defmodule ForemanServer.CommandRouter do
        do: {:ok, project_id}
 
   defp canonical_existing_run(run_id, project_id) do
-    case ProjectionStore.run(run_id) do
+    case ForemanServer.Operations.Inspect.run_state(run_id) do
       %{project_id: ^project_id, status: "in_progress"} = run ->
         case EventStore.stream("run:#{run_id}") do
           [event | _] -> {:ok, event, run}
@@ -405,6 +469,19 @@ defmodule ForemanServer.CommandRouter do
               retries_left - 1
             )
 
+          {:error, {:conflict, _}} when retries_left > 0 ->
+            # EventStore on this tree returns `{:conflict, [expected: x, actual: y]}`
+            # until 05dee032 lands; treat the keyword-list conflict as a
+            # retryable version mismatch and re-decide against freshest state.
+            reserve_slot(
+              project_id,
+              run_id,
+              payload,
+              command_id,
+              metadata,
+              retries_left - 1
+            )
+
           {:error, :run_limit_exceeded} = err ->
             err
 
@@ -445,6 +522,18 @@ defmodule ForemanServer.CommandRouter do
             {:ok, :released}
 
           {:error, :wrong_expected_version} when retries_left > 0 ->
+            release_slot(
+              project_id,
+              run_id,
+              payload,
+              command_id,
+              metadata,
+              retries_left - 1
+            )
+
+          {:error, {:conflict, _}} when retries_left > 0 ->
+            # EventStore on this tree returns `{:conflict, kwl}` until
+            # 05dee032 lands; retry as a version mismatch.
             release_slot(
               project_id,
               run_id,
@@ -706,6 +795,16 @@ defmodule ForemanServer.CommandRouter do
     {:ok, "CliEventLogged", Map.put(payload, :event_type, event_type), stream_id}
   end
 
+defp domain_event("stream_gap.detect", payload) do
+    affected_stream_id = Map.get(payload, :affected_stream_id)
+
+    if is_binary(affected_stream_id) and affected_stream_id != "" do
+      {:ok, "StreamGapDetected", Map.put(payload, :affected_stream_id, affected_stream_id),
+       affected_stream_id}
+    else
+      {:error, :affected_stream_id_required}
+    end
+  end
   defp domain_event(command_type, command), do: command_accepted(command_type, command)
 
   defp require_existing_project(project_id) do

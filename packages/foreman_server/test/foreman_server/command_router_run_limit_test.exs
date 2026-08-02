@@ -1,7 +1,7 @@
 defmodule ForemanServer.CommandRouterRunLimitTest do
   use ExUnit.Case
 
-  alias ForemanServer.{Aggregate, CommandRouter, EventStore, ProjectionStore}
+  alias ForemanServer.{Aggregate, CommandRouter, EventStore, Operations}
   alias ForemanServer.Aggregates.ProjectRunLimit
 
   setup do
@@ -96,7 +96,7 @@ defmodule ForemanServer.CommandRouterRunLimitTest do
                metadata: %{}
              })
 
-    assert ProjectionStore.run(run_id).project_id == project_id
+    assert Operations.Inspect.run_state(run_id).project_id == project_id
 
     assert {:ok, _} =
              CommandRouter.handle(%{

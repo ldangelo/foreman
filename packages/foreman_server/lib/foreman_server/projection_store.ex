@@ -52,6 +52,34 @@ defmodule ForemanServer.ProjectionStore do
                          "RunFlaggedStuck",
                          "RunRetried"
                        ])
+@terminal_task_to_run_status %{
+    "blocked" => "blocked",
+    "closed" => "completed",
+    "conflict" => "failed",
+    "failed" => "failed",
+    "merged" => "merged",
+    "stuck" => "failed"
+  }
+  @irreversible_task_statuses MapSet.new(["closed", "merged"])
+
+  @spec projected_stream_versions() :: %{String.t() => non_neg_integer()}
+  def projected_stream_versions, do: GenServer.call(__MODULE__, :projected_stream_versions)
+
+  @task_statuses MapSet.new([
+                   "backlog",
+                   "ready",
+                   "approved",
+                   "in_progress",
+                   "in-progress",
+                   "review",
+                   "merged",
+                   "closed",
+                   "conflict",
+                   "failed",
+                   "stuck",
+                   "blocked",
+                   "cooldown"
+                 ])
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -195,6 +223,10 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, task, projection}
   end
 
+  def handle_call(:status_counts, _from, projection) do
+    {:reply, projection.status_counts, projection}
+  end
+
   def handle_call(:task_list, _from, projection) do
     tasks =
       if Postgres.enabled?() do
@@ -208,8 +240,10 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, tasks, projection}
   end
 
-  def handle_call(:status_counts, _from, projection) do
-    {:reply, projection.status_counts, projection}
+
+  def handle_call(:projected_stream_versions, _from, projection) do
+    versions = Map.get(projection, :projected_stream_versions, %{})
+    {:reply, versions, projection}
   end
 
   def handle_call(:dispatchable_tasks, _from, projection) do
@@ -304,6 +338,7 @@ defmodule ForemanServer.ProjectionStore do
       authorization_audits: [],
       status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
       checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
+      projected_stream_versions: %{},
       last_sequence: 0
     }
   end
@@ -1588,6 +1623,22 @@ defmodule ForemanServer.ProjectionStore do
     projection
     |> Map.put(:checkpoint, checkpoint)
     |> Map.put(:last_sequence, checkpoint.last_stream_version)
+    |> update_projected_stream_count(event)
+  end
+
+  defp update_projected_stream_count(projection, event) do
+    case Map.get(event, :stream_id) do
+      stream_id when is_binary(stream_id) and stream_id != "" ->
+        versions = Map.get(projection, :projected_stream_versions, %{})
+
+        Map.update(versions, stream_id, 1, &(&1 + 1))
+        |> then(fn updated ->
+          Map.put(projection, :projected_stream_versions, updated)
+        end)
+
+      _ ->
+        projection
+    end
   end
 
   defp recompute_status_counts(projection) do

@@ -50,6 +50,11 @@ defmodule ForemanServer.EventStore do
     GenServer.call(__MODULE__, {:stream, stream_id})
   end
 
+  @spec stream_version(String.t()) :: non_neg_integer()
+  def stream_version(stream_id) when is_binary(stream_id) do
+    GenServer.call(__MODULE__, {:stream_version, stream_id})
+  end
+
   @spec rebuild_projections() :: {:ok, map()} | {:error, term()}
   def rebuild_projections do
     GenServer.call(__MODULE__, :rebuild_projections, rebuild_timeout_ms())
@@ -96,6 +101,22 @@ defmodule ForemanServer.EventStore do
   def handle_call({:stream, stream_id}, _from, state) do
     events = Enum.filter(state.events, &(&1.stream_id == stream_id))
     {:reply, events, state}
+  end
+
+  def handle_call({:stream_version, stream_id}, _from, state) do
+    version =
+      case state.adapter do
+        :postgres ->
+          postgres_stream_version(stream_id)
+
+        _ ->
+          state.events
+          |> Enum.filter(&(&1.stream_id == stream_id))
+          |> Enum.map(& &1.stream_version)
+          |> Enum.max(fn -> 0 end)
+      end
+
+    {:reply, version, state}
   end
 
   def handle_call(:rebuild_projections, _from, state) do
@@ -159,6 +180,17 @@ defmodule ForemanServer.EventStore do
       correlation_id: correlation_id,
       causation_id: causation_id
     }
+  end
+
+  defp postgres_stream_version(stream_id) do
+    case SQL.query(
+           Repo,
+           "SELECT COALESCE(MAX(stream_version), 0) FROM foreman_events WHERE stream_id = $1",
+           [stream_id]
+         ) do
+      {:ok, %{rows: [[version]]}} -> version
+      {:error, _reason} -> 0
+    end
   end
 
   defp persist_event(:postgres, %Event{} = event) do
