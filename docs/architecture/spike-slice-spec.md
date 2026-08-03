@@ -70,10 +70,15 @@ Asserted behaviors:
     rehydrated state — it does not lose pre-crash events or emit conflicting
     post-crash events.
 
- 5. **Append-then-apply ordering**: `CommandRouter` appends with `expected_stream_version`.
-    If append fails (conflict), the actor's in-memory state is **not** mutated —
-    `aggregate_module.apply_event/2` is not called. The actor remains alive.
-    Verify by inducing a conflict and asserting actor state is unchanged.
+ 5. **Append-then-apply ordering with bounded conflict recovery**: `CommandRouter`
+    appends with `expected_stream_version`. On `{:error, :wrong_expected_version}` the
+    actor's bounded retry path (`@max_conflict_retries`, default 3) reloads state via
+    `Aggregate.load/2` (which calls `aggregate_module.apply_event/2` for every event
+    present in the stream), re-decides via `handle_command/2`, and retries the append
+    with the new `expected_stream_version`. On retry exhaustion the actor returns
+    `{:error, :wrong_expected_version}` and the in-memory state of the un-confirmed
+    command is never applied. The actor remains alive. See AC3 for the empirical
+    sequence; see `router_optimistic_concurrency_test.exs` for the boundary proof.
 
  6. **No silent event loss on crash**: Any event that was appended before the crash
     is replayed on restart via `Aggregate.load/2`. Any event that was in-flight
@@ -111,29 +116,35 @@ out-of-order guard in `handle_command` in the aggregate.
 ### AC3 — Optimistic Concurrency
 
 **Mandated behaviour**: `CommandRouter` appends with `expected_stream_version`. If the stream
-has advanced (externally appended), the append fails and `CommandRouter` returns the conflict
-error to the caller. `aggregate_module.apply_event/2` is not called — the actor's
-in-memory state is unchanged. The actor remains alive.
+has advanced (externally appended), the append fails with `{:error, :wrong_expected_version}`.
+The Actor's bounded retry path (`@max_conflict_retries`, default 3) intercepts the conflict,
+reloads the aggregate state via `Aggregate.load/2`, re-decides via `handle_command/2`, and
+retries the append with the new `expected_stream_version`. On retry exhaustion the actor
+returns `{:error, :wrong_expected_version}` and state is unchanged. A re-decision that rejects
+(e.g. `:phase_terminal`) terminates the retry without appending — preserving exactly-once.
 
-**Test**: A test-only `handle_command` does a selective `receive` matching only `{:release, ref}`
-to park without consuming other messages. The test externally appends an event while the
-actor is parked, inducing a conflict.
+**Test**: full AC-005-3 sequence at the router+EventStore boundary
+(`router_optimistic_concurrency_test.exs`):
 
- 1. Start `Actor."run-1"` and send `run.start` — stream version N.
- 2. Dispatch a test-only command whose `handle_command` parks in selective `receive` waiting for
-    `{:release, ref}`. The command is parked; the actor's mailbox queues it.
- 3. While parked, externally call `append_to_stream(stream_uuid, N, events)` — stream advances
-    to N+1. This simulates an external actor appending to the same stream.
- 4. Release the parked command: `send(actor_pid, {:release, ref})`. The actor wakes,
-    returns its event struct to `CommandRouter`.
- 5. `CommandRouter` uses `expected_version: N`, but stream is now N+1 — conflict.
-    `CommandRouter` returns the conflict error. **No event is appended** and
-    **`aggregate_module.apply_event/2` is not called**.
- 6. Assert the actor is still alive (`:sys.get_state(actor_pid)` proves responsiveness).
- 7. Assert the actor's in-memory state is unchanged from step 1 — `apply_event` was never
-    called because the conflict prevented any confirmed event.
- 8. Assert exactly N+1 events are in the stream — the externally appended one from step 3.
-    The actor's pending event was rejected and is absent.
+ 1. `CommandRouter.dispatch(phase.start)` → `PhaseStarted` appended at v1, actor state
+    is `in_progress` (not terminal).
+ 2. Two `Task`s each send `{:append, stream, [PhaseCompleted_event], 1, ref, self()}`
+    directly to `CommandRouter` so both expected_version=1 appends race at the EventStore
+    (bypassing the actor's mailbox serialization).
+ 3. Assert outcomes are exactly `[:ok, {:error, :wrong_expected_version}]` — one wins, the
+    other is rejected by `EventStore.append_to_stream/4`'s optimistic concurrency check.
+    Stream advances to v2; the actor's local state is unchanged.
+ 4. Fresh `CommandRouter.dispatch(phase.complete)` via the normal actor+router path. Locally
+    the actor sees `in_progress`, so `handle_command` returns a `PhaseCompleted` event spec;
+    the first append fails with `:wrong_expected_version` (stream is at v2, actor's local
+    version is 1). The actor's bounded retry path reloads state via `Aggregate.load/2`
+    (the racing `PhaseCompleted` is applied → `terminal?=true`, version 2), re-decides via
+    `handle_command`, and returns `{:error, :phase_terminal}` without appending.
+ 5. Assert `fresh_result == {:error, :phase_terminal}`.
+ 6. Assert the actor's in-memory state has converged: `status == "completed"`, `terminal? == true`.
+ 7. Assert the stream ends with exactly two events
+    `[PhaseStarted, PhaseCompleted]` — exactly one `PhaseCompleted` despite two
+    distinct dispatch paths that each tried to append it.
 ### AC4 — Full Projection Rebuild
 
 1. Populate the event store with a known sequence for `run-1`:
@@ -181,6 +192,12 @@ commands for its aggregate — no two commands to the same aggregate process con
    actor rehydrates via `Aggregate.load/2` before processing the next command.
  - **Append-then-apply**: actor applies events to in-memory state **only after**
    `CommandRouter` append succeeds — not optimistically before.
+ - **Conflict recovery (bounded retry)**: on `{:error, :wrong_expected_version}` the actor
+   reloads state via `Aggregate.load/2` (which calls `aggregate_module.apply_event/2` for
+   every event in the stream), re-decides via `handle_command/2`, and retries the append
+   with the new `expected_stream_version`. Bounded at `@max_conflict_retries = 3`. On
+   retry exhaustion the actor returns the conflict error; on re-decision rejection
+   (e.g. terminal state) the retry terminates without appending.
 
 ### CommandRouter Is the Sole Append Point
 

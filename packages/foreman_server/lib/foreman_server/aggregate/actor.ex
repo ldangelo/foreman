@@ -109,81 +109,146 @@ defmodule ForemanServer.Aggregate.Actor do
     {:reply, state.module_state, state}
   end
 
+  # Bounded retries on stream-version conflict (TRD-008 AC-005-3).
+  # On :wrong_expected_version the actor reloads state + version from the
+  # event store, re-decides the command against the fresh state, and retries
+  # the append with the new version. The deterministic event_id propagates
+  # through every retry, so any partial-success → conflict → retry sequence
+  # collapses to exactly-once in the event store.
+  @max_conflict_retries 3
+
   @impl true
   def handle_call({:command, cmd}, _from, state) do
-    aggregate_module = state.aggregate_module
     aggregate_id = state.aggregate_id
-    expected_version = state.version
+    event_id = event_id_for(aggregate_id, cmd)
 
-    # -------------------------------------------------------------------------
-    # AC2: Idempotent command handling via deterministic event_id.
-    # event_id is derived from {aggregate_id, command_id}. We pre-check the
-    # aggregate's stream for this event_id BEFORE handle_command to avoid
-    # hitting terminal-state rejection paths on duplicate commands.
-    #
-    # read_event_by_id is NOT used here — it queries columns that do not exist
-    # in the current EventStore v0.14+ schema (event_number, stream_uuid,
-    # stream_version were dropped from the events table). read_stream_forward
-    # works correctly and is used instead.
-    # -------------------------------------------------------------------------
-    event_id =
-      case cmd do
-        %{command_id: command_id} when is_binary(command_id) ->
-          derive_event_id(aggregate_id, command_id)
-        _ ->
-          nil
-      end
-
-    # Pre-check for duplicate: if this event_id already exists in the stream,
-    # return the existing event as an idempotent success — skip handle_command
-    # to avoid terminal-state rejections on stale state reads.
     if event_id && duplicate_in_stream?(aggregate_id, event_id) do
       {:reply, {:ok, existing_event_spec(aggregate_id, event_id)}, state}
     else
-      case aggregate_module.handle_command(state.module_state, cmd) do
-        {:ok, nil} ->
-          {:reply, {:ok, nil}, state}
-
-        {:ok, event_spec} when is_map(event_spec) ->
-          event_data = normalize_to_event_data(event_spec, event_id)
-          ref = make_ref()
-
-          send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()})
-
-          receive do
-            {:append_ok, ^ref, _event_count, append_latency_ms} ->
-              new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
-              new_version = state.version + 1
-              update_presence(aggregate_id, aggregate_module, new_version)
-
-              {:reply, {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: append_latency_ms}},
-               %{state | module_state: new_module_state, version: new_version}}
-
-            {:append_ok, ^ref, _event_count} ->
-              new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
-              new_version = state.version + 1
-              update_presence(aggregate_id, aggregate_module, new_version)
-              {:reply, {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: 0}},
-               %{state | module_state: new_module_state, version: new_version}}
-            {:error, ^ref, :duplicate_event, append_latency_ms} ->
-              {:reply, {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
-                        %{append_latency_ms: append_latency_ms}}, state}
-
-            {:error, ^ref, :duplicate_event} ->
-              {:reply, {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
-                        %{append_latency_ms: 0}}, state}
-
-            {:error, ^ref, reason, append_latency_ms} ->
-              {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
-
-            {:error, ^ref, reason} ->
-              {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: 0}}, state}
-          end
-
-        {:error, _reason} = error ->
-          {:reply, error, state}
-      end
+      do_dispatch(state, cmd, state.version, @max_conflict_retries)
     end
+  end
+
+  # Dispatch loop with bounded conflict recovery.
+  defp do_dispatch(state, cmd, expected_version, retries_left) do
+    aggregate_module = state.aggregate_module
+    aggregate_id = state.aggregate_id
+    event_id = event_id_for(aggregate_id, cmd)
+
+    case aggregate_module.handle_command(state.module_state, cmd) do
+      {:ok, nil} ->
+        {:reply, {:ok, nil}, state}
+
+      {:ok, event_spec} when is_map(event_spec) ->
+        event_data = normalize_to_event_data(event_spec, event_id)
+        ref = make_ref()
+
+        send(
+          CommandRouter,
+          {:append, aggregate_id, [event_data], expected_version, ref, self()}
+        )
+
+        receive do
+          {:append_ok, ^ref, _event_count, append_latency_ms} ->
+            commit_event(state, event_spec, append_latency_ms)
+
+          {:append_ok, ^ref, _event_count} ->
+            commit_event(state, event_spec, 0)
+
+          {:error, ^ref, :duplicate_event, append_latency_ms}
+          when not is_nil(event_id) ->
+            {:reply,
+             {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
+              %{append_latency_ms: append_latency_ms}}, state}
+
+          {:error, ^ref, :duplicate_event} when not is_nil(event_id) ->
+            {:reply,
+             {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
+              %{append_latency_ms: 0}}, state}
+
+          {:error, ^ref, :duplicate_event, append_latency_ms} ->
+            {:reply,
+             {:telemetry, {:ok, event_spec}, %{append_latency_ms: append_latency_ms}}, state}
+
+          {:error, ^ref, :duplicate_event} ->
+            {:reply,
+             {:telemetry, {:ok, event_spec}, %{append_latency_ms: 0}}, state}
+
+          {:error, ^ref, :wrong_expected_version, append_latency_ms}
+          when retries_left > 0 ->
+            case reload_after_conflict(state) do
+              {:ok, %{state: rehydrated, version: new_version}} ->
+                do_dispatch(rehydrated, cmd, new_version, retries_left - 1)
+
+              {:error, reason} ->
+                {:reply,
+                 {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
+                 state}
+            end
+
+          {:error, ^ref, :wrong_expected_version, append_latency_ms} ->
+            {:reply,
+             {:telemetry, {:error, :wrong_expected_version},
+              %{append_latency_ms: append_latency_ms}}, state}
+
+          {:error, ^ref, :wrong_expected_version} ->
+            {:reply,
+             {:telemetry, {:error, :wrong_expected_version}, %{append_latency_ms: 0}}, state}
+
+          {:error, ^ref, reason, append_latency_ms} ->
+            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
+
+          {:error, ^ref, reason} ->
+            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: 0}}, state}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  # Compute deterministic event_id for a command. nil when no command_id.
+  defp event_id_for(aggregate_id, cmd) do
+    case cmd do
+      %{command_id: command_id} when is_binary(command_id) ->
+        derive_event_id(aggregate_id, command_id)
+
+      _ ->
+        nil
+    end
+  end
+
+  # Apply confirmed event to actor state and bump version.
+  defp commit_event(state, event_spec, append_latency_ms) do
+    new_module_state = state.aggregate_module.apply_event(state.module_state, event_spec)
+    new_version = state.version + 1
+    update_presence(state.aggregate_id, state.aggregate_module, new_version)
+
+    {:reply,
+     {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: append_latency_ms}},
+     %{state | module_state: new_module_state, version: new_version}}
+  end
+
+  # Re-read state + version from the event store after a stream-version conflict.
+  defp reload_after_conflict(state) do
+    {module_state, version} =
+      if function_exported?(state.aggregate_module, :load, 1) do
+        state.aggregate_module.load(state.aggregate_id)
+      else
+        ForemanServer.Aggregate.load(state.aggregate_module, state.aggregate_id)
+      end
+
+    rehydrated = %{state | module_state: module_state, version: version}
+
+    # Keep Presence consistent with the actor's actual state. Without this,
+    # observability would stay at the pre-conflict version even though the
+    # in-memory state has moved forward — so dashboards and debug queries
+    # would lie about the actor's true position in the stream.
+    update_presence(rehydrated.aggregate_id, rehydrated.aggregate_module, version)
+
+    {:ok, %{state: rehydrated, version: version}}
+  rescue
+    e -> {:error, {:reload_failed, e}}
   end
 
   # -------------------------------------------------------------------------

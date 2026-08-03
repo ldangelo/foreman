@@ -427,70 +427,83 @@ defmodule ForemanServer.AC1AggregateActorTest do
   # AC1.5 — Append-then-apply: conflict from external append
   # ---------------------------------------------------------------------------
 
-  test "AC1.5: external append causes conflict — aggregate state unchanged, event store authoritative" do
-    agg_id = "blocking:#{uuid()}"
-    ref = make_ref()
-    test_pid = self()
+  test "AC1.5: two CompletePhase race — actor reloads, re-decides, rejects on terminal state" do
+    # AC-005-3: two CompletePhase commands race. The actor's first append fails
+    # with :wrong_expected_version. On retry, the actor reloads state from the
+    # stream, re-decides the command, and finds the aggregate already terminal —
+    # so it rejects with :phase_terminal instead of producing a duplicate
+    # PhaseCompleted event. Exactly-once is preserved.
+    phase_id = "phase-#{uuid()}"
+    run_id = "run-#{uuid()}"
+    agg_stream = "phase:#{run_id}:#{phase_id}"
 
-    # Pre-start the actor so it is alive and responsive before dispatch.
-    {:ok, actor_pid} = ForemanServer.Aggregator.start_aggregate(BlockingAggregate, agg_id)
+    # 1) Start the phase via the actor — stream: PhaseStarted (v1),
+    #    actor state: status=in_progress, terminal?=false, version=1.
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "phase.start",
+        payload: %{phase_id: phase_id, run_id: run_id},
+        aggregate_id: agg_stream
+      })
 
-    # Capture state BEFORE dispatch — actor is idle with no events applied.
-    state_before = Aggregate.Actor.get_state(actor_pid)
+    actor_pid = aggregate_pid(agg_stream)
+    state_after_start = Aggregate.Actor.get_state(actor_pid)
+    assert Map.get(state_after_start, :status) == "in_progress"
+    refute Map.get(state_after_start, :terminal?)
 
-    task =
-      Task.async(fn ->
-        TestRouter.dispatch(%BlockCommand{
-          aggregate_id: agg_id,
-          aggregate_type: :conflict_test,
-          ref: ref,
-          notify_pid: test_pid
-        })
-      end)
-
-    assert_receive {:block_entered, ^ref, ^actor_pid}, 5_000
-
-    assert Store.read_stream_forward(agg_id, 0, 10) == {:error, :stream_not_found}
-
-    external_event = %ForemanServer.TestSupport.BlockEvent{
-      aggregate_id: agg_id,
-      aggregate_type: :conflict
-    }
-
+    # 2) External append of a PhaseCompleted wins the race. The actor's local
+    #    state still reflects status=in_progress because it has not reloaded.
+    #    Stream: [PhaseStarted, PhaseCompleted] (v1, v2).
     :ok =
-      Store.append_to_stream(agg_id, 0, [
+      Store.append_to_stream(agg_stream, 1, [
         %Elixir.EventStore.EventData{
-          event_type: "Elixir.ForemanServer.TestSupport.BlockEvent",
-          data: external_event,
+          event_type: "PhaseCompleted",
+          data: %{phase_id: phase_id, run_id: run_id},
           metadata: %{}
         }
       ])
 
-    {:ok, events_after_append} = Store.read_stream_forward(agg_id, 0, 10)
-    assert length(events_after_append) == 1
+    {:ok, events_after_external} = Store.read_stream_forward(agg_stream, 0, 10)
+    assert length(events_after_external) == 2
 
-    send(actor_pid, {:release, ref})
-
+    # 3) The actor dispatches phase.complete. Locally it sees status=in_progress,
+    #    so the first handle_command returns PhaseCompleted. The actor appends
+    #    with expected_version=1 but actual=2 → :wrong_expected_version.
+    #    The retry path reloads state from the stream (PhaseStarted then
+    #    PhaseCompleted → status=completed, terminal?=true, version=2) and
+    #    re-decides. Re-decision sees terminal state and rejects with
+    #    :phase_terminal — no duplicate PhaseCompleted is appended.
     result =
-      case Task.yield(task, 5_000) do
-        {:ok, res} -> res
-        nil -> Task.shutdown(task)
-      end
+      CommandRouter.dispatch(%{
+        type: "phase.complete",
+        payload: %{phase_id: phase_id, run_id: run_id},
+        aggregate_id: agg_stream
+      })
 
-    assert {:error, :wrong_expected_version} = result
-
+    assert {:error, :phase_terminal} = result
     assert Process.alive?(actor_pid),
-           "aggregate must stay alive after conflict (not exit)"
+           "aggregate must stay alive after a re-decision rejection"
 
-    # State must be EXACTLY equal to state_before — external append IS in the
-    # store but was never applied to this actor's state.
+    # State converged to the reloaded terminal state.
     state = Aggregate.Actor.get_state(actor_pid)
-    assert state == state_before,
-           "actor state must be unchanged after conflict — external event was not applied"
+    assert Map.get(state, :status) == "completed"
+    assert Map.get(state, :terminal?) == true
 
-    {:ok, events_final} = Store.read_stream_forward(agg_id, 0, 10)
-    assert length(events_final) == 1,
-           "event store contains the external event; aggregate's command was rejected"
+    # Stream is unchanged by the rejected retry: still 2 events, one PhaseCompleted.
+    {:ok, events_final} = Store.read_stream_forward(agg_stream, 0, 10)
+    assert length(events_final) == 2
+
+    assert Enum.map(events_final, & &1.event_type) == [
+             "PhaseStarted",
+             "PhaseCompleted"
+           ]
+
+    completed_count =
+      events_final
+      |> Enum.count(fn e -> e.event_type == "PhaseCompleted" end)
+
+    assert completed_count == 1,
+           "exactly one PhaseCompleted must exist — the loser's retry must not append"
   end
 
   # ---------------------------------------------------------------------------
@@ -653,5 +666,59 @@ defmodule ForemanServer.AC1AggregateActorTest do
     pid = aggregate_pid(agg_stream)
     state = Aggregate.Actor.get_state(pid)
     assert Map.get(state, :status) == "completed"
+  end
+
+  test "TRD-008 phase.fail: dispatch phase.fail → PhaseFailed, state terminal" do
+    phase_id = "phase-#{uuid()}"
+    run_id = "run-#{uuid()}"
+    agg_stream = "phase:#{run_id}:#{phase_id}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "phase.start",
+        payload: %{phase_id: phase_id, run_id: run_id},
+        aggregate_id: agg_stream
+      })
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "phase.fail",
+        payload: %{phase_id: phase_id, run_id: run_id},
+        aggregate_id: agg_stream
+      })
+
+    state = Aggregate.Actor.get_state(aggregate_pid(agg_stream))
+    assert Map.get(state, :status) == "failed"
+    assert Map.get(state, :terminal?) == true
+
+    {:ok, events} = Store.read_stream_forward(agg_stream, 0, 10)
+    assert Enum.map(events, & &1.event_type) == ["PhaseStarted", "PhaseFailed"]
+  end
+
+  test "TRD-008 phase.skip: dispatch phase.skip on started phase → PhaseSkipped, state terminal" do
+    phase_id = "phase-#{uuid()}"
+    run_id = "run-#{uuid()}"
+    agg_stream = "phase:#{run_id}:#{phase_id}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "phase.start",
+        payload: %{phase_id: phase_id, run_id: run_id},
+        aggregate_id: agg_stream
+      })
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "phase.skip",
+        payload: %{phase_id: phase_id, run_id: run_id},
+        aggregate_id: agg_stream
+      })
+
+    state = Aggregate.Actor.get_state(aggregate_pid(agg_stream))
+    assert Map.get(state, :status) == "skipped"
+    assert Map.get(state, :terminal?) == true
+
+    {:ok, events} = Store.read_stream_forward(agg_stream, 0, 10)
+    assert Enum.map(events, & &1.event_type) == ["PhaseStarted", "PhaseSkipped"]
   end
 end

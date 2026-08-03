@@ -219,9 +219,9 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] `ForemanServer.Aggregates.Phase.State` struct (includes `exists?` — `PhaseStarted` without `run_id` still marks `exists?: true`)
   - [x] `handle_command/2` for `StartPhase`, `CompletePhase`, `FailPhase`, `SkipPhase`
   - [x] `apply_event/2` using `%State{state | ...}` — no `Map.merge`
-  - [x] AC-005-3 router+EventStore concurrency test: two `phase.complete` specs routed before append, first succeeds, second gets `{:conflict, [expected: 1, actual: 2]}`, fresh route sees terminal state
-  - [ ] Optimistic concurrency in `Actor` (already handles expected_version conflict — verify with AC-005-3 test)
-  - [ ] Idempotent duplicate command handling via `command_id` (already in `Actor` — verify)
+  - [x] AC-005-3 router+EventStore concurrency test: two `phase.complete` specs routed before append, first succeeds, second gets `{:error, :wrong_expected_version}`, fresh route via the actor's bounded retry reloads + re-decides to `{:error, :phase_terminal}` (see `packages/foreman_server/test/foreman_server/router_optimistic_concurrency_test.exs`)
+  - [x] Optimistic concurrency in `Actor` — bounded retry via `@max_conflict_retries 3` (`packages/foreman_server/lib/foreman_server/aggregate/actor.ex`)
+  - [x] Idempotent duplicate command handling via `command_id` (verified by AC2 test)
 
 - [ ] **TRD-009** Run aggregate | 6h | [satisfies REQ-004] | Validates: AC-004-1, AC-004-2, AC-004-3, AC-004-4 | AC: Given a run is active, when `CompleteRun` dispatched on a terminal run, then `RunAlreadyCompleted` event is appended and aggregate state unchanged; given run aggregate restarts, when `Aggregate.load/2` is called, then full stream is replayed and correct terminal/non-terminal state is restored
   - [x] `ForemanServer.Aggregates.Run.State` struct with fixed fields (`run_id`, `task_id`, `project_id`, `current_phase`, `phase_order`, PR fields) and dynamic maps (`phase_status`, `worker_status`, `retry_history`)
