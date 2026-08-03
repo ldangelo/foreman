@@ -110,6 +110,13 @@ defmodule ForemanServer.Aggregates.Run do
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
+      "RunPaused" ->
+        %State{
+          state
+          | status: "paused",
+            run_id: Aggregate.get(payload, :run_id) || state.run_id,
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
+        }
 
       "RunCancelled" ->
         %State{
@@ -233,6 +240,28 @@ defmodule ForemanServer.Aggregates.Run do
              }}
           end
       end
+    end
+  end
+
+  # run.pause — emits `RunPaused` (NON-terminal; state shape `paused`,
+  # `terminal?: false` so `run.resume` is accepted). Pause is distinct
+  # from RunCancelled/RunFailed. The terminal-state guard still rejects
+  # pause-on-terminal runs so a paused run cannot re-pause with a stale
+  # sequence via the normal path; recovery re-dispatch goes through
+  # the relaxed `require_terminal_sequence` path if needed.
+  def handle_command(state, %{type: "run.pause", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunPaused",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put_new(:reason, "crash_loop")
+       }}
     end
   end
 

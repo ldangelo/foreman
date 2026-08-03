@@ -344,7 +344,11 @@ defmodule ForemanServer.AC1AggregateActorTest do
       })
 
     state = Aggregate.Actor.get_state(new_pid)
-    assert Map.get(state, :status) == "terminal"
+    # TRD-011: `WorkerExited` is a transition, NOT a terminal marker.
+    # Only `WorkerCrashed` seals the worker state. The replayed
+    # state should reflect the explicit transition (status "exited").
+    assert state.status == "exited"
+    refute state.terminal?
   end
 
   test "AC1.3: Phase :permanent crash, immediate restart, stream replay" do

@@ -474,7 +474,7 @@ defmodule ForemanServer.Aggregates.WorkerTest do
       assert state.assistant_messages == 0
     end
 
-    test "WorkerExited is terminal: true" do
+    test "WorkerExited is non-terminal: a fresh WorkerStarted can re-open the stream" do
       worker_id = uuid()
       run_id = uuid()
 
@@ -484,14 +484,26 @@ defmodule ForemanServer.Aggregates.WorkerTest do
           payload: Map.put(start_payload(worker_id, run_id), :sequence, 0)
         })
 
-      state =
+      exited =
         Worker.apply_event(state_after_started, %{
           event_type: "WorkerExited",
           payload: %{worker_id: worker_id, run_id: run_id, sequence: 1, reason: "normal"}
         })
 
-      assert state.terminal? == true
-      assert state.status == "terminal"
+      assert exited.terminal? == false
+      assert exited.status == "exited"
+
+      # Re-launch: a fresh WorkerStarted with the next sequence must be
+      # accepted (the stream was never sealed by WorkerExited).
+      restarted =
+        Worker.apply_event(exited, %{
+          event_type: "WorkerStarted",
+          payload: Map.put(start_payload(worker_id, run_id), :sequence, 2)
+        })
+
+      assert restarted.terminal? == false
+      assert restarted.status == "running"
+      assert restarted.last_sequence == 2
     end
 
     test "RunCompleted and RunFailed set terminal? true" do
@@ -544,26 +556,67 @@ defmodule ForemanServer.Aggregates.WorkerTest do
 
       assert state.last_sequence == 2
     end
-  end
+
+    test "WorkerCrashed is terminal with status crashed; subsequent WorkerExited preserves it" do
+      worker_id = uuid()
+      run_id = uuid()
+
+      started =
+        Worker.apply_event(Worker.initial_state(), %{
+          event_type: "WorkerStarted",
+          payload: Map.put(start_payload(worker_id, run_id), :sequence, 0)
+        })
+
+      crashed =
+        Worker.apply_event(started, %{
+          event_type: "WorkerCrashed",
+          payload: %{
+            worker_id: worker_id,
+            run_id: run_id,
+            sequence: 1,
+            restarts_in_window: 4,
+            window_ms: 300_000,
+            reason: "crash_loop"
+          }
+        })
+
+      assert crashed.terminal? == true
+      assert crashed.status == "crashed"
+
+      exited =
+        Worker.apply_event(crashed, %{
+          event_type: "WorkerExited",
+          payload: %{worker_id: worker_id, run_id: run_id, sequence: 2, reason: "killed"}
+        })
+
+      # terminal? and status both preserved — WorkerExited must NOT
+      # reopen the sealed stream or overwrite "crashed" with "exited".
+      assert exited.terminal? == true
+      assert exited.status == "crashed"
+    end
+
+   end
 
   # ---------------------------------------------------------------------------
   # EventCodec contract for typed events
   # ---------------------------------------------------------------------------
 
   describe "EventCodec contract" do
-    test "registered/0 returns all 10 typed event types" do
+    test "registered/0 returns all 12 typed event types" do
       expected =
         Enum.sort([
           "WorkerStarted",
           "WorkerHeartbeat",
           "WorkerUnresponsive",
           "WorkerExited",
+          "WorkerCrashed",
           "WorkerStdout",
           "WorkerStderr",
           "ToolCallFinished",
           "AssistantMessage",
           "RunCompleted",
-          "RunFailed"
+          "RunFailed",
+          "RunPaused"
         ])
 
       assert Enum.sort(EventCodec.registered()) == expected

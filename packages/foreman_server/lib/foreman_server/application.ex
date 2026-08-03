@@ -38,7 +38,13 @@ defmodule ForemanServer.Application do
     case Application.get_env(:foreman_server, ForemanServer.Overwatch, []) do
       opts when is_list(opts) ->
         if Keyword.get(opts, :enabled, false) do
-          [{ForemanServer.Overwatch, opts}]
+          merged =
+            opts
+            |> Keyword.put_new(:crash_loop_detector_enabled, true)
+            |> Keyword.put_new(:crash_loop_window_ms, 5 * 60 * 1000)
+            |> Keyword.put_new(:crash_loop_threshold, 3)
+
+          [{ForemanServer.Overwatch, merged}]
         else
           []
         end

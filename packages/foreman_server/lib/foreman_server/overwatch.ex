@@ -38,12 +38,28 @@ defmodule ForemanServer.Overwatch do
   end
 
   @impl true
-  def init(_opts) do
-    children = [
+  def init(opts) do
+    base = [
       {Registry, keys: :unique, name: ForemanServer.Overwatch.WorkerRegistry},
       Tracker,
       WorkerSupervisor
     ]
+
+    children =
+      case Keyword.get(opts, :crash_loop_detector_enabled, true) do
+        true ->
+          window_ms = Keyword.get(opts, :crash_loop_window_ms, 5 * 60 * 1000)
+          threshold = Keyword.get(opts, :crash_loop_threshold, 3)
+
+          base ++
+            [
+              {ForemanServer.Overwatch.CrashLoopDetector,
+               [window_ms: window_ms, threshold: threshold]}
+            ]
+
+        _ ->
+          base
+      end
 
     Supervisor.init(children, strategy: :one_for_one)
   end

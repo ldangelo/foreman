@@ -10,10 +10,9 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     * `heartbeat/3` — sole producer of `WorkerHeartbeat`. Resets the
       liveness timer. Atomically allocates and dispatches.
-    * `dispatch_lifecycle/3` — sole producer of non-heartbeat
-      sequenced events (`WorkerStarted`, `WorkerExited`,
-      `ToolCallFinished`, `AssistantMessage`, `WorkerStdout`,
-      `WorkerStderr`). Atomically allocates and dispatches.
+  Non-heartbeat sequenced events are: `WorkerStarted`, `WorkerExited`,
+  `WorkerCrashed`, `ToolCallFinished`, `AssistantMessage`,
+  `WorkerStdout`, `WorkerStderr`. Atomically allocates and dispatches.
     * `register/4` — registers a worker pid for monitoring.
     * `sequence/3` — read the current sequence mirror.
     * `unregister/3` — full cleanup (drops sequence mirror).
@@ -189,26 +188,49 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     state = put_sequence(state, k, sequence)
 
-    if Map.has_key?(state.monitors, k) do
-      {:reply, :ok, state}
-    else
-      monitor_ref = Process.monitor(worker_pid)
+    existing = Map.get(state.workers, k)
 
-      worker = %{
-        worker_id: worker_id,
-        run_id: run_id,
-        pid: worker_pid,
-        unresponsive_emitted?: false,
-        exited?: false
-      }
+    cond do
+      is_map(existing) and existing.pid != worker_pid and Process.alive?(existing.pid) ->
+        # Old generation is still alive. Accepting a NEW pid would
+        # leave two live workers and assign a single slot to both.
+        # Reject the newcomer so the operator can resolve the
+        # duplicate.
+        {:reply, {:error, :duplicate_live_worker}, state}
 
-      state = put_worker(state, k, worker)
-      state = %{state | monitors: Map.put(state.monitors, k, monitor_ref)}
-      state = arm_timer(state, k)
+      is_map(existing) and existing.pid != worker_pid ->
+        # Previous generation's slot has not yet been cleared. The
+        # DOWN for the old pid is still in our mailbox (or in-flight
+        # from the runtime); processing it will classify the real
+        # reason correctly (orphan vs crash). Synthesizing a kill
+        # here would overwrite that classification and falsely
+        # increment crash history. Signal a transient condition so
+        # the caller retries once the DOWN has been processed.
+        {:reply, {:error, :previous_generation_pending}, state}
 
-      {:reply, :ok, state}
+      is_map(existing) and existing.pid == worker_pid ->
+        # Same pid re-registers (idempotent). Keep the existing monitor.
+        {:reply, :ok, state}
+
+      true ->
+        # First registration for this key.
+        monitor_ref = Process.monitor(worker_pid)
+
+        worker = %{
+          worker_id: worker_id,
+          run_id: run_id,
+          pid: worker_pid,
+          unresponsive_emitted?: false,
+          exited?: false
+        }
+
+        state = put_worker(state, k, worker)
+        state = %{state | monitors: Map.put(state.monitors, k, monitor_ref)}
+        state = arm_timer(state, k)
+        {:reply, :ok, state}
     end
   end
+
 
   def handle_call({:heartbeat, worker_id, run_id}, _from, state) do
     k = key(worker_id, run_id)
@@ -379,16 +401,40 @@ defmodule ForemanServer.Overwatch.Tracker do
   end
 
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     k = find_key_by_monitor_ref(state, ref)
+
     state =
       case k do
-        nil -> state
-        _ -> state |> emit_worker_exited_for(k) |> cleanup_after_down(k)
+        nil ->
+          state
+
+        _ ->
+          worker = Map.get(state.workers, k)
+          state = state |> emit_worker_exited_for(k) |> cleanup_after_down(k)
+          notify_crash_loop_detector(worker, reason)
+          state
       end
 
     {:noreply, state}
   end
+
+  # Forward worker DOWN to the crash-loop detector (TRD-012) when present.
+ # The detector is an optional sibling supervisor child; in tests and
+ # dev where it is not started, this is a silent no-op. Failure to
+ # notify is logged at debug level — it MUST NOT crash the Tracker.
+ defp notify_crash_loop_detector(%{worker_id: worker_id, run_id: run_id}, reason)
+     when is_binary(worker_id) and is_binary(run_id) do
+    case Process.whereis(ForemanServer.Overwatch.CrashLoopDetector) do
+      nil ->
+        :ok
+
+      pid when is_pid(pid) ->
+        ForemanServer.Overwatch.CrashLoopDetector.observe_down(pid, worker_id, run_id, reason)
+    end
+  end
+
+  defp notify_crash_loop_detector(_worker, _reason), do: :ok
 
   def handle_info(_msg, state), do: {:noreply, state}
 

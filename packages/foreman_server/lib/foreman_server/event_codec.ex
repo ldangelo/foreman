@@ -27,7 +27,9 @@ defmodule ForemanServer.EventCodec do
     AssistantMessage,
     RunCompleted,
     RunFailed,
+    RunPaused,
     ToolCallFinished,
+    WorkerCrashed,
     WorkerExited,
     WorkerHeartbeat,
     WorkerStarted,
@@ -35,18 +37,19 @@ defmodule ForemanServer.EventCodec do
     WorkerStdout,
     WorkerUnresponsive
   }
-
   @registry %{
     "WorkerStarted" => WorkerStarted,
     "WorkerHeartbeat" => WorkerHeartbeat,
     "WorkerUnresponsive" => WorkerUnresponsive,
     "WorkerExited" => WorkerExited,
+    "WorkerCrashed" => WorkerCrashed,
     "WorkerStdout" => WorkerStdout,
     "WorkerStderr" => WorkerStderr,
     "ToolCallFinished" => ToolCallFinished,
     "AssistantMessage" => AssistantMessage,
     "RunCompleted" => RunCompleted,
-    "RunFailed" => RunFailed
+    "RunFailed" => RunFailed,
+    "RunPaused" => RunPaused
   }
 
   # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
@@ -58,12 +61,14 @@ defmodule ForemanServer.EventCodec do
     WorkerHeartbeat => [:worker_id, :run_id],
     WorkerUnresponsive => [:worker_id, :run_id],
     WorkerExited => [:worker_id],
+    WorkerCrashed => [:worker_id, :run_id],
     WorkerStdout => [:worker_id, :run_id],
     WorkerStderr => [:worker_id, :run_id],
     ToolCallFinished => [:worker_id, :run_id],
     AssistantMessage => [:worker_id, :run_id],
     RunCompleted => [:run_id],
-    RunFailed => [:run_id]
+    RunFailed => [:run_id],
+    RunPaused => [:run_id]
   }
 
   @type event_type :: String.t()

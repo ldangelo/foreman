@@ -27,7 +27,17 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
 
   @impl true
   def init(_opts) do
-    DynamicSupervisor.init(strategy: :one_for_one)
+    # CrashLoopDetector's threshold is 3 (default). To prevent the
+    # supervisor's restart intensity from terminating the WHOLE
+    # dynamic supervisor before the detector can authoritatively
+    # stop the offending child, raise max_restarts well above the
+    # detector boundary. The detector is the sole authority on
+    # crash-loop shutdown.
+    DynamicSupervisor.init(
+      strategy: :one_for_one,
+      max_restarts: 1_000,
+      max_seconds: 1
+    )
   end
 
   @doc """
@@ -63,5 +73,50 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
     }
 
     DynamicSupervisor.start_child(__MODULE__, child_spec)
+  end
+
+  @doc """
+  Authoritatively stop the `LaunchWorker` child for `(worker_id, run_id)`.
+  `DynamicSupervisor.terminate_child/2` removes the child from the
+  supervisor's list of children, so the `restart: :permanent` policy
+  does NOT re-introduce a live worker. The bounded Registry poll
+  bridges the gap between the previous child exiting and the next
+  generation registering (the supervisor restarts immediately, so the
+  gap is small but real). Returns `:ok` whether or not a child was
+  eventually found.
+  """
+  @spec stop_worker(String.t(), String.t()) :: :ok
+  def stop_worker(worker_id, run_id) do
+    terminate_loop(worker_id, run_id, 30)
+  end
+
+  defp terminate_loop(_worker_id, _run_id, 0), do: :ok
+
+  defp terminate_loop(worker_id, run_id, attempts_remaining) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        :ok
+
+      sup ->
+        case LaunchWorker.pid_for(worker_id, run_id) do
+          nil ->
+            Process.sleep(50)
+            terminate_loop(worker_id, run_id, attempts_remaining - 1)
+
+          pid when is_pid(pid) ->
+            case DynamicSupervisor.terminate_child(sup, pid) do
+              :ok ->
+                :ok
+
+              {:error, :not_found} ->
+                Process.sleep(50)
+                terminate_loop(worker_id, run_id, attempts_remaining - 1)
+
+              {:error, _reason} ->
+                Process.sleep(50)
+                terminate_loop(worker_id, run_id, attempts_remaining - 1)
+            end
+        end
+    end
   end
 end

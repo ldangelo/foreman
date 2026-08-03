@@ -8,6 +8,7 @@ defmodule ForemanServer.Aggregates.Worker do
     RunCompleted,
     RunFailed,
     ToolCallFinished,
+    WorkerCrashed,
     WorkerExited,
     WorkerHeartbeat,
     WorkerStarted,
@@ -34,8 +35,13 @@ defmodule ForemanServer.Aggregates.Worker do
       artifact_paths: []
     ]
   end
-
-  @terminal_events MapSet.new(["RunCompleted", "RunFailed", "WorkerExited"])
+  # `WorkerExited` is in the allow-list so a worker that finished a run
+  # (RunCompleted/RunFailed set terminal?=true) can still append its
+  # final cleanup WorkerExited. The apply clause does NOT clear
+  # terminal? — once sealed (RunCompleted, RunFailed, WorkerCrashed),
+  # the stream stays sealed even if a later WorkerExited arrives. Only
+  # `WorkerCrashed` is a fresh seal — WorkerExited no longer seals.
+  @terminal_events MapSet.new(["RunCompleted", "RunFailed", "WorkerExited", "WorkerCrashed"])
 
   @impl true
   def initial_state,
@@ -101,11 +107,11 @@ defmodule ForemanServer.Aggregates.Worker do
 
   defp apply_typed_event(state, %WorkerUnresponsive{} = e) do
     new_state = bump_sequence(state, e.sequence)
-
     # Unresponsive is recoverable: a fresh `WorkerStarted` (re-launch)
     # or a `WorkerHeartbeat` after the worker reconnects must NOT be
     # rejected by `allow_after_terminal/2`. Reserve `terminal?: true`
-    # for RunCompleted, RunFailed, and WorkerExited.
+    # for RunCompleted, RunFailed, and WorkerCrashed — only events in
+    # `@terminal_events` are accepted once the worker is terminal.
     %State{
       new_state
       | worker_id: e.worker_id,
@@ -162,14 +168,42 @@ defmodule ForemanServer.Aggregates.Worker do
     }
   end
 
+  # WorkerExited is in the allow-list so the cleanup exit can still be
+  # appended after a terminal event (RunCompleted, RunFailed). The
+  # apply clause preserves `status` and `terminal?` when the stream is
+  # already terminal — a late WorkerExited arriving after WorkerCrashed
+  # must NOT overwrite `status: "crashed"` with `"exited"`. Only
+  # `WorkerCrashed` is a fresh seal; the `terminal?` flag is monotonic.
   defp apply_typed_event(state, %WorkerExited{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    base = %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id || new_state.run_id
+    }
+
+    if new_state.terminal? do
+      base
+    else
+      %State{base | status: "exited", terminal?: false}
+    end
+  end
+
+  # `WorkerCrashed` is the genuine terminal event for a worker stream:
+  # emitted by the overwatch crash-loop detector after more than
+  # `threshold` restarts within `window_ms`. After `WorkerCrashed`, no
+  # further events are accepted on this worker stream — the slot is
+  # permanently released. `worker_status` reflects `"crashed"` so the
+  # Run projection surfaces the failure clearly to operators.
+  defp apply_typed_event(state, %WorkerCrashed{} = e) do
     new_state = bump_sequence(state, e.sequence)
 
     %State{
       new_state
       | worker_id: e.worker_id,
-        run_id: e.run_id || new_state.run_id,
-        status: "terminal",
+        run_id: e.run_id,
+        status: "crashed",
         terminal?: true
     }
   end
