@@ -293,7 +293,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 
 - [x] **TRD-017** PR monitor + GitHub webhook | 5h | [satisfies REQ-009, REQ-010] | Validates: AC-009-2, AC-009-3, AC-010-1, AC-010-2
   - Implementation AC:
-    - [ ] Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
+    - [x] Given a PR is associated with a run, when GitHub sends webhook (opened/merged/closed/conflicted), then `Webhooks.Github.process/1` processes it and run projection reflects new PR state; if webhooks are missed/reordered, periodic polling fallback reconciles state every 5 minutes; given run is pending merge and PR status is not `open` and not `merged`, then PR gate actively blocks run progression
   - [x] `PrMonitor` GenServer: polls GitHub API every 5 minutes for associated PRs
   - [x] `Webhooks.Github` existing — verify it handles `pr_merged`, `pr_closed`, `pr reopened`, `pr_sync_conflict` events
   - [x] `PrGate` module: `check(run_id) :: :ok | {:error, :pr_not_acceptable}`

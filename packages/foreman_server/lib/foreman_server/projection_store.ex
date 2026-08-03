@@ -89,6 +89,12 @@ defmodule ForemanServer.ProjectionStore do
   def list_projects do
     GenServer.call(__MODULE__, :list_projects)
   end
+
+  @doc "Return every projected run."
+  @spec list_runs() :: [map()]
+  def list_runs do
+    GenServer.call(__MODULE__, :list_runs)
+  end
   # -------------------------------------------------------------------------
 
   @impl true
@@ -154,6 +160,11 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call(:list_projects, _from, state) do
     {:reply, Map.values(state.projects), state}
+  end
+
+  @impl true
+  def handle_call(:list_runs, _from, state) do
+    {:reply, Map.values(state.runs), state}
   end
 
   # -------------------------------------------------------------------------

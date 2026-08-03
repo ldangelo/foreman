@@ -335,7 +335,8 @@ defmodule ForemanServer.Aggregates.Run do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          :ok <- allow_pr_lifecycle_on_terminal_runs(state, type),
-         :ok <- require_pr_payload(type, payload) do
+         :ok <- require_pr_payload(type, payload),
+         :ok <- ensure_pr_gate_ok(type, run_id) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
@@ -427,6 +428,17 @@ defmodule ForemanServer.Aggregates.Run do
     do: {:error, {:invalid_pr_reset_action, action}}
 
   defp validate_pr_reset_action(_type, _action), do: :ok
+
+  defp ensure_pr_gate_ok("run.pr.merge", run_id) do
+    case ForemanServer.PrGate.check(run_id) do
+      {:ok, _status} -> :ok
+      {:error, :pr_not_acceptable} -> {:error, :pr_not_acceptable}
+      {:error, :no_pr_association} -> {:error, :no_pr_association}
+      _ -> :ok
+    end
+  end
+
+  defp ensure_pr_gate_ok(_type, _run_id), do: :ok
 
   defp allow_pr_lifecycle_on_terminal_runs(_state, type)
        when type in [
