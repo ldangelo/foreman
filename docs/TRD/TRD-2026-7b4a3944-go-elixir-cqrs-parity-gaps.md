@@ -223,13 +223,14 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Optimistic concurrency in `Actor` — bounded retry via `@max_conflict_retries 3` (`packages/foreman_server/lib/foreman_server/aggregate/actor.ex`)
   - [x] Idempotent duplicate command handling via `command_id` (verified by AC2 test)
 
-- [ ] **TRD-009** Run aggregate | 6h | [satisfies REQ-004] | Validates: AC-004-1, AC-004-2, AC-004-3, AC-004-4 | AC: Given a run is active, when `CompleteRun` dispatched on a terminal run, then `RunAlreadyCompleted` event is appended and aggregate state unchanged; given run aggregate restarts, when `Aggregate.load/2` is called, then full stream is replayed and correct terminal/non-terminal state is restored
+- [x] **TRD-009** Run aggregate | 6h | [satisfies REQ-004] | Validates: AC-004-1, AC-004-2, AC-004-3, AC-004-4 | AC: Given a run is active, when `CompleteRun` dispatched on a terminal run, then `RunAlreadyCompleted` event is appended and aggregate state unchanged; given run aggregate restarts, when `Aggregate.load/2` is called, then full stream is replayed and correct terminal/non-terminal state is restored
   - [x] `ForemanServer.Aggregates.Run.State` struct with fixed fields (`run_id`, `task_id`, `project_id`, `current_phase`, `phase_order`, PR fields) and dynamic maps (`phase_status`, `worker_status`, `retry_history`)
   - [x] `handle_command/2` for `StartRun`, `CompleteRun`, `FailRun`
-  - [ ] `handle_command/2` for `CancelRun` (`run.cancel`/`RunCancelled` not in codebase)
+  - [x] `handle_command/2` for `CancelRun` (`run.cancel` → `RunCancelled` event; rejects `run.cancel` on terminal run)
   - [x] `apply_event/2` using `%State{state | ...}` updates — no `Map.merge`
   - [x] `RunAlreadyCompleted` spec emitted (state unchanged) when `run.complete` routes against a terminal run; `apply_event` for `RunAlreadyCompleted` is a no-op
-  - [x] Replay via `Aggregate.load/2` restores terminal and non-terminal state correctly (4 tests)
+  - [x] Replay via `Aggregate.load/2` restores terminal and non-terminal state correctly (4 tests: in-progress, completed, cancelled, failed)
+  - [x] Typed event modules: `ForemanServer.Events.RunCancelled` and `ForemanServer.Events.RunAlreadyCompleted` (with `@enforce_keys`, `@type t`, `@derive Jason.Encoder`)
 
 - [x] **TRD-010** BoardItemStateMachine aggregate | 4h | [satisfies REQ-006] | Validates: AC-006-1, AC-006-2 | AC: Given an invalid status transition (e.g., `closed` → `in_progress`), when the command is dispatched, then it is rejected with `:invalid_transition` error
   - [x] `ForemanServer.Aggregates.BoardItemStateMachine.State` struct with `exists?`, `board_item_id`, `status`, `terminal?`
@@ -425,12 +426,12 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Test: fire-and-track — intent recorded, worker confirms, no fire lost on scheduler crash
   - [x] Expand existing `recovery_test.exs`
 
-- [ ] **TRD-009-TEST** Run aggregate test coverage | 4h | [verifies TRD-009] [depends: TRD-009] [satisfies REQ-004, REQ-020] | Validates: AC-004-1–AC-004-4 | Implementation AC: Given `CompleteRun` on a terminal run, when dispatched, then `RunAlreadyCompleted` event appended and state unchanged; given run aggregate restarts, when `Aggregate.load/2` called, then correct terminal/non-terminal state restored; AC1 and AC2 tests green
-  - [ ] Test: `StartRun` → initial state `{:active, terminal?: false}`
-  - [ ] Test: `CompleteRun` on active run → `RunCompleted`, `terminal?: true`
-  - [ ] Test: `CompleteRun` on already-completed run → `RunAlreadyCompleted`, state unchanged
-  - [ ] Test: stream replay → correct terminal/non-terminal state
-  - [ ] Test: optimistic concurrency conflict → `{:error, :wrong_expected_version}`
+- [x] **TRD-009-TEST** Run aggregate test coverage | 4h | [verifies TRD-009] [depends: TRD-009] [satisfies REQ-004, REQ-020] | Validates: AC-004-1–AC-004-4 | Implementation AC: Given `CompleteRun` on a terminal run, when dispatched, then `RunAlreadyCompleted` event appended and state unchanged; given run aggregate restarts, when `Aggregate.load/2` called, then correct terminal/non-terminal state restored; AC1 and AC2 tests green
+  - [x] Test: `StartRun` → initial state `{:active, terminal?: false}`
+  - [x] Test: `CompleteRun` on active run → `RunCompleted`, `terminal?: true`
+  - [x] Test: `CompleteRun` on already-completed run → `RunAlreadyCompleted`, state unchanged
+  - [x] Test: stream replay → correct terminal/non-terminal state
+  - [x] Test: optimistic concurrency conflict → `{:error, :wrong_expected_version}`, fresh dispatch converges to `RunAlreadyCompleted` via bounded retry
 
 - [x] **TRD-008-TEST** Phase aggregate test coverage | 3h | [verifies TRD-008] [depends: TRD-008] [satisfies REQ-005, REQ-020] | Validates: AC-005-1–AC-005-3 | Implementation AC: Given two `CompletePhase` commands race, when the second append uses the wrong expected version, then append fails with concurrency conflict and the actor retries with the correct version
   - [x] Test: `StartPhase` → `PhaseStarted`, state transitions to active
