@@ -34,7 +34,7 @@ defmodule ForemanServer.Aggregate.Actor do
      - On conflict/error: version unchanged, returns `{:reply, {:error, reason}, old_state}`
   """
 
-  alias ForemanServer.{Aggregate, CommandRouter}
+  alias ForemanServer.{Aggregate, CommandRouter, Telemetry}
   alias EventStore.EventData
   alias ForemanServer.EventStore
 
@@ -72,6 +72,8 @@ defmodule ForemanServer.Aggregate.Actor do
       else
         Aggregate.load(aggregate_module, aggregate_id)
       end
+    Telemetry.aggregate_rehydrated(version)
+
 
     state = %{
       aggregate_module: aggregate_module,
@@ -130,17 +132,32 @@ defmodule ForemanServer.Aggregate.Actor do
           send(CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()})
 
           receive do
+            {:append_ok, ^ref, _event_count, append_latency_ms} ->
+              new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
+              new_version = state.version + 1
+
+              {:reply, {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: append_latency_ms}},
+               %{state | module_state: new_module_state, version: new_version}}
+
             {:append_ok, ^ref, _event_count} ->
               new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
               new_version = state.version + 1
-              {:reply, {:ok, to_string_keys(event_spec)},
+              {:reply, {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: 0}},
                %{state | module_state: new_module_state, version: new_version}}
 
+            {:error, ^ref, :duplicate_event, append_latency_ms} ->
+              {:reply, {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
+                        %{append_latency_ms: append_latency_ms}}, state}
+
             {:error, ^ref, :duplicate_event} ->
-              {:reply, {:ok, existing_event_spec(aggregate_id, event_id)}, state}
+              {:reply, {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
+                        %{append_latency_ms: 0}}, state}
+
+            {:error, ^ref, reason, append_latency_ms} ->
+              {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
 
             {:error, ^ref, reason} ->
-              {:reply, {:error, reason}, state}
+              {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: 0}}, state}
           end
 
         {:error, _reason} = error ->

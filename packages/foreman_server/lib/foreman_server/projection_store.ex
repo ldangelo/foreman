@@ -105,13 +105,41 @@ defmodule ForemanServer.ProjectionStore do
   defp apply_event_by_type(state, "ProjectRegistered", payload) do
     project_id = get(payload, :project_id)
     path = get(payload, :path)
-    if project_id, do: Map.put(state, project_id, %{project_id: project_id, path: path, status: "active", archived?: false}), else: state
+
+    if project_id do
+      Map.put(state, project_id, project_projection(payload, path))
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectUpdated", payload) do
+    project_id = get(payload, :project_id)
+
+    if project_id do
+      Map.update(state, project_id, project_projection(payload, nil), fn project ->
+        project
+        |> maybe_put(:path, get(payload, :path))
+        |> maybe_put(:status, get(payload, :status))
+        |> maybe_put(:default_branch, get(payload, :default_branch))
+        |> maybe_put(:health, get(payload, :health))
+        |> maybe_put(:name, get(payload, :name))
+        |> put_project_config(get(payload, :config, %{}))
+      end)
+    else
+      state
+    end
   end
 
   defp apply_event_by_type(state, "ProjectArchived", payload) do
     project_id = get(payload, :project_id)
+
     if project_id do
-      Map.update(state, project_id, %{status: "archived", archived?: true}, &%{&1 | status: "archived", archived?: true})
+      Map.update(state, project_id, %{status: "archived", archived?: true}, fn project ->
+        project
+        |> Map.put(:status, "archived")
+        |> Map.put(:archived?, true)
+      end)
     else
       state
     end
@@ -119,8 +147,13 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, "ProjectReactivated", payload) do
     project_id = get(payload, :project_id)
+
     if project_id do
-      Map.update(state, project_id, %{status: "active", archived?: false}, &%{&1 | status: "active", archived?: false})
+      Map.update(state, project_id, %{status: "active", archived?: false}, fn project ->
+        project
+        |> Map.put(:status, "active")
+        |> Map.put(:archived?, false)
+      end)
     else
       state
     end
@@ -132,9 +165,41 @@ defmodule ForemanServer.ProjectionStore do
   # Helpers
   # -------------------------------------------------------------------------
 
+  defp project_projection(payload, path) do
+    %{
+      project_id: get(payload, :project_id),
+      path: path,
+      status: get(payload, :status, "active"),
+      archived?: false,
+      default_branch: get(payload, :default_branch, "main"),
+      config: get(payload, :config, %{}),
+      health: get(payload, :health, %{ok: true}),
+      name: get(payload, :name)
+    }
+  end
+
+  defp put_project_config(project, config) do
+    Map.put(project, :config, shallow_merge(get(project, :config, %{}), config))
+  end
+
+  defp shallow_merge(left, right) when is_map(left) and is_map(right) do
+    Enum.reduce(right, left, fn {key, value}, acc -> Map.put(acc, key, value) end)
+  end
+
+  defp shallow_merge(_left, right) when is_map(right), do: right
+  defp shallow_merge(left, _right), do: left
+
+  defp maybe_put(project, _key, nil), do: project
+  defp maybe_put(project, key, value), do: Map.put(project, key, value)
+
+  # -------------------------------------------------------------------------
+  # Helpers
+  # -------------------------------------------------------------------------
+
   defp get(%{} = m, k), do: get(m, k, nil)
   defp get(%{} = m, k, default) when is_atom(k) do
     Map.get(m, k, Map.get(m, Atom.to_string(k), default))
   end
+
   defp get(%{} = m, k, default), do: Map.get(m, k, default)
 end

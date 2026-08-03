@@ -16,8 +16,7 @@ config :foreman_server, ForemanServerWeb.Endpoint,
   code_reloader: true
 
 config :foreman_server, ForemanServer.Overwatch,
-  enabled: true,
-  log: :debug
+  enabled: true
 
 config :foreman_server, ForemanServer.WorkerLauncher,
   enabled: true

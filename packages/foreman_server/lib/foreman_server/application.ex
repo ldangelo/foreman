@@ -12,18 +12,43 @@ defmodule ForemanServer.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      # EventStore must be started first (ProjectionStore subscribes to it).
-      ForemanServer.EventStore,
-      # ProjectionStore subscribes to EventStore and maintains read model.
-      ForemanServer.ProjectionStore,
-      # Aggregator starts the Registry and supervises Actor children.
-      ForemanServer.Aggregator,
-      # CommandRouter handles all append requests.
-      ForemanServer.CommandRouter
-    ]
+    children =
+      [
+        # PubSub backs LiveView debug subscriptions.
+        {Phoenix.PubSub, name: ForemanServer.PubSub},
+        # EventStore must be started first (ProjectionStore subscribes to it).
+        ForemanServer.EventStore,
+        # ProjectionStore subscribes to EventStore and maintains read model.
+        ForemanServer.ProjectionStore,
+        # Aggregator starts the Registry and supervises Actor children.
+        ForemanServer.Aggregator,
+        # CommandRouter handles all append requests.
+        ForemanServer.CommandRouter,
+        # Endpoint exposes dev-only debug LiveViews.
+        ForemanServerWeb.Endpoint
+      ] ++ maybe_overwatch_child()
 
     opts = [strategy: :one_for_one, name: __MODULE__]
     Supervisor.start_link(children, opts)
+  end
+
+  defp maybe_overwatch_child do
+    case Application.get_env(:foreman_server, ForemanServer.Overwatch, []) do
+      opts when is_list(opts) ->
+        if Keyword.get(opts, :enabled, false) do
+          [{ForemanServer.Overwatch, opts}]
+        else
+          []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  @impl true
+  def config_change(changed, _new, removed) do
+    ForemanServerWeb.Endpoint.config_change(changed, removed)
+    :ok
   end
 end
