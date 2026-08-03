@@ -73,6 +73,15 @@ defmodule ForemanServer.Aggregates.VcsOperation do
             terminal?: true
         }
 
+      "VcsOperationStarted" ->
+        %State{state | status: "started", operation_id: Aggregate.get(payload, :operation_id)}
+
+      "VcsOperationCompleted" ->
+        %State{state | status: "completed", terminal?: true, operation_id: Aggregate.get(payload, :operation_id)}
+
+      "VcsOperationFailed" ->
+        %State{state | status: "failed", terminal?: true, operation_id: Aggregate.get(payload, :operation_id)}
+
       "MergeBlocked" ->
         %State{
           state
@@ -117,6 +126,42 @@ defmodule ForemanServer.Aggregates.VcsOperation do
          stream_id: "vcs:#{operation_id}",
          event_type: event_type,
          payload: Map.put(payload, :operation_id, operation_id)
+       }}
+    end
+  end
+
+  def handle_command(_state, %{type: "vcs_operation.start", payload: payload}) do
+    with {:ok, operation_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :operation_id), :operation_id) do
+      {:ok,
+       %{
+         stream_id: "vcs_operation:#{operation_id}",
+         event_type: "VcsOperationStarted",
+         payload: payload
+       }}
+    end
+  end
+
+  def handle_command(_state, %{type: "vcs_operation.complete", payload: payload}) do
+    with {:ok, operation_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :operation_id), :operation_id) do
+      {:ok,
+       %{
+         stream_id: "vcs_operation:#{operation_id}",
+         event_type: "VcsOperationCompleted",
+         payload: payload
+       }}
+    end
+  end
+
+  def handle_command(_state, %{type: "vcs_operation.fail", payload: payload}) do
+    with {:ok, operation_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :operation_id), :operation_id) do
+      {:ok,
+       %{
+         stream_id: "vcs_operation:#{operation_id}",
+         event_type: "VcsOperationFailed",
+         payload: payload
        }}
     end
   end

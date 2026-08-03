@@ -431,7 +431,7 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp ensure_pr_gate_ok("run.pr.merge", run_id) do
     case ForemanServer.PrGate.check(run_id) do
-      {:ok, _status} -> :ok
+      :ok -> :ok
       {:error, :pr_not_acceptable} -> {:error, :pr_not_acceptable}
       {:error, :no_pr_association} -> {:error, :no_pr_association}
       _ -> :ok
