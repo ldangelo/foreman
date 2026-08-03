@@ -75,6 +75,10 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
   end
 
   test "load/2 raises when a required secret is missing from env file and process env" do
+    # Per-test env name: unique per run, so CI/operator environments
+    # cannot pre-set it and make the test fail spuriously.
+    missing_env = "FOREMAN_TEST_MISSING_SECRET_#{System.unique_integer([:positive])}"
+
     tmp_dir = Path.join(System.tmp_dir!(), "foreman-secrets-#{System.unique_integer([:positive])}")
     env_file = Path.join(tmp_dir, ".env")
 
@@ -92,9 +96,6 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
 
     on_exit(fn -> File.rm_rf(tmp_dir) end)
 
-    # FOREMAN_TEST_MISSING_SECRET is unique to this test, absent from the env file,
-    # and (per the contract) unset in the process environment. Marking it required
-    # forces `read_from_env_file/2` to raise — no global env mutation needed.
     state =
       Secrets.init(
         source: "env_file",
@@ -111,14 +112,14 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
             app: :foreman_server,
             key: ForemanServer.Repo,
             config_key: :database_password,
-            env: "FOREMAN_TEST_MISSING_SECRET",
-            secret_key: :foreman_test_missing_secret,
+            env: missing_env,
+            secret_key: :database_password,
             required: true
           ]
         ]
       )
 
-    assert_raise ArgumentError, ~r/FOREMAN_TEST_MISSING_SECRET/, fn ->
+    assert_raise ArgumentError, ~r/#{Regex.escape(missing_env)}/, fn ->
       Secrets.load([foreman_server: []], state)
     end
   end
