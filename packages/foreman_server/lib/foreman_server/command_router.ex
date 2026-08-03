@@ -144,7 +144,7 @@ defmodule ForemanServer.CommandRouter do
   defp aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
   defp aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
   defp aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
-  defp aggregate_module_for("vcs_operation:" <> _), do: ForemanServer.Aggregates.VcsOperation
+  defp aggregate_module_for("scheduler_intent:" <> _), do: ForemanServer.Aggregates.SchedulerIntent
   defp aggregate_module_for("migration:" <> _), do: ForemanServer.Aggregates.ImportMigration
   defp aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
 end

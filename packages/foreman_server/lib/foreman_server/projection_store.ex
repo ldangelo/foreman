@@ -95,6 +95,12 @@ defmodule ForemanServer.ProjectionStore do
   def list_runs do
     GenServer.call(__MODULE__, :list_runs)
   end
+
+  @doc "Return every projected scheduler intent."
+  @spec list_scheduler_intents() :: [map()]
+  def list_scheduler_intents do
+    GenServer.call(__MODULE__, :list_scheduler_intents)
+  end
   # -------------------------------------------------------------------------
 
   @impl true
@@ -167,6 +173,11 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, Map.values(state.runs), state}
   end
 
+  @impl true
+  def handle_call(:list_scheduler_intents, _from, state) do
+    {:reply, Map.values(state.scheduler_intents), state}
+  end
+
   # -------------------------------------------------------------------------
   # Projection logic
   # -------------------------------------------------------------------------
@@ -184,7 +195,7 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp initial_state do
-    %{projects: %{}, runs: %{}, pr_associations: %{}}
+    %{projects: %{}, runs: %{}, pr_associations: %{}, scheduler_intents: %{}}
   end
 
   defp apply_event(state, %RecordedEvent{} = recorded, now_ms_fun) do
@@ -414,11 +425,59 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
+  defp apply_event_by_type(state, "ScheduledFireRecorded", payload) do
+    intent_id = get(payload, :intent_id)
+
+    if valid_id?(intent_id) do
+      intent = %{
+        intent_id: intent_id,
+        status: "recorded",
+        recorded_at: payload_event_at_ms(payload),
+        run_id: get(payload, :run_id),
+        task_id: get(payload, :task_id),
+        scheduled_at: get(payload, :scheduled_at),
+        scheduled_for: get(payload, :scheduled_for),
+        payload: get(payload, :payload, %{})
+      }
+
+      put_state(state, state.projects, state.runs)
+      |> Map.put(:scheduler_intents, Map.put(state.scheduler_intents, intent_id, intent))
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "ScheduledFireConfirmed", payload) do
+    update_intent(state, payload, "confirmed")
+  end
+
+  defp apply_event_by_type(state, "ScheduledFireSkipped", payload) do
+    update_intent(state, payload, "skipped")
+  end
+
+  defp apply_event_by_type(state, "SchedulerIntentStale", payload) do
+    update_intent(state, payload, "stale")
+  end
+
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
     touch_run_for_payload(state, payload)
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state
+
+  defp update_intent(state, payload, status) do
+    intent_id = get(payload, :intent_id)
+
+    if valid_id?(intent_id) do
+      existing = Map.get(state.scheduler_intents, intent_id, %{})
+      merged = Map.merge(existing, %{status: status, intent_id: intent_id})
+
+      put_state(state, state.projects, state.runs)
+      |> Map.put(:scheduler_intents, Map.put(state.scheduler_intents, intent_id, merged))
+    else
+      state
+    end
+  end
 
   # -------------------------------------------------------------------------
   # Helpers
@@ -498,7 +557,8 @@ defmodule ForemanServer.ProjectionStore do
 
   defp put_state(state, projects, runs) do
     pr_associations = Map.get(state, :pr_associations, %{})
-    %{projects: projects, runs: runs, pr_associations: pr_associations}
+    scheduler_intents = Map.get(state, :scheduler_intents, %{})
+    %{projects: projects, runs: runs, pr_associations: pr_associations, scheduler_intents: scheduler_intents}
   end
 
   defp recorded_event_at_ms(%RecordedEvent{created_at: %DateTime{} = created_at}, _now_ms_fun) do

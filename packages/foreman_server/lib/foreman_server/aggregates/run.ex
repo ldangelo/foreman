@@ -158,7 +158,11 @@ defmodule ForemanServer.Aggregates.Run do
       "ToolCallFinished" ->
         put_worker(state, payload, "running")
 
-      _ ->
+
+      "RunRecoveryEvent" ->
+        # Recovery-scanner emits this on startup for stale runs. The recovery
+        # action sequence is owned by the Recovery aggregate; this event is
+        # observed here for ordering only and does not change Run state.
         state
     end
   end
@@ -345,6 +349,21 @@ defmodule ForemanServer.Aggregates.Run do
        }}
     end
   end
+
+  def handle_command(state, %{type: "run.recovery_event", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunRecoveryEvent",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put_new(:status, state.status)
+       }}
+    end
+  end
+
 
   def handle_command(_state, _command), do: :unhandled
 
