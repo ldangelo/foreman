@@ -75,6 +75,7 @@ defmodule ForemanServer.Inbox.SharedInbox do
           existing: existing
         }
 
+        notify(:deduped, deduped)
         {:ok, :deduped, deduped}
 
       :miss ->
@@ -86,7 +87,21 @@ defmodule ForemanServer.Inbox.SharedInbox do
         }
 
         DedupeTable.record(source_module, correlation_id, item)
+        notify(:started, item)
         {:ok, :started, item}
     end
+  end
+
+  # Route the inbox event to the running Poller (TRD-006). The Poller
+  # is supervised by ForemanServer.Application; if it is not running
+  # (eg. in a minimal test setup), the call is silently dropped.
+  defp notify(kind, event) do
+    alias ForemanServer.Inbox.Poller
+    if Process.whereis(Poller) do
+      GenServer.cast(Poller, {:inbox_event, event})
+    end
+
+    _ = kind
+    :ok
   end
 end

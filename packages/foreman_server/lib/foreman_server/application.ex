@@ -22,8 +22,11 @@ defmodule ForemanServer.Application do
         ForemanServer.EventStore,
         # ProjectionStore subscribes to EventStore and maintains read model.
         ForemanServer.ProjectionStore,
+        # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
+        ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
         ForemanServer.Aggregator,
+
         # CommandRouter handles all append requests.
         ForemanServer.CommandRouter,
         # Endpoint exposes dev-only debug LiveViews.
