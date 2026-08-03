@@ -25,6 +25,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch.Tracker
+  alias ForemanServer.CommandRouter
   alias ForemanServer.ProjectionStore
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
@@ -185,6 +186,138 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       new_pid = spawn_worker()
       :ok = Tracker.register(tracker, worker_id, run_id, new_pid)
       assert {:ok, 1} = Tracker.heartbeat(tracker, worker_id, run_id)
+    end
+  end
+
+  describe "S4 (TRD-011-TEST): worker restart → no duplicate work (command dedup)" do
+    test "restart preserves sequence, second generation starts from next sequence not seq=1" do
+      tracker = start_tracker()
+      worker_id = uuid()
+      run_id = uuid()
+
+      # Generation A: register + 2 heartbeats.
+      pid_a = spawn_worker()
+      :ok = Tracker.register(tracker, worker_id, run_id, pid_a)
+      assert {:ok, 0} = Tracker.heartbeat(tracker, worker_id, run_id)
+      assert {:ok, 1} = Tracker.heartbeat(tracker, worker_id, run_id)
+
+      # Generation A: dispatch a WorkerStarted event (the launch envelope).
+      assert :ok =
+               Tracker.dispatch_lifecycle(tracker, "WorkerStarted", %{
+                 worker_id: worker_id,
+                 run_id: run_id,
+                 session_id: "session-a",
+                 adapter: "fake",
+                 prompt_path: "/tmp/a"
+               })
+
+      # Sequence mirror advanced to 2 (heartbeats 0,1 + WorkerStarted=2).
+      assert Tracker.sequence(tracker, worker_id, run_id) == 2
+
+      # Generation A: pid exits. Tracker emits WorkerExited (seq=3) and
+      # preserves the sequence mirror.
+      Process.exit(pid_a, :kill)
+      Process.sleep(100)
+
+      assert Tracker.pid_for(tracker, worker_id, run_id) == nil
+      assert Tracker.sequence(tracker, worker_id, run_id) == 3
+
+      # Generation B: a NEW pid re-registers under the SAME (worker_id, run_id).
+      pid_b = spawn_worker()
+      :ok = Tracker.register(tracker, worker_id, run_id, pid_b)
+
+      # Generation B: dispatches a fresh WorkerStarted. Sequence mirror was 3,
+      # so this MUST allocate seq=4 — NOT seq=1. If restart dedup is broken,
+      # rehydrate would see a fresh stream and start over at seq=1, colliding
+      # on the events_pkey with the original WorkerStarted (seq=2).
+      assert :ok =
+               Tracker.dispatch_lifecycle(tracker, "WorkerStarted", %{
+                 worker_id: worker_id,
+                 run_id: run_id,
+                 session_id: "session-b",
+                 adapter: "fake",
+                 prompt_path: "/tmp/b"
+               })
+
+      assert Tracker.sequence(tracker, worker_id, run_id) == 4
+
+      # Stream has exactly: 2× WorkerHeartbeat + 1× WorkerStarted (gen A) +
+      # 1× WorkerExited + 1× WorkerStarted (gen B) = 5 events. No duplicates.
+      events = read_worker_events(worker_id, run_id)
+      assert length(events) == 5
+
+      types = Enum.map(events, & &1.event_type)
+      assert types == ~w(
+        WorkerHeartbeat
+        WorkerHeartbeat
+        WorkerStarted
+        WorkerExited
+        WorkerStarted
+      )
+
+      # Gen A's WorkerStarted and gen B's WorkerStarted each appear
+      # EXACTLY once — no duplicate work on restart.
+      assert count(events, "WorkerStarted") == 2
+      assert count(events, "WorkerHeartbeat") == 2
+      assert count(events, "WorkerExited") == 1
+    end
+
+    test "deterministic command_id rejects duplicate dispatch (events_pkey dedup)" do
+      # The dedup mechanism: command_id is deterministic in
+      # (worker_id, run_id, event_type, sequence). CommandRouter derives
+      # event_id from {aggregate_id, command_id}, and events_pkey rejects
+      # duplicates. So if a caller retries the SAME dispatch (e.g. after
+      # a transient append failure that did NOT advance the sequence
+      # mirror), the second attempt hits events_pkey and the stream
+      # still has exactly one event.
+      tracker = start_tracker()
+      worker_id = uuid()
+      run_id = uuid()
+      pid = spawn_worker()
+      :ok = Tracker.register(tracker, worker_id, run_id, pid)
+
+      assert :ok =
+               Tracker.dispatch_lifecycle(tracker, "WorkerStarted", %{
+                 worker_id: worker_id,
+                 run_id: run_id,
+                 session_id: "session-dup",
+                 adapter: "fake",
+                 prompt_path: "/tmp/dup"
+               })
+
+      assert Tracker.sequence(tracker, worker_id, run_id) == 0
+
+      # Direct insert of the SAME command_id is short-circuited by the Actor's
+      # duplicate_in_stream? check (event_id derived from {aggregate_id,
+      # command_id}). The second dispatch returns the existing event_spec
+      # without producing a new append.
+      aggregate_id = Tracker.stream_id(worker_id, run_id)
+
+      command_id = "#{run_id}:#{worker_id}:WorkerStarted:0"
+
+      assert {:ok, existing} =
+               CommandRouter.dispatch(%{
+                 aggregate_id: aggregate_id,
+                 type: "worker.record",
+                 payload: %{
+                   "event_type" => "WorkerStarted",
+                   "worker_id" => worker_id,
+                   "run_id" => run_id,
+                   "sequence" => 0,
+                   "session_id" => "session-dup",
+                   "adapter" => "fake",
+                   "prompt_path" => "/tmp/dup"
+                 },
+                 command_id: command_id
+               })
+
+      # The returned spec is the EXISTING event — same event_id, no new append.
+      assert is_map(existing)
+      assert existing["event_type"] == "WorkerStarted"
+
+      # Stream still has exactly one WorkerStarted.
+      events = read_worker_events(worker_id, run_id)
+      assert count(events, "WorkerStarted") == 1
     end
   end
 end
