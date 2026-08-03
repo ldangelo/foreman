@@ -78,8 +78,17 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:pr_association, run_id})
   end
 
-  # -------------------------------------------------------------------------
-  # GenServer callbacks
+  @doc "Return the projected state for a project, or nil if not found."
+  @spec project_projection(String.t()) :: map() | nil
+  def project_projection(project_id) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:project_projection, project_id})
+  end
+
+  @doc "Return every projected project."
+  @spec list_projects() :: [map()]
+  def list_projects do
+    GenServer.call(__MODULE__, :list_projects)
+  end
   # -------------------------------------------------------------------------
 
   @impl true
@@ -129,13 +138,22 @@ defmodule ForemanServer.ProjectionStore do
   def handle_call({:run_projection, run_id}, _from, state) do
     {:reply, Map.get(state.runs, run_id), state}
   end
-
   @impl true
   def handle_call({:pr_association, run_id}, _from, state) do
     case Map.get(state.pr_associations, run_id) do
       nil -> {:reply, {:error, :not_found}, state}
       assoc -> {:reply, {:ok, assoc}, state}
     end
+  end
+
+  @impl true
+  def handle_call({:project_projection, project_id}, _from, state) do
+    {:reply, Map.get(state.projects, project_id), state}
+  end
+
+  @impl true
+  def handle_call(:list_projects, _from, state) do
+    {:reply, Map.values(state.projects), state}
   end
 
   # -------------------------------------------------------------------------
