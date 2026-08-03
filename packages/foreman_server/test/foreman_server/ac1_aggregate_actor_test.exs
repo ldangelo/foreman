@@ -172,7 +172,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted"},
+        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted", session_id: "sess-#{id}", adapter: "AC1.TestAdapter", prompt_path: "/tmp/prompt-#{id}"},
         aggregate_id: agg_stream
       })
 
@@ -320,7 +320,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted"},
+        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted", session_id: "sess-#{id}", adapter: "AC1.TestAdapter", prompt_path: "/tmp/prompt-#{id}"},
         aggregate_id: agg_stream
       })
 

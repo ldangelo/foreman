@@ -156,6 +156,7 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+
   @impl true
   def handle_command(state, %{type: "run.start", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),

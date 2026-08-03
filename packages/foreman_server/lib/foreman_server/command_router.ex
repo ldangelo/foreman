@@ -142,6 +142,7 @@ defmodule ForemanServer.CommandRouter do
   defp aggregate_module_for("run:" <> _), do: ForemanServer.Aggregates.Run
   defp aggregate_module_for("worker:" <> _), do: ForemanServer.Aggregates.Worker
   defp aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
+  defp aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
   defp aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
-  defp aggregate_module_for(aggregate_id), do: raise("Unknown aggregate_id prefix: #{aggregate_id}")
 end
+

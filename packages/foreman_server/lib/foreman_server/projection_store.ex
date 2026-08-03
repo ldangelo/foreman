@@ -315,11 +315,37 @@ defmodule ForemanServer.ProjectionStore do
     touch_run_for_payload(state, payload)
   end
 
+  defp apply_event_by_type(state, "WorkerUnresponsive", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      worker_id = get(payload, :worker_id)
+      sequence = get(payload, :sequence)
+
+      workers =
+        Map.put(
+          Map.get(run, :workers, %{}),
+          worker_id,
+          %{status: "unresponsive", sequence: sequence}
+        )
+
+      run
+      |> Map.put(:status, "needs_recovery")
+      |> Map.put(:needs_recovery, true)
+      |> Map.put(:workers, workers)
+    end)
+  end
+
+  defp apply_event_by_type(state, "WorkerRecoveryRequired", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.put(run, :recovery_observation_at_ms, payload_event_at_ms(payload))
+    end)
+  end
+
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
     touch_run_for_payload(state, payload)
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state
+
 
   # -------------------------------------------------------------------------
   # Helpers
