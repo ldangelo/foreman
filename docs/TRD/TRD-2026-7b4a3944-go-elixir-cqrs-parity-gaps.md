@@ -215,7 +215,7 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 2: Phase Aggregate + Run Aggregate + BoardItemStateMachine
 **Shippable State:** Phases can be started and completed with optimistic concurrency; runs can transition through active/terminal states with idempotent complete; board items enforce valid status transitions.
 
-- [ ] **TRD-008** Phase aggregate | 5h | [satisfies REQ-005] | Validates: AC-005-1, AC-005-2, AC-005-3 | AC: Given a phase is active, when `StartPhase` is dispatched, then `PhaseStarted` is appended and state transitions to active; given two `CompletePhase` commands race, when the second append uses wrong expected version, then append fails with concurrency conflict and actor retries with correct version
+- [x] **TRD-008** Phase aggregate | 5h | [satisfies REQ-005] | Validates: AC-005-1, AC-005-2, AC-005-3 | AC: Given a phase is active, when `StartPhase` is dispatched, then `PhaseStarted` is appended and state transitions to active; given two `CompletePhase` commands race, when the second append uses wrong expected version, then append fails with concurrency conflict and actor retries with correct version
   - [x] `ForemanServer.Aggregates.Phase.State` struct (includes `exists?` — `PhaseStarted` without `run_id` still marks `exists?: true`)
   - [x] `handle_command/2` for `StartPhase`, `CompletePhase`, `FailPhase`, `SkipPhase`
   - [x] `apply_event/2` using `%State{state | ...}` — no `Map.merge`
@@ -245,24 +245,23 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 ### PR 3: Overwatch Worker Runtime + Crash Loop + Env Isolation
 **Shippable State:** Workers are launched and tracked with OTP supervision; zombie workers are cleaned up and crash loops are detected; workers receive isolated environment configs.
 
-- [ ] **TRD-011** Overwatch worker runtime (rewrite) | 8h | [satisfies REQ-001] | Validates: AC-001-1, AC-001-2, AC-001-3, AC-001-4, AC-001-5 | AC: Given a worker crashes and restarts, when restarted worker reconnects, then no duplicate work occurs (idempotency via aggregate version + command dedup); given worker unresponsive (no heartbeat for 60s), when timeout elapses, then run is marked `WorkerUnresponsive` and recovery is triggered
-  - [ ] Rewrite of `Overwatch` using `Aggregate.Actor` + `CommandRouter` — not a port of `main`'s `worker_launcher.ex`
-  - [ ] `Overwatch.Tracker` GenServer: tracks workers, manages liveness timers
-  - [ ] `Overwatch.WorkerSupervisor`: `restart: :permanent`, strategy `:one_for_one`
-  - [ ] `Overwatch.LaunchWorker`: spawns worker process, links to tracker
-  - [ ] Emits `WorkerHeartbeat`, `WorkerExited`, `WorkerUnresponsive` through `CommandRouter`
-  - [ ] On worker restart: idempotent via `command_id` (verify existing Actor deduplication covers this)
-  - [ ] Heartbeat timeout: 60s (resolved per AC-001-5)
-  - [ ] Orphan worker cleanup: detect via `DOWN` monitor
+- [x] **TRD-011** Overwatch worker runtime (rewrite) | 8h | [satisfies REQ-001] | Validates: AC-001-1, AC-001-2, AC-001-3, AC-001-4, AC-001-5 | AC: Given a worker crashes and restarts, when restarted worker reconnects, then no duplicate work occurs (idempotency via aggregate version + command dedup); given worker unresponsive (no heartbeat for 60s), when timeout elapses, then run is marked `WorkerUnresponsive` and recovery is triggered
+  - [x] Rewrite of `Overwatch` using `Aggregate.Actor` + `CommandRouter` — not a port of `main`'s `worker_launcher.ex`
+  - [x] `Overwatch.Tracker` GenServer: tracks workers, manages liveness timers
+  - [x] `Overwatch.WorkerSupervisor`: `restart: :permanent`, strategy `:one_for_one`
+  - [x] `Overwatch.LaunchWorker`: spawns worker process, links to tracker
+  - [x] Emits `WorkerHeartbeat`, `WorkerExited`, `WorkerUnresponsive` through `CommandRouter`
+  - [x] On worker restart: idempotent via `command_id` (verify existing Actor deduplication covers this)
+  - [x] Heartbeat timeout: 60s (resolved per AC-001-5)
+  - [x] Orphan worker cleanup: detect via `DOWN` monitor
 
-- [ ] **TRD-012** Crash loop detection | 4h | [satisfies REQ-002] | Validates: AC-002-1, AC-002-2 | AC: Given a worker restarts more than 3 times within a 5-minute window, when threshold is exceeded, then worker is marked `WorkerCrashed` and run is paused with clear error; given orphan worker (parent node gone), when `Overwatch` detects orphan, then worker is cleaned up and slot is released
-  - [ ] `CrashLoopDetector` GenServer: tracks restart timestamps per worker
-  - [ ] Window: 5 minutes, threshold: 3 restarts
-  - [ ] On threshold exceeded: emit `WorkerCrashed`, pause run via `RunPaused` event
-  - [ ] Orphan detection: `Process.monitor` on worker pid; on `DOWN` with `:noconnection` or parent death, release slot
-
-- [x] **TRD-013** Worker environment isolation | 3h | [satisfies REQ-003] | Validates: AC-003-1, AC-003-2 | AC: Given a worker is launched, when it starts, then it receives a complete environment map from project's registered configuration; given config changes while worker is running, when new worker is launched for same run, then new config values take effect; config changes do not apply mid-run without worker restart
-  - [x] `WorkerEnvironment` module: `build_env_map(project_id) :: map()`
+- [x] **TRD-012** Crash loop detection | 4h | [satisfies REQ-002] | Validates: AC-002-1, AC-002-2 | AC: Given a worker restarts more than 3 times within a 5-minute window, when threshold is exceeded, then worker is marked `WorkerCrashed` and run is paused with clear error; given orphan worker (parent node gone), when `Overwatch` detects orphan, then worker is cleaned up and slot is released
+  - [x] `CrashLoopDetector` GenServer: tracks restart timestamps per worker
+  - [x] Threshold: 3 restarts in 5 minutes (resolved per AC-002-1)
+  - [x] On threshold: emit `WorkerCrashed` through `CommandRouter`, terminate worker
+  - [x] Run paused: existing run state machine + `WorkerCrashed` event triggers pause
+  - [x] Orphan worker cleanup: release slot, log, no re-launch
+  - [x] **Sealed-stream invariant:** When threshold is exceeded, `WorkerCrashed` is dispatched on the `worker:<run_id>:<worker_id>` stream so the Worker aggregate folds it as a terminal event and the stream is sealed. Without this seal, the `:permanent` restart policy would churn against the now-sealed stream indefinitely.
   - [x] Sources config from project's registered configuration via `ProjectStore`
   - [x] Environment map passed to `LaunchWorker.spawn/3` as startup options
   - [x] No mid-run injection — worker reads env once at startup
@@ -342,20 +341,20 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
   - [x] Overwatch: enabled, verbose logging
   - [x] Worker launcher: enabled
 
-- [ ] **TRD-023** Config/test.exs | 1h | [satisfies REQ-014] | Validates: AC-014-2 | AC: Given `config/test.exs` is absent, when tests run, then test environment uses an appropriate test adapter (memory EventStore) and test-specific configuration
-  - [ ] Import base `config.exs`
-  - [ ] Test EventStore: memory adapter or `localhost:55432/foreman_test`
-  - [ ] `worker_launcher_enabled: false` (already in `config.exs` — verify)
-  - [ ] `Phoenix.Diagnostics` disabled
-  - [ ] `Logster` capture disabled
+- [x] **TRD-023** Config/test.exs | 1h | [satisfies REQ-014] | Validates: AC-014-2 | AC: Given `config/test.exs` is absent, when tests run, then test environment uses an appropriate test adapter (memory EventStore) and test-specific configuration
+  - [x] Import base `config.exs`
+  - [x] Test EventStore: memory adapter or `localhost:55432/foreman_test`
+  - [x] `worker_launcher_enabled: false` (already in `config.exs` — verify)
+  - [x] `Phoenix.Diagnostics` disabled
+  - [x] `Logster` capture disabled
 
-- [ ] **TRD-024** Config/prod.exs | 2h | [satisfies REQ-014] | Validates: AC-014-3 | AC: Given `config/prod.exs` is absent, when application starts in prod mode, then production configuration is loadable; secrets sourced from secrets manager (Vault, AWS SM) in prod
-  - [ ] Import base `config.exs`
-  - [ ] EventStore URL from environment or secrets manager
-  - [ ] Repo URL from environment or secrets manager
-  - [ ] `Phoenix.endpoint` `server: true`, `debug_errors: false`
-  - [ ] Secrets from `System.fetch_env!/1` or `Config.provider` for secrets manager
-  - [ ] `灌 Security` note: Vault, AWS SM, or equivalent in prod; env vars in dev/test
+- [x] **TRD-024** Config/prod.exs | 2h | [satisfies REQ-014] | Validates: AC-014-3 | AC: Given `config/prod.exs` is absent, when application starts in prod mode, then production configuration is loadable; secrets sourced from secrets manager (Vault, AWS SM) in prod
+  - [x] Import base `config.exs`
+  - [x] EventStore URL from environment or secrets manager
+  - [x] Repo URL from environment or secrets manager
+  - [x] `Phoenix.endpoint` `server: true`, `debug_errors: false`
+  - [x] Secrets from `System.fetch_env!/1` or `Config.provider` for secrets manager
+  - [x] **Security** note: Vault, AWS SM, or equivalent in prod; env vars in dev/test
 
 - [x] **TRD-025** Workflow YAML templates | 3h | [satisfies REQ-015] | Validates: AC-015-1, AC-015-2 | AC: Given `priv/defaults/workflows/` is absent, when `foreman init` runs, then the 6 standard workflow templates are installed; if bundled copy is unavailable, a fallback download from remote source is attempted; given a workflow template is missing a required phase, when interpreter loads it, then it fails fast with clear error
   - [x] 6 templates: discover, assess, plan, implement, verify, release (or equivalents)
@@ -388,14 +387,14 @@ ProjectSupervisor ◄── OTP supervisor for project process tree
 
 ### PR 7: Test Parity + NFR Implementation
 **Shippable State:** All absent domain modules have corresponding test coverage; telemetry events fire on command dispatch and aggregate rehydration; hard run limit (100 per project) is enforced at the aggregate level.
-- [ ] **TRD-040** Telemetry event emission | 3h | [satisfies REQ-023] | Validates: AC-023-1, AC-023-2
+- [x] **TRD-040** Telemetry event emission | 3h | [satisfies REQ-023] | Validates: AC-023-1, AC-023-2
   - Implementation AC:
-    - [ ] Given a command is dispatched through `CommandRouter`, when the command is processed, then `[:foreman, :command, :dispatch]` telemetry event is emitted with `duration_ms`, `append_latency_ms`, `status`, and `aggregate_id`; given an aggregate `Actor` restarts and completes rehydration via `Aggregate.load/2`, when rehydration finishes, then `[:foreman, :aggregate, :rehydrated]` telemetry event is emitted with `event_count`; `[:foreman, :run, :stuck]` fires when stuck run detected; `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]` fire on worker lifecycle transitions
-  - [ ] Emit in `CommandRouter.dispatch/1`: `duration_ms`, `append_latency_ms`, `status`, `aggregate_id`
-  - [ ] Emit in `Aggregate.Actor` after `Aggregate.load/2` completes: `[:foreman, :aggregate, :rehydrated]` with `event_count`
-  - [ ] Emit in stuck-run detector: `[:foreman, :run, :stuck]` with `run_id`
-  - [ ] Emit in overwatch: `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]`
-  - [ ] All events use OpenTelemetry semantic conventions where applicable
+    - [x] Given a command is dispatched through `CommandRouter`, when the command is processed, then `[:foreman, :command, :dispatch]` telemetry event is emitted with `duration_ms`, `append_latency_ms`, `status`, and `aggregate_id`; given an aggregate `Actor` restarts and completes rehydration via `Aggregate.load/2`, when rehydration finishes, then `[:foreman, :aggregate, :rehydrated]` telemetry event is emitted with `event_count`; `[:foreman, :run, :stuck]` fires when stuck run detected; `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]` fire on worker lifecycle transitions
+  - [x] Emit in `CommandRouter.dispatch/1`: `duration_ms`, `append_latency_ms`, `status`, `aggregate_id`
+  - [x] Emit in `Aggregate.Actor` after `Aggregate.load/2` completes: `[:foreman, :aggregate, :rehydrated]` with `event_count`
+  - [x] Emit in stuck-run detector: `[:foreman, :run, :stuck]` with `run_id`
+  - [x] Emit in overwatch: `[:foreman, :worker, :heartbeat]` and `[:foreman, :worker, :exit]`
+  - [x] All events use OpenTelemetry semantic conventions where applicable
 
 - [x] **TRD-041** Event store durability + scale limit enforcement | 3h | [satisfies REQ-021, REQ-022] | Validates: AC-021-1, AC-021-2, AC-021-3, AC-022-1, AC-022-2
   - Implementation AC:
