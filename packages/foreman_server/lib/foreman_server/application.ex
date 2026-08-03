@@ -16,6 +16,8 @@ defmodule ForemanServer.Application do
       [
         # PubSub backs LiveView debug subscriptions.
         {Phoenix.PubSub, name: ForemanServer.PubSub},
+        # Phoenix Presence tracks live aggregate actors for debug pages.
+        ForemanServerWeb.Presence,
         # EventStore must be started first (ProjectionStore subscribes to it).
         ForemanServer.EventStore,
         # ProjectionStore subscribes to EventStore and maintains read model.

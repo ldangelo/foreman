@@ -15,6 +15,9 @@ defmodule ForemanServerWeb.Router do
       pipe_through :browser
 
       live "/", DebugDashboardLive, :index
+      live "/runs", DebugDashboardLive, :runs
+      live "/phases", DebugDashboardLive, :phases
+      live "/workers", DebugDashboardLive, :workers
       live "/runs/:run_id", RunDebugLive, :show
       live "/phases/:run_id/:phase_id", PhaseDebugLive, :show
       live "/workers/:run_id/:worker_id", WorkerDebugLive, :show

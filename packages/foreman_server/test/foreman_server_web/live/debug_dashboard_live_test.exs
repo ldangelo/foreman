@@ -1,16 +1,61 @@
 defmodule ForemanServerWeb.DebugDashboardLiveTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   import Phoenix.LiveViewTest, only: [rendered_to_string: 1]
 
   test "dashboard renders without crashing" do
     html =
       rendered_to_string(
-        ForemanServerWeb.DebugDashboardLive.render(%{runs: [], phases: [], workers: []})
+        ForemanServerWeb.DebugDashboardLive.render(%{
+          section: nil,
+          page_title: "Debug dashboard",
+          runs: [],
+          phases: [],
+          workers: []
+        })
       )
 
     assert html =~ "Debug dashboard"
     assert html =~ "No run actors are currently loaded."
+  end
+
+  test "section filtering renders only the chosen section" do
+    runs_html =
+      rendered_to_string(
+        ForemanServerWeb.DebugDashboardLive.render(%{
+          section: :runs,
+          page_title: "Debug · Runs",
+          runs: [],
+          phases: [],
+          workers: []
+        })
+      )
+
+    assert runs_html =~ "Debug · Runs"
+    assert runs_html =~ "No run actors are currently loaded."
+    refute runs_html =~ "<h2>Phases</h2>"
+    refute runs_html =~ "<h2>Workers</h2>"
+  end
+
+  test "Presence.update surfaces a presence_diff within 1 second of subscribe" do
+    aggregate_id = "presence-update-test-#{System.unique_integer([:positive])}"
+
+    ForemanServerWeb.Presence.track(self(), "debug:aggregates", aggregate_id, %{version: 1})
+    Phoenix.PubSub.subscribe(ForemanServer.PubSub, "debug:aggregates")
+
+    ForemanServerWeb.Presence.update(self(), "debug:aggregates", aggregate_id, fn _meta ->
+      %{version: 2}
+    end)
+
+    receive do
+      %Phoenix.Socket.Broadcast{event: "presence_diff"} = _ -> :ok
+    after
+      1000 ->
+        flunk("presence_diff not delivered within 1 second")
+    end
+
+    %{^aggregate_id => %{metas: [%{version: 2}]}} =
+      ForemanServerWeb.Presence.list("debug:aggregates")
   end
 
   test "run, phase, and worker pages render state snapshots" do

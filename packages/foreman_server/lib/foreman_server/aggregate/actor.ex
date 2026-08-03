@@ -74,6 +74,8 @@ defmodule ForemanServer.Aggregate.Actor do
       end
     Telemetry.aggregate_rehydrated(version)
 
+    Phoenix.PubSub.broadcast(ForemanServer.PubSub, "debug:aggregates", {:actor_loaded, aggregate_id})
+    track_presence(aggregate_id, aggregate_module, version)
 
     state = %{
       aggregate_module: aggregate_module,
@@ -85,6 +87,23 @@ defmodule ForemanServer.Aggregate.Actor do
     {:ok, state}
   end
 
+  defp track_presence(aggregate_id, aggregate_module, version) do
+    ForemanServerWeb.Presence.track(self(), "debug:aggregates", aggregate_id, %{
+      aggregate_id: aggregate_id,
+      module: inspect(aggregate_module),
+      version: version
+    })
+  end
+
+  defp update_presence(aggregate_id, aggregate_module, version) do
+    ForemanServerWeb.Presence.update(self(), "debug:aggregates", aggregate_id, fn _meta ->
+      %{
+        aggregate_id: aggregate_id,
+        module: inspect(aggregate_module),
+        version: version
+      }
+    end)
+  end
   @impl true
   def handle_call(:get_state, _from, state) do
     {:reply, state.module_state, state}
@@ -135,6 +154,7 @@ defmodule ForemanServer.Aggregate.Actor do
             {:append_ok, ^ref, _event_count, append_latency_ms} ->
               new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
               new_version = state.version + 1
+              update_presence(aggregate_id, aggregate_module, new_version)
 
               {:reply, {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: append_latency_ms}},
                %{state | module_state: new_module_state, version: new_version}}
@@ -142,9 +162,9 @@ defmodule ForemanServer.Aggregate.Actor do
             {:append_ok, ^ref, _event_count} ->
               new_module_state = aggregate_module.apply_event(state.module_state, event_spec)
               new_version = state.version + 1
+              update_presence(aggregate_id, aggregate_module, new_version)
               {:reply, {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: 0}},
                %{state | module_state: new_module_state, version: new_version}}
-
             {:error, ^ref, :duplicate_event, append_latency_ms} ->
               {:reply, {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
                         %{append_latency_ms: append_latency_ms}}, state}

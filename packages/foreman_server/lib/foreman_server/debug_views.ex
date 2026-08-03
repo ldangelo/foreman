@@ -51,10 +51,24 @@ defmodule ForemanServerWeb.DebugDashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    section =
+      case socket.assigns.live_action do
+        :runs -> :runs
+        :phases -> :phases
+        :workers -> :workers
+        _ -> nil
+      end
+
+    socket =
+      socket
+      |> assign(:section, section)
+      |> assign(:page_title, page_title(section))
+
     if connected?(socket) do
       Phoenix.PubSub.subscribe(ForemanServer.PubSub, "runs")
       Phoenix.PubSub.subscribe(ForemanServer.PubSub, "phases")
       Phoenix.PubSub.subscribe(ForemanServer.PubSub, "workers")
+      Phoenix.PubSub.subscribe(ForemanServer.PubSub, "debug:aggregates")
       :timer.send_interval(@refresh_interval, :refresh)
     end
 
@@ -67,16 +81,20 @@ defmodule ForemanServerWeb.DebugDashboardLive do
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
 
+  def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
+    {:noreply, refresh(socket)}
+  end
+
   def handle_info(_message, socket), do: {:noreply, refresh(socket)}
 
   @impl true
   def render(assigns) do
     ~H"""
     <div class="debug-dashboard">
-      <h1>Debug dashboard</h1>
+      <h1>{@page_title}</h1>
       <button type="button" phx-click="refresh">Refresh</button>
 
-      <section>
+      <section :if={@section in [nil, :runs]}>
         <h2>Runs</h2>
         <ul>
           <li :for={run <- @runs}>
@@ -87,7 +105,7 @@ defmodule ForemanServerWeb.DebugDashboardLive do
         </ul>
       </section>
 
-      <section>
+      <section :if={@section in [nil, :phases]}>
         <h2>Phases</h2>
         <ul>
           <li :for={phase <- @phases}>
@@ -98,7 +116,7 @@ defmodule ForemanServerWeb.DebugDashboardLive do
         </ul>
       </section>
 
-      <section>
+      <section :if={@section in [nil, :workers]}>
         <h2>Workers</h2>
         <ul>
           <li :for={worker <- @workers}>
@@ -119,6 +137,11 @@ defmodule ForemanServerWeb.DebugDashboardLive do
       workers: DebugViews.list_workers()
     )
   end
+
+  defp page_title(nil), do: "Debug dashboard"
+  defp page_title(:runs), do: "Debug · Runs"
+  defp page_title(:phases), do: "Debug · Phases"
+  defp page_title(:workers), do: "Debug · Workers"
 end
 
 defmodule ForemanServerWeb.RunDebugLive do
