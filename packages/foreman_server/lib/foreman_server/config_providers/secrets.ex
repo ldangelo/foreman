@@ -200,7 +200,9 @@ defmodule ForemanServer.ConfigProviders.Secrets do
     end
   end
   defp missing_secret_message(env_name, env_file) do
+    "Missing required secret: #{env_name} (checked env file: #{env_file})"
   end
+
 
   defp default_env_file do
     release_root = System.get_env("RELEASE_ROOT") || File.cwd!()

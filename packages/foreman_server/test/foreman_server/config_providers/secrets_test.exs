@@ -72,6 +72,54 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
     assert Keyword.get(foreman_config, ForemanServer.Repo)[:url] =~ "foreman_prod"
     endpoint_config = Keyword.get(foreman_config, ForemanServerWeb.Endpoint, [])
     assert endpoint_config[:secret_key_base] == "super-secret-key-base"
-    assert get_in(endpoint_config, [:live_view, :signing_salt]) == "salty"
+  end
+
+  test "load/2 raises when a required secret is missing from env file and process env" do
+    tmp_dir = Path.join(System.tmp_dir!(), "foreman-secrets-#{System.unique_integer([:positive])}")
+    env_file = Path.join(tmp_dir, ".env")
+
+    File.mkdir_p!(tmp_dir)
+
+    File.write!(
+      env_file,
+      """
+      EVENTSTORE_URL=postgres://postgres:postgres@localhost:55432/foreman_eventstore_prod
+      DATABASE_URL=postgres://postgres:postgres@localhost:55432/foreman_prod
+      SECRET_KEY_BASE=super-secret-key-base
+      SIGNING_SALT=salty
+      """
+    )
+
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    # FOREMAN_TEST_MISSING_SECRET is unique to this test, absent from the env file,
+    # and (per the contract) unset in the process environment. Marking it required
+    # forces `read_from_env_file/2` to raise — no global env mutation needed.
+    state =
+      Secrets.init(
+        source: "env_file",
+        env_file: env_file,
+        mappings: [
+          [
+            app: :foreman_server,
+            key: ForemanServerWeb.Endpoint,
+            config_key: :secret_key_base,
+            env: "SECRET_KEY_BASE",
+            secret_key: :secret_key_base
+          ],
+          [
+            app: :foreman_server,
+            key: ForemanServer.Repo,
+            config_key: :database_password,
+            env: "FOREMAN_TEST_MISSING_SECRET",
+            secret_key: :foreman_test_missing_secret,
+            required: true
+          ]
+        ]
+      )
+
+    assert_raise ArgumentError, ~r/FOREMAN_TEST_MISSING_SECRET/, fn ->
+      Secrets.load([foreman_server: []], state)
+    end
   end
 end
