@@ -40,3 +40,6 @@
 
 # macOS quarantine artifacts
 .Compatibility*
+
+# bv (beads viewer) local config and caches
+.bv/
