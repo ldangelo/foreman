@@ -1,26 +1,32 @@
 defmodule ForemanServer.ConfigProviders.Secrets do
   @moduledoc """
-  Release `Config.Provider` for loading production secrets before the
-  application starts.
+  Release `Config.Provider` that sources secrets from the 1Password CLI
+  or a release-local `.env` file before the application starts.
+  Configured in `config/prod.exs` as `:prod_secret_provider`.
 
   Source resolution (controlled by `FOREMAN_SERVER_SECRET_SOURCE`,
   default `"auto"`):
 
-    * `:auto`     — uses 1Password CLI if available, else falls back to a
-      release-local `.env` file.
+    * `:auto`        — 1Password CLI if available, else release-local `.env`.
     * `:op` / `:"1password"` — 1Password CLI only.
-    * `:env_file` — release-local `.env` only.
+    * `:env_file`    — release-local `.env` only.
 
-  ## Security note (TRD-024)
+  ## TRD policy note (TRD-024)
 
-  This provider covers development, test, and single-node prod releases that
-  have an operator-managed 1Password vault or a checked-in-secure release
-  bundle. For multi-node prod, prefer Vault, AWS Secrets Manager, or an
-  equivalent centralized secrets manager — these are NOT yet wired into this
-  provider and a `:vault` / `:aws_sm` source can be added without changing
-  consumer code (it would resolve via the same `init/1` + `load/2` contract).
-  In dev and test, plain env vars (and the test-only env_file fixture used
-  by `secrets_test.exs`) are sufficient.
+  The slice TRD ("Quality Requirements → Security") states:
+
+    > Secrets in prod: `Vault`, `AWS Secrets Manager`, or equivalent.
+    > Env vars only in dev/test.
+
+  Today this provider implements only the dev/test path (env vars via
+  release-local `.env` or the `op` CLI). It is currently wired into
+  `config/prod.exs` as the prod provider.
+
+  Centralized-secrets-manager integration (Vault, AWS Secrets Manager,
+  or equivalent) is not implemented; this provider has no `:vault` /
+  `:aws_sm` source today.
+
+
   """
 
   @behaviour Config.Provider
@@ -102,7 +108,8 @@ defmodule ForemanServer.ConfigProviders.Secrets do
     end
   end
 
-  defp resolve_source(source, _mappings) when source in [:op, "op", :one_password, "one_password"] do
+  defp resolve_source(source, _mappings)
+       when source in [:op, "op", :one_password, "one_password"] do
     if op_available?() do
       :op
     else
@@ -166,8 +173,11 @@ defmodule ForemanServer.ConfigProviders.Secrets do
           end
         end)
 
-      {:error, :enoent} -> %{}
-      {:error, reason} -> raise File.Error, reason: reason, action: "read env file", path: path
+      {:error, :enoent} ->
+        %{}
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "read env file", path: path
     end
   end
 
@@ -194,16 +204,19 @@ defmodule ForemanServer.ConfigProviders.Secrets do
   defp strip_quotes(value) do
     if String.length(value) >= 2 do
       case {String.first(value), String.last(value)} do
-        {quote, quote} when quote in ["\"", "'"] -> String.slice(value, 1, String.length(value) - 2)
-        _ -> value
+        {quote, quote} when quote in ["\"", "'"] ->
+          String.slice(value, 1, String.length(value) - 2)
+
+        _ ->
+          value
       end
     else
       value
     end
   end
+
   defp put_if_present(keyword, _key, nil), do: keyword
   defp put_if_present(keyword, key, value), do: Keyword.put(keyword, key, value)
-
 
   defp mapping_override(mapping, value) do
     app = Keyword.fetch!(mapping, :app)
@@ -218,10 +231,10 @@ defmodule ForemanServer.ConfigProviders.Secrets do
         [{app, [{key, [{nested_key, [{config_key, value}]}]}]}]
     end
   end
+
   defp missing_secret_message(env_name, env_file) do
     "Missing required secret: #{env_name} (checked env file: #{env_file})"
   end
-
 
   defp default_env_file do
     release_root = System.get_env("RELEASE_ROOT") || File.cwd!()
