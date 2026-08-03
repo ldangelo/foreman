@@ -51,9 +51,11 @@ defmodule ForemanServer.Inbox.SharedInbox do
           | {:error, :no_correlation_id}
           | {:error, {:unknown_source, module()}}
   def ingest(source_module, payload) when is_atom(source_module) and is_map(payload) do
+    _ = Code.ensure_loaded(source_module)
+
     cond do
       not function_exported?(source_module, :correlation_id, 1) ->
-        {:error, {:unknown_source, source_module}}
+         {:error, {:unknown_source, source_module}}
 
       true ->
         case source_module.correlation_id(payload) do

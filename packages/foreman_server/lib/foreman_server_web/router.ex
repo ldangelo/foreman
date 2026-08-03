@@ -10,6 +10,10 @@ defmodule ForemanServerWeb.Router do
     plug :put_secure_browser_headers
   end
 
+  scope "/webhooks", ForemanServerWeb do
+    post "/external_trigger", WebhookController, :external_trigger
+  end
+
   if Mix.env() == :dev do
     scope "/debug", ForemanServerWeb do
       pipe_through :browser
