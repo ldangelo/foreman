@@ -1,0 +1,12 @@
+name: assess
+description: Analyze impact, constraints, and risks before implementation begins.
+phases:
+  - name: impact-analysis
+    prompt: assess.md
+    models:
+      default: MiniMax
+    maxTurns: 45
+    artifact: "{task.projectReportsDir}/ASSESS_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

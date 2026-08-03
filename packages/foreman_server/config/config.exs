@@ -7,3 +7,5 @@ config :foreman_server, ForemanServer.EventStore,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_eventstore_test"),
   serializer: ForemanServer.TermOrJsonSerializer,
   schema: "public"
+
+import_config "#{config_env()}.exs"
