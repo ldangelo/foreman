@@ -2,8 +2,9 @@ defmodule ForemanServer.ProjectionStore do
   @moduledoc """
   In-memory projection read model for domain queries.
 
-  Maintains projected state for projects and runs by applying confirmed events
-  synchronously after each successful append.
+  Maintains projected state for projects, runs, and PR associations
+  by applying confirmed events synchronously after each successful
+  append.
 
   ## Startup
 
@@ -20,6 +21,8 @@ defmodule ForemanServer.ProjectionStore do
   ## Query
 
   `project/1` returns the projected state for a given project_id.
+  `run_projection/1` returns the projected state for a given run_id.
+  `pr_association/1` returns the current PR association for a given run_id.
   """
 
   use GenServer
@@ -48,7 +51,8 @@ defmodule ForemanServer.ProjectionStore do
 
   @doc "Return active runs whose last activity is older than the threshold."
   @spec stuck_runs(non_neg_integer(), integer() | nil) :: [String.t()]
-  def stuck_runs(threshold_ms, now_ms \\ nil) when is_integer(threshold_ms) and threshold_ms >= 0 do
+  def stuck_runs(threshold_ms, now_ms \\ nil)
+      when is_integer(threshold_ms) and threshold_ms >= 0 do
     GenServer.call(__MODULE__, {:stuck_runs, threshold_ms, normalize_now_ms_fun(now_ms)})
   end
 
@@ -62,12 +66,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:apply_events, events, resolve_now_ms_fun()})
   end
 
-
-
   @doc "Return the projected state for a run, or nil if not found."
   @spec run_projection(String.t()) :: map() | nil
   def run_projection(run_id) when is_binary(run_id) do
     GenServer.call(__MODULE__, {:run_projection, run_id})
+  end
+
+  @doc "Return the PR association for a run_id, or :not_found."
+  @spec pr_association(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def pr_association(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:pr_association, run_id})
   end
 
   # -------------------------------------------------------------------------
@@ -111,14 +119,23 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_call({:apply_events, events, now_ms_fun}, _from, state) do
-    new_state = Enum.reduce(events, state, fn event, acc -> apply_event(acc, event, now_ms_fun) end)
+    new_state =
+      Enum.reduce(events, state, fn event, acc -> apply_event(acc, event, now_ms_fun) end)
+
     {:reply, :ok, new_state}
   end
-
 
   @impl true
   def handle_call({:run_projection, run_id}, _from, state) do
     {:reply, Map.get(state.runs, run_id), state}
+  end
+
+  @impl true
+  def handle_call({:pr_association, run_id}, _from, state) do
+    case Map.get(state.pr_associations, run_id) do
+      nil -> {:reply, {:error, :not_found}, state}
+      assoc -> {:reply, {:ok, assoc}, state}
+    end
   end
 
   # -------------------------------------------------------------------------
@@ -128,7 +145,9 @@ defmodule ForemanServer.ProjectionStore do
   defp rebuild_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
     case EventStore.read_all_streams_forward(0, 99_999_999) do
       {:ok, events} ->
-        Enum.reduce(events, initial_state(), fn event, acc -> apply_event(acc, event, now_ms_fun) end)
+        Enum.reduce(events, initial_state(), fn event, acc ->
+          apply_event(acc, event, now_ms_fun)
+        end)
 
       {:error, _} ->
         initial_state()
@@ -136,7 +155,7 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp initial_state do
-    %{projects: %{}, runs: %{}}
+    %{projects: %{}, runs: %{}, pr_associations: %{}}
   end
 
   defp apply_event(state, %RecordedEvent{} = recorded, now_ms_fun) do
@@ -158,7 +177,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event(state, %{event_type: type, payload: payload}, now_ms_fun) do
-    apply_event_by_type(state, type, payload |> to_payload_map() |> with_event_at_ms(now_ms_fun.()))
+    apply_event_by_type(
+      state,
+      type,
+      payload |> to_payload_map() |> with_event_at_ms(now_ms_fun.())
+    )
   end
 
   defp apply_event(state, event, now_ms_fun) when is_map(event) do
@@ -171,7 +194,11 @@ defmodule ForemanServer.ProjectionStore do
         Map.get(event, "payload") ||
         event
 
-    apply_event_by_type(state, type, payload |> to_payload_map() |> with_event_at_ms(now_ms_fun.()))
+    apply_event_by_type(
+      state,
+      type,
+      payload |> to_payload_map() |> with_event_at_ms(now_ms_fun.())
+    )
   end
 
   defp apply_event_by_type(state, "ProjectRegistered", payload) do
@@ -340,12 +367,29 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  defp apply_event_by_type(state, "PrAssociated", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      association = %{
+        run_id: run_id,
+        pr_url: get(payload, :pr_url),
+        pr_number: get(payload, :pr_number),
+        associated_at: get(payload, :associated_at)
+      }
+
+      put_state(state, state.projects, state.runs)
+      |> Map.put(:pr_associations, Map.put(state.pr_associations, run_id, association))
+    else
+      state
+    end
+  end
+
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
     touch_run_for_payload(state, payload)
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state
-
 
   # -------------------------------------------------------------------------
   # Helpers
@@ -388,8 +432,6 @@ defmodule ForemanServer.ProjectionStore do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run -> run end)
   end
 
-
-
   defp update_run_projection(state, run_id, event_at_ms, updater) when is_function(updater, 1) do
     if valid_id?(run_id) do
       run =
@@ -425,8 +467,9 @@ defmodule ForemanServer.ProjectionStore do
     |> Enum.sort()
   end
 
-  defp put_state(_state, projects, runs) do
-    %{projects: projects, runs: runs}
+  defp put_state(state, projects, runs) do
+    pr_associations = Map.get(state, :pr_associations, %{})
+    %{projects: projects, runs: runs, pr_associations: pr_associations}
   end
 
   defp recorded_event_at_ms(%RecordedEvent{created_at: %DateTime{} = created_at}, _now_ms_fun) do
