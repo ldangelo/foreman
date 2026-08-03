@@ -14,6 +14,8 @@ config :foreman_server, ForemanServer.Repo,
 config :foreman_server,
   worker_launcher_enabled: false
 
+config :foreman_server, :stuck_run_check_interval_seconds, 3_600
+
 config :phoenix, Phoenix.Diagnostics, enabled: false
 
 config :logster,

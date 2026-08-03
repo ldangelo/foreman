@@ -28,7 +28,7 @@ defmodule ForemanServer.Application do
         ForemanServer.CommandRouter,
         # Endpoint exposes dev-only debug LiveViews.
         ForemanServerWeb.Endpoint
-      ] ++ maybe_overwatch_child()
+      ] ++ maybe_overwatch_child() ++ maybe_stuck_detector_child()
 
     opts = [strategy: :one_for_one, name: __MODULE__]
     Supervisor.start_link(children, opts)
@@ -46,6 +46,13 @@ defmodule ForemanServer.Application do
       _ ->
         []
     end
+  end
+
+  defp maybe_stuck_detector_child do
+    seconds =
+      Application.get_env(:foreman_server, :stuck_run_check_interval_seconds, 60)
+
+    [{ForemanServer.StuckDetector, [interval_ms: seconds * 1000]}]
   end
 
   @impl true

@@ -101,6 +101,15 @@ defmodule ForemanServer.Aggregates.Run do
             run_id: Aggregate.get(payload, :run_id),
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
+      "RunFlaggedStuck" ->
+        %State{
+          state
+          | status: "stuck",
+            terminal?: true,
+            run_id: Aggregate.get(payload, :run_id),
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
+        }
+
 
       "RunDeleted" ->
         %State{state | status: "deleted", terminal?: true}
@@ -207,6 +216,22 @@ defmodule ForemanServer.Aggregates.Run do
        }}
     end
   end
+  def handle_command(state, %{type: "run.flag_stuck", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunFlaggedStuck",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put_new(:flagged_at, System.system_time(:millisecond))
+       }}
+    end
+  end
+
 
   def handle_command(state, %{type: type, payload: payload})
       when type in [
@@ -347,10 +372,10 @@ defmodule ForemanServer.Aggregates.Run do
        do: {:error, :out_of_order}
   defp require_sequence(%State{}, nil), do: :ok
   defp require_sequence(%State{}, _sequence), do: {:error, :out_of_order}
-  # NOTE: MapSet.member? is not guard-safe in older Elixir; using literal type guard
-  defp reject_terminal_mutation(%State{status: status})
-       when status in ["completed", "failed", "blocked", "cancelled", "deleted"],
-       do: {:error, {:run_terminal, status}}
+  # NOTE: guard on terminal? rather than status string so any new terminal
+  # state (e.g. "stuck") is automatically rejected without list maintenance.
+  defp reject_terminal_mutation(%State{terminal?: true, status: status}),
+    do: {:error, {:run_terminal, status}}
 
   defp reject_terminal_mutation(_state), do: :ok
 
