@@ -29,6 +29,7 @@ defmodule ForemanServer.Overwatch do
   use Supervisor
 
   alias ForemanServer.Overwatch.{Tracker, WorkerSupervisor}
+  alias ForemanServer.WorkerEnvironment
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -119,6 +120,9 @@ defmodule ForemanServer.Overwatch do
     adapter_name = Keyword.get_lazy(opts, :adapter_name, fn -> inspect(adapter) end)
     prompt_path = Keyword.fetch!(opts, :prompt_path)
 
+    project_id = Keyword.get(opts, :project_id) || project_id_from_phase(phase)
+    env_map = build_launch_env(project_id, opts)
+
     launch_opts =
       [
         worker_id: worker_id,
@@ -127,7 +131,9 @@ defmodule ForemanServer.Overwatch do
         adapter: adapter,
         adapter_name: adapter_name,
         prompt_path: prompt_path,
-        phase: phase
+        phase: phase,
+        project_id: project_id,
+        env_map: env_map
       ]
       |> Keyword.merge(Keyword.take(opts, [:tool_names, :artifact_paths, :activation_timeout_ms]))
 
@@ -143,7 +149,9 @@ defmodule ForemanServer.Overwatch do
              phase: phase,
              session_id: session_id,
              adapter: adapter_name,
-             prompt_path: prompt_path
+             prompt_path: prompt_path,
+             project_id: project_id,
+             env_map: env_map
            }
          }}
 
@@ -154,6 +162,23 @@ defmodule ForemanServer.Overwatch do
         {:error, {:unexpected_start_child, other}}
     end
   end
+
+  defp build_launch_env(nil, _opts), do: %{}
+
+  defp build_launch_env(project_id, opts) do
+    case Keyword.get(opts, :env_map) do
+      nil -> WorkerEnvironment.build_env_map(project_id)
+      map when is_map(map) -> map
+      other -> other
+    end
+  end
+
+  defp project_id_from_phase(%{project_id: project_id}) when is_binary(project_id), do: project_id
+
+  defp project_id_from_phase(%{"project_id" => project_id}) when is_binary(project_id),
+    do: project_id
+
+  defp project_id_from_phase(_), do: nil
 
   defp generate_worker_id do
     "wkr-" <>

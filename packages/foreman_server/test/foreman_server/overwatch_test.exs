@@ -41,6 +41,7 @@ defmodule ForemanServer.OverwatchTest do
       worker_id = Keyword.fetch!(args, :worker_id)
       run_id = Keyword.fetch!(args, :run_id)
       name = :"fake-#{run_id}-#{worker_id}"
+      capture_args(worker_id, run_id, args)
       GenServer.start_link(__MODULE__, args, name: name)
     end
 
@@ -58,6 +59,15 @@ defmodule ForemanServer.OverwatchTest do
     end
 
     def handle_info(_, state), do: {:noreply, state}
+
+    defp capture_args(worker_id, run_id, args) do
+      Agent.start_link(fn -> %{} end, name: :fake_adapter_capture)
+      Agent.update(:fake_adapter_capture, &Map.put(&1, {run_id, worker_id}, args))
+    end
+  end
+
+  defp captured_args(worker_id, run_id) do
+    Agent.get(:fake_adapter_capture, &Map.get(&1, {run_id, worker_id}))
   end
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
@@ -127,6 +137,7 @@ defmodule ForemanServer.OverwatchTest do
       assert is_pid(adapter_pid)
       assert Process.alive?(adapter_pid)
       assert adapter_pid != worker_pid
+
       assert {:ok, 1} =
                WorkerProtocol.emit(:heartbeat, %{worker_id: worker_id, run_id: run_id})
 
@@ -141,6 +152,102 @@ defmodule ForemanServer.OverwatchTest do
       assert_raise KeyError, fn ->
         Overwatch.start_phase("phase", run_id: uuid(), adapter: FakeAdapter, prompt_path: "/p")
       end
+    end
+
+    test "threads the project's env map into the adapter's start_link args" do
+      alias ForemanServer.{CommandRouter, WorkerEnvironment}
+
+      start_overwatch()
+      project_id = "project-env-thread-#{uuid()}"
+      run_id = uuid()
+      worker_id = "wkr-env-thread-#{:erlang.unique_integer([:positive])}"
+      env_map = %{"API_KEY" => "secret-1", "REGION" => "us-east-1"}
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          type: "project.register",
+          payload: %{
+            project_id: project_id,
+            path: "/tmp/#{project_id}",
+            config: %{env: env_map}
+          },
+          aggregate_id: "project:#{project_id}"
+        })
+
+      assert {:ok, launch} =
+               Overwatch.start_phase("phase-#{run_id}",
+                 run_id: run_id,
+                 worker_id: worker_id,
+                 adapter: FakeAdapter,
+                 session_id: uuid(),
+                 prompt_path: "/tmp/prompt-#{run_id}.md",
+                 project_id: project_id
+               )
+
+      adapter_args = captured_args(worker_id, run_id)
+      assert is_list(adapter_args)
+      assert Keyword.get(adapter_args, :env_map) == env_map
+      assert Keyword.get(adapter_args, :project_id) == project_id
+      assert launch.metadata.env_map == env_map
+      assert launch.metadata.project_id == project_id
+    end
+
+    test "config changes take effect only on a fresh worker launch (AC-003-2)" do
+      alias ForemanServer.CommandRouter
+
+      start_overwatch()
+      project_id = "project-env-relaunch-#{uuid()}"
+      run_id = uuid()
+      first_worker_id = "wkr-env-relaunch-first-#{:erlang.unique_integer([:positive])}"
+      second_worker_id = "wkr-env-relaunch-second-#{:erlang.unique_integer([:positive])}"
+      initial_env = %{"TOKEN" => "old"}
+      updated_env = %{"TOKEN" => "new", "EXTRA" => "x"}
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          type: "project.register",
+          payload: %{
+            project_id: project_id,
+            path: "/tmp/#{project_id}",
+            config: %{env: initial_env}
+          },
+          aggregate_id: "project:#{project_id}"
+        })
+
+      assert {:ok, first_launch} =
+               Overwatch.start_phase("phase-#{run_id}",
+                 run_id: run_id,
+                 worker_id: first_worker_id,
+                 adapter: FakeAdapter,
+                 prompt_path: "/tmp/prompt-#{run_id}.md",
+                 session_id: uuid(),
+                 project_id: project_id
+               )
+
+      first_args = captured_args(first_worker_id, run_id)
+      assert Keyword.get(first_args, :env_map) == initial_env
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          type: "project.update",
+          payload: %{project_id: project_id, config: %{env: updated_env}},
+          aggregate_id: "project:#{project_id}"
+        })
+
+      assert first_launch.metadata.env_map == initial_env
+
+      assert {:ok, _second_launch} =
+               Overwatch.start_phase("phase-#{run_id}-2",
+                 run_id: run_id,
+                 worker_id: second_worker_id,
+                 adapter: FakeAdapter,
+                 session_id: uuid(),
+                 prompt_path: "/tmp/prompt-#{run_id}.md",
+                 project_id: project_id
+               )
+
+      second_args = captured_args(second_worker_id, run_id)
+      assert Keyword.get(second_args, :env_map) == updated_env
     end
   end
 end
