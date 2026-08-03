@@ -26,11 +26,17 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
       mappings: [
         [app: :foreman_server, key: ForemanServer.EventStore, config_key: :url, env: "EVENTSTORE_URL", secret_key: :eventstore_url],
         [app: :foreman_server, key: ForemanServer.Repo, config_key: :url, env: "DATABASE_URL", secret_key: :database_url],
-        [app: :foreman_server, key: :secrets, config_key: :database_password, env: "DATABASE_PASSWORD", secret_key: :database_password, required: false],
-        [app: :foreman_server, key: :secrets, config_key: :secret_key_base, env: "SECRET_KEY_BASE", secret_key: :secret_key_base],
-        [app: :foreman_server, key: :secrets, config_key: :signing_salt, env: "SIGNING_SALT", secret_key: :signing_salt]
+        [app: :foreman_server, key: ForemanServerWeb.Endpoint, config_key: :secret_key_base, env: "SECRET_KEY_BASE", secret_key: :secret_key_base],
+        [app: :foreman_server, key: ForemanServerWeb.Endpoint, config_key: :signing_salt, env: "SIGNING_SALT", secret_key: :signing_salt, nested: :live_view]
       ]
     ]
+
+    original_endpoint = Application.get_env(:foreman_server, ForemanServerWeb.Endpoint)
+    endpoint_overrides = Application.get_env(:foreman_server, ForemanServerWeb.Endpoint, [])
+    Application.delete_env(:foreman_server, ForemanServerWeb.Endpoint)
+    on_exit(fn ->
+      Application.put_env(:foreman_server, ForemanServerWeb.Endpoint, original_endpoint || endpoint_overrides)
+    end)
 
     original = Application.get_env(:foreman_server, :prod_secret_provider)
     Application.put_env(:foreman_server, :prod_secret_provider, provider_opts)
@@ -55,7 +61,6 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
     assert Enum.map(mappings, &Keyword.fetch!(&1, :secret_key)) == [
              :eventstore_url,
              :database_url,
-             :database_password,
              :secret_key_base,
              :signing_salt
            ]
@@ -65,8 +70,8 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
 
     assert Keyword.get(foreman_config, ForemanServer.EventStore)[:url] =~ "foreman_eventstore_prod"
     assert Keyword.get(foreman_config, ForemanServer.Repo)[:url] =~ "foreman_prod"
-    assert Keyword.get(foreman_config, :secrets)[:database_password] == "swordfish"
-    assert Keyword.get(foreman_config, :secrets)[:secret_key_base] == "super-secret-key-base"
-    assert Keyword.get(foreman_config, :secrets)[:signing_salt] == "salty"
+    endpoint_config = Keyword.get(foreman_config, ForemanServerWeb.Endpoint, [])
+    assert endpoint_config[:secret_key_base] == "super-secret-key-base"
+    assert get_in(endpoint_config, [:live_view, :signing_salt]) == "salty"
   end
 end

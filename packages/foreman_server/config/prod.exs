@@ -17,10 +17,6 @@ config :foreman_server, ForemanServerWeb.Endpoint,
   debug_errors: false,
   check_origin: ["//#{phx_host}", "https://#{phx_host}"]
 
-config :foreman_server, :secrets,
-  database_password: nil,
-  secret_key_base: nil,
-  signing_salt: nil
 
 config :foreman_server, :prod_secret_provider,
   provider: ForemanServer.ConfigProviders.Secrets,
@@ -50,16 +46,17 @@ config :foreman_server, :prod_secret_provider,
     ],
     [
       app: :foreman_server,
-      key: :secrets,
+      key: ForemanServerWeb.Endpoint,
       config_key: :secret_key_base,
       env: "SECRET_KEY_BASE",
       secret_key: :secret_key_base
     ],
     [
       app: :foreman_server,
-      key: :secrets,
+      key: ForemanServerWeb.Endpoint,
       config_key: :signing_salt,
       env: "SIGNING_SALT",
-      secret_key: :signing_salt
+      secret_key: :signing_salt,
+      nested: :live_view
     ]
   ]

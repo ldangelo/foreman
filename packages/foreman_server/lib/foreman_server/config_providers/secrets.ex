@@ -56,7 +56,6 @@ defmodule ForemanServer.ConfigProviders.Secrets do
 
         case Map.fetch(secrets, secret_key) do
           {:ok, value} when is_binary(value) ->
-            System.put_env(Keyword.fetch!(mapping, :env), value)
             Config.Reader.merge(acc, mapping_override(mapping, value))
 
           _ ->
@@ -192,11 +191,15 @@ defmodule ForemanServer.ConfigProviders.Secrets do
     key = Keyword.fetch!(mapping, :key)
     config_key = Keyword.fetch!(mapping, :config_key)
 
-    [{app, [{key, [{config_key, value}]}]}]
-  end
+    case Keyword.get(mapping, :nested) do
+      nil ->
+        [{app, [{key, [{config_key, value}]}]}]
 
+      nested_key when is_atom(nested_key) ->
+        [{app, [{key, [{nested_key, [{config_key, value}]}]}]}]
+    end
+  end
   defp missing_secret_message(env_name, env_file) do
-    "missing required secret #{env_name} (checked 1Password/ENV fallback and #{env_file})"
   end
 
   defp default_env_file do
