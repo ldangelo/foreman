@@ -4,10 +4,20 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
   alias ForemanServer.{
     ProjectRegistry,
     ProjectStore,
-    ProjectionStore
+    ProjectionStore,
+    ProjectSupervisor
   }
 
   defp unique_id(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+
+  setup_all do
+    # ProjectRegistry is not in the application supervision tree; manual start.
+    case ProjectRegistry.start_link() do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+    :ok
+  end
 
   describe "ProjectRegistry — direct API contracts" do
     test "via/1 returns a via tuple referencing the registry" do
@@ -77,6 +87,47 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
       project_id = unique_id("store8")
       {:ok, _} = ProjectStore.save(%{project_id: project_id, path: "/tmp/p", default_branch: "develop"})
       assert ProjectionStore.project_projection(project_id).default_branch == "develop"
+    end
+  end
+
+  describe "ProjectSupervisor crash → restart" do
+    test "killed project process is restarted by Aggregator" do
+      project_id = unique_id("crash")
+      {:ok, pid1} = ProjectSupervisor.start_project(project_id)
+      # Actor is registered under the AggregateRegistry keyed by aggregate_id.
+      assert [{^pid1, _}] = Registry.lookup(ForemanServer.AggregateRegistry, project_id)
+      assert Process.alive?(pid1)
+
+      ref = Process.monitor(pid1)
+      Process.exit(pid1, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, _}, 5_000
+
+      # Aggregator restarts the actor under the same name. The supervisor
+      # restart is async — poll until the new pid appears.
+      assert [{pid2, _}] =
+               wait_for_aggregate(project_id, 1_000)
+
+      assert is_pid(pid2)
+      assert pid2 != pid1
+      assert Process.alive?(pid2)
+    end
+
+    defp wait_for_aggregate(project_id, timeout_ms) do
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
+      do_wait(project_id, deadline)
+    end
+
+    defp do_wait(project_id, deadline) do
+      case Registry.lookup(ForemanServer.AggregateRegistry, project_id) do
+        [] ->
+          if System.monotonic_time(:millisecond) >= deadline do
+            []
+          else
+            Process.sleep(10)
+            do_wait(project_id, deadline)
+          end
+        other -> other
+      end
     end
   end
 end

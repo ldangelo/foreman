@@ -539,4 +539,36 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert completed_count == 1,
            "fresh dispatch must not append a duplicate RunCompleted"
   end
+  test "run.pr.update emits PrUpdated and apply_event sets run_id on the Run aggregate" do
+    run_id = "run-pr-update"
+    state_started = Run.apply_event(Run.initial_state(), %{event_type: "RunStarted", run_id: run_id, task_id: "task-1", sequence: 1})
+    assert {:ok, event_spec} =
+             Run.handle_command(state_started, %{
+               type: "run.pr.update",
+               payload: %{
+                 run_id: run_id,
+                 project_id: "proj-1",
+                 task_id: "task-1",
+                 pr_url: "https://github.com/owner/repo/pull/7",
+                 branch_name: "feature/branch",
+                 head_sha: "deadbeef",
+                 base_branch: "main",
+                 phase: "update"
+               }
+             })
+
+    assert event_spec.event_type == "PrUpdated"
+    assert event_spec.stream_id == "run:#{run_id}"
+    assert event_spec.payload.run_id == run_id
+
+    new_state =
+      Run.apply_event(state_started, %{
+        event_type: "PrUpdated",
+        run_id: run_id,
+        payload: event_spec.payload
+      })
+
+    assert new_state.run_id == run_id
+    refute new_state.terminal?
+  end
 end
