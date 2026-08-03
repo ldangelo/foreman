@@ -1,7 +1,26 @@
 defmodule ForemanServer.ConfigProviders.Secrets do
   @moduledoc """
-  Release `Config.Provider` for loading production secrets from 1Password or
-  a release-local `.env` file before the application starts.
+  Release `Config.Provider` for loading production secrets before the
+  application starts.
+
+  Source resolution (controlled by `FOREMAN_SERVER_SECRET_SOURCE`,
+  default `"auto"`):
+
+    * `:auto`     — uses 1Password CLI if available, else falls back to a
+      release-local `.env` file.
+    * `:op` / `:"1password"` — 1Password CLI only.
+    * `:env_file` — release-local `.env` only.
+
+  ## Security note (TRD-024)
+
+  This provider covers development, test, and single-node prod releases that
+  have an operator-managed 1Password vault or a checked-in-secure release
+  bundle. For multi-node prod, prefer Vault, AWS Secrets Manager, or an
+  equivalent centralized secrets manager — these are NOT yet wired into this
+  provider and a `:vault` / `:aws_sm` source can be added without changing
+  consumer code (it would resolve via the same `init/1` + `load/2` contract).
+  In dev and test, plain env vars (and the test-only env_file fixture used
+  by `secrets_test.exs`) are sufficient.
   """
 
   @behaviour Config.Provider
