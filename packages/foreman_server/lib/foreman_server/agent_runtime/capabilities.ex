@@ -1,18 +1,33 @@
 defmodule ForemanServer.AgentRuntime.Capabilities do
   @moduledoc """
-  Validates the capability map returned by a
+  Validates and normalizes the capability map returned by a
   `ForemanServer.AgentRuntime.BackendAdapter` implementation.
 
   ## Schema
 
       %{
         required(:type) => atom(),
-        required(:strengths) => [term()],
-        required(:weaknesses) => [term()],
-        required(:supported_contexts) => [term()],
-        optional(:cost_per_call) => number(),
+        required(:strengths) => [atom()],
+        required(:weaknesses) => [atom()],
+        required(:supported_contexts) => [atom()],
+        optional(:cost_per_call) => float(),
         optional(:typical_latency_ms) => non_neg_integer()
       }
+
+  List-valued required fields MUST contain atoms (per PRD AC-006-1); the
+  runtime matches `supported_contexts` against `opts[:task_type]` and
+  router signals against `strengths`/`weaknesses`, both of which are
+  atoms at the call site.
+
+  ## Normalization
+
+  `:cost_per_call` is documented as a float but is leniently accepted as
+  an integer and normalized to a float (`1` becomes `1.0`). This avoids
+  silently accepting genuinely invalid entries (strings, atoms, nil)
+  while smoothing over the common case where adapters declare `1` for
+  "one unit of cost".
+
+  `:typical_latency_ms` is a `non_neg_integer` and is not normalized.
 
   ## Errors
 
@@ -24,8 +39,8 @@ defmodule ForemanServer.AgentRuntime.Capabilities do
     * `{:unknown_field, atom()}` — the map carries a field outside the schema
 
   `validate/1` is pure: it never inserts, mutates, or stores the map. An
-  invalid input short-circuits on the first violation; later violations in
-  the same map are not reported in the same call.
+  invalid input short-circuits on the first violation; later violations
+  in the same map are not reported in the same call.
   """
 
   @required_fields [:type, :strengths, :weaknesses, :supported_contexts]
@@ -38,21 +53,29 @@ defmodule ForemanServer.AgentRuntime.Capabilities do
           | {:invalid_field, field(), :wrong_type}
           | {:unknown_field, field()}
 
-  @type t :: %{required(field()) => term()}
+  @type t :: %{
+          required(:type) => atom(),
+          required(:strengths) => [atom()],
+          required(:weaknesses) => [atom()],
+          required(:supported_contexts) => [atom()],
+          optional(:cost_per_call) => float(),
+          optional(:typical_latency_ms) => non_neg_integer()
+        }
 
   @doc """
-  Validate a capability map against the schema. Returns the map
-  unchanged on success, or a field-specific error on the first violation.
+  Validate and normalize a capability map against the schema. Returns
+  the normalized map on success, or a field-specific error on the first
+  violation.
   """
   @spec validate(term()) :: {:ok, t()} | {:error, error_reason()}
   def validate(caps) when is_map(caps), do: do_validate(caps)
-  def validate(other), do: {:error, {:invalid_field, :root, :wrong_type}}
+  def validate(_root), do: {:error, {:invalid_field, :root, :wrong_type}}
 
   defp do_validate(caps) do
     with :ok <- check_required(caps),
          :ok <- check_no_unknown(caps),
-         :ok <- check_types(caps) do
-      {:ok, caps}
+         {:ok, normalized} <- check_and_normalize(caps) do
+      {:ok, normalized}
     end
   end
 
@@ -70,58 +93,62 @@ defmodule ForemanServer.AgentRuntime.Capabilities do
     end
   end
 
-  defp check_types(caps) do
-    cond do
-      type = caps[:type] ->
-        if is_atom(type), do: :ok, else: {:error, {:invalid_field, :type, :wrong_type}}
-
-      true ->
-        :ok
-    end
-    |> case do
-      :ok -> check_list_fields(caps, :strengths)
-      err -> err
-    end
-    |> case do
-      :ok -> check_list_fields(caps, :weaknesses)
-      err -> err
-    end
-    |> case do
-      :ok -> check_list_fields(caps, :supported_contexts)
-      err -> err
-    end
-    |> case do
-      :ok -> check_optional_number(caps, :cost_per_call)
-      err -> err
-    end
-    |> case do
-      :ok -> check_optional_integer(caps, :typical_latency_ms)
-      err -> err
+  defp check_and_normalize(caps) do
+    with :ok <- check_atom_field(caps, :type),
+         :ok <- check_atom_list(caps, :strengths),
+         :ok <- check_atom_list(caps, :weaknesses),
+         :ok <- check_atom_list(caps, :supported_contexts),
+         {:ok, normalized} <- normalize_cost_per_call(caps),
+         :ok <- check_typical_latency(normalized) do
+      {:ok, normalized}
     end
   end
 
-  defp check_list_fields(caps, field) do
-    value = Map.get(caps, field)
-
-    if is_list(value) do
-      :ok
-    else
-      {:error, {:invalid_field, field, :wrong_type}}
-    end
-  end
-
-  defp check_optional_number(caps, field) do
+  defp check_atom_field(caps, field) do
     case Map.fetch(caps, field) do
-      {:ok, value} when is_number(value) -> :ok
+      {:ok, value} when is_atom(value) -> :ok
       {:ok, _} -> {:error, {:invalid_field, field, :wrong_type}}
       :error -> :ok
     end
   end
 
-  defp check_optional_integer(caps, field) do
+  defp check_atom_list(caps, field) do
     case Map.fetch(caps, field) do
+      {:ok, list} when is_list(list) ->
+        if Enum.all?(list, &is_atom/1) do
+          :ok
+        else
+          {:error, {:invalid_field, field, :wrong_type}}
+        end
+
+      {:ok, _} ->
+        {:error, {:invalid_field, field, :wrong_type}}
+
+      :error ->
+        :ok
+    end
+  end
+
+  defp normalize_cost_per_call(caps) do
+    case Map.fetch(caps, :cost_per_call) do
+      :error ->
+        {:ok, caps}
+
+      {:ok, value} when is_float(value) ->
+        {:ok, caps}
+
+      {:ok, value} when is_integer(value) ->
+        {:ok, Map.put(caps, :cost_per_call, value * 1.0)}
+
+      {:ok, _} ->
+        {:error, {:invalid_field, :cost_per_call, :wrong_type}}
+    end
+  end
+
+  defp check_typical_latency(caps) do
+    case Map.fetch(caps, :typical_latency_ms) do
       {:ok, value} when is_integer(value) and value >= 0 -> :ok
-      {:ok, _} -> {:error, {:invalid_field, field, :wrong_type}}
+      {:ok, _} -> {:error, {:invalid_field, :typical_latency_ms, :wrong_type}}
       :error -> :ok
     end
   end

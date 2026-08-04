@@ -27,10 +27,15 @@ defmodule ForemanServer.AgentRuntime.CapabilitiesTest do
       assert validated == caps
     end
 
-    test "accepts an integer cost_per_call" do
+    test "normalizes integer cost_per_call to float" do
       caps = Map.put(@valid, :cost_per_call, 1)
       assert {:ok, validated} = Capabilities.validate(caps)
-      assert validated.cost_per_call == 1
+      assert validated.cost_per_call === 1.0
+    end
+
+    test "accepts a map with non-atom-free list elements as invalid (atom-list invariant)" do
+      caps = Map.put(@valid, :strengths, [:atom_ok, "string_not_ok"])
+      assert {:error, {:invalid_field, :strengths, :wrong_type}} = Capabilities.validate(caps)
     end
   end
 
@@ -54,31 +59,52 @@ defmodule ForemanServer.AgentRuntime.CapabilitiesTest do
       assert {:error, {:invalid_field, :strengths, :wrong_type}} = Capabilities.validate(caps)
     end
 
+    test ":strengths elements must all be atoms" do
+      caps = Map.put(@valid, :strengths, [:code, "low_cost"])
+      assert {:error, {:invalid_field, :strengths, :wrong_type}} = Capabilities.validate(caps)
+    end
+
     test ":weaknesses must be a list" do
       caps = Map.put(@valid, :weaknesses, %{not: "a list"})
       assert {:error, {:invalid_field, :weaknesses, :wrong_type}} = Capabilities.validate(caps)
     end
 
+    test ":weaknesses elements must all be atoms" do
+      caps = Map.put(@valid, :weaknesses, [:high_latency, 42])
+      assert {:error, {:invalid_field, :weaknesses, :wrong_type}} = Capabilities.validate(caps)
+    end
+
     test ":supported_contexts must be a list" do
       caps = Map.put(@valid, :supported_contexts, "refactor,explain")
+
+      assert {:error, {:invalid_field, :supported_contexts, :wrong_type}} =
+               Capabilities.validate(caps)
+    end
+
+    test ":supported_contexts elements must all be atoms" do
+      caps = Map.put(@valid, :supported_contexts, [:code, "review"])
+
       assert {:error, {:invalid_field, :supported_contexts, :wrong_type}} =
                Capabilities.validate(caps)
     end
 
     test ":cost_per_call must be a number when present" do
       caps = Map.put(@valid, :cost_per_call, "cheap")
+
       assert {:error, {:invalid_field, :cost_per_call, :wrong_type}} =
                Capabilities.validate(caps)
     end
 
     test ":typical_latency_ms must be a non-negative integer when present" do
       caps = Map.put(@valid, :typical_latency_ms, 1.5)
+
       assert {:error, {:invalid_field, :typical_latency_ms, :wrong_type}} =
                Capabilities.validate(caps)
     end
 
     test ":typical_latency_ms rejects negative integers" do
       caps = Map.put(@valid, :typical_latency_ms, -10)
+
       assert {:error, {:invalid_field, :typical_latency_ms, :wrong_type}} =
                Capabilities.validate(caps)
     end

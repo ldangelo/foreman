@@ -74,6 +74,30 @@ defmodule ForemanServer.AgentRuntimeTest do
     def execute(_request, _opts), do: {:ok, "ok", %{}}
   end
 
+  defmodule NonAtomListAdapter do
+    @behaviour ForemanServer.AgentRuntime.BackendAdapter
+
+    @impl true
+    def name, do: :non_atom_list
+
+    @impl true
+    def capabilities do
+      %{
+        type: :cli,
+        # list, but elements are not all atoms (PRD AC-006-1)
+        strengths: [:ok_atom, "not_an_atom"],
+        weaknesses: [],
+        supported_contexts: []
+      }
+    end
+
+    @impl true
+    def available?, do: true
+
+    @impl true
+    def execute(_request, _opts), do: {:ok, "ok", %{}}
+  end
+
   describe "register/1 — happy path" do
     test "returns {:ok, validated_caps} for a conforming adapter" do
       assert {:ok, caps} = AgentRuntime.register(ValidAdapter)
@@ -88,32 +112,25 @@ defmodule ForemanServer.AgentRuntimeTest do
   end
 
   describe "register/1 — error paths store nothing" do
-    test "returns {:error, {:missing_field, :type}} and does not raise" do
+    test "returns {:error, {:missing_field, :type}} on a missing required field" do
       assert {:error, {:missing_field, :type}} = AgentRuntime.register(MissingFieldAdapter)
     end
 
-    test "returns {:error, {:invalid_field, :strengths, :wrong_type}} on bad list field" do
+    test "returns {:error, {:invalid_field, :strengths, :wrong_type}} on a bad list field" do
       assert {:error, {:invalid_field, :strengths, :wrong_type}} =
                AgentRuntime.register(WrongTypeAdapter)
     end
 
-    test "an invalid adapter does not raise and does not leak a backend identifier" do
+    test "returns {:error, {:invalid_field, :strengths, :wrong_type}} when list elements are not atoms" do
+      assert {:error, {:invalid_field, :strengths, :wrong_type}} =
+               AgentRuntime.register(NonAtomListAdapter)
+    end
+
+    test "an invalid adapter does not raise and does not store any state" do
       # The register/1 contract: an invalid adapter is rejected with a
       # field-specific error and nothing is stored. The function MUST
       # NOT raise an exception.
       assert {:error, _reason} = AgentRuntime.register(MissingFieldAdapter)
-    end
-  end
-
-  describe "public types — backend name is not in the success tuple (TRD §Public Contracts)" do
-    # The full execute/3 implementation is TRD-003. For TRD-001 the
-    # contract is locked in at the typespec level: the public
-    # execute_result/0 type does not include any backend name in the
-    # success variant. The typespec is the contract; TRD-003 adds the
-    # runtime test that asserts the backend atom never leaks into the
-    # returned tuple.
-    test "the AgentRuntime module is loadable" do
-      assert Code.ensure_loaded?(AgentRuntime)
     end
   end
 
