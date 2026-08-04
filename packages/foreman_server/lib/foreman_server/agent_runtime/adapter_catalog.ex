@@ -53,7 +53,7 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
     case BackendAdapter.validate_capabilities(module) do
       {:ok, validated_caps} ->
         name = module.name()
-        available = module.available?
+        available = apply(module, :available?, [])
         already_registered? = module in state.adapters
 
         new_adapters = if already_registered?, do: state.adapters, else: state.adapters ++ [module]
