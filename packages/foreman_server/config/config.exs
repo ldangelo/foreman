@@ -14,4 +14,7 @@ config :foreman_server, ForemanServerWeb.Endpoint,
   pubsub_server: ForemanServer.PubSub,
   server: false
 
+config :foreman_server, :agent_runtime,
+  enabled: true,
+  adapters: []
 import_config "#{config_env()}.exs"

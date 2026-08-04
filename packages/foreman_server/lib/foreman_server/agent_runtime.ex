@@ -27,7 +27,7 @@ defmodule ForemanServer.AgentRuntime do
 
   alias ForemanServer.AgentRuntime.BackendAdapter
   alias ForemanServer.AgentRuntime.Capabilities
-
+  alias ForemanServer.AgentRuntime.AdapterCatalog
   @type backend_name :: atom()
   @type adapter :: module()
   @type capability_map :: map()
@@ -58,7 +58,19 @@ defmodule ForemanServer.AgentRuntime do
   """
   @spec register(adapter()) :: {:ok, capability_map()} | {:error, Capabilities.error_reason()}
   def register(adapter) do
-    BackendAdapter.validate_capabilities(adapter)
+    # Validate capabilities first (pure)
+    result = BackendAdapter.validate_capabilities(adapter)
+
+    # Side-effect: register with catalog if validation passed
+    case result do
+      {:ok, _caps} ->
+        # Ignore catalog errors - the validated map is the primary return
+        AdapterCatalog.register(adapter)
+        result
+
+      {:error, _} ->
+        result
+    end
   end
 
   @doc """

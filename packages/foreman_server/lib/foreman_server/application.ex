@@ -28,13 +28,23 @@ defmodule ForemanServer.Application do
         ForemanServer.Aggregator,
 
         # CommandRouter handles all append requests.
-        ForemanServer.CommandRouter,
+        ForemanServer.CommandRouter
+      ] ++ maybe_agent_runtime_child() ++ maybe_overwatch_child() ++ maybe_stuck_detector_child() ++ [
         # Endpoint exposes dev-only debug LiveViews.
         ForemanServerWeb.Endpoint
-      ] ++ maybe_overwatch_child() ++ maybe_stuck_detector_child()
+      ]
 
     opts = [strategy: :one_for_one, name: __MODULE__]
     Supervisor.start_link(children, opts)
+  end
+
+  defp maybe_agent_runtime_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{ForemanServer.AgentRuntime.Supervisor, []}]
+      _ ->
+        []
+    end
   end
 
   defp maybe_overwatch_child do
