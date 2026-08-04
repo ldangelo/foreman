@@ -5,9 +5,9 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   This adapter implements the `BackendAdapter` behaviour and owns the Port
   lifecycle including OS-PID capture, safe termination, and temp file cleanup.
 
-  ## Configuration
-
-  - `executable`: Path to the `pi` binary (default: `/opt/homebrew/bin/pi`)
+  - `executable`: Path to the `pi` binary. Bare names (the default `"pi"`)
+    are resolved via `System.find_executable/1` against `PATH`; absolute
+    paths are used as-is. (default: `"pi"`)
   - `timeout_ms`: Default timeout in milliseconds (default: `60_000`)
 
   Both can be overridden via `Application.put_env/4` or per-call via `opts`.
@@ -24,7 +24,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   @request_prompt_header "# Prompt"
   @request_context_header "# Context (JSON)"
 
-  @default_executable "/opt/homebrew/bin/pi"
+  @default_executable "pi"
   @default_timeout_ms 60_000
   @max_kill_wait_ms 5_000
 
@@ -45,18 +45,30 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
 
   @impl true
   def available? do
-    executable() |> File.regular?()
+    executable()
+    |> resolve_executable()
+    |> case do
+      nil -> false
+      path -> executable_file?(path)
+    end
   end
 
   @impl true
   def execute(request, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, timeout())
-    executable = Keyword.get(opts, :executable, executable())
+    raw_executable = Keyword.get(opts, :executable, executable())
 
     start_time = System.monotonic_time(:microsecond)
     emit_start(start_time)
 
-    result = do_execute(request, executable, timeout_ms)
+    result =
+      case resolve_executable(raw_executable) do
+        nil ->
+          {:error, {:enoent, raw_executable}}
+
+        resolved ->
+          do_execute(request, resolved, timeout_ms)
+      end
 
     stop_time = System.monotonic_time(:microsecond)
     duration_us = stop_time - start_time
@@ -112,16 +124,9 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
 
             case wait_for_port(port, timeout_ms) do
               {:ok, output, exit_status} when exit_status == 0 ->
-                case Jason.decode(output) do
-                  {:ok, %{"output" => content}} ->
-                    {:ok, content, %{}}
-                  {:ok, %{"error" => error}} ->
-                    {:error, {:adapter_error, error}}
-                  {:ok, other} ->
-                    {:error, {:invalid_response, other}}
-                  {:error, parse_error} ->
-                    {:error, {:parse_error, parse_error}}
-                end
+                # Zero-exit stdout is returned verbatim — the `pi` CLI's
+                # printable output is the complete final text.
+                {:ok, output, %{}}
 
               {:ok, _output, exit_status} when exit_status != 0 ->
                 {:error, {:non_zero_exit, exit_status}}
@@ -245,6 +250,27 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
     Application.get_env(:foreman_server, __MODULE__, [])[:timeout_ms] || @default_timeout_ms
   end
 
+  # Bare executable names ("pi") are resolved through PATH. Absolute paths
+ # are passed through unchanged. nil/empty ⇒ unavailable.
+  defp resolve_executable(nil), do: nil
+  defp resolve_executable(""), do: nil
+
+  defp resolve_executable(path) when is_binary(path) do
+    cond do
+      Path.type(path) == :absolute -> path
+      true -> System.find_executable(path)
+    end
+  end
+
+  # True iff `path` is a regular file with at least one executable bit set.
+  # Satisfies the TRD-004 "exists and is executable" available?/0 AC.
+  defp executable_file?(path) when is_binary(path) do
+    case File.stat(path) do
+      {:ok, %{type: :regular, mode: mode}} -> Bitwise.band(mode, 0o111) != 0
+      _ -> false
+    end
+  end
+
   # Telemetry helpers
   defp emit_start(start_time) do
     Telemetry.execute(
@@ -263,9 +289,6 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   end
 
   defp status_from_reason({:non_zero_exit, _}), do: :non_zero_exit
-  defp status_from_reason({:adapter_error, _}), do: :adapter_error
-  defp status_from_reason({:parse_error, _}), do: :adapter_error
-  defp status_from_reason({:invalid_response, _}), do: :adapter_error
   defp status_from_reason({:enoent, _}), do: :unavailable
   defp status_from_reason(:timeout), do: :timeout
 

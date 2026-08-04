@@ -15,35 +15,46 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     # Get tmp directory for fixture scripts
     tmp_dir = System.tmp_dir!()
 
-    # Simple success fixture: echoes JSON to stdout, exits 0
+    # Plain-text protocol (TRD-004 §"Pi Process Protocol"): zero-exit
+    # stdout is the complete final text — no JSON wrapping.
     success_path = Path.join(tmp_dir, @success_fixture)
+
     File.write!(success_path, """
     #!/bin/bash
-    echo '{"output":"hello from fixture"}'
+    printf 'hello from pi\\n'
     exit 0
     """)
+
     File.chmod!(success_path, 0o755)
 
-    # Fail fixture: echoes error JSON, exits 1
+    # Fail fixture: any non-zero exit is an error; stdout content is
+    # intentionally not asserted.
     fail_path = Path.join(tmp_dir, @fail_fixture)
+
     File.write!(fail_path, """
     #!/bin/bash
-    echo '{"error":"bad input"}'
+    echo 'bad input' >&2
     exit 1
     """)
+
     File.chmod!(fail_path, 0o755)
 
-    # Hang fixture: sleeps for 30 seconds
+    # Hang fixture: sleeps past the timeout window to exercise the
+    # adapter's deadline + kill-escalation path.
     hang_path = Path.join(tmp_dir, @hang_fixture)
+
     File.write!(hang_path, """
     #!/bin/bash
     sleep 30
     exit 0
     """)
+
+    File.chmod!(hang_path, 0o755)
     File.chmod!(hang_path, 0o755)
 
     # Contract fixture: captures argv and file content to known locations for validation
     contract_path = Path.join(tmp_dir, @contract_fixture)
+
     File.write!(contract_path, """
     #!/bin/bash
     # Capture argv to known file
@@ -57,9 +68,10 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
         stat -f "%OLp" "$REQUEST_FILE" 2>/dev/null > /tmp/pi_contract_mode.txt || stat -c "%a" "$REQUEST_FILE" 2>/dev/null > /tmp/pi_contract_mode.txt
       fi
     fi
-    echo '{"output":"contract validated"}'
+    printf 'contract validated\\n'
     exit 0
     """)
+
     File.chmod!(contract_path, 0o755)
 
     # Save original config
@@ -130,6 +142,36 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       Application.put_env(:foreman_server, PiAdapter, executable: "/nonexistent/pi")
       assert PiAdapter.available?() == false
     end
+
+    test "bare-name resolution depends on PATH (deterministic fake binary)" do
+      # A binary that exists in PATH ONLY when the fake_dir is on PATH.
+      # The bare name must not exist anywhere else (no system binary with
+      # this name), so available?/0 returning true ⇒ resolve_executable/1
+      # actually consulted PATH via System.find_executable/1.
+      fake_id = :erlang.unique_integer([:positive])
+      fake_dir = Path.join(System.tmp_dir!(), "pi_adapter_fakedir_#{fake_id}")
+      File.mkdir_p!(fake_dir)
+      fake_bin = Path.join(fake_dir, "fake_pi_#{fake_id}")
+      File.write!(fake_bin, "#!/bin/sh\nexit 0\n")
+      File.chmod!(fake_bin, 0o755)
+      fake_name = Path.basename(fake_bin)
+      original_path = System.get_env("PATH") || ""
+
+      try do
+        # Path A: fake_dir is on PATH ⇒ available?/0 must resolve and report true.
+        System.put_env("PATH", fake_dir)
+        Application.put_env(:foreman_server, PiAdapter, executable: fake_name)
+        assert PiAdapter.available?() == true
+
+        # Path B: fake_name is not on PATH ⇒ available?/0 must report false.
+        System.put_env("PATH", "/nonexistent-path-only")
+        assert PiAdapter.available?() == false
+      after
+        System.put_env("PATH", original_path)
+        File.rm_rf!(fake_dir)
+        Application.delete_env(:foreman_server, PiAdapter)
+      end
+    end
   end
 
   describe "execute/2 — cleanup on failure" do
@@ -152,14 +194,16 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
   end
 
   describe "execute/2 — success" do
-    test "returns {:ok, content} and parses JSON output", %{success_path: path} do
+    test "returns the complete final text on zero exit (plain-text protocol)", %{
+      success_path: path
+    } do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
       request = %{prompt: "test prompt", context: %{}}
       result = PiAdapter.execute(request, [])
 
       assert {:ok, content, %{}} = result
-      assert content == "hello from fixture"
+      assert content == "hello from pi\n"
     end
   end
 
@@ -190,21 +234,30 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       assert mode == "600"
     end
 
-    test "request file has correct framing", %{contract_path: path} do
+    test "request file framing is byte-exact with JSON round-trip", %{contract_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "hello world", context: %{"key" => "value"}}
+      context = %{"key" => "value", "nested" => %{"n" => 1}}
+      request = %{prompt: "hello world", context: context}
       PiAdapter.execute(request, [])
 
-      # Verify request content
-      assert File.exists?("/tmp/pi_contract_request.txt")
       content = File.read!("/tmp/pi_contract_request.txt")
 
-      # Check framing structure
-      assert content =~ "# Prompt"
-      assert content =~ "# Context (JSON)"
-      assert content =~ "hello world"
-      assert content =~ ~s({"key":"value"})
+      # Byte-exact framing: header + blank line + prompt bytes + blank
+      # line + context header + blank line + JSON segment + trailing
+      # newline. Equals (not substring) catches any extra/misplaced
+      # bytes that the TRD-004 framing AC forbids.
+      json_segment = Jason.encode!(context)
+
+      expected =
+        "# Prompt\n\nhello world\n\n# Context (JSON)\n\n" <>
+          json_segment <> "\n"
+
+      assert content == expected
+
+      # JSON segment round-trip equality against the original context
+      # map (TRD-004 §"Pi Process Protocol" semantic verification).
+      assert Jason.decode!(json_segment) == context
     end
   end
 
@@ -298,11 +351,13 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "adapter events contain exactly %{backend: :pi}" do
       tmp_dir = System.tmp_dir!()
       test_fixture_path = Path.join(tmp_dir, "pi_telemetry_fixture.sh")
+
       File.write!(test_fixture_path, """
       #!/bin/bash
       echo '{"output":"hello"}'
       exit 0
       """)
+
       File.chmod!(test_fixture_path, 0o755)
 
       try do
@@ -319,10 +374,14 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
         Process.sleep(50)
         # Receive both events - the message is {event, ref, measure, meta}
-        assert_received {[:foreman, :agent_runtime, :adapter, :pi, :start], _ref, _measure, meta_start}
+        assert_received {[:foreman, :agent_runtime, :adapter, :pi, :start], _ref, _measure,
+                         meta_start}
+
         assert meta_start == %{backend: :pi}
 
-        assert_received {[:foreman, :agent_runtime, :adapter, :pi, :stop], _ref, _measure, meta_stop}
+        assert_received {[:foreman, :agent_runtime, :adapter, :pi, :stop], _ref, _measure,
+                         meta_stop}
+
         assert meta_stop == %{backend: :pi}
       after
         # Cleanup

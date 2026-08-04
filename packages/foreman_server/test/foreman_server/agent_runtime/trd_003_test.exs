@@ -186,6 +186,12 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
     end
 
     test "error-path stop event has status/attempts in measurements, not metadata" do
+      {catalog_name, _inv_name} = start_runtime()
+      # Register an adapter so the catalog is non-empty and the
+      # :no_available_backend short-circuit does not fire. This
+      # isolates the :backend_not_found lookup-failure path.
+      {:ok, _} = AdapterCatalog.register(EchoAdapter, catalog_name)
+
       events =
         capture_telemetry(
           [
@@ -195,7 +201,8 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
           fn ->
             ForemanServer.AgentRuntime.execute("p", %{},
               strategy: :manual,
-              backend: :nonexistent
+              backend: :nonexistent,
+              catalog: catalog_name
             )
           end
         )
