@@ -45,3 +45,6 @@
 .bv/
 # br doctor per-run artifacts
 .doctor/
+
+# br corruption recovery directory (forensic-preserve on disk, hidden from VCS)
+.beads.bad/
