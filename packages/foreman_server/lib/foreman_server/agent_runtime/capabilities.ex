@@ -53,6 +53,22 @@ defmodule ForemanServer.AgentRuntime.Capabilities do
           | {:invalid_field, field(), :wrong_type}
           | {:unknown_field, field()}
 
+  @typedoc """
+  Raw capability map returned by an adapter's `capabilities/0` callback
+  before validation and normalization. The four required keys MUST be
+  present; their values are intentionally permissive so the validator
+  can report field-specific errors instead of the dialyzer. After a
+  successful `validate/1` call, the map conforms to `t/0`.
+  """
+  @type input :: %{
+          required(:type) => term(),
+          required(:strengths) => [term()],
+          required(:weaknesses) => [term()],
+          required(:supported_contexts) => [term()],
+          optional(:cost_per_call) => number(),
+          optional(:typical_latency_ms) => non_neg_integer()
+        }
+
   @type t :: %{
           required(:type) => atom(),
           required(:strengths) => [atom()],

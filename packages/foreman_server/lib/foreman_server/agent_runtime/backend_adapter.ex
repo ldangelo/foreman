@@ -44,8 +44,14 @@ defmodule ForemanServer.AgentRuntime.BackendAdapter do
   @typedoc "Adapter execution return: backend-agnostic text output and optional adapter-private metadata."
   @type execute_result :: {:ok, String.t(), map()} | {:error, term()}
 
-  @typedoc "Validated capability map. See `ForemanServer.AgentRuntime.Capabilities` for the schema."
-  @type capabilities :: map()
+  @typedoc """
+  Raw capability map returned by an adapter's `capabilities/0` callback.
+  The shape declares the four required fields and the two optional
+  ranking fields. Inner types are intentionally permissive so the
+  validator (see `ForemanServer.AgentRuntime.Capabilities.validate/1`)
+  can surface field-specific errors instead of a dialyzer warning.
+  """
+  @type capabilities :: Capabilities.input()
 
   @doc """
   Stable, module-unique backend identifier used for routing, telemetry
