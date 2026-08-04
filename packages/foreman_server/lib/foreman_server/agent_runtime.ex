@@ -143,7 +143,10 @@ defmodule ForemanServer.AgentRuntime do
         execute_manual(backend, request, Keyword.put(opts, :catalog, catalog))
 
       :automatic ->
-        {:error, :not_implemented}
+        catalog = Keyword.get(opts, :catalog, AdapterCatalog)
+        task_type = Keyword.get(opts, :task_type)
+
+        execute_automatic(task_type, request, Keyword.put(opts, :catalog, catalog))
 
       :policy ->
         {:error, :not_implemented}
@@ -293,6 +296,121 @@ defmodule ForemanServer.AgentRuntime do
           [:foreman, :agent_runtime, :execute, :stop],
           %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
           %{strategy: :manual, backend: backend}
+        )
+
+        {:error, :no_available_backend}
+    end
+  end
+
+  # Automatic strategy implementation
+  defp execute_automatic(task_type, request, opts) do
+    start_time = System.system_time()
+
+    # Route to adapter
+    catalog = Keyword.get(opts, :catalog, AdapterCatalog)
+    task_type_for_routing = if is_nil(task_type), do: nil, else: task_type
+
+    case Router.automatic(request, catalog: catalog, task_type: task_type_for_routing) do
+      {:ok, adapter_module} ->
+        # Get the backend name from the adapter
+        backend = adapter_module.name()
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :automatic, backend: backend}
+        )
+
+        inv_supervisor = Keyword.get(opts, :invocation_supervisor, InvocationSupervisor)
+        timeout = Keyword.get(opts, :timeout, 30_000)
+
+        case InvocationSupervisor.start_invocation(
+               adapter_module,
+               request,
+               self(),
+               inv_supervisor
+             ) do
+          {:ok, _pid, ref} ->
+            receive do
+              {:agent_runtime_invocation_complete, ^ref, result} ->
+                case result do
+                  {:ok, _name, content, _meta} ->
+                    stop_time = System.system_time()
+
+                    Telemetry.execute(
+                      [:foreman, :agent_runtime, :execute, :stop],
+                      %{
+                        duration_us: stop_time - start_time,
+                        status: :ok,
+                        attempts: 1
+                      },
+                      %{strategy: :automatic, backend: backend}
+                    )
+
+                    {:ok, content}
+
+                  {:error, _name, reason} ->
+                    stop_time = System.system_time()
+
+                    Telemetry.execute(
+                      [:foreman, :agent_runtime, :execute, :stop],
+                      %{
+                        duration_us: stop_time - start_time,
+                        status: :invocation_error,
+                        attempts: 1
+                      },
+                      %{strategy: :automatic, backend: backend}
+                    )
+
+                    {:error, reason}
+                end
+            after
+              timeout ->
+                stop_time = System.system_time()
+
+                Telemetry.execute(
+                  [:foreman, :agent_runtime, :execute, :stop],
+                  %{
+                    duration_us: stop_time - start_time,
+                    status: :timeout,
+                    attempts: 1
+                  },
+                  %{strategy: :automatic, backend: backend}
+                )
+
+                {:error, :timeout}
+            end
+
+          {:error, reason} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{
+                duration_us: stop_time - start_time,
+                status: :start_error,
+                attempts: 1
+              },
+              %{strategy: :automatic, backend: backend}
+            )
+
+            {:error, reason}
+        end
+
+      {:error, :no_available_backend} ->
+        # No matching adapter found - emit telemetry with nil backend
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :automatic, backend: nil}
+        )
+
+        stop_time = System.system_time()
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
+          %{strategy: :automatic, backend: nil}
         )
 
         {:error, :no_available_backend}
