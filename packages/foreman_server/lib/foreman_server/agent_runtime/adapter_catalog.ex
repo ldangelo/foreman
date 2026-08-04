@@ -28,10 +28,13 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
   @spec snapshot(GenServer.server()) :: [module()]
   def snapshot(server \\ __MODULE__), do: GenServer.call(server, :snapshot)
 
+  def empty?(server \\ __MODULE__), do: GenServer.call(server, :empty)
+
   @spec available?(module(), GenServer.server()) :: boolean()
   def available?(module, server \\ __MODULE__), do: GenServer.call(server, {:available, module})
 
-  # Server Implementation
+  @spec lookup(backend_name :: atom(), GenServer.server()) :: {:ok, module()} | {:error, :not_found}
+  def lookup(backend_name, server \\ __MODULE__), do: GenServer.call(server, {:lookup, backend_name})
 
   @impl true
   def init(opts) do
@@ -97,6 +100,15 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
 
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, state.adapters, state}
+
+  @impl true
+  def handle_call(:empty, _from, state), do: {:reply, state.adapters == [], state}
+  def handle_call({:lookup, backend_name}, _from, state) do
+    case Registry.lookup(@registry_name, backend_name) do
+      [{_pid, module}] -> {:reply, {:ok, module}, state}
+      [] -> {:reply, {:error, :not_found}, state}
+    end
+  end
 
   @impl true
   def handle_call({:available, module}, _from, state) do
