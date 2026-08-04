@@ -392,7 +392,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
   # --- Helpers ---
 
-  defp start_runtime(_opts \\ []) do
+  defp start_runtime(_opts) do
     test_id = :rand.uniform(999_999)
     sup_name = :"AgentRuntime.Test.#{test_id}"
     catalog_name = :"Catalog#{test_id}"
