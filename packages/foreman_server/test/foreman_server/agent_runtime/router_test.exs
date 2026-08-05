@@ -22,6 +22,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.001,
         typical_latency_ms: 100
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -43,6 +44,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.001,
         typical_latency_ms: 1000
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -64,6 +66,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.5,
         typical_latency_ms: 50
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -85,6 +88,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.0,
         typical_latency_ms: 0
       }
+
     @impl true
     def available?, do: false
     @impl true
@@ -105,6 +109,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         supported_contexts: [:code],
         typical_latency_ms: 999_999
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -125,6 +130,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         supported_contexts: [:code],
         cost_per_call: 0.01
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -146,6 +152,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.0,
         typical_latency_ms: 0
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -165,6 +172,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         weaknesses: [],
         supported_contexts: [:code]
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -186,6 +194,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.01,
         typical_latency_ms: 100
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -206,6 +215,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         supported_contexts: [:code],
         cost_per_call: 0.01
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -227,6 +237,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.5,
         typical_latency_ms: 500
       }
+
     @impl true
     def available?, do: true
     @impl true
@@ -248,6 +259,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
         cost_per_call: 0.5,
         typical_latency_ms: 500
       }
+
     @impl true
     def available?, do: true
     @impl true
