@@ -1,7 +1,7 @@
 defmodule ForemanServer.AgentRuntime.RouterTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter, Router}
+  alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter, Router, RoutingPolicy}
 
   # =============================================================================
   # Test fixtures - each exercises a specific dimension of the ranking matrix
@@ -463,6 +463,212 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
       assert Enum.all?(results_b, &match?({:ok, EqualCapAdapter2}, &1)),
              "EqualCapAdapter2 registered first must win 20 times; " <>
                "unique results: #{inspect(Enum.uniq(results_b))}"
+    end
+  end
+
+  # =============================================================================
+  # TRD-006: policy module fixtures
+  # =============================================================================
+
+  # PickCheapFastPolicy: always picks the registered available CheapFastAdapter.
+  defmodule PickCheapFastPolicy do
+    @behaviour RoutingPolicy
+    @impl true
+    def route(_task_type, _capabilities), do: :cheap_fast_adapter
+  end
+
+  # PickUnavailablePolicy: always picks the registered UnavailableAdapter.
+  defmodule PickUnavailablePolicy do
+    @behaviour RoutingPolicy
+    @impl true
+    def route(_task_type, _capabilities), do: :unavailable_adapter
+  end
+
+  # PickUnknownPolicy: picks a backend name that is not registered.
+  defmodule PickUnknownPolicy do
+    @behaviour RoutingPolicy
+    @impl true
+    def route(_task_type, _capabilities), do: :nonexistent_backend
+  end
+
+  # RaisingPolicy: blows up when called; router must surface the error.
+  defmodule RaisingPolicy do
+    @behaviour RoutingPolicy
+    @impl true
+    def route(_task_type, _capabilities), do: raise("policy module exploded")
+  end
+
+  # NotAPolicy: defines a module but does not export route/2.
+  defmodule NotAPolicy do
+  end
+
+  # =============================================================================
+  # Tests for TRD-006 (RoutingPolicy behaviour + Router.policy/3)
+  # =============================================================================
+
+  describe "AdapterCatalog.routing_snapshot/1" do
+    test "returns entries in registration order with name/adapter/capabilities/available fields" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(CheapSlowAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(UnavailableAdapter, catalog)
+
+      snapshot = AdapterCatalog.routing_snapshot(catalog)
+
+      assert [
+               %{
+                 name: :cheap_fast_adapter,
+                 adapter: CheapFastAdapter,
+                 capabilities: capabilities_fast,
+                 available: true
+               },
+               %{
+                 name: :cheap_slow_adapter,
+                 adapter: CheapSlowAdapter,
+                 capabilities: capabilities_slow,
+                 available: true
+               },
+               %{
+                 name: :unavailable_adapter,
+                 adapter: UnavailableAdapter,
+                 capabilities: capabilities_unavail,
+                 available: false
+               }
+             ] = snapshot
+
+      # Capabilities are the validated maps captured at registration.
+      assert capabilities_fast.supported_contexts == [:code]
+      assert capabilities_fast.cost_per_call == 0.001
+      assert capabilities_slow.supported_contexts == [:code]
+      assert capabilities_unavail.supported_contexts == [:code]
+    end
+
+    test "returns [] for an empty catalog" do
+      catalog = start_test_catalog()
+      assert AdapterCatalog.routing_snapshot(catalog) == []
+    end
+
+    test "removes a snapshot entry on unregister" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      :ok = AdapterCatalog.unregister(CheapFastAdapter, catalog)
+
+      assert AdapterCatalog.routing_snapshot(catalog) == []
+    end
+  end
+
+  describe "Router.policy/3 — registered available choice" do
+    test "preserves the policy's available selection as the first candidate followed by auto-ranked fallbacks" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(ExpensiveFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(CheapSlowAdapter, catalog)
+
+      {:ok, candidates} =
+        Router.policy(%{}, [catalog: catalog, task_type: :code], PickCheapFastPolicy)
+
+      # Primary is the policy's available choice.
+      assert {CheapFastAdapter, true} = hd(candidates)
+
+      # Fallbacks are auto-ranked available task-type-matching adapters
+      # (CheapFast excluded as it is the primary). Cost tiebreak sorts
+      # CheapSlow (0.001) ahead of ExpensiveFast (0.5).
+      assert [
+               {CheapFastAdapter, true},
+               {CheapSlowAdapter, true},
+               {ExpensiveFastAdapter, true}
+             ] = candidates
+    end
+
+    test "preserves the available choice first when no auto-ranked fallbacks exist" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(WrongContextAdapter, catalog)
+
+      {:ok, candidates} =
+        Router.policy(%{}, [catalog: catalog, task_type: :code], PickCheapFastPolicy)
+
+      assert [{CheapFastAdapter, true}] = candidates
+    end
+  end
+
+  describe "Router.policy/3 — unknown policy choice" do
+    test "returns {:error, :backend_not_found} when the policy names an unregistered backend" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(CheapSlowAdapter, catalog)
+
+      assert {:error, :backend_not_found} =
+               Router.policy(%{}, [catalog: catalog, task_type: :code], PickUnknownPolicy)
+    end
+  end
+
+  describe "Router.policy/3 — unavailable primary plus ordered fallback metadata" do
+    test "preserves the unavailable policy choice as the first candidate with available=false" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(UnavailableAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(CheapSlowAdapter, catalog)
+
+      {:ok, candidates} =
+        Router.policy(%{}, [catalog: catalog, task_type: :code], PickUnavailablePolicy)
+
+      # Primary is the policy's unavailable choice — preserved as first
+      # candidate so the Invocation layer can decide whether to skip per
+      # the resolved failure policy.
+      assert {UnavailableAdapter, false} = hd(candidates)
+
+      # Remaining fallbacks are auto-ranked available task-type-matching
+      # adapters: CheapFast (cost 0.001, latency 100) outranks CheapSlow
+      # (cost 0.001, latency 1000) on latency.
+      assert [
+               {UnavailableAdapter, false},
+               {CheapFastAdapter, true},
+               {CheapSlowAdapter, true}
+             ] = candidates
+    end
+
+    test "returns {:ok, [{unavailable, false}]} when no auto-ranked fallbacks exist" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(UnavailableAdapter, catalog)
+
+      {:ok, candidates} =
+        Router.policy(%{}, [catalog: catalog, task_type: :code], PickUnavailablePolicy)
+
+      assert [{UnavailableAdapter, false}] = candidates
+    end
+  end
+
+  describe "Router.policy/3 — preconditions and error handling" do
+    test "returns {:error, :no_available_backend} when policy_module is nil" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+
+      assert {:error, :no_available_backend} =
+               Router.policy(%{}, [catalog: catalog, task_type: :code], nil)
+    end
+
+    test "returns {:error, :no_available_backend} when policy_module does not export route/2" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+
+      assert {:error, :no_available_backend} =
+               Router.policy(%{}, [catalog: catalog, task_type: :code], NotAPolicy)
+    end
+
+    test "returns {:error, :no_available_backend} when the catalog is empty" do
+      catalog = start_test_catalog()
+
+      assert {:error, :no_available_backend} =
+               Router.policy(%{}, [catalog: catalog, task_type: :code], PickCheapFastPolicy)
+    end
+
+    test "captures policy_module exceptions as {:error, {:policy_module_raised, kind, reason}}" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+
+      assert {:error, {:policy_module_raised, _kind, _reason}} =
+               Router.policy(%{}, [catalog: catalog, task_type: :code], RaisingPolicy)
     end
   end
 end
