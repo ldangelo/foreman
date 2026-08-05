@@ -122,10 +122,25 @@ defmodule ForemanServer.Aggregate.Actor do
     aggregate_id = state.aggregate_id
     event_id = event_id_for(aggregate_id, cmd)
 
-    if event_id && duplicate_in_stream?(aggregate_id, event_id) do
-      {:reply, {:ok, existing_event_spec(aggregate_id, event_id)}, state}
-    else
-      do_dispatch(state, cmd, state.version, @max_conflict_retries)
+    # Only commands with a deterministic event_id can be idempotent.
+    # Commands without one bypass the lookup entirely so a transient read
+    # error can never reject a valid non-idempotent command, and we avoid
+    # scanning long streams for nothing.
+    case event_id do
+      nil ->
+        do_dispatch(state, cmd, state.version, @max_conflict_retries)
+
+      binary when is_binary(binary) ->
+        case find_event_by_id(aggregate_id, event_id) do
+          {:ok, event_spec} ->
+            {:reply, {:ok, event_spec}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+
+          :not_found ->
+            do_dispatch(state, cmd, state.version, @max_conflict_retries)
+        end
     end
   end
 
@@ -157,22 +172,10 @@ defmodule ForemanServer.Aggregate.Actor do
 
           {:error, ^ref, :duplicate_event, append_latency_ms}
           when not is_nil(event_id) ->
-            {:reply,
-             {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
-              %{append_latency_ms: append_latency_ms}}, state}
+            handle_duplicate_event(state, aggregate_id, event_id, append_latency_ms)
 
           {:error, ^ref, :duplicate_event} when not is_nil(event_id) ->
-            {:reply,
-             {:telemetry, {:ok, existing_event_spec(aggregate_id, event_id)},
-              %{append_latency_ms: 0}}, state}
-
-          {:error, ^ref, :duplicate_event, append_latency_ms} ->
-            {:reply,
-             {:telemetry, {:ok, event_spec}, %{append_latency_ms: append_latency_ms}}, state}
-
-          {:error, ^ref, :duplicate_event} ->
-            {:reply,
-             {:telemetry, {:ok, event_spec}, %{append_latency_ms: 0}}, state}
+            handle_duplicate_event(state, aggregate_id, event_id, 0)
 
           {:error, ^ref, :wrong_expected_version, append_latency_ms}
           when retries_left > 0 ->
@@ -302,7 +305,10 @@ defmodule ForemanServer.Aggregate.Actor do
   # Uses SHA-256 to produce a valid 32-hex-char UUID string.
   # The same {aggregate_id, command_id} always produces the same event_id.
   defp derive_event_id(aggregate_id, command_id) do
-    <<first16::binary-size(16), _::binary>> = :crypto.hash(:sha256, aggregate_id <> command_id)
+    # NUL-delimited input guarantees that distinct (aggregate_id, command_id)
+    # pairs cannot collide through concatenation. For example,
+    # `{"ab", "c"}` and `{"a", "bc"}` produce different SHA-256 digests.
+    <<first16::binary-size(16), _::binary>> = :crypto.hash(:sha256, aggregate_id <> "\0" <> command_id)
     <<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8, b8::8,
       b9::8, b10::8, b11::8, b12::8, b13::8, b14::8, b15::8>> =
       first16
@@ -314,23 +320,66 @@ defmodule ForemanServer.Aggregate.Actor do
                                      b8::8, b9::8, b10::8, b11::8, b12::8, b13::8, b14::8, b15::8>>)
   end
 
-  # Check if an event with the given event_id already exists in the aggregate's stream.
-  # Uses read_stream_forward (works with current EventStore schema) instead of
-  # the broken read_event_by_id (queries non-existent event_number column).
-  defp duplicate_in_stream?(aggregate_id, event_id) do
-    case EventStore.read_stream_forward(aggregate_id, 0, 100) do
+  # Page through the stream looking for an event with the given event_id.
+  # Returns `{:ok, event_spec}` when found, `:not_found` when the stream
+  # has been exhausted without a match, or `{:error, reason}` if the read
+  # fails (in which case the caller MUST NOT decide or append).
+  @stream_page_size 100
+  defp find_event_by_id(stream_id, event_id) do
+    find_event_by_id(stream_id, event_id, 0)
+  end
+
+  defp find_event_by_id(stream_id, event_id, start_version) do
+    case EventStore.read_stream_forward(stream_id, start_version, @stream_page_size) do
+      {:ok, []} ->
+        :not_found
+
       {:ok, events} ->
-        Enum.any?(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end)
-      {:error, _} ->
-        false
+        case Enum.find(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end) do
+          nil -> find_event_by_id(stream_id, event_id, start_version + length(events))
+          recorded -> {:ok, recorded_event_to_event_spec(recorded)}
+        end
+
+      {:error, :stream_not_found} ->
+        :not_found
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  # Find and return the event_spec for an existing event by its event_id.
-  # Reads the aggregate's stream and returns the matching event's spec.
-  defp existing_event_spec(aggregate_id, event_id) do
-    {:ok, events} = EventStore.read_stream_forward(aggregate_id, 0, 100)
-    recorded = Enum.find(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end)
-    recorded_event_to_event_spec(recorded)
+  # Synchronous helper used by the duplicate_event receive branches.
+  # Returns the original persisted event_spec when found, or
+  # `{:error, reason}` otherwise. By definition of `:duplicate_event`
+  # the persisted event must exist; a missing or read-error is reported
+  # so the actor does not pretend a successful commit and HTTP callers
+  # see the failure with the original event type/resource preserved.
+  defp lookup_persisted_event_spec(aggregate_id, event_id) do
+    case find_event_by_id(aggregate_id, event_id) do
+      {:ok, _spec} = ok -> ok
+      :not_found -> {:error, :not_found}
+      {:error, _reason} = err -> err
+    end
+  end
+
+  # Resolve a duplicate-event response. By definition the persisted event
+  # already exists, so we look it up, reload the aggregate to the stream's
+  # authoritative version, and return the original spec. The reload is
+  # required because :duplicate_event proves the stream contains an
+  # append this actor never confirmed or applied — leaving in-memory
+  # state stale would violate event-log-as-source-of-truth and cause
+  # the next command (before any future conflict) to use a wrong
+  # expected_version. If the reload fails, we surface the failure
+  # rather than fabricating success.
+  defp handle_duplicate_event(state, aggregate_id, event_id, append_latency_ms) do
+    with {:ok, persisted} <- lookup_persisted_event_spec(aggregate_id, event_id),
+         {:ok, %{state: rehydrated}} <- reload_after_conflict(state) do
+      {:reply,
+       {:telemetry, {:ok, persisted}, %{append_latency_ms: append_latency_ms}}, rehydrated}
+    else
+      {:error, reason} ->
+        {:reply,
+         {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
+    end
   end
 end

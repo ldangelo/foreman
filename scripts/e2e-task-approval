@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# scripts/e2e-task-approval
+#
+# End-to-end smoke for the task-approval slice. Exercises the full path
+# from the Go CLI through the Phoenix ingress to the event-sourced
+# projection store.
+#
+#   1. project.register           (via curl — the Go CLI does not yet
+#                                  expose project.register; this is
+#                                  honest about current CLI surface.
+#                                  Project.handle_command requires
+#                                  payload.path, so we point at a
+#                                  temp dir.)
+#   2. task.create                (Go CLI)
+#   3. task.approve               (Go CLI; --command-id pins a known
+#                                  approval_id so the run_id is
+#                                  deterministic and assertable)
+#   4. GET /api/tasks/:id         (verify TaskApproved landed)
+#   5. derive run_id server-side  and GET /api/runs/:id
+#                                  (verify RunStarted landed)
+#
+# Requirements:
+#   - Phoenix server reachable at FOREMAN_API_URL
+#   - Workflow catalog installed under the server's workflow dir
+#   - Postgres reachable on the server's DATABASE_URL
+#   - jq, curl, shasum (or sha256sum)
+#
+# Exit codes:
+#   0  all assertions passed
+#   1  environment misconfigured
+#   2  step failed (response body printed to stderr)
+#   3  unexpected server / assertion failure
+
+set -euo pipefail
+
+API="${FOREMAN_API_URL:-http://127.0.0.1:4000}"
+CLINAME="${FOREMAN_CLI:-./foreman}"
+say() { printf '\n\033[1;34m== %s ==\033[0m\n' "$*"; }
+die() { echo "fatal: $*" >&2; exit "${2:-1}"; }
+
+# ---- preflight ----
+command -v jq >/dev/null     || die "jq is required"
+command -v curl >/dev/null   || die "curl is required"
+command -v mktemp >/dev/null || die "mktemp is required"
+
+
+# Pick a portable SHA-256. macOS ships `shasum -a 256`; Linux distros
+# ship `sha256sum`. Prefer sha256sum when present (faster, no -a flag).
+# The helper reads from STDIN so callers can pipe real bytes
+# (e.g. printf '%s\0%s' — double-quoted shell strings do NOT turn
+# `\0` into a NUL byte, so we MUST pipe).
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_stdin() { sha256sum | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_stdin() { shasum -a 256 | awk '{print $1}'; }
+else
+  die "neither sha256sum nor shasum found"
+fi
+
+if [[ ! -x "$CLINAME" ]]; then
+  if command -v go >/dev/null 2>&1; then
+    say "building $CLINAME"
+    (cd packages/foreman_cli && go build -o ../../foreman ./cmd/foreman) \
+      || die "go build failed"
+  else
+    die "$CLINAME not found and go is not installed"
+  fi
+fi
+
+# ---- server liveness ----
+code=$(curl -s -o /dev/null -w "%{http_code}" "${API}/api/tasks/__no_such_id__" || echo "000")
+case "$code" in
+  200|201|400|401|404) ;; # reachable
+  *) die "cannot reach ${API} (HTTP $code)" ;;
+esac
+
+# ---- stable ids + temp project path ----
+SUFFIX="$(date +%s)-$$"
+PROJECT_ID="proj-e2e-${SUFFIX}"
+TASK_ID="task-e2e-${SUFFIX}"
+TASK_TYPE="implement"
+APPROVAL_ID="approval-e2e-${SUFFIX}"
+
+# Project.handle_command requires a non-empty `path`. Point at a
+# scratch dir we clean up on exit. PROJECT_PATH is intentionally
+# absolute (Linux and macOS mktemp -d both return absolute paths).
+PROJECT_PATH=$(mktemp -d -t foreman-e2e.XXXXXX)
+trap 'rm -rf "$PROJECT_PATH"' EXIT
+
+# Derive the run_id the same way ForemanServer.Identity.run_id/2 does:
+#   run_id = "run-" + sha256(task_id <> "\0" <> approval_id)[0:32]
+EXPECTED_RUN_ID="run-$(printf '%s\0%s' "$TASK_ID" "$APPROVAL_ID" | sha256_stdin | cut -c1-32)"
+
+# Extract a top-level field from a JSON document; assert on absence.
+field() {
+  local body="$1" path="$2"
+  printf '%s' "$body" | jq -er "${path}" 2>/dev/null
+}
+
+require_field() {
+  local body="$1" path="$2"
+  local val
+  val=$(field "$body" "$path") || {
+    echo "fatal: response missing ${path}: $body" >&2
+    exit 2
+  }
+  printf '%s' "$val"
+}
+
+# Send a raw JSON envelope to /api/commands via curl. Used for
+# project.register, which the Go CLI does not yet expose.
+post_command() {
+  local body="$1"
+  curl -sS -X POST "${API}/api/commands" \
+    -H "Content-Type: application/json" \
+    -d "$body"
+}
+
+# ---- step 1: project.register ----
+say "1/5  project.register  ${PROJECT_ID}  (path=${PROJECT_PATH})"
+out=$(post_command "$(jq -nc \
+  --arg id "$PROJECT_ID" \
+  --arg path "$PROJECT_PATH" \
+  '{
+     type:"project.register",
+     payload:{project_id:$id, name:$id, path:$path, status:"active"}
+   }')")
+status=$(require_field "$out" ".status")
+[[ "$status" == "accepted" ]] || die "project.register: status=$status: $out"
+echo "  -> accepted"
+
+# ---- step 2: task.create ----
+say "2/5  task.create  ${TASK_ID}"
+out=$("$CLINAME" task create \
+  -id "$TASK_ID" \
+  -project "$PROJECT_ID" \
+  -title "e2e task" \
+  -task-type "$TASK_TYPE") || die "task create: $out"
+status=$(require_field "$out" ".status")
+[[ "$status" == "accepted" ]] || die "task.create: status=$status: $out"
+echo "  -> accepted"
+
+# ---- step 3: task.approve ----
+say "3/5  task.approve  ${TASK_ID}  (approval_id=${APPROVAL_ID})"
+out=$("$CLINAME" task approve \
+  -id "$TASK_ID" \
+  -approved-by e2e-runner \
+  -command-id "$APPROVAL_ID") || die "task approve: $out"
+status=$(require_field "$out" ".status")
+[[ "$status" == "accepted" ]] || die "task.approve: status=$status: $out"
+echo "  -> accepted"
+wait_for_task_status() {
+  local task_id="$1" target="$2" timeout_ms="${3:-15000}"
+  local deadline=$(( $(date +%s%N) + timeout_ms * 1000000 ))
+  while :; do
+    local out
+    out=$("$CLINAME" task get "$task_id" 2>/dev/null || true)
+    local current
+    current=$(printf '%s' "$out" | jq -er ".task.status // empty" 2>/dev/null) || current=""
+    case " $current " in
+      *" $target "*) return 0 ;;
+      *) ;;
+    esac
+    if [[ $(date +%s%N) -ge $deadline ]]; then
+      echo "fatal: task $task_id did not reach status=$target (last: $current): $out" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+# ---- step 4: GET /api/tasks/:id → approve lands as 'ready', then the
+# Dispatcher dispatches 'task.dispatch' which projects status to
+# 'in_progress'. Poll for the dispatched transition so step 4 also
+# exercises the approval → dispatch bridge end-to-end. ----
+say "4/5  GET /api/tasks/${TASK_ID} → status=ready then in_progress"
+wait_for_task_status "$TASK_ID" "ready in_progress" 8000 \
+  || die "task ${TASK_ID} did not reach ready"
+out=$("$CLINAME" task get "$TASK_ID") || die "task get: $out"
+status=$(require_field "$out" ".task.status")
+case "$status" in
+  ready|in_progress) ;;
+  *) die "expected task.status in {ready,in_progress} after approve, got '$status': $out" ;;
+esac
+echo "  -> $status"
+
+# ---- step 5: derive run_id and poll until RunStarted projects a run ----
+say "5/5  GET /api/runs/${EXPECTED_RUN_ID} (poll until run exists)"
+deadline=$(( $(date +%s) + 15 ))
+run_body=""
+code=000
+while [[ $(date +%s) -lt $deadline ]]; do
+  code=$(curl -s -o /tmp/e2e-run.json -w "%{http_code}" \
+    "${API}/api/runs/${EXPECTED_RUN_ID}" || echo "000")
+  run_body=$(cat /tmp/e2e-run.json 2>/dev/null || true)
+  if [[ "$code" == "200" ]]; then break; fi
+  sleep 0.2
+done
+[[ "$code" == "200" ]] || die "run get returned HTTP $code: $run_body"
+run_status=$(require_field "$run_body" ".status")
+echo "  -> ${run_status} (run_id=${EXPECTED_RUN_ID})"
+case "$run_status" in
+  started|completed|failed|in_progress|ready|queued) ;;
+  *) die "unexpected run status: $run_status" ;;
+esac
+
+echo
+echo "e2e task-approval: PASSED"

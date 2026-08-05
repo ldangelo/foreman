@@ -8,7 +8,8 @@ defmodule ForemanServer.Operations do
   """
 
   alias ForemanServer.Commands.{CompleteRun}
-  alias ForemanServer.ProjectionStore
+
+  alias ForemanServer.{CommandGateway, ProjectionStore}
 
   @doc """
   Read the projected state for a run_id from `ProjectionStore`.
@@ -34,8 +35,7 @@ defmodule ForemanServer.Operations do
       %{run_id: run_id}
       |> maybe_put(:detected_at_ms, Keyword.get(opts, :detected_at_ms))
       |> maybe_put(:detector, Keyword.get(opts, :detector))
-
-    ForemanServer.CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       aggregate_id: "recovery:#{run_id}",
       type: "recovery.detected",
       payload: payload
@@ -52,7 +52,7 @@ defmodule ForemanServer.Operations do
       %{run_id: run_id, sequence: Keyword.get(opts, :sequence, 1)}
       |> maybe_put(:status, Keyword.get(opts, :status, "completed"))
 
-    ForemanServer.CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       aggregate_id: "run:#{run_id}",
       type: "run.complete",
       payload: payload

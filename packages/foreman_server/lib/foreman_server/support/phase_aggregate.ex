@@ -11,7 +11,14 @@ defmodule ForemanServer.AC1PhaseAggregate do
 
   # StartPhase: initial command
   def execute(%__MODULE__{status: nil}, %ForemanServer.Commands.StartPhase{} = cmd) do
-    %PhaseStarted{phase_id: cmd.phase_id, run_id: cmd.run_id}
+    %PhaseStarted{
+      phase_id: cmd.phase_id,
+      run_id: cmd.run_id,
+      index: cmd.index || 1,
+      name: cmd.name || "phase",
+      attempt: cmd.attempt || 1,
+      artifact_template: cmd.artifact_template || "{run.id}.md"
+    }
   end
 
   def execute(%__MODULE__{status: s}, %ForemanServer.Commands.StartPhase{})
@@ -20,8 +27,15 @@ defmodule ForemanServer.AC1PhaseAggregate do
   end
 
   # CompletePhase: from :running
-  def execute(%__MODULE__{status: :running}, %ForemanServer.Commands.CompletePhase{}) do
-    %PhaseCompleted{}
+  def execute(%__MODULE__{status: :running}, %ForemanServer.Commands.CompletePhase{} = cmd) do
+    %PhaseCompleted{
+      phase_id: cmd.phase_id,
+      run_id: cmd.run_id || "",
+      index: cmd.index || 1,
+      artifact_path: cmd.artifact_path || "",
+      artifact_sha256: cmd.artifact_sha256 || "",
+      artifact_bytes: cmd.artifact_bytes || 0
+    }
   end
 
   def execute(%__MODULE__{status: s}, %ForemanServer.Commands.CompletePhase{})

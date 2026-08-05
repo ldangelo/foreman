@@ -86,15 +86,21 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   end
 
   defp do_execute(request, executable, timeout_ms) when is_binary(executable) do
-    # The shell wrapper (see comment near Port.open below) means a missing
-    # executable no longer surfaces as `:enoent` from Port.open/2 — `/bin/sh`
-    # itself always exists and exits non-zero instead. So check file presence
-    # up front and short-circuit with the same `{:enoent, _}` error shape that
-    # callers already pattern-match on.
-    unless executable_file?(executable) do
-      {:error, {:enoent, executable}}
-    else
-      do_execute_port(request, executable, timeout_ms)
+    case require_working_directory(request) do
+      :ok ->
+        # The shell wrapper (see comment near Port.open below) means a missing
+        # executable no longer surfaces as `:enoent` from Port.open/2 — `/bin/sh`
+        # itself always exists and exits non-zero instead. So check file presence
+        # up front and short-circuit with the same `{:enoent, _}` error shape that
+        # callers already pattern-match on.
+        unless executable_file?(executable) do
+          {:error, {:enoent, executable}}
+        else
+          do_execute_port(request, executable, timeout_ms)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -135,8 +141,15 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
       #      that noisy `pi` diagnostics (`[pi-yaml-hooks] ...`, TUI init
       #      messages) never leak into the returned payload — PRD AC-003-1
       #      requires the adapter to return the final text result only.
+      cd_clause =
+        case working_directory(request) do
+          nil -> ""
+          dir -> "cd " <> shell_quote(dir) <> " && "
+        end
+
       sh_cmd =
-        "exec " <>
+        cd_clause <>
+          "exec " <>
           shell_quote(executable) <>
           " " <>
           Enum.map_join(argv, " ", &shell_quote/1) <>
@@ -371,4 +384,32 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   defp status_from_reason({:non_zero_exit, _}), do: :non_zero_exit
   defp status_from_reason({:enoent, _}), do: :unavailable
   defp status_from_reason(:timeout), do: :timeout
+  defp status_from_reason({:invalid_request, _}), do: :invalid_request
+  defp status_from_reason({:invalid_working_directory, _, _}), do: :invalid_working_directory
+  defp status_from_reason(_), do: :failed
+  defp require_working_directory(request) do
+    case working_directory(request) do
+      nil -> {:error, {:invalid_request, :missing_working_directory}}
+      dir -> verify_directory(dir)
+    end
+  end
+
+  defp verify_directory(dir) do
+    case File.stat(dir) do
+      {:ok, %{type: :directory}} -> :ok
+      {:ok, %{type: other}} -> {:error, {:invalid_working_directory, :not_a_directory, other}}
+      {:error, :enoent} -> {:error, {:invalid_working_directory, :missing, dir}}
+      {:error, reason} -> {:error, {:invalid_working_directory, reason, dir}}
+    end
+  end
+
+  defp working_directory(%{context: context}) when is_map(context) do
+    case Map.get(context, "working_directory") || Map.get(context, :working_directory) do
+      dir when is_binary(dir) and dir != "" -> dir
+      _ -> nil
+    end
+  end
+
+  defp working_directory(_), do: nil
 end
+

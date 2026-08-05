@@ -28,7 +28,7 @@ defmodule ForemanServer.ProjectionStore do
   use GenServer
 
   alias EventStore.{EventData, RecordedEvent}
-  alias ForemanServer.EventStore
+  alias ForemanServer.{EventCodec, EventStore}
 
   @active_run_statuses ["in_progress"]
 
@@ -66,9 +66,39 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:apply_events, events, resolve_now_ms_fun()})
   end
 
+  @spec subscribe() :: :ok
+  def subscribe do
+    GenServer.call(__MODULE__, :subscribe)
+  end
+
+  @doc "Return the projected state for a run, or nil if not found."
+  @doc "Return the projected state for a task, or nil if not found."
+  @spec task_projection(String.t()) :: map() | nil
+  def task_projection(task_id) when is_binary(task_id) and task_id != "" do
+    GenServer.call(__MODULE__, {:task_projection, task_id})
+  end
+
+  @doc "Return the projected state for a phase, or nil if not found."
+  @spec phase_projection(String.t()) :: map() | nil
+  def phase_projection(phase_id) when is_binary(phase_id) and phase_id != "" do
+    GenServer.call(__MODULE__, {:phase_projection, phase_id})
+  end
+
+  @doc "Return the ordered phase projections for a run."
+  @spec phases_for_run(String.t()) :: [map()]
+  def phases_for_run(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:phases_for_run, run_id})
+  end
+
+  @doc "Return workflow-eligible tasks (`ready` and `in_progress`) for dispatcher reconciliation."
+  @spec list_workflow_tasks() :: [map()]
+  def list_workflow_tasks do
+    GenServer.call(__MODULE__, :list_workflow_tasks)
+  end
+
   @doc "Return the projected state for a run, or nil if not found."
   @spec run_projection(String.t()) :: map() | nil
-  def run_projection(run_id) when is_binary(run_id) do
+  def run_projection(run_id) when is_binary(run_id) and run_id != "" do
     GenServer.call(__MODULE__, {:run_projection, run_id})
   end
 
@@ -144,7 +174,29 @@ defmodule ForemanServer.ProjectionStore do
     new_state =
       Enum.reduce(events, state, fn event, acc -> apply_event(acc, event, now_ms_fun) end)
 
+    new_state = broadcast_events(new_state, events)
     {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call(:subscribe, {pid, _ref}, state) do
+    Process.put(:projection_subscribers, Map.put(state.subscribers, pid, true))
+    Process.monitor(pid)
+    {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, true)}}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+  end
+
+  defp broadcast_events(state, events) do
+    for event <- events,
+        pid <- Map.keys(state.subscribers) do
+      send(pid, {:projection_event, event})
+    end
+
+    state
   end
 
   @impl true
@@ -176,10 +228,41 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:task_projection, task_id}, _from, state) do
+    {:reply, Map.get(state.tasks, task_id), state}
+  end
+
+  @impl true
+  def handle_call({:phase_projection, phase_id}, _from, state) do
+    {:reply, Map.get(state.phases, phase_id), state}
+  end
+
+  @impl true
+  def handle_call({:phases_for_run, run_id}, _from, state) do
+    phases =
+      state.phases
+      |> Map.values()
+      |> Enum.filter(fn phase -> get(phase, :run_id) == run_id end)
+      |> Enum.sort_by(fn phase -> get(phase, :index, 0) end)
+
+    {:reply, phases, state}
+  end
+
+  @impl true
+  def handle_call(:list_workflow_tasks, _from, state) do
+    tasks =
+      state.tasks
+      |> Map.values()
+      |> Enum.filter(fn task -> get(task, :status) in ["ready", "in_progress"] end)
+      |> Enum.sort_by(fn task -> get(task, :task_id, "") end)
+
+    {:reply, tasks, state}
+  end
+
+  @impl true
   def handle_call(:list_scheduler_intents, _from, state) do
     {:reply, Map.values(state.scheduler_intents), state}
   end
-
   # -------------------------------------------------------------------------
   # Projection logic
   # -------------------------------------------------------------------------
@@ -197,7 +280,15 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp initial_state do
-    %{projects: %{}, runs: %{}, pr_associations: %{}, scheduler_intents: %{}}
+    %{
+      projects: %{},
+      runs: %{},
+      tasks: %{},
+      phases: %{},
+      pr_associations: %{},
+      scheduler_intents: %{},
+      subscribers: %{}
+    }
   end
 
   defp apply_event(state, %RecordedEvent{} = recorded, now_ms_fun) do
@@ -311,22 +402,31 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "RunStarted", payload) do
-    run_id = get(payload, :run_id)
+    case decode_for_projection("RunStarted", payload) do
+      %ForemanServer.Events.RunStarted{run_id: run_id} = event ->
+        if valid_id?(run_id) do
+          event_at_ms = payload_event_at_ms(payload)
 
-    if valid_id?(run_id) do
-      event_at_ms = payload_event_at_ms(payload)
+          run = %{
+            run_id: run_id,
+            task_id: event.task_id,
+            project_id: event.project_id,
+            workflow_name: event.workflow_name,
+            workflow_digest: event.workflow_digest,
+            workflow_snapshot: event.workflow_snapshot,
+            phase_ids: [],
+            last_sequence: event.sequence,
+            status: "in_progress",
+            terminal?: false,
+            started_at_ms: event_at_ms,
+            last_event_at_ms: event_at_ms,
+            failure_reason: nil
+          }
 
-      run =
-        base_run_projection(run_id, event_at_ms)
-        |> Map.put(:status, "in_progress")
-        |> Map.put(:task_id, get(payload, :task_id))
-        |> Map.put(:started_at_ms, event_at_ms)
-        |> Map.put(:last_event_at_ms, event_at_ms)
-        |> Map.put(:terminal?, false)
-
-      put_state(state, state.projects, Map.put(state.runs, run_id, run))
-    else
-      state
+          put_state(state, state.projects, Map.put(state.runs, run_id, run))
+        else
+          state
+        end
     end
   end
 
@@ -357,15 +457,97 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "PhaseStarted", payload) do
-    touch_run_for_payload(state, payload)
+    case decode_for_projection("PhaseStarted", payload) do
+      %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event
+      when not is_nil(phase_id) and phase_id != "" and not is_nil(run_id) and run_id != "" ->
+        phase = %{
+          phase_id: phase_id,
+          run_id: run_id,
+          index: event.index,
+          name: event.name,
+          attempt: event.attempt,
+          status: "in_progress",
+          artifact_template: event.artifact_template,
+          artifact: nil,
+          failure_reason: nil,
+          last_sequence: event.sequence,
+          started_at_ms: payload_event_at_ms(payload),
+          last_event_at_ms: payload_event_at_ms(payload)
+        }
+
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
+        |> append_phase_id_to_run(run_id, phase_id)
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
   end
+
+  defp append_phase_id_to_run(state, run_id, phase_id) do
+    case Map.get(state.runs, run_id) do
+      nil ->
+        state
+
+      run ->
+        existing = Map.get(run, :phase_ids, [])
+
+        if phase_id in existing do
+          state
+        else
+          updated = %{run | phase_ids: existing ++ [phase_id]}
+          %{state | runs: Map.put(state.runs, run_id, updated)}
+        end
+    end
+  end
+
 
   defp apply_event_by_type(state, "PhaseCompleted", payload) do
-    touch_run_for_payload(state, payload)
+    case decode_for_projection("PhaseCompleted", payload) do
+      %ForemanServer.Events.PhaseCompleted{phase_id: phase_id} = event
+      when not is_nil(phase_id) and phase_id != "" ->
+        phase =
+          state.phases
+          |> Map.get(phase_id, %{})
+          |> Map.put(:status, "completed")
+          |> Map.put(:artifact, %{
+            path: event.artifact_path,
+            sha256: event.artifact_sha256,
+            bytes: event.artifact_bytes
+          })
+          |> Map.put(:last_sequence, event.sequence)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
   end
 
+
   defp apply_event_by_type(state, "PhaseFailed", payload) do
-    touch_run_for_payload(state, payload)
+    case decode_for_projection("PhaseFailed", payload) do
+      %ForemanServer.Events.PhaseFailed{phase_id: phase_id} = event
+      when not is_nil(phase_id) and phase_id != "" ->
+        phase =
+          state.phases
+          |> Map.get(phase_id, %{})
+          |> Map.put(:status, "failed")
+          |> Map.put(:failure_reason, event.reason)
+          |> Map.put(:last_sequence, event.sequence)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
   end
 
   defp apply_event_by_type(state, "PhaseTimedOut", payload) do
@@ -374,6 +556,106 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, "PhaseRetried", payload) do
     touch_run_for_payload(state, payload)
+  end
+
+  defp apply_event_by_type(state, "TaskCreated", payload) do
+    case decode_for_projection("TaskCreated", payload) do
+      %ForemanServer.Events.TaskCreated{task_id: task_id} = event ->
+        task = %{
+          task_id: task_id,
+          project_id: event.project_id,
+          title: event.title,
+          description: event.description,
+          priority: event.priority,
+          status: event.status,
+          task_type: event.task_type,
+          approval_id: nil,
+          approved_by: nil,
+          approved_at: nil,
+          run_id: nil,
+          workflow_snapshot: nil,
+          failure_reason: nil,
+          created_at_ms: payload_event_at_ms(payload),
+          last_event_at_ms: payload_event_at_ms(payload)
+        }
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskUpdated", payload) do
+    case decode_for_projection("TaskUpdated", payload) do
+      %ForemanServer.Events.TaskUpdated{task_id: task_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> maybe_put(:status, event.status)
+          |> maybe_put(:priority, event.priority)
+          |> maybe_put(:title, event.title)
+          |> maybe_put(:description, event.description)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskApproved", payload) do
+    case decode_for_projection("TaskApproved", payload) do
+      %ForemanServer.Events.TaskApproved{task_id: task_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "ready")
+          |> Map.put(:approval_id, event.approval_id)
+          |> Map.put(:approved_by, event.approved_by)
+          |> Map.put(:approved_at, event.approved_at)
+          |> Map.put(:run_id, event.run_id)
+          |> Map.put(:workflow_snapshot, event.workflow_snapshot)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskDispatched", payload) do
+    case decode_for_projection("TaskDispatched", payload) do
+      %ForemanServer.Events.TaskDispatched{task_id: task_id} ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "in_progress")
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskExecutionCompleted", payload) do
+    case decode_for_projection("TaskExecutionCompleted", payload) do
+      %ForemanServer.Events.TaskExecutionCompleted{task_id: task_id} ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "closed")
+          |> Map.put(:failure_reason, nil)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskExecutionFailed", payload) do
+    case decode_for_projection("TaskExecutionFailed", payload) do
+      %ForemanServer.Events.TaskExecutionFailed{task_id: task_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "failed")
+          |> Map.put(:failure_reason, event.reason)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
   end
 
   defp apply_event_by_type(state, "WorkerStarted", payload) do
@@ -517,6 +799,8 @@ defmodule ForemanServer.ProjectionStore do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       run
       |> maybe_put(:task_id, get(payload, :task_id))
+      |> maybe_put(:failure_reason, get(payload, :reason))
+      |> Map.update(:last_sequence, get(payload, :sequence), & &1)
       |> Map.put(:status, status)
       |> Map.put(:terminal?, true)
     end)
@@ -527,6 +811,7 @@ defmodule ForemanServer.ProjectionStore do
       run
     end)
   end
+
 
   defp update_run_projection(state, run_id, event_at_ms, updater) when is_function(updater, 1) do
     if valid_id?(run_id) do
@@ -548,9 +833,16 @@ defmodule ForemanServer.ProjectionStore do
       run_id: run_id,
       status: "in_progress",
       task_id: nil,
+      project_id: nil,
+      workflow_name: nil,
+      workflow_digest: nil,
+      workflow_snapshot: nil,
+      phase_ids: [],
+      last_sequence: nil,
       started_at_ms: now_ms,
       last_event_at_ms: now_ms,
-      terminal?: false
+      terminal?: false,
+      failure_reason: nil
     }
   end
 
@@ -564,14 +856,10 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp put_state(state, projects, runs) do
-    pr_associations = Map.get(state, :pr_associations, %{})
-    scheduler_intents = Map.get(state, :scheduler_intents, %{})
-
     %{
-      projects: projects,
-      runs: runs,
-      pr_associations: pr_associations,
-      scheduler_intents: scheduler_intents
+      state
+      | projects: projects,
+        runs: runs
     }
   end
 
@@ -589,6 +877,21 @@ defmodule ForemanServer.ProjectionStore do
 
   defp with_event_at_ms(payload, event_at_ms) when is_map(payload) do
     Map.put(payload, :_projection_event_at_ms, event_at_ms)
+  end
+
+  # The EventCodec enforces a closed set of fields per typed event struct.
+  # `_projection_event_at_ms` is a projection-private timestamp we attach
+  # in `with_event_at_ms/2` so `payload_event_at_ms/1` can read it without
+  # coupling handlers to metadata storage. Strip it before decoding so
+  # typed-event validation does not reject the private key.
+  defp decode_for_projection(event_type, payload) when is_binary(event_type) and is_map(payload) do
+    EventCodec.decode!(event_type, drop_projection_meta(payload))
+  end
+
+  defp drop_projection_meta(payload) do
+    payload
+    |> Map.delete(:_projection_event_at_ms)
+    |> Map.delete("_projection_event_at_ms")
   end
 
   defp to_payload_map(%{} = payload) do
@@ -609,6 +912,7 @@ defmodule ForemanServer.ProjectionStore do
   defp init_now_ms_fun(_init_arg), do: resolve_now_ms_fun()
 
   defp normalize_now_ms_fun(nil), do: resolve_now_ms_fun()
+
   defp normalize_now_ms_fun(now_ms) when is_integer(now_ms), do: fn -> now_ms end
   defp normalize_now_ms_fun(now_ms_fun) when is_function(now_ms_fun, 0), do: now_ms_fun
 

@@ -16,7 +16,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, event_spec} =
       Run.handle_command(Run.initial_state(), %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-1"}
+        payload: %{run_id: run_id, task_id: "task-1", project_id: "project-test-run_id", workflow_snapshot: %{}}
       })
 
     state = Run.apply_event(Run.initial_state(), %{event_type: event_spec.event_type, payload: event_spec.payload})
@@ -36,7 +36,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-2"}
+        payload: %{run_id: run_id, task_id: "task-2", project_id: "project-test-run_id", workflow_snapshot: %{}}
       })
 
     started_state =
@@ -71,7 +71,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-3"}
+        payload: %{run_id: run_id, task_id: "task-3", project_id: "project-test-run_id", workflow_snapshot: %{}}
       })
 
     started_state =
@@ -107,7 +107,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-4"}
+        payload: %{run_id: run_id, task_id: "task-4", project_id: "project-test-run_id", workflow_snapshot: %{}}
       })
 
     started_state =
@@ -143,7 +143,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-5"}
+        payload: %{run_id: run_id, task_id: "task-5", project_id: "project-test-run_id", workflow_snapshot: %{}}
       })
 
     started_state =
@@ -190,7 +190,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-6"}
+        payload: %{run_id: run_id, task_id: "task-6", project_id: "project-test-run_id", workflow_snapshot: %{}}
       })
 
     started_state =
@@ -256,7 +256,7 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-a"}
+               payload: %{run_id: run_id, task_id: "task-a", project_id: "project-test-run_id", workflow_snapshot: %{}}
              })
 
     {state, version} = recover_state(run_id)
@@ -278,7 +278,7 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-b"}
+               payload: %{run_id: run_id, task_id: "task-b", project_id: "project-test-run_id", workflow_snapshot: %{}}
              })
 
     assert {:ok, _} =
@@ -309,7 +309,7 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-c"}
+               payload: %{run_id: run_id, task_id: "task-c", project_id: "project-test-run_id", workflow_snapshot: %{}}
              })
 
     assert {:ok, _} =
@@ -339,7 +339,7 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-d"}
+               payload: %{run_id: run_id, task_id: "task-d", project_id: "project-test-run_id", workflow_snapshot: %{}}
              })
 
     assert {:ok, _} =
@@ -374,7 +374,7 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-e"}
+               payload: %{run_id: run_id, task_id: "task-e", project_id: "project-test-run_id", workflow_snapshot: %{}}
              })
 
     assert {:ok, _} =
@@ -457,7 +457,7 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: stream,
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-race"}
+               payload: %{run_id: run_id, task_id: "task-race", project_id: "project-test-run_id", workflow_snapshot: %{}}
              })
 
     [{actor_pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream)

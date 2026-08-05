@@ -7,7 +7,7 @@ defmodule ForemanServer.ProjectStore do
   path; reads from the projection store.
   """
 
-  alias ForemanServer.{CommandRouter, ProjectionStore}
+  alias ForemanServer.{CommandGateway, ProjectionStore}
 
   def save(%{project_id: project_id} = payload) when is_binary(project_id) do
     type =
@@ -16,7 +16,7 @@ defmodule ForemanServer.ProjectStore do
         _ -> "project.update"
       end
 
-    CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       aggregate_id: "project:#{project_id}",
       type: type,
       payload: Map.put(payload, :project_id, project_id)
@@ -41,7 +41,7 @@ defmodule ForemanServer.ProjectStore do
   @doc "Archive a project."
   @spec archive(String.t()) :: {:ok, term()} | {:error, term()}
   def archive(project_id) when is_binary(project_id) do
-    CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       aggregate_id: "project:#{project_id}",
       type: "project.archive",
       payload: %{project_id: project_id}
@@ -51,7 +51,7 @@ defmodule ForemanServer.ProjectStore do
   @doc "Reactivate a project."
   @spec reactivate(String.t()) :: {:ok, term()} | {:error, term()}
   def reactivate(project_id) when is_binary(project_id) do
-    CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       aggregate_id: "project:#{project_id}",
       type: "project.reactivate",
       payload: %{project_id: project_id}

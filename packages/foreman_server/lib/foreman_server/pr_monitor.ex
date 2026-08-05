@@ -25,7 +25,7 @@ defmodule ForemanServer.PrMonitor do
 
   alias ForemanServer.ProjectionStore
   alias ForemanServer.PrAssociate
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
 
   require Logger
 
@@ -176,7 +176,7 @@ defmodule ForemanServer.PrMonitor do
       }
     }
 
-    case CommandRouter.dispatch(command) do
+    case CommandGateway.dispatch_system(command) do
       {:ok, _event_spec} -> :ok
       {:error, _} -> :error
     end

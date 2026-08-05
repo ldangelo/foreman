@@ -20,7 +20,7 @@ defmodule ForemanServer.Webhooks.Github do
       :ok
   """
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
 
   require Logger
 
@@ -44,7 +44,7 @@ defmodule ForemanServer.Webhooks.Github do
   def process(payload) when is_map(payload) do
     case build_command(payload) do
       {:ok, command} ->
-        case CommandRouter.dispatch(command) do
+        case CommandGateway.dispatch_system(command) do
           {:ok, _event_spec} -> :ok
           {:error, reason} -> {:error, reason}
         end

@@ -31,6 +31,14 @@ defmodule ForemanServer.Application do
         # Aggregator starts the Registry and supervises Actor children.
         ForemanServer.Aggregator,
 
+        # RunExecutorRegistry must exist before RunExecutor children start;
+        # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
+        {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
+        ForemanServer.Workflow.RunSupervisor,
+        # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched.
+        ForemanServer.Workflow.Dispatcher,
+
+        # CommandRouter handles all append requests.
         # CommandRouter handles all append requests.
         ForemanServer.CommandRouter
       ] ++

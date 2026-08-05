@@ -176,7 +176,11 @@ defmodule ForemanServer.Aggregates.Run do
        %{
          stream_id: "run:#{run_id}",
          event_type: "RunStarted",
-         payload: payload |> Map.put(:run_id, run_id) |> Map.put(:status, "in_progress")
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.delete(:status)
+           |> Map.drop([:approval_id, :phase_specs])
        }}
     end
   end

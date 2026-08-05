@@ -22,7 +22,7 @@ defmodule ForemanServer.Recovery do
   crash-restart redispatches collapse to a single underlying event.
   """
 
-  alias ForemanServer.{CommandRouter, ProjectionStore}
+  alias ForemanServer.{CommandGateway, ProjectionStore}
   alias ForemanServer.Events
 
   @typedoc "Recovery scan options."
@@ -72,7 +72,7 @@ defmodule ForemanServer.Recovery do
         }
       }
 
-      case CommandRouter.dispatch(command) do
+      case CommandGateway.dispatch_system(command) do
         {:ok, _spec} -> {:cont, {:ok, count + 1}}
         {:error, _} -> {:halt, {:ok, count}}
       end
@@ -116,7 +116,7 @@ defmodule ForemanServer.Recovery do
         }
       }
 
-      case CommandRouter.dispatch(command) do
+      case CommandGateway.dispatch_system(command) do
         {:ok, _spec} -> {:cont, {:ok, count + 1}}
         {:error, _} -> {:halt, {:ok, count}}
       end
@@ -136,7 +136,7 @@ defmodule ForemanServer.Recovery do
       payload: Map.put(payload, :intent_id, intent_id)
     }
 
-    CommandRouter.dispatch(command)
+    CommandGateway.dispatch_system(command)
   end
 
   @doc """
@@ -151,7 +151,7 @@ defmodule ForemanServer.Recovery do
       payload: %{intent_id: intent_id, confirmed_at: DateTime.to_iso8601(DateTime.utc_now())}
     }
 
-    CommandRouter.dispatch(command)
+    CommandGateway.dispatch_system(command)
   end
 
   @doc """
@@ -166,7 +166,7 @@ defmodule ForemanServer.Recovery do
       payload: %{intent_id: intent_id, reason: reason}
     }
 
-    CommandRouter.dispatch(command)
+    CommandGateway.dispatch_system(command)
   end
 
   # ---------------------------------------------------------------------------

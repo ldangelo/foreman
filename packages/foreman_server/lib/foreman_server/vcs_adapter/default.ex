@@ -13,7 +13,7 @@ defmodule ForemanServer.VcsAdapter.Default do
 
   @behaviour ForemanServer.VcsAdapter
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
 
   @impl true
   def clone(url, opts) do
@@ -120,14 +120,24 @@ defmodule ForemanServer.VcsAdapter.Default do
   end
 
   defp emit_started(operation_id, operation_type, target) do
-    CommandRouter.dispatch(%{
+    operation_id = to_string(operation_id)
+    target = to_string(target)
+
+    CommandGateway.dispatch_system(%{
+      command_id: "vcs_operation:#{operation_id}:start",
+      aggregate_id: "vcs_operation:#{operation_id}",
       type: "vcs_operation.start",
       payload: %{operation_id: operation_id, operation_type: operation_type, target: target}
     })
   end
 
   defp emit_completed(operation_id, operation_type, target, result) do
-    CommandRouter.dispatch(%{
+    operation_id = to_string(operation_id)
+    target = to_string(target)
+
+    CommandGateway.dispatch_system(%{
+      command_id: "vcs_operation:#{operation_id}:complete",
+      aggregate_id: "vcs_operation:#{operation_id}",
       type: "vcs_operation.complete",
       payload: %{
         operation_id: operation_id,
@@ -139,7 +149,12 @@ defmodule ForemanServer.VcsAdapter.Default do
   end
 
   defp emit_failed(operation_id, operation_type, target, error, retries) do
-    CommandRouter.dispatch(%{
+    operation_id = to_string(operation_id)
+    target = to_string(target)
+
+    CommandGateway.dispatch_system(%{
+      command_id: "vcs_operation:#{operation_id}:fail",
+      aggregate_id: "vcs_operation:#{operation_id}",
       type: "vcs_operation.fail",
       payload: %{
         operation_id: operation_id,

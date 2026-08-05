@@ -1,9 +1,9 @@
 defmodule ForemanServer.Events.RunFailed do
   @moduledoc "Typed event emitted when a run has failed terminally."
-  @enforce_keys [:run_id]
+  @enforce_keys [:run_id, :sequence]
   @type t :: %__MODULE__{
           run_id: String.t(),
-          sequence: non_neg_integer() | nil,
+          sequence: non_neg_integer(),
           reason: String.t() | nil
         }
   @derive Jason.Encoder

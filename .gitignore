@@ -51,3 +51,4 @@
 
 # Scout artifacts (per-task markdown output, regenerated each run)
 .local/scout/*.md
+/foreman

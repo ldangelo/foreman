@@ -48,18 +48,53 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   end
 
   defp copy_bundled_templates(source_dir, destination_dir) do
-    with :ok <- File.mkdir_p(destination_dir) do
-      @template_files
-      |> Enum.reduce_while({:ok, []}, fn filename, {:ok, paths} ->
-        source_path = Path.join(source_dir, filename)
-        destination_path = Path.join(destination_dir, filename)
+    with :ok <- File.mkdir_p(destination_dir),
+         {:ok, manifest_paths} <- copy_manifests(source_dir, destination_dir),
+         {:ok, prompt_paths} <- copy_prompts(source_dir, destination_dir) do
+      {:ok, manifest_paths ++ prompt_paths}
+    end
+  end
 
-        case File.cp(source_path, destination_path) do
-          :ok -> {:cont, {:ok, [destination_path | paths]}}
-          {:error, reason} -> {:halt, {:error, {:copy_failed, source_path, reason}}}
-        end
-      end)
-      |> reverse_ok_paths()
+
+  defp copy_manifests(source_dir, destination_dir) do
+    @template_files
+    |> Enum.reduce_while({:ok, []}, fn filename, {:ok, paths} ->
+      source_path = Path.join(source_dir, filename)
+      destination_path = Path.join(destination_dir, filename)
+
+      case File.cp(source_path, destination_path) do
+        :ok -> {:cont, {:ok, [destination_path | paths]}}
+        {:error, reason} -> {:halt, {:error, {:copy_failed, source_path, reason}}}
+      end
+    end)
+    |> reverse_ok_paths()
+  end
+
+  defp copy_prompts(source_dir, destination_dir) do
+    source_prompts = Path.join(source_dir, "prompts")
+    destination_prompts = Path.join(destination_dir, "prompts")
+
+    cond do
+      not File.dir?(source_prompts) ->
+        {:ok, []}
+
+      :ok != File.mkdir_p(destination_prompts) ->
+        {:error, {:mkdir_failed, destination_prompts}}
+
+      true ->
+        source_prompts
+        |> File.ls!()
+        |> Enum.sort()
+        |> Enum.reduce_while({:ok, []}, fn filename, {:ok, paths} ->
+          source_path = Path.join(source_prompts, filename)
+          destination_path = Path.join(destination_prompts, filename)
+
+          case File.cp(source_path, destination_path) do
+            :ok -> {:cont, {:ok, [destination_path | paths]}}
+            {:error, reason} -> {:halt, {:error, {:copy_failed, source_path, reason}}}
+          end
+        end)
+        |> reverse_ok_paths()
     end
   end
 

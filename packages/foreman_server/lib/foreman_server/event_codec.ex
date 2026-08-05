@@ -25,9 +25,21 @@ defmodule ForemanServer.EventCodec do
 
   alias ForemanServer.Events.{
     AssistantMessage,
+    PhaseCompleted,
+    PhaseFailed,
+    PhaseStarted,
     RunCompleted,
     RunFailed,
     RunPaused,
+    RunStarted,
+    TaskAnnotated,
+    TaskApproved,
+    TaskCreated,
+    TaskDependencyAdded,
+    TaskDispatched,
+    TaskExecutionCompleted,
+    TaskExecutionFailed,
+    TaskUpdated,
     ToolCallFinished,
     WorkerCrashed,
     WorkerExited,
@@ -48,9 +60,21 @@ defmodule ForemanServer.EventCodec do
     "WorkerStderr" => WorkerStderr,
     "ToolCallFinished" => ToolCallFinished,
     "AssistantMessage" => AssistantMessage,
+    "RunStarted" => RunStarted,
     "RunCompleted" => RunCompleted,
     "RunFailed" => RunFailed,
-    "RunPaused" => RunPaused
+    "RunPaused" => RunPaused,
+    "PhaseStarted" => PhaseStarted,
+    "PhaseCompleted" => PhaseCompleted,
+    "PhaseFailed" => PhaseFailed,
+    "TaskCreated" => TaskCreated,
+    "TaskUpdated" => TaskUpdated,
+    "TaskAnnotated" => TaskAnnotated,
+    "TaskDependencyAdded" => TaskDependencyAdded,
+    "TaskApproved" => TaskApproved,
+    "TaskDispatched" => TaskDispatched,
+    "TaskExecutionCompleted" => TaskExecutionCompleted,
+    "TaskExecutionFailed" => TaskExecutionFailed
   }
 
   # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
@@ -67,9 +91,21 @@ defmodule ForemanServer.EventCodec do
     WorkerStderr => [:worker_id, :run_id],
     ToolCallFinished => [:worker_id, :run_id],
     AssistantMessage => [:worker_id, :run_id],
-    RunCompleted => [:run_id],
-    RunFailed => [:run_id],
-    RunPaused => [:run_id]
+    RunStarted => [:run_id, :task_id, :project_id, :workflow_snapshot],
+    RunCompleted => [:run_id, :sequence],
+    RunFailed => [:run_id, :sequence],
+    RunPaused => [:run_id],
+    PhaseStarted => [:phase_id, :run_id, :index, :name, :attempt, :artifact_template],
+    PhaseCompleted => [:phase_id, :run_id, :index, :artifact_path, :artifact_sha256, :artifact_bytes],
+    PhaseFailed => [:run_id, :phase_id, :index, :reason],
+    TaskCreated => [:task_id, :project_id, :title, :status, :task_type],
+    TaskUpdated => [:task_id],
+    TaskAnnotated => [:task_id, :body, :author],
+    TaskDependencyAdded => [:task_id, :depends_on],
+    TaskApproved => [:task_id, :approval_id, :approved_by, :approved_at, :run_id, :workflow_snapshot],
+    TaskDispatched => [:task_id, :run_id, :approval_id],
+    TaskExecutionCompleted => [:task_id, :run_id],
+    TaskExecutionFailed => [:task_id, :run_id, :reason]
   }
 
   @type event_type :: String.t()

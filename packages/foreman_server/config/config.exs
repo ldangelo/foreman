@@ -11,8 +11,7 @@ config :foreman_server, ForemanServer.EventStore,
 config :foreman_server, ForemanServerWeb.Endpoint,
   url: [host: "localhost"],
   render_errors: [formats: [html: ForemanServerWeb.ErrorHTML], layout: false],
-  pubsub_server: ForemanServer.PubSub,
-  server: false
+  pubsub_server: ForemanServer.PubSub
 
 config :foreman_server, :agent_runtime,
   enabled: true,

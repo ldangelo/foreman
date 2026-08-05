@@ -66,7 +66,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
   require Logger
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.Overwatch.WorkerSupervisor
 
@@ -309,7 +309,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
       command_id: command_id
     }
 
-    case CommandRouter.dispatch(command) do
+    case CommandGateway.dispatch_system(command) do
       :ok -> :ok
       {:ok, _event_spec} -> :ok
       {:error, reason} -> {:error, reason}

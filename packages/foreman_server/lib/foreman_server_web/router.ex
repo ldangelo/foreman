@@ -9,6 +9,22 @@ defmodule ForemanServerWeb.Router do
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
   end
+  pipeline :api do
+    plug(:accepts, ["json"])
+    plug(ForemanServerWeb.Plugs.BearerAuth)
+  end
+
+  scope "/api", ForemanServerWeb do
+    pipe_through(:api)
+
+    post("/commands", CommandController, :create)
+    get("/tasks/:id", TaskController, :show)
+    get("/runs/:id", RunController, :show)
+
+    scope "/admin" do
+      post("/workflows/install", WorkflowInstallController, :install)
+    end
+  end
 
   scope "/webhooks", ForemanServerWeb do
     post("/external_trigger", WebhookController, :external_trigger)

@@ -19,7 +19,7 @@ defmodule ForemanServer.PrAssociate do
   -> 42) which is stored on the event.
   """
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
   alias ForemanServer.Events.PrAssociated
 
   require Logger
@@ -46,7 +46,7 @@ defmodule ForemanServer.PrAssociate do
         }
       }
 
-      case CommandRouter.dispatch(command) do
+      case CommandGateway.dispatch_system(command) do
         {:ok, _event_spec} -> {:ok, run_id}
         {:error, reason} = err -> err_with_log(reason, run_id, pr_url, err)
       end

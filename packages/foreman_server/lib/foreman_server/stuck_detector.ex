@@ -16,7 +16,7 @@ defmodule ForemanServer.StuckDetector do
 
   use GenServer
 
-  alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.{CommandGateway, ProjectionStore, Telemetry}
 
   @default_threshold_ms 900_000
   @default_interval_seconds 60
@@ -35,7 +35,7 @@ defmodule ForemanServer.StuckDetector do
   def scan(opts \\ []) do
     threshold_ms = Keyword.get(opts, :threshold_ms, @default_threshold_ms)
     now_ms_fun = Keyword.get(opts, :now_ms_fun, fn -> System.system_time(:millisecond) end)
-    dispatch_fun = Keyword.get(opts, :dispatch_fun, &CommandRouter.dispatch/2)
+    dispatch_fun = Keyword.get(opts, :dispatch_fun, &CommandGateway.dispatch_system/2)
     dispatch_timeout = Keyword.get(opts, :dispatch_timeout, @default_dispatch_timeout)
 
     now_ms = now_ms_fun.()

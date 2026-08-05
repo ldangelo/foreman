@@ -39,7 +39,7 @@ defmodule ForemanServer.Overwatch.Tracker do
 
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Aggregator
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
 
   @default_heartbeat_timeout_ms 60_000
 
@@ -590,7 +590,7 @@ defmodule ForemanServer.Overwatch.Tracker do
   end
 
   defp dispatch_command(command) do
-    case CommandRouter.dispatch(command) do
+    case CommandGateway.dispatch_system(command) do
       {:ok, _event_spec} -> :ok
       {:error, reason} -> {:error, reason}
     end
@@ -629,7 +629,7 @@ defmodule ForemanServer.Overwatch.Tracker do
       command_id: command_id
     }
 
-    case CommandRouter.dispatch(command) do
+    case CommandGateway.dispatch_system(command) do
       :ok ->
         :ok
 

@@ -10,7 +10,7 @@ defmodule ForemanServer.MigrationImporter do
   orchestrator over the canonical command path.
   """
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandGateway
 
   @type import_id :: String.t()
   @type record :: map()
@@ -27,7 +27,7 @@ defmodule ForemanServer.MigrationImporter do
   def start_import(batch) when is_map(batch) do
     import_id = require_field!(batch, :import_id)
 
-    CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       type: "migration.import.start",
       aggregate_id: "migration:#{import_id}",
       payload: batch
@@ -46,7 +46,7 @@ defmodule ForemanServer.MigrationImporter do
     import_id = require_field!(record, :import_id)
     _ = require_field!(record, :record_id)
 
-    CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       type: "migration.record.import",
       aggregate_id: "migration:#{import_id}",
       payload: record
@@ -60,7 +60,7 @@ defmodule ForemanServer.MigrationImporter do
   def complete_import(batch) when is_map(batch) do
     import_id = require_field!(batch, :import_id)
 
-    CommandRouter.dispatch(%{
+    CommandGateway.dispatch_system(%{
       type: "migration.import.complete",
       aggregate_id: "migration:#{import_id}",
       payload: batch
