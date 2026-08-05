@@ -5,6 +5,7 @@ defmodule ForemanServer.Telemetry do
   @aggregate_rehydrated [:foreman, :aggregate, :rehydrated]
   @worker_heartbeat [:foreman, :worker, :heartbeat]
   @worker_exit [:foreman, :worker, :exit]
+  @agent_runtime_invocation_complete [:foreman, :agent_runtime, :invocation, :complete]
   @run_stuck [:foreman, :run, :stuck]
 
   @all_events [
@@ -12,8 +13,11 @@ defmodule ForemanServer.Telemetry do
     @aggregate_rehydrated,
     @worker_heartbeat,
     @worker_exit,
+    @agent_runtime_invocation_complete,
     @run_stuck
   ]
+
+
 
   def all_events, do: @all_events
 
@@ -62,5 +66,71 @@ defmodule ForemanServer.Telemetry do
       run_id: run_id,
       threshold_ms: threshold_ms
     })
+  end
+
+  @typedoc """
+  Closed measurement set permitted for the agent runtime completion event.
+
+  Prompts, context, output content, credentials, and adapter metadata MUST
+  NOT appear here. The helper constructs the measurements map explicitly
+  from these keys so any extras supplied by callers are dropped.
+  """
+  @type completion_measurements :: %{
+          required(:duration_us) => non_neg_integer(),
+          required(:attempt_count) => non_neg_integer(),
+          optional(atom()) => term()
+        }
+  @type completion_metadata :: %{
+          required(:status) => atom(),
+          required(:task_type) => atom() | nil,
+          required(:attempted_backends) => [atom()],
+          required(:successful_backend) => atom() | nil,
+          required(:final_backend) => atom() | nil,
+          optional(atom()) => term()
+        }
+  @doc """
+  Emits `[:foreman, :agent_runtime, :invocation, :complete]`. This is the
+  sole completion emission per agent runtime call (TRD-009).
+
+  Both argument maps are pattern-matched for required keys; missing keys
+  raise `FunctionClauseError` instead of silently emitting a partial event.
+  Only the whitelisted keys are projected into the emitted measurement
+  and metadata maps, so any sensitive extras (prompt, context, output
+  content, credentials, adapter metadata) are dropped before emission.
+
+  See `t:completion_measurements` and `t:completion_metadata` for the
+  closed field sets.
+  """
+
+  @spec agent_runtime_execute(completion_measurements(), completion_metadata(), keyword()) :: :ok
+  def agent_runtime_execute(
+        %{duration_us: duration_us, attempt_count: attempt_count},
+        %{
+          status: status,
+          task_type: task_type,
+          attempted_backends: attempted_backends,
+          successful_backend: successful_backend,
+          final_backend: final_backend
+        },
+        _opts \\ []
+      )
+      when is_integer(duration_us) and duration_us >= 0
+           and is_integer(attempt_count) and attempt_count >= 0
+           and is_atom(status)
+           and (is_atom(task_type) or is_nil(task_type))
+           and is_list(attempted_backends)
+           and (is_atom(successful_backend) or is_nil(successful_backend))
+           and (is_atom(final_backend) or is_nil(final_backend)) do
+    execute(
+      @agent_runtime_invocation_complete,
+      %{duration_us: duration_us, attempt_count: attempt_count},
+      %{
+        status: status,
+        task_type: task_type,
+        attempted_backends: attempted_backends,
+        successful_backend: successful_backend,
+        final_backend: final_backend
+      }
+    )
   end
 end

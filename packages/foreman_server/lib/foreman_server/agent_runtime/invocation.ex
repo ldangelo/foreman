@@ -32,22 +32,26 @@ defmodule ForemanServer.AgentRuntime.Invocation do
           request: map(),
           caller: pid(),
           ref: reference(),
-          start_time: integer()
+          start_time: integer(),
+          task_type: atom() | nil
         }
 
   # ------------------------------------------------------------------
   # Client API
   # ------------------------------------------------------------------
 
-  @spec start_link({[candidate()], map(), map(), pid(), reference()}) :: GenServer.on_start()
-  def start_link({candidates, policy, request, caller, ref}) do
-    GenServer.start_link(__MODULE__, {candidates, policy, request, caller, ref})
+  @spec start_link({[candidate()], map(), map(), pid(), reference(), atom() | nil}) ::
+          GenServer.on_start()
+  def start_link({candidates, policy, request, caller, ref, task_type}) do
+    GenServer.start_link(__MODULE__, {candidates, policy, request, caller, ref, task_type})
   end
 
-  def child_spec({candidates, policy, request, caller, ref}) do
+  def child_spec({candidates, policy, request, caller, ref, task_type}) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, [{candidates, policy, request, caller, ref}]},
+      start:
+        {__MODULE__, :start_link,
+         [{candidates, policy, request, caller, ref, task_type}]},
       restart: :temporary
     }
   end
@@ -57,7 +61,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
   # ------------------------------------------------------------------
 
   @impl true
-  def init({candidates, policy, request, caller, ref}) do
+  def init({candidates, policy, request, caller, ref, task_type}) do
     start_time = System.monotonic_time(:microsecond)
 
     state = %{
@@ -66,7 +70,8 @@ defmodule ForemanServer.AgentRuntime.Invocation do
       request: request,
       caller: caller,
       ref: ref,
-      start_time: start_time
+      start_time: start_time,
+      task_type: task_type
     }
 
     {:ok, state, {:continue, :orchestrate}}
@@ -78,48 +83,31 @@ defmodule ForemanServer.AgentRuntime.Invocation do
         state = %{
           candidates: candidates,
           policy: policy,
-          request: request,
+          request: _request,
           caller: caller,
           ref: ref,
-          start_time: start_time
+          start_time: start_time,
+          task_type: task_type
         }
       ) do
-    initial_backend =
-      case Enum.find(candidates, fn {_, available} -> available end) do
-        {adapter, true} -> adapter.name()
-        nil -> nil
-      end
-
-    Telemetry.execute(
-      [:foreman, :agent_runtime, :invocation, :start],
-      %{system_time: System.system_time()},
-      %{backend: initial_backend}
-    )
-
-    {final, attempts} = run_attempts(candidates, request, policy)
+    {final, attempts} = run_attempts(candidates, _request, policy)
 
     stop_time = System.monotonic_time(:microsecond)
     duration_us = stop_time - start_time
 
-    status =
-      case final do
-        {:ok, _} -> :ok
-        _ -> :error
-      end
+    {status, final_backend, attempted_backends, successful_backend} =
+      completion_fields(final, attempts)
 
-    backend =
-      case attempts do
-        [{:ok, name, _, _} | _] -> name
-        [{:error, name, _} | _] -> name
-        [] -> nil
-      end
-
-    Telemetry.execute(
-      [:foreman, :agent_runtime, :invocation, :stop],
-      %{duration_us: duration_us, status: status},
-      %{backend: backend}
+    Telemetry.agent_runtime_execute(
+      %{duration_us: duration_us, attempt_count: length(attempts)},
+      %{
+        status: status,
+        task_type: task_type,
+        attempted_backends: attempted_backends,
+        successful_backend: successful_backend,
+        final_backend: final_backend
+      }
     )
-
     send(caller, {:agent_runtime_invocation_complete, ref, final})
 
     {:stop, :normal, state}
@@ -179,7 +167,10 @@ defmodule ForemanServer.AgentRuntime.Invocation do
       case run_one(adapter, request, policy.timeout_ms) do
         {:ok, content, meta} ->
           attempt = {:ok, backend_name, content, meta}
-          {{:ok, content}, [attempt | attempts]}
+          # Internal accumulator is newest-prepended; reverse to restore
+          # execution order: prior failures first, successful backend last.
+          ordered = Enum.reverse([attempt | attempts])
+          {{:ok, content}, ordered}
 
         {:error, reason} ->
           attempt = {:error, backend_name, reason}
@@ -198,9 +189,9 @@ defmodule ForemanServer.AgentRuntime.Invocation do
               # of how many attempts were recorded (AC 3 holds even for a
               # single allowed attempt, including mixed available/unavailable
               # where only one backend was actually tried).
-              reversed = Enum.reverse(new_attempts)
+              ordered = Enum.reverse(new_attempts)
 
-              {{:error, :all_backends_failed, %{attempts: reversed}}, reversed}
+              {{:error, :all_backends_failed, %{attempts: ordered}}, ordered}
 
             true ->
               # Fallback disabled: return the first (and only) attempt's direct
@@ -242,4 +233,45 @@ defmodule ForemanServer.AgentRuntime.Invocation do
         {:error, {adapter, reason}}
     end
   end
+
+  # ------------------------------------------------------------------
+  # Completion telemetry fields
+  #
+  # Derives the privacy-safe event payload from the final public result and
+  # the attempts list. No request, output, or adapter metadata is touched.
+  #
+  # `attempts` arrives in execution order from `run_attempts/5` for every
+  # branch (success and failure alike). This is the only contract callers
+  # may rely on.
+  # ------------------------------------------------------------------
+
+  defp completion_fields({:ok, _content}, attempts) do
+    # run_attempts guarantees attempts are in execution order: prior failures
+    # first, successful backend last.
+    attempted_backends = Enum.map(attempts, fn attempt -> attempt_backend(attempt) end)
+    successful_backend = attempted_backends |> List.last()
+    final_backend = successful_backend
+    {:ok, final_backend, attempted_backends, successful_backend}
+  end
+
+  # Specific failure clauses must precede the catch-all so they are not
+  # shadowed by `{:error, _reason}`.
+  defp completion_fields({:error, :no_available_backend}, _attempts) do
+    {:no_available_backend, nil, [], nil}
+  end
+
+  defp completion_fields({:error, :all_backends_failed, _meta}, attempts) do
+    attempted_backends = Enum.map(attempts, fn attempt -> attempt_backend(attempt) end)
+    final_backend = attempted_backends |> List.last()
+    {:all_backends_failed, final_backend, attempted_backends, nil}
+  end
+
+  defp completion_fields({:error, _reason}, attempts) do
+    attempted_backends = Enum.map(attempts, fn attempt -> attempt_backend(attempt) end)
+    final_backend = attempted_backends |> List.last()
+    {:direct_error, final_backend, attempted_backends, nil}
+  end
+
+  defp attempt_backend({:ok, backend_name, _content, _meta}), do: backend_name
+  defp attempt_backend({:error, backend_name, _reason}), do: backend_name
 end

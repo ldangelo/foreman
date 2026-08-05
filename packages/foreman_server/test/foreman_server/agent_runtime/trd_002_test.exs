@@ -597,7 +597,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       spec =
         Invocation.child_spec(
           {[{SomeAdapter, true}], %{fallback: false, max_attempts: 1, timeout_ms: 60_000},
-           %{prompt: "", context: %{}}, self(), make_ref()}
+           %{prompt: "", context: %{}}, self(), make_ref(), nil}
         )
 
       assert spec.restart == :temporary
@@ -752,15 +752,12 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       assert Enum.find(children, fn {_, p, _, _} -> p == pid end) == nil
     end
 
-    test "no stop telemetry event is emitted for the killed invocation" do
+    test "no completion telemetry event is emitted for the killed invocation" do
       {_catalog_name, inv_name} = start_runtime([])
 
       events =
         capture_telemetry(
-          [
-            [:foreman, :agent_runtime, :invocation, :start],
-            [:foreman, :agent_runtime, :invocation, :stop]
-          ],
+          [[:foreman, :agent_runtime, :invocation, :complete]],
           fn ->
             request = %{prompt: "test", context: %{}}
 
@@ -784,27 +781,16 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
           end
         )
 
-      start_events =
-        Enum.filter(events, fn {e, _, _} ->
-          e == [:foreman, :agent_runtime, :invocation, :start]
-        end)
-
-      stop_events =
-        Enum.filter(events, fn {e, _, _} ->
-          e == [:foreman, :agent_runtime, :invocation, :stop]
-        end)
-
-      assert length(start_events) == 1
-      assert length(stop_events) == 0
+      assert events == []
     end
   end
 
   describe "AC-2 — timeout is adapter-owned" do
-    test "Invocation stop telemetry reports status: :ok and a non-negative duration_us" do
+    test "Invocation completion telemetry reports status: :ok and a non-negative duration_us" do
       {_catalog_name, inv_name} = start_runtime([])
 
       events =
-        capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
+        capture_telemetry([:foreman, :agent_runtime, :invocation, :complete], fn ->
           request = %{prompt: "test", context: %{}}
 
           {:ok, _pid, _ref} =
@@ -835,8 +821,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       events =
         capture_telemetry(
           [
-            [:foreman, :agent_runtime, :invocation, :start],
-            [:foreman, :agent_runtime, :invocation, :stop]
+            [:foreman, :agent_runtime, :invocation, :complete]
           ],
           fn ->
             request = %{prompt: prompt, context: %{}}
@@ -869,8 +854,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       events =
         capture_telemetry(
           [
-            [:foreman, :agent_runtime, :invocation, :start],
-            [:foreman, :agent_runtime, :invocation, :stop]
+            [:foreman, :agent_runtime, :invocation, :complete]
           ],
           fn ->
             request = %{prompt: "test", context: context}
@@ -901,8 +885,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       events =
         capture_telemetry(
           [
-            [:foreman, :agent_runtime, :invocation, :start],
-            [:foreman, :agent_runtime, :invocation, :stop]
+            [:foreman, :agent_runtime, :invocation, :complete]
           ],
           fn ->
             request = %{prompt: "test", context: %{}}
@@ -921,7 +904,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       for {_, _, metadata} <- events do
         metadata_str = inspect(metadata)
-        assert metadata.backend == :redact_output
+        assert metadata.final_backend == :redact_output
         refute String.contains?(metadata_str, "output_marker")
       end
     end
@@ -930,7 +913,7 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       events =
-        capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
+        capture_telemetry([:foreman, :agent_runtime, :invocation, :complete], fn ->
           request = %{prompt: "test", context: %{}}
 
           {:ok, _pid, _ref} =
@@ -940,15 +923,15 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
         end)
 
       assert length(events) == 1
-      {_event, measurements, _metadata} = hd(events)
-      assert measurements.status == :ok
+      {_event, _measurements, metadata} = hd(events)
+      assert metadata.status == :ok
     end
 
-    test "errored invocation emits a stop event with status: :error" do
+    test "errored invocation emits a completion event with status: :direct_error" do
       {_catalog_name, inv_name} = start_runtime([])
 
       events =
-        capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
+        capture_telemetry([:foreman, :agent_runtime, :invocation, :complete], fn ->
           request = %{prompt: "test", context: %{}}
 
           {:ok, _pid, _ref} =
@@ -958,8 +941,8 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
         end)
 
       assert length(events) == 1
-      {_event, measurements, _metadata} = hd(events)
-      assert measurements.status == :error
+      {_event, _measurements, metadata} = hd(events)
+      assert metadata.status == :direct_error
     end
 
     test "no [:foreman, :agent_runtime, :execute] event is emitted by the Invocation slice" do
@@ -987,6 +970,154 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
         )
 
       assert events == []
+    end
+  end
+
+  # --- AC-9: facade early-exit branches emit the completion event ---
+
+  describe "AC-9 — facade early-exit branches emit one completion event" do
+    test "manual execute against an unknown backend (catalog populated) emits one completion event" do
+      {catalog_name, invocation_name} = start_runtime([])
+      {:ok, _} = AdapterCatalog.register(OrderAdapterA, catalog_name)
+
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :execute, :stop],
+            [:foreman, :agent_runtime, :invocation, :complete]
+          ],
+          fn ->
+            ForemanServer.AgentRuntime.execute(
+              "test",
+              %{},
+              strategy: :manual,
+              backend: :missing_backend,
+              task_type: :chat,
+              catalog: catalog_name,
+              invocation_supervisor: invocation_name,
+              fail_on_unavailable: true
+            )
+          end
+        )
+
+      completion_events =
+        Enum.filter(events, fn {ev, _, _} ->
+          ev == [:foreman, :agent_runtime, :invocation, :complete]
+        end)
+
+      assert length(completion_events) == 1
+      {_, measurements, metadata} = hd(completion_events)
+      assert metadata.status == :backend_not_found
+      assert metadata.attempted_backends == []
+      assert measurements.attempt_count == 0
+      assert is_nil(metadata.final_backend)
+      assert is_nil(metadata.successful_backend)
+    end
+
+    test "automatic execute on an empty catalog + fail_on_unavailable emits one completion event" do
+      {catalog_name, invocation_name} = start_runtime([])
+
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :execute, :stop],
+            [:foreman, :agent_runtime, :invocation, :complete]
+          ],
+          fn ->
+            ForemanServer.AgentRuntime.execute(
+              "test",
+              %{},
+              strategy: :automatic,
+              task_type: :chat,
+              catalog: catalog_name,
+              invocation_supervisor: invocation_name,
+              fail_on_unavailable: true
+            )
+          end
+        )
+
+      completion_events =
+        Enum.filter(events, fn {ev, _, _} ->
+          ev == [:foreman, :agent_runtime, :invocation, :complete]
+        end)
+
+      assert length(completion_events) == 1
+      {_, measurements, metadata} = hd(completion_events)
+      assert metadata.status == :no_available_backend
+      assert metadata.attempted_backends == []
+      assert measurements.attempt_count == 0
+      assert is_nil(metadata.final_backend)
+      assert is_nil(metadata.successful_backend)
+    end
+
+    test "successful manual execute emits exactly one completion event (not duplicated by facade)" do
+      {catalog_name, invocation_name} = start_runtime([])
+      {:ok, _} = AdapterCatalog.register(OrderAdapterA, catalog_name)
+
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :execute, :start],
+            [:foreman, :agent_runtime, :execute, :stop],
+            [:foreman, :agent_runtime, :invocation, :complete]
+          ],
+          fn ->
+            ForemanServer.AgentRuntime.execute(
+              "test",
+              %{},
+              strategy: :manual,
+              backend: :order_test_a,
+              task_type: :chat,
+              catalog: catalog_name,
+              invocation_supervisor: invocation_name
+            )
+          end
+        )
+
+      completion_events =
+        Enum.filter(events, fn {ev, _, _} ->
+          ev == [:foreman, :agent_runtime, :invocation, :complete]
+        end)
+
+      assert length(completion_events) == 1
+      {_, _, metadata} = hd(completion_events)
+      assert metadata.status == :ok
+      assert metadata.successful_backend == :order_test_a
+      assert metadata.final_backend == :order_test_a
+    end
+
+    test "execute with an unknown strategy emits one completion event with status :invalid_strategy" do
+      {catalog_name, invocation_name} = start_runtime([])
+
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :execute, :stop],
+            [:foreman, :agent_runtime, :invocation, :complete]
+          ],
+          fn ->
+            ForemanServer.AgentRuntime.execute(
+              "test",
+              %{},
+              strategy: :not_a_real_strategy,
+              task_type: :chat,
+              catalog: catalog_name,
+              invocation_supervisor: invocation_name
+            )
+          end
+        )
+
+      completion_events =
+        Enum.filter(events, fn {ev, _, _} ->
+          ev == [:foreman, :agent_runtime, :invocation, :complete]
+        end)
+
+      assert length(completion_events) == 1
+      {_, _measurements, metadata} = hd(completion_events)
+      assert metadata.status == :invalid_strategy
+      assert metadata.attempted_backends == []
+      assert is_nil(metadata.final_backend)
+      assert is_nil(metadata.successful_backend)
     end
   end
 

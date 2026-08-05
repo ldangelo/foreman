@@ -47,7 +47,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisor do
     # Convert legacy single-adapter call to new format
     candidates = [{adapter_module, true}]
     policy = %{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}
-    start_invocation_impl(candidates, policy, request, caller, supervisor)
+    start_invocation_impl(candidates, policy, request, caller, supervisor, nil)
   end
 
   @doc """
@@ -58,26 +58,27 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisor do
   - `policy` — resolved failure policy map with :fallback, :max_attempts, :timeout_ms
   - `request` — the execution request map with :prompt and :context
   - `caller` — the PID to receive the result
+  - `task_type` — the `:task_type` keyword for telemetry metadata (atom or nil)
   - `supervisor` — the supervisor to start the invocation under (optional, defaults to __MODULE__)
 
   Returns `{:ok, invocation_pid, invocation_ref}`.
   """
-  @spec start_invocation([candidate()], map(), map(), pid(), GenServer.server()) ::
+  @spec start_invocation([candidate()], map(), map(), pid(), atom() | nil, GenServer.server()) ::
           {:ok, pid(), reference()} | DynamicSupervisor.on_start_child()
-  def start_invocation(candidates, policy, request, caller, supervisor)
+  def start_invocation(candidates, policy, request, caller, task_type, supervisor)
       when is_list(candidates) do
-    start_invocation_impl(candidates, policy, request, caller, supervisor)
+    start_invocation_impl(candidates, policy, request, caller, supervisor, task_type)
   end
 
   # Default supervisor version
-  def start_invocation(candidates, policy, request, caller) do
-    start_invocation_impl(candidates, policy, request, caller, __MODULE__)
+  def start_invocation(candidates, policy, request, caller, task_type) do
+    start_invocation_impl(candidates, policy, request, caller, __MODULE__, task_type)
   end
 
   # Implementation
-  defp start_invocation_impl(candidates, policy, request, caller, supervisor) do
+  defp start_invocation_impl(candidates, policy, request, caller, supervisor, task_type) do
     ref = make_ref()
-    spec = {Invocation, {candidates, policy, request, caller, ref}}
+    spec = {Invocation, {candidates, policy, request, caller, ref, task_type}}
 
     case DynamicSupervisor.start_child(supervisor, spec) do
       {:ok, pid} -> {:ok, pid, ref}
