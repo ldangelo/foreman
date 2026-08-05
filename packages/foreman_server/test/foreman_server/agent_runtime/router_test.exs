@@ -396,7 +396,7 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
   end
 
   describe "automatic/2 full ranking matrix" do
-    test "correct ordering with all fixtures" do
+    test "every expected candidate order is stable and unavailable adapters are absent" do
       catalog = start_test_catalog()
       {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
       {:ok, _} = AdapterCatalog.register(CheapSlowAdapter, catalog)
@@ -406,13 +406,63 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
       {:ok, _} = AdapterCatalog.register(DefaultCostAdapter, catalog)
       {:ok, _} = AdapterCatalog.register(WrongContextAdapter, catalog)
       {:ok, _} = AdapterCatalog.register(MissingOptionalAdapter, catalog)
+      # EqualCapAdapter1/2 are equal in cost+latency — only registration order breaks the tie.
+      {:ok, _} = AdapterCatalog.register(EqualCapAdapter1, catalog)
+      {:ok, _} = AdapterCatalog.register(EqualCapAdapter2, catalog)
 
       {:ok, adapter} = Router.automatic(%{}, catalog: catalog, task_type: :code)
 
-      # Sorted: cost ( CheapFast=0.001, CheapSlow=0.001, DefaultCost=0.01, ExpensiveFast=0.5, then nil )
-      # For ties on cost: latency (CheapFast=100 < CheapSlow=1000 < DefaultCost=nil)
-      # So: CheapFast should win
+      # Sorted: cost ( CheapFast=0.001, CheapSlow=0.001, DefaultCost=0.01,
+      #   ExpensiveFast=0.5, EqualCapAdapter1=0.5, EqualCapAdapter2=0.5, then nil )
+      # For ties on cost: latency (CheapFast=100 < CheapSlow=1000 < nil).
+      # So: CheapFast wins — registration-order tiebreak never fires because cheaper
+      # adapters outrank EqualCapAdapter1/2.
       assert adapter == CheapFastAdapter
+
+      # Stability: 20 invocations must all return the same winner.
+      results = for _ <- 1..20, do: Router.automatic(%{}, catalog: catalog, task_type: :code)
+      unique = Enum.uniq(results)
+
+      assert length(unique) == 1,
+             "Expected stable ranking across 20 invocations, got #{length(unique)} unique results"
+
+      # UnavailableAdapter is registered but absent from the ranking.
+      assert UnavailableAdapter in AdapterCatalog.snapshot(catalog)
+      refute match?({:ok, UnavailableAdapter}, hd(results))
+
+      # WrongContextAdapter is registered but absent from the ranking for :code.
+      assert WrongContextAdapter in AdapterCatalog.snapshot(catalog)
+      refute match?({:ok, WrongContextAdapter}, hd(results))
+    end
+
+    test "registration-order tiebreak is stable across opposite-order catalogs" do
+      # The matrix above has cheaper adapters dominating — registration-order tiebreak
+      # never fires there. To exercise it, build catalogs where the ONLY differentiator
+      # between competing adapters is registration order (identical cost + latency).
+      #
+      # Case A: EqualCapAdapter1 registered first → must win 20 times.
+      catalog_a = start_test_catalog(:router_test_reg_order_a)
+      {:ok, _} = AdapterCatalog.register(EqualCapAdapter1, catalog_a)
+      {:ok, _} = AdapterCatalog.register(EqualCapAdapter2, catalog_a)
+
+      results_a = for _ <- 1..20, do: Router.automatic(%{}, catalog: catalog_a, task_type: :code)
+
+      assert Enum.all?(results_a, &match?({:ok, EqualCapAdapter1}, &1)),
+             "EqualCapAdapter1 registered first must win 20 times; " <>
+               "unique results: #{inspect(Enum.uniq(results_a))}"
+
+      # Case B: EqualCapAdapter2 registered first → must win 20 times.
+      # Opposite order proves the tiebreak depends on registration order, not on
+      # adapter identity (e.g., alphabetical name).
+      catalog_b = start_test_catalog(:router_test_reg_order_b)
+      {:ok, _} = AdapterCatalog.register(EqualCapAdapter2, catalog_b)
+      {:ok, _} = AdapterCatalog.register(EqualCapAdapter1, catalog_b)
+
+      results_b = for _ <- 1..20, do: Router.automatic(%{}, catalog: catalog_b, task_type: :code)
+
+      assert Enum.all?(results_b, &match?({:ok, EqualCapAdapter2}, &1)),
+             "EqualCapAdapter2 registered first must win 20 times; " <>
+               "unique results: #{inspect(Enum.uniq(results_b))}"
     end
   end
 end
