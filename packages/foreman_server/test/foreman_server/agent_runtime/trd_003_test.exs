@@ -35,6 +35,26 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
     def execute(_req, _opts), do: {:ok, "success", %{}}
   end
 
+  defmodule TrapAdapter do
+    @behaviour BackendAdapter
+
+    @impl true
+    def name, do: :trap_adapter
+
+    @impl true
+    def capabilities, do: %{type: :cli, strengths: [], weaknesses: [], supported_contexts: []}
+
+    @impl true
+    def available?, do: true
+
+    @impl true
+    def execute(%{context: %{test_pid: pid}}, _opts) do
+      # Signal that this adapter was invoked — used to refute fallback behavior
+      send(pid, {:trap_adapter_called, self()})
+      {:ok, "trap", %{}}
+    end
+  end
+
   defp start_runtime do
     test_id = :rand.uniform(999_999)
     sup_name = :"AgentRuntime.Test.#{test_id}"
@@ -74,14 +94,16 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
       assert {:ok, "prompt=my test prompt context=%{key: \"value\"}"} = result
     end
 
-    test "returns {:error, :backend_not_found} for unknown backend" do
+    test "returns {:error, :backend_not_found} and does not invoke any registered alternative" do
       {catalog_name, inv_name} = start_runtime()
 
-      # Register EchoAdapter, then request a different (nonexistent) backend
+      # Register EchoAdapter as the registered alternative and TrapAdapter as fallback trap
       {:ok, _} = AdapterCatalog.register(EchoAdapter, catalog_name)
+      {:ok, _} = AdapterCatalog.register(TrapAdapter, catalog_name)
 
+      # Request a nonexistent backend — should NOT fallback to either registered adapter
       result =
-        ForemanServer.AgentRuntime.execute("test prompt", %{},
+        ForemanServer.AgentRuntime.execute("test prompt", %{test_pid: self()},
           strategy: :manual,
           backend: :nonexistent,
           catalog: catalog_name,
@@ -89,17 +111,20 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
         )
 
       assert {:error, :backend_not_found} = result
+      # Prove no fallback adapter was invoked
+      refute_receive {:trap_adapter_called, _}, 100
     end
 
-    test "returns {:error, :backend_unavailable} for unavailable backend - no fallback" do
+    test "returns {:error, :backend_unavailable} and does not invoke any available alternative" do
       {catalog_name, inv_name} = start_runtime()
 
-      # Register unavailable adapter
+      # Register unavailable adapter and TrapAdapter as the available alternative
       {:ok, _} = AdapterCatalog.register(UnavailableAdapter, catalog_name)
+      {:ok, _} = AdapterCatalog.register(TrapAdapter, catalog_name)
 
-      # Execute - should return unavailable, NOT try another adapter
+      # Execute — should NOT fallback to the available TrapAdapter
       result =
-        ForemanServer.AgentRuntime.execute("test prompt", %{},
+        ForemanServer.AgentRuntime.execute("test prompt", %{test_pid: self()},
           strategy: :manual,
           backend: :unavailable_adapter,
           catalog: catalog_name,
@@ -107,6 +132,8 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
         )
 
       assert {:error, :backend_unavailable} = result
+      # Prove no fallback adapter was invoked
+      refute_receive {:trap_adapter_called, _}, 100
     end
 
     test "returns {:error, :no_available_backend} for empty catalog" do
