@@ -147,6 +147,36 @@ defmodule ForemanServer.AgentRuntime.FailurePolicyTest do
                  expected(true, 1, 30_000)
       end)
     end
+
+    test "3-layer precedence: per-call > task-type > global default" do
+      # Global default_timeout_ms is 30_000 (NOT 60_000), so a non-overridden
+      # field must surface that 30_000 — proving the global layer is consulted.
+      task_cfg =
+        rt(%{code_generation: %{fallback: true, max_attempts: 5, timeout_ms: 120_000}}, 30_000)
+
+      with_rt_config(task_cfg, fn ->
+        # Per-call sets only :fallback. timeout_ms comes from task-type (120k),
+        # not from global default (30k). max_attempts comes from task-type (5).
+        assert FailurePolicy.resolve(:code_generation, fallback: false) ==
+                 expected(false, 5, 120_000)
+      end)
+    end
+
+    test "2-layer precedence: task-type > global default when no per-call opts" do
+      # Global timeout is 30_000; task-type omits :timeout_ms so it falls through.
+      task_cfg = rt(%{code_generation: %{fallback: true, max_attempts: 5}}, 30_000)
+
+      with_rt_config(task_cfg, fn ->
+        assert FailurePolicy.resolve(:code_generation, []) ==
+                 expected(true, 5, 30_000)
+      end)
+    end
+
+    test "1-layer: global default_timeout_ms is the only contributor when no task-type, no per-call" do
+      with_rt_config(rt(%{}, 75_000), fn ->
+        assert FailurePolicy.resolve(:any_task, []) == expected(false, 1, 75_000)
+      end)
+    end
   end
 
   describe "resolve/2 — edge cases" do
