@@ -389,4 +389,206 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       end
     end
   end
+
+  describe "TRD-004-TEST protocol verification" do
+    # Test 1: Exact argv contract — verifies the adapter passes exactly 6 argv fields
+    test "execute/2 passes exact 6-field argv to pi", %{contract_path: path} do
+      Application.put_env(:foreman_server, PiAdapter, executable: path)
+
+      request = %{prompt: "test prompt", context: %{key: "value"}}
+      PiAdapter.execute(request, [])
+
+      # Read captured argv from contract fixture
+      assert File.exists?("/tmp/pi_contract_argv.txt")
+      argv = String.trim(File.read!("/tmp/pi_contract_argv.txt"))
+
+      # Split into individual arguments (space-separated)
+      argv_parts = String.split(argv, " ")
+
+      # Assert exactly 6 fields
+      assert length(argv_parts) == 6,
+             "Expected exactly 6 argv fields, got #{length(argv_parts)}: #{inspect(argv_parts)}"
+
+      # Verify the exact expected argv structure
+      assert Enum.at(argv_parts, 0) == "--print"
+      assert Enum.at(argv_parts, 1) == "--mode"
+      assert Enum.at(argv_parts, 2) == "text"
+      assert Enum.at(argv_parts, 3) == "--no-session"
+      assert Enum.at(argv_parts, 4) == "--no-context-files"
+
+      # Last argv must be @ with request file path
+      last_arg = Enum.at(argv_parts, 5)
+
+      assert String.starts_with?(last_arg, "@"),
+             "Last argv should be @request_file, got: #{last_arg}"
+
+      assert last_arg =~ "request.txt"
+    end
+
+    # Test 2: Canonical JSON extraction round-trip
+    test "execute/2 correctly frames and extracts canonical JSON", %{contract_path: path} do
+      Application.put_env(:foreman_server, PiAdapter, executable: path)
+
+      # Use atom-keyed context (canonical form)
+      context = %{model: "gpt-4", temperature: 0.7, items: [1, 2, 3]}
+      request = %{prompt: "test prompt", context: context}
+      PiAdapter.execute(request, [])
+
+      # Read the request file captured by contract fixture
+      assert File.exists?("/tmp/pi_contract_request.txt")
+      request_content = File.read!("/tmp/pi_contract_request.txt")
+
+      # Split on the literal delimiter to extract JSON segment
+      [_, json_with_newline] = String.split(request_content, "# Context (JSON)\n\n")
+      [json_segment | _] = String.split(json_with_newline, "\n")
+      json_segment = String.trim_trailing(json_segment, "\n")
+
+      # Decode with Jason.decode! (canonical form uses string keys after encode/decode)
+      decoded = Jason.decode!(json_segment)
+
+      # Verify round-trip: encode the original context, decode, compare
+      expected_json = Jason.encode!(context)
+      expected_decoded = Jason.decode!(expected_json)
+
+      assert decoded == expected_decoded
+    end
+
+    # Test 3: Explicit terminal {port, {:exit_status, status}} shape
+    test "execute/2 receives exact {:exit_status, status} and translates to adapter result", %{
+      success_path: success_path,
+      fail_path: fail_path
+    } do
+      # Part A: Verify raw port sends {:exit_status, status}
+      port = Port.open({:spawn_executable, success_path}, [:binary, :exit_status])
+      assert_receive {^port, {:exit_status, 0}}, 1000
+
+      try do
+        Port.close(port)
+      catch
+        :error, :badarg -> :ok
+      end
+
+      # Part B: Verify adapter translates port exit_status correctly
+      # Zero exit -> {:ok, output, %{}}
+      Application.put_env(:foreman_server, PiAdapter, executable: success_path)
+      request = %{prompt: "test", context: %{}}
+      result = PiAdapter.execute(request, [])
+      assert {:ok, "hello from pi\n", %{}} = result
+
+      # Non-zero exit -> {:error, {:non_zero_exit, code}}
+      Application.put_env(:foreman_server, PiAdapter, executable: fail_path)
+      result = PiAdapter.execute(request, [])
+      assert {:error, {:non_zero_exit, 1}} = result
+    end
+
+    # Test 4: Immediate OS PID capture verified via timeout kill
+    test "execute/2 captures OS PID and terminates on timeout", %{tmp_dir: tmp_dir} do
+      # Use hang fixture that writes its own PID so we can verify it was killed
+      pid_capture_hang = Path.join(tmp_dir, "pi_hang_pid_fixture.sh")
+
+      File.write!(pid_capture_hang, """
+      #!/bin/bash
+      echo $$ > /tmp/pi_adapter_test_pid.txt
+      sleep 30
+      exit 0
+      """)
+
+      File.chmod!(pid_capture_hang, 0o755)
+
+      try do
+        Application.put_env(:foreman_server, PiAdapter,
+          executable: pid_capture_hang,
+          timeout_ms: 60_000
+        )
+
+        request = %{prompt: "test", context: %{}}
+        # Use longer timeout to allow process to start and write PID
+        result = PiAdapter.execute(request, timeout_ms: 500)
+
+        # Must return timeout error - proves PID was captured and kill was called
+        assert {:error, :timeout} = result
+
+        # Verify the hang process was actually killed
+        assert File.exists?("/tmp/pi_adapter_test_pid.txt"),
+               "PID file should be written before timeout"
+
+        pid_str = String.trim(File.read!("/tmp/pi_adapter_test_pid.txt"))
+        {_, exit_code} = System.cmd("kill", ["-0", pid_str])
+        assert exit_code != 0, "Process should be killed but kill -0 returned success"
+      after
+        File.rm(pid_capture_hang)
+        File.rm("/tmp/pi_adapter_test_pid.txt")
+      end
+    end
+
+    # Test 5: Kill -0 + SIGTERM/SIGKILL escalation on timeout
+    test "execute/2 terminates hang process with kill escalation on timeout", %{tmp_dir: tmp_dir} do
+      # Create a hang fixture that writes its own PID immediately
+      pid_capture_hang = Path.join(tmp_dir, "pi_hang_pid_fixture2.sh")
+
+      File.write!(pid_capture_hang, """
+      #!/bin/bash
+      echo $$ > /tmp/pi_adapter_test_hang_pid.txt
+      sync
+      sleep 30
+      exit 0
+      """)
+
+      File.chmod!(pid_capture_hang, 0o755)
+
+      try do
+        Application.put_env(:foreman_server, PiAdapter,
+          executable: pid_capture_hang,
+          timeout_ms: 60_000
+        )
+
+        # Start execution and wait for timeout
+        # Use longer timeout to allow process to start and write PID
+        result = PiAdapter.execute(%{prompt: "test", context: %{}}, timeout_ms: 500)
+        assert {:error, :timeout} = result
+
+        # Give a moment for the file to be written
+        Process.sleep(50)
+
+        # Verify the hang process is gone using kill -0
+        assert File.exists?("/tmp/pi_adapter_test_hang_pid.txt"), "PID file must exist"
+        pid_str = String.trim(File.read!("/tmp/pi_adapter_test_hang_pid.txt"))
+        {_, exit_code} = System.cmd("kill", ["-0", pid_str])
+        assert exit_code != 0, "Process should be killed but kill -0 returned success"
+      after
+        File.rm(pid_capture_hang)
+        File.rm("/tmp/pi_adapter_test_hang_pid.txt")
+      end
+    end
+
+    # Test 6: Port.close/1 ArgumentError race handling
+    # The safe_close_port/1 function (pi_adapter.ex:220) is public and rescues :badarg
+    test "safe_close_port/1 handles already-closed port gracefully" do
+      tmp_dir = System.tmp_dir!()
+      test_script = Path.join(tmp_dir, "pi_closetest.sh")
+
+      File.write!(test_script, """
+      #!/bin/bash
+      echo "test"
+      exit 0
+      """)
+
+      File.chmod!(test_script, 0o755)
+
+      try do
+        # Open a port directly
+        port = Port.open({:spawn_executable, test_script}, [:binary, :exit_status])
+
+        # Close it first
+        Port.close(port)
+
+        # Now safe_close_port should handle the already-closed case gracefully
+        # It rescues ArgumentError (:badarg) and returns :ok
+        result = PiAdapter.safe_close_port(port)
+        assert result == :ok
+      after
+        File.rm(test_script)
+      end
+    end
+  end
 end
