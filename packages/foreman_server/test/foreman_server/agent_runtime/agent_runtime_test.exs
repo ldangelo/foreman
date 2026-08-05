@@ -76,6 +76,30 @@ defmodule ForemanServer.AgentRuntimeTRD008Test do
     end
   end
 
+  defmodule ThirdFailsAdapter do
+    @behaviour BackendAdapter
+    @impl true
+    def name, do: :third_fails
+    @impl true
+    def capabilities,
+      do: %{
+        type: :language_model,
+        strengths: [:coding],
+        weaknesses: [],
+        supported_contexts: [:chat],
+        cost_per_call: 0.003,
+        typical_latency_ms: 300
+      }
+
+    @impl true
+    def available?, do: true
+    @impl true
+    def execute(request, _opts) do
+      send(request.context.test_pid, {:adapter_called, :third_fails})
+      {:error, :third_failed}
+    end
+  end
+
   defmodule UnavailableAdapter do
     @behaviour BackendAdapter
     @impl true
@@ -448,6 +472,80 @@ defmodule ForemanServer.AgentRuntimeTRD008Test do
         )
 
       assert result == {:error, :no_available_backend}
+    end
+  end
+
+  # TRD-008-TEST: explicit attempt limits — max_attempts cap on a candidate list
+  # longer than the cap. Call order, call count, and exact attempt history are
+  # asserted.
+  describe "TRD-008-TEST: explicit attempt limits" do
+    test "max_attempts=2 caps at 2 attempts when 3 candidates are available" do
+      catalog = start_test_catalog(:t008_limit)
+      sup_name = start_inv_sup(:t008_limit)
+
+      # Three failing adapters. Order in registration: primary_fails (cost 0.001),
+      # third_fails (cost 0.003), both_fail (no cost → sorts last). With
+      # max_attempts=2, only the first two are tried.
+      {:ok, _} = AdapterCatalog.register(PrimaryFailsAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(ThirdFailsAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(BothFailAdapter, catalog)
+
+      result =
+        AgentRuntime.execute("test", %{test_pid: self()},
+          strategy: :automatic,
+          task_type: :chat,
+          catalog: catalog,
+          invocation_supervisor: sup_name,
+          fallback: true,
+          max_attempts: 2
+        )
+
+      assert {:error, :all_backends_failed, %{attempts: attempts}} = result
+      assert length(attempts) == 2
+      assert {:error, :primary_fails, :primary_failed} = hd(attempts)
+      assert {:error, :third_fails, :third_failed} = Enum.at(attempts, 1)
+
+      # Exactly two adapters called in execution order; both_fail is excluded.
+      # Drain all adapter_called messages and compare the received-name list to
+      # the expected execution order. This avoids pattern-specific receives
+      # and proves order plus count plus exclusion in one assertion.
+      called =
+        for _ <- 1..2 do
+          assert_receive {:adapter_called, name}, 100
+          name
+        end
+
+      assert called == [:primary_fails, :third_fails]
+      # Final guard: no further adapter calls (catches duplicates if max_attempts
+      # were ever bypassed) and no :both_fail (the third registered adapter).
+      refute_receive {:adapter_called, _}, 100
+    end
+
+    test "exact attempt history tuples preserve backend name and reason" do
+      catalog = start_test_catalog(:t008_history)
+      sup_name = start_inv_sup(:t008_history)
+
+      {:ok, _} = AdapterCatalog.register(PrimaryFailsAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(BothFailAdapter, catalog)
+
+      result =
+        AgentRuntime.execute("test", %{test_pid: self()},
+          strategy: :automatic,
+          task_type: :chat,
+          catalog: catalog,
+          invocation_supervisor: sup_name,
+          fallback: true,
+          max_attempts: 2
+        )
+
+      assert {:error, :all_backends_failed, %{attempts: attempts}} = result
+
+      # Exact attempt history: each attempt is {:error, backend_name, reason}
+      # in execution order, with backend name and reason preserved verbatim.
+      assert attempts == [
+               {:error, :primary_fails, :primary_failed},
+               {:error, :both_fail, :both_failed}
+             ]
     end
   end
 end
