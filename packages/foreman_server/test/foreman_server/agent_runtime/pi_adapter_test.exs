@@ -10,6 +10,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
   @fail_fixture "pi_fail_fixture.sh"
   @hang_fixture "pi_hang_fixture.sh"
   @contract_fixture "pi_contract_fixture.sh"
+  @noisy_fixture "pi_noisy_fixture.sh"
 
   setup do
     # Get tmp directory for fixture scripts
@@ -74,11 +75,30 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
     File.chmod!(contract_path, 0o755)
 
+    # Noisy fixture: simulates what real `pi 0.83` emits at exit — a
+    # stderr hook-banner, a BEL, the user-visible payload, and trailing
+    # TUI cleanup CSI sequences. The adapter must strip all of that and
+    # return ONLY the printable text (PRD AC-003-1). The hook banner
+    # exercises the stderr -> /dev/null redirect in the shell wrapper;
+    # the BEL and CSIs exercise `normalize_output/1`.
+    noisy_path = Path.join(tmp_dir, @noisy_fixture)
+
+    File.write!(noisy_path, """
+    #!/bin/bash
+    echo '[pi-yaml-hooks] Loaded 1 hook (global: 1, project: 0).' >&2
+    printf '\\ahello\\x1b[?2026h\\x1b[r\\x1b[?1006l\\x1b[?1002l\\x1b[?1000l\\x1b[?1007h\\x1b[?1049l\\x1b[<999u\\x1b[>4;0m\\x1b[?2026l\\n'
+    exit 0
+    """)
+
+    File.chmod!(noisy_path, 0o755)
+
     # Save original config
+
     original_config = Application.get_env(:foreman_server, PiAdapter, [])
 
     on_exit(fn ->
-      # Cleanup fixture files
+      File.rm(Path.join(tmp_dir, @contract_fixture))
+      File.rm(Path.join(tmp_dir, @noisy_fixture))
       File.rm(Path.join(tmp_dir, @success_fixture))
       File.rm(Path.join(tmp_dir, @fail_fixture))
       File.rm(Path.join(tmp_dir, @hang_fixture))
@@ -93,6 +113,8 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     end)
 
     %{
+      contract_path: contract_path,
+      noisy_path: noisy_path,
       success_path: success_path,
       fail_path: fail_path,
       hang_path: hang_path,
@@ -204,6 +226,22 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       assert {:ok, content, %{}} = result
       assert content == "hello from pi\n"
+    end
+
+    test "strips stderr banner, BEL, and trailing TUI cleanup CSIs (PRD AC-003-1)", %{
+      noisy_path: path
+    } do
+      # The fixture emits exactly what real `pi 0.83` produces: a stderr
+      # yaml-hooks banner, a leading BEL, the printable payload, and the
+      # full bracketed-paste / mouse-tracking / alt-screen teardown
+      # sequence. AC-003-1 requires the adapter to return the final text
+      # result only — i.e. just the payload bytes, byte-for-byte.
+      Application.put_env(:foreman_server, PiAdapter, executable: path)
+
+      request = %{prompt: "test prompt", context: %{}}
+      result = PiAdapter.execute(request, [])
+
+      assert {:ok, "hello\n", %{}} = result
     end
   end
 

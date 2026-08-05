@@ -85,7 +85,20 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
     result
   end
 
-  defp do_execute(request, executable, timeout_ms) do
+  defp do_execute(request, executable, timeout_ms) when is_binary(executable) do
+    # The shell wrapper (see comment near Port.open below) means a missing
+    # executable no longer surfaces as `:enoent` from Port.open/2 — `/bin/sh`
+    # itself always exists and exits non-zero instead. So check file presence
+    # up front and short-circuit with the same `{:enoent, _}` error shape that
+    # callers already pattern-match on.
+    unless executable_file?(executable) do
+      {:error, {:enoent, executable}}
+    else
+      do_execute_port(request, executable, timeout_ms)
+    end
+  end
+
+  defp do_execute_port(request, executable, timeout_ms) do
     # Create temp directory first - cleanup happens in outer try/after
     tmp_dir = mk_tmp_dir!()
 
@@ -93,21 +106,49 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
       # Build request file with byte-exact framing:
       request_file = Path.join(tmp_dir, "request.txt")
       context_json = Jason.encode!(request.context)
+
       request_content = <<
-        @request_prompt_header::binary, "\n\n",
-        request.prompt::binary, "\n\n",
-        @request_context_header::binary, "\n\n",
-        context_json::binary, "\n"
+        @request_prompt_header::binary,
+        "\n\n",
+        request.prompt::binary,
+        "\n\n",
+        @request_context_header::binary,
+        "\n\n",
+        context_json::binary,
+        "\n"
       >>
+
       # Write with mode 0600 - use exclusive + explicit chmod
       :file.write_file(request_file, request_content, [:write, :exclusive])
       File.chmod!(request_file, 0o600)
       argv = @pi_argv ++ ["@" <> request_file]
 
+      # Spawn via `/bin/sh -c "exec <exe> <args> < /dev/null 2>/dev/null"` so:
+      #   1. stdin is explicitly redirected from /dev/null — pi is a Node.js
+      #      CLI that hangs waiting for stdin EOF when invoked without it
+      #      (Erlang's spawn_executable inherits a live stdin pipe by default).
+      #   2. `exec` replaces the shell process with the target binary, so the
+      #      OS-PID captured from Port.info/2 is the actual pi process. The
+      #      existing kill_os_process!/1 escalation path then targets pi
+      #      directly without leaving a shell wrapper as an orphan.
+      #   3. stderr is redirected to /dev/null (not folded into stdout) so
+      #      that noisy `pi` diagnostics (`[pi-yaml-hooks] ...`, TUI init
+      #      messages) never leak into the returned payload — PRD AC-003-1
+      #      requires the adapter to return the final text result only.
+      sh_cmd =
+        "exec " <>
+          shell_quote(executable) <>
+          " " <>
+          Enum.map_join(argv, " ", &shell_quote/1) <>
+          " < /dev/null 2>/dev/null"
+
       # Open port - cleanup happens in inner try/after
       port =
         try do
-          Port.open({:spawn_executable, executable}, [:binary, :exit_status, args: argv])
+          Port.open(
+            {:spawn_executable, "/bin/sh"},
+            [:binary, :exit_status, args: ["-c", sh_cmd]]
+          )
         catch
           :error, :enoent ->
             # Executable not found - return error without crashing
@@ -124,9 +165,12 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
 
             case wait_for_port(port, timeout_ms) do
               {:ok, output, exit_status} when exit_status == 0 ->
-                # Zero-exit stdout is returned verbatim — the `pi` CLI's
-                # printable output is the complete final text.
-                {:ok, output, %{}}
+                # Real `pi` interleaves a BEL and trailing TUI cleanup
+                # CSI sequences with the user-visible text. Those are
+                # terminal-control artifacts, not final text — strip them
+                # before returning so PRD AC-003-1's "final text result"
+                # contract holds even for noisy emitters.
+                {:ok, normalize_output(output), %{}}
 
               {:ok, _output, exit_status} when exit_status != 0 ->
                 {:error, {:non_zero_exit, exit_status}}
@@ -165,8 +209,9 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
 
       {^port, {:exit_status, exit_status}} ->
         {:ok, acc, exit_status}
-    after remaining ->
-      {:error, :timeout}
+    after
+      remaining ->
+        {:error, :timeout}
     end
   end
 
@@ -200,6 +245,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   end
 
   defp wait_for_exit(_pid, 0), do: false
+
   defp wait_for_exit(pid, timeout_ms) do
     if process_exists?(pid) do
       Process.sleep(100)
@@ -235,10 +281,44 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
         File.chmod!(path, 0o700)
         path
 
-      {:error, :eexist} -> mk_tmp_dir!() # Retry on collision
+      # Retry on collision
+      {:error, :eexist} ->
+        mk_tmp_dir!()
 
-      {:error, reason} -> raise "Failed to create temp dir: #{inspect(reason)}"
+      {:error, reason} ->
+        raise "Failed to create temp dir: #{inspect(reason)}"
     end
+  end
+
+  # POSIX single-quote wrapper for an argv element. Single quotes are the only
+  # mechanism that suppresses all shell expansion (no $VAR, no glob), so this
+  # is the conservative default for paths the user supplies as the
+  # `:executable` config. Elements matching a tight safe-char set (no
+  # whitespace, no shell metacharacters, no quotes) pass through untouched
+  # so the usual case (`/opt/homebrew/bin/pi --print --mode text ...`) stays
+  # readable in logs.
+  defp shell_quote(arg) when is_binary(arg) do
+    if Regex.match?(~r/\A[A-Za-z0-9_.\/@-]+\z/, arg) do
+      arg
+    else
+      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+    end
+  end
+
+  # Strip terminal-control sequences that real `pi` interleaves with its
+  # printable text. Three families:
+  #   - OSC (`ESC ] ... (BEL | ST)`): operating-system commands.
+  #     ANSI control sequences such as bracketed paste mode, alt-screen
+  #     teardown, kitty keyboard progressive enhancement, mouse tracking.
+  #   - BEL (`\x07`): terminal bell.
+  # Each one matches the same shapes pi 0.83 emits at exit; if a future pi
+  # release introduces new sequences they will simply survive and need to
+  # be added here.
+  defp normalize_output(text) when is_binary(text) do
+    text
+    |> String.replace(~r/\e\][^\x07\e]*(?:\x07|\e\\)/, "")
+    |> String.replace(~r/\e\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]/, "")
+    |> String.replace(~r/\x07/, "")
   end
 
   # Configuration accessors
@@ -251,7 +331,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   end
 
   # Bare executable names ("pi") are resolved through PATH. Absolute paths
- # are passed through unchanged. nil/empty ⇒ unavailable.
+  # are passed through unchanged. nil/empty ⇒ unavailable.
   defp resolve_executable(nil), do: nil
   defp resolve_executable(""), do: nil
 
@@ -291,5 +371,4 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   defp status_from_reason({:non_zero_exit, _}), do: :non_zero_exit
   defp status_from_reason({:enoent, _}), do: :unavailable
   defp status_from_reason(:timeout), do: :timeout
-
 end
