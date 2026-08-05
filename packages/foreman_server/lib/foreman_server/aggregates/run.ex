@@ -485,9 +485,8 @@ defmodule ForemanServer.Aggregates.Run do
   defp require_absent(_state, _run_id), do: :ok
 
   # `RunStarted` enforces :workflow_snapshot as a required key. The dispatcher
-  # bridge supplies a non-empty map; reject missing/non-map payloads at the
-  # aggregate boundary so the event store never receives an unreplayable event.
-  # The empty map `%{}` is a valid (degenerate) value and is accepted here.
+  # bridge supplies a map; reject missing/non-map payloads at the aggregate
+  # boundary so the event store never receives an unreplayable event.
   defp require_workflow_snapshot(snapshot) when is_map(snapshot), do: :ok
 
   defp require_workflow_snapshot(_snapshot),
