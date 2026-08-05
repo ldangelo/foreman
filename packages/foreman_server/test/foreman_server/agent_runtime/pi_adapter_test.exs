@@ -623,25 +623,133 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       end
     end
 
-    # Test 6 dropped: concurrent-exit timeout preservation.
-    # The AC says: "the adapter's returned {:error, :timeout} tuple is preserved even when the
-    # OS process exits concurrently with the timeout."
+    # Test 6: Concurrent OS-process-exit-during-cleanup preserves {:error, :timeout}.
+    # The AC says: "the adapter's returned {:error, :timeout} tuple is preserved even when
+    # the OS process exits concurrently with the timeout."
     #
-    # This contract is structurally enforced by execute/2's try/after block, which calls
-    # safe_close_port/1 unconditionally — and safe_close_port/1 already handles the
-    # already-closed case (proven at lines 312-317). Without an injection seam for
-    # Port.close/1 or kill semantics, there is no deterministic test that can prove
-    # concurrent-exit preservation as an orthogonal behavior — only timing-dependent
-    # observations that conflate it with the standard timeout path (Test 4/5).
+    # Mechanism — deterministic via TERM-trap-exits fixture:
+    #   1. The fixture writes its PID, sets a SIGTERM trap that writes coop_marker +
+    #      exit 0 cooperatively, then loops on `sleep 0.1`.
+    #   2. With timeout_ms=200, the adapter's receive loop times out at Port_open + 200ms.
+    #      kill_os_process! then Process.sleep(100)s, then SIGTERM at Port_open + 300ms.
+    #   3. SIGTERM arrives synchronously into bash; the trap handler runs, writes
+    #      coop_marker, and exits 0 — all during the cleanup window.
+    #   4. The receive loop has already returned :timeout — the cooperative exit's
+    #      {:exit_status, 0} message lands in the mailbox AFTER the receive loop has
+    #      exited. Cleanup (safe_close_port/1 + outer try/after) must still:
+    #        - return {:error, :timeout} (not crash, not upgrade to {:ok, ""})
+    #        - handle the port whose underlying process has exited
+    #        - remove the temp dir
     #
-    # Honest timeout coverage is retained at:
-    #   - lines 290-301: bounded timeout returns {:error, :timeout}
-    #   - Test 4 (above): Port.info(:os_pid) equality + adapter kill on timeout
-    #   - Test 5 (above): SIGTERM trap → SIGKILL escalation path
+    # Why this is orthogonal to Test 4 and Test 5:
+    #   - Test 4 proves the adapter kills the right PID on timeout (kill -0 returns
+    #     non-zero after timeout fires).
+    #   - Test 5 proves SIGTERM trap-while-alive escalates to SIGKILL (trap writes
+    #     term_marker, fixture keeps looping, SIGKILL required to terminate).
+    #   - Test 6's trap EXITS cooperatively — the trap-fires-and-exits path proves
+    #     the adapter doesn't process the {:exit_status, 0} after returning :timeout.
     #
-    # safe_close_port/1 idempotence and closed-port behavior is covered at lines 312-317.
-    # It is the single Port.close/1 call site in the adapter (per pi_adapter.ex:225) and
-    # is invoked from every Port-close path in execute/2's try/after.
+    # Why the coop_marker is the proof:
+    #   - The marker is written by the SIGTERM trap handler before exit 0.
+    #   - If SIGTERM never arrives (timeout tuple wins but cleanup skipped kill),
+    #     the marker is missing and the test fails.
+    #   - If SIGKILL escalation fires before SIGTERM, bash dies without trap, marker
+    #     missing, test fails.
+    #   - coop_marker present + result == :timeout = AC proven.
+    test "execute/2 preserves {:error, :timeout} when OS process exits during cleanup",
+         %{tmp_dir: tmp_dir} do
+      pid_file = "/tmp/pi_adapter_concurrent_pid.txt"
+      coop_marker = "/tmp/pi_adapter_concurrent_exited_cooperatively.txt"
+      File.rm(pid_file)
+      File.rm(coop_marker)
+
+      concurrent = Path.join(tmp_dir, "pi_concurrent_fixture.sh")
+
+      # TERM-trap-exits fixture. SIGTERM is the trigger; the trap handler performs
+      # the cooperative exit (writes coop_marker, exit 0). This is reliable because:
+      #   - The adapter sends SIGTERM deterministically at Port_open + timeout_ms + 100ms.
+      #   - The trap fires synchronously when SIGTERM arrives.
+      #   - The marker write happens BEFORE exit 0, so its presence proves the trap ran.
+      #   - If SIGKILL escalates (it shouldn't, because trap fires first), the marker is
+      #     missing — the test correctly fails.
+      #
+      # This proves the AC: when SIGTERM terminates the OS process during the cleanup
+      # window via a cooperative (trap-driven) exit, the adapter still returns
+      # {:error, :timeout} and the temp dir is cleaned up.
+      File.write!(concurrent, """
+      #!/bin/bash
+      printf '%s' "$$" > #{pid_file}
+      trap 'printf "%s" "$$" > #{coop_marker}; exit 0' TERM
+      while true; do sleep 0.1; done
+      """)
+
+      File.chmod!(concurrent, 0o755)
+
+      timeout_ms = 200
+
+      try do
+        Application.put_env(:foreman_server, PiAdapter,
+          executable: concurrent,
+          timeout_ms: 60_000
+        )
+
+        request = %{prompt: "test", context: %{}}
+
+        result = PiAdapter.execute(request, timeout_ms: timeout_ms)
+
+        # CRITICAL: coop_marker must exist, proving the trap-driven cooperative exit
+        # ran. If the marker is missing, the fixture was killed before reaching the
+        # trap — which means either SIGKILL escalation fired (race) or the receive
+        # loop didn't actually return :timeout. Either way, the AC is not proven.
+        assert File.exists?(coop_marker),
+               "Concurrent-exit scenario NOT proven: fixture's TERM trap did not run. " <>
+                 "Expected SIGTERM at cleanup to fire the cooperative-exit trap and " <>
+                 "write coop_marker; missing marker means SIGKILL escalation killed the " <>
+                 "fixture first, or the trap was bypassed entirely. The AC requires " <>
+                 "proving {:error, :timeout} survives an in-cleanup cooperative exit; " <>
+                 "without the marker, this test cannot claim that."
+
+        # CRITICAL ASSERTION: timeout tuple preserved even though the fixture exited
+        # cooperatively DURING the cleanup window. If the receive loop somehow picked
+        # up the cooperative {:exit_status, 0} after returning :timeout, the result
+        # would be `{:ok, "", %{}}` instead.
+        assert {:error, :timeout} = result,
+               "Timeout tuple must be preserved when OS process exits during cleanup. " <>
+                 "Got #{inspect(result)} instead — cleanup upgraded a timeout to a success " <>
+                 "by processing the cooperative {:exit_status, 0} after the receive loop " <>
+                 "had already returned :timeout."
+
+        # The fixture wrote its PID and is now dead (cooperative exit took effect).
+        assert File.exists?(pid_file), "Fixture must have written its PID"
+
+        pid_str = String.trim(File.read!(pid_file))
+        {_, exit_code} = System.cmd("kill", ["-0", pid_str])
+
+        assert exit_code != 0,
+               "Fixture PID #{pid_str} must be dead — cooperative exit did not happen " <>
+                 "during cleanup window"
+
+        # Outer try/after completed: no leftover pi_adapter_* tmp dirs.
+        remaining =
+          tmp_dir
+          |> File.ls!()
+          |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+
+        assert remaining == [],
+               "Temp dir cleanup must complete even on concurrent exit. " <>
+                 "Leftover dirs: #{inspect(remaining)}"
+      after
+        # Defensive cleanup of any leftover fixture process.
+        if File.exists?(pid_file) do
+          pid_str = String.trim(File.read!(pid_file))
+          {_, _} = System.cmd("kill", ["-KILL", pid_str])
+        end
+
+        File.rm(concurrent)
+        File.rm(pid_file)
+        File.rm(coop_marker)
+      end
+    end
   end
 
   # Polls every 20ms until `path` exists or the deadline elapses.
