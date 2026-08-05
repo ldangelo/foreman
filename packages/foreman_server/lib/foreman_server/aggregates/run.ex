@@ -171,6 +171,10 @@ defmodule ForemanServer.Aggregates.Run do
   @impl true
   def handle_command(state, %{type: "run.start", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         :ok <- require_workflow_snapshot(Aggregate.get(payload, :workflow_snapshot)),
          :ok <- require_absent(state, run_id) do
       {:ok,
        %{
@@ -179,6 +183,8 @@ defmodule ForemanServer.Aggregates.Run do
          payload:
            payload
            |> Map.put(:run_id, run_id)
+           |> Map.put(:task_id, task_id)
+           |> Map.put(:project_id, project_id)
            |> Map.delete(:status)
            |> Map.drop([:approval_id, :phase_specs])
        }}
@@ -477,6 +483,15 @@ defmodule ForemanServer.Aggregates.Run do
     do: {:error, {:already_exists, :run, run_id}}
 
   defp require_absent(_state, _run_id), do: :ok
+
+  # `RunStarted` enforces :workflow_snapshot as a required key. The dispatcher
+  # bridge supplies a non-empty map; reject missing/non-map payloads at the
+  # aggregate boundary so the event store never receives an unreplayable event.
+  # The empty map `%{}` is a valid (degenerate) value and is accepted here.
+  defp require_workflow_snapshot(snapshot) when is_map(snapshot), do: :ok
+
+  defp require_workflow_snapshot(_snapshot),
+    do: {:error, {:missing_or_invalid, :workflow_snapshot}}
 
   defp require_exists(%State{exists?: true, run_id: run_id}, run_id), do: :ok
   defp require_exists(%State{}, run_id), do: {:error, {:not_found, :run, run_id}}

@@ -150,19 +150,27 @@ status=$(require_field "$out" ".status")
 [[ "$status" == "accepted" ]] || die "task.approve: status=$status: $out"
 echo "  -> accepted"
 wait_for_task_status() {
-  local task_id="$1" target="$2" timeout_ms="${3:-15000}"
-  local deadline=$(( $(date +%s%N) + timeout_ms * 1000000 ))
+  local task_id="$1"; shift
+  local timeout_ms="${1:-15000}"; shift || true
+  # Remaining args are accepted target statuses. The loop succeeds when
+  # the polled status matches ANY target (OR semantics).
+  local target_spec="$*"
+  # Portable: seconds-based deadline. Round timeout up to whole seconds
+  # (sleep is integral anyway); poll every 100 ms inside that window.
+  local timeout_s=$(( (timeout_ms + 999) / 1000 ))
+  local deadline=$(( $(date +%s) + timeout_s ))
+  local out current attempt=0
   while :; do
-    local out
     out=$("$CLINAME" task get "$task_id" 2>/dev/null || true)
-    local current
     current=$(printf '%s' "$out" | jq -er ".task.status // empty" 2>/dev/null) || current=""
-    case " $current " in
-      *" $target "*) return 0 ;;
-      *) ;;
-    esac
-    if [[ $(date +%s%N) -ge $deadline ]]; then
-      echo "fatal: task $task_id did not reach status=$target (last: $current): $out" >&2
+    if [[ -n "$current" ]]; then
+      for t in $target_spec; do
+        if [[ "$current" == "$t" ]]; then return 0; fi
+      done
+    fi
+    attempt=$(( attempt + 1 ))
+    if (( $(date +%s) >= deadline )); then
+      echo "fatal: task $task_id did not reach any of [$target_spec] in ${timeout_s}s (last: $current): $out" >&2
       return 1
     fi
     sleep 0.1
@@ -174,7 +182,7 @@ wait_for_task_status() {
 # 'in_progress'. Poll for the dispatched transition so step 4 also
 # exercises the approval → dispatch bridge end-to-end. ----
 say "4/5  GET /api/tasks/${TASK_ID} → status=ready then in_progress"
-wait_for_task_status "$TASK_ID" "ready in_progress" 8000 \
+wait_for_task_status "$TASK_ID" 8000 ready in_progress \
   || die "task ${TASK_ID} did not reach ready"
 out=$("$CLINAME" task get "$TASK_ID") || die "task get: $out"
 status=$(require_field "$out" ".task.status")
@@ -197,7 +205,7 @@ while [[ $(date +%s) -lt $deadline ]]; do
   sleep 0.2
 done
 [[ "$code" == "200" ]] || die "run get returned HTTP $code: $run_body"
-run_status=$(require_field "$run_body" ".status")
+run_status=$(require_field "$run_body" ".run.status")
 echo "  -> ${run_status} (run_id=${EXPECTED_RUN_ID})"
 case "$run_status" in
   started|completed|failed|in_progress|ready|queued) ;;

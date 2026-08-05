@@ -29,6 +29,42 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert state.terminal? == false
   end
 
+  # Guard against the regression we hit earlier: a `run.start` payload without
+  # all of :task_id, :project_id, and :workflow_snapshot used to slip through
+  # the aggregate and reach the event store, where the typed `RunStarted`
+  # struct's `@enforce_keys` raised at projection time and crashed the boot.
+  # The aggregate boundary now rejects these malformed payloads.
+  for {field, bad_payload} <- [
+        {:task_id,
+         %{run_id: "run-missing-task", project_id: "project-x", workflow_snapshot: %{}}},
+        {:project_id,
+         %{run_id: "run-missing-project", task_id: "task-x", workflow_snapshot: %{}}},
+        {:workflow_snapshot,
+         %{run_id: "run-missing-snapshot", task_id: "task-x", project_id: "project-x"}}
+      ] do
+    test "run.start rejects payload missing #{field} (no event emitted)" do
+      assert {:error, {:missing_or_invalid, _}} =
+               Run.handle_command(Run.initial_state(), %{
+                 type: "run.start",
+                 payload: unquote(Macro.escape(bad_payload))
+               })
+    end
+  end
+
+  test "run.start rejects non-map workflow_snapshot" do
+    assert {:error, {:missing_or_invalid, :workflow_snapshot}} =
+             Run.handle_command(Run.initial_state(), %{
+               type: "run.start",
+               payload: %{
+                 run_id: "run-bad-snapshot",
+                 task_id: "task-x",
+                 project_id: "project-x",
+                 workflow_snapshot: "not-a-map"
+               }
+             })
+  end
+
+
   test "run.complete marks the run completed and terminal" do
     run_id = "run-complete"
     initial_state = Run.initial_state()
