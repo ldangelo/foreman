@@ -498,6 +498,17 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
     def route(_task_type, _capabilities), do: raise("policy module exploded")
   end
 
+  # CapturingPolicy: stores the task_type and capabilities it was invoked with
+  # in the calling process's dictionary so the test can read them back.
+  defmodule CapturingPolicy do
+    @behaviour RoutingPolicy
+    @impl true
+    def route(task_type, capabilities) do
+      Process.put({:captured_policy_args, CapturingPolicy}, {task_type, capabilities})
+      :cheap_fast_adapter
+    end
+  end
+
   # NotAPolicy: defines a module but does not export route/2.
   defmodule NotAPolicy do
   end
@@ -669,6 +680,43 @@ defmodule ForemanServer.AgentRuntime.RouterTest do
 
       assert {:error, {:policy_module_raised, _kind, _reason}} =
                Router.policy(%{}, [catalog: catalog, task_type: :code], RaisingPolicy)
+    end
+  end
+
+  describe "Router.policy/3 — capability snapshot contract" do
+    test "passes the task_type and a capability map keyed by backend name to the policy module" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(CheapSlowAdapter, catalog)
+
+      {:ok, _candidates} =
+        Router.policy(%{}, [catalog: catalog, task_type: :code], CapturingPolicy)
+
+      assert {captured_task_type, captured_caps} =
+               Process.get({:captured_policy_args, CapturingPolicy})
+
+      assert captured_task_type == :code
+      assert Map.keys(captured_caps) |> Enum.sort() == [:cheap_fast_adapter, :cheap_slow_adapter]
+      assert captured_caps[:cheap_fast_adapter].supported_contexts == [:code]
+      assert captured_caps[:cheap_slow_adapter].cost_per_call == 0.001
+    end
+
+    test "ignores a :backend opt passed by the caller (no direct backend override)" do
+      catalog = start_test_catalog()
+      {:ok, _} = AdapterCatalog.register(CheapFastAdapter, catalog)
+      {:ok, _} = AdapterCatalog.register(ExpensiveFastAdapter, catalog)
+
+      # Passing :backend must NOT route directly to that adapter. The policy's
+      # choice (CheapFastAdapter) wins; the override is silently ignored.
+      {:ok, candidates} =
+        Router.policy(
+          %{},
+          [catalog: catalog, task_type: :code, backend: ExpensiveFastAdapter],
+          PickCheapFastPolicy
+        )
+
+      # Primary is the policy's choice, not the override.
+      assert {CheapFastAdapter, true} = hd(candidates)
     end
   end
 end
