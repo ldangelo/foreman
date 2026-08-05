@@ -1,0 +1,74 @@
+# Foreman
+
+Foreman orchestrates AI-agent workflows backed by the Elixir/Phoenix
+service in `packages/foreman_server`. This repository currently
+contains:
+
+| Path | Role |
+|---|---|
+| `packages/foreman_server/` | The Elixir/Phoenix runtime. Hosts the `ForemanServer.AgentRuntime` subsystem (TRD-2026-6af02293). |
+| `docs/PRD/` | Product requirements documents, one per design slice. |
+| `docs/TRD/` | Technical requirements documents, one per design slice. |
+| `docs/architecture/`, `docs/standards/` | Architectural context and conventions. |
+| `dist/` | Generated artifacts (CLI/daemon/MCP/templates). |
+| `AGENTS.md` | Agent-context contract for coding subagents (read-only here). |
+| `CLAUDE.md` | Durable developer architecture conventions (start here when modifying the runtime). |
+
+## Subsystem documentation
+
+| Slice | Doc |
+|---|---|
+| `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). This slice did not add a CLI; see the Go CLI slice when it lands. |
+| Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/` |
+
+The agent runtime is an OTP-supervised, backend-agnostic façade over
+pluggable adapters. Callers register a module that implements
+`ForemanServer.AgentRuntime.BackendAdapter`, then call
+`ForemanServer.AgentRuntime.execute/3` to run prompts.
+
+```elixir
+defmodule MyApp.ClaudeAdapter do
+  use ForemanServer.AgentRuntime.BackendAdapter
+
+  def name, do: :claude
+  def capabilities do
+    %{
+      type: :remote,
+      strengths: [:long_context, :code_review],
+      weaknesses: [:image_input],
+      supported_contexts: [:code_review, :brainstorm],
+      cost_per_call: 0.012,
+      typical_latency_ms: 4_500
+    }
+  end
+
+  def available?, do: true
+
+  def execute(%{prompt: prompt, context: ctx}, _opts) do
+    MyApp.ClaudeAPI.complete(prompt, ctx)
+  end
+end
+
+# Register via config (preferred)
+config :foreman_server, :agent_runtime,
+  enabled: true,
+  adapters: [MyApp.ClaudeAdapter]
+
+# Call it:
+ForemanServer.AgentRuntime.execute("Summarize this PR", %{pr: 123},
+  strategy: :automatic, task_type: :code_review)
+```
+
+See [`CLAUDE.md`](./CLAUDE.md) for the full convention catalogue and
+[`docs/user-guide.md`](./docs/user-guide.md) for operator
+configuration and the adapter extension workflow.
+
+## Build & test
+
+The Elixir runtime (verified tests in this slice):
+```
+cd packages/foreman_server && mix test
+```
+
+For full-repo build/test (CLI/daemon/MCP), see the per-package
+`package.json`/`mix.exs`.

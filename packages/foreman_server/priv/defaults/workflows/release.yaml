@@ -1,0 +1,12 @@
+name: release
+description: Finalize outputs, publish deliverables, and complete release steps.
+phases:
+  - name: finalize-and-release
+    prompt: release.md
+    models:
+      default: MiniMax
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/RELEASE_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

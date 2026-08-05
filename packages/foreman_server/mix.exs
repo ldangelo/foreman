@@ -8,7 +8,8 @@ defmodule ForemanServer.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      elixirc_paths: elixirc_paths(Mix.env())
+      elixirc_paths: elixirc_paths(Mix.env()),
+      releases: releases()
     ]
   end
 
@@ -22,10 +23,13 @@ defmodule ForemanServer.MixProject do
 
       # Phoenix HTTP boundary
       {:phoenix, "~> 1.7"},
+      {:phoenix_html, "~> 4.1"},
+      {:phoenix_live_view, "~> 1.0"},
       {:plug_cowboy, "~> 2.6"},
+      {:lazy_html, ">= 0.1.0", only: :test},
 
       # JSON serialization for EventStore
-      {:jason, "~> 1.4"},
+      {:jason, "~> 1.4"}
     ]
   end
 
@@ -35,6 +39,16 @@ defmodule ForemanServer.MixProject do
       mod: {ForemanServer.Application, []},
       env: [
         event_stores: [ForemanServer.EventStore]
+      ]
+    ]
+  end
+
+  defp releases do
+    [
+      foreman_server: [
+        config_providers: [
+          {ForemanServer.ConfigProviders.Secrets, []}
+        ]
       ]
     ]
   end

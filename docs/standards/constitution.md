@@ -198,8 +198,13 @@ They supplement Sections 1–6. Violations are rejected at code review.
 ### Article V — Concurrency
 
 1. Every `EventStore.append` uses `expected_stream_version` for optimistic
-   concurrency. Conflicts return `{:error, {:conflict, ...}}`. No partial state
-   is written.
+   concurrency. Conflicts return `{:error, :wrong_expected_version}`. No partial state
+   is written. The Actor intercepts the conflict and reloads state via
+   `Aggregate.load/2`, re-decides via `handle_command/2`, and retries the append with
+   the new version (bounded at `@max_conflict_retries = 3` in
+   `ForemanServer.Aggregate.Actor`). On retry exhaustion the actor returns the conflict
+   error to the caller; on re-decision rejection (e.g. terminal state) the retry loop
+   terminates without appending — preserving exactly-once semantics.
 2. Every command carries a unique `command_id`. The event store deduplicates
    by `command_id`.
 3. Out-of-order events are rejected by the aggregate's state machine. The event

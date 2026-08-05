@@ -73,8 +73,6 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-READ ./CLAUDE.md
-
 Workflow note: PR/merge behavior is controlled by phase-level `checkpointPr: true` on mutating phases plus explicit `create-pr`, `pr-wait`, and `merge` phases. Do not add top-level workflow `merge:` or `pr:` tags.
 
 Execution safety rules:
@@ -151,6 +149,13 @@ Actor calls aggregate_module.apply_event/2  ◄── state updated after confir
   via `apply_event` before processing any command.
 - **Normal operation**: actor receives command, calls `handle_command`, sends event spec
   to `CommandRouter`, awaits append confirmation, then calls `apply_event` to update state.
+- **Conflict recovery (bounded retry)**: on `{:error, :wrong_expected_version}` the actor
+  reloads state via `Aggregate.load/2`, re-decides via `handle_command/2`, and retries the
+  append with the new `expected_stream_version`. Retry is bounded by
+  `@max_conflict_retries` (default 3). On exhaustion the actor returns
+  `{:telemetry, {:error, :wrong_expected_version}, %{append_latency_ms: latency}}` and
+  leaves state unchanged. A re-decision that returns `{:error, _}` (e.g.
+  `:phase_terminal`) terminates the retry without appending.
 - **Crash + eager restart**: `Aggregator` supervisor restarts the actor immediately
   (`restart: :permanent`). Restarted actor rehydrates via `Aggregate.load/2` before
   processing the next command.
@@ -283,8 +288,13 @@ produce no additional events. Domain idempotency (e.g. rejecting a second
 `handle_command/2`.
 
 **Optimistic Concurrency**: Every append uses `expected_stream_version`. If the
-stream has moved past the expected version, append fails with a concurrency conflict.
-The aggregate's in-memory state is unchanged.
+stream has moved past the expected version, append fails with `{:error, :wrong_expected_version}`.
+The Actor's bounded retry path intercepts the conflict, reloads the aggregate state via
+`Aggregate.load/2`, re-decides via `handle_command/2`, and retries with the new version
+(see **Actor lifecycle → Conflict recovery**). On retry exhaustion the actor returns
+`{:error, :wrong_expected_version}` and state is unchanged; on a re-decision that
+rejects (e.g. `:phase_terminal`) the retry terminates without appending — preserving
+exactly-once.
 
 ### Go CLI Boundaries (Slice)
 

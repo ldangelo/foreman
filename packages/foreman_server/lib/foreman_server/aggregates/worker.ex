@@ -1,8 +1,21 @@
 defmodule ForemanServer.Aggregates.Worker do
   @moduledoc "Worker aggregate: folds worker stream, validates monotonic event sequence and lifecycle."
   @behaviour ForemanServer.Aggregate
-
   alias ForemanServer.Aggregate
+  alias ForemanServer.EventCodec
+  alias ForemanServer.Events.{
+    AssistantMessage,
+    RunCompleted,
+    RunFailed,
+    ToolCallFinished,
+    WorkerCrashed,
+    WorkerExited,
+    WorkerHeartbeat,
+    WorkerStarted,
+    WorkerStderr,
+    WorkerStdout,
+    WorkerUnresponsive
+  }
 
   defmodule State do
     @enforce_keys [:exists?, :worker_id, :run_id, :status, :terminal?]
@@ -12,13 +25,23 @@ defmodule ForemanServer.Aggregates.Worker do
       :run_id,
       :status,
       :terminal?,
+      :session_id,
+      :adapter,
+      :prompt_path,
       last_sequence: -1,
       tool_events: 0,
-      assistant_messages: 0
+      assistant_messages: 0,
+      tool_names: [],
+      artifact_paths: []
     ]
   end
-
-  @terminal_events MapSet.new(["RunCompleted", "RunFailed", "WorkerExited"])
+  # `WorkerExited` is in the allow-list so a worker that finished a run
+  # (RunCompleted/RunFailed set terminal?=true) can still append its
+  # final cleanup WorkerExited. The apply clause does NOT clear
+  # terminal? — once sealed (RunCompleted, RunFailed, WorkerCrashed),
+  # the stream stays sealed even if a later WorkerExited arrives. Only
+  # `WorkerCrashed` is a fresh seal — WorkerExited no longer seals.
+  @terminal_events MapSet.new(["RunCompleted", "RunFailed", "WorkerExited", "WorkerCrashed"])
 
   @impl true
   def initial_state,
@@ -35,83 +58,182 @@ defmodule ForemanServer.Aggregates.Worker do
 
   @impl true
   def apply_event(state, event) do
-    payload = Aggregate.event_payload(event)
     type = Aggregate.event_type(event)
-    sequence = Aggregate.get(payload, :sequence)
+    payload = Aggregate.event_payload(event)
+    # `event_type` identifies the event class and is the first argument to
+    # `EventCodec.decode!/2` — it MUST NOT live inside the typed struct
+    # payload. Strip both the atom and string forms of the key so the codec
+    # sees only the struct's declared fields (regardless of whether the
+    # caller dispatched with atom- or string-keyed payload).
+    payload =
+      payload
+      |> Map.delete(:event_type)
+      |> Map.delete("event_type")
 
-    new_state =
-      if is_integer(sequence) do
-        %State{state | last_sequence: max(sequence, state.last_sequence)}
-      else
-        state
-      end
+    decoded = EventCodec.decode!(type, payload)
+    apply_typed_event(state, decoded)
+  end
 
-    case type do
-      "WorkerStarted" ->
-        %State{
-          new_state
-          | exists?: true,
-            worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            status: "running",
-            terminal?: false
-        }
 
-      "WorkerHeartbeat" ->
-        %State{
-          new_state
-          | worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            status: "heartbeat"
-        }
+  # ------------------------------------------------------------------
+  defp apply_typed_event(state, %WorkerStarted{} = e) do
+    new_state = bump_sequence(state, e.sequence)
 
-      "ToolCallFinished" ->
-        %State{
-          new_state
-          | worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            tool_events: new_state.tool_events + 1,
-            status: "running"
-        }
+    %State{
+      new_state
+      | exists?: true,
+        worker_id: e.worker_id,
+        run_id: e.run_id,
+        session_id: e.session_id,
+        adapter: e.adapter,
+        prompt_path: e.prompt_path,
+        tool_names: e.tool_names,
+        artifact_paths: e.artifact_paths,
+        status: "running",
+        terminal?: false
+    }
+  end
 
-      "AssistantMessage" ->
-        %State{
-          new_state
-          | worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            assistant_messages: new_state.assistant_messages + 1,
-            status: "running"
-        }
+  defp apply_typed_event(state, %WorkerHeartbeat{} = e) do
+    new_state = bump_sequence(state, e.sequence)
 
-      "WorkerStdout" ->
-        %State{
-          new_state
-          | worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            status: "running"
-        }
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        status: "heartbeat"
+    }
+  end
 
-      "WorkerStderr" ->
-        %State{
-          new_state
-          | worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            status: "running"
-        }
+  defp apply_typed_event(state, %WorkerUnresponsive{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+    # Unresponsive is recoverable: a fresh `WorkerStarted` (re-launch)
+    # or a `WorkerHeartbeat` after the worker reconnects must NOT be
+    # rejected by `allow_after_terminal/2`. Reserve `terminal?: true`
+    # for RunCompleted, RunFailed, and WorkerCrashed — only events in
+    # `@terminal_events` are accepted once the worker is terminal.
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        status: "unresponsive",
+        terminal?: false
+    }
+  end
 
-      type when type in ["RunCompleted", "RunFailed", "WorkerExited"] ->
-        %State{
-          new_state
-          | worker_id: Aggregate.get(payload, :worker_id),
-            run_id: Aggregate.get(payload, :run_id),
-            status: "terminal",
-            terminal?: true
-        }
+  defp apply_typed_event(state, %ToolCallFinished{} = e) do
+    new_state = bump_sequence(state, e.sequence)
 
-      _ ->
-        new_state
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        tool_events: new_state.tool_events + 1,
+        status: "running"
+    }
+  end
+
+
+  defp apply_typed_event(state, %AssistantMessage{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        assistant_messages: new_state.assistant_messages + 1,
+        status: "running"
+    }
+  end
+
+  defp apply_typed_event(state, %WorkerStdout{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        status: "running"
+    }
+  end
+
+  defp apply_typed_event(state, %WorkerStderr{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        status: "running"
+    }
+  end
+
+  # WorkerExited is in the allow-list so the cleanup exit can still be
+  # appended after a terminal event (RunCompleted, RunFailed). The
+  # apply clause preserves `status` and `terminal?` when the stream is
+  # already terminal — a late WorkerExited arriving after WorkerCrashed
+  # must NOT overwrite `status: "crashed"` with `"exited"`. Only
+  # `WorkerCrashed` is a fresh seal; the `terminal?` flag is monotonic.
+  defp apply_typed_event(state, %WorkerExited{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    base = %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id || new_state.run_id
+    }
+
+    if new_state.terminal? do
+      base
+    else
+      %State{base | status: "exited", terminal?: false}
     end
   end
+
+  # `WorkerCrashed` is the genuine terminal event for a worker stream:
+  # emitted by the overwatch crash-loop detector after more than
+  # `threshold` restarts within `window_ms`. After `WorkerCrashed`, no
+  # further events are accepted on this worker stream — the slot is
+  # permanently released. `worker_status` reflects `"crashed"` so the
+  # Run projection surfaces the failure clearly to operators.
+  defp apply_typed_event(state, %WorkerCrashed{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | worker_id: e.worker_id,
+        run_id: e.run_id,
+        status: "crashed",
+        terminal?: true
+    }
+  end
+
+  defp apply_typed_event(state, %RunCompleted{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | run_id: e.run_id || new_state.run_id,
+        status: "terminal",
+        terminal?: true
+    }
+  end
+
+  defp apply_typed_event(state, %RunFailed{} = e) do
+    new_state = bump_sequence(state, e.sequence)
+
+    %State{
+      new_state
+      | run_id: e.run_id || new_state.run_id,
+        status: "terminal",
+        terminal?: true
+    }
+  end
+
+  defp bump_sequence(state, nil), do: state
+
+  defp bump_sequence(state, sequence) when is_integer(sequence),
+    do: %State{state | last_sequence: max(sequence, state.last_sequence)}
 
   @impl true
   def handle_command(state, %{type: "worker.record", payload: payload}) do
@@ -121,15 +243,17 @@ defmodule ForemanServer.Aggregates.Worker do
          {:ok, event_type} <-
            Aggregate.required_binary(Aggregate.get(payload, :event_type), :event_type),
          :ok <- validate_next_sequence(state, Aggregate.get(payload, :sequence)),
-         :ok <- allow_after_terminal(state, event_type) do
+         :ok <- allow_after_terminal(state, event_type),
+         :ok <- validate_typed_event(event_type, payload) do
       {:ok,
        %{
          stream_id: "worker:#{run_id}:#{worker_id}",
          event_type: event_type,
-         payload: Map.merge(payload, %{run_id: run_id, worker_id: worker_id})
+         payload: payload
        }}
     end
   end
+
 
   def handle_command(_state, _command), do: :unhandled
 
@@ -153,4 +277,29 @@ defmodule ForemanServer.Aggregates.Worker do
   end
 
   defp allow_after_terminal(_state, _event_type), do: :ok
+
+  # Strictly validate the event payload against the typed-event contract.
+  # `EventCodec.decode!/2` raises on:
+  #   * unknown event_type
+  #   * mismatched struct
+  #   * missing `@enforce_keys` (e.g. session_id/adapter/prompt_path on WorkerStarted)
+  #   * unknown fields
+  # We surface those as `{:error, {:malformed_event, message}}` so the
+  # dispatcher never persists a payload that would later fail replay.
+  #
+  # `event_type` identifies the event class and is the first argument to
+  # `decode!/2` — it MUST NOT live inside the typed struct payload.
+  # Strip both atom and string forms (same convention as `apply_event/2`)
+  # so the codec only sees declared fields.
+  defp validate_typed_event(event_type, payload) do
+    cleaned =
+      payload
+      |> Map.delete(:event_type)
+      |> Map.delete("event_type")
+
+    _ = EventCodec.decode!(event_type, cleaned)
+    :ok
+  rescue
+    e in ArgumentError -> {:error, {:malformed_event, Exception.message(e)}}
+  end
 end

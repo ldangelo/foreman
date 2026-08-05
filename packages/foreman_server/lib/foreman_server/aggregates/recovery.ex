@@ -18,7 +18,8 @@ defmodule ForemanServer.Aggregates.Recovery do
   @observation_events MapSet.new([
                         "WorkerFailureSimulated",
                         "WorkerRecoveryRequired",
-                        "ExternalWorkerObserved"
+                        "ExternalWorkerObserved",
+                        "RecoveryDetected"
                       ])
   @action_events MapSet.new([
                    "WorkerReattached",
@@ -72,6 +73,18 @@ defmodule ForemanServer.Aggregates.Recovery do
   end
 
   @impl true
+  def handle_command(_state, %{type: "recovery.detected", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id) do
+      {:ok,
+       %{
+         stream_id: "recovery:#{run_id}",
+         event_type: "RecoveryDetected",
+         payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
+  @impl true
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "recovery.observe_external_worker",
@@ -106,7 +119,7 @@ defmodule ForemanServer.Aggregates.Recovery do
   def handle_command(_state, _command), do: :unhandled
 
   defp require_observation_for_action(_state, type)
-       when type in ["recovery.observe_external_worker", "recovery.require"],
+       when type in ["recovery.observe_external_worker", "recovery.require", "recovery.detected"],
        do: :ok
 
   defp require_observation_for_action(%State{observations: obs}, _type)

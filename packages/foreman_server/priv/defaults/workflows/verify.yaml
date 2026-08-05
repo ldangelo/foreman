@@ -1,0 +1,12 @@
+name: verify
+description: Run validation, testing, and quality checks for the completed work.
+phases:
+  - name: test-and-validate
+    prompt: verify.md
+    models:
+      default: MiniMax
+    maxTurns: 60
+    artifact: "{task.projectReportsDir}/VERIFY_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

@@ -1,0 +1,12 @@
+name: plan
+description: Produce the design, task decomposition, and execution plan.
+phases:
+  - name: design-and-decompose
+    prompt: plan.md
+    models:
+      default: MiniMax
+    maxTurns: 50
+    artifact: "{task.projectReportsDir}/PLAN_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

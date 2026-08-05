@@ -40,3 +40,14 @@
 
 # macOS quarantine artifacts
 .Compatibility*
+
+# bv (beads viewer) local config and caches
+.bv/
+# br doctor per-run artifacts
+.doctor/
+
+# br corruption recovery directory (forensic-preserve on disk, hidden from VCS)
+.beads.bad/
+
+# Scout artifacts (per-task markdown output, regenerated each run)
+.local/scout/*.md

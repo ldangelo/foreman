@@ -1,0 +1,12 @@
+name: implement
+description: Generate and refine the code changes required for the task.
+phases:
+  - name: code-generation
+    prompt: implement.md
+    models:
+      default: MiniMax
+    maxTurns: 80
+    artifact: "{task.projectReportsDir}/IMPLEMENT_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true
