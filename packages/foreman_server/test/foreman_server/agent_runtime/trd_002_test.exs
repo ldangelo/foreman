@@ -418,9 +418,14 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test_pid = self()
     handler_id = "test-#{:rand.uniform(999_999)}"
 
-    :telemetry.attach_many(handler_id, normalized, fn event, measurements, metadata, _config ->
-      send(test_pid, {:telemetry_event, event, measurements, metadata})
-    end, nil)
+    :telemetry.attach_many(
+      handler_id,
+      normalized,
+      fn event, measurements, metadata, _config ->
+        send(test_pid, {:telemetry_event, event, measurements, metadata})
+      end,
+      nil
+    )
 
     try do
       fun.()
@@ -435,8 +440,9 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     receive do
       {:telemetry_event, event, measurements, metadata} ->
         receive_all_telemetry([{event, measurements, metadata} | acc])
-    after 100 ->
-      Enum.reverse(acc)
+    after
+      100 ->
+        Enum.reverse(acc)
     end
   end
 
@@ -446,13 +452,15 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
   defp receive_results(expected_count, acc \\ [])
   defp receive_results(0, acc), do: acc
+
   defp receive_results(expected_count, acc) do
     receive do
       {:agent_runtime_invocation_complete, ref, result} ->
         new_acc = [{ref, result} | acc]
         receive_results(expected_count - 1, new_acc)
-    after 1000 ->
-      acc
+    after
+      1000 ->
+        acc
     end
   end
 
@@ -513,9 +521,10 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test "post-startup AdapterCatalog.register/2 emits exactly one catalog register event" do
       {catalog_name, _inv_name} = start_runtime([])
 
-      events = capture_telemetry([:foreman, :agent_runtime, :catalog, :register], fn ->
-        {:ok, _} = AdapterCatalog.register(StartupTelemetryAdapter, catalog_name)
-      end)
+      events =
+        capture_telemetry([:foreman, :agent_runtime, :catalog, :register], fn ->
+          {:ok, _} = AdapterCatalog.register(StartupTelemetryAdapter, catalog_name)
+        end)
 
       assert length(events) == 1
       {event, _measurements, metadata} = hd(events)
@@ -550,8 +559,11 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       request = %{prompt: "test", context: %{}}
 
-      {:ok, pid1, _ref1} = InvocationSupervisor.start_invocation(CrashSiblingAdapter, request, self(), inv_name)
-      {:ok, _pid2, ref2} = InvocationSupervisor.start_invocation(CrashSiblingAdapter, request, self(), inv_name)
+      {:ok, pid1, _ref1} =
+        InvocationSupervisor.start_invocation(CrashSiblingAdapter, request, self(), inv_name)
+
+      {:ok, _pid2, ref2} =
+        InvocationSupervisor.start_invocation(CrashSiblingAdapter, request, self(), inv_name)
 
       # Wait for first invocation to start
       Process.sleep(20)
@@ -561,14 +573,16 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       # Wait for second to complete - should receive exactly one result (the sibling)
       results = receive_results(1)
-      assert [{^ref2, {:ok, :crash_sibling, "done", %{}}}] = results
+      assert [{^ref2, {:ok, "done"}}] = results
     end
 
     test "DynamicSupervisor.which_children/1 is empty after the killed child is reaped" do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(EmptyChildrenAdapter, request, self(), inv_name)
+
+      {:ok, _pid, _ref} =
+        InvocationSupervisor.start_invocation(EmptyChildrenAdapter, request, self(), inv_name)
 
       receive_results(1)
 
@@ -580,7 +594,12 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
   describe "AC-2 — invocation lifecycle is :temporary" do
     test "child_spec/1 declares restart: :temporary" do
-      spec = Invocation.child_spec({SomeAdapter, %{prompt: "", context: %{}}, self(), make_ref()})
+      spec =
+        Invocation.child_spec(
+          {[{SomeAdapter, true}], %{fallback: false, max_attempts: 1, timeout_ms: 60_000},
+           %{prompt: "", context: %{}}, self(), make_ref()}
+        )
+
       assert spec.restart == :temporary
     end
 
@@ -588,7 +607,9 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, pid, _ref} = InvocationSupervisor.start_invocation(StopNormalAdapter, request, self(), inv_name)
+
+      {:ok, pid, _ref} =
+        InvocationSupervisor.start_invocation(StopNormalAdapter, request, self(), inv_name)
 
       receive_results(1)
 
@@ -604,8 +625,11 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       request = %{prompt: "test", context: %{}}
 
-      {:ok, _pid1, _ref1} = InvocationSupervisor.start_invocation(ConcurrentAdapter1, request, self(), inv_name)
-      {:ok, _pid2, _ref2} = InvocationSupervisor.start_invocation(ConcurrentAdapter2, request, self(), inv_name)
+      {:ok, _pid1, _ref1} =
+        InvocationSupervisor.start_invocation(ConcurrentAdapter1, request, self(), inv_name)
+
+      {:ok, _pid2, _ref2} =
+        InvocationSupervisor.start_invocation(ConcurrentAdapter2, request, self(), inv_name)
 
       results = receive_results(2)
       assert length(results) == 2
@@ -630,7 +654,9 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(RaiseAdapter, request, self(), inv_name)
+
+      {:ok, _pid, _ref} =
+        InvocationSupervisor.start_invocation(RaiseAdapter, request, self(), inv_name)
 
       results = receive_results(1)
       assert length(results) == 1
@@ -643,7 +669,9 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(ThrowAdapter, request, self(), inv_name)
+
+      {:ok, _pid, _ref} =
+        InvocationSupervisor.start_invocation(ThrowAdapter, request, self(), inv_name)
 
       results = receive_results(1)
       assert length(results) == 1
@@ -656,7 +684,9 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(ExitAdapter, request, self(), inv_name)
+
+      {:ok, _pid, _ref} =
+        InvocationSupervisor.start_invocation(ExitAdapter, request, self(), inv_name)
 
       results = receive_results(1)
       assert length(results) == 1
@@ -671,7 +701,9 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(KillAdapter, request, self(), inv_name)
+
+      {:ok, _pid, _ref} =
+        InvocationSupervisor.start_invocation(KillAdapter, request, self(), inv_name)
 
       Process.sleep(100)
 
@@ -683,15 +715,18 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, pid, _ref} = InvocationSupervisor.start_invocation(KillMonitorAdapter, request, self(), inv_name)
+
+      {:ok, pid, _ref} =
+        InvocationSupervisor.start_invocation(KillMonitorAdapter, request, self(), inv_name)
 
       monitor_ref = Process.monitor(pid)
 
       receive do
         {:DOWN, ^monitor_ref, :process, _object, :killed} ->
           :ok
-      after 500 ->
-        flunk("Process should have been killed")
+      after
+        500 ->
+          flunk("Process should have been killed")
       end
     end
 
@@ -699,12 +734,16 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       {_catalog_name, inv_name} = start_runtime([])
 
       request = %{prompt: "test", context: %{}}
-      {:ok, pid, _ref} = InvocationSupervisor.start_invocation(KillNoRestartAdapter, request, self(), inv_name)
+
+      {:ok, pid, _ref} =
+        InvocationSupervisor.start_invocation(KillNoRestartAdapter, request, self(), inv_name)
 
       monitor_ref = Process.monitor(pid)
+
       receive do
         {:DOWN, ^monitor_ref, :process, _object, :killed} -> :ok
-      after 500 -> :ok
+      after
+        500 -> :ok
       end
 
       Process.sleep(50)
@@ -716,24 +755,44 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test "no stop telemetry event is emitted for the killed invocation" do
       {_catalog_name, inv_name} = start_runtime([])
 
-      events = capture_telemetry(
-        [[:foreman, :agent_runtime, :invocation, :start], [:foreman, :agent_runtime, :invocation, :stop]],
-        fn ->
-          request = %{prompt: "test", context: %{}}
-          {:ok, pid, _ref} = InvocationSupervisor.start_invocation(KillNoTelemetryAdapter, request, self(), inv_name)
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :invocation, :start],
+            [:foreman, :agent_runtime, :invocation, :stop]
+          ],
+          fn ->
+            request = %{prompt: "test", context: %{}}
 
-          monitor_ref = Process.monitor(pid)
-          receive do
-            {:DOWN, ^monitor_ref, :process, _object, :killed} -> :ok
-          after 500 -> :ok
+            {:ok, pid, _ref} =
+              InvocationSupervisor.start_invocation(
+                KillNoTelemetryAdapter,
+                request,
+                self(),
+                inv_name
+              )
+
+            monitor_ref = Process.monitor(pid)
+
+            receive do
+              {:DOWN, ^monitor_ref, :process, _object, :killed} -> :ok
+            after
+              500 -> :ok
+            end
+
+            Process.sleep(50)
           end
+        )
 
-          Process.sleep(50)
-        end
-      )
+      start_events =
+        Enum.filter(events, fn {e, _, _} ->
+          e == [:foreman, :agent_runtime, :invocation, :start]
+        end)
 
-      start_events = Enum.filter(events, fn {e, _, _} -> e == [:foreman, :agent_runtime, :invocation, :start] end)
-      stop_events = Enum.filter(events, fn {e, _, _} -> e == [:foreman, :agent_runtime, :invocation, :stop] end)
+      stop_events =
+        Enum.filter(events, fn {e, _, _} ->
+          e == [:foreman, :agent_runtime, :invocation, :stop]
+        end)
 
       assert length(start_events) == 1
       assert length(stop_events) == 0
@@ -744,11 +803,20 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test "Invocation stop telemetry reports status: :ok and a non-negative duration_us" do
       {_catalog_name, inv_name} = start_runtime([])
 
-      events = capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
-        request = %{prompt: "test", context: %{}}
-        {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(DurationTelemetryAdapter, request, self(), inv_name)
-        receive_results(1)
-      end)
+      events =
+        capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
+          request = %{prompt: "test", context: %{}}
+
+          {:ok, _pid, _ref} =
+            InvocationSupervisor.start_invocation(
+              DurationTelemetryAdapter,
+              request,
+              self(),
+              inv_name
+            )
+
+          receive_results(1)
+        end)
 
       assert length(events) == 1
       {_event, measurements, _metadata} = hd(events)
@@ -764,18 +832,32 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       prompt = gen_sentinel()
 
-      events = capture_telemetry(
-        [[:foreman, :agent_runtime, :invocation, :start], [:foreman, :agent_runtime, :invocation, :stop]],
-        fn ->
-          request = %{prompt: prompt, context: %{}}
-          {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(RedactPromptAdapter, request, self(), inv_name)
-          receive_results(1)
-        end
-      )
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :invocation, :start],
+            [:foreman, :agent_runtime, :invocation, :stop]
+          ],
+          fn ->
+            request = %{prompt: prompt, context: %{}}
+
+            {:ok, _pid, _ref} =
+              InvocationSupervisor.start_invocation(
+                RedactPromptAdapter,
+                request,
+                self(),
+                inv_name
+              )
+
+            receive_results(1)
+          end
+        )
 
       for {_, _, metadata} <- events do
         metadata_str = inspect(metadata)
-        refute String.contains?(metadata_str, prompt), "Prompt leaked into telemetry: #{metadata_str}"
+
+        refute String.contains?(metadata_str, prompt),
+               "Prompt leaked into telemetry: #{metadata_str}"
       end
     end
 
@@ -784,32 +866,58 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
 
       context = %{private_key: gen_sentinel()}
 
-      events = capture_telemetry(
-        [[:foreman, :agent_runtime, :invocation, :start], [:foreman, :agent_runtime, :invocation, :stop]],
-        fn ->
-          request = %{prompt: "test", context: context}
-          {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(RedactContextAdapter, request, self(), inv_name)
-          receive_results(1)
-        end
-      )
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :invocation, :start],
+            [:foreman, :agent_runtime, :invocation, :stop]
+          ],
+          fn ->
+            request = %{prompt: "test", context: context}
+
+            {:ok, _pid, _ref} =
+              InvocationSupervisor.start_invocation(
+                RedactContextAdapter,
+                request,
+                self(),
+                inv_name
+              )
+
+            receive_results(1)
+          end
+        )
 
       for {_, _, metadata} <- events do
         metadata_str = inspect(metadata)
-        refute String.contains?(metadata_str, "private_key"), "Context leaked into telemetry: #{metadata_str}"
+
+        refute String.contains?(metadata_str, "private_key"),
+               "Context leaked into telemetry: #{metadata_str}"
       end
     end
 
     test "no event metadata contains the adapter output string" do
       {_catalog_name, inv_name} = start_runtime([])
 
-      events = capture_telemetry(
-        [[:foreman, :agent_runtime, :invocation, :start], [:foreman, :agent_runtime, :invocation, :stop]],
-        fn ->
-          request = %{prompt: "test", context: %{}}
-          {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(RedactOutputAdapter, request, self(), inv_name)
-          receive_results(1)
-        end
-      )
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :invocation, :start],
+            [:foreman, :agent_runtime, :invocation, :stop]
+          ],
+          fn ->
+            request = %{prompt: "test", context: %{}}
+
+            {:ok, _pid, _ref} =
+              InvocationSupervisor.start_invocation(
+                RedactOutputAdapter,
+                request,
+                self(),
+                inv_name
+              )
+
+            receive_results(1)
+          end
+        )
 
       for {_, _, metadata} <- events do
         metadata_str = inspect(metadata)
@@ -821,11 +929,15 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test "successful invocation emits a stop event with status: :ok" do
       {_catalog_name, inv_name} = start_runtime([])
 
-      events = capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
-        request = %{prompt: "test", context: %{}}
-        {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(OkStatusAdapter, request, self(), inv_name)
-        receive_results(1)
-      end)
+      events =
+        capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
+          request = %{prompt: "test", context: %{}}
+
+          {:ok, _pid, _ref} =
+            InvocationSupervisor.start_invocation(OkStatusAdapter, request, self(), inv_name)
+
+          receive_results(1)
+        end)
 
       assert length(events) == 1
       {_event, measurements, _metadata} = hd(events)
@@ -835,11 +947,15 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test "errored invocation emits a stop event with status: :error" do
       {_catalog_name, inv_name} = start_runtime([])
 
-      events = capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
-        request = %{prompt: "test", context: %{}}
-        {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(ErrorStatusAdapter, request, self(), inv_name)
-        receive_results(1)
-      end)
+      events =
+        capture_telemetry([:foreman, :agent_runtime, :invocation, :stop], fn ->
+          request = %{prompt: "test", context: %{}}
+
+          {:ok, _pid, _ref} =
+            InvocationSupervisor.start_invocation(ErrorStatusAdapter, request, self(), inv_name)
+
+          receive_results(1)
+        end)
 
       assert length(events) == 1
       {_event, measurements, _metadata} = hd(events)
@@ -849,14 +965,26 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     test "no [:foreman, :agent_runtime, :execute] event is emitted by the Invocation slice" do
       {_catalog_name, inv_name} = start_runtime([])
 
-      events = capture_telemetry(
-        [[:foreman, :agent_runtime, :execute, :start], [:foreman, :agent_runtime, :execute, :stop]],
-        fn ->
-          request = %{prompt: "test", context: %{}}
-          {:ok, _pid, _ref} = InvocationSupervisor.start_invocation(NoExecuteEventAdapter, request, self(), inv_name)
-          receive_results(1)
-        end
-      )
+      events =
+        capture_telemetry(
+          [
+            [:foreman, :agent_runtime, :execute, :start],
+            [:foreman, :agent_runtime, :execute, :stop]
+          ],
+          fn ->
+            request = %{prompt: "test", context: %{}}
+
+            {:ok, _pid, _ref} =
+              InvocationSupervisor.start_invocation(
+                NoExecuteEventAdapter,
+                request,
+                self(),
+                inv_name
+              )
+
+            receive_results(1)
+          end
+        )
 
       assert events == []
     end

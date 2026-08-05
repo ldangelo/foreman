@@ -18,6 +18,7 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
         supported_contexts: [:chat]
       }
     end
+
     @impl true
     def available?, do: true
     @impl true
@@ -37,6 +38,7 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
         supported_contexts: [:chat]
       }
     end
+
     @impl true
     def available?, do: true
     @impl true
@@ -56,6 +58,7 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
         supported_contexts: [:chat]
       }
     end
+
     @impl true
     def available?, do: true
     @impl true
@@ -77,6 +80,7 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
         supported_contexts: [:chat]
       }
     end
+
     @impl true
     def available?, do: true
     @impl true
@@ -91,6 +95,26 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
     end
   end
 
+  defmodule UnavailableForInvocationAdapter do
+    @behaviour BackendAdapter
+    @impl true
+    def name, do: :unavailable_for_invocation
+    @impl true
+    def capabilities do
+      %{
+        type: :language_model,
+        strengths: [:coding],
+        weaknesses: [],
+        supported_contexts: [:chat]
+      }
+    end
+
+    @impl true
+    def available?, do: false
+    @impl true
+    def execute(_req, _opts), do: flunk("unavailable adapter must not be invoked")
+  end
+
   # Helper to start supervisor with unique name
   defp start_invocation_supervisor(id) do
     name = :"InvocationSupervisor.Test.#{id}"
@@ -98,16 +122,26 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
     name
   end
 
+  # Default policy for tests
+  defp default_policy do
+    %{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}
+  end
+
   describe "success path" do
-    test "returns {:ok, backend_name, content, metadata}" do
+    test "returns {:ok, content} normalized from invocation result" do
       sup_name = start_invocation_supervisor(:invocation_success)
 
       request = %{prompt: "hello", context: %{}}
-      {:ok, _pid, ref} = InvocationSupervisor.start_invocation(SuccessAdapter, request, self(), sup_name)
+      policy = default_policy()
+      candidates = [{SuccessAdapter, true}]
+
+      {:ok, _pid, ref} =
+        InvocationSupervisor.start_invocation(candidates, policy, request, self(), sup_name)
 
       assert_receive {:agent_runtime_invocation_complete, ^ref, result}
 
-      assert result == {:ok, :success_adapter, "success response", %{meta: true}}
+      # Result is now normalized to 2-tuple: {:ok, content}
+      assert result == {:ok, "success response"}
     end
   end
 
@@ -116,7 +150,11 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
       sup_name = start_invocation_supervisor(:invocation_error)
 
       request = %{prompt: "hello", context: %{}}
-      {:ok, _pid, ref} = InvocationSupervisor.start_invocation(ErrorAdapter, request, self(), sup_name)
+      policy = default_policy()
+      candidates = [{ErrorAdapter, true}]
+
+      {:ok, _pid, ref} =
+        InvocationSupervisor.start_invocation(candidates, policy, request, self(), sup_name)
 
       assert_receive {:agent_runtime_invocation_complete, ^ref, result}
 
@@ -130,7 +168,11 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
       sup_name = start_invocation_supervisor(:invocation_crash)
 
       request = %{prompt: "hello", context: %{}}
-      {:ok, _pid, ref} = InvocationSupervisor.start_invocation(CrashAdapter, request, self(), sup_name)
+      policy = default_policy()
+      candidates = [{CrashAdapter, true}]
+
+      {:ok, _pid, ref} =
+        InvocationSupervisor.start_invocation(candidates, policy, request, self(), sup_name)
 
       assert_receive {:agent_runtime_invocation_complete, ^ref, result}
 
@@ -143,23 +185,34 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
 
       # Start two invocations
       request = %{prompt: "hello", context: %{}}
-      {:ok, _pid1, _ref1} = InvocationSupervisor.start_invocation(CrashAdapter, request, self(), sup_name)
-      {:ok, _pid2, _ref2} = InvocationSupervisor.start_invocation(SuccessAdapter, request, self(), sup_name)
+      policy = default_policy()
+
+      candidates1 = [{CrashAdapter, true}]
+      candidates2 = [{SuccessAdapter, true}]
+
+      {:ok, _pid1, _ref1} =
+        InvocationSupervisor.start_invocation(candidates1, policy, request, self(), sup_name)
+
+      {:ok, _pid2, _ref2} =
+        InvocationSupervisor.start_invocation(candidates2, policy, request, self(), sup_name)
 
       # Both should complete (order may vary)
-      results = for _ <- 1..2 do
-        receive do
-          {:agent_runtime_invocation_complete, _ref, result} -> result
-        after 1000 -> flunk("timeout waiting for result")
+      results =
+        for _ <- 1..2 do
+          receive do
+            {:agent_runtime_invocation_complete, _ref, result} -> result
+          after
+            1000 -> flunk("timeout waiting for result")
+          end
         end
-      end
 
       # One should be error (crash), one should be success
       assert length(results) == 2
+
       assert Enum.any?(results, fn
-        {:ok, :success_adapter, _, _} -> true
-        _ -> false
-      end)
+               {:ok, _content} -> true
+               _ -> false
+             end)
     end
 
     test "forced process crash does not restart and sibling completes" do
@@ -168,13 +221,21 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
 
       # Start first invocation (will block) - pass test_pid in context
       request = %{prompt: "hello", context: %{test_pid: test_pid}}
-      {:ok, pid1, _ref1} = InvocationSupervisor.start_invocation(BlockingAdapter, request, self(), sup_name)
+      policy = default_policy()
+
+      candidates1 = [{BlockingAdapter, true}]
+
+      {:ok, pid1, _ref1} =
+        InvocationSupervisor.start_invocation(candidates1, policy, request, self(), sup_name)
 
       # Wait for blocking adapter to start executing
       assert_receive {:blocking_adapter, :started}, 1000
 
       # Start sibling invocation concurrently (will complete)
-      {:ok, pid2, ref2} = InvocationSupervisor.start_invocation(SuccessAdapter, request, self(), sup_name)
+      candidates2 = [{SuccessAdapter, true}]
+
+      {:ok, pid2, ref2} =
+        InvocationSupervisor.start_invocation(candidates2, policy, request, self(), sup_name)
 
       # Now kill the blocked invocation
       monitor_ref = Process.monitor(pid1)
@@ -183,7 +244,8 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
       # Wait for the EXIT signal
       receive do
         {:DOWN, ^monitor_ref, :process, ^pid1, :killed} -> :ok
-      after 1000 -> flunk("timeout waiting for :DOWN")
+      after
+        1000 -> flunk("timeout waiting for :DOWN")
       end
 
       # Verify no child was restarted (supervisor uses one_for_one with restart: :temporary)
@@ -192,10 +254,67 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
 
       # Sibling should have completed despite sibling crash
       assert_receive {:agent_runtime_invocation_complete, ^ref2, result}
-      assert {:ok, :success_adapter, _, _} = result
+      assert {:ok, "success response"} = result
 
       # Verify no replacement was started for the killed process
       assert pid2 != pid1
+    end
+  end
+
+  describe "fallback exhaustion" do
+    test "fallback: true with one available candidate that fails returns :all_backends_failed" do
+      sup_name = start_invocation_supervisor(:invocation_exhaust_single)
+
+      request = %{prompt: "hello", context: %{}}
+      policy = %{fail_fast: true, fallback: true, max_attempts: 1, timeout_ms: 60_000}
+      candidates = [{ErrorAdapter, true}]
+
+      {:ok, _pid, ref} =
+        InvocationSupervisor.start_invocation(candidates, policy, request, self(), sup_name)
+
+      assert_receive {:agent_runtime_invocation_complete, ^ref, result}
+
+      # AC 3 holds even when only one allowed attempt was recorded.
+      assert {:error, :all_backends_failed, %{attempts: attempts}} = result
+      assert length(attempts) == 1
+      assert {:error, :error_adapter, :something_went_wrong} = hd(attempts)
+    end
+
+    test "fallback: true with mixed available/unavailable candidates returns :all_backends_failed" do
+      sup_name = start_invocation_supervisor(:invocation_exhaust_mixed)
+
+      request = %{prompt: "hello", context: %{}}
+      policy = %{fail_fast: true, fallback: true, max_attempts: 2, timeout_ms: 60_000}
+
+      # ErrorAdapter is available and fails; ManualUnavailableAdapter is unavailable.
+      # The unavailable candidate must be skipped (not recorded); the one available
+      # candidate fails → all attempted failed → :all_backends_failed.
+      candidates = [{ErrorAdapter, true}, {UnavailableForInvocationAdapter, false}]
+
+      {:ok, _pid, ref} =
+        InvocationSupervisor.start_invocation(candidates, policy, request, self(), sup_name)
+
+      assert_receive {:agent_runtime_invocation_complete, ^ref, result}
+
+      assert {:error, :all_backends_failed, %{attempts: attempts}} = result
+      assert length(attempts) == 1
+      assert {:error, :error_adapter, :something_went_wrong} = hd(attempts)
+    end
+
+    test "fallback: false with one available candidate that fails returns direct error" do
+      sup_name = start_invocation_supervisor(:invocation_no_fallback_fail)
+
+      request = %{prompt: "hello", context: %{}}
+      policy = default_policy()
+      candidates = [{ErrorAdapter, true}]
+
+      {:ok, _pid, ref} =
+        InvocationSupervisor.start_invocation(candidates, policy, request, self(), sup_name)
+
+      assert_receive {:agent_runtime_invocation_complete, ^ref, result}
+
+      # Per AC 2: fallback disabled → direct error, no :all_backends_failed wrapping.
+      assert result == {:error, :something_went_wrong}
     end
   end
 end

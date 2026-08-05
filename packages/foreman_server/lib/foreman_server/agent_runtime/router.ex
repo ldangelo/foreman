@@ -46,67 +46,64 @@ defmodule ForemanServer.AgentRuntime.Router do
   end
 
   @doc """
-  Automatic routing: select an adapter based on task capabilities.
+  Automatic routing candidates: return an ordered list of candidates based on
+  task capabilities.
 
   Filters adapters by:
   1. supported_contexts contains opts[:task_type]
-  2. available? returns true
-  3. Sorts by: cost_per_call (asc), typical_latency_ms (asc), registration_index (asc)
+  2. available
+
+  Sorts by: cost_per_call (asc), typical_latency_ms (asc), registration_index (asc)
 
   Missing optional numeric values sort after declared values.
-  Returns first match or {:error, :no_available_backend}.
+  Returns `{:ok, [{adapter, available?}, ...]}` or `{:error, :no_available_backend}`.
+
+  Per TRD-008 AC-004-2: returns only available backends in the candidate list.
   """
-  @spec automatic(map(), keyword()) :: {:ok, adapter()} | {:error, :no_available_backend}
-  def automatic(_request, opts \\ []) do
+  @spec automatic_candidates(map(), keyword()) ::
+          {:ok, [candidate()]} | {:error, :no_available_backend}
+  def automatic_candidates(_request, opts \\ []) do
     catalog = Keyword.get(opts, :catalog, AdapterCatalog)
     task_type = Keyword.get(opts, :task_type)
 
-    # If no task_type provided, no adapter can be selected
     if is_nil(task_type) do
       {:error, :no_available_backend}
     else
-      # Get all registered adapters in stable registration order
-      all_adapters = AdapterCatalog.snapshot(catalog)
+      snapshot = AdapterCatalog.routing_snapshot(catalog)
 
-      # Filter: supported_contexts contains task_type
-      matching_context =
-        Enum.filter(all_adapters, fn adapter ->
-          case BackendAdapter.validate_capabilities(adapter) do
-            {:ok, %{supported_contexts: contexts}} when is_list(contexts) ->
-              task_type in contexts
-
-            _ ->
-              false
-          end
+      ranked =
+        snapshot
+        |> Enum.filter(fn entry ->
+          supported = Map.get(entry.capabilities, :supported_contexts, [])
+          is_list(supported) and task_type in supported
         end)
-
-      # Filter: available
-      available =
-        Enum.filter(matching_context, fn adapter ->
-          AdapterCatalog.available?(adapter, catalog)
-        end)
-
-      # Build list of {adapter_module, registration_index, cost_per_call, typical_latency_ms}
-      # Missing optional values (nil) sort after declared values using tuple comparison:
-      # {{cost_present?, cost_value}, {latency_present?, latency_value}, registration_index}
-      indexed_adapters =
-        Enum.with_index(available, fn adapter, index ->
-          {:ok, caps} = BackendAdapter.validate_capabilities(adapter)
-          cost = Map.get(caps, :cost_per_call)
-          latency = Map.get(caps, :typical_latency_ms)
-          {adapter, index, cost, latency}
-        end)
-
-      # Sort by cost_per_call (declared before missing), then latency (declared before missing), then registration_index
-      sorted =
-        Enum.sort_by(indexed_adapters, fn {_adapter, index, cost, latency} ->
+        |> Enum.filter(fn entry -> entry.available end)
+        |> Enum.with_index()
+        |> Enum.sort_by(fn {entry, index} ->
+          cost = Map.get(entry.capabilities, :cost_per_call)
+          latency = Map.get(entry.capabilities, :typical_latency_ms)
           {{is_nil(cost), cost || 0}, {is_nil(latency), latency || 0}, index}
         end)
 
-      case sorted do
-        [{adapter, _index, _cost, _latency} | _] -> {:ok, adapter}
+      case ranked do
         [] -> {:error, :no_available_backend}
+        _ -> {:ok, Enum.map(ranked, fn {entry, _} -> {entry.adapter, true} end)}
       end
+    end
+  end
+
+  @doc """
+  Automatic routing: select a single adapter based on task capabilities.
+
+  Uses `automatic_candidates/2` internally and returns the first candidate.
+  Returns `{:ok, adapter_module}` or `{:error, :no_available_backend}`.
+  """
+  @spec automatic(map(), keyword()) :: {:ok, adapter()} | {:error, :no_available_backend}
+  def automatic(_request, opts \\ []) do
+    case automatic_candidates(_request, opts) do
+      {:ok, []} -> {:error, :no_available_backend}
+      {:ok, [{adapter, _} | _]} -> {:ok, adapter}
+      {:error, _} = err -> err
     end
   end
 

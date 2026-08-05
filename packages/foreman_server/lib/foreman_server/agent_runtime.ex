@@ -23,6 +23,7 @@ defmodule ForemanServer.AgentRuntime do
       validation gate. No supervisor, no catalog, no execution.
     * TRD-002: supervisor, catalog, invocation lifecycle.
     * TRD-003: `execute/3` implementation with manual routing.
+    * TRD-008: fallback orchestration, attempt history, bounded retries.
   """
 
   alias ForemanServer.AgentRuntime.BackendAdapter
@@ -132,9 +133,12 @@ defmodule ForemanServer.AgentRuntime do
   - `opts` - keyword list containing:
     - `:strategy` - `:manual`, `:automatic`, or `:policy` (default: `:manual`)
     - `:backend` - backend name (required for manual strategy)
-    - `:task_type` - task type for automatic routing
+    - `:task_type` - task type for automatic or policy routing
     - `:invocation_supervisor` - supervisor to use (optional)
-    - `:timeout` - timeout in ms (default: 30000)
+    - `:timeout` - timeout in ms (default: 30000) - passed to FailurePolicy
+    - `:fallback` - whether to try fallback backends on failure
+    - `:max_attempts` - maximum number of attempts
+    - `:fail_on_unavailable` - return immediately if no backends available (default: true)
 
   Returns `{:ok, content}` on success or an error tuple.
   """
@@ -146,119 +150,77 @@ defmodule ForemanServer.AgentRuntime do
     # Build request map
     request = %{prompt: prompt, context: context}
 
+    # Get common options
+    catalog = Keyword.get(opts, :catalog, AdapterCatalog)
+    inv_supervisor = Keyword.get(opts, :invocation_supervisor, InvocationSupervisor)
+    task_type = Keyword.get(opts, :task_type)
+    fail_on_unavailable = Keyword.get(opts, :fail_on_unavailable, true)
+
+    # Resolve failure policy
+    policy_opts = Keyword.take(opts, [:timeout_ms, :fallback, :max_attempts])
+    policy = FailurePolicy.resolve(task_type, policy_opts)
+
     case strategy do
       :manual ->
-        catalog = Keyword.get(opts, :catalog, AdapterCatalog)
-        execute_manual(backend, request, Keyword.put(opts, :catalog, catalog))
+        execute_manual(backend, request, catalog, inv_supervisor, policy, fail_on_unavailable)
 
       :automatic ->
-        catalog = Keyword.get(opts, :catalog, AdapterCatalog)
-        task_type = Keyword.get(opts, :task_type)
-
-        execute_automatic(task_type, request, Keyword.put(opts, :catalog, catalog))
+        execute_automatic(
+          task_type,
+          request,
+          catalog,
+          inv_supervisor,
+          policy,
+          fail_on_unavailable
+        )
 
       :policy ->
-        {:error, :not_implemented}
+        policy_module = Keyword.get(opts, :policy_module)
+
+        execute_policy(
+          policy_module,
+          task_type,
+          request,
+          catalog,
+          inv_supervisor,
+          policy,
+          fail_on_unavailable
+        )
 
       other ->
         {:error, {:invalid_strategy, other}}
     end
   end
 
-  # Manual strategy implementation
-  defp execute_manual(nil, _request, _opts) do
+  # Manual strategy: single backend, build single-element candidates
+  defp execute_manual(backend, request, catalog, inv_supervisor, policy, fail_on_unavailable) do
     start_time = System.system_time()
-    backend = nil
-
-    Telemetry.execute(
-      [:foreman, :agent_runtime, :execute, :start],
-      %{system_time: start_time, status: :started},
-      %{strategy: :manual, backend: backend}
-    )
-
-    stop_time = System.system_time()
-
-    Telemetry.execute(
-      [:foreman, :agent_runtime, :execute, :stop],
-      %{duration_us: stop_time - start_time, status: :backend_not_found, attempts: 0},
-      %{strategy: :manual, backend: backend}
-    )
-
-    {:error, :backend_not_found}
-  end
-
-  defp execute_manual(backend, request, opts) do
-    start_time = System.system_time()
-
-    Telemetry.execute(
-      [:foreman, :agent_runtime, :execute, :start],
-      %{system_time: start_time, status: :started},
-      %{strategy: :manual, backend: backend}
-    )
-
-    catalog = Keyword.get(opts, :catalog, AdapterCatalog)
 
     case Router.manual(backend, catalog: catalog) do
       {:ok, adapter_module} ->
-        inv_supervisor = Keyword.get(opts, :invocation_supervisor, InvocationSupervisor)
-        timeout = Keyword.get(opts, :timeout, 30_000)
+        # Get backend name for telemetry
+        backend_name = adapter_module.name()
 
+        # Emit start telemetry with actual backend
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :manual, backend: backend_name}
+        )
+
+        # Build single-element candidates list with availability flag
+        candidates = [{adapter_module, true}]
+
+        # Start invocation
         case InvocationSupervisor.start_invocation(
-               adapter_module,
+               candidates,
+               policy,
                request,
                self(),
                inv_supervisor
              ) do
           {:ok, _pid, ref} ->
-            receive do
-              {:agent_runtime_invocation_complete, ^ref, result} ->
-                case result do
-                  {:ok, _name, content, _meta} ->
-                    stop_time = System.system_time()
-
-                    Telemetry.execute(
-                      [:foreman, :agent_runtime, :execute, :stop],
-                      %{
-                        duration_us: stop_time - start_time,
-                        status: :ok,
-                        attempts: 1
-                      },
-                      %{strategy: :manual, backend: backend}
-                    )
-
-                    {:ok, content}
-
-                  {:error, _name, reason} ->
-                    stop_time = System.system_time()
-
-                    Telemetry.execute(
-                      [:foreman, :agent_runtime, :execute, :stop],
-                      %{
-                        duration_us: stop_time - start_time,
-                        status: :adapter_error,
-                        attempts: 1
-                      },
-                      %{strategy: :manual, backend: backend}
-                    )
-
-                    {:error, reason}
-                end
-            after
-              timeout ->
-                stop_time = System.system_time()
-
-                Telemetry.execute(
-                  [:foreman, :agent_runtime, :execute, :stop],
-                  %{
-                    duration_us: stop_time - start_time,
-                    status: :timeout,
-                    attempts: 1
-                  },
-                  %{strategy: :manual, backend: backend}
-                )
-
-                {:error, :timeout}
-            end
+            receive_result(ref, start_time, :manual, backend_name)
 
           {:error, reason} ->
             stop_time = System.system_time()
@@ -270,125 +232,95 @@ defmodule ForemanServer.AgentRuntime do
                 status: :invocation_start_failed,
                 attempts: 1
               },
-              %{strategy: :manual, backend: backend}
+              %{strategy: :manual, backend: backend_name}
             )
 
             {:error, reason}
         end
 
       {:error, :backend_not_found} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :manual, backend: nil}
+        )
+
         stop_time = System.system_time()
 
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :stop],
           %{duration_us: stop_time - start_time, status: :backend_not_found, attempts: 0},
-          %{strategy: :manual, backend: backend}
+          %{strategy: :manual, backend: nil}
         )
 
         {:error, :backend_not_found}
 
       {:error, :backend_unavailable} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :manual, backend: nil}
+        )
+
         stop_time = System.system_time()
 
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :stop],
           %{duration_us: stop_time - start_time, status: :backend_unavailable, attempts: 0},
-          %{strategy: :manual, backend: backend}
+          %{strategy: :manual, backend: nil}
         )
 
         {:error, :backend_unavailable}
 
       {:error, :no_available_backend} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :manual, backend: nil}
+        )
+
         stop_time = System.system_time()
 
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :stop],
           %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
-          %{strategy: :manual, backend: backend}
+          %{strategy: :manual, backend: nil}
         )
 
         {:error, :no_available_backend}
     end
   end
 
-  # Automatic strategy implementation
-  defp execute_automatic(task_type, request, opts) do
+  # Automatic strategy: use Router.automatic_candidates
+  defp execute_automatic(task_type, request, catalog, inv_supervisor, policy, fail_on_unavailable) do
     start_time = System.system_time()
 
-    # Route to adapter
-    catalog = Keyword.get(opts, :catalog, AdapterCatalog)
-    task_type_for_routing = if is_nil(task_type), do: nil, else: task_type
+    case Router.automatic_candidates(request, catalog: catalog, task_type: task_type) do
+      {:ok, candidates} when candidates != [] ->
+        # Get first backend for telemetry
+        backend =
+          case hd(candidates) do
+            {adapter, _} -> adapter.name()
+            _ -> nil
+          end
 
-    case Router.automatic(request, catalog: catalog, task_type: task_type_for_routing) do
-      {:ok, adapter_module} ->
-        # Get the backend name from the adapter
-        backend = adapter_module.name()
-
+        # Emit start telemetry with actual backend
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
           %{system_time: start_time, status: :started},
           %{strategy: :automatic, backend: backend}
         )
 
-        inv_supervisor = Keyword.get(opts, :invocation_supervisor, InvocationSupervisor)
-        timeout = Keyword.get(opts, :timeout, 30_000)
-
+        # Start invocation with candidates
         case InvocationSupervisor.start_invocation(
-               adapter_module,
+               candidates,
+               policy,
                request,
                self(),
                inv_supervisor
              ) do
           {:ok, _pid, ref} ->
-            receive do
-              {:agent_runtime_invocation_complete, ^ref, result} ->
-                case result do
-                  {:ok, _name, content, _meta} ->
-                    stop_time = System.system_time()
-
-                    Telemetry.execute(
-                      [:foreman, :agent_runtime, :execute, :stop],
-                      %{
-                        duration_us: stop_time - start_time,
-                        status: :ok,
-                        attempts: 1
-                      },
-                      %{strategy: :automatic, backend: backend}
-                    )
-
-                    {:ok, content}
-
-                  {:error, _name, reason} ->
-                    stop_time = System.system_time()
-
-                    Telemetry.execute(
-                      [:foreman, :agent_runtime, :execute, :stop],
-                      %{
-                        duration_us: stop_time - start_time,
-                        status: :invocation_error,
-                        attempts: 1
-                      },
-                      %{strategy: :automatic, backend: backend}
-                    )
-
-                    {:error, reason}
-                end
-            after
-              timeout ->
-                stop_time = System.system_time()
-
-                Telemetry.execute(
-                  [:foreman, :agent_runtime, :execute, :stop],
-                  %{
-                    duration_us: stop_time - start_time,
-                    status: :timeout,
-                    attempts: 1
-                  },
-                  %{strategy: :automatic, backend: backend}
-                )
-
-                {:error, :timeout}
-            end
+            receive_result(ref, start_time, :automatic, backend)
 
           {:error, reason} ->
             stop_time = System.system_time()
@@ -397,7 +329,7 @@ defmodule ForemanServer.AgentRuntime do
               [:foreman, :agent_runtime, :execute, :stop],
               %{
                 duration_us: stop_time - start_time,
-                status: :start_error,
+                status: :invocation_start_failed,
                 attempts: 1
               },
               %{strategy: :automatic, backend: backend}
@@ -406,8 +338,7 @@ defmodule ForemanServer.AgentRuntime do
             {:error, reason}
         end
 
-      {:error, :no_available_backend} ->
-        # No matching adapter found - emit telemetry with nil backend
+      {:ok, []} when fail_on_unavailable ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
           %{system_time: start_time, status: :started},
@@ -423,6 +354,274 @@ defmodule ForemanServer.AgentRuntime do
         )
 
         {:error, :no_available_backend}
+
+      {:error, :no_available_backend} when fail_on_unavailable ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :automatic, backend: nil}
+        )
+
+        stop_time = System.system_time()
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
+          %{strategy: :automatic, backend: nil}
+        )
+
+        {:error, :no_available_backend}
+
+      # When fail_on_unavailable is false, start Invocation with empty candidates
+      {:ok, []} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :automatic, backend: nil}
+        )
+
+        candidates = []
+
+        case InvocationSupervisor.start_invocation(
+               candidates,
+               policy,
+               request,
+               self(),
+               inv_supervisor
+             ) do
+          {:ok, _pid, ref} ->
+            receive_result(ref, start_time, :automatic, nil)
+
+          {:error, reason} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{
+                duration_us: stop_time - start_time,
+                status: :invocation_start_failed,
+                attempts: 1
+              },
+              %{strategy: :automatic, backend: nil}
+            )
+
+            {:error, reason}
+        end
+
+      {:error, :no_available_backend} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :automatic, backend: nil}
+        )
+
+        # Start Invocation with empty candidates when fail_on_unavailable is false
+        candidates = []
+
+        case InvocationSupervisor.start_invocation(
+               candidates,
+               policy,
+               request,
+               self(),
+               inv_supervisor
+             ) do
+          {:ok, _pid, ref} ->
+            receive_result(ref, start_time, :automatic, nil)
+
+          {:error, reason} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{
+                duration_us: stop_time - start_time,
+                status: :invocation_start_failed,
+                attempts: 1
+              },
+              %{strategy: :automatic, backend: nil}
+            )
+
+            {:error, reason}
+        end
+    end
+  end
+
+  # Policy strategy: use Router.policy/3.
+  #
+  # `fail_on_unavailable` is honored ONLY for `{:error, :no_available_backend}`.
+  # When true, the facade short-circuits and returns immediately without
+  # spawning an Invocation. When false (default), an Invocation is started
+  # with an empty candidate list and returns the same result on its own.
+  #
+  # `{:error, :backend_not_found}` and `{:error, {:policy_module_raised, ...}}`
+  # are real router errors and are propagated unchanged regardless of the opt.
+  defp execute_policy(
+        policy_module,
+        task_type,
+        request,
+        catalog,
+        inv_supervisor,
+        policy,
+        fail_on_unavailable
+      ) do
+    start_time = System.system_time()
+
+    case Router.policy(request, [catalog: catalog, task_type: task_type], policy_module) do
+      {:ok, candidates} ->
+        backend =
+          case hd(candidates) do
+            {adapter, _} -> adapter.name()
+            _ -> nil
+          end
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :policy, backend: backend}
+        )
+
+        run_policy_invocation(candidates, policy, request, inv_supervisor, start_time, backend)
+
+      {:error, :no_available_backend} when fail_on_unavailable ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :policy, backend: nil}
+        )
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: 0, status: :no_available_backend, attempts: 0},
+          %{strategy: :policy, backend: nil}
+        )
+
+        {:error, :no_available_backend}
+
+      {:error, :no_available_backend} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :policy, backend: nil}
+        )
+
+        run_policy_invocation([], policy, request, inv_supervisor, start_time, nil)
+
+      {:error, :backend_not_found} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :policy, backend: nil}
+        )
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: 0, status: :backend_not_found, attempts: 0},
+          %{strategy: :policy, backend: nil}
+        )
+
+        {:error, :backend_not_found}
+
+      {:error, {:policy_module_raised, _kind, _reason} = raised} ->
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :start],
+          %{system_time: start_time, status: :started},
+          %{strategy: :policy, backend: nil}
+        )
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: 0, status: :policy_module_raised, attempts: 0},
+          %{strategy: :policy, backend: nil}
+        )
+
+        {:error, raised}
+    end
+  end
+
+  # Spawn an Invocation for the policy strategy and bridge its result through
+  # the facade's telemetry/receive plumbing. Used by both the `:ok` and the
+  # no-opt `:no_available_backend` branches.
+  defp run_policy_invocation(candidates, policy, request, inv_supervisor, start_time, backend) do
+    case InvocationSupervisor.start_invocation(
+           candidates,
+           policy,
+           request,
+           self(),
+           inv_supervisor
+         ) do
+      {:ok, _pid, ref} ->
+        receive_result(ref, start_time, :policy, backend)
+
+      {:error, reason} ->
+        stop_time = System.system_time()
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{
+            duration_us: stop_time - start_time,
+            status: :invocation_start_failed,
+            attempts: 1
+          },
+          %{strategy: :policy, backend: backend}
+        )
+
+        {:error, reason}
+    end
+  end
+
+  # Receive result from Invocation - no facade timeout, Invocation enforces its own
+  defp receive_result(ref, start_time, strategy, backend) do
+    receive do
+      {:agent_runtime_invocation_complete, ^ref, result} ->
+        case result do
+          {:ok, content} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
+              %{strategy: strategy, backend: backend}
+            )
+
+            {:ok, content}
+
+          {:error, reason} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
+              %{strategy: strategy, backend: backend}
+            )
+
+            {:error, reason}
+
+          {:error, :all_backends_failed, %{attempts: attempts}} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{
+                duration_us: stop_time - start_time,
+                status: :all_backends_failed,
+                attempts: length(attempts)
+              },
+              %{strategy: strategy, backend: backend}
+            )
+
+            {:error, :all_backends_failed, %{attempts: attempts}}
+
+          {:error, :no_available_backend} ->
+            stop_time = System.system_time()
+
+            Telemetry.execute(
+              [:foreman, :agent_runtime, :execute, :stop],
+              %{duration_us: stop_time - start_time, status: :no_available_backend, attempts: 0},
+              %{strategy: strategy, backend: backend}
+            )
+
+            {:error, :no_available_backend}
+        end
     end
   end
 end
