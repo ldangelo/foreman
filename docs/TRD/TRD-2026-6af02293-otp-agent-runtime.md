@@ -405,7 +405,7 @@ Remote/optional adapters are registered only when their modules are explicitly c
   - **Implementation AC:**
     - Given attached test handlers for success, direct failure, and fallback success, when executions complete, then one event per call has all required fields and no sensitive payload values.
 
-- [ ] **TRD-010** Document runtime configuration and adapter extension workflow (4h) [satisfies REQ-002] [satisfies REQ-004] [satisfies REQ-008] [satisfies ARCH] [depends: TRD-004] [depends: TRD-006] [depends: TRD-008] [depends: TRD-009]
+- [x] **TRD-010** Document runtime configuration and adapter extension workflow (4h) [satisfies REQ-002] [satisfies REQ-004] [satisfies REQ-008] [satisfies ARCH] [depends: TRD-004] [depends: TRD-006] [depends: TRD-008] [depends: TRD-009]
   - **Target:** `README.md`, `docs/user-guide.md`, `docs/cli-reference.md` where relevant, and `CLAUDE.md` for durable developer architecture conventions; update only behavior implemented by preceding tasks.
   - **Validates PRD ACs:** AC-002-1, AC-002-3, AC-002-4, AC-004-1, AC-008-1, AC-008-2
   - **Implementation AC:**
