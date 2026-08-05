@@ -37,6 +37,7 @@ defmodule ForemanServer.EventCodec do
     WorkerStdout,
     WorkerUnresponsive
   }
+
   @registry %{
     "WorkerStarted" => WorkerStarted,
     "WorkerHeartbeat" => WorkerHeartbeat,
@@ -177,7 +178,6 @@ defmodule ForemanServer.EventCodec do
 
     struct!(module, pairs)
   end
-
 
   defp reject_duplicate_forms!(plain_map, declared_string_keys, event_type) do
     duplicates =

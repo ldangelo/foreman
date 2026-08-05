@@ -103,8 +103,10 @@ defmodule ForemanServer.RouterOptimisticConcurrencyTest do
     assert Enum.map(events_after_race, & &1.event_type) == ["PhaseStarted", "PhaseCompleted"]
 
     state_after_race = Aggregate.Actor.get_state(actor_pid)
+
     assert Map.get(state_after_race, :status) == "in_progress",
            "actor must not have observed the racing :append messages"
+
     refute Map.get(state_after_race, :terminal?)
 
     # 3. Fresh dispatch via the normal actor+router path. Locally the actor
@@ -137,6 +139,7 @@ defmodule ForemanServer.RouterOptimisticConcurrencyTest do
 
     assert presence_version == 2,
            "Presence must reflect the reloaded version after bounded-retry reload"
+
     # Stream invariants: exactly one PhaseStarted, exactly one PhaseCompleted.
     {:ok, events_final} = Store.read_stream_forward(stream, 0, 10)
     assert length(events_final) == 2

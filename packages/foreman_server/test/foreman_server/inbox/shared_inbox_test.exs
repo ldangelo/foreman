@@ -26,7 +26,9 @@ defmodule ForemanServer.Inbox.SharedInboxTest do
   end
 
   setup do
-    DedupeTable.start_link([])
+    # NOTE: do NOT call DedupeTable.start_link/1 here — the regression test
+    # (in describe "dedupe_table ownership") proves the supervised GenServer
+    # is running, which is only meaningful if no test setup creates it.
     DedupeTable.clear()
     Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 60)
     :ok
@@ -47,7 +49,9 @@ defmodule ForemanServer.Inbox.SharedInboxTest do
       payload = %{"id" => "evt-2", "body" => "hi"}
 
       assert {:ok, :started, _} = SharedInbox.ingest(FakeSource, payload)
-      assert {:ok, :deduped, %InboxItemDeduped{} = deduped} = SharedInbox.ingest(FakeSource, payload)
+
+      assert {:ok, :deduped, %InboxItemDeduped{} = deduped} =
+               SharedInbox.ingest(FakeSource, payload)
 
       assert deduped.correlation_id == "evt-2"
       assert deduped.source == FakeSource
@@ -64,13 +68,34 @@ defmodule ForemanServer.Inbox.SharedInboxTest do
                SharedInbox.ingest(EmptySource, %{"id" => "x"})
     end
 
-    test "dedupe_table.count drops back to zero after window" do
+    test "size drops back to zero after window" do
       Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 0)
       DedupeTable.clear()
 
       assert {:ok, :started, _} = SharedInbox.ingest(FakeSource, %{"id" => "evt-3"})
       Process.sleep(5)
       assert :miss = DedupeTable.lookup(FakeSource, "evt-3")
+    end
+  end
+
+  describe "dedupe_table ownership" do
+    test "is owned by the supervised GenServer, not a transient caller" do
+      # Regression: the dedupe ETS table must outlive any transient caller.
+      # Previously the table was lazily created inside `ensure_table/0` and
+      # owned by whichever caller won the race; that caller exiting (e.g. a
+      # test process) destroyed the table and broke the dedup contract.
+      # The fix routes ownership through a registered GenServer started by
+      # the application supervisor.
+      owner = :ets.info(DedupeTable, :owner)
+      assert is_pid(owner), "DedupeTable must be a named, public ETS table"
+
+      supervised = Process.whereis(DedupeTable)
+
+      assert is_pid(supervised),
+             "DedupeTable must be a registered GenServer in the supervision tree"
+
+      assert Process.alive?(supervised)
+      assert owner == supervised, "ETS table must be owned by the supervised GenServer"
     end
   end
 

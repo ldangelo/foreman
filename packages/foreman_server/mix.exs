@@ -29,7 +29,7 @@ defmodule ForemanServer.MixProject do
       {:lazy_html, ">= 0.1.0", only: :test},
 
       # JSON serialization for EventStore
-      {:jason, "~> 1.4"},
+      {:jason, "~> 1.4"}
     ]
   end
 

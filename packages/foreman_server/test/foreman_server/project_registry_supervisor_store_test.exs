@@ -8,7 +8,8 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
     ProjectSupervisor
   }
 
-  defp unique_id(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+  defp unique_id(prefix),
+    do: "#{prefix}-#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
   setup_all do
     # ProjectRegistry is not in the application supervision tree; manual start.
@@ -16,6 +17,7 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
+
     :ok
   end
 
@@ -85,7 +87,10 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
 
     test "save/1 with default_branch in payload persists branch" do
       project_id = unique_id("store8")
-      {:ok, _} = ProjectStore.save(%{project_id: project_id, path: "/tmp/p", default_branch: "develop"})
+
+      {:ok, _} =
+        ProjectStore.save(%{project_id: project_id, path: "/tmp/p", default_branch: "develop"})
+
       assert ProjectionStore.project_projection(project_id).default_branch == "develop"
     end
   end
@@ -103,30 +108,43 @@ defmodule ForemanServer.ProjectRegistrySupervisorStoreTest do
       assert_receive {:DOWN, ^ref, :process, _, _}, 5_000
 
       # Aggregator restarts the actor under the same name. The supervisor
-      # restart is async — poll until the new pid appears.
-      assert [{pid2, _}] =
-               wait_for_aggregate(project_id, 1_000)
+      # restart is async — poll until a *live* pid different from pid1 appears.
+      # The registry briefly holds the dead pid between DOWN and the restart,
+      # so accepting the first entry races the supervisor.
+      pid2 = wait_for_live_restart(project_id, pid1, 1_000)
 
       assert is_pid(pid2)
       assert pid2 != pid1
       assert Process.alive?(pid2)
     end
 
-    defp wait_for_aggregate(project_id, timeout_ms) do
+    defp wait_for_live_restart(project_id, dead_pid, timeout_ms) do
       deadline = System.monotonic_time(:millisecond) + timeout_ms
-      do_wait(project_id, deadline)
+      do_wait_for_live_restart(project_id, dead_pid, deadline)
     end
 
-    defp do_wait(project_id, deadline) do
-      case Registry.lookup(ForemanServer.AggregateRegistry, project_id) do
-        [] ->
+    defp do_wait_for_live_restart(project_id, dead_pid, deadline) do
+      case live_pid_other_than(dead_pid, project_id) do
+        nil ->
           if System.monotonic_time(:millisecond) >= deadline do
-            []
+            nil
           else
             Process.sleep(10)
-            do_wait(project_id, deadline)
+            do_wait_for_live_restart(project_id, dead_pid, deadline)
           end
-        other -> other
+
+        pid ->
+          pid
+      end
+    end
+
+    defp live_pid_other_than(pid, project_id) do
+      case Registry.lookup(ForemanServer.AggregateRegistry, project_id) do
+        [{candidate, _}] when candidate != pid ->
+          if Process.alive?(candidate), do: candidate, else: nil
+
+        _ ->
+          nil
       end
     end
   end

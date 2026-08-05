@@ -101,6 +101,7 @@ defmodule ForemanServer.ProjectionStore do
   def list_scheduler_intents do
     GenServer.call(__MODULE__, :list_scheduler_intents)
   end
+
   # -------------------------------------------------------------------------
 
   @impl true
@@ -150,6 +151,7 @@ defmodule ForemanServer.ProjectionStore do
   def handle_call({:run_projection, run_id}, _from, state) do
     {:reply, Map.get(state.runs, run_id), state}
   end
+
   @impl true
   def handle_call({:pr_association, run_id}, _from, state) do
     case Map.get(state.pr_associations, run_id) do
@@ -246,7 +248,11 @@ defmodule ForemanServer.ProjectionStore do
     path = get(payload, :path)
 
     if valid_id?(project_id) do
-      put_state(state, Map.put(state.projects, project_id, project_projection(payload, path)), state.runs)
+      put_state(
+        state,
+        Map.put(state.projects, project_id, project_projection(payload, path)),
+        state.runs
+      )
     else
       state
     end
@@ -517,7 +523,9 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp touch_run_for_payload(state, payload) do
-    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run -> run end)
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      run
+    end)
   end
 
   defp update_run_projection(state, run_id, event_at_ms, updater) when is_function(updater, 1) do
@@ -558,7 +566,13 @@ defmodule ForemanServer.ProjectionStore do
   defp put_state(state, projects, runs) do
     pr_associations = Map.get(state, :pr_associations, %{})
     scheduler_intents = Map.get(state, :scheduler_intents, %{})
-    %{projects: projects, runs: runs, pr_associations: pr_associations, scheduler_intents: scheduler_intents}
+
+    %{
+      projects: projects,
+      runs: runs,
+      pr_associations: pr_associations,
+      scheduler_intents: scheduler_intents
+    }
   end
 
   defp recorded_event_at_ms(%RecordedEvent{created_at: %DateTime{} = created_at}, _now_ms_fun) do

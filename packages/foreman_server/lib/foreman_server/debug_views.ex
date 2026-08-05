@@ -253,7 +253,11 @@ defmodule ForemanServerWeb.PhaseDebugLive do
   end
 
   defp refresh(socket) do
-    assign(socket, :snapshot, DebugViews.get_phase(socket.assigns.run_id, socket.assigns.phase_id))
+    assign(
+      socket,
+      :snapshot,
+      DebugViews.get_phase(socket.assigns.run_id, socket.assigns.phase_id)
+    )
   end
 
   defp required_param!(params, session, key) do
@@ -316,7 +320,11 @@ defmodule ForemanServerWeb.WorkerDebugLive do
   end
 
   defp refresh(socket) do
-    assign(socket, :snapshot, DebugViews.get_worker(socket.assigns.run_id, socket.assigns.worker_id))
+    assign(
+      socket,
+      :snapshot,
+      DebugViews.get_worker(socket.assigns.run_id, socket.assigns.worker_id)
+    )
   end
 
   defp required_param!(params, session, key) do

@@ -10,7 +10,7 @@ defmodule ForemanServer.TriggerPollerTest do
 
       pid ->
         if not Process.alive?(pid),
-          do: ({:ok, _pid} = ForemanServer.Inbox.Poller.start_link([]))
+          do: {:ok, _pid} = ForemanServer.Inbox.Poller.start_link([])
     end
 
     # Reset fetch_fun to default (no-op) on every test setup.
@@ -23,6 +23,7 @@ defmodule ForemanServer.TriggerPollerTest do
     }
 
     Application.put_env(:foreman_server, :trigger_poll_enabled, false)
+
     Application.put_env(
       :foreman_server,
       :trigger_poll_source_module,

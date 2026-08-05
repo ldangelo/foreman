@@ -40,6 +40,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
             :timer.sleep(10)
             {:cont, nil}
           end
+
         [] ->
           :timer.sleep(10)
           {:cont, nil}
@@ -172,7 +173,14 @@ defmodule ForemanServer.AC1AggregateActorTest do
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted", session_id: "sess-#{id}", adapter: "AC1.TestAdapter", prompt_path: "/tmp/prompt-#{id}"},
+        payload: %{
+          worker_id: id,
+          run_id: run_id,
+          event_type: "WorkerStarted",
+          session_id: "sess-#{id}",
+          adapter: "AC1.TestAdapter",
+          prompt_path: "/tmp/prompt-#{id}"
+        },
         aggregate_id: agg_stream
       })
 
@@ -320,7 +328,14 @@ defmodule ForemanServer.AC1AggregateActorTest do
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "worker.record",
-        payload: %{worker_id: id, run_id: run_id, event_type: "WorkerStarted", session_id: "sess-#{id}", adapter: "AC1.TestAdapter", prompt_path: "/tmp/prompt-#{id}"},
+        payload: %{
+          worker_id: id,
+          run_id: run_id,
+          event_type: "WorkerStarted",
+          session_id: "sess-#{id}",
+          adapter: "AC1.TestAdapter",
+          prompt_path: "/tmp/prompt-#{id}"
+        },
         aggregate_id: agg_stream
       })
 
@@ -385,6 +400,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     state = Aggregate.Actor.get_state(new_pid)
     assert Map.get(state, :status) == "completed"
   end
+
   # ---------------------------------------------------------------------------
   # AC1.4 — Post-restart command correctness
   # ---------------------------------------------------------------------------
@@ -485,6 +501,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
       })
 
     assert {:error, :phase_terminal} = result
+
     assert Process.alive?(actor_pid),
            "aggregate must stay alive after a re-decision rejection"
 
@@ -529,6 +546,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
           :exit, reason -> {:EXIT, reason}
         end
       end)
+
     assert_receive {:block_entered, ^ref, _}, 5_000
 
     assert Store.read_stream_forward(agg_id, 0, 10) == {:error, :stream_not_found},
@@ -610,6 +628,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     :sys.resume(CommandRouter)
 
     result = Task.await(task, 5_000)
+
     assert {:ok, _} = result,
            "matching ref must complete the command after wrong_ref was queued"
   end

@@ -22,6 +22,10 @@ defmodule ForemanServer.Application do
         ForemanServer.EventStore,
         # ProjectionStore subscribes to EventStore and maintains read model.
         ForemanServer.ProjectionStore,
+        # DedupeTable owns the dedupe ETS table; started before Inbox.Poller
+        # so the long-lived owner outlives any transient caller that may have
+        # lazily created the table before Poller subscribed.
+        ForemanServer.Inbox.DedupeTable,
         # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
         ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
@@ -29,10 +33,14 @@ defmodule ForemanServer.Application do
 
         # CommandRouter handles all append requests.
         ForemanServer.CommandRouter
-      ] ++ maybe_agent_runtime_child() ++ maybe_overwatch_child() ++ maybe_stuck_detector_child() ++ [
-        # Endpoint exposes dev-only debug LiveViews.
-        ForemanServerWeb.Endpoint
-      ]
+      ] ++
+        maybe_agent_runtime_child() ++
+        maybe_overwatch_child() ++
+        maybe_stuck_detector_child() ++
+        [
+          # Endpoint exposes dev-only debug LiveViews.
+          ForemanServerWeb.Endpoint
+        ]
 
     opts = [strategy: :one_for_one, name: __MODULE__]
     Supervisor.start_link(children, opts)
@@ -42,6 +50,7 @@ defmodule ForemanServer.Application do
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
         [{ForemanServer.AgentRuntime.Supervisor, []}]
+
       _ ->
         []
     end

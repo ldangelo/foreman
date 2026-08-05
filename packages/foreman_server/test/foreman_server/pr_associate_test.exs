@@ -32,8 +32,11 @@ defmodule ForemanServer.PrAssociateTest do
 
   describe "store/2 — input validation" do
     test "returns error for non-binary run_id" do
-      assert {:error, :invalid_arguments} = PrAssociate.store(nil, "https://github.com/o/r/pull/1")
-      assert {:error, :invalid_arguments} = PrAssociate.store(123, "https://github.com/o/r/pull/1")
+      assert {:error, :invalid_arguments} =
+               PrAssociate.store(nil, "https://github.com/o/r/pull/1")
+
+      assert {:error, :invalid_arguments} =
+               PrAssociate.store(123, "https://github.com/o/r/pull/1")
     end
 
     test "returns error for non-binary pr_url" do

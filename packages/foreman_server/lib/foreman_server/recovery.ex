@@ -27,10 +27,10 @@ defmodule ForemanServer.Recovery do
 
   @typedoc "Recovery scan options."
   @type scan_opts :: [
-    {:now, DateTime.t()},
-    {:stale_after_ms, non_neg_integer()},
-    {:command_id_prefix, String.t()}
-  ]
+          {:now, DateTime.t()},
+          {:stale_after_ms, non_neg_integer()},
+          {:command_id_prefix, String.t()}
+        ]
 
   @default_stale_after_ms 5 * 60 * 1000
 
@@ -207,6 +207,7 @@ defmodule ForemanServer.Recovery do
         rescue
           _ -> Integer.to_string(System.unique_integer([:positive]))
         end
+
       _ ->
         Integer.to_string(System.unique_integer([:positive]))
     end

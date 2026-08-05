@@ -107,5 +107,4 @@ defmodule ForemanServer.ProjectionStoreRunsTest do
     assert ProjectionStore.stuck_runs(0, flagged_at_ms + 1) == []
     assert ProjectionStore.stuck_runs(900_000, flagged_at_ms + 900_000) == []
   end
-
 end

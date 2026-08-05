@@ -3,6 +3,11 @@ defmodule ForemanServer.MigrationImporterTest do
 
   alias ForemanServer.MigrationImporter
 
+  # Cross-VM-stable IDs: System.unique_integer/1 resets per BEAM startup, so reused
+  # prefixes collide with aggregates persisted from prior runs against the same DB.
+  defp unique_id(prefix),
+    do: "#{prefix}-#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
+
   setup do
     # Make sure shared Inbox infrastructure is up (affects ingest path).
     case Process.whereis(ForemanServer.Inbox.Poller) do
@@ -20,7 +25,7 @@ defmodule ForemanServer.MigrationImporterTest do
     test "dispatches via CommandRouter with migration aggregate id" do
       assert {:ok, _} =
                MigrationImporter.start_import(%{
-                 import_id: "batch-#{System.unique_integer([:positive])}",
+                 import_id: unique_id("batch"),
                  source: "fixture-seed",
                  initiated_by: "test"
                })
@@ -35,7 +40,7 @@ defmodule ForemanServer.MigrationImporterTest do
 
   describe "import_record/1" do
     test "dispatches via CommandRouter keyed by import_id" do
-      import_id = "rec-#{System.unique_integer([:positive])}"
+      import_id = unique_id("rec")
       assert {:ok, _} = MigrationImporter.start_import(%{import_id: import_id, source: "fixture"})
 
       assert {:ok, _} =
@@ -55,7 +60,7 @@ defmodule ForemanServer.MigrationImporterTest do
 
   describe "complete_import/1" do
     test "dispatches completion event" do
-      import_id = "done-#{System.unique_integer([:positive])}"
+      import_id = unique_id("done")
       assert {:ok, _} = MigrationImporter.start_import(%{import_id: import_id, source: "x"})
       assert {:ok, _} = MigrationImporter.complete_import(%{import_id: import_id})
     end
@@ -63,7 +68,7 @@ defmodule ForemanServer.MigrationImporterTest do
 
   describe "process/1" do
     test "processes a batch of records end-to-end" do
-      import_id = "batch-proc-#{System.unique_integer([:positive])}"
+      import_id = unique_id("batch-proc")
 
       assert {:ok, results} =
                MigrationImporter.process(%{

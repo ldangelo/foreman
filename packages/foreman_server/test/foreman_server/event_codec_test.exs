@@ -2,6 +2,7 @@ defmodule ForemanServer.EventCodecTest do
   use ExUnit.Case, async: true
 
   alias ForemanServer.EventCodec
+
   alias ForemanServer.Events.{
     WorkerHeartbeat,
     WorkerStarted,
@@ -18,7 +19,13 @@ defmodule ForemanServer.EventCodecTest do
 
   describe "decode!/2 mismatch" do
     test "raises ArgumentError when input has a different struct" do
-      wrong = %WorkerStarted{worker_id: "w1", run_id: "r1", session_id: "s1", adapter: "Ad", prompt_path: "/p"}
+      wrong = %WorkerStarted{
+        worker_id: "w1",
+        run_id: "r1",
+        session_id: "s1",
+        adapter: "Ad",
+        prompt_path: "/p"
+      }
 
       assert_raise ArgumentError, ~r/EventCodec mismatch/, fn ->
         EventCodec.decode!("WorkerHeartbeat", wrong)
@@ -35,8 +42,7 @@ defmodule ForemanServer.EventCodecTest do
           sequence: 7
         })
 
-      assert %WorkerHeartbeat{worker_id: "w1", run_id: "r1", sequence: 7,
-                               timestamp: nil} = result
+      assert %WorkerHeartbeat{worker_id: "w1", run_id: "r1", sequence: 7, timestamp: nil} = result
     end
 
     test "builds struct from string-keyed map" do
@@ -46,10 +52,9 @@ defmodule ForemanServer.EventCodecTest do
           "run_id" => "r1",
           "sequence" => 7
         })
+
       assert result == %WorkerHeartbeat{worker_id: "w1", run_id: "r1", sequence: 7}
     end
-
-
 
     test "rejects duplicate atom/string forms of the same field" do
       assert_raise ArgumentError, ~r/both atom and string/, fn ->
@@ -59,6 +64,7 @@ defmodule ForemanServer.EventCodecTest do
         })
       end
     end
+
     test "rejects unknown keys" do
       assert_raise ArgumentError, ~r/unknown fields/, fn ->
         EventCodec.decode!("WorkerHeartbeat", %{
@@ -79,7 +85,6 @@ defmodule ForemanServer.EventCodecTest do
       result = EventCodec.decode!("WorkerExited", %{worker_id: "w1"})
       assert %WorkerExited{worker_id: "w1", run_id: nil} = result
     end
-
   end
 
   describe "decode!/2 unregistered event_type" do
@@ -101,6 +106,7 @@ defmodule ForemanServer.EventCodecTest do
   describe "decode_recorded!/1" do
     test "decodes a RecordedEvent-shaped map" do
       recorded = %{event_type: "WorkerUnresponsive", data: %{worker_id: "w1", run_id: "r1"}}
+
       assert EventCodec.decode_recorded!(recorded) ==
                %WorkerUnresponsive{worker_id: "w1", run_id: "r1"}
     end

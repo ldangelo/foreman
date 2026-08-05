@@ -67,7 +67,10 @@ defmodule ForemanServer.ProjectionStoreTest do
 
     assert :ok =
              ProjectionStore.apply_events([
-               %{event_type: "ProjectRegistered", payload: %{project_id: project_id, path: "/tmp/project-2"}},
+               %{
+                 event_type: "ProjectRegistered",
+                 payload: %{project_id: project_id, path: "/tmp/project-2"}
+               },
                %{event_type: "ProjectArchived", payload: %{project_id: project_id}}
              ])
 

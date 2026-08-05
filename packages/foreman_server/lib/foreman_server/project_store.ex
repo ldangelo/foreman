@@ -8,6 +8,7 @@ defmodule ForemanServer.ProjectStore do
   """
 
   alias ForemanServer.{CommandRouter, ProjectionStore}
+
   def save(%{project_id: project_id} = payload) when is_binary(project_id) do
     type =
       case ProjectionStore.project_projection(project_id) do

@@ -63,6 +63,7 @@ defmodule ForemanServer.ConfigTest do
       es_cfg = Keyword.get(foreman_env(opts), ForemanServer.EventStore)
       url = Keyword.fetch!(es_cfg, :url)
       assert url =~ "localhost"
+
       assert Keyword.get(es_cfg, :log) == :debug,
              "Dev EventStore should have verbose logging per TRD-022"
     end

@@ -149,7 +149,9 @@ defmodule ForemanServer.VcsAdapterTest do
     end
 
     test "supports branch and create_pr funs" do
-      assert {:ok, %{branch: "feature-x"}} = VcsAdapter.run(StubOk, :branch, ["/tmp", "feature-x"])
+      assert {:ok, %{branch: "feature-x"}} =
+               VcsAdapter.run(StubOk, :branch, ["/tmp", "feature-x"])
+
       assert {:ok, %{url: _, number: 1}} = VcsAdapter.run(StubOk, :create_pr, ["/tmp", []])
     end
   end

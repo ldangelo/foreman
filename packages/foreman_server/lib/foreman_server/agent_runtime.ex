@@ -245,6 +245,7 @@ defmodule ForemanServer.AgentRuntime do
              ) do
           {:ok, _pid, ref} ->
             receive_result(ref, start_time, :manual, backend_name)
+
           {:error, reason} ->
             stop_time = System.system_time()
 
@@ -262,6 +263,7 @@ defmodule ForemanServer.AgentRuntime do
 
             {:error, reason}
         end
+
       {:error, :backend_not_found} ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -280,6 +282,7 @@ defmodule ForemanServer.AgentRuntime do
         emit_early_exit_completion(monotonic_start, :backend_not_found, task_type)
 
         {:error, :backend_not_found}
+
       {:error, :backend_unavailable} ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -298,6 +301,7 @@ defmodule ForemanServer.AgentRuntime do
         emit_early_exit_completion(monotonic_start, :backend_unavailable, task_type)
 
         {:error, :backend_unavailable}
+
       {:error, :no_available_backend} ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -368,6 +372,7 @@ defmodule ForemanServer.AgentRuntime do
 
             {:error, reason}
         end
+
       {:ok, []} when fail_on_unavailable ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -386,6 +391,7 @@ defmodule ForemanServer.AgentRuntime do
         emit_early_exit_completion(monotonic_start, :no_available_backend, task_type)
 
         {:error, :no_available_backend}
+
       {:error, :no_available_backend} when fail_on_unavailable ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -443,6 +449,7 @@ defmodule ForemanServer.AgentRuntime do
 
             {:error, reason}
         end
+
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
           %{system_time: start_time, status: :started},
@@ -493,14 +500,14 @@ defmodule ForemanServer.AgentRuntime do
   # `{:error, :backend_not_found}` and `{:error, {:policy_module_raised, ...}}`
   # are real router errors and are propagated unchanged regardless of the opt.
   defp execute_policy(
-        policy_module,
-        task_type,
-        request,
-        catalog,
-        inv_supervisor,
-        policy,
-        fail_on_unavailable
-      ) do
+         policy_module,
+         task_type,
+         request,
+         catalog,
+         inv_supervisor,
+         policy,
+         fail_on_unavailable
+       ) do
     start_time = System.system_time()
     monotonic_start = System.monotonic_time(:microsecond)
 
@@ -518,7 +525,16 @@ defmodule ForemanServer.AgentRuntime do
           %{strategy: :policy, backend: backend}
         )
 
-        run_policy_invocation(candidates, policy, request, inv_supervisor, start_time, backend, task_type)
+        run_policy_invocation(
+          candidates,
+          policy,
+          request,
+          inv_supervisor,
+          start_time,
+          backend,
+          task_type
+        )
+
       {:error, :no_available_backend} when fail_on_unavailable ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -561,6 +577,7 @@ defmodule ForemanServer.AgentRuntime do
         emit_early_exit_completion(monotonic_start, :backend_not_found, task_type)
 
         {:error, :backend_not_found}
+
       {:error, {:policy_module_raised, _kind, _reason} = raised} ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
@@ -679,6 +696,7 @@ defmodule ForemanServer.AgentRuntime do
         end
     end
   end
+
   # Emit the privacy-safe completion telemetry for an early-exit branch where
   # the Invocation process never ran. The contract requires exactly one
   # [:foreman, :agent_runtime, :invocation, :complete] event per

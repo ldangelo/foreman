@@ -17,8 +17,6 @@ defmodule ForemanServer.Telemetry do
     @run_stuck
   ]
 
-
-
   def all_events, do: @all_events
 
   def execute(event, measurements, metadata \\ %{}) do
@@ -30,10 +28,14 @@ defmodule ForemanServer.Telemetry do
   end
 
   def command_dispatch(duration_ms, append_latency_ms, status, aggregate_id) do
-    execute(@command_dispatch, %{duration_ms: duration_ms, append_latency_ms: append_latency_ms}, %{
-      status: status,
-      aggregate_id: aggregate_id
-    })
+    execute(
+      @command_dispatch,
+      %{duration_ms: duration_ms, append_latency_ms: append_latency_ms},
+      %{
+        status: status,
+        aggregate_id: aggregate_id
+      }
+    )
   end
 
   def aggregate_rehydrated(event_count) do
@@ -114,13 +116,13 @@ defmodule ForemanServer.Telemetry do
         },
         _opts \\ []
       )
-      when is_integer(duration_us) and duration_us >= 0
-           and is_integer(attempt_count) and attempt_count >= 0
-           and is_atom(status)
-           and (is_atom(task_type) or is_nil(task_type))
-           and is_list(attempted_backends)
-           and (is_atom(successful_backend) or is_nil(successful_backend))
-           and (is_atom(final_backend) or is_nil(final_backend)) do
+      when is_integer(duration_us) and duration_us >= 0 and
+             is_integer(attempt_count) and attempt_count >= 0 and
+             is_atom(status) and
+             (is_atom(task_type) or is_nil(task_type)) and
+             is_list(attempted_backends) and
+             (is_atom(successful_backend) or is_nil(successful_backend)) and
+             (is_atom(final_backend) or is_nil(final_backend)) do
     execute(
       @agent_runtime_invocation_complete,
       %{duration_us: duration_us, attempt_count: attempt_count},

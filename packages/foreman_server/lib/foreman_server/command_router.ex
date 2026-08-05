@@ -49,14 +49,16 @@ defmodule ForemanServer.CommandRouter do
   # GenServer callbacks
   # -------------------------------------------------------------------------
 
-
   @impl true
   def init(_init_arg) do
     {:ok, %{}}
   end
 
   @impl true
-  def handle_info({:append, aggregate_id, event_data_list, expected_version, ref, actor_pid}, state) do
+  def handle_info(
+        {:append, aggregate_id, event_data_list, expected_version, ref, actor_pid},
+        state
+      ) do
     append_started_at_ms = System.monotonic_time(:millisecond)
     result = append_events(aggregate_id, expected_version, event_data_list)
     append_latency_ms = elapsed_ms(append_started_at_ms)
@@ -82,7 +84,8 @@ defmodule ForemanServer.CommandRouter do
 
   # event_data_list is already a list of %EventData{} — pass through directly.
   # EventStore.append_to_stream/4 returns :ok on success.
-  defp append_events(aggregate_id, expected_version, event_data_list) when is_list(event_data_list) do
+  defp append_events(aggregate_id, expected_version, event_data_list)
+       when is_list(event_data_list) do
     case EventStore.append_to_stream(aggregate_id, expected_version, event_data_list) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
@@ -114,7 +117,12 @@ defmodule ForemanServer.CommandRouter do
 
   defp maybe_add_topic(topics, nil), do: topics
   defp maybe_add_topic(topics, topic), do: [topic | topics]
-  defp finalize_dispatch({:telemetry, result, %{append_latency_ms: append_latency_ms}}, aggregate_id, started_at_ms) do
+
+  defp finalize_dispatch(
+         {:telemetry, result, %{append_latency_ms: append_latency_ms}},
+         aggregate_id,
+         started_at_ms
+       ) do
     Telemetry.command_dispatch(
       elapsed_ms(started_at_ms),
       append_latency_ms,
@@ -126,7 +134,13 @@ defmodule ForemanServer.CommandRouter do
   end
 
   defp finalize_dispatch(result, aggregate_id, started_at_ms) do
-    Telemetry.command_dispatch(elapsed_ms(started_at_ms), 0, telemetry_status(result), aggregate_id)
+    Telemetry.command_dispatch(
+      elapsed_ms(started_at_ms),
+      0,
+      telemetry_status(result),
+      aggregate_id
+    )
+
     result
   end
 
@@ -144,8 +158,10 @@ defmodule ForemanServer.CommandRouter do
   defp aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
   defp aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
   defp aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
-  defp aggregate_module_for("scheduler_intent:" <> _), do: ForemanServer.Aggregates.SchedulerIntent
+
+  defp aggregate_module_for("scheduler_intent:" <> _),
+    do: ForemanServer.Aggregates.SchedulerIntent
+
   defp aggregate_module_for("migration:" <> _), do: ForemanServer.Aggregates.ImportMigration
   defp aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
 end
-

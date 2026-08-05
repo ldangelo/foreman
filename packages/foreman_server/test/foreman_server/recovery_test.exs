@@ -55,6 +55,7 @@ defmodule ForemanServer.RecoveryTest do
       IO.puts("[detect-returns-0] counter=#{System.unique_integer([:positive])}")
       assert {:ok, 0} = Recovery.detect_unconfirmed_intents([])
     end
+
     test "emits a scheduler_intent.mark_stale for recorded intents" do
       intent_id = fresh_intent_id()
       IO.puts("[emits-mark-stale] intent_id=#{intent_id}")
