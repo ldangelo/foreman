@@ -31,6 +31,7 @@ defmodule ForemanServer.AgentRuntime do
   alias ForemanServer.AgentRuntime.Router
   alias ForemanServer.AgentRuntime.InvocationSupervisor
   alias ForemanServer.Telemetry
+  alias ForemanServer.AgentRuntime.FailurePolicy
 
   @type backend_name :: atom()
   @type adapter :: module()
@@ -87,6 +88,14 @@ defmodule ForemanServer.AgentRuntime do
   Returns the list of optional capability fields.
   """
   defdelegate optional_capability_fields(), to: Capabilities, as: :optional_fields
+
+  @doc """
+  Resolves the failure policy for a given task type and call options.
+
+  Delegates to `FailurePolicy.resolve/2`. See that module for full documentation.
+  """
+  @spec failure_policy(atom() | nil, keyword() | map()) :: map()
+  defdelegate failure_policy(task_type, opts \\ []), to: FailurePolicy, as: :resolve
 
   @doc """
   Register an adapter at runtime with optional catalog injection.
