@@ -17,6 +17,7 @@ defmodule ForemanServer.TaskProvider.Registry do
   require Logger
 
   @restart_event [:foreman_server, :task_provider, :registry, :restarted]
+  @route_event_prefix [:foreman_server, :task_provider, :registry, :route]
   @required_callbacks TaskProvider.behaviour_info(:callbacks)
 
   @type state :: %{
@@ -39,11 +40,18 @@ defmodule ForemanServer.TaskProvider.Registry do
     GenServer.call(__MODULE__, :routing_snapshot)
   end
 
+  @spec route(transition :: atom(), routing_key :: term()) ::
+          {:ok, module()} | {:error, atom()}
+  def route(transition, routing_key) when is_atom(transition) do
+    GenServer.call(__MODULE__, {:route, transition, routing_key})
+  end
+
   @doc """
   Manually register a provider (rare; usually loaded at boot).
   """
   @spec register(module()) ::
-          {:ok, module()} | {:error, :contract_version_mismatch | :invalid_module}
+          {:ok, module()}
+          | {:error, :contract_version_mismatch | :invalid_module | :unavailable}
   def register(provider_module) when is_atom(provider_module) do
     GenServer.call(__MODULE__, {:register, provider_module})
   end
@@ -88,6 +96,28 @@ defmodule ForemanServer.TaskProvider.Registry do
     end
   end
 
+  def handle_call({:route, transition, routing_key}, _from, state) do
+    case route_provider(state.routing, transition, routing_key) do
+      {:ok, provider_module} = ok ->
+        :telemetry.execute(@route_event_prefix ++ [:ok], %{count: 1}, %{
+          transition: transition,
+          routing_key: routing_key,
+          provider: provider_module
+        })
+
+        {:reply, ok, state}
+
+      {:error, reason} = error ->
+        :telemetry.execute(@route_event_prefix ++ [:error], %{count: 1}, %{
+          transition: transition,
+          routing_key: routing_key,
+          reason: reason
+        })
+
+        {:reply, error, state}
+    end
+  end
+
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -114,7 +144,8 @@ defmodule ForemanServer.TaskProvider.Registry do
   defp register_provider(provider_module, routing, accepted_versions) do
     with :ok <- ensure_provider_module(provider_module),
          capabilities <- provider_module.capabilities(),
-         :ok <- ensure_contract_version(capabilities, accepted_versions) do
+         :ok <- ensure_contract_version(capabilities, accepted_versions),
+         :ok <- ensure_available(provider_module) do
       provider_id = provider_id(provider_module, capabilities)
       {:ok, provider_id, Map.put(routing, provider_id, provider_module)}
     end
@@ -140,6 +171,41 @@ defmodule ForemanServer.TaskProvider.Registry do
       {:error, :contract_version_mismatch}
     end
   end
+
+  defp ensure_available(provider_module) do
+    case provider_module.available?() do
+      true -> :ok
+      false -> {:error, :unavailable}
+    end
+  end
+
+  defp route_provider(routing, transition, routing_key) do
+    routing
+    |> Map.values()
+    |> Enum.find(fn provider_module ->
+      supports_transition?(provider_module, transition) and
+        routing_key_match?(provider_module, routing_key)
+    end)
+    |> case do
+      nil -> {:error, :no_provider_for_transition}
+      provider_module -> {:ok, provider_module}
+    end
+  end
+
+  defp supports_transition?(provider_module, transition) do
+    provider_module
+    |> provider_capabilities()
+    |> Map.get(:supports, [])
+    |> Enum.member?(transition)
+  end
+
+  defp routing_key_match?(_provider_module, nil), do: true
+
+  defp routing_key_match?(provider_module, routing_key) do
+    provider_module.name() == routing_key
+  end
+
+  defp provider_capabilities(provider_module), do: provider_module.capabilities()
 
   defp provider_id(provider_module, capabilities) do
     capabilities[:provider_id] || provider_module.name()
