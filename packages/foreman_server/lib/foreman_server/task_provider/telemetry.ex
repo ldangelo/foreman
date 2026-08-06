@@ -140,7 +140,7 @@ defmodule ForemanServer.TaskProvider.Telemetry do
   @spec taxonomy() :: %{event_path() => taxonomy_entry()}
   def taxonomy, do: @taxonomy
 
-  @spec scrub_argv(list()) :: list()
+  @spec scrub_argv(argv :: [String.t()]) :: [String.t()]
   def scrub_argv(argv) when is_list(argv) do
     argv
     |> Enum.map_reduce(nil, &scrub_argv_entry/2)
