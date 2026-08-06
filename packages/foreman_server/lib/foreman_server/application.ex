@@ -30,6 +30,9 @@ defmodule ForemanServer.Application do
         ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
         ForemanServer.Aggregator,
+        # TaskProvider.Registry owns configured task provider routing and must
+        # start before dispatch paths resolve a provider snapshot.
+        ForemanServer.TaskProvider.Registry,
 
         # RunExecutorRegistry must exist before RunExecutor children start;
         # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
