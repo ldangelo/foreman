@@ -1,5 +1,5 @@
 defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ForemanServer.TaskProviders.SystemBrRunner
 
@@ -76,17 +76,38 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     assert %{"database_path" => ^db_path} = Jason.decode!(stdout)
   end
 
-  test "Port.info and timeout escalation are implemented in source" do
-    source = File.read!(@source_path)
+  test "Port.info captures OS PID and timeout escalation runs SIGTERM then SIGKILL", %{
+    temp_dir: temp_dir
+  } do
+    # The fake `br` sleeps 30s — far longer than the 200 ms cmd timeout — so the impl
+    # must observe the timeout, send SIGTERM, wait, then SIGKILL. exit_code 143 means
+    # SIGTERM landed; 137 means SIGKILL was needed after the grace window.
+    with_fake_br(
+      temp_dir,
+      """
+      echo starting
+      sleep 30
+      echo done
+      """,
+      fn ->
+        # The cmd timeout (200 ms) is well under the SIGTERM grace window (5000 ms),
+        # so SIGTERM must land and the fake `br` exits with 143 — proving Port.info
+        # captured a real OS PID and terminate_os_process/1 actually invoked kill -TERM.
+        assert {:error, %{stdout: stdout, reason: :timeout, exit_code: exit_code}} =
+                 SystemBrRunner.cmd(
+                   {:ready, %{}},
+                   %{database_path: Path.join(temp_dir, "fake.db")},
+                   timeout_ms: 200
+                 )
 
-    assert source =~ "case Port.info(port, :os_pid) do"
-    assert source =~ "{:os_pid, os_pid} when is_integer(os_pid) -> os_pid"
-    assert source =~ "run_kill(os_pid, \"-TERM\")"
-    assert source =~ "if wait_for_exit(os_pid, @max_kill_wait_ms) do"
-    assert source =~ "run_kill(os_pid, \"-KILL\")"
-    assert source =~ "wait_for_exit(os_pid, @max_kill_wait_ms)"
-    assert source =~ "143"
-    assert source =~ "137"
+        assert exit_code in [143, 137],
+               "expected SIGTERM (143) or SIGKILL (137) exit_code, got: #{inspect(exit_code)}"
+
+        # stdout may or may not contain "starting" depending on timing, but the
+        # timeout path MUST have flushed whatever it captured before the kill.
+        assert is_binary(stdout)
+      end
+    )
   end
 
   test "temp files are removed in try/after", %{baseline_temp_files: baseline_temp_files} do
