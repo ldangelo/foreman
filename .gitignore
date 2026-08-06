@@ -51,4 +51,7 @@
 
 # Scout artifacts (per-task markdown output, regenerated each run)
 .local/scout/*.md
+# CLI escript build artifacts
+/packages/foreman_cli/foreman
+# Repo-root foreman binary
 /foreman
