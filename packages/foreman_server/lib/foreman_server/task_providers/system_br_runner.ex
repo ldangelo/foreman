@@ -11,7 +11,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     show: "show",
     update: "update",
     close: "close",
-    where: "where"
+    where: "where",
+    schema: "schema"
   }
   @default_timeout_ms 60_000
   @max_kill_wait_ms 5_000
@@ -66,6 +67,14 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     end
   end
 
+  defp build_argv({:schema, _payload} = request, _project_config) do
+    {action, payload} = validate_request!(request)
+    subcommand = Map.fetch!(@action_subcommands, action)
+    action_argv = build_action_argv(action, payload)
+
+    ["br", subcommand | action_argv]
+  end
+
   defp build_argv(request, project_config) do
     {action, payload} = validate_request!(request)
     database_path = fetch_database_path!(project_config)
@@ -99,6 +108,13 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
           "expected project_config with binary :database_path, got: #{inspect(project_config)}"
   end
 
+  defp build_action_argv(:schema, payload) do
+    validate_payload_shape!(:schema, payload)
+
+    [fetch_optional(payload, :schema)]
+    |> maybe_append_json_flag()
+  end
+
   defp build_action_argv(action, payload) do
     payload
     |> extract_flags!()
@@ -112,6 +128,16 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       nil -> :ok
       subcommand when is_binary(subcommand) -> :ok
       other -> raise ArgumentError, "expected :subcommand to be a binary, got: #{inspect(other)}"
+    end
+  end
+
+  defp validate_payload_shape!(:schema, payload) do
+    case fetch_optional(payload, :schema) do
+      schema when is_binary(schema) and schema != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :schema to be a non-empty binary, got: #{inspect(other)}"
     end
   end
 
