@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-48f7b420
 label: trd-foreman-beads-task-provider
-version: 1.0.4
+version: 1.0.5
 status: Draft
 date: 2026-08-06
 prd_reference: PRD-2026-48f7b420
@@ -598,6 +598,7 @@ The matrix links every PRD requirement (REQ-NNN) to its implementation tasks (TR
 2. **TRD-024 (RunExecutor drive, 5h) is the largest single task in PR 1.** Mitigation: it is decomposed into 3 commit-sized sub-PRs in the issue tracking during the implementation phase. The task header enumerates the 3 sub-hooks (claim/complete/fail). Reopen is NOT in this task — it lives in TRD-016 + BootReconciliation.
 3. **`set_priority/3` and `add_dependency/3` have no in-tree runner/operator invocation.** This is intentional: the TRD implements + tests the callbacks (REQ-002 capability list is honored), but operator invocation is deferred to a future Phoenix-operator TRD to avoid manufacturing a fabricated temporary public API. PRD `foreman task <verb>` was the exact trap and has been explicitly removed.
 4. **`reopen/3` has exactly ONE caller (`Workflow.BootReconciliation`).** This is enforced both at runtime (TRD-016-TEST asserts only one caller) and structurally (4th architecture scan in PR 3). The RunExecutor deliberately does NOT have a `reopen` hook because AC-015-2 assigns the post-execution `--status open` transition exclusively to `fail/3`; a runner-side `reopen` would duplicate that transition.
+5. **AC-008-5 sub-AC convention + parser limitation (discovered v1.0.5).** The PRD has AC-008-5 as a single AC; the TRD splits it into AC-008-5(a) (factory AST scan) and AC-008-5(b) (per-path runtime sentinel) sub-ACs to give each obligation its own test row (TRD-033, TRD-034). Both sub-ACs appear in the source's validates cells, but the parser's strict regex `^AC-\d+-\d+$` (trd-parser.js:645) rejects any token with trailing letters or parens — `AC-008-5(a)`, `AC-008-5(b)`, and `AC-008-5a` ALL fail to match. Net effect: the parser captures 63 unique ACs (all AC-001..AC-019 except AC-008-5). AC-008-5 itself is covered semantically by the **union** of TRD-033 (covers 5a) + TRD-034 (covers 5b); the parser cannot see this union because its regex filter is applied per-row before set aggregation. **Manual reconciliation:** the 64th AC (AC-008-5 parent) is fully covered by the two sub-parts and requires no additional task; the v1.0.4 changelog claim of "64/64 AC coverage" was a parser-strict read that does not actually hold (it would only hold if parent IDs were added to both sub-rows' validates cells, which is rejected in v1.0.5 to avoid making traceability semantically false — adding `AC-008-5` to TRD-033 alone would falsely claim TRD-033 validates the entire parent; the union of (a) + (b) is what genuinely covers the parent). The sub-AC notation is preserved in narrative (descriptions, AC-checklist bullets, changelog) for human readability — readers benefit from knowing which sub-part a task addresses.
 
 ---
 
@@ -611,6 +612,13 @@ The TRD is saved at `docs/TRD/TRD-2026-48f7b420-foreman-beads-task-provider.md`.
 
 ## 8. Changelog
 
+### v1.0.5 — 2026-08-06 (AC-008-5 sub-AC parser limitation documented)
+
+- **Discovered:** the parser's strict regex `^AC-\d+-\d+$` (trd-parser.js:645) rejects the AC-008-5(a) and AC-008-5(b) sub-AC tokens that appear in the source's validates cells. The parser therefore captures 63 unique ACs in `validatesAcs`, not 64. AC-008-5 itself is covered semantically by the union of TRD-033 (5a) + TRD-034 (5b); the parser cannot see this union because its regex filter is per-row before set aggregation.
+- **Considered fix — add parent `AC-008-5` to both TRD-033 and TRD-034 validates cells.** Would make the parser capture AC-008-5, satisfying a set-count check. **Rejected (advisory):** adding `AC-008-5` to TRD-033 alone falsely claims TRD-033 validates the entire parent (it only handles 5a); adding to both makes each row individually over-claim. Passing a simplistic set-count validator is not worth making traceability semantically false. The 2-line addition was briefly applied (L479/L480) and reverted per the advisory.
+- **Documented in §6.4 item 5:** AC-008-5 sub-AC convention, parser limitation, manual reconciliation note (union of TRD-033 + TRD-034 covers parent), and rationale for rejecting the parent-ID-injection fix.
+- **No semantic change to any task.** All 63 task rows unchanged. Sub-AC notation preserved in narrative (descriptions, AC-checklist bullets) for human readability. Frontmatter: `version: 1.0.4 → 1.0.5`. Counters unchanged (63 tasks / 64 ACs / 19 REQs).
+- **Structural re-validation:** 63/63 task rows at 6 GFM columns; 63 unique IDs; 0 unresolved deps; graph acyclic; AC coverage 63/64 by parser + 1 (AC-008-5 parent) covered semantically by union of TRD-033 (5a) + TRD-034 (5b); frontmatter counters consistent (63 tasks / 64 ACs / 19 REQs); 19/19 REQs covered.
 ### v1.0.4 — 2026-08-06 (TRD-023-TEST test-design infeasibility fix)
 
 - **AC-009-5 test surface changed from call-count to behavioral assertions** (blocker advisory: `Path.expand/1` is a standard-library function and cannot be stubbed via Mox). The v1.0.3 TRD-023-TEST row specified a "Counter stub on `Path.expand/1`" plus assertions like "the counter increments exactly 0/1 times" and "the counter remains at 1 across N callback invocations" — none of which are implementable against `Path`. The architectural shift (AC-009-5 as a command-time contract in `Project.handle_command/2`, order-preserving `Path.type/1`-then-`Path.expand/1` validation, projector as the single cache site) is unchanged; only the test contract is rephrased.
