@@ -17,7 +17,10 @@ config :foreman_server,
 config :foreman_server, :agent_runtime,
   enabled: true,
   adapters: []
+
 config :foreman_server, :stuck_run_check_interval_seconds, 3_600
+# foreman_server: br_runner test override (TRD-030)
+config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
 config :phoenix, Phoenix.Diagnostics, enabled: false
 
