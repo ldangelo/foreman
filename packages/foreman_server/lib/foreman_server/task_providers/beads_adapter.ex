@@ -154,10 +154,14 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   defp decode_json_map(_payload), do: :error
 
-  defp maybe_put_exit_code(%ProviderError{} = provider_error, %{exit_code: exit_code})
-       when is_integer(exit_code) do
-    %{provider_error | context: Map.put(provider_error.context, :exit_code, exit_code)}
+  defp maybe_put_exit_code(provider_error, %{exit_code: exit_code})
+       when is_integer(exit_code) and is_map(provider_error) do
+    Map.put(
+      provider_error,
+      :context,
+      Map.put(Map.fetch!(provider_error, :context), :exit_code, exit_code)
+    )
   end
 
-  defp maybe_put_exit_code(%ProviderError{} = provider_error, _result), do: provider_error
+  defp maybe_put_exit_code(provider_error, _result), do: provider_error
 end
