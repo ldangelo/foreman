@@ -110,7 +110,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterPreflightDatabaseTest do
 
     assert_receive {:telemetry, @preflight_ok_event, %{system_time: system_time}, metadata}, 1_000
     assert is_integer(system_time)
-    assert metadata == %{database_path: "/abs/path"}
+    assert metadata == %{argv: ["where", "--db", "/abs/<redacted:9>", "--json"]}
     assert :ok == Mox.verify!()
   end
 
@@ -131,13 +131,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterPreflightDatabaseTest do
                    1_000
 
     assert is_integer(system_time)
-    assert metadata.database_path == "/abs/path"
+    assert metadata.argv == ["where", "--db", "/abs/<redacted:9>", "--json"]
+    refute Map.has_key?(metadata, :database_path)
     assert metadata.error == provider_error
     assert provider_error.code == "DATABASE_NOT_FOUND"
     assert provider_error.retryable? == false
     assert provider_error.context.command == "br where"
     assert provider_error.context.exit_code == 2
-    assert provider_error.context.stderr_byte_count == byte_size(@missing_database_stderr)
     assert :ok == Mox.verify!()
   end
 

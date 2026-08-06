@@ -9,9 +9,14 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiter do
 
   use GenServer
 
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+
   @app :foreman_server
   @default_max_in_flight 4
   @default_timeout_ms 30_000
+  @acquire_event [:foreman_server, :task_provider, :concurrency_limiter, :acquire]
+  @release_event [:foreman_server, :task_provider, :concurrency_limiter, :release]
+  @timeout_event [:foreman_server, :task_provider, :concurrency_limiter, :timeout]
 
   @type project_id :: term()
   @type waiter :: {project_id(), GenServer.from(), reference(), reference()}
@@ -82,6 +87,7 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiter do
         | in_flight: put_in_flight(state.in_flight, project_id, current_in_flight + 1)
       }
 
+      emit_acquire(project_id, :immediate, current_in_flight + 1)
       {:reply, :ok, next_state}
     else
       waiter_ref = make_ref()
@@ -121,9 +127,12 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiter do
                   )
             }
 
+            emit_release(project_id, true, Map.get(granted_state.in_flight, project_id, 0))
+            emit_acquire(project_id, :queued, Map.get(granted_state.in_flight, project_id, 0))
             {:reply, :ok, granted_state}
 
           :error ->
+            emit_release(project_id, false, Map.get(base_state.in_flight, project_id, 0))
             {:reply, :ok, base_state}
         end
     end
@@ -132,13 +141,34 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiter do
   @impl true
   def handle_info({:waiter_timeout, waiter_ref}, state) do
     case drop_waiter(state.waiters, waiter_ref) do
-      {:ok, {_project_id, from, ^waiter_ref, _timeout_ref}, remaining_waiters} ->
+      {:ok, {project_id, from, ^waiter_ref, _timeout_ref}, remaining_waiters} ->
+        emit_timeout(project_id)
         GenServer.reply(from, {:error, :timeout})
         {:noreply, %{state | waiters: remaining_waiters}}
 
       :error ->
         {:noreply, state}
     end
+  end
+
+  defp emit_acquire(project_id, source, in_flight) do
+    TaskProviderTelemetry.emit(@acquire_event, %{count: 1}, %{
+      project_id: project_id,
+      source: source,
+      in_flight: in_flight
+    })
+  end
+
+  defp emit_release(project_id, granted_waiter?, in_flight) do
+    TaskProviderTelemetry.emit(@release_event, %{count: 1}, %{
+      project_id: project_id,
+      granted_waiter?: granted_waiter?,
+      in_flight: in_flight
+    })
+  end
+
+  defp emit_timeout(project_id) do
+    TaskProviderTelemetry.emit(@timeout_event, %{count: 1}, %{project_id: project_id})
   end
 
   defp put_in_flight(in_flight, project_id, 0), do: Map.delete(in_flight, project_id)

@@ -5,6 +5,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   """
 
   @behaviour ForemanServer.TaskProviders.BrRunner
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   @action_subcommands %{
     ready: "ready",
@@ -396,7 +397,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
 
         %{kind: kind, path: path} ->
           if File.exists?(path) do
-            :telemetry.execute(@temp_file_leaked_event, %{count: 1}, %{kind: kind})
+            TaskProviderTelemetry.emit(@temp_file_leaked_event, %{count: 1}, %{kind: kind})
             File.rm(path)
           end
       end

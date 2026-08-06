@@ -13,6 +13,7 @@ defmodule ForemanServer.TaskProvider.Registry do
   use GenServer
 
   alias ForemanServer.TaskProvider
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   require Logger
 
@@ -99,7 +100,7 @@ defmodule ForemanServer.TaskProvider.Registry do
   def handle_call({:route, transition, routing_key}, _from, state) do
     case route_provider(state.routing, transition, routing_key) do
       {:ok, provider_module} = ok ->
-        :telemetry.execute(@route_event_prefix ++ [:ok], %{count: 1}, %{
+        TaskProviderTelemetry.emit(@route_event_prefix ++ [:ok], %{count: 1}, %{
           transition: transition,
           routing_key: routing_key,
           provider: provider_module
@@ -108,7 +109,7 @@ defmodule ForemanServer.TaskProvider.Registry do
         {:reply, ok, state}
 
       {:error, reason} = error ->
-        :telemetry.execute(@route_event_prefix ++ [:error], %{count: 1}, %{
+        TaskProviderTelemetry.emit(@route_event_prefix ++ [:error], %{count: 1}, %{
           transition: transition,
           routing_key: routing_key,
           reason: reason
@@ -222,7 +223,7 @@ defmodule ForemanServer.TaskProvider.Registry do
         next_boot_count = boot_count + 1
         :persistent_term.put(marker, next_boot_count)
 
-        :telemetry.execute(@restart_event, %{count: 1}, %{
+        TaskProviderTelemetry.emit(@restart_event, %{count: 1}, %{
           restart_count: next_boot_count - 1,
           providers: Map.keys(routing),
           registry: server_name

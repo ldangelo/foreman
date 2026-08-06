@@ -7,6 +7,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
 
   require Logger
 
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias __MODULE__.State
 
   @br_runner Application.compile_env(
@@ -282,7 +283,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
   defp extract_contract_version(_schema), do: nil
 
   defp emit_refresh_telemetry(%State{} = state) do
-    :telemetry.execute(@refresh_event, %{count: 1}, %{
+    TaskProviderTelemetry.emit(@refresh_event, %{count: 1}, %{
       schema_count: map_size(state.schemas),
       contract_version: state.version,
       refreshed_at: state.last_refresh
@@ -292,7 +293,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
   defp maybe_emit_version_change(previous_version, current_version)
        when is_binary(previous_version) and is_binary(current_version) and
               previous_version != current_version do
-    :telemetry.execute(@version_changed_event, %{count: 1}, %{
+    TaskProviderTelemetry.emit(@version_changed_event, %{count: 1}, %{
       previous_version: previous_version,
       current_version: current_version
     })

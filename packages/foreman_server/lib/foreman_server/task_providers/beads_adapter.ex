@@ -3,6 +3,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @behaviour ForemanServer.TaskProvider
 
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
   alias ForemanServer.TaskProviders.ProviderError
@@ -53,14 +54,21 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   def preflight_database(database_path, opts \\ []) when is_binary(database_path) do
     request = {:where, %{database_path: database_path}}
     project_config = %{database_path: database_path}
+    argv = ["where", "--db", database_path, "--json"]
     timeout_ms = Keyword.get(opts, :timeout_ms, 30_000)
+
+    TaskProviderTelemetry.emit(
+      [:foreman_server, :task_provider, :beads_adapter, :preflight, :start],
+      %{system_time: System.system_time()},
+      %{argv: argv, timeout_ms: timeout_ms}
+    )
 
     case @runner.cmd(request, project_config, timeout_ms: timeout_ms) do
       {:ok, _response} ->
-        :telemetry.execute(
+        TaskProviderTelemetry.emit(
           [:foreman_server, :task_provider, :beads_adapter, :preflight, :ok],
           %{system_time: System.system_time()},
-          %{database_path: database_path}
+          %{argv: argv}
         )
 
         :ok
@@ -68,10 +76,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       {:error, %{stdout: stdout, stderr: stderr} = result} ->
         provider_error = build_preflight_error(stdout, stderr, result)
 
-        :telemetry.execute(
+        TaskProviderTelemetry.emit(
           [:foreman_server, :task_provider, :beads_adapter, :preflight, :error],
           %{system_time: System.system_time()},
-          %{database_path: database_path, error: provider_error}
+          %{argv: argv, error: provider_error}
         )
 
         {:error, provider_error}
