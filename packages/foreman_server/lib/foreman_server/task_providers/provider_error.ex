@@ -33,6 +33,17 @@ defmodule ForemanServer.TaskProviders.ProviderError do
   end
 
   defp build_context(context) when is_map(context) do
-    Map.take(context, @context_keys)
+    unknown_keys = Map.keys(context) -- @context_keys
+
+    if unknown_keys != [] do
+      raise ArgumentError,
+            "unknown ProviderError.context keys: #{inspect(unknown_keys)}; " <>
+              "allowed: #{inspect(@context_keys)}"
+    end
+
+    context
+    |> Map.put_new(:sanitized?, true)
+    |> Map.put_new(:redacted_fields, [])
+    |> Map.put_new(:missing_fields, [])
   end
 end

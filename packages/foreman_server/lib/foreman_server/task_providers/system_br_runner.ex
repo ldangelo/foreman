@@ -22,38 +22,43 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   @impl true
   def cmd(request, project_config, opts \\ []) when is_list(opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, configured_timeout_ms())
-    temp_files = create_temp_files(opts)
+    stdin_payload = fetch_stdin_payload!(opts)
+    temp_files = create_temp_files(stdin_payload)
 
     try do
       argv = build_argv(request, project_config)
       port = open_port(build_shell_command(argv, temp_files))
-      os_pid = get_os_pid!(port)
-      monitor_ref = :erlang.monitor(:port, port)
 
       try do
-        case await_port_completion(port, monitor_ref, timeout_ms) do
-          {:ok, stdout, exit_code} ->
-            finalize_result(stdout, temp_files, exit_code)
+        os_pid = get_os_pid!(port)
+        monitor_ref = :erlang.monitor(:port, port)
 
-          {:timeout, stdout} ->
-            exit_code = terminate_os_process(os_pid)
-            stdout = await_port_exit_after_timeout(port, monitor_ref, stdout)
-            finalize_timeout(stdout, temp_files, exit_code)
+        try do
+          case await_port_completion(port, monitor_ref, timeout_ms) do
+            {:ok, stdout, exit_code} ->
+              finalize_result(stdout, temp_files, exit_code)
 
-          {:down, reason, stdout} ->
-            stderr = read_temp_file(temp_files.stderr)
-            cleanup_temp_files(temp_files)
+            {:timeout, stdout} ->
+              exit_code = terminate_os_process(os_pid)
+              stdout = await_port_exit_after_timeout(port, monitor_ref, stdout)
+              finalize_timeout(stdout, temp_files, exit_code)
 
-            {:error,
-             %{
-               stdout: stdout,
-               stderr: stderr,
-               exit_code: nil,
-               reason: normalize_down_reason(reason)
-             }}
+            {:down, reason, stdout} ->
+              stderr = read_temp_file(temp_files.stderr)
+              cleanup_temp_files(temp_files)
+
+              {:error,
+               %{
+                 stdout: stdout,
+                 stderr: stderr,
+                 exit_code: nil,
+                 reason: normalize_down_reason(reason)
+               }}
+          end
+        after
+          :erlang.demonitor(monitor_ref, [:flush])
         end
       after
-        :erlang.demonitor(monitor_ref, [:flush])
         safe_close_port(port)
       end
     after
@@ -277,17 +282,31 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     {:error, %{stdout: stdout, stderr: stderr, exit_code: exit_code, reason: :timeout}}
   end
 
-  defp create_temp_files(opts) do
-    %{
-      stderr: create_temp_file!(:stderr, ""),
-      stdin: create_optional_stdin_temp_file(opts)
-    }
+  defp create_temp_files(stdin_payload) do
+    stderr_file = create_temp_file!(:stderr, "")
+
+    try do
+      %{
+        stderr: stderr_file,
+        stdin: create_optional_stdin_temp_file(stdin_payload)
+      }
+    rescue
+      error ->
+        delete_temp_file(stderr_file)
+        reraise error, __STACKTRACE__
+    end
   end
 
-  defp create_optional_stdin_temp_file(opts) do
+  defp create_optional_stdin_temp_file(nil), do: nil
+
+  defp create_optional_stdin_temp_file(payload) when is_binary(payload) do
+    create_temp_file!(:stdin, payload)
+  end
+
+  defp fetch_stdin_payload!(opts) do
     case Keyword.get(opts, :stdin_payload) do
       payload when is_binary(payload) ->
-        create_temp_file!(:stdin, payload)
+        payload
 
       nil ->
         nil
@@ -304,10 +323,15 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
         "system_br_runner_#{kind}_#{System.unique_integer([:positive, :monotonic])}.tmp"
       )
 
-    File.write!(path, contents, [:write, :exclusive])
-    File.chmod!(path, 0o600)
-
-    %{kind: kind, path: path}
+    try do
+      File.write!(path, contents, [:write, :exclusive])
+      File.chmod!(path, 0o600)
+      %{kind: kind, path: path}
+    rescue
+      error ->
+        File.rm(path)
+        reraise error, __STACKTRACE__
+    end
   end
 
   defp read_temp_file(nil), do: ""
