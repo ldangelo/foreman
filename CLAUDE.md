@@ -225,3 +225,50 @@ a bug; do not invent behavior for undocumented keys.
 These are tracked in the TRD-2026-6af02293 documentation under
 *Open Issues / Future Work*. Any code that introduces them inline
 without a TRD is out of scope.
+
+## 11. Workflow catalog is the only manifest source (Go/Elixir CQRS slice)
+
+`ForemanServer.Workflow.Catalog` is the supervised GenServer that owns
+every parsed workflow manifest and prompt body in memory and keeps
+them in sync with the on-disk root (`~/.foreman/workflows`,
+hardcoded by `AssetCatalog.default/0`).
+
+- **Single owner of manifests.** `Approval.resolve_workflow_snapshot/2`
+  (the public `Approval.prepare/2` path) and the private
+  `RunExecutor.read_phase_prompt/2` read through the catalog.
+  No module reads a workflow manifest or prompt file directly;
+  the catalog is the only path.
+- **Auto-install is gated.** `init/1` calls
+  `ForemanServer.WorkflowTemplate.Installer` only when the root
+  contains no `*.yaml` manifests. A populated `prompts/` directory
+  does **not** suppress the install; the installer uses
+  `File.cp/2`/`File.write/2` and will overwrite any same-named
+  prompt already on disk. Keep custom templates under their own
+  filenames.
+- **Synchronous load.** Every manifest is parsed via
+  `ForemanServer.Workflow.Interpreter.load/1` and every prompt via
+  `File.read/1` during `init/1` so the first command after boot
+  finds the catalog ready.
+- **Hot reload by polling.** A periodic timer (default 2 s,
+  override via `Application.put_env(:foreman_server,
+  :workflow_catalog_poll_ms, ms)`) re-hashes every entry and
+  replaces any whose content or mtime changed; vanished files are
+  removed. `:fs` is **not** used; this slice does not depend on
+  the `FileSystem` package.
+- **Test isolation.** `Catalog.server/0` reads the
+  `:workflow_catalog` app env so tests can redirect to a scoped
+  instance via `Application.put_env(:foreman_server,
+  :workflow_catalog, server_name)` without tearing down the
+  app-managed catalog.
+
+Telemetry: `[:foreman_server, :workflow, :installed]`,
+`[:foreman_server, :workflow, :manifest, :loaded | :reload, :ok |
+:reload, :error | :removed]`,
+`[:foreman_server, :workflow, :prompt, :loaded | :reload, :ok |
+:reload, :error | :removed]`.
+
+Operator-facing CLI: `foreman workflow install --target PATH [--source PATH | --remote URL]`
+(see `docs/cli-reference.md`). The CLI is a thin shell around the
+HTTP admin endpoint and is **not** an alternate write path to the
+event store; it only materialises assets on disk.
+

@@ -1,14 +1,12 @@
 defmodule ForemanServer.Workflow.AssetCatalog do
   @moduledoc """
-  Locates installed workflow assets (YAML manifests + Markdown prompts).
+  Resolves installed workflow asset paths.
 
-  An `AssetCatalog` is rooted at a workflow install directory; manifests live
-  in the directory itself and prompts are resolved from `prompts/` next to it.
-  Returns deterministic paths so the same workflow always resolves to the same
-  on-disk artifact regardless of caller process.
+  An `AssetCatalog` is a *path helper* only — it does not parse YAML or hold
+  loaded workflow state. The supervised `ForemanServer.Workflow.Catalog`
+  process owns the parsed snapshots; this module exists so callers can
+  resolve manifest and prompt paths against an explicit install root.
   """
-
-  alias ForemanServer.Workflow.Interpreter
 
   @type t :: %__MODULE__{
           root: Path.t(),
@@ -28,8 +26,7 @@ defmodule ForemanServer.Workflow.AssetCatalog do
   @doc "Default install root: `~/.foreman/workflows`."
   @spec default() :: t()
   def default do
-    home = System.fetch_env!("HOME")
-    new(Path.join([home, ".foreman", "workflows"]))
+    new(Path.join([System.user_home!(), ".foreman", "workflows"]))
   end
 
   @doc "List every installed workflow manifest path (sorted for determinism)."
@@ -47,35 +44,18 @@ defmodule ForemanServer.Workflow.AssetCatalog do
     end
   end
 
-  @doc "Load a workflow manifest by filename (e.g. `\"implement.yaml\"`)."
-  @spec load(t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def load(%__MODULE__{root: root} = catalog, filename) when is_binary(filename) do
-    path = Path.join(root, filename)
+  @doc "List every installed prompt file path under `prompts/`, sorted for determinism."
+  @spec prompts(t()) :: [Path.t()]
+  def prompts(%__MODULE__{prompts_dir: prompts_dir}) do
+    case File.ls(prompts_dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.ends_with?(&1, ".md"))
+        |> Enum.sort()
+        |> Enum.map(&Path.join(prompts_dir, &1))
 
-    try do
-      case Interpreter.load!(path) do
-        {:ok, workflow} ->
-          resolved = %{
-            name: workflow["name"],
-            description: workflow["description"],
-            phases:
-              Enum.map(workflow["phases"], fn phase ->
-                phase
-                |> Map.put(:prompt_path, resolve_prompt(catalog, phase["prompt"]))
-                |> Map.put(:artifact_template, phase["artifact"])
-              end),
-            manifest_path: path,
-            digest: digest(path)
-          }
-
-          {:ok, resolved}
-
-        {:error, reason} ->
-          {:error, {:invalid_manifest, filename, reason}}
-      end
-    rescue
-      e in [File.Error, ArgumentError, KeyError, Workflow.MissingRequiredPhaseError] ->
-        {:error, {:manifest_load_failed, filename, Exception.message(e)}}
+      {:error, _} ->
+        []
     end
   end
 
@@ -92,8 +72,9 @@ defmodule ForemanServer.Workflow.AssetCatalog do
   def digest(path) when is_binary(path) do
     case File.read(path) do
       {:ok, contents} ->
-        <<hex::binary-size(16), _::binary>> = ForemanServer.Identity.sha256(contents)
-        hex
+        :crypto.hash(:sha256, contents)
+        |> Base.encode16(case: :lower)
+        |> binary_part(0, 16)
 
       {:error, _} ->
         nil

@@ -228,6 +228,38 @@ adapter dispatch functions. Module declarations (`defmodule … do; use EventSto
   Phoenix → CommandRouter.
 - **Queries** read from the projection store (read model). No writes on the query path.
 
+#### 6. Workflow Catalog Hot-Reload
+
+`ForemanServer.Workflow.Catalog` is a supervised GenServer that owns every
+parsed workflow manifest and prompt body in memory and keeps them in sync
+with the on-disk root.
+
+- **Auto-install** — `init/1` calls
+  `ForemanServer.WorkflowTemplate.Installer` only when the configured root
+  contains no `*.yaml` manifests. A populated `prompts/` directory does
+  **not** suppress the install; the installer uses `File.cp/2` and
+  `File.write/2` and will overwrite any same-named prompt already on
+  disk. Keep custom templates under their own filenames.
+- **Synchronous load** — every manifest is parsed via
+  `ForemanServer.Workflow.Interpreter.load/1` during `init/1` so the first
+  command after boot finds the catalog ready. Every `*.md` under
+  `prompts/` is loaded the same way.
+- **Hot reload** — a periodic poll (default 2s, override via
+  `Application.put_env(:foreman_server, :workflow_catalog_poll_ms, ms)`)
+  re-hashes every manifest and prompt and replaces any entry whose content
+  or mtime changed. Files that vanish are removed from the catalog.
+- **Prompt read API** — `Catalog.read_prompt/1` returns the latest prompt
+  body. `RunExecutor.read_phase_prompt/2` reads through the catalog so a
+  prompt edit is picked up on the next phase.
+- **Configurable server name** — tests redirect via
+  `Application.put_env(:foreman_server, :workflow_catalog, server_name)`
+  to isolate from the app-managed instance.
+
+Telemetry:
+`[:foreman_server, :workflow, :installed]`,
+`[:foreman_server, :workflow, :manifest, :loaded | :reload, :ok | :reload, :error | :removed]`,
+`[:foreman_server, :workflow, :prompt, :loaded | :reload, :ok | :reload, :error | :removed]`.
+
 ### Domain Events (Slice)
 
 All authoritative state transitions are domain events persisted in `foreman_events`.

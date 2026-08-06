@@ -19,7 +19,8 @@ contains:
 | Slice | Doc |
 |---|---|
 | `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). This slice did not add a CLI; see the Go CLI slice when it lands. |
-| Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/` |
+| Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` has no `*.yaml`. |
+
 
 The agent runtime is an OTP-supervised, backend-agnostic façade over
 pluggable adapters. Callers register a module that implements

@@ -13,7 +13,7 @@ defmodule ForemanServer.Workflow.Approval do
   """
 
   alias ForemanServer.Identity
-  alias ForemanServer.Workflow.AssetCatalog
+  alias ForemanServer.Workflow.Catalog
 
   @type prepare_input :: %{
           :task_id => String.t(),
@@ -31,14 +31,14 @@ defmodule ForemanServer.Workflow.Approval do
           :workflow_snapshot => map() | nil
         }
 
-  @spec prepare(AssetCatalog.t(), map() | prepare_input(), keyword()) ::
+  @spec prepare(map() | prepare_input(), keyword()) ::
           {:ok, prepare_result()} | {:error, term()}
-  def prepare(catalog, %{task_id: task_id} = payload, opts \\ [])
+  def prepare(%{task_id: task_id} = payload, opts \\ [])
       when is_binary(task_id) and task_id != "" do
     with {:ok, approval_id} <- ensure_approval_id(payload, opts),
          run_id = Identity.run_id(task_id, approval_id),
          {:ok, workflow_name, workflow_digest, snapshot} <-
-           resolve_workflow_snapshot(catalog, payload, run_id) do
+           resolve_workflow_snapshot(payload, run_id) do
       {:ok,
        %{
          task_id: task_id,
@@ -51,10 +51,8 @@ defmodule ForemanServer.Workflow.Approval do
     end
   end
 
-  def prepare(_catalog, payload, _opts),
+  def prepare(payload, _opts),
     do: {:error, {:invalid_payload, :task_id_missing, Map.keys(payload || %{})}}
-
-
 
   @doc "Return the approval_id used for a given payload (or `:error` if invalid)."
   @spec approval_id_for(map() | prepare_input(), keyword()) ::
@@ -88,12 +86,12 @@ defmodule ForemanServer.Workflow.Approval do
 
   defp deterministic_approval_id(_payload), do: {:error, :task_id_required}
 
-  defp resolve_workflow_snapshot(catalog, payload, run_id) do
+  defp resolve_workflow_snapshot(payload, run_id) do
     task_type =
       payload[:task_type] ||
         Application.get_env(:foreman_server, :default_task_type, "implement")
 
-    case AssetCatalog.load(catalog, task_type <> ".yaml") do
+    case Catalog.load(task_type <> ".yaml") do
       {:ok, workflow} ->
         snapshot = %{
           run_id: run_id,

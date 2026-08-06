@@ -28,6 +28,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime
   alias ForemanServer.CommandGateway
   alias ForemanServer.Identity
+  alias ForemanServer.Workflow.Catalog
 
   require Logger
 
@@ -286,9 +287,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "Run phase #{phase_spec_name(phase_spec)}"
 
       path when is_binary(path) ->
-        case File.read(path) do
-          {:ok, content} -> content
-          {:error, reason} -> raise "RunExecutor: unable to read prompt file #{path}: #{inspect(reason)}"
+        case Catalog.read_prompt(path) do
+          {:ok, content} ->
+            content
+
+          {:error, :prompt_not_tracked} ->
+            raise "RunExecutor: prompt file #{path} is not tracked by the workflow catalog"
         end
     end
   end

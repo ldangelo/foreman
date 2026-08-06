@@ -34,11 +34,14 @@ defmodule ForemanServer.Application do
         # RunExecutorRegistry must exist before RunExecutor children start;
         # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
         {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
+        # Workflow.Catalog owns the in-memory workflow + prompt snapshots,
+        # auto-installs the bundled templates on first boot, and reloads
+        # files when the directory changes. Must start before any code path
+        # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
+        ForemanServer.Workflow.Catalog,
         ForemanServer.Workflow.RunSupervisor,
         # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched.
         ForemanServer.Workflow.Dispatcher,
-
-        # CommandRouter handles all append requests.
         # CommandRouter handles all append requests.
         ForemanServer.CommandRouter
       ] ++

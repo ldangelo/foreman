@@ -36,8 +36,7 @@ defmodule ForemanServer.CommandGateway do
   """
 
   alias ForemanServer.{CommandRouter, ProjectionStore}
-  alias ForemanServer.Workflow.{Approval, AssetCatalog}
-
+  alias ForemanServer.Workflow.Approval
 
   @allowed_operator_types ~w(project.register task.create task.approve)
 
@@ -101,11 +100,22 @@ defmodule ForemanServer.CommandGateway do
 
       true ->
         normalized_payload = normalize_payload_keys(payload)
-        {:ok, %{command_id: command_id, aggregate_id: aggregate_id, type: type, payload: normalized_payload}}
+
+        {:ok,
+         %{
+           command_id: command_id,
+           aggregate_id: aggregate_id,
+           type: type,
+           payload: normalized_payload
+         }}
     end
   end
 
-  defp validate_aggregate_id(%{type: "project.register", aggregate_id: aggregate_id, payload: payload}) do
+  defp validate_aggregate_id(%{
+         type: "project.register",
+         aggregate_id: aggregate_id,
+         payload: payload
+       }) do
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
 
     cond do
@@ -149,7 +159,11 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
-  defp validate_aggregate_id(%{type: "task.approve", aggregate_id: aggregate_id, payload: payload}) do
+  defp validate_aggregate_id(%{
+         type: "task.approve",
+         aggregate_id: aggregate_id,
+         payload: payload
+       }) do
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
 
     cond do
@@ -180,7 +194,6 @@ defmodule ForemanServer.CommandGateway do
     end)
   end
 
-
   defp validate_aggregate_id(_), do: :ok
 
   # Canonical stream ID for a domain entity. Mirrors the convention used by
@@ -189,7 +202,6 @@ defmodule ForemanServer.CommandGateway do
   # not matching `prefix:id` is rejected before dispatch.
   defp stream_id(prefix, id) when is_binary(prefix) and is_binary(id),
     do: prefix <> ":" <> id
-
 
   defp enrich_operator_command(%{type: "task.approve"} = command) do
     task_id = get_value(command.payload, :task_id) || get_value(command.payload, "task_id")
@@ -219,7 +231,6 @@ defmodule ForemanServer.CommandGateway do
          %{command_id: command_id, payload: payload} = command,
          task_projection
        ) do
-    catalog = AssetCatalog.default()
     approval_id = command_id
     approved_at = DateTime.utc_now() |> DateTime.to_iso8601()
 
@@ -233,7 +244,7 @@ defmodule ForemanServer.CommandGateway do
       end
 
     with {:ok, prepared} <-
-           Approval.prepare(catalog, payload_with_type, approval_id: approval_id) do
+           Approval.prepare(payload_with_type, approval_id: approval_id) do
       enriched_payload =
         payload
         |> Map.put(:approval_id, prepared.approval_id)
@@ -268,7 +279,9 @@ defmodule ForemanServer.CommandGateway do
   defp enrich_operator_command(command), do: {:ok, command}
 
   defp rebuild_approval_payload(task, original_payload) do
-    approved_by = get_value(original_payload, :approved_by) || get_value(original_payload, "approved_by")
+    approved_by =
+      get_value(original_payload, :approved_by) || get_value(original_payload, "approved_by")
+
     snapshot = Map.get(task, :workflow_snapshot) || %{}
     run_id = Map.get(task, :run_id)
 

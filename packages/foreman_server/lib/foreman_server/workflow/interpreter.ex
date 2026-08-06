@@ -8,6 +8,22 @@ defmodule ForemanServer.Workflow.Interpreter do
   """
   @required_top_level_keys ~w(name phases)
 
+  @spec load(Path.t()) :: {:ok, map()} | {:error, term()}
+  def load(path) when is_binary(path) do
+    try do
+      load!(path)
+    rescue
+      e in [
+        File.Error,
+        ArgumentError,
+        KeyError,
+        CaseClauseError,
+        Workflow.MissingRequiredPhaseError
+      ] ->
+        {:error, {:manifest_load_failed, path, Exception.message(e)}}
+    end
+  end
+
   @spec load!(Path.t()) :: {:ok, map()}
   def load!(path) when is_binary(path) do
     unless File.regular?(path) do

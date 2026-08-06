@@ -125,7 +125,39 @@ Handlers attach via `:telemetry.attach/4`; one is enough. The test
 suite attaches handlers per test via `capture_completion_events/1`
 and detaches in `after`.
 
-## 7. Adding a new adapter (developer workflow)
+## 7. Workflow templates and prompts
+
+Workflow manifests and prompt bodies live under the runtime root
+(`~/.foreman/workflows` by default — `AssetCatalog.default/0` is
+hardcoded; tests and slice binaries that need a different root must
+call `AssetCatalog.new/1` and pass it to
+`ForemanServer.Workflow.Catalog.start_link/1` explicitly).
+
+- **Auto-install** — at startup, if the root contains no
+  `*.yaml` manifests (a populated `prompts/` directory does **not**
+  suppress the install), the catalog copies the bundled templates
+  from the application `priv/`. If a manifest is already present the
+  installer is skipped; note that the installer uses `File.cp/2` and
+  `File.write/2` and will overwrite any bundled-name file on disk, so
+  re-installing over a populated root is destructive — keep custom
+  templates under their own filenames.
+- **Hot reload** — the catalog polls the root on a short interval
+  (default 2 s, override via
+  `Application.put_env(:foreman_server, :workflow_catalog_poll_ms, ms)`)
+  and replaces any manifest or prompt whose content or mtime changed.
+  `RunExecutor.read_phase_prompt/2` and `Approval.prepare/2` read
+  through the catalog, so a prompt or manifest edit is visible to the
+  next consumer after the next reload pass — typically within the
+  configured poll interval (default 2 s), or immediately after
+  `Catalog.reload/0`.
+- **Manual reload** — call `ForemanServer.Workflow.Catalog.reload/0`
+  from IEx (or any module) to force an immediate pass without
+  waiting for the poll.
+- **Telemetry** — every install, load, reload, and removal emits
+  `[:foreman_server, :workflow, ...]` events. Attach handlers to
+  observe the catalog in production.
+
+## 8. Adding a new adapter (developer workflow)
 
 The minimum to add an optional adapter:
 
@@ -229,7 +261,7 @@ without making a network call.
 See `packages/foreman_server/test/foreman_server/agent_runtime/` for
 frozen examples of all four.
 
-## 8. The Pi adapter in practice
+## 9. The Pi adapter in practice
 
 The provided `PiAdapter` shells out to the local `pi` binary:
 
@@ -242,7 +274,7 @@ The provided `PiAdapter` shells out to the local `pi` binary:
   outcome. On untrappable process death the request file/dir may
   leak — this is a documented v1 limitation, not a regression.
 
-## 9. Quick troubleshooting
+## 10. Quick troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
