@@ -58,7 +58,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
     {:ok, temp_dir: temp_dir}
   end
 
-  test "happy path returns {:ok, %Issue{}} with all fields populated", %{temp_dir: temp_dir} do
+  test "happy path returns {:ok, %Issue{}} with all 11 canonical fields populated", %{
+    temp_dir: temp_dir
+  } do
     start_schema_cache!()
 
     cached_database_path = "/abs/get/happy.db"
@@ -108,9 +110,67 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
              labels: ["backend", "get"],
              metadata: %{"provider_id" => "beads", "source" => "br show"}
            }
+
+    assert issue
+           |> Map.from_struct()
+           |> Map.keys()
+           |> Enum.sort() ==
+             [
+               :assignee,
+               :dependencies,
+               :description,
+               :design,
+               :id,
+               :labels,
+               :metadata,
+               :notes,
+               :priority,
+               :status,
+               :title
+             ]
   end
 
-  test "br error envelope returns a mapped ProviderError", %{temp_dir: temp_dir} do
+  test "dependencies remain opaque ids", %{temp_dir: temp_dir} do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/get/dependencies.db"
+    project_config = register_project!("proj-get-dependencies", cached_database_path)
+
+    payload = %{
+      "id" => "bead-701b",
+      "title" => "Preserve dependency identifiers",
+      "status" => "open",
+      "priority" => 3,
+      "dependencies" => ["opaque:dep-1", "dep/2", "needs-review@3"],
+      "assignee" => nil,
+      "description" => nil,
+      "notes" => "dependencies must stay opaque",
+      "design" => nil,
+      "labels" => ["blocked"],
+      "metadata" => %{"source" => "br show"}
+    }
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:show, %{id: "bead-701b", database_path: cached_database_path}}
+      assert runner_project_config == project_config
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["show", "--db", cached_database_path, "bead-701b", "--json"]
+      )
+
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
+
+    assert {:ok, %Issue{} = issue} = BeadsAdapter.get("bead-701b", project_config)
+    assert issue.dependencies == ["opaque:dep-1", "dep/2", "needs-review@3"]
+  end
+
+  test "ISSUE_NOT_FOUND envelope routes through CodeMap with retryable false",
+       %{temp_dir: temp_dir} do
     cached_database_path = "/abs/get/error.db"
     project_config = register_project!("proj-get-error", cached_database_path)
 
@@ -200,11 +260,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
     assert provider_error.context.stderr_byte_count == 0
   end
 
-  test "consumes the cached absolute database_path established at registration verbatim",
+  test "consumes the already-registered absolute database_path verbatim",
        %{temp_dir: temp_dir} do
     start_schema_cache!()
 
-    cached_database_path = "/abs/cached/../get/path.db"
+    cached_database_path =
+      Path.join("/tmp", "beads_test_get_#{System.unique_integer([:positive, :monotonic])}.db")
+
+    assert Path.expand(cached_database_path) == cached_database_path
+
     project_config = register_project!("proj-get-cached-path", cached_database_path)
 
     payload = %{
