@@ -476,6 +476,301 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     )
   end
 
+  defp parse_failed_issue_response(stdout, task_id, argv) when is_binary(stdout) do
+    case String.trim(stdout) do
+      "" ->
+        {:error, build_fail_parse_error(argv)}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, %{} = payload} ->
+            parse_failed_issue_payload(payload, task_id, argv)
+
+          {:ok, _other} ->
+            {:error,
+             build_fail_contract_error(
+               "Beads failed issue payload must decode to a JSON object.",
+               argv
+             )}
+
+          {:error, _reason} ->
+            {:error, build_fail_parse_error(argv)}
+        end
+    end
+  end
+
+  defp parse_failed_issue_response(_stdout, _task_id, argv) do
+    {:error, build_fail_parse_error(argv)}
+  end
+
+  defp parse_failed_issue_payload(payload, task_id, argv) when is_map(payload) do
+    with :ok <- JsonSchemaCache.validate(:failed_issue, payload),
+         {:ok, id} <- fetch_fail_required_string(payload, :id, argv),
+         {:ok, title} <- fetch_fail_optional_string(payload, :title, task_id, argv),
+         {:ok, priority} <- parse_fail_priority(fetch_payload_value(payload, :priority), argv),
+         {:ok, dependencies} <-
+           parse_fail_string_list(
+             fetch_payload_value(payload, :dependencies),
+             :dependencies,
+             argv
+           ),
+         {:ok, assignee} <- fetch_fail_optional_string(payload, :assignee, nil, argv),
+         {:ok, description} <- fetch_fail_optional_string(payload, :description, nil, argv),
+         {:ok, notes} <- fetch_fail_optional_string(payload, :notes, nil, argv),
+         {:ok, design} <- fetch_fail_optional_string(payload, :design, nil, argv),
+         {:ok, labels} <-
+           parse_fail_string_list(fetch_payload_value(payload, :labels), :labels, argv),
+         {:ok, metadata} <- parse_fail_metadata(fetch_payload_value(payload, :metadata), argv) do
+      TaskProviderTelemetry.emit(
+        [:foreman_server, :task_provider, :beads_adapter, :fail, :success],
+        %{system_time: System.system_time()},
+        %{argv: argv}
+      )
+
+      {:ok,
+       %Issue{
+         id: id,
+         title: title,
+         status: "open",
+         priority: priority,
+         dependencies: dependencies,
+         assignee: assignee,
+         description: description,
+         notes: notes,
+         design: design,
+         labels: labels,
+         metadata: metadata
+       }}
+    else
+      {:error, errors} when is_list(errors) ->
+        {:error, build_fail_schema_validation_error(errors, argv)}
+
+      {:error, provider_error} ->
+        {:error, provider_error}
+    end
+  end
+
+  defp parse_failed_issue_payload(_payload, _task_id, argv) do
+    {:error, build_fail_contract_error("Beads failed issue payload must be a JSON object.", argv)}
+  end
+
+  defp fetch_fail_required_string(payload, key, argv) do
+    case fetch_payload_value(payload, key) do
+      value when is_binary(value) ->
+        {:ok, value}
+
+      _other ->
+        {:error,
+         build_fail_contract_error(
+           "Beads failed issue field #{inspect(key)} must be a string.",
+           argv
+         )}
+    end
+  end
+
+  defp fetch_fail_optional_string(payload, key, default, argv) do
+    case fetch_payload_value(payload, key) do
+      nil -> {:ok, default}
+      value when is_binary(value) -> {:ok, value}
+      _other -> {:error, build_fail_optional_string_error(key, argv)}
+    end
+  end
+
+  defp build_fail_optional_string_error(key, argv) do
+    build_fail_contract_error(
+      "Beads failed issue field #{inspect(key)} must be a string or null.",
+      argv
+    )
+  end
+
+  defp parse_fail_priority(nil, _argv), do: {:ok, 0}
+  defp parse_fail_priority(value, _argv) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp parse_fail_priority(_value, argv) do
+    {:error,
+     build_fail_contract_error(
+       "Beads failed issue field :priority must be a non-negative integer.",
+       argv
+     )}
+  end
+
+  defp parse_fail_string_list(nil, _field, _argv), do: {:ok, []}
+
+  defp parse_fail_string_list(values, field, argv) when is_list(values) do
+    if Enum.all?(values, &is_binary/1) do
+      {:ok, values}
+    else
+      {:error,
+       build_fail_contract_error(
+         "Beads failed issue field #{inspect(field)} must be a list of strings.",
+         argv
+       )}
+    end
+  end
+
+  defp parse_fail_string_list(_values, field, argv) do
+    {:error,
+     build_fail_contract_error(
+       "Beads failed issue field #{inspect(field)} must be a list of strings.",
+       argv
+     )}
+  end
+
+  defp parse_fail_metadata(nil, _argv), do: {:ok, %{}}
+  defp parse_fail_metadata(%{} = metadata, _argv), do: {:ok, metadata}
+
+  defp parse_fail_metadata(_metadata, argv) do
+    {:error,
+     build_fail_contract_error("Beads failed issue field :metadata must be an object.", argv)}
+  end
+
+  defp build_fail_error(stdout, stderr, result, task_id, argv) do
+    stderr_byte_count = byte_size(stderr)
+    command = scrubbed_fail_command(argv)
+
+    case parse_br_error_envelope(stderr, stdout) do
+      {:ok, envelope} ->
+        raw_code = normalize_provider_code(envelope[:code] || envelope["code"])
+
+        provider_error =
+          envelope
+          |> ProviderErrorInput.from_br_envelope()
+          |> CodeMap.build_provider_error(command, stderr_byte_count)
+          |> maybe_put_exit_code(result)
+
+        if provider_error.code == "BR_ERROR_ENVELOPE" do
+          TaskProviderTelemetry.emit(
+            [:foreman_server, :task_provider, :transition_comment, :rejected],
+            %{system_time: System.system_time()},
+            %{argv: argv, raw_code: raw_code, task_id: task_id}
+          )
+
+          Logger.warning(
+            "BR_ERROR_ENVELOPE raw_code=#{raw_code} argv=#{inspect(TaskProviderTelemetry.scrub_argv(argv))}"
+          )
+        end
+
+        {:error, provider_error}
+
+      :error ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "BR_PARSE_ERROR",
+             "Beads CLI returned an unreadable error envelope.",
+             "Verify the installed br version and retry.",
+             false
+           ),
+           command,
+           stderr_byte_count
+         )
+         |> maybe_put_exit_code(result)}
+    end
+  end
+
+  defp build_fail_schema_validation_error(errors, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "VALIDATION_FAILED",
+        "Beads fail payload failed schema validation.",
+        "Refresh the cached schema or re-fetch the Beads payload.",
+        false,
+        missing_fields_from(errors)
+      ),
+      scrubbed_fail_command(argv),
+      0
+    )
+  end
+
+  defp build_fail_contract_error(message, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_CONTRACT_MISMATCH",
+        message,
+        "Update the adapter or install a supported Beads CLI version.",
+        false
+      ),
+      scrubbed_fail_command(argv),
+      0
+    )
+  end
+
+  defp build_fail_parse_error(argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_PARSE_ERROR",
+        "Beads failed issue payload could not be parsed.",
+        "Check the Beads output format or refresh the CLI contract cache.",
+        false
+      ),
+      scrubbed_fail_command(argv),
+      0
+    )
+  end
+
+  defp resolve_transition_comment(%{} = failure_token) do
+    case fetch_payload_value(failure_token, :transition_comment) do
+      value when is_binary(value) and value != "" ->
+        {:ok, value}
+
+      _other ->
+        fabricate_transition_comment(failure_token)
+    end
+  end
+
+  defp resolve_transition_comment(value) when is_binary(value) and value != "", do: {:ok, value}
+
+  defp resolve_transition_comment(failure_token) do
+    fabricate_transition_comment(failure_token)
+  end
+
+  defp fabricate_transition_comment(%{} = failure_token) do
+    case {fetch_payload_value(failure_token, :run_id),
+          fetch_payload_value(failure_token, :artifact_path)} do
+      {run_id, artifact_path}
+      when is_binary(run_id) and run_id != "" and is_binary(artifact_path) and artifact_path != "" ->
+        {:ok, "foreman-run:#{run_id}:#{artifact_path}"}
+
+      _other ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "INVALID_TRANSITION_COMMENT",
+             "Transition comment must be a non-empty string.",
+             "Pass :transition_comment or provide both :run_id and :artifact_path.",
+             false
+           ),
+           nil,
+           0
+         )}
+    end
+  end
+
+  defp fabricate_transition_comment(_failure_token) do
+    {:error,
+     CodeMap.build_provider_error(
+       ProviderErrorInput.from_local(
+         "INVALID_TRANSITION_COMMENT",
+         "Transition comment must be a non-empty string.",
+         "Pass :transition_comment or provide both :run_id and :artifact_path.",
+         false
+       ),
+       nil,
+       0
+     )}
+  end
+
+  defp scrubbed_fail_command(argv) do
+    argv
+    |> TaskProviderTelemetry.scrub_argv()
+    |> then(&["br" | &1])
+    |> Enum.join(" ")
+  end
+
+  defp normalize_provider_code(code) when is_binary(code), do: code
+  defp normalize_provider_code(code) when is_atom(code), do: Atom.to_string(code)
+  defp normalize_provider_code(code), do: inspect(code)
+
   defp missing_fields_from(errors) when is_list(errors) do
     errors
     |> Enum.flat_map(fn
@@ -693,7 +988,63 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def fail(_id, _actor, _opts), do: {:error, :not_implemented}
+  def fail(task_id, failure_token, project_config) when is_map(project_config) do
+    if is_binary(task_id) and String.trim(task_id) != "" do
+      database_path =
+        case project_config do
+          %{database_path: cached_path} when is_binary(cached_path) ->
+            cached_path
+
+          %{"database_path" => cached_path} when is_binary(cached_path) ->
+            cached_path
+
+          other ->
+            raise ArgumentError,
+                  "expected project_config with binary :database_path, got: #{inspect(other)}"
+        end
+
+      with {:ok, transition_comment} <- resolve_transition_comment(failure_token) do
+        request =
+          {:update,
+           %{
+             flags: [task_id, "--status", "open", "--transition-comment", transition_comment],
+             database_path: database_path
+           }}
+
+        argv = [
+          "update",
+          "--db",
+          database_path,
+          task_id,
+          "--status",
+          "open",
+          "--transition-comment",
+          transition_comment,
+          "--json"
+        ]
+
+        case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
+          {:ok, %{stdout: stdout}} ->
+            parse_failed_issue_response(stdout, task_id, argv)
+
+          {:error, %{stdout: stdout, stderr: stderr} = result} ->
+            build_fail_error(stdout, stderr, result, task_id, argv)
+        end
+      end
+    else
+      {:error,
+       CodeMap.build_provider_error(
+         ProviderErrorInput.from_local(
+           "INVALID_TASK_ID",
+           "Issue identifier must be a non-empty string.",
+           "Pass the Beads task identifier returned by the provider.",
+           false
+         ),
+         nil,
+         0
+       )}
+    end
+  end
 
   @impl true
   def reopen(_id, _actor, _opts), do: {:error, :not_implemented}

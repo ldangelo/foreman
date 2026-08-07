@@ -46,7 +46,7 @@ defmodule ForemanServer.TaskProvider.Telemetry do
       description: "BeadsAdapter fail/open transition succeeded."
     },
     [:foreman_server, :task_provider, :transition_comment, :rejected] => %{
-      metadata_keys: [:argv, :code],
+      metadata_keys: [:argv, :raw_code, :task_id],
       scrub_required?: true,
       description:
         "A fail/open transition was rejected and the unmapped br error code was surfaced."

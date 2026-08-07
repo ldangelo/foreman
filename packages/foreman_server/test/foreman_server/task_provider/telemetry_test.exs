@@ -63,6 +63,18 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
                :argv,
                :error
              ]
+    assert taxonomy[[:foreman_server, :task_provider, :beads_adapter, :fail, :success]].metadata_keys ==
+             [
+               :argv
+             ]
+
+    assert taxonomy[[:foreman_server, :task_provider, :transition_comment, :rejected]].metadata_keys ==
+             [
+               :argv,
+               :raw_code,
+               :task_id
+             ]
+
 
     assert taxonomy[[:foreman_server, :task_provider, :beads, :temp_file, :leaked]].metadata_keys ==
              [
@@ -151,7 +163,9 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
       [:foreman_server, :task_provider, :beads, :contract, :version_changed],
       [:foreman_server, :task_provider, :concurrency_limiter, :acquire],
       [:foreman_server, :task_provider, :concurrency_limiter, :release],
-      [:foreman_server, :task_provider, :concurrency_limiter, :timeout]
+      [:foreman_server, :task_provider, :concurrency_limiter, :timeout],
+      [:foreman_server, :task_provider, :beads_adapter, :fail, :success],
+      [:foreman_server, :task_provider, :transition_comment, :rejected]
     ]
 
     event_counts =

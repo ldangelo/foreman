@@ -38,8 +38,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
       flunk("unexpected BrRunnerMock.cmd/3 call: #{inspect({request, project_config, opts})}")
     end)
 
-    start_supervised!(Registry)
-
     temp_dir =
       Path.join(
         System.tmp_dir!(),
