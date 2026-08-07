@@ -75,7 +75,7 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
     assert {:error, 64, "usage: foreman doctor task_provider"} = CLI.run(["doctor"])
   end
 
-  test "doctor task_provider reports a healthy project", %{
+  test "doctor task_provider reports a healthy project with a clean snapshot", %{
     temp_dir: temp_dir,
     original_path: original_path
   } do
@@ -202,6 +202,92 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
     assert error["redacted_fields"] == []
   end
 
+  test "doctor task_provider reports each project independently", %{
+    temp_dir: temp_dir,
+    original_path: original_path
+  } do
+    healthy_project_id = unique_project_id("multi-a-healthy")
+    healthy_database_path = unique_database_path("multi-a-healthy")
+    ready_issue = ready_issue_payload(%{"id" => "ready-multi", "title" => "Multi issue"})
+    capabilities_payload = %{"commands" => [%{"name" => "ready"}]}
+    unhealthy_project_id = unique_project_id("multi-b-unhealthy")
+    unhealthy_database_path = unique_database_path("multi-b-unhealthy")
+
+    seed_project!(healthy_project_id, project_task_provider(healthy_database_path))
+    seed_project!(unhealthy_project_id, project_task_provider(unhealthy_database_path))
+    put_fake_br_on_path!(temp_dir, original_path)
+
+    assert :ok =
+             TaskProviderRegistry.register_for_project(healthy_project_id, BeadsAdapter, %{
+               "database_path" => healthy_database_path
+             })
+
+    assert :ok =
+             TaskProviderRegistry.register_for_project(unhealthy_project_id, BeadsAdapter, %{
+               "database_path" => unhealthy_database_path
+             })
+
+    expect_schema_boot_fetches()
+
+    expect(BrRunnerMock, :cmd, 1, fn {:where, %{database_path: ^healthy_database_path}},
+                                     %{database_path: ^healthy_database_path},
+                                     [timeout_ms: 30_000] ->
+      {:ok,
+       %{
+         stdout: Jason.encode!(%{"database_path" => healthy_database_path}),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:version, %{}}, %{}, [timeout_ms: 30_000] ->
+      {:ok, %{stdout: "br 1.2.3\n", stderr: "", exit_code: 0}}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:capabilities, %{}}, %{}, [timeout_ms: 30_000] ->
+      {:ok, %{stdout: Jason.encode!(capabilities_payload), stderr: "", exit_code: 0}}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:ready, %{flags: ["--limit", "1"]}},
+                                     %{"database_path" => ^healthy_database_path},
+                                     [timeout_ms: 30_000] ->
+      {:ok, %{stdout: Jason.encode!([ready_issue]), stderr: "", exit_code: 0}}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:where, %{database_path: ^unhealthy_database_path}},
+                                     %{database_path: ^unhealthy_database_path},
+                                     [timeout_ms: 30_000] ->
+      {:error, %{stdout: "", stderr: @missing_database_stderr, exit_code: 2}}
+    end)
+
+    output =
+      capture_io(fn ->
+        assert {:error, 1, "one or more unhealthy task_provider projects"} =
+                 CLI.run(["doctor", "task_provider"])
+      end)
+
+    reports =
+      output
+      |> decode_reports()
+      |> Map.new(fn report -> {report["project_id"], report} end)
+
+    healthy_report = Map.fetch!(reports, healthy_project_id)
+    unhealthy_report = Map.fetch!(reports, unhealthy_project_id)
+
+    assert map_size(reports) == 2
+
+    assert healthy_report["healthy"] == true
+    assert healthy_report["sample_ready"] == [ready_issue]
+    assert healthy_report["capabilities"] == capabilities_payload
+    refute Map.has_key?(healthy_report, "error")
+
+    assert unhealthy_report["healthy"] == false
+    assert unhealthy_report["error"]["code"] == "DATABASE_NOT_FOUND"
+    assert unhealthy_report["error"]["stderr_byte_count"] == byte_size(@missing_database_stderr)
+    assert unhealthy_report["error"]["redacted_fields"] == []
+    refute output =~ "super secret raw stderr"
+  end
+
   test "doctor task_provider marks schema validation failures unhealthy", %{
     temp_dir: temp_dir,
     original_path: original_path
@@ -255,6 +341,7 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
     assert report["sample_ready"] == [%{"id" => "ready-1"}]
     assert failure["probe"] == "ready"
     assert failure["schema"] == "ready_issue"
+    refute Map.has_key?(report, "error")
   end
 
   defp ensure_started(child_spec, name) do
@@ -325,14 +412,18 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
     end
   end
 
-  defp decode_single_report(output) do
-    lines =
-      output
-      |> String.split("\n", trim: true)
-      |> Enum.filter(&(String.starts_with?(&1, "{") and String.contains?(&1, "\"project_id\"")))
+  defp decode_reports(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.filter(&(String.starts_with?(&1, "{") and String.contains?(&1, "\"project_id\"")))
+    |> Enum.map(&Jason.decode!/1)
+  end
 
-    assert length(lines) == 1
-    Jason.decode!(hd(lines))
+  defp decode_single_report(output) do
+    reports = decode_reports(output)
+
+    assert length(reports) == 1
+    hd(reports)
   end
 
   defp unique_project_id(label) do
