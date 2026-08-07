@@ -49,9 +49,27 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
     }
   end
 
-  @spec validate(:ready_issue | :issue_details, term()) :: :ok | {:error, [map()]}
-  def validate(schema_atom, payload) when schema_atom in [:ready_issue, :issue_details] do
-    GenServer.call(@name, {:validate, schema_atom, payload})
+  @spec validate(
+          :ready_issue | :claimed_issue | :issue_details | :closed_issue | :failed_issue,
+          term()
+        ) ::
+          :ok | {:error, [map()]}
+  def validate(schema_atom, payload)
+      when schema_atom in [
+             :ready_issue,
+             :claimed_issue,
+             :issue_details,
+             :closed_issue,
+             :failed_issue
+           ] do
+    normalized_schema =
+      case schema_atom do
+        schema when schema in [:claimed_issue, :closed_issue] -> :ready_issue
+        :failed_issue -> :issue_details
+        other -> other
+      end
+
+    GenServer.call(@name, {:validate, normalized_schema, payload})
   end
 
   def validate(schema_atom, _payload) do
