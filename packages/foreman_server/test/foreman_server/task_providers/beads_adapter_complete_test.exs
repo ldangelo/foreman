@@ -201,11 +201,42 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
     assert provider_error.context.stderr_byte_count == 0
   end
 
-  test "ALREADY_CLOSED returns {:ok, :already_terminal}" do
+  test "double-complete is idempotent when the second close returns ALREADY_CLOSED", %{
+    temp_dir: temp_dir
+  } do
     start_schema_cache!()
 
     cached_database_path = "/abs/complete/already-closed.db"
     project_config = register_project!("proj-complete-already-closed", cached_database_path)
+
+    payload = %{
+      "id" => "bead-804",
+      "title" => "Close once, then noop",
+      "status" => "closed",
+      "priority" => 1,
+      "dependencies" => [],
+      "assignee" => nil,
+      "description" => "first completion closes the issue",
+      "notes" => nil,
+      "design" => nil,
+      "labels" => ["complete"],
+      "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+    }
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: "bead-804"}}
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["close", "--db", cached_database_path, "bead-804", "--json"]
+      )
+
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
 
     stderr =
       Jason.encode!(%{
@@ -215,11 +246,23 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
         "retryable?" => false
       })
 
-    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: "bead-804"}},
-                                     %{database_path: ^cached_database_path},
-                                     [timeout_ms: 30_000] ->
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: "bead-804"}}
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["close", "--db", cached_database_path, "bead-804", "--json"]
+      )
+
       {:error, %{stdout: "", stderr: stderr, exit_code: 9}}
     end)
+
+    assert {:ok, %Issue{id: "bead-804", status: "closed", dependents: []}} =
+             BeadsAdapter.complete("bead-804", :ignored, project_config)
 
     assert {:ok, :already_terminal} =
              BeadsAdapter.complete("bead-804", :ignored, project_config)
