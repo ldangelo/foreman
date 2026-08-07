@@ -19,7 +19,6 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   alias EventStore.{EventData, RecordedEvent}
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
-  alias ForemanServer.TaskProviders.ProviderError
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -196,11 +195,12 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   defp normalize_preflight(:ok), do: :ok
   defp normalize_preflight(:error), do: :ok
 
-  defp normalize_preflight({:error, %ProviderError{code: "DATABASE_NOT_FOUND"}}),
+  defp normalize_preflight({:error, %{code: "DATABASE_NOT_FOUND"}}),
     do: {:error, :database_not_found}
 
-  defp normalize_preflight({:error, %ProviderError{code: code}}) when is_binary(code),
+  defp normalize_preflight({:error, %{code: code}}) when is_binary(code),
     do: {:error, :preflight_failed}
+
 
   defp normalize_preflight({:error, _reason}), do: {:error, :preflight_failed}
   defp normalize_preflight(_other), do: :ok
