@@ -10,9 +10,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                  __DIR__
                )
 
-  test "13-row mapping is deterministic per Foreman.code" do
+  test "17-row mapping is deterministic per Foreman.code" do
     rows = mapping_rows()
-    assert length(rows) == 13
+    assert length(rows) == 17
 
     Enum.each(rows, fn %{br_code: br_code, foreman_code: foreman_code, retryable?: retryable?} ->
       input =
@@ -66,6 +66,22 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     assert byte_size(message) > 0
   end
 
+  test "INVALID_TASK_ID row maps to ProviderError{code: INVALID_TASK_ID, retryable?: false}" do
+    assert %ProviderError{code: "INVALID_TASK_ID", retryable?: false, message: message} =
+             CodeMap.build_provider_error(
+               ProviderErrorInput.from_local(
+                 "INVALID_TASK_ID",
+                 "ignored envelope message",
+                 "ignored envelope hint",
+                 true
+               ),
+               nil,
+               0
+             )
+
+    assert byte_size(message) > 0
+  end
+
   test "build_provider_error/3 is the only construction site (no direct struct construction)" do
     source = code_map_source()
     assert Code.ensure_loaded?(CodeMap)
@@ -75,12 +91,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     refute Regex.match?(~r/%(?:[A-Za-z0-9_.]+\.)?ProviderError\s*\{/, source)
   end
 
-  test "unknown br.code preserves br.retryable" do
+  test "unknown br.code preserves br.retryable and surfaces the raw br.code" do
     Enum.each([true, false], fn retryable? ->
       assert %ProviderError{
                code: "BR_ERROR_ENVELOPE",
-               message: "raw envelope message",
-               hint: "raw envelope hint",
+               message: "UNKNOWN_BR_CODE",
+               hint: nil,
                retryable?: ^retryable?
              } =
                CodeMap.build_provider_error(

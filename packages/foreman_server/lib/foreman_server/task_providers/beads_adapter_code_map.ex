@@ -13,9 +13,16 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
       redacted_fields: ["current_assignee"]
     },
     "ISSUE_NOT_FOUND" => %{foreman_code: "ISSUE_NOT_FOUND", retryable?: false},
+    "INVALID_TASK_ID" => %{foreman_code: "INVALID_TASK_ID", retryable?: false},
+    "INVALID_TRANSITION_COMMENT" => %{
+      foreman_code: "INVALID_TRANSITION_COMMENT",
+      retryable?: false
+    },
     "ALREADY_CLOSED" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "INVALID_PRIORITY" => %{foreman_code: "INVALID_PRIORITY", retryable?: false},
+    "VALIDATION_FAILED" => %{foreman_code: "VALIDATION_FAILED", retryable?: false},
     "SCHEMA_VALIDATION_FAILED" => %{foreman_code: "SCHEMA_VALIDATION_FAILED", retryable?: false},
+    "BR_ERROR_ENVELOPE" => %{foreman_code: "BR_ERROR_ENVELOPE", retryable?: false},
     "BR_TIMEOUT_QUEUE" => %{foreman_code: "BR_TIMEOUT_QUEUE", retryable?: true},
     "BR_TIMEOUT_SUBPROCESS" => %{foreman_code: "BR_TIMEOUT_SUBPROCESS", retryable?: true},
     "BR_PERMISSIONS_DENIED" => %{foreman_code: "BR_PERMISSIONS_DENIED", retryable?: false},
@@ -98,8 +105,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
   defp translate_unknown(%ProviderErrorInput{} = input, command, stderr_byte_count) do
     build_error(
       "BR_ERROR_ENVELOPE",
-      input.message,
-      input.hint,
+      normalize_code(input.code),
+      nil,
       input.retryable?,
       build_context(input, command, stderr_byte_count, [])
     )
@@ -147,6 +154,16 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     {"Requested issue was not found.", "Verify the issue identifier before retrying."}
   end
 
+  defp templates_for("INVALID_TASK_ID") do
+    {"Issue identifier must be a non-empty string.",
+     "Pass a non-empty Beads issue identifier before retrying."}
+  end
+
+  defp templates_for("INVALID_TRANSITION_COMMENT") do
+    {"Transition comment must be a non-empty string.",
+     "Pass :transition_comment or provide both :run_id and :artifact_path."}
+  end
+
   defp templates_for("ALREADY_TERMINAL") do
     {"Issue is already closed.", "Treat duplicate completion as an idempotent success."}
   end
@@ -156,9 +173,19 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
      "Pass a Beads priority level in the inclusive range 0..4."}
   end
 
+  defp templates_for("VALIDATION_FAILED") do
+    {"Beads fail payload failed schema validation.",
+     "Refresh the cached schema or re-fetch the Beads payload."}
+  end
+
   defp templates_for("SCHEMA_VALIDATION_FAILED") do
     {"Beads JSON payload failed schema validation.",
      "Refresh the cached schema or re-fetch the Beads payload."}
+  end
+
+  defp templates_for("BR_ERROR_ENVELOPE") do
+    {"Beads CLI returned an unmapped error envelope.",
+     "Update the adapter mapping or install a supported Beads CLI version."}
   end
 
   defp templates_for("BR_TIMEOUT_QUEUE") do
