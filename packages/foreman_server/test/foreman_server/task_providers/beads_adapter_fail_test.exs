@@ -67,8 +67,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
   } do
     start_schema_cache!()
 
-    handler_id = attach_handler(@fail_success_event)
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    ref = :telemetry_test.attach_event_handlers(self(), [@fail_success_event])
+    on_exit(fn -> :telemetry.detach(ref) end)
 
     cached_database_path = "/abs/fail/happy.db"
     project_config = register_project!("proj-fail-happy", cached_database_path)
@@ -135,7 +135,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
     assert issue.title == "Reopen after failure"
 
     assert issue.dependents == []
-    assert_receive {:telemetry, @fail_success_event, %{system_time: _}, %{argv: argv}}, 1_000
+    assert_receive {@fail_success_event, ^ref, %{system_time: _}, %{argv: argv}}, 1_000
 
     assert argv == [
              "update",
@@ -150,7 +150,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
            ]
   end
 
-  test "fabricates deterministic transition_comment when operator comment is absent", %{
+  test "fabricates deterministic transition_comment when operator comment is nil", %{
     temp_dir: temp_dir
   } do
     start_schema_cache!()
@@ -210,7 +210,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
     assert {:ok, %Issue{id: "bead-902", status: "open", title: "bead-902", dependents: []}} =
              BeadsAdapter.fail(
                "bead-902",
-               %{run_id: "run-902", artifact_path: artifact_path},
+               %{transition_comment: nil, run_id: "run-902", artifact_path: artifact_path},
                project_config
              )
   end
@@ -221,8 +221,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
        } do
     start_schema_cache!()
 
-    handler_id = attach_handler(@rejected_event)
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    ref = :telemetry_test.attach_event_handlers(self(), [@rejected_event])
+    on_exit(fn -> :telemetry.detach(ref) end)
 
     cached_database_path = "/abs/fail/unknown.db"
     project_config = register_project!("proj-fail-unknown", cached_database_path)
@@ -296,7 +296,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
         refute provider_error.context.command =~ artifact_path
       end)
 
-    assert_receive {:telemetry, @rejected_event, %{system_time: _}, metadata}, 1_000
+    assert_receive {@rejected_event, ^ref, %{system_time: _}, metadata}, 1_000
 
     assert metadata.raw_code == "UNKNOWN_BR_CODE"
     assert metadata.task_id == "bead-903"
@@ -565,16 +565,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
     after
       System.put_env("PATH", original_path)
     end
-  end
-
-  defp attach_handler(event) do
-    handler_id = "beads-adapter-fail-test-#{System.unique_integer([:positive, :monotonic])}"
-    :ok = :telemetry.attach(handler_id, event, &__MODULE__.handle_telemetry/4, self())
-    handler_id
-  end
-
-  def handle_telemetry(telemetry_event, measurements, metadata, pid) do
-    send(pid, {:telemetry, telemetry_event, measurements, metadata})
   end
 
   defp redacted_database_path(database_path) do
