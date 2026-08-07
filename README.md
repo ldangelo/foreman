@@ -21,6 +21,19 @@ contains:
 | `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). This slice did not add a CLI; see the Go CLI slice when it lands. |
 | Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` has no `*.yaml`. |
 
+## Task-provider boundary overview
+
+The Go/Elixir CQRS task-provider slice keeps task-tracker ownership on
+the Beads side and splits Foreman's responsibilities by lifecycle:
+
+- `RunExecutor` drives claim, complete, and fail transitions during an
+  active run.
+- `Workflow.BootReconciliation` drives orphan-reopen on boot.
+- `foreman doctor task_provider` is the operator-facing health check.
+
+Enablement, the per-project `task_provider` block, and doctor output are
+documented in the [task-provider enablement guide](./docs/user-guide.md#11-task-provider-enablement).
+
 
 The agent runtime is an OTP-supervised, backend-agnostic façade over
 pluggable adapters. Callers register a module that implements

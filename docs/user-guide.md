@@ -283,3 +283,76 @@ The provided `PiAdapter` shells out to the local `pi` binary:
 | `{:error, :backend_unavailable}` with `:manual` | The chosen backend's `available?/0` is `false` | Confirm the underlying binary/credentials are present; the call is intentional and never substitutes another backend. |
 | `{:error, :all_backends_failed, ...}` | Bounded fallback exhausted | Inspect `attempts:` list — order matches `attempted_backends`. Tune `:failure_policies` or `:max_attempts`. |
 | Telemetry duplicate events | Handler attached multiple times | Detach in `after`; one handler per test/per subscription is enough. |
+
+## 11. Task-provider enablement
+
+The Go/Elixir CQRS slice adds a separate `:task_provider` boundary for
+projects that want Foreman to drive Beads issue state alongside the run
+lifecycle.
+
+Global registration lives in application config:
+
+```elixir
+config :foreman_server, :task_provider,
+  actor: "foreman-runner",
+  accepted_contract_versions: ["br.capabilities.v1"],
+  providers: [ForemanServer.TaskProviders.BeadsAdapter]
+```
+
+Each project opts in explicitly with a per-project `task_provider`
+block:
+
+```elixir
+%{
+  project_id: "proj-123",
+  path: "/srv/foreman/proj-123",
+  task_provider: %{
+    provider: ForemanServer.TaskProviders.BeadsAdapter,
+    config: %{
+      database_path: "/srv/beads/proj-123.sqlite3"
+    }
+  }
+}
+```
+
+The `database_path` must be absolute. `ProjectRegistered` /
+`ProjectUpdated` normalize it with `Path.expand/1` and reject relative
+paths before any `br` invocation is attempted. Projects with no
+`task_provider` block continue to run without this boundary.
+
+Runtime ownership is split deliberately:
+
+- `RunExecutor` drives `claim/3`, `complete/3`, and `fail/3`.
+- `Workflow.BootReconciliation` drives orphan-reopen on boot.
+- `set_priority/3` and `add_dependency/3` exist at the adapter
+  boundary, but this slice does not introduce an operator CLI surface
+  for them.
+
+## 12. `foreman doctor task_provider`
+
+Run the operator-facing command:
+
+```
+foreman doctor task_provider
+```
+
+The command emits one JSON object per task-provider project. Each report
+includes:
+
+- `project_id`
+- `provider_id`
+- `contract_version`
+- `br_version`
+- `capabilities` (`br capabilities --json`)
+- `sample_ready` (`br ready --limit 1 --json`)
+- `schema_validation_failures`
+
+Exit behavior is strict:
+
+- exit 0 / `:ok` when every reported project is healthy
+- exit 1 when any reported project is unhealthy
+
+Unhealthy reports expose only the allowlisted error fields:
+`code`, `message`, `hint`, `exit_code`, `stderr_byte_count`, and
+`redacted_fields`. Raw `stderr` is never printed, even for
+`DATABASE_NOT_FOUND`.

@@ -75,6 +75,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 Workflow note: PR/merge behavior is controlled by phase-level `checkpointPr: true` on mutating phases plus explicit `create-pr`, `pr-wait`, and `merge` phases. Do not add top-level workflow `merge:` or `pr:` tags.
 
+Task-provider boundary reminder: RunExecutor drives claim/complete/fail;
+BootReconciliation drives orphan-reopen.
+
 Execution safety rules:
 
 - Before rerunning a task to validate a fix, ensure the fix is durably committed and available on the active branch being tested.

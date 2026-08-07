@@ -2,11 +2,9 @@
 
 This slice ships `foreman`, a thin Go CLI around the Elixir/Phoenix
 HTTP boundary. The CLI is **not** an alternate write path to the
-event store. Task mutations (`task create`, `task approve`) route
-through the server's `CommandRouter`; asset materialisation
-(`workflow install`) is an admin endpoint that writes files on
-disk and is observed by `Workflow.Catalog` on its next poll tick
-or via `Catalog.reload/0`.
+event store. The commands documented here either query read models,
+run diagnostics, or invoke admin asset materialisation on the server
+host.
 
 ## Environment
 
@@ -20,23 +18,29 @@ below. Run `foreman <command> -h` for per-command usage.
 
 ## Commands
 
-### `foreman task create`
-
-Register a new task. Issues `POST /api/commands` with
-`type=task.create`.
-
-### `foreman task approve`
-
-Approve a task and bind it to a workflow. Issues
-`POST /api/commands` with `type=task.approve`.
-
-### `foreman task get <id>`
-
-Fetch a task projection. Issues `GET /api/tasks/:id`.
-
 ### `foreman run get <id>`
 
 Fetch a run projection. Issues `GET /api/runs/:id`.
+
+### `foreman doctor task_provider`
+
+Run the task-provider health check. The command emits one JSON object
+per project that carries a `task_provider` block and exits non-zero if
+any reported project is unhealthy.
+
+Per-project fields include:
+
+- `project_id`
+- `provider_id`
+- `contract_version`
+- `br_version`
+- `capabilities`
+- `sample_ready`
+- `schema_validation_failures`
+
+Unhealthy reports surface only the allowlisted error fields:
+`code`, `message`, `hint`, `exit_code`, `stderr_byte_count`, and
+`redacted_fields`. Raw `stderr` is never printed.
 
 ### `foreman workflow install`
 

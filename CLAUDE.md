@@ -272,3 +272,9 @@ Operator-facing CLI: `foreman workflow install --target PATH [--source PATH | --
 HTTP admin endpoint and is **not** an alternate write path to the
 event store; it only materialises assets on disk.
 
+
+## 12. Task-provider boundary reminder (Go/Elixir CQRS slice)
+
+RunExecutor drives claim/complete/fail. Workflow.BootReconciliation
+drives orphan-reopen. `set_priority` and `add_dependency` stay at the
+adapter boundary until a separate operator surface TRD introduces them.
