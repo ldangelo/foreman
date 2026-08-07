@@ -20,9 +20,8 @@ defmodule ForemanServer.TaskProviders.BrRunner do
   @typedoc "Tagged runner request: action atom plus action-specific payload map."
   @type request :: {atom(), map()}
 
-  @typedoc "Resolved per-project Beads adapter configuration."
-  @type project_config :: %{database_path: String.t()}
-
+  @typedoc "Resolved provider configuration for the current probe or project."
+  @type project_config :: map()
   @typedoc "Optional call-scoped runner options."
   @type opts :: keyword()
 

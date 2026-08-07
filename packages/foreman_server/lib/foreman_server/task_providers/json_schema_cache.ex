@@ -50,7 +50,8 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
   end
 
   @spec validate(
-          :ready_issue
+          :commands
+          | :ready_issue
           | :claimed_issue
           | :issue_details
           | :closed_issue
@@ -62,6 +63,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
           :ok | {:error, [map()]}
   def validate(schema_atom, payload)
       when schema_atom in [
+             :commands,
              :ready_issue,
              :claimed_issue,
              :issue_details,
@@ -72,6 +74,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
            ] do
     normalized_schema =
       case schema_atom do
+        :commands -> :commands
         schema when schema in [:claimed_issue, :closed_issue, :updated_issue] -> :ready_issue
         schema when schema in [:failed_issue, :reopened_issue] -> :issue_details
         other -> other

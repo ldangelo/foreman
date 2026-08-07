@@ -67,6 +67,13 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCacheTest do
     assert :ok == JsonSchemaCache.validate(:ready_issue, payload)
   end
 
+  test "validate/2 accepts commands schema payloads" do
+    expect_schema_boot_fetches("v1", 4)
+    start_supervised!(JsonSchemaCache)
+
+    assert :ok == JsonSchemaCache.validate(:commands, %{"commands" => []})
+  end
+
   test "24h refresh ticker uses default interval and send_after", %{source: source} do
     assert source =~ "@default_refresh_interval_ms 24 * 60 * 60 * 1000"
     assert source =~ "Process.send_after(self(), :refresh, refresh_interval_ms)"

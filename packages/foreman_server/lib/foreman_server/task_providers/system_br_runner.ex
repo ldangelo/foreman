@@ -8,6 +8,8 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   @action_subcommands %{
+    version: "--version",
+    capabilities: "capabilities",
     ready: "ready",
     show: "show",
     update: "update",
@@ -71,6 +73,20 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     end
   end
 
+  defp build_argv({:version, _payload} = request, _project_config) do
+    {action, payload} = validate_request!(request)
+    action_argv = build_action_argv(action, payload)
+    ["br" | action_argv]
+  end
+
+  defp build_argv({:capabilities, _payload} = request, _project_config) do
+    {action, payload} = validate_request!(request)
+    subcommand = Map.fetch!(@action_subcommands, action)
+    action_argv = build_action_argv(action, payload)
+
+    ["br", subcommand | action_argv]
+  end
+
   defp build_argv({:schema, _payload} = request, _project_config) do
     {action, payload} = validate_request!(request)
     subcommand = Map.fetch!(@action_subcommands, action)
@@ -95,6 +111,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
 
     ["br" | action_argv] ++ ["--json", "--db", database_path]
   end
+
   defp build_argv({:coordination_status, _payload} = request, project_config) do
     {action, payload} = validate_request!(request)
     database_path = fetch_database_path!(project_config)
@@ -134,6 +151,19 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   defp fetch_database_path!(project_config) do
     raise ArgumentError,
           "expected project_config with binary :database_path, got: #{inspect(project_config)}"
+  end
+
+  defp build_action_argv(:version, payload) do
+    validate_payload_shape!(:version, payload)
+    ["--version"]
+  end
+
+  defp build_action_argv(:capabilities, payload) do
+    validate_payload_shape!(:capabilities, payload)
+
+    payload
+    |> extract_flags!()
+    |> maybe_append_json_flag()
   end
 
   defp build_action_argv(:schema, payload) do

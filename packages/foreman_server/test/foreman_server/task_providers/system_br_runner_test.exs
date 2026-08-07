@@ -125,6 +125,40 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     )
   end
 
+  test "version request translates to br --version", %{temp_dir: temp_dir} do
+    with_fake_br(
+      temp_dir,
+      """
+      for arg in "$@"; do
+        printf '%s\\n' "$arg"
+      done
+      """,
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd({:version, %{}}, %{})
+
+        assert String.split(stdout, "\n", trim: true) == ["--version"]
+      end
+    )
+  end
+
+  test "capabilities request translates to br capabilities --json", %{temp_dir: temp_dir} do
+    with_fake_br(
+      temp_dir,
+      """
+      for arg in "$@"; do
+        printf '%s\\n' "$arg"
+      done
+      """,
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd({:capabilities, %{}}, %{})
+
+        assert String.split(stdout, "\n", trim: true) == ["capabilities", "--json"]
+      end
+    )
+  end
+
   test "Port.info captures OS PID and timeout escalation runs SIGTERM then SIGKILL", %{
     temp_dir: temp_dir
   } do
