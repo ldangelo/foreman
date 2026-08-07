@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-48f7b420
 label: trd-foreman-beads-task-provider
-version: 1.0.5
+version: 1.0.6
 status: Draft
 date: 2026-08-06
 prd_reference: PRD-2026-48f7b420
@@ -612,6 +612,21 @@ The TRD is saved at `docs/TRD/TRD-2026-48f7b420-foreman-beads-task-provider.md`.
 
 ## 8. Changelog
 
+### v1.0.6 — 2026-08-06 (slice completed: 63/63 task beads closed on `slices/go-elixir-cqrs`)
+
+- **Status:** All 63 task beads + 4 PR epics + 1 root epic closed (92 `br` records total). Branch `slices/go-elixir-cqrs` ready for PR.
+- **Coverage evidence:**
+  - Stateful slice test files (`task_provider/`, `task_providers/`, `workflow/`, `architecture/`, `cli/`) — run with `mix test --no-start`. 3 properties, 219 tests, 0 failures.
+  - App-start wiring test (`test/integration/registry_app_start_test.exs`) — runs with `mix test` (app started). 6 tests, 0 failures. Verifies `ForemanServer.TaskProvider.Registry` boots from `Application.get_env(:foreman_server, :task_provider)` and serves routing through the canonical public API. **Deliberately excluded from the `--no-start` slice directory run** so the documented `--no-start` contract for stateful tests remains reproducible.
+  - Full app-start suite (`mix test` with `DATABASE_URL`) remains red in non-targeted areas (`Recovery`, `StuckDetector`, `AgentRuntime.*`, `Overwatch.*`, `Inbox.*`, `ProjectRegistrySupervisor*`, `RouterOptimisticConcurrency`, `DoctorTaskProviderTest`, etc.). Baseline comparison was not possible because the parent of this branch does not compile under `mix test`. The slice's targeted stateful tests (run with `--no-start`) and the new app-start wiring test are both green and reproducible; the wider red area is out of scope for this TRD and is **not** claimed as pre-existing.
+- **Architecture invariants enforced and verified:**
+  - `SystemBrRunner` is the sole `br` runner site; AST scan asserts zero `System.cmd("br", ...)` calls in `lib/foreman_server/`. (`test/foreman_server/architecture/system_cmd_br_test.exs`)
+  - `BeadsAdapter.reopen/3` is the sole reopen call site outside `BootReconciliation.reconcile_orphans/1`. (`test/foreman_server/architecture/reopen_call_site_test.exs`)
+  - `BeadsAdapter` module boundary: only `TaskProviders.*` may invoke adapter methods. (`test/foreman_server/architecture/alias_boundary_test.exs`)
+  - `BeadsAdapter.CodeMap` is the sole `ProviderError` construction site. (`test/foreman_server/task_providers/beads_adapter_code_map_factory_test.exs`)
+  - AC-008-5(b) side-channel scrub: telemetry/log/IO emission-only, no leakage through returns or struct fields. (`test/foreman_server/task_providers/side_channel_capture_test.exs`)
+  - AC-005-4 isolation: `ConcurrencyLimiter` permits at most 4 in-flight per provider per project. (`test/foreman_server/task_providers/concurrency_limiter_test.exs` property-based test)
+- **No semantic change to any task row or acceptance criterion.** Counter unchanged (63 tasks / 64 ACs / 19 REQs). PR-1a / PR-1b / PR-2 / PR-3 epics and root epic all closed.
 ### v1.0.5 — 2026-08-06 (AC-008-5 sub-AC parser limitation documented)
 
 - **Discovered:** the parser's strict regex `^AC-\d+-\d+$` (trd-parser.js:645) rejects the AC-008-5(a) and AC-008-5(b) sub-AC tokens that appear in the source's validates cells. The parser therefore captures 63 unique ACs in `validatesAcs`, not 64. AC-008-5 itself is covered semantically by the union of TRD-033 (5a) + TRD-034 (5b); the parser cannot see this union because its regex filter is per-row before set aggregation.
