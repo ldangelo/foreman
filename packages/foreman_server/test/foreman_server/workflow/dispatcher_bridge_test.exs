@@ -42,6 +42,34 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     end
   end
 
+  setup_all do
+    {:ok, _} = Application.ensure_all_started(:telemetry)
+    {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
+    {:ok, _} = Application.ensure_all_started(:eventstore)
+    ensure_started({Phoenix.PubSub, name: ForemanServer.PubSub}, ForemanServer.PubSub)
+    ensure_started(ForemanServerWeb.Presence, ForemanServerWeb.Presence)
+    ensure_started(ForemanServer.EventStore, ForemanServer.EventStore)
+    ensure_started(ForemanServer.ProjectionStore, ForemanServer.ProjectionStore)
+    ensure_started(ForemanServer.Aggregator, ForemanServer.Aggregator)
+    ensure_started(ForemanServer.TaskProvider.Registry, ForemanServer.TaskProvider.Registry)
+
+    ensure_started(
+      {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
+      ForemanServer.RunExecutorRegistry
+    )
+
+    ensure_started(
+      ForemanServer.AgentRuntime.AdapterCatalog,
+      ForemanServer.AgentRuntime.AdapterCatalog
+    )
+
+    ensure_started(ForemanServer.Workflow.Catalog, ForemanServer.Workflow.Catalog)
+    ensure_started(ForemanServer.Workflow.RunSupervisor, ForemanServer.Workflow.RunSupervisor)
+    ensure_started(ForemanServer.Workflow.Dispatcher, ForemanServer.Workflow.Dispatcher)
+    ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
+    :ok
+  end
+
   defp unique_id(prefix) do
     suffix = System.unique_integer([:positive])
     "#{prefix}-dispatcher-bridge-#{suffix}"
@@ -107,7 +135,7 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
                  }
                })
 
-      task_state = wait_for_status(task_id, "open")
+      _ = wait_for_status(task_id, "open")
 
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{
@@ -135,6 +163,15 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
 
       refute is_nil(run.status) or run.status == "",
              "run #{run_id} should have a status, got: #{inspect(run)}"
+    end
+  end
+
+  defp ensure_started(child_spec, name) do
+    if Process.whereis(name) do
+      :ok
+    else
+      start_supervised!(child_spec)
+      :ok
     end
   end
 end

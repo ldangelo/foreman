@@ -13,8 +13,8 @@ defmodule ForemanServer.Workflow.ArtifactTemplateTest do
 
     state = state_with("run-abc", "task-xyz", base)
 
-    assert ArtifactTemplate.write(state, %{}, 1, "first") == :ok
-    assert ArtifactTemplate.write(state, %{}, 2, "second") == :ok
+    assert {:ok, _} = ArtifactTemplate.write(state, %{}, 1, "first")
+    assert {:ok, _} = ArtifactTemplate.write(state, %{}, 2, "second")
 
     assert File.read!(Path.join([base, "run-abc", "phase-1.md"])) == "first"
     assert File.read!(Path.join([base, "run-abc", "phase-2.md"])) == "second"
@@ -29,7 +29,7 @@ defmodule ForemanServer.Workflow.ArtifactTemplateTest do
     try do
       state = state_with("run-zzz", "task-zzz", tmp)
       phase_spec = %{artifact_template: %{path: Path.join([tmp, "{run_id}-{task_id}.md"])}}
-      assert :ok = ArtifactTemplate.write(state, phase_spec, 1, "hello")
+      assert {:ok, _} = ArtifactTemplate.write(state, phase_spec, 1, "hello")
 
       assert File.read!(Path.join(tmp, "run-zzz-task-zzz.md")) == "hello"
     after
@@ -43,7 +43,14 @@ defmodule ForemanServer.Workflow.ArtifactTemplateTest do
 
     home = System.fetch_env!("HOME")
     refute String.contains?(home <> "/.foreman/runs/run-isolated", base)
-    assert :ok = ArtifactTemplate.write(state_with("run-isolated", "task-isolated", base), %{}, 1, "ok")
+
+    assert {:ok, _} =
+             ArtifactTemplate.write(
+               state_with("run-isolated", "task-isolated", base),
+               %{},
+               1,
+               "ok"
+             )
   after
     File.rm_rf!(Path.join(System.tmp_dir!(), "foreman-artifact-"))
   end
