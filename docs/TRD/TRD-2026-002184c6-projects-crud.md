@@ -8,6 +8,10 @@ date: 2026-08-07
 kind: trd
 scale_depth: STANDARD
 design_readiness_score: 3.4
+ensemble_implement_trd_beads:
+  branch_name: slices/go-elixir-cqrs
+  use_proposed: false
+  stacked_prs: false
 ---
 
 # TRD: Project CRUD — HTTP Resource Read + Command-Gateway Mutations
