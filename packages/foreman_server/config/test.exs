@@ -22,6 +22,8 @@ config :foreman_server, :stuck_run_check_interval_seconds, 3_600
 # foreman_server: br_runner test override (TRD-030)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
+config :foreman_server, :start_project_provider_projector?, false
+
 config :phoenix, Phoenix.Diagnostics, enabled: false
 
 config :logster,

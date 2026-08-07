@@ -3,10 +3,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @behaviour ForemanServer.TaskProvider
 
-  alias ForemanServer.TaskProvider.Issue
-  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
+  alias ForemanServer.TaskProvider.Issue
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
   require Logger
@@ -120,6 +120,356 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   def list_ready(_opts, project_config) when is_map(project_config) do
     list_ready(project_config, %{})
+  end
+
+  @spec coordination_status(map(), keyword()) :: {:ok, [Issue.t()]} | {:error, ProviderError.t()}
+  def coordination_status(project_config, opts \\ [])
+      when is_map(project_config) and is_list(opts) do
+    database_path =
+      case project_config do
+        %{database_path: cached_path} when is_binary(cached_path) ->
+          cached_path
+
+        %{"database_path" => cached_path} when is_binary(cached_path) ->
+          cached_path
+
+        other ->
+          raise ArgumentError,
+                "expected project_config with binary :database_path, got: #{inspect(other)}"
+      end
+
+    argv = ["coordination", "status", "--db", database_path, "--json"]
+
+    case @runner.cmd({:coordination_status, %{}}, %{database_path: database_path},
+           timeout_ms: Keyword.get(opts, :timeout_ms, 30_000)
+         ) do
+      {:ok, %{stdout: stdout}} ->
+        parse_coordination_status_response(stdout, argv)
+
+      {:error, %{stdout: stdout, stderr: stderr} = result} ->
+        {:error, build_coordination_status_error(stdout, stderr, result, argv)}
+    end
+  end
+
+  defp parse_coordination_status_response(stdout, argv) when is_binary(stdout) do
+    case String.trim(stdout) do
+      "" ->
+        {:ok, []}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, []} ->
+            {:ok, []}
+
+          {:ok, payloads} when is_list(payloads) ->
+            parse_coordination_issue_list(payloads, argv)
+
+          {:ok, %{} = payload} ->
+            parse_coordination_issue_container(payload, argv)
+
+          {:ok, _other} ->
+            {:error,
+             build_coordination_status_contract_error(
+               "Beads coordination status payload must decode to a JSON object or array.",
+               argv
+             )}
+
+          {:error, _reason} ->
+            {:error, build_coordination_status_parse_error(argv)}
+        end
+    end
+  end
+
+  defp parse_coordination_status_response(_stdout, argv) do
+    {:error, build_coordination_status_parse_error(argv)}
+  end
+
+  defp parse_coordination_issue_container(payload, argv) when is_map(payload) do
+    case fetch_payload_value(payload, :issues) do
+      issues when is_list(issues) ->
+        parse_coordination_issue_list(issues, argv)
+
+      nil ->
+        case parse_coordination_issue_payload(payload, argv) do
+          {:ok, issue} -> {:ok, [issue]}
+          {:error, provider_error} -> {:error, provider_error}
+        end
+
+      _other ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status field :issues must be a JSON array.",
+           argv
+         )}
+    end
+  end
+
+  defp parse_coordination_issue_list(payloads, argv) when is_list(payloads) do
+    payloads
+    |> Enum.reduce_while({:ok, []}, fn payload, {:ok, issues} ->
+      case parse_coordination_issue_payload(payload, argv) do
+        {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
+        {:error, provider_error} -> {:halt, {:error, provider_error}}
+      end
+    end)
+    |> case do
+      {:ok, issues} -> {:ok, Enum.reverse(issues)}
+      error -> error
+    end
+  end
+
+  defp parse_coordination_issue_payload(payload, argv) when is_map(payload) do
+    with {:ok, id} <- fetch_coordination_required_string(payload, :id, argv),
+         {:ok, title} <- fetch_coordination_optional_string(payload, :title, id, argv),
+         {:ok, status} <- fetch_coordination_required_string(payload, :status, argv),
+         {:ok, priority} <-
+           parse_coordination_priority(fetch_payload_value(payload, :priority), argv),
+         {:ok, dependencies} <-
+           parse_coordination_dependencies(fetch_payload_value(payload, :dependencies), argv),
+         {:ok, dependents} <-
+           parse_coordination_dependents(fetch_payload_value(payload, :dependents), argv),
+         {:ok, assignee} <-
+           fetch_coordination_optional_string(payload, :assignee, nil, argv),
+         {:ok, description} <-
+           fetch_coordination_optional_string(payload, :description, nil, argv),
+         {:ok, notes} <- fetch_coordination_optional_string(payload, :notes, nil, argv),
+         {:ok, design} <- fetch_coordination_optional_string(payload, :design, nil, argv),
+         {:ok, labels} <-
+           parse_coordination_string_list(fetch_payload_value(payload, :labels), :labels, argv),
+         {:ok, metadata} <-
+           parse_coordination_metadata(fetch_payload_value(payload, :metadata), argv) do
+      {:ok,
+       %Issue{
+         id: id,
+         title: title,
+         status: status,
+         priority: priority,
+         dependencies: dependencies,
+         dependents: dependents,
+         assignee: assignee,
+         description: description,
+         notes: notes,
+         design: design,
+         labels: labels,
+         metadata: metadata
+       }}
+    end
+  end
+
+  defp parse_coordination_issue_payload(_payload, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status issue payload must be a JSON object.",
+       argv
+     )}
+  end
+
+  defp fetch_coordination_required_string(payload, key, argv) do
+    case fetch_payload_value(payload, key) do
+      value when is_binary(value) ->
+        {:ok, value}
+
+      _other ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status field #{inspect(key)} must be a string.",
+           argv
+         )}
+    end
+  end
+
+  defp fetch_coordination_optional_string(payload, key, default, argv) do
+    case fetch_payload_value(payload, key) do
+      nil ->
+        {:ok, default}
+
+      value when is_binary(value) ->
+        {:ok, value}
+
+      _other ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status field #{inspect(key)} must be a string or null.",
+           argv
+         )}
+    end
+  end
+
+  defp parse_coordination_priority(nil, _argv), do: {:ok, 0}
+
+  defp parse_coordination_priority(value, _argv) when is_integer(value) and value >= 0,
+    do: {:ok, value}
+
+  defp parse_coordination_priority(_value, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status field :priority must be a non-negative integer.",
+       argv
+     )}
+  end
+
+  defp parse_coordination_dependencies(nil, _argv), do: {:ok, []}
+
+  defp parse_coordination_dependencies(values, argv) when is_list(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, dependencies} ->
+      case parse_coordination_dependency(value, argv) do
+        {:ok, dependency} -> {:cont, {:ok, [dependency | dependencies]}}
+        {:error, provider_error} -> {:halt, {:error, provider_error}}
+      end
+    end)
+    |> case do
+      {:ok, dependencies} -> {:ok, Enum.reverse(dependencies)}
+      error -> error
+    end
+  end
+
+  defp parse_coordination_dependencies(_values, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status field :dependencies must be a list of strings or issue objects.",
+       argv
+     )}
+  end
+
+  defp parse_coordination_dependency(value, _argv) when is_binary(value), do: {:ok, value}
+
+  defp parse_coordination_dependency(%{} = payload, argv) do
+    parse_coordination_issue_payload(payload, argv)
+  end
+
+  defp parse_coordination_dependency(_value, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status dependency entries must be strings or issue objects.",
+       argv
+     )}
+  end
+
+  defp parse_coordination_dependents(nil, _argv), do: {:ok, []}
+
+  defp parse_coordination_dependents(values, argv) when is_list(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, dependents} ->
+      case value do
+        %{} = payload ->
+          case parse_coordination_issue_payload(payload, argv) do
+            {:ok, dependent} -> {:cont, {:ok, [dependent | dependents]}}
+            {:error, provider_error} -> {:halt, {:error, provider_error}}
+          end
+
+        _other ->
+          {:halt,
+           {:error,
+            build_coordination_status_contract_error(
+              "Beads coordination status dependent entries must be issue objects.",
+              argv
+            )}}
+      end
+    end)
+    |> case do
+      {:ok, dependents} -> {:ok, Enum.reverse(dependents)}
+      error -> error
+    end
+  end
+
+  defp parse_coordination_dependents(_values, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status field :dependents must be a list of issue objects.",
+       argv
+     )}
+  end
+
+  defp parse_coordination_string_list(nil, _field, _argv), do: {:ok, []}
+
+  defp parse_coordination_string_list(values, field, argv) when is_list(values) do
+    if Enum.all?(values, &is_binary/1) do
+      {:ok, values}
+    else
+      {:error,
+       build_coordination_status_contract_error(
+         "Beads coordination status field #{inspect(field)} must be a list of strings.",
+         argv
+       )}
+    end
+  end
+
+  defp parse_coordination_string_list(_values, field, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status field #{inspect(field)} must be a list of strings.",
+       argv
+     )}
+  end
+
+  defp parse_coordination_metadata(nil, _argv), do: {:ok, %{}}
+  defp parse_coordination_metadata(%{} = metadata, _argv), do: {:ok, metadata}
+
+  defp parse_coordination_metadata(_metadata, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status field :metadata must be an object.",
+       argv
+     )}
+  end
+
+  defp build_coordination_status_error(stdout, stderr, result, argv) do
+    stderr_byte_count = byte_size(stderr)
+    command = scrubbed_coordination_status_command(argv)
+
+    case parse_br_error_envelope(stderr, stdout) do
+      {:ok, envelope} ->
+        envelope
+        |> ProviderErrorInput.from_br_envelope()
+        |> CodeMap.build_provider_error(command, stderr_byte_count)
+
+      :error ->
+        CodeMap.build_provider_error(
+          ProviderErrorInput.from_local(
+            "BR_PARSE_ERROR",
+            "Beads CLI returned an unreadable error envelope.",
+            "Verify the installed br version and retry.",
+            false
+          ),
+          command,
+          stderr_byte_count
+        )
+    end
+    |> maybe_put_exit_code(result)
+  end
+
+  defp build_coordination_status_contract_error(message, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_CONTRACT_MISMATCH",
+        message,
+        "Update the adapter or install a supported Beads CLI version.",
+        false
+      ),
+      scrubbed_coordination_status_command(argv),
+      0
+    )
+  end
+
+  defp build_coordination_status_parse_error(argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_PARSE_ERROR",
+        "Beads coordination status payload could not be parsed.",
+        "Check the Beads output format or refresh the CLI contract cache.",
+        false
+      ),
+      scrubbed_coordination_status_command(argv),
+      0
+    )
+  end
+
+  defp scrubbed_coordination_status_command(argv) do
+    argv
+    |> TaskProviderTelemetry.scrub_argv()
+    |> then(&["br" | &1])
+    |> Enum.join(" ")
   end
 
   defp parse_list_ready_response(stdout) when is_binary(stdout) do

@@ -13,6 +13,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     update: "update",
     set_priority: "update",
     add_dependency: "dep",
+    coordination_status: "coordination",
     close: "close",
     where: "where",
     schema: "schema"
@@ -93,6 +94,13 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     action_argv = build_action_argv(action, payload)
 
     ["br" | action_argv] ++ ["--json", "--db", database_path]
+  end
+  defp build_argv({:coordination_status, _payload} = request, project_config) do
+    {action, payload} = validate_request!(request)
+    database_path = fetch_database_path!(project_config)
+    action_argv = build_action_argv(action, payload)
+
+    ["br", "coordination", "status", "--db", database_path | action_argv]
   end
 
   defp build_argv(request, project_config) do

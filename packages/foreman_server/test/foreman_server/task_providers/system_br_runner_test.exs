@@ -101,6 +101,30 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
     )
   end
 
+  test "coordination_status request translates to br coordination status with cached database_path",
+       %{
+         temp_dir: temp_dir
+       } do
+    with_fake_br(
+      temp_dir,
+      """
+      for arg in "$@"; do
+        printf '%s\\n' "$arg"
+      done
+      """,
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd(
+                   {:coordination_status, %{}},
+                   %{database_path: "/tmp/cached.db"}
+                 )
+
+        assert String.split(stdout, "\n", trim: true) ==
+                 ["coordination", "status", "--db", "/tmp/cached.db", "--json"]
+      end
+    )
+  end
+
   test "Port.info captures OS PID and timeout escalation runs SIGTERM then SIGKILL", %{
     temp_dir: temp_dir
   } do

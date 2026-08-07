@@ -32,24 +32,28 @@ defmodule ForemanServer.Application do
         ForemanServer.Aggregator,
         # TaskProvider.Registry owns configured task provider routing and must
         # start before dispatch paths resolve a provider snapshot.
-        ForemanServer.TaskProvider.Registry,
-        # ProjectProviderProjector subscribes to ProjectionStore and maintains
-        # per-project task provider routing inside the Registry.
-        ForemanServer.TaskProvider.ProjectProviderProjector,
-        # RunExecutorRegistry must exist before RunExecutor children start;
-        # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
-        {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
-        # Workflow.Catalog owns the in-memory workflow + prompt snapshots,
-        # auto-installs the bundled templates on first boot, and reloads
-        # files when the directory changes. Must start before any code path
-        # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
-        ForemanServer.Workflow.Catalog,
-        ForemanServer.Workflow.RunSupervisor,
-        # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched.
-        ForemanServer.Workflow.Dispatcher,
-        # CommandRouter handles all append requests.
-        ForemanServer.CommandRouter
+        ForemanServer.TaskProvider.Registry
       ] ++
+        maybe_project_provider_projector_child() ++
+        [
+          # BootReconciliation runs once after the projector has rebuilt
+          # per-project routing so orphaned upstream in-progress issues can be
+          # reopened before any dispatcher/executor work resumes.
+          ForemanServer.Workflow.BootReconciliation,
+          # RunExecutorRegistry must exist before RunExecutor children start;
+          # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
+          {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
+          # Workflow.Catalog owns the in-memory workflow + prompt snapshots,
+          # auto-installs the bundled templates on first boot, and reloads
+          # files when the directory changes. Must start before any code path
+          # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
+          ForemanServer.Workflow.Catalog,
+          ForemanServer.Workflow.RunSupervisor,
+          # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched.
+          ForemanServer.Workflow.Dispatcher,
+          # CommandRouter handles all append requests.
+          ForemanServer.CommandRouter
+        ] ++
         maybe_agent_runtime_child() ++
         maybe_overwatch_child() ++
         maybe_stuck_detector_child() ++
@@ -89,6 +93,18 @@ defmodule ForemanServer.Application do
 
       _ ->
         []
+    end
+  end
+
+  defp maybe_project_provider_projector_child do
+    if Application.get_env(:foreman_server, :start_project_provider_projector?, true) do
+      [
+        # ProjectProviderProjector subscribes to ProjectionStore and maintains
+        # per-project task provider routing inside the Registry.
+        ForemanServer.TaskProvider.ProjectProviderProjector
+      ]
+    else
+      []
     end
   end
 
