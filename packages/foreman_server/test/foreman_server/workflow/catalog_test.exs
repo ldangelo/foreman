@@ -5,6 +5,8 @@ defmodule ForemanServer.Workflow.CatalogTest do
   alias ForemanServer.Workflow.Catalog
 
   setup do
+    {:ok, _} = Application.ensure_all_started(:telemetry)
+
     tmp =
       Path.join(
         System.tmp_dir!(),

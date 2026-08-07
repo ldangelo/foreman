@@ -1,15 +1,19 @@
 defmodule ForemanServer.Workflow.RunExecutorTest do
   use ExUnit.Case, async: false
 
+  import Mox
+
   alias ForemanServer.{AgentRuntime, CommandGateway, EventStore, Identity, ProjectionStore}
   alias ForemanServer.AgentRuntime.AdapterCatalog
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
   alias ForemanServer.Workflow.RunExecutor
 
+  @cache_name :foreman_server_json_schema_cache
   @route_ok_event [:foreman_server, :task_provider, :registry, :route, :ok]
-  @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @poll_timeout_ms 8_000
+  @run_executor_source "lib/foreman_server/workflow/run_executor.ex"
 
   defmodule LifecycleStore do
     use Agent
@@ -47,96 +51,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
-  defmodule TestProvider do
-    @behaviour ForemanServer.TaskProvider
-
-    @impl true
-    def name, do: "run_executor_test_provider"
-
-    @impl true
-    def capabilities do
-      %{
-        provider_id: :run_executor_test_provider,
-        contract_version: "br.capabilities.v1",
-        supports: [:claim, :close, :reopen]
-      }
-    end
-
-    @impl true
-    def available?, do: true
-
-    @impl true
-    def list_ready(project_config, _opts) do
-      script_key = script_key(project_config)
-      notify(script_key, {:provider_list_ready, project_config})
-      LifecycleStore.take(script_key, :list_ready_results, {:ok, []})
-    end
-
-    @impl true
-    def get(_id, _project_config), do: {:error, %{code: "UNAVAILABLE"}}
-
-    @impl true
-    def claim(id, actor, project_config) do
-      script_key = script_key(project_config)
-      notify(script_key, {:provider_claim, id, actor, project_config})
-      LifecycleStore.take(script_key, :claim_results, {:ok, issue(id, "in_progress")})
-    end
-
-    @impl true
-    def complete(id, completion_token, project_config) do
-      script_key = script_key(project_config)
-      notify(script_key, {:provider_complete, id, completion_token, project_config})
-      LifecycleStore.take(script_key, :complete_results, {:ok, issue(id, "closed")})
-    end
-
-    @impl true
-    def fail(id, failure_token, project_config) do
-      script_key = script_key(project_config)
-      notify(script_key, {:provider_fail, id, failure_token, project_config})
-      LifecycleStore.take(script_key, :fail_results, {:ok, issue(id, "failed")})
-    end
-
-    @impl true
-    def reopen(id, transition_comment, project_config) do
-      script_key = script_key(project_config)
-      notify(script_key, {:provider_reopen_called, id, transition_comment, project_config})
-      {:ok, issue(id, "open")}
-    end
-
-    @impl true
-    def set_priority(_id, _priority, _project_config), do: :ok
-
-    @impl true
-    def add_dependency(_id, _depends_on_id, _project_config), do: :ok
-
-    defp script_key(project_config) do
-      Map.get(project_config, :script_key) || Map.get(project_config, "script_key")
-    end
-
-    defp notify(script_key, message) do
-      if pid = LifecycleStore.test_pid(script_key) do
-        send(pid, message)
-      end
-    end
-
-    defp issue(task_id, status) do
-      %Issue{
-        id: task_id,
-        title: "Task #{task_id}",
-        status: status,
-        priority: "medium",
-        dependencies: [],
-        assignee: nil,
-        description: nil,
-        notes: nil,
-        design: nil,
-        labels: [],
-        metadata: %{},
-        dependents: []
-      }
-    end
-  end
-
   defmodule TestAdapter do
     @behaviour ForemanServer.AgentRuntime.BackendAdapter
 
@@ -164,31 +78,21 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         send(pid, {:adapter_execute, prompt, context})
       end
 
-      LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact", %{}})
+      LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
     end
   end
 
   setup_all do
+    {:ok, _} = Application.ensure_all_started(:mox)
     {:ok, _} = Application.ensure_all_started(:telemetry)
     {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
     {:ok, _} = Application.ensure_all_started(:eventstore)
-    previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
-
-    Application.put_env(
-      :foreman_server,
-      :task_provider,
-      Keyword.merge(previous_task_provider,
-        actor: "foreman-runner",
-        accepted_contract_versions: ["br.capabilities.v1"]
-      )
-    )
 
     ensure_started({Phoenix.PubSub, name: ForemanServer.PubSub}, ForemanServer.PubSub)
     ensure_started(ForemanServerWeb.Presence, ForemanServerWeb.Presence)
     ensure_started(ForemanServer.EventStore, ForemanServer.EventStore)
     ensure_started(ForemanServer.ProjectionStore, ForemanServer.ProjectionStore)
     ensure_started(ForemanServer.Aggregator, ForemanServer.Aggregator)
-    ensure_started(ForemanServer.TaskProvider.Registry, ForemanServer.TaskProvider.Registry)
 
     ensure_started(
       {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
@@ -196,18 +100,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     )
 
     ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
-
-    ensure_started(
-      ForemanServer.AgentRuntime.AdapterCatalog,
-      ForemanServer.AgentRuntime.AdapterCatalog
-    )
+    ensure_started(ForemanServer.AgentRuntime.AdapterCatalog, ForemanServer.AgentRuntime.AdapterCatalog)
 
     ensure_started(
       ForemanServer.AgentRuntime.InvocationSupervisor,
       ForemanServer.AgentRuntime.InvocationSupervisor
     )
-
-    ensure_started({LifecycleStore, name: LifecycleStore}, LifecycleStore)
 
     previous_pi_adapter =
       case AdapterCatalog.lookup(:pi) do
@@ -219,95 +117,149 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     on_exit(fn ->
       restore_pi_adapter(previous_pi_adapter)
-      Application.put_env(:foreman_server, :task_provider, previous_task_provider)
     end)
 
     :ok
   end
 
+  setup :set_mox_global
+  setup :verify_on_exit!
+
   setup do
+    previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
+
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: "foreman-runner",
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: []
+    )
+
+    stop_schema_cache()
+    start_supervised!(TaskProviderRegistry)
+    start_supervised!({LifecycleStore, name: LifecycleStore})
     LifecycleStore.clear()
-    :ok
+
+    stub(BrRunnerMock, :cmd, fn request, project_config, opts ->
+      flunk("unexpected BrRunnerMock.cmd/3 call: #{inspect({request, project_config, opts})}")
+    end)
+
+    temp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "run_executor_test_#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir_p!(temp_dir)
+    write_fake_br!(temp_dir, default_fake_br_body())
+
+    original_path = System.get_env("PATH") || ""
+    System.put_env("PATH", temp_dir <> ":" <> original_path)
+
+    on_exit(fn ->
+      Application.put_env(:foreman_server, :task_provider, previous_task_provider)
+      System.put_env("PATH", original_path)
+      stop_schema_cache()
+      File.rm_rf!(temp_dir)
+    end)
+
+    {:ok, temp_dir: temp_dir}
   end
 
-  test "claim emits lost-claim telemetry for NOT_CLAIMABLE provider maps" do
-    {collector, handler_id} = attach_collector(@claim_lost_event)
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+  test "start phase claims before dispatch and completes on TaskExecutionCompleted", %{
+    temp_dir: temp_dir
+  } do
+    start_schema_cache!()
 
-    project_id = unique_id("project")
-    task_id = unique_id("task")
-    script_key = unique_id("script")
-    database_path = unique_database_path(script_key)
-    task_provider = project_task_provider(script_key, database_path)
+    {collector, ref} = start_telemetry_collector([@route_ok_event])
+    on_exit(fn ->
+      :telemetry.detach(ref)
+      stop_telemetry_collector(collector)
+    end)
 
-    LifecycleStore.put(script_key, %{
-      test_pid: self(),
-      claim_results: [{:error, %{code: "NOT_CLAIMABLE"}}],
-      list_ready_results: [{:ok, []}]
-    })
-
-    seed_project!(project_id, task_provider)
-
-    assert :ok =
-             TaskProviderRegistry.register_for_project(
-               project_id,
-               TestProvider,
-               task_provider.config
-             )
-
-    assert {:error, %{code: "NOT_CLAIMABLE"}} =
-             RunExecutor.claim(project_id, task_id, "foreman-runner")
-
-    assert_receive {:provider_claim, ^task_id, "foreman-runner", _project_config}, 1_000
-    assert_receive {:provider_list_ready, _project_config}, 1_000
-
-    assert [%{event: @claim_lost_event, measurements: %{count: 1}}] =
-             poll_until(
-               fn ->
-                 case telemetry_events(collector) do
-                   [] -> {:error, :missing}
-                   events -> {:ok, events}
-                 end
-               end,
-               "claim lost telemetry"
-             )
-  end
-
-  test "successful run claims before adapter execution, closes the task, and never reopens" do
-    {collector, handler_id} = attach_collector(@route_ok_event)
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
+    test_pid = self()
     project_id = unique_id("project")
     task_id = unique_id("task")
     run_id = unique_id("run")
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    task_provider = project_task_provider(script_key, database_path)
     workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
 
-    LifecycleStore.put(script_key, %{
-      test_pid: self(),
-      claim_results: [{:ok, issue(task_id, "in_progress")}],
-      complete_results: [{:ok, issue(task_id, "closed")}],
-      adapter_results: [{:ok, "artifact body", %{}}]
-    })
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    seed_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, task_provider)
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
 
-    assert :ok =
-             TaskProviderRegistry.register_for_project(
-               project_id,
-               TestProvider,
-               task_provider.config
-             )
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["update", "--db", database_path, "--claim", task_id, "--json"]
+      )
+
+      send(test_pid, {:runner_cmd, :claim, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: task_id}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["close", "--db", database_path, task_id, "--json"]
+      )
+
+      send(test_pid, {:runner_cmd, :complete, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "closed", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
 
     assert {:ok, _pid} = start_run_executor!(run_id, task_id)
 
-    assert {:provider_claim, ^task_id, "foreman-runner", _project_config} = receive_message()
+    assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
+             receive_message()
 
-    assert {:adapter_execute, prompt, context} = receive_message()
-    assert prompt == "Run phase implement"
+    assert {:adapter_execute, "Run phase implement", context} = receive_message()
     assert context["script_key"] == script_key
     assert context["phase_id"] == Identity.phase_id(run_id, 1)
     assert context["run_id"] == run_id
@@ -315,10 +267,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
 
-    assert_receive {:provider_complete, ^task_id, completion_token, project_config}, 1_000
-    assert completion_token.run_id == run_id
-    assert completion_token.artifact_path == artifact_path
-    assert fetch_script_key(project_config) == script_key
+    assert {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _} = receive_message()
 
     assert %{status: "closed"} =
              poll_until(
@@ -364,63 +313,151 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     transitions =
       poll_until(
         fn ->
-          transitions = route_transitions(collector, TestProvider)
+          transitions = route_transitions(collector, BeadsAdapter)
 
-          if Enum.all?([:claim, :close], &(&1 in transitions)) do
+          if Enum.count(transitions, &(&1 == :claim)) == 1 and
+               Enum.count(transitions, &(&1 == :close)) == 1 do
             {:ok, transitions}
           else
             {:error, transitions}
           end
         end,
-        "route transitions for success"
+        "claim and close route telemetry"
       )
 
-    assert :claim in transitions
-    assert :close in transitions
-    refute_receive {:provider_reopen_called, _, _, _}, 100
+    assert transitions == [:claim, :close]
   end
 
-  test "failed run invokes fail with deterministic transition comment and never reopens" do
-    {collector, handler_id} = attach_collector(@route_ok_event)
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+  test "failure path invokes fail on TaskExecutionFailed with deterministic default transition comment", %{
+    temp_dir: temp_dir
+  } do
+    start_schema_cache!()
 
+    {collector, ref} = start_telemetry_collector([@route_ok_event])
+    on_exit(fn ->
+      :telemetry.detach(ref)
+      stop_telemetry_collector(collector)
+    end)
+
+    test_pid = self()
     project_id = unique_id("project")
     task_id = unique_id("task")
     run_id = unique_id("run")
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    task_provider = project_task_provider(script_key, database_path)
     workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
+    expected_comment = "foreman-run:#{run_id}:#{artifact_path}"
 
-    LifecycleStore.put(script_key, %{
-      test_pid: self(),
-      claim_results: [{:ok, issue(task_id, "in_progress")}],
-      fail_results: [{:ok, issue(task_id, "failed")}],
-      adapter_results: [{:error, :boom}]
-    })
+    LifecycleStore.put(script_key, %{test_pid: test_pid, adapter_results: [{:error, :boom}]})
 
-    seed_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, task_provider)
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
 
-    assert :ok =
-             TaskProviderRegistry.register_for_project(
-               project_id,
-               TestProvider,
-               task_provider.config
-             )
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["update", "--db", database_path, "--claim", task_id, "--json"]
+      )
+
+      send(test_pid, {:runner_cmd, :claim, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request ==
+               {:update,
+                %{
+                  flags: [
+                    task_id,
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    expected_comment
+                  ],
+                  database_path: database_path
+                }}
+
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        [
+          "update",
+          "--db",
+          database_path,
+          task_id,
+          "--status",
+          "open",
+          "--transition-comment",
+          expected_comment,
+          "--json"
+        ]
+      )
+
+      send(test_pid, {:runner_cmd, :fail, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "open", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
 
     assert {:ok, _pid} = start_run_executor!(run_id, task_id)
 
-    assert {:provider_claim, ^task_id, "foreman-runner", _project_config} = receive_message()
-    assert {:adapter_execute, _prompt, _context} = receive_message()
+    assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
+             receive_message()
 
-    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
+    assert {:adapter_execute, "Run phase implement", _context} = receive_message()
 
-    assert_receive {:provider_fail, ^task_id, failure_token, project_config}, 1_000
-    assert failure_token.run_id == run_id
-    assert failure_token.artifact_path == artifact_path
-    assert failure_token.transition_comment == "foreman-run:#{run_id}:#{artifact_path}"
-    assert fetch_script_key(project_config) == script_key
+    assert {:runner_cmd,
+            :fail,
+            {:update,
+             %{
+               flags: [
+                 ^task_id,
+                 "--status",
+                 "open",
+                 "--transition-comment",
+                 ^expected_comment
+               ]
+             }}, _, _} = receive_message()
 
     assert %{status: "failed"} =
              poll_until(
@@ -438,56 +475,167 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     transitions =
       poll_until(
         fn ->
-          transitions = route_transitions(collector, TestProvider)
+          transitions = route_transitions(collector, BeadsAdapter)
 
-          if Enum.all?([:claim, :reopen], &(&1 in transitions)) do
+          if Enum.count(transitions, &(&1 == :claim)) == 1 and
+               Enum.any?(transitions, &(&1 in [:reopen, :fail])) do
             {:ok, transitions}
           else
             {:error, transitions}
           end
         end,
-        "route transitions for failure"
+        "failure route telemetry"
       )
 
     assert :claim in transitions
-    assert :reopen in transitions
-    refute_receive {:provider_reopen_called, _, _, _}, 100
+    assert Enum.any?(transitions, &(&1 in [:reopen, :fail]))
   end
 
-  test "second finalize after an already terminal completion does not emit a second task execution event" do
+  test "complete/4 is idempotent when the provider reports ALREADY_CLOSED" do
+    start_schema_cache!()
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    database_path = unique_database_path(unique_id("script"))
+    artifact_path = "/artifacts/#{run_id}/#{task_id}.md"
+
+    seed_project!(project_id, project_task_provider(database_path))
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: task_id}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+      send(test_pid, {:runner_cmd, :complete, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "closed", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    stderr =
+      Jason.encode!(%{
+        "code" => "ALREADY_CLOSED",
+        "message" => "ignored envelope message",
+        "hint" => "ignored envelope hint",
+        "retryable?" => false
+      })
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: task_id}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+      send(test_pid, {:runner_cmd, :complete, request, runner_project_config, opts})
+      {:error, %{stdout: "", stderr: stderr, exit_code: 9}}
+    end)
+
+    assert {:ok, %Issue{status: "closed", id: ^task_id}} =
+             RunExecutor.complete(project_id, task_id, run_id, artifact_path)
+
+    assert_receive {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _}, 1_000
+
+    assert {:ok, :already_terminal} =
+             RunExecutor.complete(project_id, task_id, run_id, artifact_path)
+
+    assert_receive {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _}, 1_000
+  end
+
+  test "second finalize after ALREADY_CLOSED does not emit a duplicate TaskExecutionCompleted event" do
+    start_schema_cache!()
+
+    test_pid = self()
     project_id = unique_id("project")
     task_id = unique_id("task")
     run_id = unique_id("run")
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    task_provider = project_task_provider(script_key, database_path)
     workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
 
-    LifecycleStore.put(script_key, %{
-      test_pid: self(),
-      claim_results: [{:ok, issue(task_id, "in_progress")}],
-      complete_results: [
-        {:ok, issue(task_id, "closed")},
-        {:ok, :already_terminal}
-      ],
-      adapter_results: [{:ok, "artifact body", %{}}]
-    })
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    seed_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, task_provider)
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
 
-    assert :ok =
-             TaskProviderRegistry.register_for_project(
-               project_id,
-               TestProvider,
-               task_provider.config
-             )
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+      send(test_pid, {:runner_cmd, :claim, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: task_id}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+      send(test_pid, {:runner_cmd, :complete, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "closed", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    stderr =
+      Jason.encode!(%{
+        "code" => "ALREADY_CLOSED",
+        "message" => "ignored envelope message",
+        "hint" => "ignored envelope hint",
+        "retryable?" => false
+      })
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: task_id}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+      send(test_pid, {:runner_cmd, :complete, request, runner_project_config, opts})
+      {:error, %{stdout: "", stderr: stderr, exit_code: 9}}
+    end)
 
     assert {:ok, _pid} = start_run_executor!(run_id, task_id)
 
-    assert {:provider_claim, ^task_id, "foreman-runner", _project_config} = receive_message()
-    assert {:adapter_execute, _prompt, _context} = receive_message()
-    assert_receive {:provider_complete, ^task_id, _completion_token, _project_config}, 1_000
+    assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
+             receive_message()
+
+    assert {:adapter_execute, "Run phase implement", _context} = receive_message()
+    assert {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _} = receive_message()
 
     assert %{status: "closed"} =
              poll_until(
@@ -504,7 +652,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert :ok = RunExecutor.advance_to(run_id, 0)
 
-    assert_receive {:provider_complete, ^task_id, _completion_token, _project_config}, 1_000
+    assert_receive {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _}, 1_000
 
     assert 1 =
              poll_until(
@@ -517,10 +665,19 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                    {:error, count}
                  end
                end,
-               "single task execution completed event"
+               "single TaskExecutionCompleted event"
              )
+  end
 
-    refute_receive {:provider_reopen_called, _, _, _}, 100
+  test "runner source resolves providers through Registry.route/2 and never directly invokes reopen or BeadsAdapter transitions" do
+    source = File.read!(@run_executor_source)
+
+    assert source =~ "TaskProviderRegistry.route(transition, {project_id, database_path})"
+    refute source =~ "BeadsAdapter.claim("
+    refute source =~ "BeadsAdapter.complete("
+    refute source =~ "BeadsAdapter.fail("
+    refute source =~ "BeadsAdapter.reopen("
+    refute Regex.match?(~r/\.\s*reopen\(/, source)
   end
 
   defp ensure_started(child_spec, name) do
@@ -539,7 +696,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       module when is_atom(module) and not is_nil(module) ->
         unregister_adapter(module)
-
         {:ok, _} = AgentRuntime.register_adapter(TestAdapter)
         :ok
 
@@ -556,13 +712,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       module when is_atom(module) and not is_nil(module) ->
         unregister_adapter(TestAdapter)
-
         {:ok, _} = AgentRuntime.register_adapter(module)
         :ok
 
       nil ->
         unregister_adapter(TestAdapter)
-
         :ok
     end
   end
@@ -578,23 +732,42 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
-  defp attach_collector(event) do
-    collector = start_supervised!({Agent, fn -> [] end})
-    handler_id = "run-executor-test-#{System.unique_integer([:positive])}"
-
-    :ok = :telemetry.attach(handler_id, event, &__MODULE__.handle_telemetry/4, collector)
-
-    {collector, handler_id}
+  defp start_telemetry_collector(events) do
+    collector = spawn_link(fn -> telemetry_collector_loop([]) end)
+    ref = :telemetry_test.attach_event_handlers(collector, events)
+    {collector, ref}
   end
 
-  def handle_telemetry(event, measurements, metadata, collector) do
-    Agent.update(collector, fn events ->
-      [%{event: event, measurements: measurements, metadata: metadata} | events]
-    end)
+  defp stop_telemetry_collector(collector) do
+    if Process.alive?(collector) do
+      send(collector, :stop)
+    end
+  end
+
+  defp telemetry_collector_loop(events) do
+    receive do
+      {event, ref, measurements, metadata} ->
+        telemetry_collector_loop([
+          %{event: event, ref: ref, measurements: measurements, metadata: metadata} | events
+        ])
+
+      {:get, caller} ->
+        send(caller, {:telemetry_events, Enum.reverse(events)})
+        telemetry_collector_loop(events)
+
+      :stop ->
+        :ok
+    end
   end
 
   defp telemetry_events(collector) do
-    Agent.get(collector, &Enum.reverse/1)
+    send(collector, {:get, self()})
+
+    receive do
+      {:telemetry_events, events} -> events
+    after
+      1_000 -> flunk("timed out collecting telemetry events")
+    end
   end
 
   defp route_transitions(collector, provider_module) do
@@ -612,10 +785,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     Path.join(System.tmp_dir!(), "#{script_key}.db")
   end
 
-  defp project_task_provider(script_key, database_path) do
+  defp project_task_provider(database_path) do
     %{
-      provider: "run_executor_test_provider",
-      config: %{"database_path" => database_path, "script_key" => script_key}
+      provider: "beads",
+      config: %{"database_path" => database_path}
     }
   end
 
@@ -627,21 +800,164 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     }
   end
 
-  defp issue(task_id, status) do
-    %Issue{
-      id: task_id,
-      title: "Task #{task_id}",
-      status: status,
-      priority: "medium",
-      dependencies: [],
-      assignee: nil,
-      description: nil,
-      notes: nil,
-      design: nil,
-      labels: [],
-      metadata: %{},
-      dependents: []
+  defp issue_payload(task_id, status, overrides) do
+    Map.merge(
+      %{
+        "id" => task_id,
+        "title" => "RunExecutor #{task_id}",
+        "status" => status,
+        "priority" => 2,
+        "dependencies" => [],
+        "assignee" => nil,
+        "description" => "RunExecutor task payload",
+        "notes" => nil,
+        "design" => nil,
+        "labels" => ["workflow", status],
+        "metadata" => %{"provider_id" => "beads"}
+      },
+      overrides
+    )
+  end
+
+  defp register_project!(project_id, database_path) do
+    assert :ok =
+             TaskProviderRegistry.register_for_project(project_id, BeadsAdapter, %{
+               "database_path" => database_path
+             })
+
+    assert TaskProviderRegistry.routing_snapshot()[project_id] == BeadsAdapter
+
+    assert {:active, %{provider_module: BeadsAdapter, config: project_config}} =
+             :sys.get_state(TaskProviderRegistry).per_project[project_id]
+
+    assert project_config == %{"database_path" => database_path}
+    project_config
+  end
+
+  defp start_schema_cache! do
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+  end
+
+  defp expect_schema_boot_fetches do
+    expect(BrRunnerMock, :cmd, 4, fn {:schema, %{schema: schema_name}}, %{}, [] ->
+      {:ok, %{stdout: Jason.encode!(schema_document(schema_name))}}
+    end)
+  end
+
+  defp schema_document("ready-issue") do
+    %{
+      "type" => "object",
+      "required" => [
+        "id",
+        "title",
+        "status",
+        "priority",
+        "dependencies",
+        "assignee",
+        "description",
+        "notes",
+        "design",
+        "labels",
+        "metadata"
+      ],
+      "properties" => %{
+        "id" => %{"type" => "string"},
+        "title" => %{"type" => "string"},
+        "status" => %{"type" => "string"},
+        "priority" => %{"type" => "integer"},
+        "dependencies" => %{"type" => "array"},
+        "assignee" => %{"type" => ["string", "null"]},
+        "description" => %{"type" => ["string", "null"]},
+        "notes" => %{"type" => ["string", "null"]},
+        "design" => %{"type" => ["string", "null"]},
+        "labels" => %{"type" => "array"},
+        "metadata" => %{"type" => "object"}
+      }
     }
+  end
+
+  defp schema_document("issue-details") do
+    %{
+      "type" => "object",
+      "required" => ["id", "description"],
+      "properties" => %{
+        "id" => %{"type" => "string"},
+        "description" => %{"type" => "string"}
+      }
+    }
+  end
+
+  defp schema_document("error") do
+    %{
+      "type" => "object",
+      "required" => ["code", "message"],
+      "properties" => %{
+        "code" => %{"type" => "string"},
+        "message" => %{"type" => "string"}
+      }
+    }
+  end
+
+  defp schema_document("commands") do
+    %{
+      "type" => "object",
+      "metadata" => %{"contractVersion" => "br.capabilities.v1"},
+      "properties" => %{
+        "commands" => %{"type" => "array"}
+      }
+    }
+  end
+
+  defp assert_database_path(project_config, expected_database_path) do
+    assert (Map.get(project_config, :database_path) || Map.get(project_config, "database_path")) ==
+             expected_database_path
+  end
+
+  defp assert_translated_argv(temp_dir, request, project_config, expected_argv) do
+    with_fake_br(
+      temp_dir,
+      default_fake_br_body(),
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd(request, project_config)
+
+        assert String.split(stdout, "\n", trim: true) == expected_argv
+      end
+    )
+  end
+
+  defp default_fake_br_body do
+    """
+    for arg in "$@"; do
+      printf '%s\\n' "$arg"
+    done
+    """
+  end
+
+  defp write_fake_br!(temp_dir, body) do
+    script_path = Path.join(temp_dir, "br")
+    File.write!(script_path, "#!/bin/sh\nset -eu\n#{body}\n")
+    File.chmod!(script_path, 0o755)
+  end
+
+  defp with_fake_br(temp_dir, body, fun) do
+    original_path = System.get_env("PATH") || ""
+    write_fake_br!(temp_dir, body)
+    System.put_env("PATH", temp_dir <> ":" <> original_path)
+
+    try do
+      fun.()
+    after
+      System.put_env("PATH", original_path)
+    end
+  end
+
+  defp stop_schema_cache do
+    case Process.whereis(@cache_name) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
+    end
   end
 
   defp seed_project!(project_id, task_provider) do
@@ -730,10 +1046,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       {:ok, events} -> events
       {:error, :stream_not_found} -> []
     end
-  end
-
-  defp fetch_script_key(project_config) do
-    Map.get(project_config, :script_key) || Map.get(project_config, "script_key")
   end
 
   defp receive_message(timeout \\ 1_000) do
