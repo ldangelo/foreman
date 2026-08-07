@@ -142,6 +142,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
                status: "blocked",
                priority: 2,
                dependencies: ["opaque:dep-1", "dep/2"],
+               dependents: [],
                assignee: "leo",
                description: "List ready issues",
                notes: "Keep dependency ids opaque",
@@ -156,6 +157,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
                status: "blocked",
                priority: 4,
                dependencies: ["opaque:dep-3"],
+               dependents: [],
                assignee: "mox",
                description: "Second issue",
                notes: "Populate all fields",
@@ -215,6 +217,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
       assert issue.id == "bead-103"
       assert issue.priority == 1
       assert issue.dependencies == []
+      assert issue.dependents == []
     end
 
     test "returns {:ok, []} when br ready reports no ready issues" do

@@ -184,6 +184,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          status: "blocked",
          priority: priority,
          dependencies: dependencies,
+         dependents: [],
          assignee: assignee,
          description: description,
          notes: notes,
@@ -385,6 +386,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          status: "closed",
          priority: priority,
          dependencies: dependencies,
+         dependents: [],
          assignee: assignee,
          description: description,
          notes: notes,
@@ -537,6 +539,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          status: "open",
          priority: priority,
          dependencies: dependencies,
+         dependents: [],
          assignee: assignee,
          description: description,
          notes: notes,
@@ -859,22 +862,38 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   defp parse_get_issue_payload(%{} = payload, argv) do
-    with :ok <- JsonSchemaCache.validate(:issue_details, payload),
-         {:ok, id} <- fetch_required_string(payload, :id),
-         {:ok, title} <- fetch_required_string(payload, :title),
-         {:ok, status} <- fetch_required_string(payload, :status),
-         {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
+    normalized_payload =
+      payload
+      |> put_default_payload_field(:dependencies, [])
+      |> put_default_payload_field(:dependents, [])
+
+    with :ok <- JsonSchemaCache.validate(:issue_details, normalized_payload),
+         {:ok, id} <- fetch_required_string(normalized_payload, :id),
+         {:ok, title} <- fetch_required_string(normalized_payload, :title),
+         {:ok, status} <- fetch_required_string(normalized_payload, :status),
+         {:ok, priority} <- parse_priority(fetch_payload_value(normalized_payload, :priority)),
          {:ok, dependencies} <-
-           parse_opaque_string_list(fetch_payload_value(payload, :dependencies), :dependencies),
+           parse_get_dependencies(fetch_payload_value(normalized_payload, :dependencies), argv),
+         {:ok, dependents} <-
+           parse_get_issue_array(
+             fetch_payload_value(normalized_payload, :dependents),
+             :dependents,
+             argv
+           ),
          {:ok, assignee} <-
-           parse_optional_string(fetch_payload_value(payload, :assignee), :assignee),
+           parse_optional_string(fetch_payload_value(normalized_payload, :assignee), :assignee),
          {:ok, description} <-
-           parse_optional_string(fetch_payload_value(payload, :description), :description),
-         {:ok, notes} <- parse_optional_string(fetch_payload_value(payload, :notes), :notes),
-         {:ok, design} <- parse_optional_string(fetch_payload_value(payload, :design), :design),
+           parse_optional_string(
+             fetch_payload_value(normalized_payload, :description),
+             :description
+           ),
+         {:ok, notes} <-
+           parse_optional_string(fetch_payload_value(normalized_payload, :notes), :notes),
+         {:ok, design} <-
+           parse_optional_string(fetch_payload_value(normalized_payload, :design), :design),
          {:ok, labels} <-
-           parse_opaque_string_list(fetch_payload_value(payload, :labels), :labels),
-         {:ok, metadata} <- parse_metadata(fetch_payload_value(payload, :metadata)) do
+           parse_opaque_string_list(fetch_payload_value(normalized_payload, :labels), :labels),
+         {:ok, metadata} <- parse_metadata(fetch_payload_value(normalized_payload, :metadata)) do
       {:ok,
        %Issue{
          id: id,
@@ -882,6 +901,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          status: status,
          priority: priority,
          dependencies: dependencies,
+         dependents: dependents,
          assignee: assignee,
          description: description,
          notes: notes,
@@ -900,6 +920,90 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   defp parse_get_issue_payload(_payload, argv) do
     {:error, build_get_contract_error("Beads issue-details payload must be a JSON object.", argv)}
+  end
+
+  defp put_default_payload_field(payload, key, default) do
+    string_key = to_string(key)
+
+    if Map.has_key?(payload, key) or Map.has_key?(payload, string_key) do
+      payload
+    else
+      Map.put(payload, string_key, default)
+    end
+  end
+
+  defp parse_get_dependencies(nil, _argv), do: {:ok, []}
+
+  defp parse_get_dependencies(values, argv) when is_list(values) do
+    cond do
+      Enum.all?(values, &is_binary/1) ->
+        {:ok, values}
+
+      Enum.all?(values, &is_map/1) ->
+        parse_get_issue_array(values, :dependencies, argv)
+
+      true ->
+        {:error,
+         build_get_contract_error(
+           "Beads issue-details field :dependencies must be a list of strings or issue objects.",
+           argv
+         )}
+    end
+  end
+
+  defp parse_get_dependencies(_values, argv) do
+    {:error,
+     build_get_contract_error(
+       "Beads issue-details field :dependencies must be a list of strings or issue objects.",
+       argv
+     )}
+  end
+
+  defp parse_get_issue_array(nil, _field, _argv), do: {:ok, []}
+
+  defp parse_get_issue_array(values, field, argv) when is_list(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn
+      %{} = value, {:ok, issues} ->
+        case parse_get_issue_reference(value, field, argv) do
+          {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+
+      _value, _acc ->
+        {:halt,
+         {:error,
+          build_get_contract_error(
+            "Beads issue-details field #{inspect(field)} must be a list of issue objects.",
+            argv
+          )}}
+    end)
+    |> case do
+      {:ok, issues} -> {:ok, Enum.reverse(issues)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp parse_get_issue_array(_values, field, argv) do
+    {:error,
+     build_get_contract_error(
+       "Beads issue-details field #{inspect(field)} must be a list of issue objects.",
+       argv
+     )}
+  end
+
+  defp parse_get_issue_reference(%{} = payload, field, argv) do
+    case fetch_payload_value(payload, :id) do
+      id when is_binary(id) ->
+        {:ok, struct(Issue, id: id)}
+
+      _other ->
+        {:error,
+         build_get_contract_error(
+           "Beads issue-details #{inspect(field)} entries must include a string id.",
+           argv
+         )}
+    end
   end
 
   defp build_get_error(stdout, stderr, result, argv) do
@@ -1042,6 +1146,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                        status: "in_progress",
                        priority: priority,
                        dependencies: dependencies,
+                       dependents: [],
                        assignee: if(is_binary(actor) and actor != "", do: actor, else: assignee),
                        description: description,
                        notes: notes,
@@ -1238,7 +1343,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def reopen(task_id, _transition_comment, project_config) when is_map(project_config) do
+  def reopen(task_id, transition_comment, project_config) when is_map(project_config) do
     if is_binary(task_id) and String.trim(task_id) != "" do
       database_path =
         case project_config do
@@ -1253,21 +1358,33 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
 
-      request =
-        {:update,
-         %{
-           flags: [task_id, "--status", "open"],
-           database_path: database_path
-         }}
+      with {:ok, reopen_comment} <- resolve_transition_comment(transition_comment) do
+        request =
+          {:update,
+           %{
+             flags: [task_id, "--status", "open", "--transition-comment", reopen_comment],
+             database_path: database_path
+           }}
 
-      argv = ["update", "--db", database_path, task_id, "--status", "open", "--json"]
+        argv = [
+          "update",
+          "--db",
+          database_path,
+          task_id,
+          "--status",
+          "open",
+          "--transition-comment",
+          reopen_comment,
+          "--json"
+        ]
 
-      case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
-        {:ok, %{stdout: stdout}} ->
-          parse_reopened_issue_response(stdout, task_id, argv)
+        case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
+          {:ok, %{stdout: stdout}} ->
+            parse_reopened_issue_response(stdout, task_id, argv)
 
-        {:error, %{stdout: stdout, stderr: stderr} = result} ->
-          build_reopen_error(stdout, stderr, result, argv)
+          {:error, %{stdout: stdout, stderr: stderr} = result} ->
+            build_reopen_error(stdout, stderr, result, argv)
+        end
       end
     else
       {:error,
@@ -1336,6 +1453,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          status: "open",
          priority: priority,
          dependencies: dependencies,
+         dependents: [],
          assignee: assignee,
          description: description,
          notes: notes,
@@ -1720,6 +1838,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          status: status,
          priority: priority,
          dependencies: [dependency_id | Enum.reject(dependencies, &(&1 == dependency_id))],
+         dependents: [],
          assignee: assignee,
          description: description,
          notes: notes,

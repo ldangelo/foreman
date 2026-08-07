@@ -52,6 +52,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
     assert issue.status == "in_progress"
     assert issue.assignee == "foreman-actor"
     assert issue.id == "bead-101"
+    assert issue.dependents == []
   end
 
   test "claim/3 routes NOT_CLAIMABLE through CodeMap as non-retryable" do
@@ -149,7 +150,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
        }}
     end)
 
-    assert {:ok, %Issue{id: "bead-104", status: "in_progress"}} =
+    assert {:ok, %Issue{id: "bead-104", status: "in_progress", dependents: []}} =
              BeadsAdapter.claim("bead-104", "foreman-actor", %{
                "database_path" => cached_database_path
              })

@@ -134,6 +134,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
     assert issue.id == "bead-901"
     assert issue.title == "Reopen after failure"
 
+    assert issue.dependents == []
     assert_receive {:telemetry, @fail_success_event, %{system_time: _}, %{argv: argv}}, 1_000
 
     assert argv == [
@@ -206,7 +207,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
        }}
     end)
 
-    assert {:ok, %Issue{id: "bead-902", status: "open", title: "bead-902"}} =
+    assert {:ok, %Issue{id: "bead-902", status: "open", title: "bead-902", dependents: []}} =
              BeadsAdapter.fail(
                "bead-902",
                %{run_id: "run-902", artifact_path: artifact_path},
@@ -432,7 +433,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterFailTest do
        }}
     end)
 
-    assert {:ok, %Issue{id: "bead-905", status: "open"}} =
+    assert {:ok, %Issue{id: "bead-905", status: "open", dependents: []}} =
              BeadsAdapter.fail(
                "bead-905",
                %{transition_comment: "cached-path", run_id: "run-905"},

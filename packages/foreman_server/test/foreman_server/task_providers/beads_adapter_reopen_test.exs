@@ -6,6 +6,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.TaskProviders.BeadsAdapter
+  alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap
+  alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
   alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
@@ -58,11 +60,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
     {:ok, temp_dir: temp_dir}
   end
 
-  test "happy path returns {:ok, %Issue{status: \"open\"}}", %{temp_dir: temp_dir} do
+  test "happy path returns {:ok, %Issue{status: \"open\"}} and includes the supplied transition_comment",
+       %{temp_dir: temp_dir} do
     start_schema_cache!()
 
     cached_database_path = "/abs/reopen/happy.db"
     project_config = register_project!("proj-reopen-happy", cached_database_path)
+    transition_comment = "foreman-run-reconciled"
 
     payload = %{
       "id" => "bead-1001",
@@ -82,7 +86,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
       assert request ==
                {:update,
                 %{
-                  flags: ["bead-1001", "--status", "open"],
+                  flags: [
+                    "bead-1001",
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    transition_comment
+                  ],
                   database_path: cached_database_path
                 }}
 
@@ -93,13 +103,23 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
         temp_dir,
         request,
         runner_project_config,
-        ["update", "--db", cached_database_path, "bead-1001", "--status", "open", "--json"]
+        [
+          "update",
+          "--db",
+          cached_database_path,
+          "bead-1001",
+          "--status",
+          "open",
+          "--transition-comment",
+          transition_comment,
+          "--json"
+        ]
       )
 
       {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
     end)
 
-    assert {:ok, issue} = BeadsAdapter.reopen("bead-1001", :ignored, project_config)
+    assert {:ok, issue} = BeadsAdapter.reopen("bead-1001", transition_comment, project_config)
     assert is_struct(issue, Issue)
 
     assert issue == %Issue{
@@ -108,6 +128,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
              status: "open",
              priority: 1,
              dependencies: ["opaque:dep-1"],
+             dependents: [],
              assignee: nil,
              description: "Task returned to ready state",
              notes: "reopened by operator",
@@ -117,11 +138,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
            }
   end
 
-  test "br error envelope returns a mapped ProviderError" do
+  test "ISSUE_NOT_FOUND envelopes route through CodeMap to ProviderError" do
     start_schema_cache!()
 
     cached_database_path = "/abs/reopen/error.db"
     project_config = register_project!("proj-reopen-error", cached_database_path)
+    transition_comment = "missing-issue"
 
     stderr =
       Jason.encode!(%{
@@ -133,7 +155,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
 
     expect(BrRunnerMock, :cmd, 1, fn {:update,
                                       %{
-                                        flags: ["bead-1002", "--status", "open"],
+                                        flags: [
+                                          "bead-1002",
+                                          "--status",
+                                          "open",
+                                          "--transition-comment",
+                                          ^transition_comment
+                                        ],
                                         database_path: ^cached_database_path
                                       }},
                                      %{database_path: ^cached_database_path},
@@ -142,7 +170,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
     end)
 
     assert {:error, provider_error} =
-             BeadsAdapter.reopen("bead-1002", :ignored, project_config)
+             BeadsAdapter.reopen("bead-1002", transition_comment, project_config)
 
     assert is_struct(provider_error, ProviderError)
     assert provider_error.code == "ISSUE_NOT_FOUND"
@@ -151,42 +179,75 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
     assert provider_error.hint == "Verify the issue identifier before retrying."
 
     assert provider_error.context.command ==
-             "br update --db #{redacted_database_path(cached_database_path)} bead-1002 --status open --json"
+             "br update --db #{redacted_database_path(cached_database_path)} bead-1002 --status open --transition-comment missing-issue --json"
 
     assert provider_error.context.exit_code == 3
     assert provider_error.context.stderr_byte_count == byte_size(stderr)
   end
 
-  test "validation failure returns VALIDATION_FAILED" do
+  test "validation failure returns VALIDATION_FAILED", %{temp_dir: temp_dir} do
     start_schema_cache!()
 
     cached_database_path = "/abs/reopen/validation.db"
     project_config = register_project!("proj-reopen-validation", cached_database_path)
+    transition_comment = "schema-check"
 
-    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["bead-1003", "--status", "open"]}},
-                                     %{database_path: ^cached_database_path},
-                                     [timeout_ms: 30_000] ->
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request ==
+               {:update,
+                %{
+                  flags: [
+                    "bead-1003",
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    transition_comment
+                  ],
+                  database_path: cached_database_path
+                }}
+
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        [
+          "update",
+          "--db",
+          cached_database_path,
+          "bead-1003",
+          "--status",
+          "open",
+          "--transition-comment",
+          transition_comment,
+          "--json"
+        ]
+      )
+
       {:ok, %{stdout: Jason.encode!(%{"id" => "bead-1003"}), stderr: "", exit_code: 0}}
     end)
 
     assert {:error, provider_error} =
-             BeadsAdapter.reopen("bead-1003", :ignored, project_config)
+             BeadsAdapter.reopen("bead-1003", transition_comment, project_config)
 
     assert is_struct(provider_error, ProviderError)
     assert provider_error.code == "VALIDATION_FAILED"
     assert provider_error.retryable? == false
 
     assert provider_error.context.command ==
-             "br update --db #{redacted_database_path(cached_database_path)} bead-1003 --status open --json"
+             "br update --db #{redacted_database_path(cached_database_path)} bead-1003 --status open --transition-comment schema-check --json"
 
     assert provider_error.context.missing_fields == ["description"]
   end
 
-  test "ALREADY_OPEN returns {:ok, :already_terminal}" do
+  test "ALREADY_OPEN returns {:ok, :already_terminal}", %{temp_dir: temp_dir} do
     start_schema_cache!()
 
     cached_database_path = "/abs/reopen/already-open.db"
     project_config = register_project!("proj-reopen-already-open", cached_database_path)
+    transition_comment = "already-open-comment"
 
     stderr =
       Jason.encode!(%{
@@ -196,18 +257,67 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
         "retryable?" => false
       })
 
-    expect(BrRunnerMock, :cmd, 1, fn {:update,
-                                      %{
-                                        flags: ["bead-1004", "--status", "open"],
-                                        database_path: ^cached_database_path
-                                      }},
-                                     %{database_path: ^cached_database_path},
-                                     [timeout_ms: 30_000] ->
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request ==
+               {:update,
+                %{
+                  flags: [
+                    "bead-1004",
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    transition_comment
+                  ],
+                  database_path: cached_database_path
+                }}
+
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        [
+          "update",
+          "--db",
+          cached_database_path,
+          "bead-1004",
+          "--status",
+          "open",
+          "--transition-comment",
+          transition_comment,
+          "--json"
+        ]
+      )
+
       {:error, %{stdout: "", stderr: stderr, exit_code: 9}}
     end)
 
     assert {:ok, :already_terminal} =
-             BeadsAdapter.reopen("bead-1004", :ignored, project_config)
+             BeadsAdapter.reopen("bead-1004", transition_comment, project_config)
+  end
+
+  test "ALREADY_OPEN CodeMap translation remains non-retryable" do
+    provider_error =
+      %{
+        "code" => "ALREADY_OPEN",
+        "message" => "ignored envelope message",
+        "hint" => "ignored envelope hint",
+        "retryable?" => true
+      }
+      |> ProviderErrorInput.from_br_envelope()
+      |> CodeMap.build_provider_error("br update --transition-comment foreman-run-reconciled", 11)
+
+    assert provider_error.code == "ALREADY_TERMINAL"
+    assert provider_error.retryable? == false
+    assert provider_error.message == "Issue is already closed."
+    assert provider_error.hint == "Treat duplicate completion as an idempotent success."
+
+    assert provider_error.context.command ==
+             "br update --transition-comment foreman-run-reconciled"
+
+    assert provider_error.context.stderr_byte_count == 11
   end
 
   test "empty task_id returns INVALID_TASK_ID without invoking br" do
@@ -221,6 +331,17 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
     assert provider_error.context.stderr_byte_count == 0
   end
 
+  test "blank transition_comment returns INVALID_TRANSITION_COMMENT without invoking br" do
+    assert {:error, provider_error} =
+             BeadsAdapter.reopen("bead-blank-comment", "", %{"database_path" => "/abs/path.db"})
+
+    assert is_struct(provider_error, ProviderError)
+    assert provider_error.code == "INVALID_TRANSITION_COMMENT"
+    assert provider_error.retryable? == false
+    assert provider_error.context.command == nil
+    assert provider_error.context.stderr_byte_count == 0
+  end
+
   test "consumes the cached absolute database_path established at registration verbatim", %{
     temp_dir: temp_dir
   } do
@@ -228,6 +349,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
 
     cached_database_path = "/abs/cached/../reopen/path.db"
     project_config = register_project!("proj-reopen-cached-path", cached_database_path)
+    transition_comment = "cached-path"
 
     payload = %{
       "id" => "bead-1005",
@@ -239,7 +361,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
       assert request ==
                {:update,
                 %{
-                  flags: ["bead-1005", "--status", "open"],
+                  flags: [
+                    "bead-1005",
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    transition_comment
+                  ],
                   database_path: cached_database_path
                 }}
 
@@ -250,17 +378,32 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
         temp_dir,
         request,
         runner_project_config,
-        ["update", "--db", cached_database_path, "bead-1005", "--status", "open", "--json"]
+        [
+          "update",
+          "--db",
+          cached_database_path,
+          "bead-1005",
+          "--status",
+          "open",
+          "--transition-comment",
+          transition_comment,
+          "--json"
+        ]
       )
 
       {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
     end)
 
-    assert {:ok, issue} = BeadsAdapter.reopen("bead-1005", :ignored, project_config)
+    assert {:ok, issue} = BeadsAdapter.reopen("bead-1005", transition_comment, project_config)
     assert is_struct(issue, Issue)
     assert issue.id == "bead-1005"
     assert issue.status == "open"
     assert issue.description == "Keep cached path verbatim"
+    assert issue.dependents == []
+  end
+
+  test "lib scan finds zero in-tree BeadsAdapter.reopen callers on this branch" do
+    assert enumerate_beads_adapter_reopen_callers() == []
   end
 
   defp register_project!(project_id, database_path) do
@@ -387,6 +530,28 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterReopenTest do
     after
       System.put_env("PATH", original_path)
     end
+  end
+
+  defp enumerate_beads_adapter_reopen_callers do
+    lib_root = Path.join(package_root(), "lib")
+    {output, exit_code} = System.cmd("grep", ["-R", "-nF", "BeadsAdapter.reopen(", lib_root])
+
+    case exit_code do
+      0 ->
+        String.split(output, "\n", trim: true)
+
+      1 ->
+        []
+
+      other ->
+        flunk(
+          "grep failed while scanning lib/ for BeadsAdapter.reopen callers: #{inspect(other)}"
+        )
+    end
+  end
+
+  defp package_root do
+    Path.expand("../../..", __DIR__)
   end
 
   defp redacted_database_path(database_path) do

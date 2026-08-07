@@ -1,8 +1,8 @@
 defmodule ForemanServer.TaskProvider.Issue do
   @moduledoc """
-  Normalized task-provider issue record with 11 first-class fields:
-  `id`, `title`, `status`, `priority`, `dependencies`, `assignee`,
-  `description`, `notes`, `design`, `labels`, and `metadata`.
+  Normalized task-provider issue record with 12 first-class fields:
+  `id`, `title`, `status`, `priority`, `dependencies`, `dependents`,
+  `assignee`, `description`, `notes`, `design`, `labels`, and `metadata`.
 
   AC-019-5 requires the sensitive fields (`assignee`, `description`, `notes`,
   and `design`) to remain explicit struct fields rather than being aliased into
@@ -28,7 +28,8 @@ defmodule ForemanServer.TaskProvider.Issue do
           title: String.t(),
           status: String.t(),
           priority: non_neg_integer(),
-          dependencies: [String.t()],
+          dependencies: [String.t() | __MODULE__.t()],
+          dependents: [__MODULE__.t()],
           assignee: String.t() | nil,
           description: String.t() | nil,
           notes: String.t() | nil,
@@ -44,6 +45,7 @@ defmodule ForemanServer.TaskProvider.Issue do
     :status,
     :priority,
     dependencies: [],
+    dependents: [],
     assignee: nil,
     description: nil,
     notes: nil,

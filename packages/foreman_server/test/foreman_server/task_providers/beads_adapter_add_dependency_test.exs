@@ -104,6 +104,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
              status: "blocked",
              priority: 2,
              dependencies: ["opaque:dep-9", "opaque:dep-1", "opaque:dep-2"],
+             dependents: [],
              assignee: "operator",
              description: "Preserve all issue fields",
              notes: "dependency mutation should be additive",
@@ -152,7 +153,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
       {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
     end)
 
-    assert {:ok, %Issue{dependencies: ["opaque:dep-4", "opaque:dep-2"]}} =
+    assert {:ok, %Issue{dependencies: ["opaque:dep-4", "opaque:dep-2"], dependents: []}} =
              BeadsAdapter.add_dependency("bead-707", "opaque:dep-4", project_config)
   end
 
@@ -339,7 +340,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
       {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
     end)
 
-    assert {:ok, %Issue{id: "bead-706", dependencies: ["opaque:dep-8"], status: "blocked"}} =
+    assert {:ok,
+            %Issue{
+              id: "bead-706",
+              dependencies: ["opaque:dep-8"],
+              status: "blocked",
+              dependents: []
+            }} =
              BeadsAdapter.add_dependency("bead-706", "opaque:dep-8", project_config)
   end
 

@@ -3,13 +3,14 @@ defmodule ForemanServer.TaskProvider.IssueTest do
 
   alias ForemanServer.TaskProvider.Issue
 
-  test "constructs a fully-populated Issue with all 11 fields" do
+  test "constructs a fully-populated Issue with all 12 fields" do
     issue = %Issue{
       id: "ISS-123",
       title: "Investigate provider outage",
       status: "open",
       priority: 2,
       dependencies: ["ISS-100", "ISS-101"],
+      dependents: [],
       assignee: "agent.smith",
       description: "Detailed problem description",
       notes: "Internal operator notes",
@@ -23,6 +24,7 @@ defmodule ForemanServer.TaskProvider.IssueTest do
     assert issue.status == "open"
     assert issue.priority == 2
     assert issue.dependencies == ["ISS-100", "ISS-101"]
+    assert issue.dependents == []
     assert issue.assignee == "agent.smith"
     assert issue.description == "Detailed problem description"
     assert issue.notes == "Internal operator notes"
@@ -38,6 +40,7 @@ defmodule ForemanServer.TaskProvider.IssueTest do
       status: "ready",
       priority: 1,
       dependencies: [],
+      dependents: [],
       assignee: "owner@example.com",
       description: "Contains sensitive task details",
       notes: "Contains reviewer-only notes",
@@ -68,6 +71,7 @@ defmodule ForemanServer.TaskProvider.IssueTest do
       status: "claimed",
       priority: 3,
       dependencies: ["ISS-110"],
+      dependents: [],
       assignee: nil,
       description: nil,
       notes: nil,

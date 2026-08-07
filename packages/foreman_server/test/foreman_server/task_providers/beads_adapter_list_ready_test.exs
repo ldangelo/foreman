@@ -48,7 +48,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterListReadyTest do
     :ok
   end
 
-  test "happy path returns three blocked Issue structs with all 11 fields populated" do
+  test "happy path returns three blocked Issue structs with all 12 fields populated" do
     start_schema_cache!()
 
     cached_database_path = "/abs/cache/./ready/../beads.sqlite3"
@@ -128,6 +128,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterListReadyTest do
                status: "blocked",
                priority: 2,
                dependencies: ["opaque:dep-1", "dep/2"],
+               dependents: [],
                assignee: "leo",
                description: "List ready issues",
                notes: "Keep dependency ids opaque",
@@ -146,6 +147,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterListReadyTest do
                status: "blocked",
                priority: 4,
                dependencies: ["opaque:dep-3"],
+               dependents: [],
                assignee: nil,
                description: "Second issue",
                notes: nil,
@@ -164,6 +166,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterListReadyTest do
                status: "blocked",
                priority: 0,
                dependencies: [],
+               dependents: [],
                assignee: "mox",
                description: nil,
                notes: "Third issue",
@@ -215,6 +218,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterListReadyTest do
 
     assert issue.dependencies == []
     assert issue.assignee == "operator"
+    assert issue.dependents == []
   end
 
   test "preserves dependency ids as opaque strings exactly as br returned them" do

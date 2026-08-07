@@ -101,6 +101,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
              status: "closed",
              priority: 2,
              dependencies: ["opaque:dep-1"],
+             dependents: [],
              assignee: "operator",
              description: "Close the task",
              notes: "completion notes",
@@ -260,7 +261,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
       {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
     end)
 
-    assert {:ok, %Issue{status: "closed", id: "bead-805"}} =
+    assert {:ok, %Issue{status: "closed", id: "bead-805", dependents: []}} =
              BeadsAdapter.complete("bead-805", :ignored, project_config)
   end
 
