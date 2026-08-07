@@ -33,7 +33,9 @@ defmodule ForemanServer.Application do
         # TaskProvider.Registry owns configured task provider routing and must
         # start before dispatch paths resolve a provider snapshot.
         ForemanServer.TaskProvider.Registry,
-
+        # ProjectProviderProjector subscribes to ProjectionStore and maintains
+        # per-project task provider routing inside the Registry.
+        ForemanServer.TaskProvider.ProjectProviderProjector,
         # RunExecutorRegistry must exist before RunExecutor children start;
         # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
         {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},

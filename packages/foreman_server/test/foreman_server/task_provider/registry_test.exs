@@ -13,7 +13,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :compatible, contract_version: "br.capabilities.v1"}
+      %{provider_id: :compatible, contract_version: "br.capabilities.v1", supports: [:claim]}
     end
 
     @impl true
@@ -53,7 +53,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :incompatible, contract_version: "br.capabilities.v2"}
+      %{provider_id: :incompatible, contract_version: "br.capabilities.v2", supports: [:claim]}
     end
 
     @impl true
@@ -93,7 +93,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :concurrent, contract_version: "br.capabilities.v1"}
+      %{provider_id: :concurrent, contract_version: "br.capabilities.v1", supports: [:claim]}
     end
 
     @impl true
@@ -133,7 +133,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :unavailable, contract_version: "br.capabilities.v1"}
+      %{provider_id: :unavailable, contract_version: "br.capabilities.v1", supports: [:claim]}
     end
 
     @impl true
@@ -200,8 +200,36 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     assert :sys.get_state(name) == %{
              routing: %{beads: ForemanServer.TaskProviders.BeadsAdapter},
-             accepted_versions: ["br.capabilities.v1"]
+             accepted_versions: ["br.capabilities.v1"],
+             per_project: %{}
            }
+  end
+
+  test "routing_snapshot/0 merges per-project entries alongside global routing" do
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: nil,
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: [ForemanServer.TaskProviders.BeadsAdapter]
+    )
+
+    name = :task_provider_registry_snapshot_per_project
+    start_supervised!({Registry, [name: name]}, id: name)
+
+    :ok =
+      GenServer.call(
+        name,
+        {:register_for_project, "project-1", CompatibleProvider,
+         %{
+           "database_path" => "/tmp/project-1.db"
+         }}
+      )
+
+    snapshot = GenServer.call(name, :routing_snapshot)
+
+    assert snapshot.beads == ForemanServer.TaskProviders.BeadsAdapter
+    assert snapshot["project-1"] == CompatibleProvider
   end
 
   test "register rejects incompatible contract versions" do
@@ -291,7 +319,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
            }
   end
 
-  test "available?/0 filtering removes unavailable providers" do
+  test "global register/1 accepts unavailable providers without filtering them out" do
     Application.put_env(
       :foreman_server,
       :task_provider,
@@ -302,8 +330,108 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     start_supervised!(Registry)
 
-    assert {:error, :unavailable} = Registry.register(UnavailableProvider)
-    refute Map.has_key?(Registry.routing_snapshot(), :unavailable)
+    assert {:ok, UnavailableProvider} = Registry.register(UnavailableProvider)
+    assert Registry.routing_snapshot().unavailable == UnavailableProvider
+    assert {:ok, UnavailableProvider} = Registry.route(:claim, :unavailable)
+  end
+
+  test "register_for_project/3 stores per-project routing and route/2 with tuple key returns the provider" do
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: nil,
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: []
+    )
+
+    start_supervised!(Registry)
+
+    assert :ok =
+             Registry.register_for_project("project-1", CompatibleProvider, %{
+               "database_path" => "/tmp/project-1.db"
+             })
+
+    assert {:ok, CompatibleProvider} = Registry.route(:claim, {"project-1", "/tmp/project-1.db"})
+
+    assert :sys.get_state(Registry).per_project == %{
+             "project-1" =>
+               {:active,
+                %{
+                  provider_module: CompatibleProvider,
+                  config: %{"database_path" => "/tmp/project-1.db"}
+                }}
+           }
+  end
+
+  test "register_for_project/3 rejects unavailable providers and unregister_for_project/2 marks unavailable" do
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: nil,
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: []
+    )
+
+    start_supervised!(Registry)
+
+    assert {:error, :unavailable} =
+             Registry.register_for_project("project-1", UnavailableProvider, %{
+               "database_path" => "/tmp/project-1.db"
+             })
+
+    assert :ok =
+             Registry.register_for_project("project-1", CompatibleProvider, %{
+               "database_path" => "/tmp/project-1.db"
+             })
+
+    assert :ok = Registry.unregister_for_project("project-1", :database_not_found)
+
+    assert {:error, :provider_unavailable_for_project} =
+             Registry.route(:claim, {"project-1", "/tmp/project-1.db"})
+
+    # Recovery: re-registering restores routing.
+    assert :ok =
+             Registry.register_for_project("project-1", CompatibleProvider, %{
+               "database_path" => "/tmp/project-1.db"
+             })
+
+    assert {:ok, CompatibleProvider} =
+             Registry.route(:claim, {"project-1", "/tmp/project-1.db"})
+  end
+
+  test "route/2 returns database_path_mismatch when the project database_path differs" do
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: nil,
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: []
+    )
+
+    start_supervised!(Registry)
+
+    :ok =
+      Registry.register_for_project("project-1", CompatibleProvider, %{
+        "database_path" => "/tmp/project-1.db"
+      })
+
+    assert {:error, :database_path_mismatch} =
+             Registry.route(:claim, {"project-1", "/tmp/other.db"})
+  end
+
+  test "route/2 returns task_provider_not_configured for projects that were never registered" do
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: nil,
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: []
+    )
+
+    start_supervised!(Registry)
+
+    assert {:error, :task_provider_not_configured} =
+             Registry.route(:claim, {"project-ghost", "/tmp/ghost.db"})
   end
 
   test "restart-redundancy re-registers config providers" do

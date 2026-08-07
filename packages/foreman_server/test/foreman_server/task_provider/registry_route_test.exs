@@ -137,11 +137,15 @@ defmodule ForemanServer.TaskProvider.RegistryRouteTest do
     assert {:error, :contract_version_mismatch} = Registry.register(ContractVersionStubV999)
   end
 
-  test "available?/0 filtering at registration" do
-    assert {:error, :unavailable} = Registry.register(UnavailableStub)
+  test "global register/1 keeps unavailable providers in the routing snapshot" do
+    assert {:ok, UnavailableStub} = Registry.register(UnavailableStub)
 
-    assert Registry.routing_snapshot() == %{beads: BeadsAdapter}
-    refute Map.has_key?(Registry.routing_snapshot(), :unavailable_stub)
+    assert Registry.routing_snapshot() == %{
+             beads: BeadsAdapter,
+             unavailable_stub: UnavailableStub
+           }
+
+    assert {:ok, UnavailableStub} = Registry.route(:claim, :unavailable_stub)
   end
 
   test "both :claim and :reopen round-trip through route/2" do
