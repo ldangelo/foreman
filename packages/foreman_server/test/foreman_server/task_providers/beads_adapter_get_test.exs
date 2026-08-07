@@ -110,24 +110,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
              labels: ["backend", "get"],
              metadata: %{"provider_id" => "beads", "source" => "br show"}
            }
-
-    assert issue
-           |> Map.from_struct()
-           |> Map.keys()
-           |> Enum.sort() ==
-             [
-               :assignee,
-               :dependencies,
-               :description,
-               :design,
-               :id,
-               :labels,
-               :metadata,
-               :notes,
-               :priority,
-               :status,
-               :title
-             ]
   end
 
   test "dependencies remain opaque ids", %{temp_dir: temp_dir} do

@@ -113,6 +113,49 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
            }
   end
 
+  test "exact br dep add argv shape is preserved and success prepends the new dependency", %{
+    temp_dir: temp_dir
+  } do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/add-dep/argv.db"
+    project_config = register_project!("proj-add-dep-argv", cached_database_path)
+
+    payload = %{
+      "id" => "bead-707",
+      "title" => "Preserve argv order",
+      "status" => "blocked",
+      "priority" => 3,
+      "dependencies" => ["opaque:dep-4", "opaque:dep-2"],
+      "assignee" => nil,
+      "description" => nil,
+      "notes" => nil,
+      "design" => nil,
+      "labels" => [],
+      "metadata" => %{}
+    }
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request ==
+               {:add_dependency, %{dependent_id: "bead-707", dependency_id: "opaque:dep-4"}}
+
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["dep", "add", "bead-707", "opaque:dep-4", "--json", "--db", cached_database_path]
+      )
+
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
+
+    assert {:ok, %Issue{dependencies: ["opaque:dep-4", "opaque:dep-2"]}} =
+             BeadsAdapter.add_dependency("bead-707", "opaque:dep-4", project_config)
+  end
+
   test "br error envelope returns mapped ProviderError", %{temp_dir: temp_dir} do
     start_schema_cache!()
 
@@ -235,9 +278,16 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterAddDependencyTest do
     assert dependency_error.context.stderr_byte_count == 0
   end
 
-  test "dependency id outside id_format returns INVALID_TASK_ID without invoking br" do
+  test "dependency id outside id_format returns INVALID_TASK_ID before argv construction" do
     assert %{id_format: id_format} = BeadsAdapter.capabilities()
     refute Regex.match?(Regex.compile!(id_format), "bad dep")
+
+    expect(BrRunnerMock, :cmd, 0, fn request, project_config, opts ->
+      flunk(
+        "BrRunnerMock.cmd/3 must not be invoked for invalid dependency id format: " <>
+          inspect({request, project_config, opts})
+      )
+    end)
 
     assert {:error, %ProviderError{} = provider_error} =
              BeadsAdapter.add_dependency("bead-705", "bad dep", %{
