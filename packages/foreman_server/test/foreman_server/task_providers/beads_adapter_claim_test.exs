@@ -4,9 +4,12 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
   import Mox
 
   alias ForemanServer.TaskProvider.Issue
+  alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.TaskProviders.BeadsAdapter
   alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.JsonSchemaCache
+  alias ForemanServer.TaskProviders.ProviderError
+  alias ForemanServer.TaskProviders.SystemBrRunner
 
   @cache_name :foreman_server_json_schema_cache
 
@@ -19,24 +22,59 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
   setup :verify_on_exit!
 
   setup do
+    previous_config = Application.get_env(:foreman_server, :task_provider, [])
+
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      actor: nil,
+      accepted_contract_versions: ["br.capabilities.v1"],
+      providers: []
+    )
+
     stop_schema_cache()
+    start_supervised!(Registry)
 
     stub(BrRunnerMock, :cmd, fn request, project_config, opts ->
       flunk("unexpected BrRunnerMock.cmd/3 call: #{inspect({request, project_config, opts})}")
     end)
 
-    on_exit(&stop_schema_cache/0)
+    temp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "beads_adapter_claim_test_#{System.unique_integer([:positive, :monotonic])}"
+      )
 
-    :ok
+    File.mkdir_p!(temp_dir)
+    original_path = System.get_env("PATH") || ""
+
+    on_exit(fn ->
+      Application.put_env(:foreman_server, :task_provider, previous_config)
+      System.put_env("PATH", original_path)
+      stop_schema_cache()
+      File.rm_rf!(temp_dir)
+    end)
+
+    {:ok, temp_dir: temp_dir}
   end
 
-  test "claim/3 returns an in_progress Issue on success" do
+  test "claim/3 returns an in_progress Issue with the actor as assignee", %{temp_dir: temp_dir} do
     start_schema_cache!()
 
-    expect(BrRunnerMock, :cmd, 1, fn request, project_config, opts ->
+    cached_database_path = "/abs/path"
+    project_config = register_project!("proj-claim-success", cached_database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:update, %{flags: ["--claim", "bead-101"]}}
-      assert project_config == %{database_path: "/abs/path"}
+      assert runner_project_config == project_config
       assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["update", "--db", cached_database_path, "--claim", "bead-101", "--json"]
+      )
 
       {:ok,
        %{
@@ -47,18 +85,42 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
     end)
 
     assert {:ok, %Issue{} = issue} =
-             BeadsAdapter.claim("bead-101", "foreman-actor", %{database_path: "/abs/path"})
+             BeadsAdapter.claim("bead-101", "foreman-actor", project_config)
 
-    assert issue.status == "in_progress"
-    assert issue.assignee == "foreman-actor"
-    assert issue.id == "bead-101"
-    assert issue.dependents == []
+    assert issue == %Issue{
+             id: "bead-101",
+             title: "Claim TRD-013",
+             status: "in_progress",
+             priority: 2,
+             dependencies: ["dep-1"],
+             dependents: [],
+             assignee: "foreman-actor",
+             description: "Claimed issue payload",
+             notes: "Keep cached paths verbatim",
+             design: "Map to Issue struct",
+             labels: ["backend", "claim"],
+             metadata: %{"provider_id" => "beads", "source" => "br update"}
+           }
   end
 
-  test "claim/3 routes NOT_CLAIMABLE through CodeMap as non-retryable" do
-    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", "bead-102"]}},
-                                     %{database_path: "/abs/path"},
-                                     [timeout_ms: 30_000] ->
+  test "claim/3 routes NOT_CLAIMABLE through CodeMap as non-retryable", %{temp_dir: temp_dir} do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/path"
+    project_config = register_project!("proj-claim-not-claimable", cached_database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", "bead-102"]}}
+      assert runner_project_config == project_config
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["update", "--db", cached_database_path, "--claim", "bead-102", "--json"]
+      )
+
       {:error,
        %{
          stdout: "",
@@ -73,17 +135,34 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
        }}
     end)
 
-    assert {:error, %{code: "NOT_CLAIMABLE"} = provider_error} =
-             BeadsAdapter.claim("bead-102", "foreman-actor", %{database_path: "/abs/path"})
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.claim("bead-102", "foreman-actor", project_config)
 
+    assert provider_error.code == "NOT_CLAIMABLE"
     assert provider_error.retryable? == false
+    assert provider_error.context.command == "br update"
     assert provider_error.context.exit_code == 2
   end
 
-  test "claim/3 routes CLAIMED_BY_OTHER without exposing the assignee value" do
-    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", "bead-102b"]}},
-                                     %{database_path: "/abs/path"},
-                                     [timeout_ms: 30_000] ->
+  test "claim/3 routes CLAIMED_BY_OTHER without exposing the assignee value",
+       %{temp_dir: temp_dir} do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/path"
+    project_config = register_project!("proj-claim-claimed-by-other", cached_database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", "bead-102b"]}}
+      assert runner_project_config == project_config
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["update", "--db", cached_database_path, "--claim", "bead-102b", "--json"]
+      )
+
       {:error,
        %{
          stdout: "",
@@ -99,21 +178,36 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
        }}
     end)
 
-    assert {:error, %{code: "CLAIMED_BY_OTHER"} = provider_error} =
-             BeadsAdapter.claim("bead-102b", "foreman-actor", %{database_path: "/abs/path"})
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.claim("bead-102b", "foreman-actor", project_config)
 
+    assert provider_error.code == "CLAIMED_BY_OTHER"
     assert provider_error.retryable? == true
     assert provider_error.context.current_assignee_present? == true
     assert "current_assignee" in provider_error.context.redacted_fields
+    refute Map.has_key?(provider_error.context, :current_assignee)
     refute inspect(provider_error) =~ "secret-owner"
   end
 
-  test "claim/3 returns SCHEMA_VALIDATION_FAILED when the claimed issue payload is malformed" do
+  test "claim/3 returns SCHEMA_VALIDATION_FAILED when the claimed issue payload is malformed",
+       %{temp_dir: temp_dir} do
     start_schema_cache!()
 
-    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", "bead-103"]}},
-                                     %{database_path: "/abs/path"},
-                                     [timeout_ms: 30_000] ->
+    cached_database_path = "/abs/path"
+    project_config = register_project!("proj-claim-schema-validation", cached_database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", "bead-103"]}}
+      assert runner_project_config == project_config
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["update", "--db", cached_database_path, "--claim", "bead-103", "--json"]
+      )
+
       {:ok,
        %{
          stdout: Jason.encode!(%{"id" => "bead-103", "status" => "in_progress"}),
@@ -122,38 +216,35 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
        }}
     end)
 
-    assert {:error, %{code: "SCHEMA_VALIDATION_FAILED"} = provider_error} =
-             BeadsAdapter.claim("bead-103", "foreman-actor", %{database_path: "/abs/path"})
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.claim("bead-103", "foreman-actor", project_config)
 
+    assert provider_error.code == "SCHEMA_VALIDATION_FAILED"
+    assert provider_error.context.command == "br update"
     assert "title" in provider_error.context.missing_fields
   end
 
   test "claim/3 returns INVALID_TASK_ID without calling br for empty task ids" do
-    assert {:error, %{code: "INVALID_TASK_ID"}} =
-             BeadsAdapter.claim("   ", "foreman-actor", %{database_path: "/abs/path"})
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.claim("   ", "foreman-actor", %{"database_path" => "/abs/path"})
+
+    assert provider_error.code == "INVALID_TASK_ID"
+    assert provider_error.retryable? == false
   end
 
-  test "claim/3 consumes the cached database_path verbatim" do
-    start_schema_cache!()
-
-    cached_database_path = "/tmp/foreman/cache/../claimed.sqlite3"
-
-    expect(BrRunnerMock, :cmd, 1, fn request, project_config, [timeout_ms: 30_000] ->
-      assert request == {:update, %{flags: ["--claim", "bead-104"]}}
-      assert project_config == %{"database_path" => cached_database_path}
-
-      {:ok,
-       %{
-         stdout: Jason.encode!(issue_payload(%{"id" => "bead-104", "status" => "in_progress"})),
-         stderr: "",
-         exit_code: 0
-       }}
-    end)
-
-    assert {:ok, %Issue{id: "bead-104", status: "in_progress", dependents: []}} =
-             BeadsAdapter.claim("bead-104", "foreman-actor", %{
-               "database_path" => cached_database_path
+  defp register_project!(project_id, database_path) do
+    assert :ok =
+             Registry.register_for_project(project_id, BeadsAdapter, %{
+               "database_path" => database_path
              })
+
+    assert Registry.routing_snapshot()[project_id] == BeadsAdapter
+
+    assert {:active, %{provider_module: BeadsAdapter, config: project_config}} =
+             :sys.get_state(Registry).per_project[project_id]
+
+    assert project_config == %{"database_path" => database_path}
+    project_config
   end
 
   defp start_schema_cache! do
@@ -248,6 +339,42 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
         "commands" => %{"type" => "array"}
       }
     }
+  end
+
+  defp assert_translated_argv(temp_dir, request, project_config, expected_argv) do
+    with_fake_br(
+      temp_dir,
+      """
+      for arg in "$@"; do
+        printf '%s\\n' "$arg"
+      done
+      """,
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd(request, project_config)
+
+        assert String.split(stdout, "\n", trim: true) == expected_argv
+      end
+    )
+  end
+
+  defp write_fake_br!(temp_dir, body) do
+    script_path = Path.join(temp_dir, "br")
+
+    File.write!(script_path, "#!/bin/sh\nset -eu\n#{body}\n")
+    File.chmod!(script_path, 0o755)
+  end
+
+  defp with_fake_br(temp_dir, body, fun) do
+    original_path = System.get_env("PATH") || ""
+    write_fake_br!(temp_dir, body)
+    System.put_env("PATH", temp_dir <> ":" <> original_path)
+
+    try do
+      fun.()
+    after
+      System.put_env("PATH", original_path)
+    end
   end
 
   defp stop_schema_cache do
