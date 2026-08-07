@@ -10,9 +10,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                  __DIR__
                )
 
-  test "17-row mapping is deterministic per Foreman.code" do
+  test "18-row mapping is deterministic per Foreman.code" do
     rows = mapping_rows()
-    assert length(rows) == 17
+    assert length(rows) == 18
 
     Enum.each(rows, fn %{br_code: br_code, foreman_code: foreman_code, retryable?: retryable?} ->
       input =
@@ -81,6 +81,24 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
 
     assert byte_size(message) > 0
   end
+
+  test "ALREADY_OPEN row maps to ALREADY_TERMINAL and remains non-retryable" do
+    provider_error =
+      CodeMap.build_provider_error(
+        ProviderErrorInput.from_local(
+          "ALREADY_OPEN",
+          "ignored envelope message",
+          "ignored envelope hint",
+          true
+        ),
+        "br update",
+        17
+      )
+
+    assert is_struct(provider_error, ProviderError)
+    assert provider_error.code == "ALREADY_TERMINAL"
+    assert provider_error.retryable? == false
+    assert byte_size(provider_error.message) > 0
 
   test "CLAIMED_BY_OTHER only surfaces current_assignee presence" do
     assert %ProviderError{

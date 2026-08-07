@@ -19,6 +19,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
       retryable?: false
     },
     "ALREADY_CLOSED" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
+    "ALREADY_OPEN" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "INVALID_PRIORITY" => %{foreman_code: "INVALID_PRIORITY", retryable?: false},
     "VALIDATION_FAILED" => %{foreman_code: "VALIDATION_FAILED", retryable?: false},
     "SCHEMA_VALIDATION_FAILED" => %{foreman_code: "SCHEMA_VALIDATION_FAILED", retryable?: false},
