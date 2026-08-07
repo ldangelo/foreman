@@ -229,9 +229,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
     end
   end
 
-  test "unimplemented callbacks return {:error, :not_implemented}" do
-    assert BeadsAdapter.get("issue-1", %{}) == {:error, :not_implemented}
-    assert BeadsAdapter.reopen("issue-1", "retry", %{}) == {:error, :not_implemented}
+  test "remaining unimplemented callbacks return {:error, :not_implemented}" do
     assert BeadsAdapter.add_dependency("issue-1", "issue-2", %{}) == {:error, :not_implemented}
   end
 

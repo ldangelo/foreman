@@ -781,7 +781,195 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def get(_id, _opts), do: {:error, :not_implemented}
+  def get(task_id, project_config) when is_map(project_config),
+    do: get(project_config, task_id, [])
+
+  def get(project_config, task_id) when is_map(project_config),
+    do: get(project_config, task_id, [])
+
+  def get(project_config, task_id, opts) when is_map(project_config) and is_list(opts) do
+    if is_binary(task_id) and String.trim(task_id) != "" do
+      database_path =
+        case project_config do
+          %{database_path: cached_path} when is_binary(cached_path) ->
+            cached_path
+
+          %{"database_path" => cached_path} when is_binary(cached_path) ->
+            cached_path
+
+          other ->
+            raise ArgumentError,
+                  "expected project_config with binary :database_path, got: #{inspect(other)}"
+        end
+
+      request = {:show, %{id: task_id, database_path: database_path}}
+      argv = ["show", "--db", database_path, task_id, "--json"]
+      timeout_ms = Keyword.get(opts, :timeout_ms, 30_000)
+
+      case @runner.cmd(request, project_config, timeout_ms: timeout_ms) do
+        {:ok, %{stdout: stdout}} ->
+          parse_get_issue_response(stdout, argv)
+
+        {:error, %{stdout: stdout, stderr: stderr} = result} ->
+          {:error, build_get_error(stdout, stderr, result, argv)}
+      end
+    else
+      {:error,
+       CodeMap.build_provider_error(
+         ProviderErrorInput.from_local(
+           "INVALID_TASK_ID",
+           "Issue identifier must be a non-empty string.",
+           "Pass a non-empty Beads issue identifier before retrying.",
+           false
+         ),
+         nil,
+         0
+       )}
+    end
+  end
+
+  defp parse_get_issue_response(stdout, argv) when is_binary(stdout) do
+    case String.trim(stdout) do
+      "" ->
+        {:error, build_get_parse_error(argv)}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, %{} = payload} ->
+            parse_get_issue_payload(payload, argv)
+
+          {:ok, _other} ->
+            {:error,
+             build_get_contract_error(
+               "Beads issue-details payload must decode to a JSON object.",
+               argv
+             )}
+
+          {:error, _reason} ->
+            {:error, build_get_parse_error(argv)}
+        end
+    end
+  end
+
+  defp parse_get_issue_response(_stdout, argv) do
+    {:error, build_get_parse_error(argv)}
+  end
+
+  defp parse_get_issue_payload(%{} = payload, argv) do
+    with :ok <- JsonSchemaCache.validate(:issue_details, payload),
+         {:ok, id} <- fetch_required_string(payload, :id),
+         {:ok, title} <- fetch_required_string(payload, :title),
+         {:ok, status} <- fetch_required_string(payload, :status),
+         {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
+         {:ok, dependencies} <-
+           parse_opaque_string_list(fetch_payload_value(payload, :dependencies), :dependencies),
+         {:ok, assignee} <-
+           parse_optional_string(fetch_payload_value(payload, :assignee), :assignee),
+         {:ok, description} <-
+           parse_optional_string(fetch_payload_value(payload, :description), :description),
+         {:ok, notes} <- parse_optional_string(fetch_payload_value(payload, :notes), :notes),
+         {:ok, design} <- parse_optional_string(fetch_payload_value(payload, :design), :design),
+         {:ok, labels} <-
+           parse_opaque_string_list(fetch_payload_value(payload, :labels), :labels),
+         {:ok, metadata} <- parse_metadata(fetch_payload_value(payload, :metadata)) do
+      {:ok,
+       %Issue{
+         id: id,
+         title: title,
+         status: status,
+         priority: priority,
+         dependencies: dependencies,
+         assignee: assignee,
+         description: description,
+         notes: notes,
+         design: design,
+         labels: labels,
+         metadata: metadata
+       }}
+    else
+      {:error, errors} when is_list(errors) ->
+        {:error, build_get_validation_error(errors, argv)}
+
+      {:error, provider_error} ->
+        {:error, provider_error}
+    end
+  end
+
+  defp parse_get_issue_payload(_payload, argv) do
+    {:error, build_get_contract_error("Beads issue-details payload must be a JSON object.", argv)}
+  end
+
+  defp build_get_error(stdout, stderr, result, argv) do
+    stderr_byte_count = byte_size(stderr)
+    command = scrubbed_get_command(argv)
+
+    case parse_br_error_envelope(stderr, stdout) do
+      {:ok, envelope} ->
+        envelope
+        |> ProviderErrorInput.from_br_envelope()
+        |> CodeMap.build_provider_error(command, stderr_byte_count)
+
+      :error ->
+        CodeMap.build_provider_error(
+          ProviderErrorInput.from_local(
+            "BR_PARSE_ERROR",
+            "Beads CLI returned an unreadable error envelope.",
+            "Verify the installed br version and retry.",
+            false
+          ),
+          command,
+          stderr_byte_count
+        )
+    end
+    |> maybe_put_exit_code(result)
+  end
+
+  defp build_get_validation_error(errors, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "VALIDATION_FAILED",
+        "Beads issue-details payload failed schema validation.",
+        "Refresh the cached schema or re-fetch the Beads payload.",
+        false,
+        missing_fields_from(errors)
+      ),
+      scrubbed_get_command(argv),
+      0
+    )
+  end
+
+  defp build_get_contract_error(message, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_CONTRACT_MISMATCH",
+        message,
+        "Update the adapter or install a supported Beads CLI version.",
+        false
+      ),
+      scrubbed_get_command(argv),
+      0
+    )
+  end
+
+  defp build_get_parse_error(argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_PARSE_ERROR",
+        "Beads issue-details payload could not be parsed.",
+        "Check the Beads output format or refresh the CLI contract cache.",
+        false
+      ),
+      scrubbed_get_command(argv),
+      0
+    )
+  end
+
+  defp scrubbed_get_command(argv) do
+    argv
+    |> TaskProviderTelemetry.scrub_argv()
+    |> then(&["br" | &1])
+    |> Enum.join(" ")
+  end
 
   @impl true
   def claim(task_id, actor, project_config) do
@@ -1047,7 +1235,275 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def reopen(_id, _actor, _opts), do: {:error, :not_implemented}
+  def reopen(task_id, _transition_comment, project_config) when is_map(project_config) do
+    if is_binary(task_id) and String.trim(task_id) != "" do
+      database_path =
+        case project_config do
+          %{database_path: cached_path} when is_binary(cached_path) ->
+            cached_path
+
+          %{"database_path" => cached_path} when is_binary(cached_path) ->
+            cached_path
+
+          other ->
+            raise ArgumentError,
+                  "expected project_config with binary :database_path, got: #{inspect(other)}"
+        end
+
+      request =
+        {:update,
+         %{
+           flags: [task_id, "--status", "open"],
+           database_path: database_path
+         }}
+
+      argv = ["update", "--db", database_path, task_id, "--status", "open", "--json"]
+
+      case @runner.cmd(request, %{database_path: database_path}, timeout_ms: 30_000) do
+        {:ok, %{stdout: stdout}} ->
+          parse_reopened_issue_response(stdout, task_id, argv)
+
+        {:error, %{stdout: stdout, stderr: stderr} = result} ->
+          build_reopen_error(stdout, stderr, result, argv)
+      end
+    else
+      {:error,
+       CodeMap.build_provider_error(
+         ProviderErrorInput.from_local(
+           "INVALID_TASK_ID",
+           "Issue identifier must be a non-empty string.",
+           "Pass the Beads task identifier returned by the provider.",
+           false
+         ),
+         nil,
+         0
+       )}
+    end
+  end
+
+  defp parse_reopened_issue_response(stdout, task_id, argv) when is_binary(stdout) do
+    case String.trim(stdout) do
+      "" ->
+        {:error, build_reopen_parse_error(argv)}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, %{} = payload} ->
+            parse_reopened_issue_payload(payload, task_id, argv)
+
+          {:ok, _other} ->
+            {:error,
+             build_reopen_contract_error(
+               "Beads reopened issue payload must decode to a JSON object.",
+               argv
+             )}
+
+          {:error, _reason} ->
+            {:error, build_reopen_parse_error(argv)}
+        end
+    end
+  end
+
+  defp parse_reopened_issue_response(_stdout, _task_id, argv) do
+    {:error, build_reopen_parse_error(argv)}
+  end
+
+  defp parse_reopened_issue_payload(payload, task_id, argv) when is_map(payload) do
+    with :ok <- JsonSchemaCache.validate(:reopened_issue, payload),
+         {:ok, id} <- fetch_reopen_required_string(payload, :id, argv),
+         {:ok, title} <- fetch_reopen_optional_string(payload, :title, task_id, argv),
+         {:ok, priority} <- parse_reopen_priority(fetch_payload_value(payload, :priority), argv),
+         {:ok, dependencies} <-
+           parse_reopen_string_list(
+             fetch_payload_value(payload, :dependencies),
+             :dependencies,
+             argv
+           ),
+         {:ok, assignee} <- fetch_reopen_optional_string(payload, :assignee, nil, argv),
+         {:ok, description} <- fetch_reopen_optional_string(payload, :description, nil, argv),
+         {:ok, notes} <- fetch_reopen_optional_string(payload, :notes, nil, argv),
+         {:ok, design} <- fetch_reopen_optional_string(payload, :design, nil, argv),
+         {:ok, labels} <-
+           parse_reopen_string_list(fetch_payload_value(payload, :labels), :labels, argv),
+         {:ok, metadata} <- parse_reopen_metadata(fetch_payload_value(payload, :metadata), argv) do
+      {:ok,
+       %Issue{
+         id: id,
+         title: title,
+         status: "open",
+         priority: priority,
+         dependencies: dependencies,
+         assignee: assignee,
+         description: description,
+         notes: notes,
+         design: design,
+         labels: labels,
+         metadata: metadata
+       }}
+    else
+      {:error, errors} when is_list(errors) ->
+        {:error, build_reopen_schema_validation_error(errors, argv)}
+
+      {:error, provider_error} ->
+        {:error, provider_error}
+    end
+  end
+
+  defp parse_reopened_issue_payload(_payload, _task_id, argv) do
+    {:error,
+     build_reopen_contract_error("Beads reopened issue payload must be a JSON object.", argv)}
+  end
+
+  defp fetch_reopen_required_string(payload, key, argv) do
+    case fetch_payload_value(payload, key) do
+      value when is_binary(value) ->
+        {:ok, value}
+
+      _other ->
+        {:error,
+         build_reopen_contract_error(
+           "Beads reopened issue field #{inspect(key)} must be a string.",
+           argv
+         )}
+    end
+  end
+
+  defp fetch_reopen_optional_string(payload, key, default, argv) do
+    case fetch_payload_value(payload, key) do
+      nil -> {:ok, default}
+      value when is_binary(value) -> {:ok, value}
+      _other -> {:error, build_reopen_optional_string_error(key, argv)}
+    end
+  end
+
+  defp build_reopen_optional_string_error(key, argv) do
+    build_reopen_contract_error(
+      "Beads reopened issue field #{inspect(key)} must be a string or null.",
+      argv
+    )
+  end
+
+  defp parse_reopen_priority(nil, _argv), do: {:ok, 0}
+  defp parse_reopen_priority(value, _argv) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp parse_reopen_priority(_value, argv) do
+    {:error,
+     build_reopen_contract_error(
+       "Beads reopened issue field :priority must be a non-negative integer.",
+       argv
+     )}
+  end
+
+  defp parse_reopen_string_list(nil, _field, _argv), do: {:ok, []}
+
+  defp parse_reopen_string_list(values, field, argv) when is_list(values) do
+    if Enum.all?(values, &is_binary/1) do
+      {:ok, values}
+    else
+      {:error,
+       build_reopen_contract_error(
+         "Beads reopened issue field #{inspect(field)} must be a list of strings.",
+         argv
+       )}
+    end
+  end
+
+  defp parse_reopen_string_list(_values, field, argv) do
+    {:error,
+     build_reopen_contract_error(
+       "Beads reopened issue field #{inspect(field)} must be a list of strings.",
+       argv
+     )}
+  end
+
+  defp parse_reopen_metadata(nil, _argv), do: {:ok, %{}}
+  defp parse_reopen_metadata(%{} = metadata, _argv), do: {:ok, metadata}
+
+  defp parse_reopen_metadata(_metadata, argv) do
+    {:error,
+     build_reopen_contract_error("Beads reopened issue field :metadata must be an object.", argv)}
+  end
+
+  defp build_reopen_error(stdout, stderr, result, argv) do
+    stderr_byte_count = byte_size(stderr)
+    command = scrubbed_reopen_command(argv)
+
+    case parse_br_error_envelope(stderr, stdout) do
+      {:ok, envelope} ->
+        provider_error =
+          envelope
+          |> ProviderErrorInput.from_br_envelope()
+          |> CodeMap.build_provider_error(command, stderr_byte_count)
+          |> maybe_put_exit_code(result)
+
+        if provider_error.code == "ALREADY_TERMINAL" do
+          {:ok, :already_terminal}
+        else
+          {:error, provider_error}
+        end
+
+      :error ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "BR_PARSE_ERROR",
+             "Beads CLI returned an unreadable error envelope.",
+             "Verify the installed br version and retry.",
+             false
+           ),
+           command,
+           stderr_byte_count
+         )
+         |> maybe_put_exit_code(result)}
+    end
+  end
+
+  defp build_reopen_schema_validation_error(errors, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "VALIDATION_FAILED",
+        "Beads reopened issue payload failed schema validation.",
+        "Refresh the cached schema or re-fetch the Beads payload.",
+        false,
+        missing_fields_from(errors)
+      ),
+      scrubbed_reopen_command(argv),
+      0
+    )
+  end
+
+  defp build_reopen_contract_error(message, argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_CONTRACT_MISMATCH",
+        message,
+        "Update the adapter or install a supported Beads CLI version.",
+        false
+      ),
+      scrubbed_reopen_command(argv),
+      0
+    )
+  end
+
+  defp build_reopen_parse_error(argv) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_PARSE_ERROR",
+        "Beads reopened issue payload could not be parsed.",
+        "Check the Beads output format or refresh the CLI contract cache.",
+        false
+      ),
+      scrubbed_reopen_command(argv),
+      0
+    )
+  end
+
+  defp scrubbed_reopen_command(argv) do
+    argv
+    |> TaskProviderTelemetry.scrub_argv()
+    |> then(&["br" | &1])
+    |> Enum.join(" ")
+  end
 
   @impl true
   def set_priority(id, priority, project_config) do
