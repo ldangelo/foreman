@@ -14,6 +14,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     },
     "ISSUE_NOT_FOUND" => %{foreman_code: "ISSUE_NOT_FOUND", retryable?: false},
     "ALREADY_CLOSED" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
+    "INVALID_PRIORITY" => %{foreman_code: "INVALID_PRIORITY", retryable?: false},
     "SCHEMA_VALIDATION_FAILED" => %{foreman_code: "SCHEMA_VALIDATION_FAILED", retryable?: false},
     "BR_TIMEOUT_QUEUE" => %{foreman_code: "BR_TIMEOUT_QUEUE", retryable?: true},
     "BR_TIMEOUT_SUBPROCESS" => %{foreman_code: "BR_TIMEOUT_SUBPROCESS", retryable?: true},
@@ -148,6 +149,11 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
 
   defp templates_for("ALREADY_TERMINAL") do
     {"Issue is already closed.", "Treat duplicate completion as an idempotent success."}
+  end
+
+  defp templates_for("INVALID_PRIORITY") do
+    {"Issue priority must be between 0 and 4.",
+     "Pass a Beads priority level in the inclusive range 0..4."}
   end
 
   defp templates_for("SCHEMA_VALIDATION_FAILED") do

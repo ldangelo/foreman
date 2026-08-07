@@ -11,6 +11,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ready: "ready",
     show: "show",
     update: "update",
+    set_priority: "update",
     close: "close",
     where: "where",
     schema: "schema"
@@ -76,6 +77,15 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ["br", subcommand | action_argv]
   end
 
+  defp build_argv({:set_priority, _payload} = request, _project_config) do
+    {action, payload} = validate_request!(request)
+    database_path = fetch_database_path!(payload)
+    subcommand = Map.fetch!(@action_subcommands, action)
+    action_argv = build_action_argv(action, payload)
+
+    ["br", subcommand, "--db", database_path | action_argv]
+  end
+
   defp build_argv(request, project_config) do
     {action, payload} = validate_request!(request)
     database_path = fetch_database_path!(project_config)
@@ -116,6 +126,17 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     |> maybe_append_json_flag()
   end
 
+  defp build_action_argv(:set_priority, payload) do
+    validate_payload_shape!(:set_priority, payload)
+
+    [
+      fetch_optional(payload, :id),
+      "--priority",
+      Integer.to_string(fetch_optional(payload, :priority))
+    ]
+    |> maybe_append_json_flag()
+  end
+
   defp build_action_argv(action, payload) do
     payload
     |> extract_flags!()
@@ -129,6 +150,24 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
       nil -> :ok
       subcommand when is_binary(subcommand) -> :ok
       other -> raise ArgumentError, "expected :subcommand to be a binary, got: #{inspect(other)}"
+    end
+  end
+
+  defp validate_payload_shape!(:set_priority, payload) do
+    case fetch_optional(payload, :id) do
+      id when is_binary(id) and id != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :id to be a non-empty binary, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :priority) do
+      priority when is_integer(priority) and priority in 0..4 ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :priority to be an integer in 0..4, got: #{inspect(other)}"
     end
   end
 

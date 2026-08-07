@@ -89,6 +89,21 @@ defmodule ForemanServer.TaskProvider.Telemetry do
       scrub_required?: false,
       description: "Registry.route/2 failed to resolve a provider for the requested transition."
     },
+    [:foreman_server, :task_provider, :registry, :register_for_project, :ok] => %{
+      metadata_keys: [:project_id, :provider],
+      scrub_required?: false,
+      description: "Registry registered a per-project task provider."
+    },
+    [:foreman_server, :task_provider, :registry, :register_for_project, :error] => %{
+      metadata_keys: [:project_id, :provider, :reason],
+      scrub_required?: false,
+      description: "Registry rejected a per-project task provider registration."
+    },
+    [:foreman_server, :task_provider, :registry, :unregister_for_project] => %{
+      metadata_keys: [:project_id, :reason],
+      scrub_required?: false,
+      description: "Registry removed a per-project task provider registration."
+    },
     [:foreman_server, :task_provider, :beads, :contract, :version_changed] => %{
       metadata_keys: [:previous_version, :current_version],
       scrub_required?: false,

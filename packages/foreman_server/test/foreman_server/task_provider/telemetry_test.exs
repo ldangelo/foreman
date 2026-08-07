@@ -33,6 +33,26 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
              :registry
            ]
 
+    assert taxonomy[[:foreman_server, :task_provider, :registry, :register_for_project, :ok]].metadata_keys ==
+             [
+               :project_id,
+               :provider
+             ]
+
+    assert taxonomy[
+             [:foreman_server, :task_provider, :registry, :register_for_project, :error]
+           ].metadata_keys == [
+             :project_id,
+             :provider,
+             :reason
+           ]
+
+    assert taxonomy[[:foreman_server, :task_provider, :registry, :unregister_for_project]].metadata_keys ==
+             [
+               :project_id,
+               :reason
+             ]
+
     assert taxonomy[[:foreman_server, :task_provider, :beads_adapter, :preflight, :ok]].metadata_keys ==
              [
                :argv
@@ -120,6 +140,9 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
       [:foreman_server, :task_provider, :registry, :route, :ok],
       [:foreman_server, :task_provider, :registry, :route, :error],
       [:foreman_server, :task_provider, :registry, :restarted],
+      [:foreman_server, :task_provider, :registry, :register_for_project, :ok],
+      [:foreman_server, :task_provider, :registry, :register_for_project, :error],
+      [:foreman_server, :task_provider, :registry, :unregister_for_project],
       [:foreman_server, :task_provider, :beads_adapter, :preflight, :start],
       [:foreman_server, :task_provider, :beads_adapter, :preflight, :ok],
       [:foreman_server, :task_provider, :beads_adapter, :preflight, :error],
