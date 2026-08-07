@@ -102,6 +102,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
              BeadsAdapter.claim("bead-102b", "foreman-actor", %{database_path: "/abs/path"})
 
     assert provider_error.retryable? == true
+    assert provider_error.context.current_assignee_present? == true
     assert "current_assignee" in provider_error.context.redacted_fields
     refute inspect(provider_error) =~ "secret-owner"
   end

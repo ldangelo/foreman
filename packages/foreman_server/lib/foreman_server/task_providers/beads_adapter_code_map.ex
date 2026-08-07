@@ -40,10 +40,19 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
             message: String.t(),
             hint: String.t() | nil,
             retryable?: boolean(),
+            current_assignee_present?: boolean() | nil,
             source: :br_envelope | :local,
             missing_fields: [String.t()]
           }
-    defstruct [:code, :message, :hint, :retryable?, source: :br_envelope, missing_fields: []]
+    defstruct [
+      :code,
+      :message,
+      :hint,
+      :retryable?,
+      :current_assignee_present?,
+      source: :br_envelope,
+      missing_fields: []
+    ]
 
     def from_br_envelope(br_envelope) when is_map(br_envelope) do
       %__MODULE__{
@@ -51,6 +60,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
         message: fetch_value(br_envelope, :message),
         hint: fetch_value(br_envelope, :hint),
         retryable?: fetch_value(br_envelope, :retryable?),
+        current_assignee_present?: current_assignee_present(br_envelope),
         source: :br_envelope,
         missing_fields: []
       }
@@ -72,6 +82,11 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
         %{^key => value} -> value
         _ -> Map.fetch!(map, Atom.to_string(key))
       end
+    end
+
+    defp current_assignee_present(br_envelope) do
+      Map.has_key?(br_envelope, :current_assignee) or
+        Map.has_key?(br_envelope, "current_assignee")
     end
   end
 
@@ -126,7 +141,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
       redacted_fields: redacted_fields,
       missing_fields: input.missing_fields
     }
+    |> maybe_put_current_assignee_present(input.current_assignee_present?)
   end
+
+  defp maybe_put_current_assignee_present(context, true),
+    do: Map.put(context, :current_assignee_present?, true)
+
+  defp maybe_put_current_assignee_present(context, _other), do: context
 
   defp normalize_code(code) when is_binary(code), do: code
   defp normalize_code(code) when is_atom(code), do: Atom.to_string(code)

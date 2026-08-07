@@ -8,7 +8,8 @@ defmodule ForemanServer.TaskProviders.ProviderError do
     :stderr_byte_count,
     :sanitized?,
     :redacted_fields,
-    :missing_fields
+    :missing_fields,
+    :current_assignee_present?
   ]
 
   @enforce_keys [:code, :message, :hint, :retryable?, :context]

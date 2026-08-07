@@ -3,7 +3,7 @@ defmodule ForemanServer.TaskProviders.ProviderErrorTest do
 
   alias ForemanServer.TaskProviders.ProviderError
 
-  test "accepts the 7 allowlisted context keys" do
+  test "accepts the 8 allowlisted context keys" do
     assert %ProviderError{
              code: "X",
              message: "m",
@@ -16,7 +16,8 @@ defmodule ForemanServer.TaskProviders.ProviderErrorTest do
                stderr_byte_count: 0,
                sanitized?: true,
                redacted_fields: [],
-               missing_fields: []
+               missing_fields: [],
+               current_assignee_present?: true
              }
            } =
              ProviderError.new("X", "m",
@@ -27,7 +28,8 @@ defmodule ForemanServer.TaskProviders.ProviderErrorTest do
                  stderr_byte_count: 0,
                  sanitized?: true,
                  redacted_fields: [],
-                 missing_fields: []
+                 missing_fields: [],
+                 current_assignee_present?: true
                }
              )
   end
@@ -44,6 +46,7 @@ defmodule ForemanServer.TaskProviders.ProviderErrorTest do
     assert provider_error.context.sanitized? == true
     assert provider_error.context.redacted_fields == []
     assert provider_error.context.missing_fields == []
+    refute Map.has_key?(provider_error.context, :current_assignee_present?)
   end
 
   test "missing_fields round-trips when set" do

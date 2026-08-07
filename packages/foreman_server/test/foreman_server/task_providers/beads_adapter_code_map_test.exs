@@ -82,6 +82,39 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     assert byte_size(message) > 0
   end
 
+  test "CLAIMED_BY_OTHER only surfaces current_assignee presence" do
+    assert %ProviderError{
+             code: "CLAIMED_BY_OTHER",
+             retryable?: true,
+             context: %{current_assignee_present?: true, redacted_fields: ["current_assignee"]}
+           } =
+             CodeMap.build_provider_error(
+               ProviderErrorInput.from_br_envelope(%{
+                 code: "CLAIMED_BY_OTHER",
+                 message: "raw envelope message",
+                 hint: "raw envelope hint",
+                 retryable?: false,
+                 current_assignee: "secret-owner"
+               }),
+               "br update --claim bead-102b",
+               19
+             )
+
+    refute inspect(
+             CodeMap.build_provider_error(
+               ProviderErrorInput.from_br_envelope(%{
+                 code: "CLAIMED_BY_OTHER",
+                 message: "raw envelope message",
+                 hint: "raw envelope hint",
+                 retryable?: false,
+                 current_assignee: "secret-owner"
+               }),
+               "br update --claim bead-102b",
+               19
+             )
+           ) =~ "secret-owner"
+  end
+
   test "build_provider_error/3 is the only construction site (no direct struct construction)" do
     source = code_map_source()
     assert Code.ensure_loaded?(CodeMap)
