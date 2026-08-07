@@ -10,9 +10,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                  __DIR__
                )
 
-  test "18-row mapping is deterministic per Foreman.code" do
+  test "20-row mapping is deterministic per Foreman.code" do
     rows = mapping_rows()
-    assert length(rows) == 18
+    assert length(rows) == 20
 
     Enum.each(rows, fn %{br_code: br_code, foreman_code: foreman_code, retryable?: retryable?} ->
       input =
@@ -99,6 +99,39 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     assert provider_error.code == "ALREADY_TERMINAL"
     assert provider_error.retryable? == false
     assert byte_size(provider_error.message) > 0
+  end
+
+  test "DEPENDENCY_CYCLE row maps to ProviderError{code: DEPENDENCY_CYCLE, retryable?: false}" do
+    assert %ProviderError{code: "DEPENDENCY_CYCLE", retryable?: false, message: message} =
+             CodeMap.build_provider_error(
+               ProviderErrorInput.from_local(
+                 "DEPENDENCY_CYCLE",
+                 "ignored envelope message",
+                 "ignored envelope hint",
+                 true
+               ),
+               "br dep add",
+               17
+             )
+
+    assert byte_size(message) > 0
+  end
+
+  test "DEPENDENCY_EXISTS row maps to ProviderError{code: DEPENDENCY_EXISTS, retryable?: false}" do
+    assert %ProviderError{code: "DEPENDENCY_EXISTS", retryable?: false, message: message} =
+             CodeMap.build_provider_error(
+               ProviderErrorInput.from_local(
+                 "DEPENDENCY_EXISTS",
+                 "ignored envelope message",
+                 "ignored envelope hint",
+                 true
+               ),
+               "br dep add",
+               17
+             )
+
+    assert byte_size(message) > 0
+  end
 
   test "CLAIMED_BY_OTHER only surfaces current_assignee presence" do
     assert %ProviderError{

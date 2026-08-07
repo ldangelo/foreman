@@ -13,6 +13,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
   @expected_capabilities %{
     provider_id: :beads,
     contract_version: "br.capabilities.v1",
+    id_format: "^[A-Za-z0-9][A-Za-z0-9:_-]*$",
     supports: [
       :claim,
       :close,
@@ -227,10 +228,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
 
       assert {:ok, []} == BeadsAdapter.list_ready(%{database_path: "/abs/path"}, [])
     end
-  end
-
-  test "remaining unimplemented callbacks return {:error, :not_implemented}" do
-    assert BeadsAdapter.add_dependency("issue-1", "issue-2", %{}) == {:error, :not_implemented}
   end
 
   defp start_schema_cache! do

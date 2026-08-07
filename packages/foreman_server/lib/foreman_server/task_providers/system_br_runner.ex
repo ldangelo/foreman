@@ -12,6 +12,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     show: "show",
     update: "update",
     set_priority: "update",
+    add_dependency: "dep",
     close: "close",
     where: "where",
     schema: "schema"
@@ -86,6 +87,14 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ["br", subcommand, "--db", database_path | action_argv]
   end
 
+  defp build_argv({:add_dependency, _payload} = request, project_config) do
+    {action, payload} = validate_request!(request)
+    database_path = fetch_database_path!(project_config)
+    action_argv = build_action_argv(action, payload)
+
+    ["br" | action_argv] ++ ["--json", "--db", database_path]
+  end
+
   defp build_argv(request, project_config) do
     {action, payload} = validate_request!(request)
     database_path = fetch_database_path!(project_config)
@@ -137,6 +146,17 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     |> maybe_append_json_flag()
   end
 
+  defp build_action_argv(:add_dependency, payload) do
+    validate_payload_shape!(:add_dependency, payload)
+
+    [
+      "dep",
+      "add",
+      fetch_optional(payload, :dependent_id),
+      fetch_optional(payload, :dependency_id)
+    ]
+  end
+
   defp build_action_argv(action, payload) do
     payload
     |> extract_flags!()
@@ -168,6 +188,26 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
 
       other ->
         raise ArgumentError, "expected :priority to be an integer in 0..4, got: #{inspect(other)}"
+    end
+  end
+
+  defp validate_payload_shape!(:add_dependency, payload) do
+    case fetch_optional(payload, :dependent_id) do
+      dependent_id when is_binary(dependent_id) and dependent_id != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "expected :dependent_id to be a non-empty binary, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :dependency_id) do
+      dependency_id when is_binary(dependency_id) and dependency_id != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "expected :dependency_id to be a non-empty binary, got: #{inspect(other)}"
     end
   end
 

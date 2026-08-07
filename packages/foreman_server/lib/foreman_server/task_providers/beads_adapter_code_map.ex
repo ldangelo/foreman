@@ -21,6 +21,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     "ALREADY_CLOSED" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "ALREADY_OPEN" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "INVALID_PRIORITY" => %{foreman_code: "INVALID_PRIORITY", retryable?: false},
+    "DEPENDENCY_CYCLE" => %{foreman_code: "DEPENDENCY_CYCLE", retryable?: false},
+    "DEPENDENCY_EXISTS" => %{foreman_code: "DEPENDENCY_EXISTS", retryable?: false},
     "VALIDATION_FAILED" => %{foreman_code: "VALIDATION_FAILED", retryable?: false},
     "SCHEMA_VALIDATION_FAILED" => %{foreman_code: "SCHEMA_VALIDATION_FAILED", retryable?: false},
     "BR_ERROR_ENVELOPE" => %{foreman_code: "BR_ERROR_ENVELOPE", retryable?: false},
@@ -195,8 +197,18 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
      "Pass a Beads priority level in the inclusive range 0..4."}
   end
 
+  defp templates_for("DEPENDENCY_CYCLE") do
+    {"Dependency edge would create a cycle.",
+     "Choose a dependency that does not reference the issue itself or any of its descendants."}
+  end
+
+  defp templates_for("DEPENDENCY_EXISTS") do
+    {"Dependency edge already exists.",
+     "Treat duplicate dependency insertion as an idempotent no-op or remove the existing edge first."}
+  end
+
   defp templates_for("VALIDATION_FAILED") do
-    {"Beads fail payload failed schema validation.",
+    {"Beads updated issue payload failed schema validation.",
      "Refresh the cached schema or re-fetch the Beads payload."}
   end
 

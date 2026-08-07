@@ -16,6 +16,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
             :br_runner,
             ForemanServer.TaskProviders.SystemBrRunner
           )
+  @id_format_source "^[A-Za-z0-9][A-Za-z0-9:_-]*$"
+  @id_format_regex Regex.compile!(@id_format_source)
 
   @impl true
   def name, do: :beads
@@ -25,6 +27,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     %{
       provider_id: :beads,
       contract_version: "br.capabilities.v1",
+      id_format: @id_format_source,
       supports: [
         :claim,
         :close,
@@ -1572,7 +1575,305 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def add_dependency(_id, _depends_on_id, _opts), do: {:error, :not_implemented}
+  def add_dependency(dependent_id, dependency_id, project_config) do
+    add_dependency(dependent_id, dependency_id, project_config, [])
+  end
+
+  def add_dependency(dependent_id, dependency_id, project_config, opts)
+      when is_map(project_config) and is_list(opts) do
+    cond do
+      not (is_binary(dependent_id) and String.trim(dependent_id) != "") ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "INVALID_TASK_ID",
+             "Issue identifier must be a non-empty string.",
+             "Pass the Beads task identifier returned by the provider.",
+             false
+           ),
+           nil,
+           0
+         )}
+
+      not (is_binary(dependency_id) and String.trim(dependency_id) != "") ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "INVALID_TASK_ID",
+             "Issue identifier must be a non-empty string.",
+             "Pass the Beads task identifier returned by the provider.",
+             false
+           ),
+           nil,
+           0
+         )}
+
+      not Regex.match?(@id_format_regex, dependency_id) ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "INVALID_TASK_ID",
+             "Dependency issue identifier must match the Beads id_format regex.",
+             "Pass a dependency identifier matching #{@id_format_source}.",
+             false
+           ),
+           nil,
+           0
+         )}
+
+      dependent_id == dependency_id ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "DEPENDENCY_CYCLE",
+             "Dependency edge would create a cycle.",
+             "Choose a dependency that does not reference the issue itself or any of its descendants.",
+             false
+           ),
+           nil,
+           0
+         )}
+
+      true ->
+        database_path =
+          case project_config do
+            %{database_path: cached_path} when is_binary(cached_path) ->
+              cached_path
+
+            %{"database_path" => cached_path} when is_binary(cached_path) ->
+              cached_path
+
+            other ->
+              raise ArgumentError,
+                    "expected project_config with binary :database_path, got: #{inspect(other)}"
+          end
+
+        request =
+          {:add_dependency, %{dependent_id: dependent_id, dependency_id: dependency_id}}
+
+        case @runner.cmd(
+               request,
+               %{database_path: database_path},
+               Keyword.put_new(opts, :timeout_ms, 30_000)
+             ) do
+          {:ok, %{stdout: stdout}} ->
+            parse_updated_issue_response(stdout, dependency_id)
+
+          {:error, %{stdout: stdout, stderr: stderr} = result} ->
+            {:error, build_add_dependency_error(stdout, stderr, result)}
+        end
+    end
+  end
+
+  defp parse_updated_issue_response(stdout, dependency_id) when is_binary(stdout) do
+    case String.trim(stdout) do
+      "" ->
+        {:error, build_add_dependency_parse_error()}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, %{} = payload} ->
+            parse_updated_issue_payload(payload, dependency_id)
+
+          {:ok, _other} ->
+            {:error,
+             build_add_dependency_contract_error(
+               "Beads updated issue payload must decode to a JSON object."
+             )}
+
+          {:error, _reason} ->
+            {:error, build_add_dependency_parse_error()}
+        end
+    end
+  end
+
+  defp parse_updated_issue_response(_stdout, _dependency_id) do
+    {:error, build_add_dependency_parse_error()}
+  end
+
+  defp parse_updated_issue_payload(payload, dependency_id) when is_map(payload) do
+    with :ok <- JsonSchemaCache.validate(:updated_issue, payload),
+         {:ok, id} <- fetch_add_dependency_required_string(payload, :id),
+         {:ok, title} <- fetch_add_dependency_required_string(payload, :title),
+         {:ok, status} <- fetch_add_dependency_required_string(payload, :status),
+         {:ok, priority} <-
+           parse_add_dependency_priority(fetch_payload_value(payload, :priority)),
+         {:ok, dependencies} <-
+           parse_add_dependency_string_list(
+             fetch_payload_value(payload, :dependencies),
+             :dependencies
+           ),
+         {:ok, assignee} <-
+           fetch_add_dependency_optional_string(payload, :assignee, nil),
+         {:ok, description} <-
+           fetch_add_dependency_optional_string(payload, :description, nil),
+         {:ok, notes} <- fetch_add_dependency_optional_string(payload, :notes, nil),
+         {:ok, design} <- fetch_add_dependency_optional_string(payload, :design, nil),
+         {:ok, labels} <-
+           parse_add_dependency_string_list(fetch_payload_value(payload, :labels), :labels),
+         {:ok, metadata} <-
+           parse_add_dependency_metadata(fetch_payload_value(payload, :metadata)) do
+      {:ok,
+       %Issue{
+         id: id,
+         title: title,
+         status: status,
+         priority: priority,
+         dependencies: [dependency_id | Enum.reject(dependencies, &(&1 == dependency_id))],
+         assignee: assignee,
+         description: description,
+         notes: notes,
+         design: design,
+         labels: labels,
+         metadata: metadata
+       }}
+    else
+      {:error, errors} when is_list(errors) ->
+        {:error, build_add_dependency_validation_error(errors)}
+
+      {:error, provider_error} ->
+        {:error, provider_error}
+    end
+  end
+
+  defp parse_updated_issue_payload(_payload, _dependency_id) do
+    {:error,
+     build_add_dependency_contract_error("Beads updated issue payload must be a JSON object.")}
+  end
+
+  defp fetch_add_dependency_required_string(payload, key) do
+    case fetch_payload_value(payload, key) do
+      value when is_binary(value) ->
+        {:ok, value}
+
+      _other ->
+        {:error,
+         build_add_dependency_contract_error(
+           "Beads updated issue field #{inspect(key)} must be a string."
+         )}
+    end
+  end
+
+  defp fetch_add_dependency_optional_string(payload, key, default) do
+    case fetch_payload_value(payload, key) do
+      nil ->
+        {:ok, default}
+
+      value when is_binary(value) ->
+        {:ok, value}
+
+      _other ->
+        {:error,
+         build_add_dependency_contract_error(
+           "Beads updated issue field #{inspect(key)} must be a string or null."
+         )}
+    end
+  end
+
+  defp parse_add_dependency_priority(nil), do: {:ok, 0}
+
+  defp parse_add_dependency_priority(value) when is_integer(value) and value >= 0,
+    do: {:ok, value}
+
+  defp parse_add_dependency_priority(_value) do
+    {:error,
+     build_add_dependency_contract_error(
+       "Beads updated issue field :priority must be a non-negative integer."
+     )}
+  end
+
+  defp parse_add_dependency_string_list(nil, _field), do: {:ok, []}
+
+  defp parse_add_dependency_string_list(values, field) when is_list(values) do
+    if Enum.all?(values, &is_binary/1) do
+      {:ok, values}
+    else
+      {:error,
+       build_add_dependency_contract_error(
+         "Beads updated issue field #{inspect(field)} must be a list of strings."
+       )}
+    end
+  end
+
+  defp parse_add_dependency_string_list(_values, field) do
+    {:error,
+     build_add_dependency_contract_error(
+       "Beads updated issue field #{inspect(field)} must be a list of strings."
+     )}
+  end
+
+  defp parse_add_dependency_metadata(nil), do: {:ok, %{}}
+  defp parse_add_dependency_metadata(%{} = metadata), do: {:ok, metadata}
+
+  defp parse_add_dependency_metadata(_metadata) do
+    {:error,
+     build_add_dependency_contract_error("Beads updated issue field :metadata must be an object.")}
+  end
+
+  defp build_add_dependency_error(stdout, stderr, result) do
+    stderr_byte_count = byte_size(stderr)
+    command = "br dep add"
+
+    case parse_br_error_envelope(stderr, stdout) do
+      {:ok, envelope} ->
+        envelope
+        |> ProviderErrorInput.from_br_envelope()
+        |> CodeMap.build_provider_error(command, stderr_byte_count)
+
+      :error ->
+        CodeMap.build_provider_error(
+          ProviderErrorInput.from_local(
+            "BR_PARSE_ERROR",
+            "Beads CLI returned an unreadable error envelope.",
+            "Verify the installed br version and retry.",
+            false
+          ),
+          command,
+          stderr_byte_count
+        )
+    end
+    |> maybe_put_exit_code(result)
+  end
+
+  defp build_add_dependency_validation_error(errors) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "VALIDATION_FAILED",
+        "Beads updated issue payload failed schema validation.",
+        "Refresh the cached schema or re-fetch the Beads payload.",
+        false,
+        missing_fields_from(errors)
+      ),
+      "br dep add",
+      0
+    )
+  end
+
+  defp build_add_dependency_contract_error(message) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_CONTRACT_MISMATCH",
+        message,
+        "Update the adapter or install a supported Beads CLI version.",
+        false
+      ),
+      "br dep add",
+      0
+    )
+  end
+
+  defp build_add_dependency_parse_error do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "BR_PARSE_ERROR",
+        "Beads updated issue payload could not be parsed.",
+        "Check the Beads output format or refresh the CLI contract cache.",
+        false
+      ),
+      "br dep add",
+      0
+    )
+  end
 
   @doc false
   def __runner__, do: @runner
