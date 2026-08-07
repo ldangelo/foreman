@@ -66,19 +66,26 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
     cached_database_path = "/abs/get/happy.db"
     project_config = register_project!("proj-get-happy", cached_database_path)
 
-    payload = %{
-      "id" => "bead-701",
-      "title" => "Ship TRD-012",
-      "status" => "open",
-      "priority" => 2,
-      "dependencies" => ["opaque:dep-1", "dep/2"],
-      "assignee" => "operator",
-      "description" => "Fetch the issue details",
-      "notes" => "Preserve every Issue field",
-      "design" => "Map br show payload directly",
-      "labels" => ["backend", "get"],
-      "metadata" => %{"provider_id" => "beads", "source" => "br show"}
-    }
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-701",
+        "title" => "Ship TRD-012",
+        "status" => "open",
+        "priority" => 2,
+        "dependencies" => [
+          nested_issue_payload("bead-901", "D1"),
+          nested_issue_payload("bead-902", "D2")
+        ],
+        "dependents" => [
+          nested_issue_payload("bead-903", "D3")
+        ],
+        "assignee" => "operator",
+        "description" => "Fetch the issue details",
+        "notes" => "Preserve every Issue field",
+        "design" => "Map br show payload directly",
+        "labels" => ["backend", "get"],
+        "metadata" => %{"provider_id" => "beads", "source" => "br show"}
+      })
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:show, %{id: "bead-701", database_path: cached_database_path}}
@@ -97,41 +104,55 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
 
     assert {:ok, %Issue{} = issue} = BeadsAdapter.get("bead-701", project_config)
 
-    assert issue == %Issue{
-             id: "bead-701",
-             title: "Ship TRD-012",
-             status: "open",
-             priority: 2,
-             dependencies: ["opaque:dep-1", "dep/2"],
-             dependents: [],
-             assignee: "operator",
-             description: "Fetch the issue details",
-             notes: "Preserve every Issue field",
-             design: "Map br show payload directly",
-             labels: ["backend", "get"],
-             metadata: %{"provider_id" => "beads", "source" => "br show"}
-           }
+    assert issue ==
+             expected_issue("bead-701", "Ship TRD-012",
+               status: "open",
+               priority: 2,
+               dependencies: [
+                 expected_issue("bead-901", "D1"),
+                 expected_issue("bead-902", "D2")
+               ],
+               dependents: [
+                 expected_issue("bead-903", "D3")
+               ],
+               assignee: "operator",
+               description: "Fetch the issue details",
+               notes: "Preserve every Issue field",
+               design: "Map br show payload directly",
+               labels: ["backend", "get"],
+               metadata: %{"provider_id" => "beads", "source" => "br show"}
+             )
   end
 
-  test "dependencies remain opaque ids", %{temp_dir: temp_dir} do
+  test "dependencies are nested Issue objects in get path", %{temp_dir: temp_dir} do
     start_schema_cache!()
 
     cached_database_path = "/abs/get/dependencies.db"
     project_config = register_project!("proj-get-dependencies", cached_database_path)
 
-    payload = %{
-      "id" => "bead-701b",
-      "title" => "Preserve dependency identifiers",
-      "status" => "open",
-      "priority" => 3,
-      "dependencies" => ["opaque:dep-1", "dep/2", "needs-review@3"],
-      "assignee" => nil,
-      "description" => nil,
-      "notes" => "dependencies must stay opaque",
-      "design" => nil,
-      "labels" => ["blocked"],
-      "metadata" => %{"source" => "br show"}
-    }
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-701b",
+        "title" => "Map nested dependencies",
+        "status" => "blocked",
+        "priority" => 4,
+        "dependencies" => [
+          nested_issue_payload("bead-911", "Dependency 1"),
+          nested_issue_payload("bead-912", "Dependency 2", %{
+            "status" => "blocked",
+            "priority" => 3,
+            "labels" => ["blocked"],
+            "metadata" => %{"source" => "br show"}
+          })
+        ],
+        "dependents" => [],
+        "assignee" => "operator",
+        "description" => nil,
+        "notes" => "dependencies should hydrate as Issue structs",
+        "design" => nil,
+        "labels" => [],
+        "metadata" => %{"source" => "br show"}
+      })
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:show, %{id: "bead-701b", database_path: cached_database_path}}
@@ -149,7 +170,18 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
     end)
 
     assert {:ok, %Issue{} = issue} = BeadsAdapter.get("bead-701b", project_config)
-    assert issue.dependencies == ["opaque:dep-1", "dep/2", "needs-review@3"]
+
+    assert issue.dependencies == [
+             expected_issue("bead-911", "Dependency 1"),
+             expected_issue("bead-912", "Dependency 2",
+               status: "blocked",
+               priority: 3,
+               labels: ["blocked"],
+               metadata: %{"source" => "br show"}
+             )
+           ]
+
+    assert issue.dependents == []
   end
 
   test "dependents mapped to [%Issue{}] when payload contains nested issues", %{
@@ -160,20 +192,29 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
     cached_database_path = "/abs/get/dependents.db"
     project_config = register_project!("proj-get-dependents", cached_database_path)
 
-    payload = %{
-      "id" => "bead-701c",
-      "title" => "Map nested dependents",
-      "status" => "open",
-      "priority" => 1,
-      "dependencies" => [],
-      "dependents" => [%{"id" => "bead-901"}, %{"id" => "bead-902"}],
-      "assignee" => nil,
-      "description" => "dependents should hydrate as Issue structs",
-      "notes" => nil,
-      "design" => nil,
-      "labels" => ["graph"],
-      "metadata" => %{"source" => "br show"}
-    }
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-701c",
+        "title" => "Map nested dependents",
+        "status" => "open",
+        "priority" => 1,
+        "dependencies" => [],
+        "dependents" => [
+          nested_issue_payload("bead-921", "Dependent 1"),
+          nested_issue_payload("bead-922", "Dependent 2", %{
+            "status" => "blocked",
+            "priority" => 2,
+            "description" => "nested dependent",
+            "labels" => ["graph"]
+          })
+        ],
+        "assignee" => nil,
+        "description" => "dependents should hydrate as Issue structs",
+        "notes" => nil,
+        "design" => nil,
+        "labels" => ["graph"],
+        "metadata" => %{"source" => "br show"}
+      })
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:show, %{id: "bead-701c", database_path: cached_database_path}}
@@ -192,48 +233,16 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
 
     assert {:ok, %Issue{} = issue} = BeadsAdapter.get("bead-701c", project_config)
     assert issue.dependencies == []
-    assert issue.dependents == [struct(Issue, id: "bead-901"), struct(Issue, id: "bead-902")]
-  end
 
-  test "dependencies mapped to [%Issue{}] in get payload", %{temp_dir: temp_dir} do
-    start_schema_cache!()
-
-    cached_database_path = "/abs/get/nested-dependencies.db"
-    project_config = register_project!("proj-get-nested-dependencies", cached_database_path)
-
-    payload = %{
-      "id" => "bead-701d",
-      "title" => "Map nested dependencies",
-      "status" => "blocked",
-      "priority" => 4,
-      "dependencies" => [%{"id" => "bead-901"}, %{"id" => "bead-902"}],
-      "dependents" => [],
-      "assignee" => "operator",
-      "description" => nil,
-      "notes" => "dependencies should hydrate as Issue structs",
-      "design" => nil,
-      "labels" => [],
-      "metadata" => %{"source" => "br show"}
-    }
-
-    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
-      assert request == {:show, %{id: "bead-701d", database_path: cached_database_path}}
-      assert runner_project_config == project_config
-      assert opts == [timeout_ms: 30_000]
-
-      assert_translated_argv(
-        temp_dir,
-        request,
-        runner_project_config,
-        ["show", "--db", cached_database_path, "bead-701d", "--json"]
-      )
-
-      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
-    end)
-
-    assert {:ok, %Issue{} = issue} = BeadsAdapter.get("bead-701d", project_config)
-    assert issue.dependencies == [struct(Issue, id: "bead-901"), struct(Issue, id: "bead-902")]
-    assert issue.dependents == []
+    assert issue.dependents == [
+             expected_issue("bead-921", "Dependent 1"),
+             expected_issue("bead-922", "Dependent 2",
+               status: "blocked",
+               priority: 2,
+               description: "nested dependent",
+               labels: ["graph"]
+             )
+           ]
   end
 
   test "ISSUE_NOT_FOUND envelope routes through CodeMap with retryable false",
@@ -296,6 +305,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
              "status" => "open",
              "priority" => 1,
              "dependencies" => [],
+             "dependents" => [],
              "assignee" => nil,
              "description" => nil,
              "notes" => nil,
@@ -315,6 +325,90 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
     assert provider_error.retryable? == false
     assert provider_error.context.command =~ "br show"
     assert provider_error.context.missing_fields == ["title"]
+  end
+
+  test "schema validation fails when dependencies is missing" do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/get/missing-dependencies.db"
+    project_config = register_project!("proj-get-missing-dependencies", cached_database_path)
+
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-703b",
+        "title" => "Missing dependencies"
+      })
+      |> Map.delete("dependencies")
+
+    expect(BrRunnerMock, :cmd, 1, fn {:show,
+                                      %{id: "bead-703b", database_path: ^cached_database_path}},
+                                     ^project_config,
+                                     [timeout_ms: 30_000] ->
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
+
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.get("bead-703b", project_config)
+
+    assert provider_error.code == "VALIDATION_FAILED"
+    assert provider_error.retryable? == false
+    assert provider_error.context.missing_fields == ["dependencies"]
+  end
+
+  test "schema validation fails when dependents is missing" do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/get/missing-dependents.db"
+    project_config = register_project!("proj-get-missing-dependents", cached_database_path)
+
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-703c",
+        "title" => "Missing dependents"
+      })
+      |> Map.delete("dependents")
+
+    expect(BrRunnerMock, :cmd, 1, fn {:show,
+                                      %{id: "bead-703c", database_path: ^cached_database_path}},
+                                     ^project_config,
+                                     [timeout_ms: 30_000] ->
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
+
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.get("bead-703c", project_config)
+
+    assert provider_error.code == "VALIDATION_FAILED"
+    assert provider_error.retryable? == false
+    assert provider_error.context.missing_fields == ["dependents"]
+  end
+
+  test "nested dependency with missing id fails with VALIDATION_FAILED" do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/get/nested-missing-id.db"
+    project_config = register_project!("proj-get-nested-missing-id", cached_database_path)
+
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-703d",
+        "title" => "Nested dependency missing id",
+        "dependencies" => [%{}]
+      })
+
+    expect(BrRunnerMock, :cmd, 1, fn {:show,
+                                      %{id: "bead-703d", database_path: ^cached_database_path}},
+                                     ^project_config,
+                                     [timeout_ms: 30_000] ->
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
+
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.get("bead-703d", project_config)
+
+    assert provider_error.code == "VALIDATION_FAILED"
+    assert provider_error.retryable? == false
+    assert "id" in provider_error.context.missing_fields
   end
 
   test "empty task_id returns INVALID_TASK_ID without invoking br" do
@@ -338,19 +432,13 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
 
     project_config = register_project!("proj-get-cached-path", cached_database_path)
 
-    payload = %{
-      "id" => "bead-704",
-      "title" => "Keep cached path",
-      "status" => "blocked",
-      "priority" => 0,
-      "dependencies" => [],
-      "assignee" => nil,
-      "description" => nil,
-      "notes" => nil,
-      "design" => nil,
-      "labels" => [],
-      "metadata" => %{}
-    }
+    payload =
+      issue_details_payload(%{
+        "id" => "bead-704",
+        "title" => "Keep cached path",
+        "status" => "blocked",
+        "priority" => 0
+      })
 
     expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
       assert request == {:show, %{id: "bead-704", database_path: cached_database_path}}
@@ -430,55 +518,20 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
   end
 
   defp schema_document("issue-details") do
+    required = issue_details_required_fields()
+    properties = issue_details_properties()
+
     %{
+      "$defs" => %{
+        "issue" => %{
+          "type" => "object",
+          "required" => required,
+          "properties" => properties
+        }
+      },
       "type" => "object",
-      "required" => [
-        "id",
-        "title",
-        "status",
-        "priority",
-        "dependencies",
-        "dependents",
-        "assignee",
-        "description",
-        "notes",
-        "design",
-        "labels",
-        "metadata"
-      ],
-      "properties" => %{
-        "id" => %{"type" => "string"},
-        "title" => %{"type" => "string"},
-        "status" => %{"type" => "string"},
-        "priority" => %{"type" => "integer"},
-        "dependencies" => %{
-          "type" => "array",
-          "items" => %{
-            "oneOf" => [
-              %{"type" => "string"},
-              %{
-                "type" => "object",
-                "required" => ["id"],
-                "properties" => %{"id" => %{"type" => "string"}}
-              }
-            ]
-          }
-        },
-        "dependents" => %{
-          "type" => "array",
-          "items" => %{
-            "type" => "object",
-            "required" => ["id"],
-            "properties" => %{"id" => %{"type" => "string"}}
-          }
-        },
-        "assignee" => %{"type" => ["string", "null"]},
-        "description" => %{"type" => ["string", "null"]},
-        "notes" => %{"type" => ["string", "null"]},
-        "design" => %{"type" => ["string", "null"]},
-        "labels" => %{"type" => "array"},
-        "metadata" => %{"type" => "object"}
-      }
+      "required" => required,
+      "properties" => properties
     }
   end
 
@@ -501,6 +554,89 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterGetTest do
         "commands" => %{"type" => "array"}
       }
     }
+  end
+
+  defp issue_details_required_fields do
+    [
+      "id",
+      "title",
+      "status",
+      "priority",
+      "dependencies",
+      "dependents",
+      "assignee",
+      "description",
+      "notes",
+      "design",
+      "labels",
+      "metadata"
+    ]
+  end
+
+  defp issue_details_properties do
+    %{
+      "id" => %{"type" => "string"},
+      "title" => %{"type" => "string"},
+      "status" => %{"type" => "string"},
+      "priority" => %{"type" => "integer"},
+      "dependencies" => %{
+        "type" => "array",
+        "items" => %{"$ref" => "#/$defs/issue"}
+      },
+      "dependents" => %{
+        "type" => "array",
+        "items" => %{"$ref" => "#/$defs/issue"}
+      },
+      "assignee" => %{"type" => ["string", "null"]},
+      "description" => %{"type" => ["string", "null"]},
+      "notes" => %{"type" => ["string", "null"]},
+      "design" => %{"type" => ["string", "null"]},
+      "labels" => %{"type" => "array"},
+      "metadata" => %{"type" => "object"}
+    }
+  end
+
+  defp issue_details_payload(overrides) do
+    Map.merge(
+      %{
+        "id" => "bead-default",
+        "title" => "Default issue",
+        "status" => "open",
+        "priority" => 1,
+        "dependencies" => [],
+        "dependents" => [],
+        "assignee" => nil,
+        "description" => nil,
+        "notes" => nil,
+        "design" => nil,
+        "labels" => [],
+        "metadata" => %{}
+      },
+      overrides
+    )
+  end
+
+  defp nested_issue_payload(id, title, overrides \\ %{}) do
+    issue_details_payload(Map.merge(%{"id" => id, "title" => title}, overrides))
+  end
+
+  defp expected_issue(id, title, overrides \\ []) do
+    defaults = [
+      id: id,
+      title: title,
+      status: "open",
+      priority: 1,
+      dependencies: [],
+      dependents: [],
+      assignee: nil,
+      description: nil,
+      notes: nil,
+      design: nil,
+      labels: [],
+      metadata: %{}
+    ]
+
+    struct!(Issue, Keyword.merge(defaults, overrides))
   end
 
   defp assert_translated_argv(temp_dir, request, project_config, expected_argv) do

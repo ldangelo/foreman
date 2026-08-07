@@ -862,38 +862,32 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   defp parse_get_issue_payload(%{} = payload, argv) do
-    normalized_payload =
-      payload
-      |> put_default_payload_field(:dependencies, [])
-      |> put_default_payload_field(:dependents, [])
+    populate_issue_from_payload(payload, argv)
+  end
 
-    with :ok <- JsonSchemaCache.validate(:issue_details, normalized_payload),
-         {:ok, id} <- fetch_required_string(normalized_payload, :id),
-         {:ok, title} <- fetch_required_string(normalized_payload, :title),
-         {:ok, status} <- fetch_required_string(normalized_payload, :status),
-         {:ok, priority} <- parse_priority(fetch_payload_value(normalized_payload, :priority)),
+  defp parse_get_issue_payload(_payload, argv) do
+    {:error, build_get_contract_error("Beads issue-details payload must be a JSON object.", argv)}
+  end
+
+  defp populate_issue_from_payload(payload, argv) do
+    with :ok <- JsonSchemaCache.validate(:issue_details, payload),
+         {:ok, id} <- fetch_required_string(payload, :id),
+         {:ok, title} <- fetch_required_string(payload, :title),
+         {:ok, status} <- fetch_required_string(payload, :status),
+         {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
          {:ok, dependencies} <-
-           parse_get_dependencies(fetch_payload_value(normalized_payload, :dependencies), argv),
+           parse_get_dependencies(fetch_payload_value(payload, :dependencies), argv),
          {:ok, dependents} <-
-           parse_get_issue_array(
-             fetch_payload_value(normalized_payload, :dependents),
-             :dependents,
-             argv
-           ),
+           parse_get_issue_array(fetch_payload_value(payload, :dependents), :dependents, argv),
          {:ok, assignee} <-
-           parse_optional_string(fetch_payload_value(normalized_payload, :assignee), :assignee),
+           parse_optional_string(fetch_payload_value(payload, :assignee), :assignee),
          {:ok, description} <-
-           parse_optional_string(
-             fetch_payload_value(normalized_payload, :description),
-             :description
-           ),
-         {:ok, notes} <-
-           parse_optional_string(fetch_payload_value(normalized_payload, :notes), :notes),
-         {:ok, design} <-
-           parse_optional_string(fetch_payload_value(normalized_payload, :design), :design),
+           parse_optional_string(fetch_payload_value(payload, :description), :description),
+         {:ok, notes} <- parse_optional_string(fetch_payload_value(payload, :notes), :notes),
+         {:ok, design} <- parse_optional_string(fetch_payload_value(payload, :design), :design),
          {:ok, labels} <-
-           parse_opaque_string_list(fetch_payload_value(normalized_payload, :labels), :labels),
-         {:ok, metadata} <- parse_metadata(fetch_payload_value(normalized_payload, :metadata)) do
+           parse_opaque_string_list(fetch_payload_value(payload, :labels), :labels),
+         {:ok, metadata} <- parse_metadata(fetch_payload_value(payload, :metadata)) do
       {:ok,
        %Issue{
          id: id,
@@ -918,48 +912,17 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp parse_get_issue_payload(_payload, argv) do
-    {:error, build_get_contract_error("Beads issue-details payload must be a JSON object.", argv)}
-  end
-
-  defp put_default_payload_field(payload, key, default) do
-    string_key = to_string(key)
-
-    if Map.has_key?(payload, key) or Map.has_key?(payload, string_key) do
-      payload
-    else
-      Map.put(payload, string_key, default)
-    end
-  end
-
-  defp parse_get_dependencies(nil, _argv), do: {:ok, []}
-
   defp parse_get_dependencies(values, argv) when is_list(values) do
-    cond do
-      Enum.all?(values, &is_binary/1) ->
-        {:ok, values}
-
-      Enum.all?(values, &is_map/1) ->
-        parse_get_issue_array(values, :dependencies, argv)
-
-      true ->
-        {:error,
-         build_get_contract_error(
-           "Beads issue-details field :dependencies must be a list of strings or issue objects.",
-           argv
-         )}
-    end
+    parse_get_issue_array(values, :dependencies, argv)
   end
 
   defp parse_get_dependencies(_values, argv) do
     {:error,
      build_get_contract_error(
-       "Beads issue-details field :dependencies must be a list of strings or issue objects.",
+       "Beads issue-details field :dependencies must be a list of issue objects.",
        argv
      )}
   end
-
-  defp parse_get_issue_array(nil, _field, _argv), do: {:ok, []}
 
   defp parse_get_issue_array(values, field, argv) when is_list(values) do
     values
@@ -992,18 +955,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
      )}
   end
 
-  defp parse_get_issue_reference(%{} = payload, field, argv) do
-    case fetch_payload_value(payload, :id) do
-      id when is_binary(id) ->
-        {:ok, struct(Issue, id: id)}
-
-      _other ->
-        {:error,
-         build_get_contract_error(
-           "Beads issue-details #{inspect(field)} entries must include a string id.",
-           argv
-         )}
-    end
+  defp parse_get_issue_reference(%{} = payload, _field, argv) do
+    populate_issue_from_payload(payload, argv)
   end
 
   defp build_get_error(stdout, stderr, result, argv) do
