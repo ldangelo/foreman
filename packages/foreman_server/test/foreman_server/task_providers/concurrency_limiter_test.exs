@@ -41,7 +41,7 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiterTest do
     )
 
     start_supervised!(ConcurrencyLimiter)
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     on_exit(fn ->
       Application.put_env(:foreman_server, :task_provider, previous_config)

@@ -3,7 +3,15 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
   import Mox
 
-  alias ForemanServer.{AgentRuntime, CommandGateway, EventStore, Identity, ProjectionStore}
+  alias ForemanServer.{
+    AgentRuntime,
+    CommandGateway,
+    EventStore,
+    Identity,
+    ProjectionStore,
+    RunAdmission
+  }
+
   alias ForemanServer.AgentRuntime.AdapterCatalog
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
@@ -141,7 +149,17 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     )
 
     stop_schema_cache()
-    start_supervised!(TaskProviderRegistry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(TaskProviderRegistry)
+    dispatcher = Process.whereis(ForemanServer.Workflow.Dispatcher)
+
+    if dispatcher do
+      :sys.suspend(dispatcher)
+
+      on_exit(fn ->
+        if Process.alive?(dispatcher), do: :sys.resume(dispatcher)
+      end)
+    end
+
     start_supervised!({LifecycleStore, name: LifecycleStore})
     LifecycleStore.clear()
 
@@ -977,6 +995,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
   defp seed_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, task_provider) do
     seed_project!(project_id, task_provider)
+    approval_id = unique_id("approval")
 
     dispatch_system!("task.create", "task:#{task_id}", %{
       task_id: task_id,
@@ -987,7 +1006,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     dispatch_system!("task.approve", "task:#{task_id}", %{
       task_id: task_id,
-      approval_id: unique_id("approval"),
+      approval_id: approval_id,
       approved_by: "run-executor-test",
       approved_at: "2026-08-06T00:00:00Z",
       run_id: run_id,
@@ -996,12 +1015,15 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     dispatch_system!("task.dispatch", "task:#{task_id}", %{task_id: task_id})
 
-    dispatch_system!("run.start", "run:#{run_id}", %{
-      run_id: run_id,
-      task_id: task_id,
-      project_id: project_id,
-      workflow_snapshot: workflow_snapshot
-    })
+    assert {:ok, _} =
+             RunAdmission.start(project_id, %{
+               run_id: run_id,
+               task_id: task_id,
+               project_id: project_id,
+               approval_id: approval_id,
+               workflow_snapshot: workflow_snapshot,
+               phase_specs: Map.get(workflow_snapshot, :phases, [])
+             })
   end
 
   defp dispatch_system!(type, aggregate_id, payload) do

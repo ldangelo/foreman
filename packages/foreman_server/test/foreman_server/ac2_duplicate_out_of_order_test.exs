@@ -18,7 +18,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
   # AC2.4  actor state correct throughout
   # ---------------------------------------------------------------------------
 
-  alias ForemanServer.CommandRouter
+  alias ForemanServer.{CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
@@ -51,14 +51,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     run_id = "run-#{uuid()}"
     cmd_id = "cmd-#{uuid()}"
 
-    # Seed the run so handle_command has an existing aggregate
-    {:ok, _} =
-      dispatch(%{
-        aggregate_id: "run:#{run_id}",
-        type: "run.start",
-        command_id: "seed-#{uuid()}",
-        payload: %{run_id: run_id}
-      })
+    seed_run(run_id)
 
     :timer.sleep(100)
 
@@ -83,14 +76,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     run_id = "run-#{uuid()}"
     cmd_id = "dup-#{uuid()}"
 
-    # Seed the run
-    {:ok, _} =
-      dispatch(%{
-        aggregate_id: "run:#{run_id}",
-        type: "run.start",
-        command_id: "seed-#{uuid()}",
-        payload: %{run_id: run_id}
-      })
+    seed_run(run_id)
 
     :timer.sleep(100)
 
@@ -107,7 +93,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     assert run_completed_count(run_id) == 1
 
     # AC2 step 2: same command_id again — idempotent, no second event appended
-    {:ok, second} =
+    {:ok, _second} =
       dispatch(%{
         aggregate_id: "run:#{run_id}",
         type: "run.complete",
@@ -125,14 +111,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
   test "AC2.3: run.complete with out-of-order sequence returns :out_of_order" do
     run_id = "run-#{uuid()}"
 
-    # Seed the run
-    {:ok, _} =
-      dispatch(%{
-        aggregate_id: "run:#{run_id}",
-        type: "run.start",
-        command_id: "seed-#{uuid()}",
-        payload: %{run_id: run_id}
-      })
+    seed_run(run_id)
 
     :timer.sleep(100)
 
@@ -160,14 +139,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     agg_id = "run:#{run_id}"
     cmd_id = "dup2-#{uuid()}"
 
-    # Seed the run
-    {:ok, _} =
-      dispatch(%{
-        aggregate_id: agg_id,
-        type: "run.start",
-        command_id: "seed-#{uuid()}",
-        payload: %{run_id: run_id}
-      })
+    seed_run(run_id)
 
     :timer.sleep(100)
 
@@ -213,5 +185,29 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     state_after_oow = run_state(run_id)
     assert state_after_oow.status == state_after_dup.status
     assert state_after_oow.terminal? == state_after_dup.terminal?
+  end
+
+  defp seed_run(run_id) do
+    project_id = "project-#{uuid()}"
+
+    {:ok, _} =
+      dispatch(%{
+        aggregate_id: "project:#{project_id}",
+        command_id: "register:#{project_id}",
+        type: "project.register",
+        payload: %{
+          project_id: project_id,
+          name: "AC2 #{project_id}",
+          path: System.tmp_dir!()
+        }
+      })
+
+    {:ok, _} =
+      RunAdmission.start(project_id, %{
+        run_id: run_id,
+        task_id: "task-#{run_id}",
+        workflow_snapshot: %{phases: []},
+        phase_specs: []
+      })
   end
 end

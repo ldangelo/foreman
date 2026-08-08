@@ -15,7 +15,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
   # Blocking infrastructure (BlockCommand, BlockingAggregate) lives in test/support/.
   # ---------------------------------------------------------------------------
 
-  alias ForemanServer.{Aggregate, CommandRouter}
+  alias ForemanServer.{Aggregate, CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.TestSupport.{BlockCommand, BlockingAggregate, TestRouter}
 
@@ -24,6 +24,50 @@ defmodule ForemanServer.AC1AggregateActorTest do
   # ---------------------------------------------------------------------------
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
+
+  defp start_run(run_id, task_id) do
+    project_id = "project-#{uuid()}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{project_id: project_id, path: System.tmp_dir!()},
+        aggregate_id: "project:#{project_id}"
+      })
+
+    RunAdmission.start(project_id, %{
+      run_id: run_id,
+      task_id: task_id,
+      workflow_snapshot: %{phases: []},
+      phase_specs: []
+    })
+  end
+
+  defp start_phase(run_id, phase_id) do
+    CommandRouter.dispatch(%{
+      type: "phase.start",
+      payload: %{
+        phase_id: phase_id,
+        run_id: run_id,
+        index: 1,
+        name: "test",
+        attempt: 1,
+        artifact_template: "report.md"
+      },
+      aggregate_id: "phase:#{run_id}:#{phase_id}"
+    })
+  end
+
+  defp complete_phase_payload(run_id, phase_id) do
+    %{
+      phase_id: phase_id,
+      run_id: run_id,
+      index: 1,
+      artifact_path: "report.md",
+      artifact_sha256: String.duplicate("a", 64),
+      artifact_bytes: 1
+    }
+  end
 
   defp aggregate_pid(aggregate_id) do
     [{pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id)
@@ -152,12 +196,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     task_id = "task-#{uuid()}"
     agg_stream = "run:#{id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "run.start",
-        payload: %{run_id: id, task_id: task_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_run(id, task_id)
 
     pid = aggregate_pid(agg_stream)
     state = Aggregate.Actor.get_state(pid)
@@ -196,12 +235,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     run_id = "run-#{uuid()}"
     agg_stream = "phase:#{run_id}:#{id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "phase.start",
-        payload: %{phase_id: id, run_id: run_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_phase(run_id, id)
 
     pid = aggregate_pid(agg_stream)
     state = Aggregate.Actor.get_state(pid)
@@ -335,12 +369,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     task_id = "task-#{uuid()}"
     agg_stream = "run:#{id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "run.start",
-        payload: %{run_id: id, task_id: task_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_run(id, task_id)
 
     old_pid = aggregate_pid(agg_stream)
     ref = Process.monitor(old_pid)
@@ -416,12 +445,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     run_id = "run-#{uuid()}"
     agg_stream = "phase:#{run_id}:#{id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "phase.start",
-        payload: %{phase_id: id, run_id: run_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_phase(run_id, id)
 
     old_pid = aggregate_pid(agg_stream)
     ref = Process.monitor(old_pid)
@@ -438,7 +462,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "phase.complete",
-        payload: %{phase_id: id, run_id: run_id},
+        payload: complete_phase_payload(run_id, id),
         aggregate_id: agg_stream
       })
 
@@ -455,12 +479,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     task_id = "task-#{uuid()}"
     agg_stream = "run:#{run_id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "run.start",
-        payload: %{run_id: run_id, task_id: task_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_run(run_id, task_id)
 
     pid = aggregate_pid(agg_stream)
     ref = Process.monitor(pid)
@@ -504,12 +523,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
     # 1) Start the phase via the actor — stream: PhaseStarted (v1),
     #    actor state: status=in_progress, terminal?=false, version=1.
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "phase.start",
-        payload: %{phase_id: phase_id, run_id: run_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_phase(run_id, phase_id)
 
     actor_pid = aggregate_pid(agg_stream)
     state_after_start = Aggregate.Actor.get_state(actor_pid)
@@ -523,7 +537,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
       Store.append_to_stream(agg_stream, 1, [
         %Elixir.EventStore.EventData{
           event_type: "PhaseCompleted",
-          data: %{phase_id: phase_id, run_id: run_id},
+          data: complete_phase_payload(run_id, phase_id),
           metadata: %{}
         }
       ])
@@ -541,7 +555,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     result =
       CommandRouter.dispatch(%{
         type: "phase.complete",
-        payload: %{phase_id: phase_id, run_id: run_id},
+        payload: complete_phase_payload(run_id, phase_id),
         aggregate_id: agg_stream
       })
 
@@ -728,12 +742,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     task_id = "task-#{uuid()}"
     agg_stream = "run:#{run_id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "run.start",
-        payload: %{run_id: run_id, task_id: task_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_run(run_id, task_id)
 
     {:ok, [recorded]} = Store.read_stream_forward(agg_stream, 0, 10)
     assert recorded.event_type == "RunStarted"
@@ -753,12 +762,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     task_id = "task-#{uuid()}"
     agg_stream = "run:#{run_id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "run.start",
-        payload: %{run_id: run_id, task_id: task_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_run(run_id, task_id)
 
     {:ok, _} =
       CommandRouter.dispatch(%{
@@ -782,17 +786,12 @@ defmodule ForemanServer.AC1AggregateActorTest do
     run_id = "run-#{uuid()}"
     agg_stream = "phase:#{run_id}:#{phase_id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "phase.start",
-        payload: %{phase_id: phase_id, run_id: run_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_phase(run_id, phase_id)
 
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "phase.fail",
-        payload: %{phase_id: phase_id, run_id: run_id},
+        payload: %{phase_id: phase_id, run_id: run_id, index: 1, reason: "test failure"},
         aggregate_id: agg_stream
       })
 
@@ -809,12 +808,7 @@ defmodule ForemanServer.AC1AggregateActorTest do
     run_id = "run-#{uuid()}"
     agg_stream = "phase:#{run_id}:#{phase_id}"
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "phase.start",
-        payload: %{phase_id: phase_id, run_id: run_id},
-        aggregate_id: agg_stream
-      })
+    {:ok, _} = start_phase(run_id, phase_id)
 
     {:ok, _} =
       CommandRouter.dispatch(%{

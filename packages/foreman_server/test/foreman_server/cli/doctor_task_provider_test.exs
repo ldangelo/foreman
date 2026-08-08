@@ -352,12 +352,7 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
   end
 
   defp restart_registry do
-    case Process.whereis(TaskProviderRegistry) do
-      nil -> :ok
-      pid -> GenServer.stop(pid)
-    end
-
-    start_supervised!(TaskProviderRegistry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(TaskProviderRegistry)
   end
 
   defp seed_project!(project_id, task_provider) do

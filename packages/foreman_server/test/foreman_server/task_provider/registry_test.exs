@@ -296,7 +296,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     results =
       [CompatibleProvider, ConcurrentProvider]
@@ -328,7 +328,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     assert {:ok, UnavailableProvider} = Registry.register(UnavailableProvider)
     assert Registry.routing_snapshot().unavailable == UnavailableProvider
@@ -344,7 +344,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     assert :ok =
              Registry.register_for_project("project-1", CompatibleProvider, %{
@@ -372,7 +372,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     assert {:error, :unavailable} =
              Registry.register_for_project("project-1", UnavailableProvider, %{
@@ -408,7 +408,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     :ok =
       Registry.register_for_project("project-1", CompatibleProvider, %{
@@ -428,7 +428,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     assert {:error, :task_provider_not_configured} =
              Registry.route(:claim, {"project-ghost", "/tmp/ghost.db"})
@@ -443,7 +443,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
       providers: [ForemanServer.TaskProviders.BeadsAdapter]
     )
 
-    pid = start_supervised!(Registry)
+    pid = ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     assert Registry.routing_snapshot() == %{beads: ForemanServer.TaskProviders.BeadsAdapter}
 
@@ -474,7 +474,7 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    pid = start_supervised!(Registry)
+    pid = ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     refute_receive {:telemetry, @restart_event, _, _}, 50
 

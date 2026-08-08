@@ -51,7 +51,6 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     """)
 
     File.chmod!(hang_path, 0o755)
-    File.chmod!(hang_path, 0o755)
 
     # Contract fixture: captures argv and file content to known locations for validation
     contract_path = Path.join(tmp_dir, @contract_fixture)
@@ -102,7 +101,6 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       File.rm(Path.join(tmp_dir, @success_fixture))
       File.rm(Path.join(tmp_dir, @fail_fixture))
       File.rm(Path.join(tmp_dir, @hang_fixture))
-      File.rm(Path.join(tmp_dir, @contract_fixture))
       # Cleanup contract artifacts
       File.rm("/tmp/pi_contract_argv.txt")
       File.rm("/tmp/pi_contract_request.txt")
@@ -118,7 +116,6 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       success_path: success_path,
       fail_path: fail_path,
       hang_path: hang_path,
-      contract_path: contract_path,
       tmp_dir: tmp_dir
     }
   end
@@ -203,7 +200,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       # Try to execute with nonexistent executable
       Application.put_env(:foreman_server, PiAdapter, executable: "/nonexistent/pi")
-      request = %{prompt: "test", context: %{}}
+      request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
       result = PiAdapter.execute(request, [])
 
       # Should fail gracefully
@@ -221,7 +218,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     } do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       result = PiAdapter.execute(request, [])
 
       assert {:ok, content, %{}} = result
@@ -238,7 +239,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       # result only — i.e. just the payload bytes, byte-for-byte.
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       result = PiAdapter.execute(request, [])
 
       assert {:ok, "hello\n", %{}} = result
@@ -249,7 +254,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "argv contains fixed flags", %{contract_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test", context: %{}}
+      request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
       PiAdapter.execute(request, [])
 
       # Verify argv captured - should contain fixed flags and @ with path
@@ -263,7 +268,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "request file has mode 0600", %{contract_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test", context: %{}}
+      request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
       PiAdapter.execute(request, [])
 
       # Verify mode captured
@@ -276,7 +281,8 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
       context = %{"key" => "value", "nested" => %{"n" => 1}}
-      request = %{prompt: "hello world", context: context}
+      request_context = Map.put(context, :working_directory, System.tmp_dir!())
+      request = %{prompt: "hello world", context: request_context}
       PiAdapter.execute(request, [])
 
       content = File.read!("/tmp/pi_contract_request.txt")
@@ -285,7 +291,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       # line + context header + blank line + JSON segment + trailing
       # newline. Equals (not substring) catches any extra/misplaced
       # bytes that the TRD-004 framing AC forbids.
-      json_segment = Jason.encode!(context)
+      json_segment = Jason.encode!(request_context)
 
       expected =
         "# Prompt\n\nhello world\n\n# Context (JSON)\n\n" <>
@@ -295,7 +301,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       # JSON segment round-trip equality against the original context
       # map (TRD-004 §"Pi Process Protocol" semantic verification).
-      assert Jason.decode!(json_segment) == context
+      assert Jason.decode!(json_segment) == stringify_keys(request_context)
     end
   end
 
@@ -303,7 +309,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "returns {:error, reason} on non-zero exit", %{fail_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       result = PiAdapter.execute(request, [])
 
       assert {:error, {:non_zero_exit, 1}} = result
@@ -312,7 +322,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "temp file is cleaned up after failure", %{fail_path: path, tmp_dir: tmp_dir} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       PiAdapter.execute(request, [])
 
       # Check that no temp directories remain from this adapter
@@ -329,7 +343,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "returns {:error, :timeout} within timeout_ms + slack", %{hang_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path, timeout_ms: 500)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       start = System.monotonic_time(:millisecond)
       result = PiAdapter.execute(request, [])
       elapsed = System.monotonic_time(:millisecond) - start
@@ -359,7 +377,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "temp file is gone after successful execution", %{success_path: path, tmp_dir: tmp_dir} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       PiAdapter.execute(request, [])
 
       remaining_dirs =
@@ -375,7 +397,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "timeout_ms option overrides default", %{hang_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path, timeout_ms: 60_000)
 
-      request = %{prompt: "test prompt", context: %{}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{}, :working_directory, System.tmp_dir!())
+      }
+
       start = System.monotonic_time(:millisecond)
       result = PiAdapter.execute(request, timeout_ms: 200)
       elapsed = System.monotonic_time(:millisecond) - start
@@ -407,7 +433,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
           [:foreman, :agent_runtime, :adapter, :pi, :stop]
         ])
 
-        request = %{prompt: "test", context: %{}}
+        request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
         PiAdapter.execute(request, [])
 
         Process.sleep(50)
@@ -433,7 +459,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
     test "execute/2 passes exact 6-field argv to pi", %{contract_path: path} do
       Application.put_env(:foreman_server, PiAdapter, executable: path)
 
-      request = %{prompt: "test prompt", context: %{key: "value"}}
+      request = %{
+        prompt: "test prompt",
+        context: Map.put(%{key: "value"}, :working_directory, System.tmp_dir!())
+      }
+
       PiAdapter.execute(request, [])
 
       # Read captured argv from contract fixture
@@ -469,7 +499,8 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       # Use atom-keyed context (canonical form)
       context = %{model: "gpt-4", temperature: 0.7, items: [1, 2, 3]}
-      request = %{prompt: "test prompt", context: context}
+      request_context = Map.put(context, :working_directory, System.tmp_dir!())
+      request = %{prompt: "test prompt", context: request_context}
       PiAdapter.execute(request, [])
 
       # Read the request file captured by contract fixture
@@ -485,7 +516,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       decoded = Jason.decode!(json_segment)
 
       # Verify round-trip: encode the original context, decode, compare
-      expected_json = Jason.encode!(context)
+      expected_json = Jason.encode!(request_context)
       expected_decoded = Jason.decode!(expected_json)
 
       assert decoded == expected_decoded
@@ -510,7 +541,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       try do
         Application.put_env(:foreman_server, PiAdapter, executable: delayed_exit)
-        request = %{prompt: "test", context: %{}}
+        request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
         result = PiAdapter.execute(request, [])
 
         # Both stdout chunks captured + exit_status translated to plain text result.
@@ -556,7 +587,11 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
         )
 
         # Run execute/2 with a tight timeout.
-        result = PiAdapter.execute(%{prompt: "test", context: %{}}, timeout_ms: 200)
+        result =
+          PiAdapter.execute(
+            %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())},
+            timeout_ms: 200
+          )
 
         # Timeout tuple returned.
         assert {:error, :timeout} = result
@@ -623,7 +658,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
           timeout_ms: 60_000
         )
 
-        request = %{prompt: "test", context: %{}}
+        request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
         result = PiAdapter.execute(request, timeout_ms: 200)
 
         assert {:error, :timeout} = result
@@ -731,7 +766,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
           timeout_ms: 60_000
         )
 
-        request = %{prompt: "test", context: %{}}
+        request = %{prompt: "test", context: Map.put(%{}, :working_directory, System.tmp_dir!())}
 
         result = PiAdapter.execute(request, timeout_ms: timeout_ms)
 
@@ -828,5 +863,9 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
   defp wait_for_pid_exit(pid_str, _deadline_ms, _elapsed) do
     flunk("wait_for_pid_exit timed out — PID #{pid_str} still alive after deadline")
+  end
+
+  defp stringify_keys(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 end

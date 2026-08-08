@@ -38,7 +38,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterListReadyTest do
       flunk("unexpected BrRunnerMock.cmd/3 call: #{inspect({request, project_config, opts})}")
     end)
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     on_exit(fn ->
       Application.put_env(:foreman_server, :task_provider, previous_config)

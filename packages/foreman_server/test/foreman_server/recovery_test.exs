@@ -2,7 +2,7 @@ defmodule ForemanServer.RecoveryTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.Recovery
-  alias ForemanServer.{Aggregate, CommandRouter, ProjectionStore}
+  alias ForemanServer.{CommandRouter, ProjectionStore, RunAdmission}
 
   setup do
     :sys.replace_state(ProjectionStore, fn state ->
@@ -167,17 +167,26 @@ defmodule ForemanServer.RecoveryTest do
   # ---------------------------------------------------------------------------
 
   defp start_run(run_id) do
+    project_id = "project-#{run_id}"
+
     {:ok, _} =
       CommandRouter.dispatch(%{
-        aggregate_id: "run:#{run_id}",
-        command_id: "run.start:#{run_id}",
-        type: "run.start",
+        aggregate_id: "project:#{project_id}",
+        command_id: "project.register:#{project_id}",
+        type: "project.register",
         payload: %{
-          run_id: run_id,
-          task_id: "task-#{run_id}",
-          project_id: "proj-1",
-          workflow_snapshot: %{phases: []}
+          project_id: project_id,
+          name: "Recovery #{project_id}",
+          path: System.tmp_dir!()
         }
+      })
+
+    {:ok, _} =
+      RunAdmission.start(project_id, %{
+        run_id: run_id,
+        task_id: "task-#{run_id}",
+        workflow_snapshot: %{phases: []},
+        phase_specs: []
       })
 
     :ok

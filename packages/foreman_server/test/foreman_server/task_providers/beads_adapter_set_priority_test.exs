@@ -196,7 +196,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterSetPriorityTest do
       providers: []
     )
 
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     project_id = "proj-x"
     cached_path = "/abs/cached/../path.db"

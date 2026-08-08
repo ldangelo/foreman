@@ -3,6 +3,7 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
 
   @template_names ~w(discover assess plan implement verify release)
   @template_files Enum.map(@template_names, &"#{&1}.yaml")
+  @prompt_files Enum.map(@template_names, &"#{&1}.md")
 
   test "install/1 copies bundled templates into the workflows directory" do
     home_dir = make_temp_dir!("workflow-installer-home")
@@ -10,11 +11,13 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
     assert {:ok, installed_paths} = WorkflowTemplate.Installer.install(home_dir: home_dir)
 
     expected_dir = Path.join([home_dir, ".foreman", "workflows"])
-    expected_paths = Enum.map(@template_files, &Path.join(expected_dir, &1))
+    expected_manifest_paths = Enum.map(@template_files, &Path.join(expected_dir, &1))
+    expected_prompt_paths = Enum.map(@prompt_files, &Path.join([expected_dir, "prompts", &1]))
+    expected_paths = expected_manifest_paths ++ expected_prompt_paths
 
     assert Enum.sort(installed_paths) == Enum.sort(expected_paths)
 
-    Enum.each(installed_paths, fn path ->
+    Enum.each(expected_manifest_paths, fn path ->
       assert File.regular?(path)
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
     end)

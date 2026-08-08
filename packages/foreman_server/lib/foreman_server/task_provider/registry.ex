@@ -128,6 +128,13 @@ defmodule ForemanServer.TaskProvider.Registry do
     {:reply, Map.merge(state.routing, project_entries), state}
   end
 
+  def handle_call(:reload_config, _from, _state) do
+    {accepted_versions, providers} = provider_config()
+    routing = load_providers(providers, accepted_versions)
+
+    {:reply, :ok, %{routing: routing, accepted_versions: accepted_versions, per_project: %{}}}
+  end
+
   def handle_call({:register, provider_module}, _from, state) do
     case register_global_provider(provider_module, state.routing, state.accepted_versions) do
       {:ok, _provider_id, routing} ->

@@ -33,7 +33,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
     )
 
     stop_schema_cache()
-    start_supervised!(Registry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     stub(BrRunnerMock, :cmd, fn request, project_config, opts ->
       flunk("unexpected BrRunnerMock.cmd/3 call: #{inspect({request, project_config, opts})}")

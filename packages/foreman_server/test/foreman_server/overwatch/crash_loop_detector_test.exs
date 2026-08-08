@@ -10,9 +10,9 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
 
   use ExUnit.Case, async: false
 
+  alias ForemanServer.{CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.Overwatch.CrashLoopDetector
-  alias ForemanServer.Overwatch.Tracker
+  alias ForemanServer.Overwatch.{CrashLoopDetector, Tracker}
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
@@ -55,14 +55,26 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
   end
 
   defp seed_run(run_id) do
-    command = %{
-      aggregate_id: "run:#{run_id}",
-      type: "run.start",
-      payload: %{"run_id" => run_id, "title" => "crash-loop seed", "user_id" => "tester"},
-      command_id: "seed:#{run_id}"
-    }
+    project_id = "project-#{run_id}"
 
-    case ForemanServer.CommandRouter.dispatch(command) do
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        aggregate_id: "project:#{project_id}",
+        command_id: "project.register:#{project_id}",
+        type: "project.register",
+        payload: %{
+          project_id: project_id,
+          name: "Crash Loop #{project_id}",
+          path: System.tmp_dir!()
+        }
+      })
+
+    case RunAdmission.start(project_id, %{
+           run_id: run_id,
+           task_id: "task-#{run_id}",
+           workflow_snapshot: %{phases: []},
+           phase_specs: []
+         }) do
       {:ok, _} -> :ok
       {:error, reason} -> flunk("seed_run failed: #{inspect(reason)}")
     end
