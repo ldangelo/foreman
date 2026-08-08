@@ -1,4 +1,4 @@
-defmodule ForemanServer.ConfigTest do
+defmodule ForemanServer.BaseConfigTest do
   use ExUnit.Case, async: false
 
   @config_path Path.expand("../../config/config.exs", __DIR__)

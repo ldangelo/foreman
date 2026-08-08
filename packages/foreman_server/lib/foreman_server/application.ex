@@ -29,18 +29,20 @@ defmodule ForemanServer.Application do
         # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
         ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
-        ForemanServer.Aggregator,
-        # JsonSchemaCache owns the cached `br schema ... --json` payload
-        # schemas used by every BeadsAdapter parser (claim, list_ready,
-        # complete, fail, reopen, etc.). It MUST start before any code
-        # path that resolves a Beads provider, including the
-        # TaskProvider.Registry snapshot and BootReconciliation's lazy
-        # orphan-reopen pass.
-        ForemanServer.TaskProviders.JsonSchemaCache,
-        # TaskProvider.Registry owns configured task provider routing and must
-        # start before dispatch paths resolve a provider snapshot.
-        ForemanServer.TaskProvider.Registry
+        ForemanServer.Aggregator
       ] ++
+        maybe_json_schema_cache_child() ++
+        [
+          # JsonSchemaCache owns the cached `br schema ... --json` payload
+          # schemas used by every BeadsAdapter parser (claim, list_ready,
+          # complete, fail, reopen, etc.). It MUST start before any code
+          # path that resolves a Beads provider, including the
+          # TaskProvider.Registry snapshot and BootReconciliation's lazy
+          # orphan-reopen pass.
+          # TaskProvider.Registry owns configured task provider routing and must
+          # start before dispatch paths resolve a provider snapshot.
+          ForemanServer.TaskProvider.Registry
+        ] ++
         maybe_project_provider_projector_child() ++
         [
           # BootReconciliation runs once after the projector has rebuilt
@@ -113,6 +115,14 @@ defmodule ForemanServer.Application do
         # per-project task provider routing inside the Registry.
         ForemanServer.TaskProvider.ProjectProviderProjector
       ]
+    else
+      []
+    end
+  end
+
+  defp maybe_json_schema_cache_child do
+    if Application.get_env(:foreman_server, :start_json_schema_cache?, true) do
+      [ForemanServer.TaskProviders.JsonSchemaCache]
     else
       []
     end
