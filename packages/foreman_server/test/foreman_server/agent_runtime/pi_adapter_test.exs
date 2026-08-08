@@ -321,6 +321,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
           json_segment <> "\n"
 
       assert content == expected
+
       refute String.starts_with?(content, "# Prompt\n\n"),
              "slash command prompt must not be prefixed by the # Prompt header"
     end

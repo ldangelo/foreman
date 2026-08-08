@@ -187,7 +187,8 @@ defmodule ForemanServer.Workflow.Interpreter do
   end
 
   defp validate_phases!(phases, path) do
-    named_count = Enum.count(phases, fn phase -> is_map(phase) and present?(Map.get(phase, "name")) end)
+    named_count =
+      Enum.count(phases, fn phase -> is_map(phase) and present?(Map.get(phase, "name")) end)
 
     if named_count == 0 do
       raise Workflow.MissingRequiredPhaseError,
@@ -222,11 +223,11 @@ defmodule ForemanServer.Workflow.Interpreter do
         end
     end
   end
+
   defp validate_phase_actions!(phase, index, path) do
     actions =
       @allowed_phase_actions
       |> Enum.filter(fn action -> present?(Map.get(phase, action)) end)
-
 
     case actions do
       [] ->

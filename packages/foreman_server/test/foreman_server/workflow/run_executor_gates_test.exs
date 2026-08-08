@@ -15,6 +15,7 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
                PlanContext.build(%{task_type: "plan", project_id: "tf-1", run_id: "run-abcdef"})
     end
   end
+
   describe "required file gate key handling" do
     test "single-segment plan context key resolves to path" do
       ctx = %{"planning" => %{"prd_path" => "/tmp/PRD-x.md"}}

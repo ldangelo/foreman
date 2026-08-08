@@ -384,6 +384,7 @@ defmodule ForemanServer.Workflow.Catalog do
               |> Map.put(:models, phase["models"])
               |> Map.put(:max_turns, phase["maxTurns"])
               |> Map.put(:mail, phase["mail"])
+
             action =
               cond do
                 is_binary(phase["command"]) and phase["command"] != "" -> :command

@@ -249,12 +249,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
       :bash ->
         {:error, {:unsupported_phase_action, :bash}}
 
-      _ -> {:ok, :ok}
+      _ ->
+        {:ok, :ok}
     end
   end
 
   defp emit_phase_start(state, phase_spec, phase_index) do
     phase_id = Identity.phase_id(state.run_id, phase_index)
+
     payload = %{
       run_id: state.run_id,
       phase_id: phase_id,
@@ -293,6 +295,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       task_type: phase_spec_name(phase_spec)
     )
   end
+
   defmodule ArtifactTemplate do
     @moduledoc """
     Renders phase output to a file using the phase's `artifact_template`
@@ -788,6 +791,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp resolve_context_key(state, key, phase_index) when is_binary(key) do
     segments = String.split(key, ".", trim: true)
+
     cond do
       segments == [] -> {:error, {:required_file_blank_key, key}}
       Enum.any?(segments, &(&1 == "")) -> {:error, {:required_file_blank_segment, key}}
@@ -804,6 +808,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     Map.merge(base, state.plan_context || %{})
   end
+
   defp traverse_context_key(_ctx, []), do: {:error, :required_file_traversal_failed}
 
   defp traverse_context_key(ctx, [segment]) when is_map(ctx) do

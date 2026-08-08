@@ -1555,8 +1555,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @impl true
   def complete(task_id, _completion_token, project_config) when is_map(project_config) do
-
-
     if is_binary(task_id) and String.trim(task_id) != "" do
       database_path =
         case project_config do

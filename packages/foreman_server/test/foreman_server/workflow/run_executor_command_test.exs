@@ -150,15 +150,18 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     :ok
   end
+
   test "command: phase forwards slash command at byte zero and requiredFile gate fails when the file is missing" do
     expect_schema_boot_fetches()
     start_supervised!(JsonSchemaCache)
 
-
     test_pid = self()
     project_id = unique_id("project")
     task_id = unique_id("task")
-    run_id = "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
@@ -175,7 +178,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
           required_file: "planning.prd_path",
           index: 1,
           phase_id: Identity.phase_id(run_id, 1),
-          artifact_template: %{path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])},
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])
+          },
           context: %{"script_key" => script_key}
         }
       ]
@@ -222,6 +227,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
          exit_code: 0
        }}
     end)
+
     expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, opts ->
       assert opts == [timeout_ms: 30_000]
       send(test_pid, {:runner_cmd, :reopen, request})
@@ -253,6 +259,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     # Adapter must receive the slash command at byte zero.
     assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
     assert is_binary(prompt)
+
     assert String.starts_with?(prompt, "/skill:ensemble-full-create-prd"),
            "expected prompt to begin with the slash command, got: #{inspect(String.slice(prompt, 0, 80))}"
 
@@ -265,7 +272,6 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert is_binary(context["planning"]["trd_path"])
     assert is_binary(context["planning"]["slug"])
     assert is_integer(context["planning"]["document_year"])
-
 
     # The resolved requiredFile path is the planning.prd_path context value.
     expected_path = context["planning"]["prd_path"]
@@ -284,7 +290,10 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       )
 
     assert failed_phase.status == "failed"
-    failure_reason = Map.get(failed_phase, :failure_reason) || Map.get(failed_phase, "failure_reason")
+
+    failure_reason =
+      Map.get(failed_phase, :failure_reason) || Map.get(failed_phase, "failure_reason")
+
     assert is_binary(failure_reason)
     assert failure_reason =~ "required_file_missing"
     assert failure_reason =~ "planning.prd_path"
@@ -373,7 +382,13 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     Path.join(System.tmp_dir!(), "#{script_key}.db")
   end
 
-  defp seed_plan_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, database_path) do
+  defp seed_plan_project_task_and_run!(
+         project_id,
+         task_id,
+         run_id,
+         workflow_snapshot,
+         database_path
+       ) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,
       name: "Plan #{project_id}",

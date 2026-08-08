@@ -102,13 +102,17 @@ defmodule ForemanServer.Workflow.PlanContext do
     raw = Map.get(task_projection, :approved_at) || Map.get(task_projection, "approved_at")
 
     cond do
-      is_struct(raw, DateTime) -> {:ok, raw.year}
+      is_struct(raw, DateTime) ->
+        {:ok, raw.year}
+
       is_binary(raw) ->
         case DateTime.from_iso8601(raw) do
           {:ok, dt, _offset} -> {:ok, dt.year}
           _ -> {:error, :approved_at_invalid}
         end
-      true -> {:error, :approved_at_invalid}
+
+      true ->
+        {:error, :approved_at_invalid}
     end
   end
 
@@ -116,6 +120,7 @@ defmodule ForemanServer.Workflow.PlanContext do
     case run_id_of(task_projection) do
       "run-" <> rest when is_binary(rest) and byte_size(rest) >= 8 ->
         prefix = binary_part(rest, 0, 8)
+
         if String.match?(prefix, ~r/^[0-9a-f]{8}$/),
           do: {:ok, prefix},
           else: {:error, :run_id_invalid}
@@ -129,7 +134,9 @@ defmodule ForemanServer.Workflow.PlanContext do
     sanitized = sanitize_slug(title_of(task_projection))
 
     cond do
-      sanitized != "" -> {:ok, cap_slug(sanitized)}
+      sanitized != "" ->
+        {:ok, cap_slug(sanitized)}
+
       true ->
         case sanitized_fallback(task_id_of(task_projection)) do
           "" -> {:ok, "plan"}
@@ -145,8 +152,12 @@ defmodule ForemanServer.Workflow.PlanContext do
     title = Map.get(task_projection, :title) || Map.get(task_projection, "title")
 
     cond do
-      not is_binary(title) -> {:error, :title_missing}
-      title == "" -> {:error, :title_missing}
+      not is_binary(title) ->
+        {:error, :title_missing}
+
+      title == "" ->
+        {:error, :title_missing}
+
       true ->
         {:ok,
          %{
