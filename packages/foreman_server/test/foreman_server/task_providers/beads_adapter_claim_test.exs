@@ -103,6 +103,31 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterClaimTest do
            }
   end
 
+  test "claim/3 unwraps JSON array returned by `br update --claim` (current CLI contract)" do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/path"
+    project_config = register_project!("proj-claim-array", cached_database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:update, %{flags: ["--claim", "bead-101"]}}
+
+      {:ok,
+       %{
+         stdout: Jason.encode!([issue_payload(%{"status" => "in_progress"})]),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    assert {:ok, %Issue{} = issue} =
+             BeadsAdapter.claim("bead-101", "foreman-actor", project_config)
+
+    assert issue.id == "bead-101"
+    assert issue.assignee == "foreman-actor"
+    assert issue.status == "in_progress"
+  end
+
   test "claim/3 routes NOT_CLAIMABLE through CodeMap as non-retryable", %{temp_dir: temp_dir} do
     start_schema_cache!()
 

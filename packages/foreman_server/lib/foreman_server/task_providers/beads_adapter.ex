@@ -1417,71 +1417,18 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
             json ->
               case Jason.decode(json) do
-                {:ok, %{} = payload} ->
-                  with :ok <- JsonSchemaCache.validate(:claimed_issue, payload),
-                       {:ok, id} <- fetch_required_string(payload, :id),
-                       {:ok, title} <- fetch_required_string(payload, :title),
-                       {:ok, _status} <- fetch_required_string(payload, :status),
-                       {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
-                       {:ok, dependencies} <-
-                         parse_opaque_string_list(
-                           fetch_payload_value(payload, :dependencies),
-                           :dependencies
-                         ),
-                       {:ok, assignee} <-
-                         parse_optional_string(fetch_payload_value(payload, :assignee), :assignee),
-                       {:ok, description} <-
-                         parse_optional_string(
-                           fetch_payload_value(payload, :description),
-                           :description
-                         ),
-                       {:ok, notes} <-
-                         parse_optional_string(fetch_payload_value(payload, :notes), :notes),
-                       {:ok, design} <-
-                         parse_optional_string(fetch_payload_value(payload, :design), :design),
-                       {:ok, labels} <-
-                         parse_opaque_string_list(fetch_payload_value(payload, :labels), :labels),
-                       {:ok, metadata} <- parse_metadata(fetch_payload_value(payload, :metadata)) do
-                    {:ok,
-                     %Issue{
-                       id: id,
-                       title: title,
-                       status: "in_progress",
-                       priority: priority,
-                       dependencies: dependencies,
-                       dependents: [],
-                       assignee: if(is_binary(actor) and actor != "", do: actor, else: assignee),
-                       description: description,
-                       notes: notes,
-                       design: design,
-                       labels: labels,
-                       metadata: metadata
-                     }}
-                  else
-                    {:error, errors} when is_list(errors) ->
-                      {:error,
-                       CodeMap.build_provider_error(
-                         ProviderErrorInput.from_local(
-                           "SCHEMA_VALIDATION_FAILED",
-                           "Beads claimed issue payload failed schema validation.",
-                           "Refresh the cached schema or re-fetch the Beads payload.",
-                           false,
-                           missing_fields_from(errors)
-                         ),
-                         "br update",
-                         0
-                       )}
+                {:ok, [%{} = payload | _rest]} ->
+                  parse_claimed_payload(payload, actor)
 
-                    {:error, provider_error} ->
-                      {:error, provider_error}
-                  end
+                {:ok, %{} = payload} ->
+                  parse_claimed_payload(payload, actor)
 
                 {:ok, _other} ->
                   {:error,
                    CodeMap.build_provider_error(
                      ProviderErrorInput.from_local(
                        "BR_CONTRACT_MISMATCH",
-                       "Beads claim payload must decode to a JSON object.",
+                       "Beads claim payload must decode to a JSON object or array.",
                        "Update the adapter or install a supported Beads CLI version.",
                        false
                      ),
@@ -1546,8 +1493,70 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
+  defp parse_claimed_payload(payload, actor) do
+    with :ok <- JsonSchemaCache.validate(:claimed_issue, payload),
+         {:ok, id} <- fetch_required_string(payload, :id),
+         {:ok, title} <- fetch_required_string(payload, :title),
+         {:ok, _status} <- fetch_required_string(payload, :status),
+         {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
+         {:ok, dependencies} <-
+           parse_opaque_string_list(
+             fetch_payload_value(payload, :dependencies),
+             :dependencies
+           ),
+         {:ok, assignee} <-
+           parse_optional_string(fetch_payload_value(payload, :assignee), :assignee),
+         {:ok, description} <-
+           parse_optional_string(
+             fetch_payload_value(payload, :description),
+             :description
+           ),
+         {:ok, notes} <-
+           parse_optional_string(fetch_payload_value(payload, :notes), :notes),
+         {:ok, design} <-
+           parse_optional_string(fetch_payload_value(payload, :design), :design),
+         {:ok, labels} <-
+           parse_opaque_string_list(fetch_payload_value(payload, :labels), :labels),
+         {:ok, metadata} <- parse_metadata(fetch_payload_value(payload, :metadata)) do
+      {:ok,
+       %Issue{
+         id: id,
+         title: title,
+         status: "in_progress",
+         priority: priority,
+         dependencies: dependencies,
+         dependents: [],
+         assignee: if(is_binary(actor) and actor != "", do: actor, else: assignee),
+         description: description,
+         notes: notes,
+         design: design,
+         labels: labels,
+         metadata: metadata
+       }}
+    else
+      {:error, errors} when is_list(errors) ->
+        {:error,
+         CodeMap.build_provider_error(
+           ProviderErrorInput.from_local(
+             "SCHEMA_VALIDATION_FAILED",
+             "Beads claimed issue payload failed schema validation.",
+             "Refresh the cached schema or re-fetch the Beads payload.",
+             false,
+             missing_fields_from(errors)
+           ),
+           "br update",
+           0
+         )}
+
+      {:error, provider_error} ->
+        {:error, provider_error}
+    end
+  end
+
   @impl true
   def complete(task_id, _completion_token, project_config) when is_map(project_config) do
+
+
     if is_binary(task_id) and String.trim(task_id) != "" do
       database_path =
         case project_config do
