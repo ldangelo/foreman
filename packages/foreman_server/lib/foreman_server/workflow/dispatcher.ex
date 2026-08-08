@@ -8,9 +8,9 @@ defmodule ForemanServer.Workflow.Dispatcher do
       command so the projection store transitions the task from
       `ready` → `dispatching` and the next-event handler eventually
       emits `TaskDispatched`.
-    * `TaskDispatched` — issues `run.start` (system) to append the
-      `RunStarted` event and hands the run off to `RunSupervisor`.
-
+    * `TaskDispatched` — enters the run admission flow through
+      `RunAdmission.start/2`, which reserves the project slot and appends
+      `RunStarted` before handing the run off to `RunSupervisor`.
   The dispatcher is the bridge between the operator-facing task
   lifecycle and the supervised executor. Subscriptions are
   per-process and unlink automatically when the subscriber exits.
@@ -18,8 +18,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   use GenServer
 
+  alias ForemanServer.{ProjectionStore, RunAdmission}
   alias ForemanServer.CommandGateway
-  alias ForemanServer.ProjectionStore
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
@@ -110,22 +110,18 @@ defmodule ForemanServer.Workflow.Dispatcher do
       task ->
         phase_specs = extract_phase_specs(task)
         project_id = Map.get(task, :project_id) || Map.get(task, "project_id")
+
         workflow_snapshot =
           Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
 
         result =
-          CommandGateway.dispatch_system(%{
-            type: "run.start",
-            command_id: "workflow:dispatcher:run-start:#{run_id}",
-            aggregate_id: "run:#{run_id}",
-            payload: %{
-              run_id: run_id,
-              task_id: task_id,
-              project_id: project_id,
-              approval_id: approval_id,
-              workflow_snapshot: workflow_snapshot,
-              phase_specs: phase_specs
-            }
+          RunAdmission.start(project_id, %{
+            run_id: run_id,
+            task_id: task_id,
+            project_id: project_id,
+            approval_id: approval_id,
+            workflow_snapshot: workflow_snapshot,
+            phase_specs: phase_specs
           })
 
         case result do

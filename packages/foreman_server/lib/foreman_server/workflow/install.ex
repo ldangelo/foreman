@@ -55,7 +55,6 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     end
   end
 
-
   defp copy_manifests(source_dir, destination_dir) do
     @template_files
     |> Enum.reduce_while({:ok, []}, fn filename, {:ok, paths} ->

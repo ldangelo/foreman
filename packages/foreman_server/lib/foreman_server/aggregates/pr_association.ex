@@ -58,8 +58,7 @@ defmodule ForemanServer.Aggregates.PrAssociation do
           run_id: run_id,
           pr_url: pr_url,
           pr_number: pr_number,
-          associated_at:
-            Aggregate.get(payload, :associated_at, System.system_time(:millisecond))
+          associated_at: Aggregate.get(payload, :associated_at, System.system_time(:millisecond))
         })
 
       {:ok,
@@ -85,8 +84,7 @@ defmodule ForemanServer.Aggregates.PrAssociation do
             run_id: Aggregate.get(payload, :run_id) || state.run_id,
             pr_url: Aggregate.get(payload, :pr_url) || state.pr_url,
             pr_number: Aggregate.get(payload, :pr_number) || state.pr_number,
-            associated_at:
-              Aggregate.get(payload, :associated_at) || state.associated_at
+            associated_at: Aggregate.get(payload, :associated_at) || state.associated_at
         }
 
       _ ->

@@ -31,6 +31,7 @@ defmodule ForemanServer.Aggregates.Task do
       annotations: []
     ]
   end
+
   @valid_statuses MapSet.new(["open", "ready", "in_progress", "blocked", "closed", "failed"])
 
   @impl true
@@ -178,14 +179,18 @@ defmodule ForemanServer.Aggregates.Task do
        }}
     end
   end
+
   def handle_command(state, %{type: "task.approve", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
          :ok <- require_exists(state, task_id),
          :ok <- require_approvable(state),
-         {:ok, approved_by} <- require_nonempty_string(Aggregate.get(payload, :approved_by), :approved_by),
-         {:ok, approval_id} <- require_nonempty_string(Aggregate.get(payload, :approval_id), :approval_id),
+         {:ok, approved_by} <-
+           require_nonempty_string(Aggregate.get(payload, :approved_by), :approved_by),
+         {:ok, approval_id} <-
+           require_nonempty_string(Aggregate.get(payload, :approval_id), :approval_id),
          {:ok, run_id} <- require_nonempty_string(Aggregate.get(payload, :run_id), :run_id),
-         {:ok, approved_at} <- require_nonempty_string(Aggregate.get(payload, :approved_at), :approved_at),
+         {:ok, approved_at} <-
+           require_nonempty_string(Aggregate.get(payload, :approved_at), :approved_at),
          :ok <- require_workflow_snapshot(Aggregate.get(payload, :workflow_snapshot)) do
       {:ok,
        %{
@@ -202,8 +207,6 @@ defmodule ForemanServer.Aggregates.Task do
        }}
     end
   end
-
-
 
   def handle_command(state, %{type: command_type, payload: payload})
       when command_type in ["task.block", "task.close"] do
@@ -302,8 +305,6 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-
-
   def handle_command(state, %{type: "task.add_dependency", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
          {:ok, depends_on} <-
@@ -320,11 +321,6 @@ defmodule ForemanServer.Aggregates.Task do
   end
 
   def handle_command(_state, _command), do: :unhandled
-
-
-
-
-
 
   defp maybe_apply_terminal_run(state, payload, status) do
     if Aggregate.get(payload, :task_id) == Map.get(state, :task_id),
@@ -348,12 +344,10 @@ defmodule ForemanServer.Aggregates.Task do
       else: {:error, {:invalid_task_status, status}}
   end
 
-
   defp require_approvable(%State{status: status}) when status in ["open", "blocked"], do: :ok
+
   defp require_approvable(%State{status: status}),
     do: {:error, {:task_not_approvable, status}}
-
-
 
   defp validate_status(status), do: {:error, {:invalid_task_status, status}}
 
@@ -374,8 +368,6 @@ defmodule ForemanServer.Aggregates.Task do
   defp require_executing(%State{status: "in_progress"}), do: :ok
   defp require_executing(%State{status: status}), do: {:error, {:task_not_executing, status}}
 
-
-
   defp allow_transition(%State{status: status}, new_status)
        when status == "merged" and new_status != status,
        do: {:error, {:invalid_task_transition, status, new_status}}
@@ -393,16 +385,16 @@ defmodule ForemanServer.Aggregates.Task do
       _ -> :ok
     end
   end
+
   defp require_nonempty_string(value, _key) when is_binary(value) and value != "",
     do: {:ok, value}
+
   defp require_nonempty_string(value, key),
     do: {:error, {:missing_or_invalid, key, value}}
 
   defp require_workflow_snapshot(snapshot) when is_map(snapshot) and map_size(snapshot) > 0,
     do: :ok
+
   defp require_workflow_snapshot(snapshot),
     do: {:error, {:missing_or_invalid, :workflow_snapshot, snapshot}}
-
-
 end
-

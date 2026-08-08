@@ -1,37 +1,38 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"os"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
 
 func runRun(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "foreman run: missing subcommand (get)")
-		os.Exit(2)
+		return usageTextError(
+			"foreman run: missing subcommand (get)",
+			"Usage:\n  foreman run get <id>",
+		)
 	}
 
 	switch args[0] {
 	case "get":
 		return runGet(c, args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "foreman run: unknown subcommand %q\n", args[0])
-		os.Exit(2)
-		return nil
+		return usageTextError(
+			fmt.Sprintf("foreman run: unknown subcommand %q", args[0]),
+			"Usage:\n  foreman run get <id>",
+		)
 	}
 }
 
 func runGet(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("run get", flag.ExitOnError)
-	_ = fs.Parse(args)
+	fs := newFlagSet("run get")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "foreman run get: expected one argument: <run-id>")
-		fs.Usage()
-		os.Exit(2)
+		return usageError(fs, "foreman run get: expected one argument: <run-id>")
 	}
 
 	var out map[string]any

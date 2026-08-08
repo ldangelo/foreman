@@ -256,7 +256,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
 
 **Shippable State:** Project state carries an `active_run_reservations` map keyed by `run_id`; the run aggregate carries a `project_id` field populated on every `RunStarted` apply_event and rehydrated correctly on replay; `CommandRouter.dispatch_run_start/2` owns the multi-step admission protocol via a `defp do_dispatch/2` (unreachable from outside the module); `RunLifecycleReconciler` runs in two paths (terminal-event subscription + scheduled pass) using authoritative event-stream-derived state (event payload for subscription, `Project.load/2` + `Run.load/2` for the scheduled pass); the reconciler applies the **retry-not-release** protocol (NEVER releases on `Run.State.exists? == false` alone — retries `RunAdmission.start/2` with the preserved `run_start_payload` from `Project.State.active_run_reservations`); supervision tree includes `RunLifecycleReconciler`; `EventCodec` registry knows the two new reservation events plus `RunCompleted`/`RunFailed` extended with `project_id` and `run_id`; terminal-event subscription drives reservation release with sub-second happy-path latency; no projection read backs any safety decision (projection is enumeration only).
 
-- [ ] **TRD-001** Add `active_run_reservations` map to `Project.State` with reservation metadata (4h) [satisfies REQ-004, AMB-004]
+- [x] **TRD-001** Add `active_run_reservations` map to `Project.State` with reservation metadata (4h) [satisfies REQ-004, AMB-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Implementation ACs:
     - [ ] Given `Project.State`, when inspecting the struct, then the field is `active_run_reservations: %{String.t() => reservation_metadata()}` (NOT a `MapSet`).
@@ -267,7 +267,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the rehydrated state via `Project.load/2`, when a reconciler reads `Map.get(state.active_run_reservations, run_id)`, then it returns the full reservation metadata (preserving `run_start_payload` for retry).
   - Depends on: (none — first task in PR 1)
 
-- [ ] **TRD-001-TEST** Active-run reservations map tests (2h) [verifies TRD-001] [satisfies REQ-004] [depends: TRD-001]
+- [x] **TRD-001-TEST** Active-run reservations map tests (2h) [verifies TRD-001] [satisfies REQ-004] [depends: TRD-001]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Test cases:
     - [ ] Assert: empty initial state has `active_run_reservations == %{}`.
@@ -277,7 +277,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: re-applying `ProjectRunReserved` for an existing `run_id` is idempotent (does NOT create duplicate entries; map update is by key).
     - [ ] Assert: unknown atom keys are rejected by `%State{state | ...}` syntax (compile-time guard).
 
-- [ ] **TRD-002** `ProjectRunReserved` and `ProjectRunReservationReleased` event structs + handle_command clauses (3h) [satisfies REQ-004, AMB-004]
+- [x] **TRD-002** `ProjectRunReserved` and `ProjectRunReservationReleased` event structs + handle_command clauses (3h) [satisfies REQ-004, AMB-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3
   - Implementation ACs:
     - [ ] Given `ForemanServer.Events.ProjectRunReserved`, when defined, then `@enforce_keys [:run_id, :project_id, :sequence, :command_id, :run_start_payload]` and `@derive Jason.Encoder` precede `defstruct`.
@@ -288,7 +288,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `Project.handle_command(:project.release_run_reservation, ...)` for an unknown run, when invoked, then it returns `:ok` without emitting (idempotent release).
   - Depends on: TRD-001
 
-- [ ] **TRD-002-TEST** Reservation event + handle_command tests (2h) [verifies TRD-002] [satisfies REQ-004] [depends: TRD-002]
+- [x] **TRD-002-TEST** Reservation event + handle_command tests (2h) [verifies TRD-002] [satisfies REQ-004] [depends: TRD-002]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3
   - Test cases:
     - [ ] Assert: `ProjectRunReserved` struct has the 5 `@enforce_keys`.
@@ -298,7 +298,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: `:project.release_run_reservation` removes the entry from `active_run_reservations`.
     - [ ] Assert: `:project.release_run_reservation` on unknown run is idempotent.
 
-- [ ] **TRD-003** Extend `Run.State` with `project_id` field; populate on `RunStarted` apply_event + replay correctness (2h) [satisfies REQ-004]
+- [x] **TRD-003** Extend `Run.State` with `project_id` field; populate on `RunStarted` apply_event + replay correctness (2h) [satisfies REQ-004]
   - Validates PRD ACs: AC-004-2, AC-004-3
   - Implementation ACs:
     - [ ] Given `Run.State`, when inspecting the struct, then a new field `project_id: String.t() | nil` is declared.
@@ -307,7 +307,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the terminal-event structs (`RunCompleted`, `RunFailed`, `RunCancelled`, `RunFlaggedStuck`, `RunBlocked`), when re-inspected, then each carries `@enforce_keys` that include `project_id` and `run_id`.
   - Depends on: (none)
 
-- [ ] **TRD-003-TEST** Run.State.project_id rehydration + terminal-event codec tests (1h) [verifies TRD-003] [satisfies REQ-004] [depends: TRD-003]
+- [x] **TRD-003-TEST** Run.State.project_id rehydration + terminal-event codec tests (1h) [verifies TRD-003] [satisfies REQ-004] [depends: TRD-003]
   - Validates PRD ACs: AC-004-2, AC-004-3
   - Test cases:
     - [ ] Assert: `RunStarted` apply_event populates `project_id`.
@@ -315,7 +315,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: terminal events reject construction without `project_id` (KeyError on `defstruct`).
     - [ ] Assert: `EventCodec.decode!` reconstructs the typed terminal event with `project_id` accessible via struct field access.
 
-- [ ] **TRD-004** `RunAdmission.start/2` public facade → `CommandRouter.dispatch_run_start/2` internal entry → `defp do_dispatch/2` private protocol (4h) [satisfies REQ-004, AMB-004]
+- [x] **TRD-004** `RunAdmission.start/2` public facade → `CommandRouter.dispatch_run_start/2` internal entry → `defp do_dispatch/2` private protocol (4h) [satisfies REQ-004, AMB-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Implementation ACs:
     - [ ] Given the call graph, when documented in module headers, then it is **one-way and acyclic**: `Dispatcher / Reconciler → RunAdmission.start/2 → CommandRouter.dispatch_run_start/2 → defp do_dispatch/2`. No caller skips the facade.
@@ -326,7 +326,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `defp do_dispatch/2`, when a test attempts to call it from outside the module, then it fails with `UndefinedFunctionError` (compile-time guard against future bypass).
   - Depends on: TRD-001, TRD-002, TRD-003
 
-- [ ] **TRD-004-TEST** RunAdmission facade + router-owned admission path tests (2h) [verifies TRD-004] [satisfies REQ-004] [depends: TRD-004]
+- [x] **TRD-004-TEST** RunAdmission facade + router-owned admission path tests (2h) [verifies TRD-004] [satisfies REQ-004] [depends: TRD-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Test cases:
     - [ ] Assert: `RunAdmission.start/2` is `def` and public.
@@ -340,7 +340,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: ambiguous failure (timeout mock) RETAINS the reservation for the reconciler.
 
 
-- [ ] **TRD-005** `RunLifecycleReconciler` with subscribed + scheduled paths (retry-not-release protocol) (4h) [satisfies REQ-004, AMB-004]
+- [x] **TRD-005** `RunLifecycleReconciler` with subscribed + scheduled paths (retry-not-release protocol) (4h) [satisfies REQ-004, AMB-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Test cases for the 5-step protocol:
     - [ ] Assert: terminal event (`RunCompleted`/`RunFailed`) subscription triggers release within 1s happy-path latency.
@@ -358,7 +358,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the per-pair decision logic, when it executes, then it implements the 4-branch table from the test cases (terminal/release, absent/retry, exists-not-terminal/retain, definitive-rejection-during-retry/release).
   - Depends on: TRD-001, TRD-002, TRD-003, TRD-004
 
-- [ ] **TRD-005-TEST** Reconciler retry-not-release protocol tests (3h) [verifies TRD-005] [satisfies REQ-004] [depends: TRD-005]
+- [x] **TRD-005-TEST** Reconciler retry-not-release protocol tests (3h) [verifies TRD-005] [satisfies REQ-004] [depends: TRD-005]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Test cases:
     - [ ] Assert: terminal event subscription releases within 1s of the terminal event being committed.
@@ -371,7 +371,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: idempotent reserve on retry path — `project.reserve_run` does NOT emit a second `ProjectRunReserved`.
     - [ ] Assert: end-to-end TOCTOU test — concurrent run.start between scheduled pass's load and reconcile path is correctly handled (no archive race).
 
-- [ ] **TRD-006** Supervision tree wiring + `EventCodec` registry updates + admission-facade-bypass architecture test (2h) [satisfies REQ-004, AMB-004]
+- [x] **TRD-006** Supervision tree wiring + `EventCodec` registry updates + admission-facade-bypass architecture test (2h) [satisfies REQ-004, AMB-004]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Implementation ACs:
     - [ ] Given `application.ex`, when the supervision tree is updated, then `RunLifecycleReconciler` is added as a child under the existing supervisor with `restart: :permanent`.
@@ -381,7 +381,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the bypass test, when it scans the same set, then a direct call to `RunAdmission.start/2` from `lib/foreman_server_web/` also fails (the facade is server-internal; web must use `CommandGateway.dispatch_operator/2`).
   - Depends on: TRD-002, TRD-003, TRD-004
 
-- [ ] **TRD-006-TEST** Codec registry + supervision + facade-bypass tests (2h) [verifies TRD-006] [satisfies REQ-004] [depends: TRD-006]
+- [x] **TRD-006-TEST** Codec registry + supervision + facade-bypass tests (2h) [verifies TRD-006] [satisfies REQ-004] [depends: TRD-006]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Test cases:
     - [ ] Assert: `EventCodec.decode!` reconstructs `ProjectRunReserved` from a JSON map (round-trip).
@@ -395,7 +395,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
 
 **Shippable State:** `POST /api/commands` with `type: "project.update"` or `type: "project.archive"` flows end-to-end against a running server; `project.archive` returns `409 project_has_active_runs` with the active run ids list when `Project.State.active_run_reservations` is non-empty (the active-run check uses the in-state map, NOT a fresh query); identity-binding mismatch returns `400` with `reason: ":aggregate_id_mismatch"`; the web layer cannot bypass the gateway (architecture test fails on any direct `EventStore.append_to_stream`, `CommandRouter.append_*`, `CommandRouter.dispatch_run_start/2`, `RunAdmission.start/2`, or `RunLifecycleReconciler.retry_run_start/2` call in `lib/foreman_server_web/`); the workflow dispatcher's run-start path routes through `RunAdmission.start/2` (the public facade — no parallel saga path, no bypass of the facade); the call graph `Dispatcher/Reconciler → RunAdmission.start/2 → CommandRouter.dispatch_run_start/2 → defp do_dispatch/2` is acyclic (architecture bypass test scans for any caller other than the allowlisted seam); telemetry handlers emit the 6 documented project lifecycle events; `ProjectionStore` exposes `list_projects_with_active_runs/0` for reconciler enumeration (no `run_projection/1`).
 
-- [ ] **TRD-007** Update `command_controller.ex` allowlist tables + 409 version-conflict mapping for `project.update` and `project.archive` (3h) [satisfies REQ-002, REQ-003]
+- [x] **TRD-007** Update `command_controller.ex` allowlist tables + 409 version-conflict mapping for `project.update` and `project.archive` (3h) [satisfies REQ-002, REQ-003]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-002-4, AC-002-5, AC-002-6, AC-003-2, AC-003-3, AC-003-4
   - Implementation ACs:
     - [ ] Given `@allowed_types` is updated, when `project.update` envelope is POSTed to `/api/commands`, then the controller accepts the type (not rejected at the type-validation gate).
@@ -408,7 +408,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the actor's bounded retry path exhausts on `wrong_expected_version`, when the controller renders the response, then it returns `409 Conflict` with `code: "version_conflict"` and `current_version` in the body (AC-003-4 — field name `code` per PRD AC-003-4; not `error`). The `current_version` is the **authoritative stream version** from the actor's propagated tuple `{:error, {:wrong_expected_version, current_version}}` — NOT a projection lookup (§3/§7 A8 forbids projection reads for safety decisions). The actor's retry-exhaustion return is extended from `{:error, :wrong_expected_version}` to `{:error, {:wrong_expected_version, current_version}}` where `current_version` is the **stream version already held by the actor** (per AGENTS.md: the actor owns a separate `stream version` and rehydrates via `Aggregate.load/2` on each conflict-recovery reload). The change is propagating the version the actor already has in scope from the last reload — no fresh branch over aggregate types, no `state.last_sequence` lookup (not every `%State{}` field is named that way), no projection read. The gateway passes the tuple through unchanged; the controller renders it as `409` + `code: "version_conflict"` + `current_version`.
   - Depends on: (none — first task in PR 2)
 
-- [ ] **TRD-007-TEST** Controller allowlist + HTTP mutation envelope + 409 mapping tests (2h) [verifies TRD-007] [satisfies REQ-002, REQ-003] [depends: TRD-007, TRD-008]
+- [x] **TRD-007-TEST** Controller allowlist + HTTP mutation envelope + 409 mapping tests (2h) [verifies TRD-007] [satisfies REQ-002, REQ-003] [depends: TRD-007, TRD-008]
   - Validates PRD ACs: AC-002-1, AC-002-2, AC-002-3, AC-002-4, AC-002-5, AC-002-6, AC-003-2, AC-003-3, AC-003-4
   - Test cases:
     - [ ] Assert: `project.update` envelope is accepted (no reject).
@@ -420,7 +420,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: HTTP 201 envelope for `project.archive` — body matches `{status: "accepted", result: {project_id: ...}}` (AC-003-3; end-to-end through the controller).
     - [ ] Assert: HTTP 409 `version_conflict` mapping when the actor's bounded retry path exhausts on `wrong_expected_version` (AC-003-4; controller-rendering only — the actor contract is verified by TRD-024-TEST). The controller rendering test stubs the gateway to return `{:error, {:wrong_expected_version, current_version}}` (matching the actor contract from TRD-024) and asserts the controller renders `409 Conflict` with body containing `code: "version_conflict"` and `current_version: <propagated>` (per PRD AC-003-4 — field name `code`, not `error`) — explicitly NOT a projection lookup (the test does not call `ProjectionStore.get_project/1` and the controller does not take a projection read for the version).
 
-- [ ] **TRD-008** Update `command_gateway.ex` allowlist + `validate_aggregate_id/1` clauses for `project.update` and `project.archive` (3h) [satisfies REQ-002, REQ-015]
+- [x] **TRD-008** Update `command_gateway.ex` allowlist + `validate_aggregate_id/1` clauses for `project.update` and `project.archive` (3h) [satisfies REQ-002, REQ-015]
   - Validates PRD ACs: AC-002-7, AC-002-8, AC-015-1, AC-015-2, AC-015-3, AC-015-4, AC-015-5
   - Implementation ACs:
     - [ ] Given `@allowed_operator_types` is updated, when an envelope with `type: "project.update"` reaches the gateway, then the allowlist gate does not reject.
@@ -432,7 +432,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the gateway allowlist gate admits the type, when `validate_aggregate_id/1` runs, then it executes before any call to the actor (no event is appended on mismatch).
   - Depends on: TRD-007
 
-- [ ] **TRD-008-TEST** Gateway allowlist + identity-binding validator tests (2h) [verifies TRD-008] [satisfies REQ-002, REQ-015] [depends: TRD-008]
+- [x] **TRD-008-TEST** Gateway allowlist + identity-binding validator tests (2h) [verifies TRD-008] [satisfies REQ-002, REQ-015] [depends: TRD-008]
   - Validates PRD ACs: AC-002-7, AC-002-8, AC-015-1, AC-015-2, AC-015-3, AC-015-4, AC-015-5
   - Test cases:
     - [ ] Assert: `project.update` and `project.archive` are in `@allowed_operator_types` (regression guard).
@@ -442,7 +442,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: HTTP path — controller returns `400` with `reason: ":aggregate_id_mismatch"` (current controller behavior; regression-safe).
     - [ ] Assert: actor is NOT called on mismatch (event log is unchanged).
 
-- [ ] **TRD-009** Web-layer CQRS enforcement test (extended allowlist for reconciler) (2h) [satisfies REQ-008]
+- [x] **TRD-009** Web-layer CQRS enforcement test (extended allowlist for reconciler) (2h) [satisfies REQ-008]
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-008-3
   - Implementation ACs:
     - [ ] Given a controller file under `lib/foreman_server_web/`, when the architecture test scans it, then any call to `EventStore.append_to_stream`, `CommandRouter.append_*`, `RunLifecycleReconciler.retry_run_start/2`, or `EventStore.Adapter` dispatch fails the test.
@@ -451,7 +451,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given a controller file with `RunLifecycleReconciler` direct import, when the test runs, then it fails (reconciler is server-internal; web must not import).
   - Depends on: (none)
 
-- [ ] **TRD-009-TEST** Self-verifying scan (1h) [verifies TRD-009] [satisfies REQ-008] [depends: TRD-009]
+- [x] **TRD-009-TEST** Self-verifying scan (1h) [verifies TRD-009] [satisfies REQ-008] [depends: TRD-009]
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-008-3
   - Test cases:
     - [ ] Assert: a controller file with a direct `EventStore.append_to_stream` call fails the test.
@@ -459,7 +459,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: a controller file with a `CommandGateway.dispatch_operator/2` call passes.
     - [ ] Assert: `ProjectController` is in the scan set.
 
-- [ ] **TRD-010** Telemetry handlers for project lifecycle events (2h) [satisfies REQ-012]
+- [x] **TRD-010** Telemetry handlers for project lifecycle events (2h) [satisfies REQ-012]
   - Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3, AC-012-4, AC-012-5, AC-012-6
   - Implementation ACs:
     - [ ] Given `GET /api/projects/:id` completes (success or error), then `[:foreman_server, :project, :read]` is emitted with `duration_ms` and `outcome`.
@@ -470,14 +470,14 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `GET /api/projects` (list) completes, then `[:foreman_server, :project, :list]` is emitted with `duration_ms`, `count: <n>`, and `outcome`.
   - Depends on: TRD-007 (so mutation telemetry is co-located with the gateway allowlist work)
 
-- [ ] **TRD-010-TEST** Telemetry handler tests (1h) [verifies TRD-010] [satisfies REQ-012] [depends: TRD-010]
+- [x] **TRD-010-TEST** Telemetry handler tests (1h) [verifies TRD-010] [satisfies REQ-012] [depends: TRD-010]
   - Validates PRD ACs: AC-012-1, AC-012-2, AC-012-3, AC-012-4, AC-012-5, AC-012-6
   - Test cases:
     - [ ] Assert: each of the 6 events is emitted with the documented fields.
     - [ ] Assert: `:error` events include `code` and `retryable`.
     - [ ] Assert: list event includes `count`.
 
-- [ ] **TRD-011** `Project.handle_command :project.archive` active-run check using `active_run_reservations` map (2h) [satisfies REQ-004, AMB-004]
+- [x] **TRD-011** `Project.handle_command :project.archive` active-run check using `active_run_reservations` map (2h) [satisfies REQ-004, AMB-004]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Implementation ACs:
     - [ ] Given `Project.handle_command(:project.archive, payload)`, when `map_size(state.active_run_reservations) == 0`, then it emits `ProjectArchived` (no rejection).
@@ -486,7 +486,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given a previous dispatch returned `{:error, :project_has_active_runs}` and the reconciler has since released all reservations, when `project.archive` is retried, then the command succeeds.
   - Depends on: TRD-001, TRD-002
 
-- [ ] **TRD-011-TEST** Project.archive active-run check tests (2h) [verifies TRD-011] [satisfies REQ-004] [depends: TRD-011]
+- [x] **TRD-011-TEST** Project.archive active-run check tests (2h) [verifies TRD-011] [satisfies REQ-004] [depends: TRD-011]
   - Validates PRD ACs: AC-004-1, AC-004-2, AC-004-3, AC-004-4
   - Test cases:
     - [ ] Assert: project with empty `active_run_reservations` accepts `project.archive`.
@@ -496,7 +496,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: terminal-state enumeration in `run.ex` matches the test contract (parametrized test against documented non-terminal states).
     - [ ] Assert: reconciler-released reservation (via `ProjectRunReservationReleased` apply) unblocks archive.
 
-- [ ] **TRD-012** Workflow dispatcher migration to `RunAdmission.start/2` (public facade) (2h) [satisfies REQ-004]
+- [x] **TRD-012** Workflow dispatcher migration to `RunAdmission.start/2` (public facade) (2h) [satisfies REQ-004]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Implementation ACs:
     - [ ] Given `ForemanServer.Workflow.Dispatcher`, when the run-start path is invoked, then it calls `RunAdmission.start(project_id, run_start_payload)` (the public facade). It MUST NOT call `CommandRouter.dispatch_run_start/2` or `defp do_dispatch/2` directly — the architecture bypass test fails any other call site.
@@ -504,14 +504,14 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the workflow dispatcher integration tests, when run, then they pass against the facade path.
   - Depends on: TRD-004
 
-- [ ] **TRD-012-TEST** Workflow dispatcher migration tests (1h) [verifies TRD-012] [satisfies REQ-004] [depends: TRD-012]
+- [x] **TRD-012-TEST** Workflow dispatcher migration tests (1h) [verifies TRD-012] [satisfies REQ-004] [depends: TRD-012]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Test cases:
     - [ ] Assert: dispatcher calls `RunAdmission.start/2` (mock verifies the facade is the call site).
     - [ ] Assert: dispatcher does NOT call `CommandRouter.dispatch_run_start/2` or `defp do_dispatch/2` directly (architecture bypass regression guard).
     - [ ] Assert: end-to-end integration test — workflow triggers run start, reservation is created, run.start succeeds.
 
-- [ ] **TRD-013** `ProjectionStore.list_projects_with_active_runs/0` enumeration-only API (1h) [satisfies REQ-004]
+- [x] **TRD-013** `ProjectionStore.list_projects_with_active_runs/0` enumeration-only API (1h) [satisfies REQ-004]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Implementation ACs:
     - [ ] Given `ProjectionStore.list_projects_with_active_runs/0`, when invoked, then it returns `[{project_id, run_id}, ...]` tuples from the projection.
@@ -519,20 +519,20 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the reconciler scheduled pass, when it enumerates, then it calls `list_projects_with_active_runs/0` (NOT a projection read for a single run).
   - Depends on: TRD-005 (PR 1), TRD-006 (PR 1)
 
-- [ ] **TRD-013-TEST** Projection enumeration tests (1h) [verifies TRD-013] [satisfies REQ-004] [depends: TRD-013]
+- [x] **TRD-013-TEST** Projection enumeration tests (1h) [verifies TRD-013] [satisfies REQ-004] [depends: TRD-013]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Test cases:
     - [ ] Assert: `list_projects_with_active_runs/0` returns tuples in `(project_id, run_id)` format.
     - [ ] Assert: empty store returns `[]`.
     - [ ] Assert: legacy `run_projection/1` raises `UndefinedFunctionError`.
     - [ ] Assert: reconciler scheduled pass test asserts that the projection is read ONLY via `list_projects_with_active_runs/0`.
-- [ ] **TRD-024** Actor retry-exhaustion contract extension (carries authoritative stream version) (1h) [satisfies REQ-003]
+- [x] **TRD-024** Actor retry-exhaustion contract extension (carries authoritative stream version) (1h) [satisfies REQ-003]
   - Validates PRD ACs: AC-003-4
   - Implementation ACs:
     - [ ] Given `ForemanServer.Aggregate.Actor` (or the equivalent aggregate actor module) handles the bounded retry path, when retry exhaustion occurs on `wrong_expected_version`, then the actor returns `{:error, {:wrong_expected_version, current_version}}` where `current_version` is the **stream version already held by the actor** (per AGENTS.md: the actor owns a separate `stream version` and rehydrates via `Aggregate.load/2` on each conflict-recovery reload). The change is propagating the version the actor already has in scope from the last reload — no fresh branch over aggregate types, no `state.last_sequence` lookup (not every `%State{}` field is named that way), no projection read. The tuple is the new contract; downstream callers (gateway, controller) advertise the same shape.
   - Depends on: TRD-001 (PR 1)
 
-- [ ] **TRD-024-TEST** Actor retry-exhaustion contract test (real Aggregate.Actor, no mocks) (1h) [verifies TRD-024] [satisfies REQ-003] [depends: TRD-024]
+- [x] **TRD-024-TEST** Actor retry-exhaustion contract test (real Aggregate.Actor, no mocks) (1h) [verifies TRD-024] [satisfies REQ-003] [depends: TRD-024]
   - Validates PRD ACs: AC-003-4
   - Test cases:
     - [ ] Assert: real `Aggregate.Actor` — start the actor with a deterministic `command_id` stream version, then append a successful event (advance stream version to N+1), then inject a sustained `wrong_expected_version` failure (e.g., disable the event store append or attach a stub that always returns `{:error, :wrong_expected_version}` to the append path), then dispatch a command that triggers the bounded retry path. After `@max_conflict_retries` (default 3) the actor returns `{:error, {:wrong_expected_version, current_version}}` where `current_version` matches the actor's stream version AT THE POINT OF RETRY EXHAUSTION (the value the actor already has in scope from its last `Aggregate.load/2` reload — verified by inspecting the actor's state via `:sys.get_state/1`).
@@ -542,7 +542,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
 
 **Shippable State:** `GET /api/projects/:id` returns the projection behind Bearer auth with `200 OK` or `404 not_found` / `401 unauthorized`; `GET /api/projects?include_archived=<bool>` returns the list with default hard cap 1000 and `X-Total-Count` header; empty list is `200 OK + {projects: []}` (NOT an error); `meta.truncated: true` is set when the cap is hit; all four list responses (`GET /:id`, `GET /`, the bearer-auth plug, and the existing `POST /api/commands`) are exercised end-to-end against a running server with both happy-path and failure cases.
 
-- [ ] **TRD-014** `ProjectController.show/2` for `GET /api/projects/:id` (2h) [satisfies REQ-001, REQ-007, REQ-011]
+- [x] **TRD-014** `ProjectController.show/2` for `GET /api/projects/:id` (2h) [satisfies REQ-001, REQ-007, REQ-011]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-007-1, AC-007-2, AC-011-1
   - Implementation ACs:
     - [ ] Given `GET /api/projects/:id` is requested, when the controller matches, then it calls `ProjectionStore.get_project/1` (read-only) and returns `200 OK` with `{project: <projection>}` envelope.
@@ -552,7 +552,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `X-Request-Id` is supplied, when the controller responds, then it echoes the value in the response header.
   - Depends on: (none — first task in PR 3)
 
-- [ ] **TRD-014-TEST** `ProjectController.show/2` tests (2h) [verifies TRD-014] [satisfies REQ-001, REQ-007, REQ-011] [depends: TRD-014]
+- [x] **TRD-014-TEST** `ProjectController.show/2` tests (2h) [verifies TRD-014] [satisfies REQ-001, REQ-007, REQ-011] [depends: TRD-014]
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3, AC-007-1, AC-007-2, AC-011-1
   - Test cases:
     - [ ] Assert: `GET /api/projects/<existing>` returns 200 with `{project: <projection>}`.
@@ -562,7 +562,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: `X-Request-Id` is echoed.
     - [ ] Assert: archived project is still readable by id (no auto-filter).
 
-- [ ] **TRD-015** `ProjectController.index/2` for `GET /api/projects` with hard cap + `meta.truncated` (3h) [satisfies REQ-007, REQ-016]
+- [x] **TRD-015** `ProjectController.index/2` for `GET /api/projects` with hard cap + `meta.truncated` (3h) [satisfies REQ-007, REQ-016]
   - Validates PRD ACs: AC-007-3, AC-007-4, AC-016-1, AC-016-2, AC-016-3, AC-016-4, AC-016-5
   - Implementation ACs:
     - [ ] Given `GET /api/projects` is requested with no `include_archived`, when the controller runs, then it returns `200 OK + {projects: [...non-archived...]}` (archived excluded by default).
@@ -574,7 +574,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given a malformed query string (e.g., `?include_archived=notabool`), when the controller parses, then it returns `400` with `reason: ":invalid_query"` envelope.
   - Depends on: TRD-014 (read infrastructure exists)
 
-- [ ] **TRD-015-TEST** `ProjectController.index/2` tests (2h) [verifies TRD-015] [satisfies REQ-007, REQ-016] [depends: TRD-015]
+- [x] **TRD-015-TEST** `ProjectController.index/2` tests (2h) [verifies TRD-015] [satisfies REQ-007, REQ-016] [depends: TRD-015]
   - Validates PRD ACs: AC-007-3, AC-007-4, AC-016-1, AC-016-2, AC-016-3, AC-016-4, AC-016-5
   - Test cases:
     - [ ] Assert: default response excludes archived projects.
@@ -585,7 +585,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: `?limit=N` respects the cap.
     - [ ] Assert: malformed query string returns 400.
 
-- [ ] **TRD-016** Router wiring + auth pipeline + read-route smoke test (1h) [satisfies REQ-001, REQ-011, REQ-016]
+- [x] **TRD-016** Router wiring + auth pipeline + read-route smoke test (1h) [satisfies REQ-001, REQ-011, REQ-016]
   - Validates PRD ACs: AC-001-1, AC-011-1, AC-016-1
   - Implementation ACs:
     - [ ] Given `foreman_server_web/router.ex`, when the routes are updated, then `GET /api/projects` and `GET /api/projects/:id` are mounted under the existing `BearerAuth` pipeline.
@@ -594,7 +594,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the existing `POST /api/commands` route, when the smoke test runs, then `project.register` succeeds with HTTP `201 Created` and response body `{status: "accepted", result: {project_id: ...}}` (regression guard for REQ-003 201 envelope shape; locks the gateway success response against accidental changes).
   - Depends on: TRD-014, TRD-015
 
-- [ ] **TRD-016-TEST** Router + auth + read-route smoke tests (1h) [verifies TRD-016] [satisfies REQ-001, REQ-003, REQ-011, REQ-016] [depends: TRD-016]
+- [x] **TRD-016-TEST** Router + auth + read-route smoke tests (1h) [verifies TRD-016] [satisfies REQ-001, REQ-003, REQ-011, REQ-016] [depends: TRD-016]
   - Validates PRD ACs: AC-001-1, AC-011-1, AC-016-1
   - Test cases:
     - [ ] Assert: router test verifies both routes mount under the `BearerAuth` pipeline.
@@ -605,7 +605,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
 
 **Shippable State:** `foreman project {create,get,update,delete,list}` all run end-to-end against a running server; exit codes 0/1/2/3/4/5 are documented and exercised; `foreman project list` defaults to a table with columns `ID, PATH, ARCHIVED, REGISTERED, VERSION`, accepts `--include-archived` and `--format=json|ndjson`; user guide and CLI reference reflect the new surface.
 
-- [ ] **TRD-017** `foreman project create` Go subcommand (2h) [satisfies REQ-009, REQ-010]
+- [x] **TRD-017** `foreman project create` Go subcommand (2h) [satisfies REQ-009, REQ-010]
   - Validates PRD ACs: AC-009-1, AC-010-1, AC-010-2, AC-010-3
   - Implementation ACs:
     - [ ] Given `--id`, `--path`, `--task-provider` are supplied, when the CLI runs, then it POSTs `/api/commands` with `type: "project.register"` and the required payload.
@@ -616,7 +616,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given no `--idempotency-key`, then `command_id = sha256("project.create." + path + "." + task_provider)`.
   - Depends on: PR 1 (mutation gate open — TRD-007/TRD-008)
 
-- [ ] **TRD-017-TEST** `project create` CLI tests (1h) [verifies TRD-017] [satisfies REQ-009, REQ-010] [depends: TRD-017]
+- [x] **TRD-017-TEST** `project create` CLI tests (1h) [verifies TRD-017] [satisfies REQ-009, REQ-010] [depends: TRD-017]
   - Validates PRD ACs: AC-009-1, AC-010-1, AC-010-2, AC-010-3
   - Test cases:
     - [ ] Assert: successful create POSTs the right envelope.
@@ -624,7 +624,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: env vars drive auth.
     - [ ] Assert: `--format=json` outputs JSON.
 
-- [ ] **TRD-018** `foreman project get` Go subcommand (1h) [satisfies REQ-009, REQ-010]
+- [x] **TRD-018** `foreman project get` Go subcommand (1h) [satisfies REQ-009, REQ-010]
   - Validates PRD ACs: AC-009-2, AC-010-1, AC-010-2, AC-010-3
   - Implementation ACs:
     - [ ] Given `<id>` is supplied, when the CLI runs, then it calls `GET /api/projects/<id>` and prints the projection.
@@ -632,14 +632,14 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given no `--format`, then human-readable.
   - Depends on: TRD-014 (read route exists)
 
-- [ ] **TRD-018-TEST** `project get` CLI tests (1h) [verifies TRD-018] [satisfies REQ-009, REQ-010] [depends: TRD-018]
+- [x] **TRD-018-TEST** `project get` CLI tests (1h) [verifies TRD-018] [satisfies REQ-009, REQ-010] [depends: TRD-018]
   - Validates PRD ACs: AC-009-2, AC-010-1, AC-010-2, AC-010-3
   - Test cases:
     - [ ] Assert: GET path is `/api/projects/<id>`.
     - [ ] Assert: 404 → exit 2 (per TRD-022).
     - [ ] Assert: `--format=json` output.
 
-- [ ] **TRD-019** `foreman project update` Go subcommand (2h) [satisfies REQ-009, REQ-010]
+- [x] **TRD-019** `foreman project update` Go subcommand (2h) [satisfies REQ-009, REQ-010]
   - Validates PRD ACs: AC-009-3, AC-010-1, AC-010-2, AC-010-3
   - Implementation ACs:
     - [ ] Given `<id>` and `--task-provider` are supplied, when the CLI runs, then it POSTs `/api/commands` with `type: "project.update"`.
@@ -647,13 +647,13 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given no `--idempotency-key`, then `command_id = sha256("project.update." + id + "." + task_provider)`.
   - Depends on: PR 1 (mutation gate open — TRD-007/TRD-008)
 
-- [ ] **TRD-019-TEST** `project update` CLI tests (1h) [verifies TRD-019] [satisfies REQ-009, REQ-010] [depends: TRD-019]
+- [x] **TRD-019-TEST** `project update` CLI tests (1h) [verifies TRD-019] [satisfies REQ-009, REQ-010] [depends: TRD-019]
   - Validates PRD ACs: AC-009-3, AC-010-1, AC-010-2, AC-010-3
   - Test cases:
     - [ ] Assert: update POSTs the right envelope.
     - [ ] Assert: idempotency-key derivation.
 
-- [ ] **TRD-020** `foreman project delete` Go subcommand (2h) [satisfies REQ-009, REQ-010, REQ-013]
+- [x] **TRD-020** `foreman project delete` Go subcommand (2h) [satisfies REQ-009, REQ-010, REQ-013]
   - Validates PRD ACs: AC-009-4, AC-010-1, AC-010-2, AC-010-3
   - Implementation ACs:
     - [ ] Given `<id>` is supplied, when the CLI runs, then it POSTs `/api/commands` with `type: "project.archive"` (the soft-delete).
@@ -663,7 +663,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `--force` is supplied AND the server returns 409, then the CLI prints the active run ids list to stderr and exits 3 (FORCE does NOT bypass — by design).
   - Depends on: PR 1 (TRD-007/TRD-008) + TRD-011 (active-run check)
 
-- [ ] **TRD-020-TEST** `project delete` CLI tests (1h) [verifies TRD-020] [satisfies REQ-009, REQ-010, REQ-013] [depends: TRD-020]
+- [x] **TRD-020-TEST** `project delete` CLI tests (1h) [verifies TRD-020] [satisfies REQ-009, REQ-010, REQ-013] [depends: TRD-020]
   - Validates PRD ACs: AC-009-4, AC-010-1, AC-010-2, AC-010-3
   - Test cases:
     - [ ] Assert: delete POSTs `project.archive`.
@@ -672,7 +672,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: idempotency-key derivation.
     - [ ] Assert: `--force` does NOT bypass 409.
 
-- [ ] **TRD-021** `foreman project list` Go subcommand (3h) [satisfies REQ-017, REQ-013]
+- [x] **TRD-021** `foreman project list` Go subcommand (3h) [satisfies REQ-017, REQ-013]
   - Validates PRD ACs: AC-017-1, AC-017-2, AC-017-3, AC-017-4, AC-017-5, AC-017-6, AC-017-7
   - Implementation ACs:
     - [ ] Given `foreman project list` is invoked, then it calls `GET /api/projects?include_archived=false` and prints the default table with columns `ID, PATH, ARCHIVED, REGISTERED, VERSION`.
@@ -685,7 +685,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `meta.truncated: true` in the body, then print a warning to stderr (per §2c / TRD Self-Critique #4).
   - Depends on: TRD-015 (list route exists), TRD-022 (exit-code mapping)
 
-- [ ] **TRD-021-TEST** `project list` CLI tests (2h) [verifies TRD-021] [satisfies REQ-017, REQ-013] [depends: TRD-021]
+- [x] **TRD-021-TEST** `project list` CLI tests (2h) [verifies TRD-021] [satisfies REQ-017, REQ-013] [depends: TRD-021]
   - Validates PRD ACs: AC-017-1, AC-017-2, AC-017-3, AC-017-4, AC-017-5, AC-017-6, AC-017-7
   - Test cases:
     - [ ] Assert: default table columns.
@@ -697,7 +697,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Assert: 5xx → exit 5.
     - [ ] Assert: truncation warning to stderr.
 
-- [ ] **TRD-022** Exit-code mapping in `internal/client` (1h) [satisfies REQ-013]
+- [x] **TRD-022** Exit-code mapping in `internal/client` (1h) [satisfies REQ-013]
   - Validates PRD ACs: AC-013-1, AC-013-2, AC-013-3, AC-013-4, AC-013-5, AC-013-6
   - Implementation ACs:
     - [ ] Given a successful run, exit 0.
@@ -708,13 +708,13 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given the server returns any 5xx, exit 5.
   - Depends on: (none — pure CLI logic)
 
-- [ ] **TRD-022-TEST** Exit-code mapping tests (1h) [verifies TRD-022] [satisfies REQ-013] [depends: TRD-022]
+- [x] **TRD-022-TEST** Exit-code mapping tests (1h) [verifies TRD-022] [satisfies REQ-013] [depends: TRD-022]
   - Validates PRD ACs: AC-013-1..AC-013-6
   - Test cases:
     - [ ] Assert: each documented exit code is emitted in its documented scenario.
     - [ ] Assert: usage error path emits a usage message to stderr and exits 1.
 
-- [ ] **TRD-023** User guide + CLI reference docs (2h) [satisfies REQ-014]
+- [x] **TRD-023** User guide + CLI reference docs (2h) [satisfies REQ-014]
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Implementation ACs:
     - [ ] Given `docs/user-guide.md` is updated, then the `project` section documents all five subcommands (`create`, `get`, `update`, `delete`, `list`) with examples and a note that `delete` is a soft-delete (archive).
@@ -723,7 +723,7 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
     - [ ] Given `docs/user-guide.md` is updated, then a "performance / scaling" note explains the list endpoint's hard cap (default 1000) and `X-Total-Count` behavior.
   - Depends on: TRD-017, TRD-018, TRD-019, TRD-020, TRD-021, TRD-022 (subcommands + exit codes are stable)
 
-- [ ] **TRD-023-TEST** Docs example verification (0.5h) [verifies TRD-023] [satisfies REQ-014] [depends: TRD-023]
+- [x] **TRD-023-TEST** Docs example verification (0.5h) [verifies TRD-023] [satisfies REQ-014] [depends: TRD-023]
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Test cases:
     - [ ] Assert: every command example in the user guide runs without error against a live server (manual or scripted smoke).

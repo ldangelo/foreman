@@ -4,6 +4,14 @@ defmodule ForemanServer.EventCodecTest do
   alias ForemanServer.EventCodec
 
   alias ForemanServer.Events.{
+    ProjectRunReservationReleased,
+    ProjectRunReserved,
+    RunBlocked,
+    RunCancelled,
+    RunCompleted,
+    RunFailed,
+    RunFlaggedStuck,
+    RunPaused,
     WorkerHeartbeat,
     WorkerStarted,
     WorkerUnresponsive,
@@ -87,6 +95,150 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "decode!/2 terminal run events" do
+    test "builds typed terminal events and preserves project_id" do
+      assert EventCodec.decode!("RunCompleted", %{run_id: "r1", project_id: "p1", sequence: 7}) ==
+               %RunCompleted{run_id: "r1", project_id: "p1", sequence: 7}
+
+      assert EventCodec.decode!("RunFailed", %{
+               "run_id" => "r1",
+               "project_id" => "p1",
+               "sequence" => 8,
+               "reason" => "worker_crashed"
+             }) ==
+               %RunFailed{
+                 run_id: "r1",
+                 project_id: "p1",
+                 sequence: 8,
+                 reason: "worker_crashed"
+               }
+
+      assert EventCodec.decode!("RunCancelled", %{
+               run_id: "r1",
+               project_id: "p1",
+               reason: "operator_abort",
+               sequence: 9
+             }) ==
+               %RunCancelled{
+                 run_id: "r1",
+                 project_id: "p1",
+                 reason: "operator_abort",
+                 sequence: 9
+               }
+
+      assert EventCodec.decode!("RunBlocked", %{
+               run_id: "r1",
+               project_id: "p1",
+               reason: "awaiting_review",
+               status: "blocked"
+             }) ==
+               %RunBlocked{
+                 run_id: "r1",
+                 project_id: "p1",
+                 reason: "awaiting_review",
+                 status: "blocked"
+               }
+
+      assert EventCodec.decode!("RunFlaggedStuck", %{
+               run_id: "r1",
+               project_id: "p1",
+               flagged_at: 1_234
+             }) ==
+               %RunFlaggedStuck{run_id: "r1", project_id: "p1", flagged_at: 1_234}
+    end
+
+    test "rejects terminal run events that omit project_id" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunCompleted", %{run_id: "r1", sequence: 1})
+      end
+
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunFailed", %{run_id: "r1", sequence: 1})
+      end
+
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunCancelled", %{run_id: "r1", reason: "operator_abort"})
+      end
+
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunBlocked", %{run_id: "r1", reason: "awaiting_review"})
+      end
+
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunFlaggedStuck", %{run_id: "r1", flagged_at: 1_234})
+      end
+    end
+  end
+
+  describe "decode!/2 paused run events" do
+    test "builds typed paused events and preserves defaults" do
+      assert EventCodec.decode!("RunPaused", %{
+               run_id: "r1",
+               sequence: 10,
+               reason: "operator_intervention"
+             }) ==
+               %RunPaused{
+                 run_id: "r1",
+                 sequence: 10,
+                 reason: "operator_intervention",
+                 metadata: %{}
+               }
+    end
+
+    test "rejects paused events that omit run_id" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunPaused", %{reason: "operator_intervention"})
+      end
+    end
+  end
+
+  describe "decode!/2 project run reservation events" do
+    test "builds typed reservation events and preserves retry payloads" do
+      assert EventCodec.decode!("ProjectRunReserved", %{
+               project_id: "p1",
+               run_id: "r1",
+               sequence: 1,
+               command_id: "cmd-1",
+               run_start_payload: %{task_id: "t1", workflow_snapshot: %{phases: []}}
+             }) ==
+               %ProjectRunReserved{
+                 project_id: "p1",
+                 run_id: "r1",
+                 sequence: 1,
+                 command_id: "cmd-1",
+                 run_start_payload: %{task_id: "t1", workflow_snapshot: %{phases: []}}
+               }
+
+      assert EventCodec.decode!("ProjectRunReservationReleased", %{
+               "project_id" => "p1",
+               "run_id" => "r1",
+               "sequence" => 2,
+               "reason" => "terminal_event"
+             }) ==
+               %ProjectRunReservationReleased{
+                 project_id: "p1",
+                 run_id: "r1",
+                 sequence: 2,
+                 reason: "terminal_event"
+               }
+    end
+
+    test "rejects reservation events that omit enforced keys" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("ProjectRunReserved", %{
+          project_id: "p1",
+          run_id: "r1",
+          sequence: 1,
+          command_id: "cmd-1"
+        })
+      end
+
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("ProjectRunReservationReleased", %{project_id: "p1", run_id: "r1"})
+      end
+    end
+  end
+
   describe "decode!/2 unregistered event_type" do
     test "raises ArgumentError when event_type is not registered" do
       assert_raise ArgumentError, ~r/unregistered event_type/, fn ->
@@ -118,6 +270,14 @@ defmodule ForemanServer.EventCodecTest do
       assert "WorkerHeartbeat" in EventCodec.registered()
       assert "WorkerUnresponsive" in EventCodec.registered()
       assert "WorkerExited" in EventCodec.registered()
+      assert "ProjectRunReserved" in EventCodec.registered()
+      assert "ProjectRunReservationReleased" in EventCodec.registered()
+      assert "RunCompleted" in EventCodec.registered()
+      assert "RunFailed" in EventCodec.registered()
+      assert "RunCancelled" in EventCodec.registered()
+      assert "RunBlocked" in EventCodec.registered()
+      assert "RunFlaggedStuck" in EventCodec.registered()
+      assert "RunPaused" in EventCodec.registered()
     end
   end
 end

@@ -68,8 +68,12 @@ defmodule ForemanServer.Inbox.AttachBridgeAdapterTest do
 
     test "dedupes second ingest with same correlation id" do
       id = "ab-dedup-#{System.unique_integer([:positive])}"
-      assert {:ok, :started, _} = AttachBridgeAdapter.ingest(FakeSource, %{"correlation_id" => id})
-      assert {:ok, :deduped, _} = AttachBridgeAdapter.ingest(FakeSource, %{"correlation_id" => id})
+
+      assert {:ok, :started, _} =
+               AttachBridgeAdapter.ingest(FakeSource, %{"correlation_id" => id})
+
+      assert {:ok, :deduped, _} =
+               AttachBridgeAdapter.ingest(FakeSource, %{"correlation_id" => id})
     end
 
     test "rejects sources that don't implement InboxItemCorrelationId" do

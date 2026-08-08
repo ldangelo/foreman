@@ -50,7 +50,7 @@ defmodule ForemanServer.Aggregates.TaskTest do
                    approved_by: "alice",
                    approved_at: "2026-01-01T00:00:00Z",
                    run_id: "run-xyz",
-                  workflow_snapshot: %{run_id: "run-xyz", phases: []}
+                   workflow_snapshot: %{run_id: "run-xyz", phases: []}
                  }
                })
 

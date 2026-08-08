@@ -13,6 +13,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,6 +53,68 @@ type Error struct {
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("foreman: HTTP %d: %s", e.Status, e.Body)
+}
+
+// UsageError reports a CLI usage problem and carries the ready-to-print
+// stderr text.
+type UsageError struct {
+	Text string
+}
+
+func NewUsageError(text string) error {
+	return &UsageError{Text: text}
+}
+
+func (e *UsageError) Error() string {
+	return e.Text
+}
+
+// HelpError reports a help request and carries the ready-to-print text.
+type HelpError struct {
+	Text string
+}
+
+func NewHelpError(text string) error {
+	return &HelpError{Text: text}
+}
+
+func (e *HelpError) Error() string {
+	return e.Text
+}
+
+// ExitCode maps CLI errors to the documented process exit codes.
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+
+	var helpErr *HelpError
+	if errors.As(err, &helpErr) {
+		return 0
+	}
+
+	var usageErr *UsageError
+	if errors.As(err, &usageErr) {
+		return 1
+	}
+
+	var httpErr *Error
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.Status == http.StatusNotFound:
+			return 2
+		case httpErr.Status == http.StatusConflict:
+			return 3
+		case httpErr.Status == http.StatusUnauthorized:
+			return 4
+		case httpErr.Status >= http.StatusInternalServerError:
+			return 5
+		default:
+			return 1
+		}
+	}
+
+	return 1
 }
 
 // PostJSON sends a JSON envelope to the given path. `body` is

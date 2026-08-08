@@ -45,6 +45,7 @@ defmodule ForemanServer.Inbox.Poller do
         :auto -> self()
         pid when is_pid(pid) -> pid
       end
+
     GenServer.call(__MODULE__, {:attach, source_module, handler_module, target_pid})
   end
 
@@ -88,6 +89,7 @@ defmodule ForemanServer.Inbox.Poller do
     binding = {handler, target_pid}
     {:reply, :ok, %{state | handlers: Map.put(state.handlers, source, binding)}}
   end
+
   def handle_call({:detach, source}, _from, state) do
     {:reply, :ok, %{state | handlers: Map.delete(state.handlers, source)}}
   end
@@ -103,12 +105,9 @@ defmodule ForemanServer.Inbox.Poller do
   @impl true
   def handle_cast({:inbox_event, %InboxItemStarted{} = item}, state) do
     bump(:started)
+
     case Map.get(state.handlers, item.source) do
-
-
-
       nil -> :ok
-
       {handler, target_pid} -> dispatch(handler, target_pid, item)
     end
 

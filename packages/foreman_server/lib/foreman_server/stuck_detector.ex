@@ -93,7 +93,7 @@ defmodule ForemanServer.StuckDetector do
   end
 
   defp idle_for(run_id, now_ms) do
-    case ProjectionStore.run_projection(run_id) do
+    case ProjectionStore.run(run_id) do
       %{last_event_at_ms: last} when is_integer(last) -> max(now_ms - last, 0)
       _ -> 0
     end

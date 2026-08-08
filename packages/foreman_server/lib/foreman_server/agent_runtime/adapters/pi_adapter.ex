@@ -387,6 +387,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   defp status_from_reason({:invalid_request, _}), do: :invalid_request
   defp status_from_reason({:invalid_working_directory, _, _}), do: :invalid_working_directory
   defp status_from_reason(_), do: :failed
+
   defp require_working_directory(request) do
     case working_directory(request) do
       nil -> {:error, {:invalid_request, :missing_working_directory}}
@@ -412,4 +413,3 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
 
   defp working_directory(_), do: nil
 end
-

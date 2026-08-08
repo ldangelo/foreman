@@ -5,11 +5,12 @@ defmodule ForemanServer.Events.RunFlaggedStuck do
 
   Both fields are required.
   """
-  @enforce_keys [:run_id, :flagged_at]
+  @enforce_keys [:run_id, :project_id, :flagged_at]
   @type t :: %__MODULE__{
           run_id: String.t(),
+          project_id: String.t(),
           flagged_at: non_neg_integer()
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :flagged_at]
+  defstruct [:run_id, :project_id, :flagged_at]
 end

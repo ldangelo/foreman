@@ -9,6 +9,7 @@ defmodule ForemanServerWeb.Router do
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
   end
+
   pipeline :api do
     plug(:accepts, ["json"])
     plug(ForemanServerWeb.Plugs.BearerAuth)
@@ -18,6 +19,8 @@ defmodule ForemanServerWeb.Router do
     pipe_through(:api)
 
     post("/commands", CommandController, :create)
+    get("/projects", ProjectController, :index)
+    get("/projects/:id", ProjectController, :show)
     get("/tasks/:id", TaskController, :show)
     get("/runs/:id", RunController, :show)
 

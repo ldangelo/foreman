@@ -88,10 +88,29 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     )
   end
 
+  defp wait_for_active_run_reservation(project_id, run_id) do
+    poll_until(
+      fn ->
+        active_runs = ProjectionStore.list_projects_with_active_runs()
+
+        case Enum.find(active_runs, fn {listed_project_id, run_ids} ->
+               listed_project_id == project_id and run_id in run_ids
+             end) do
+          {^project_id, run_ids} ->
+            {:ok, run_ids}
+
+          nil ->
+            {:error, active_runs}
+        end
+      end,
+      "active run reservation #{project_id}/#{run_id}"
+    )
+  end
+
   defp wait_for_run(run_id) do
     poll_until(
       fn ->
-        case ProjectionStore.run_projection(run_id) do
+        case ProjectionStore.run(run_id) do
           %{run_id: ^run_id} = run -> {:ok, run}
           %{run_id: other} -> {:error, {:run_id_mismatch, other}}
           nil -> {:error, :missing}
@@ -154,6 +173,9 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
       assert approved.workflow_snapshot
 
       run_id = approved.run_id
+
+      reserved_runs = wait_for_active_run_reservation(project_id, run_id)
+      assert run_id in reserved_runs
 
       dispatched = wait_for_status(task_id, "in_progress")
       assert dispatched.run_id == run_id

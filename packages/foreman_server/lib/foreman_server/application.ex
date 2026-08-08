@@ -52,7 +52,10 @@ defmodule ForemanServer.Application do
           # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched.
           ForemanServer.Workflow.Dispatcher,
           # CommandRouter handles all append requests.
-          ForemanServer.CommandRouter
+          ForemanServer.CommandRouter,
+          # RunLifecycleReconciler releases terminal reservations quickly and
+          # retries orphaned reservations on the scheduled pass.
+          ForemanServer.RunLifecycleReconciler
         ] ++
         maybe_agent_runtime_child() ++
         maybe_overwatch_child() ++

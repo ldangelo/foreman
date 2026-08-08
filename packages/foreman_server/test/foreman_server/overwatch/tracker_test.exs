@@ -73,7 +73,9 @@ defmodule ForemanServer.Overwatch.TrackerTest do
 
       events = read_worker_events(worker_id, run_id)
       assert count(events, "WorkerHeartbeat") == 3
-      assert Enum.map(events, & &1.event_type) == ~w(WorkerHeartbeat WorkerHeartbeat WorkerHeartbeat)
+
+      assert Enum.map(events, & &1.event_type) ==
+               ~w(WorkerHeartbeat WorkerHeartbeat WorkerHeartbeat)
 
       assert Tracker.sequence(tracker, worker_id, run_id) == 2
     end
@@ -103,10 +105,12 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       Process.sleep(250)
 
       worker_events = read_worker_events(worker_id, run_id)
+
       assert count(worker_events, "WorkerUnresponsive") == 1,
              "expected exactly one WorkerUnresponsive, got: #{inspect(Enum.map(worker_events, & &1.event_type))}"
 
       recovery_events = read_recovery_events(run_id)
+
       assert count(recovery_events, "WorkerRecoveryRequired") == 1,
              "expected exactly one WorkerRecoveryRequired, got: #{inspect(Enum.map(recovery_events, & &1.event_type))}"
 
@@ -133,7 +137,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       :ok = Tracker.register(tracker, worker_id, run_id, worker_pid)
       Process.sleep(250)
 
-      run = ProjectionStore.run_projection(run_id)
+      run = ProjectionStore.run(run_id)
       assert is_map(run), "run projection should exist after WorkerUnresponsive"
       assert run.status == "needs_recovery"
       assert run.needs_recovery == true

@@ -109,8 +109,7 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
 
       {:ok, worker_pid} =
         start_supervised(
-          {HeartbeatWorker,
-           worker_id: worker_id, run_id: run_id, heartbeat_interval_ms: 60_000},
+          {HeartbeatWorker, worker_id: worker_id, run_id: run_id, heartbeat_interval_ms: 60_000},
           id: :hw_activate
         )
 
@@ -126,8 +125,7 @@ defmodule ForemanServer.Overwatch.Adapters.HeartbeatWorkerTest do
 
       {:ok, worker_pid} =
         start_supervised(
-          {HeartbeatWorker,
-           worker_id: worker_id, run_id: run_id, heartbeat_interval_ms: 60_000},
+          {HeartbeatWorker, worker_id: worker_id, run_id: run_id, heartbeat_interval_ms: 60_000},
           id: :hw_ignore
         )
 

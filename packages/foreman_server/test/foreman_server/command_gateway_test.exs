@@ -1,7 +1,7 @@
 defmodule ForemanServer.CommandGatewayTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.CommandGateway
+  alias ForemanServer.{CommandGateway, ProjectStore}
 
   describe "envelope validation" do
     test "rejects command without command_id" do
@@ -118,14 +118,34 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
-  describe "project.register validation" do
-    test "rejects missing project_id" do
+  describe "project lifecycle validation" do
+    test "project.register rejects missing project_id" do
       assert {:error, {:invalid_envelope, :missing_project_id}} =
                CommandGateway.dispatch_operator(%{
                  command_id: "cid-1",
                  aggregate_id: "project:abc",
                  type: "project.register",
                  payload: %{path: "/tmp/p"}
+               })
+    end
+
+    test "project.update rejects missing project_id" do
+      assert {:error, {:invalid_envelope, :missing_project_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-update-1",
+                 aggregate_id: "project:abc",
+                 type: "project.update",
+                 payload: %{path: "/tmp/p"}
+               })
+    end
+
+    test "project.archive rejects missing project_id" do
+      assert {:error, {:invalid_envelope, :missing_project_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-archive-1",
+                 aggregate_id: "project:abc",
+                 type: "project.archive",
+                 payload: %{}
                })
     end
   end
@@ -144,7 +164,6 @@ defmodule ForemanServer.CommandGatewayTest do
 
   describe "task.approve validation" do
     test "rejects missing task_id" do
-
       assert {:error, {:invalid_envelope, :missing_task_id}} =
                CommandGateway.dispatch_operator(%{
                  command_id: "cid-1",
@@ -155,7 +174,6 @@ defmodule ForemanServer.CommandGatewayTest do
     end
 
     test "rejects mismatched aggregate_id" do
-
       assert {:error, {:invalid_envelope, :aggregate_id_mismatch}} =
                CommandGateway.dispatch_operator(%{
                  command_id: "cid-1",
@@ -166,7 +184,6 @@ defmodule ForemanServer.CommandGatewayTest do
     end
 
     test "rejects nonexistent task when payload is well-formed" do
-
       assert {:error, {:task_not_found, "missing-task"}} =
                CommandGateway.dispatch_operator(%{
                  command_id: "cid-1",
@@ -196,5 +213,145 @@ defmodule ForemanServer.CommandGatewayTest do
       assert match?({:error, _}, result)
       refute match?({:error, {:command_not_allowed, _}}, result)
     end
+  end
+
+  describe "project lifecycle telemetry" do
+    test "dispatch_operator emits project.register telemetry" do
+      project_id = unique_id("project")
+      handler_id = attach_telemetry(self(), [[:foreman_server, :project, :register]])
+
+      try do
+        assert {:ok, _} =
+                 CommandGateway.dispatch_operator(%{
+                   command_id: unique_id("command"),
+                   aggregate_id: "project:#{project_id}",
+                   type: "project.register",
+                   payload: %{project_id: project_id, path: "/tmp/#{project_id}"}
+                 })
+
+        assert_receive {
+          :telemetry_event,
+          [:foreman_server, :project, :register],
+          %{duration_ms: duration_ms},
+          %{project_id: ^project_id, outcome: :ok}
+        }
+
+        assert is_integer(duration_ms) and duration_ms >= 0
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+
+    test "dispatch_operator emits project.update telemetry" do
+      project_id = unique_id("project")
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project_id,
+                 path: "/tmp/#{project_id}",
+                 task_provider: %{provider: :beads}
+               })
+
+      handler_id = attach_telemetry(self(), [[:foreman_server, :project, :update]])
+
+      try do
+        assert {:ok, _} =
+                 CommandGateway.dispatch_operator(%{
+                   command_id: unique_id("command"),
+                   aggregate_id: "project:#{project_id}",
+                   type: "project.update",
+                   payload: %{project_id: project_id, path: "/tmp/#{project_id}/updated"}
+                 })
+
+        assert_receive {
+          :telemetry_event,
+          [:foreman_server, :project, :update],
+          %{duration_ms: duration_ms},
+          %{project_id: ^project_id, outcome: :ok}
+        }
+
+        assert is_integer(duration_ms) and duration_ms >= 0
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+
+    test "dispatch_operator emits project.archive telemetry with code and retryable on active-run conflict" do
+      project_id = unique_id("project")
+      run_id = unique_id("run")
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project_id,
+                 path: "/tmp/#{project_id}",
+                 task_provider: %{provider: :beads}
+               })
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 command_id: unique_id("reserve"),
+                 aggregate_id: "project:#{project_id}",
+                 type: "project.reserve_run",
+                 payload: %{
+                   project_id: project_id,
+                   run_id: run_id,
+                   command_id: unique_id("run-start"),
+                   sequence: 1,
+                   run_start_payload: %{
+                     project_id: project_id,
+                     run_id: run_id,
+                     task_id: unique_id("task"),
+                     workflow_snapshot: %{}
+                   }
+                 }
+               })
+
+      handler_id = attach_telemetry(self(), [[:foreman_server, :project, :archive]])
+
+      try do
+        assert {:error, :project_has_active_runs, [^run_id]} =
+                 CommandGateway.dispatch_operator(%{
+                   command_id: unique_id("command"),
+                   aggregate_id: "project:#{project_id}",
+                   type: "project.archive",
+                   payload: %{project_id: project_id}
+                 })
+
+        assert_receive {
+          :telemetry_event,
+          [:foreman_server, :project, :archive],
+          %{duration_ms: duration_ms},
+          %{
+            project_id: ^project_id,
+            outcome: :error,
+            code: "project_has_active_runs",
+            retryable: false
+          }
+        }
+
+        assert is_integer(duration_ms) and duration_ms >= 0
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+  end
+
+  defp attach_telemetry(test_pid, events) do
+    handler_id = "command-gateway-telemetry-#{unique_id("handler")}"
+
+    :telemetry.attach_many(
+      handler_id,
+      events,
+      fn event, measurements, metadata, _config ->
+        send(test_pid, {:telemetry_event, event, measurements, metadata})
+      end,
+      nil
+    )
+
+    handler_id
+  end
+
+  defp unique_id(prefix) do
+    "#{prefix}-#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
   end
 end

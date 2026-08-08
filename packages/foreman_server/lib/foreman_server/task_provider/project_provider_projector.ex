@@ -201,7 +201,6 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   defp normalize_preflight({:error, %{code: code}}) when is_binary(code),
     do: {:error, :preflight_failed}
 
-
   defp normalize_preflight({:error, _reason}), do: {:error, :preflight_failed}
   defp normalize_preflight(_other), do: :ok
 

@@ -18,6 +18,98 @@ below. Run `foreman <command> -h` for per-command usage.
 
 ## Commands
 
+### `foreman project create`
+
+Register a project by POSTing `project.register` to `/api/commands`.
+
+| Flag | Description |
+|---|---|
+| `--id ID` | **Required.** Project identifier. |
+| `--path PATH` | **Required.** Absolute project path recorded in the projection. |
+| `--task-provider PROVIDER` | **Required.** Task-provider adapter id, for example `beads`. |
+| `--idempotency-key KEY` | Optional caller-supplied dedupe key; otherwise the CLI derives one from `path` and `task_provider`. |
+| `--format json` | Print the accepted command response as JSON instead of the human summary line. |
+
+Example:
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider beads
+```
+
+### `foreman project get <id>`
+
+Fetch a single project projection with `GET /api/projects/:id`.
+
+| Flag | Description |
+|---|---|
+| `--format json` | Print the raw JSON response instead of the human-readable summary. |
+
+Example:
+
+```
+foreman project get project-123
+```
+
+### `foreman project update <id>`
+
+Update a project's task-provider block by POSTing `project.update` to
+`/api/commands`.
+
+| Flag | Description |
+|---|---|
+| `--task-provider PROVIDER` | **Required.** Replacement task-provider adapter id. |
+| `--idempotency-key KEY` | Optional caller-supplied dedupe key; otherwise the CLI derives one from `project_id` and `task_provider`. |
+| `--format json` | Print the accepted command response as JSON instead of the human summary line. |
+
+Example:
+
+```
+foreman project update --task-provider beads project-123
+```
+
+### `foreman project delete <id>`
+
+Archive a project by POSTing `project.archive` to `/api/commands`.
+This is a soft-delete: the project remains in the read model with
+`archived: true`. The server rejects the archive while active runs
+remain.
+
+| Flag | Description |
+|---|---|
+| `--force` | On a `project_has_active_runs` conflict, print the blocking run ids to stderr before exiting with code `3`. |
+| `--idempotency-key KEY` | Optional caller-supplied dedupe key; otherwise the CLI derives one from `project_id`. |
+
+Example:
+
+```
+foreman project delete --force project-123
+```
+
+### `foreman project list`
+
+List project projections with `GET /api/projects`. The default table
+columns are `ID`, `PATH`, `ARCHIVED`, `REGISTERED`, and `VERSION`.
+
+| Flag | Description |
+|---|---|
+| `--include-archived` | Include archived projects in the response (`include_archived=true`). |
+| `--format json` | Print the project array as JSON. |
+| `--format ndjson` | Print one JSON object per line. |
+
+When the server enforces the current hard cap (1000 rows), the CLI
+prints a truncation warning and operators can inspect `X-Total-Count`
+for the full matching count.
+
+Example:
+
+```
+foreman project list --include-archived
+```
+
+
 ### `foreman run get <id>`
 
 Fetch a run projection. Issues `GET /api/runs/:id`.

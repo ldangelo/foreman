@@ -1,9 +1,8 @@
 defmodule ForemanServer.Aggregates.RunTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Aggregate
+  alias ForemanServer.{Aggregate, CommandRouter, RunAdmission}
   alias ForemanServer.Aggregates.Run
-  alias ForemanServer.CommandRouter
   alias ForemanServer.EventStore, as: Store
 
   # ---------------------------------------------------------------------------
@@ -16,20 +15,29 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, event_spec} =
       Run.handle_command(Run.initial_state(), %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-1", project_id: "project-test-run_id", workflow_snapshot: %{}}
+        payload: %{
+          run_id: run_id,
+          task_id: "task-1",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
       })
 
-    state = Run.apply_event(Run.initial_state(), %{event_type: event_spec.event_type, payload: event_spec.payload})
+    state =
+      Run.apply_event(Run.initial_state(), %{
+        event_type: event_spec.event_type,
+        payload: event_spec.payload
+      })
 
     assert event_spec.event_type == "RunStarted"
     assert event_spec.stream_id == "run:#{run_id}"
     assert state.run_id == run_id
     assert state.task_id == "task-1"
+    assert state.project_id == "project-test-run_id"
     assert state.status == "in_progress"
     assert state.terminal? == false
   end
 
-  # Guard against the regression we hit earlier: a `run.start` payload without
   # all of :task_id, :project_id, and :workflow_snapshot used to slip through
   # the aggregate and reach the event store, where the typed `RunStarted`
   # struct's `@enforce_keys` raised at projection time and crashed the boot.
@@ -64,7 +72,6 @@ defmodule ForemanServer.Aggregates.RunTest do
              })
   end
 
-
   test "run.complete marks the run completed and terminal" do
     run_id = "run-complete"
     initial_state = Run.initial_state()
@@ -72,11 +79,19 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-2", project_id: "project-test-run_id", workflow_snapshot: %{}}
+        payload: %{
+          run_id: run_id,
+          task_id: "task-2",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
       })
 
     started_state =
-      Run.apply_event(initial_state, %{event_type: start_event.event_type, payload: start_event.payload})
+      Run.apply_event(initial_state, %{
+        event_type: start_event.event_type,
+        payload: start_event.payload
+      })
 
     {:ok, complete_event} =
       Run.handle_command(started_state, %{
@@ -91,12 +106,13 @@ defmodule ForemanServer.Aggregates.RunTest do
       })
 
     assert complete_event.event_type == "RunCompleted"
+    assert complete_event.payload.project_id == "project-test-run_id"
+    assert completed_state.project_id == "project-test-run_id"
     assert completed_state.status == "completed"
     assert completed_state.terminal? == true
     assert completed_state.last_sequence == 1
   end
 
-  # ---------------------------------------------------------------------------
   # TRD-009: run.cancel
   # ---------------------------------------------------------------------------
 
@@ -107,11 +123,19 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-3", project_id: "project-test-run_id", workflow_snapshot: %{}}
+        payload: %{
+          run_id: run_id,
+          task_id: "task-3",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
       })
 
     started_state =
-      Run.apply_event(initial_state, %{event_type: start_event.event_type, payload: start_event.payload})
+      Run.apply_event(initial_state, %{
+        event_type: start_event.event_type,
+        payload: start_event.payload
+      })
 
     {:ok, cancel_event} =
       Run.handle_command(started_state, %{
@@ -122,6 +146,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert cancel_event.event_type == "RunCancelled"
     assert cancel_event.stream_id == "run:#{run_id}"
     assert cancel_event.payload.run_id == run_id
+    assert cancel_event.payload.project_id == "project-test-run_id"
     assert cancel_event.payload.status == "cancelled"
     assert cancel_event.payload.reason == "user_abort"
 
@@ -132,6 +157,7 @@ defmodule ForemanServer.Aggregates.RunTest do
       })
 
     assert cancelled_state.status == "cancelled"
+    assert cancelled_state.project_id == "project-test-run_id"
     assert cancelled_state.terminal? == true
     assert cancelled_state.run_id == run_id
   end
@@ -143,11 +169,19 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-4", project_id: "project-test-run_id", workflow_snapshot: %{}}
+        payload: %{
+          run_id: run_id,
+          task_id: "task-4",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
       })
 
     started_state =
-      Run.apply_event(initial_state, %{event_type: start_event.event_type, payload: start_event.payload})
+      Run.apply_event(initial_state, %{
+        event_type: start_event.event_type,
+        payload: start_event.payload
+      })
 
     {:ok, complete_event} =
       Run.handle_command(started_state, %{
@@ -179,11 +213,19 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-5", project_id: "project-test-run_id", workflow_snapshot: %{}}
+        payload: %{
+          run_id: run_id,
+          task_id: "task-5",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
       })
 
     started_state =
-      Run.apply_event(initial_state, %{event_type: start_event.event_type, payload: start_event.payload})
+      Run.apply_event(initial_state, %{
+        event_type: start_event.event_type,
+        payload: start_event.payload
+      })
 
     {:ok, complete_event} =
       Run.handle_command(started_state, %{
@@ -226,11 +268,19 @@ defmodule ForemanServer.Aggregates.RunTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: "task-6", project_id: "project-test-run_id", workflow_snapshot: %{}}
+        payload: %{
+          run_id: run_id,
+          task_id: "task-6",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
       })
 
     started_state =
-      Run.apply_event(initial_state, %{event_type: start_event.event_type, payload: start_event.payload})
+      Run.apply_event(initial_state, %{
+        event_type: start_event.event_type,
+        payload: start_event.payload
+      })
 
     {:ok, fail_event} =
       Run.handle_command(started_state, %{
@@ -265,15 +315,95 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert after_state == failed_state
   end
 
+  test "run.block emits RunBlocked and preserves project_id on terminal state" do
+    run_id = "run-blocked"
+    initial_state = Run.initial_state()
+
+    {:ok, start_event} =
+      Run.handle_command(initial_state, %{
+        type: "run.start",
+        payload: %{
+          run_id: run_id,
+          task_id: "task-7",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
+      })
+
+    started_state =
+      Run.apply_event(initial_state, %{
+        event_type: start_event.event_type,
+        payload: start_event.payload
+      })
+
+    {:ok, block_event} =
+      Run.handle_command(started_state, %{
+        type: "run.block",
+        payload: %{run_id: run_id, reason: "awaiting_review"}
+      })
+
+    blocked_state =
+      Run.apply_event(started_state, %{
+        event_type: block_event.event_type,
+        payload: block_event.payload
+      })
+
+    assert block_event.event_type == "RunBlocked"
+    assert block_event.payload.project_id == "project-test-run_id"
+    assert blocked_state.status == "blocked"
+    assert blocked_state.project_id == "project-test-run_id"
+    assert blocked_state.terminal? == true
+  end
+
+  test "terminal run event structs require project_id alongside run_id" do
+    assert_raise ArgumentError, fn ->
+      struct!(ForemanServer.Events.RunCompleted, run_id: "run-1", sequence: 1)
+    end
+
+    assert_raise ArgumentError, fn ->
+      struct!(ForemanServer.Events.RunFailed, run_id: "run-1", sequence: 1)
+    end
+
+    assert_raise ArgumentError, fn ->
+      struct!(ForemanServer.Events.RunCancelled, run_id: "run-1")
+    end
+
+    assert_raise ArgumentError, fn ->
+      struct!(ForemanServer.Events.RunFlaggedStuck, run_id: "run-1", flagged_at: 1)
+    end
+
+    assert_raise ArgumentError, fn ->
+      struct!(ForemanServer.Events.RunBlocked, run_id: "run-1")
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # TRD-009: Aggregate.load/2 replay tests (4)
   #
-  # Each test dispatches commands through CommandRouter to persist events to the
-  # stream, then calls `Aggregate.load(Run, run_id)` to rehydrate state from
-  # the EventStore — the canonical replay path exercised on Actor restart.
+  # Each test starts the run through RunAdmission, then calls
+  # `Aggregate.load(Run, run_id)` to rehydrate state from the EventStore —
+  # the canonical replay path exercised on Actor restart.
   # ---------------------------------------------------------------------------
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
+
+  defp dispatch(%{type: "run.start", payload: payload}) do
+    project_id = "project-#{payload.run_id}"
+
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        aggregate_id: "project:#{project_id}",
+        command_id: "register:#{project_id}",
+        type: "project.register",
+        payload: %{
+          project_id: project_id,
+          name: "Run replay #{payload.run_id}",
+          path: System.tmp_dir!()
+        }
+      })
+
+    RunAdmission.start(project_id, Map.put(payload, :project_id, project_id))
+  end
 
   defp dispatch(command), do: CommandRouter.dispatch(command, 5_000)
 
@@ -292,7 +422,12 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-a", project_id: "project-test-run_id", workflow_snapshot: %{}}
+               payload: %{
+                 run_id: run_id,
+                 task_id: "task-a",
+                 project_id: "project-test-run_id",
+                 workflow_snapshot: %{}
+               }
              })
 
     {state, version} = recover_state(run_id)
@@ -300,6 +435,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert state.exists? == true
     assert state.run_id == run_id
     assert state.task_id == "task-a"
+    assert state.project_id == "project-#{run_id}"
     assert state.status == "in_progress"
     assert state.terminal? == false
     assert version == 1
@@ -314,7 +450,12 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-b", project_id: "project-test-run_id", workflow_snapshot: %{}}
+               payload: %{
+                 run_id: run_id,
+                 task_id: "task-b",
+                 project_id: "project-test-run_id",
+                 workflow_snapshot: %{}
+               }
              })
 
     assert {:ok, _} =
@@ -330,6 +471,7 @@ defmodule ForemanServer.Aggregates.RunTest do
 
     assert state.exists? == true
     assert state.run_id == run_id
+    assert state.project_id == "project-#{run_id}"
     assert state.status == "completed"
     assert state.terminal? == true
     assert state.last_sequence == 1
@@ -345,7 +487,12 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-c", project_id: "project-test-run_id", workflow_snapshot: %{}}
+               payload: %{
+                 run_id: run_id,
+                 task_id: "task-c",
+                 project_id: "project-test-run_id",
+                 workflow_snapshot: %{}
+               }
              })
 
     assert {:ok, _} =
@@ -361,6 +508,7 @@ defmodule ForemanServer.Aggregates.RunTest do
 
     assert state.exists? == true
     assert state.run_id == run_id
+    assert state.project_id == "project-#{run_id}"
     assert state.status == "cancelled"
     assert state.terminal? == true
     assert version == 2
@@ -375,7 +523,12 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-d", project_id: "project-test-run_id", workflow_snapshot: %{}}
+               payload: %{
+                 run_id: run_id,
+                 task_id: "task-d",
+                 project_id: "project-test-run_id",
+                 workflow_snapshot: %{}
+               }
              })
 
     assert {:ok, _} =
@@ -391,6 +544,7 @@ defmodule ForemanServer.Aggregates.RunTest do
 
     assert state.exists? == true
     assert state.run_id == run_id
+    assert state.project_id == "project-#{run_id}"
     assert state.status == "failed"
     assert state.terminal? == true
     assert state.last_sequence == 1
@@ -410,7 +564,12 @@ defmodule ForemanServer.Aggregates.RunTest do
                aggregate_type: "Run",
                aggregate_id: "run:#{run_id}",
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-e", project_id: "project-test-run_id", workflow_snapshot: %{}}
+               payload: %{
+                 run_id: run_id,
+                 task_id: "task-e",
+                 project_id: "project-test-run_id",
+                 workflow_snapshot: %{}
+               }
              })
 
     assert {:ok, _} =
@@ -450,7 +609,7 @@ defmodule ForemanServer.Aggregates.RunTest do
   # RunAlreadyCompleted (AC-004-1, AC-004-4).
   #
   # Mirrors the AC-005-3 phase race pattern but for the Run aggregate:
-  #   1. `run.start` via CommandRouter → RunStarted at version 1, actor state
+  #   1. `run.start` via RunAdmission → RunStarted at version 1, actor state
   #      is in_progress (not terminal).
   #   2. Two concurrent `:append` of RunCompleted at expected_version=1 →
   #      exactly one wins, the other is rejected with
@@ -486,14 +645,19 @@ defmodule ForemanServer.Aggregates.RunTest do
     run_id = "run-race-#{uuid()}"
     stream = "run:#{run_id}"
 
-    # 1. Start run via the normal actor+router path.
+    # 1. Start run via the admission boundary.
     assert {:ok, _} =
              dispatch(%{
                command_id: "cmd-#{uuid()}",
                aggregate_type: "Run",
                aggregate_id: stream,
                type: "run.start",
-               payload: %{run_id: run_id, task_id: "task-race", project_id: "project-test-run_id", workflow_snapshot: %{}}
+               payload: %{
+                 run_id: run_id,
+                 task_id: "task-race",
+                 project_id: "project-test-run_id",
+                 workflow_snapshot: %{}
+               }
              })
 
     [{actor_pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream)
@@ -540,8 +704,10 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert Enum.map(events_after_race, & &1.event_type) == ["RunStarted", "RunCompleted"]
 
     state_after_race = Aggregate.Actor.get_state(actor_pid)
+
     assert state_after_race.status == "in_progress",
            "actor must not have observed the racing :append messages"
+
     refute state_after_race.terminal?
 
     # 3. Fresh dispatch via the normal actor+router path. Locally the actor
@@ -563,6 +729,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     # exactly one RunAlreadyCompleted. The failed append was rejected; the
     # retry appended only RunAlreadyCompleted.
     {:ok, events_final} = Store.read_stream_forward(stream, 0, 10)
+
     assert Enum.map(events_final, & &1.event_type) == [
              "RunStarted",
              "RunCompleted",
@@ -575,9 +742,18 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert completed_count == 1,
            "fresh dispatch must not append a duplicate RunCompleted"
   end
+
   test "run.pr.update emits PrUpdated and apply_event sets run_id on the Run aggregate" do
     run_id = "run-pr-update"
-    state_started = Run.apply_event(Run.initial_state(), %{event_type: "RunStarted", run_id: run_id, task_id: "task-1", sequence: 1})
+
+    state_started =
+      Run.apply_event(Run.initial_state(), %{
+        event_type: "RunStarted",
+        run_id: run_id,
+        task_id: "task-1",
+        sequence: 1
+      })
+
     assert {:ok, event_spec} =
              Run.handle_command(state_started, %{
                type: "run.pr.update",

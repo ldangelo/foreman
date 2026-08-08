@@ -3,6 +3,7 @@ defmodule ForemanServer.Aggregates.Worker do
   @behaviour ForemanServer.Aggregate
   alias ForemanServer.Aggregate
   alias ForemanServer.EventCodec
+
   alias ForemanServer.Events.{
     AssistantMessage,
     RunCompleted,
@@ -35,6 +36,7 @@ defmodule ForemanServer.Aggregates.Worker do
       artifact_paths: []
     ]
   end
+
   # `WorkerExited` is in the allow-list so a worker that finished a run
   # (RunCompleted/RunFailed set terminal?=true) can still append its
   # final cleanup WorkerExited. The apply clause does NOT clear
@@ -73,7 +75,6 @@ defmodule ForemanServer.Aggregates.Worker do
     decoded = EventCodec.decode!(type, payload)
     apply_typed_event(state, decoded)
   end
-
 
   # ------------------------------------------------------------------
   defp apply_typed_event(state, %WorkerStarted{} = e) do
@@ -132,7 +133,6 @@ defmodule ForemanServer.Aggregates.Worker do
         status: "running"
     }
   end
-
 
   defp apply_typed_event(state, %AssistantMessage{} = e) do
     new_state = bump_sequence(state, e.sequence)
@@ -253,7 +253,6 @@ defmodule ForemanServer.Aggregates.Worker do
        }}
     end
   end
-
 
   def handle_command(_state, _command), do: :unhandled
 

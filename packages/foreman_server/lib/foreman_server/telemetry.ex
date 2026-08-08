@@ -3,18 +3,34 @@ defmodule ForemanServer.Telemetry do
 
   @command_dispatch [:foreman, :command, :dispatch]
   @aggregate_rehydrated [:foreman, :aggregate, :rehydrated]
+  @run_admission_start [:foreman, :run_admission, :start]
+  @project_read [:foreman_server, :project, :read]
+  @project_list [:foreman_server, :project, :list]
+  @project_register [:foreman_server, :project, :register]
+  @project_update [:foreman_server, :project, :update]
+  @project_archive [:foreman_server, :project, :archive]
   @worker_heartbeat [:foreman, :worker, :heartbeat]
   @worker_exit [:foreman, :worker, :exit]
   @agent_runtime_invocation_complete [:foreman, :agent_runtime, :invocation, :complete]
   @run_stuck [:foreman, :run, :stuck]
+  @reconciler_terminal_release [:foreman_server, :reconciler, :terminal_release]
+  @reconciler_orphan_retry [:foreman_server, :reconciler, :orphan_retry]
 
   @all_events [
     @command_dispatch,
     @aggregate_rehydrated,
+    @run_admission_start,
+    @project_read,
+    @project_list,
+    @project_register,
+    @project_update,
+    @project_archive,
     @worker_heartbeat,
     @worker_exit,
     @agent_runtime_invocation_complete,
-    @run_stuck
+    @run_stuck,
+    @reconciler_terminal_release,
+    @reconciler_orphan_retry
   ]
 
   def all_events, do: @all_events
@@ -40,6 +56,42 @@ defmodule ForemanServer.Telemetry do
 
   def aggregate_rehydrated(event_count) do
     execute(@aggregate_rehydrated, %{event_count: event_count}, %{})
+  end
+
+  def run_admission_start(project_id, run_id, task_id) do
+    execute(@run_admission_start, %{count: 1}, %{
+      project_id: project_id,
+      run_id: run_id,
+      task_id: task_id
+    })
+  end
+
+  def project_read(duration_ms, metadata \\ %{})
+      when is_integer(duration_ms) and duration_ms >= 0 and is_map(metadata) do
+    execute(@project_read, %{duration_ms: duration_ms}, metadata)
+  end
+
+  def project_list(duration_ms, count, metadata \\ %{})
+      when is_integer(duration_ms) and duration_ms >= 0 and is_integer(count) and count >= 0 and
+             is_map(metadata) do
+    execute(@project_list, %{duration_ms: duration_ms, count: count}, metadata)
+  end
+
+  def project_register(duration_ms, metadata \\ %{}) do
+    project_lifecycle(@project_register, duration_ms, metadata)
+  end
+
+  def project_update(duration_ms, metadata \\ %{}) do
+    project_lifecycle(@project_update, duration_ms, metadata)
+  end
+
+  def project_archive(duration_ms, metadata \\ %{}) do
+    project_lifecycle(@project_archive, duration_ms, metadata)
+  end
+
+  defp project_lifecycle(event, duration_ms, metadata)
+       when is_integer(duration_ms) and duration_ms >= 0 and is_map(metadata) do
+    execute(event, %{duration_ms: duration_ms}, metadata)
   end
 
   def worker_heartbeat(measurements \\ %{count: 1}, metadata \\ %{}) do
@@ -70,6 +122,16 @@ defmodule ForemanServer.Telemetry do
     })
   end
 
+  def reconciler_terminal_release(duration_ms, metadata \\ %{})
+      when is_integer(duration_ms) and duration_ms >= 0 and is_map(metadata) do
+    execute(@reconciler_terminal_release, %{duration_ms: duration_ms}, metadata)
+  end
+
+  def reconciler_orphan_retry(duration_ms, metadata \\ %{})
+      when is_integer(duration_ms) and duration_ms >= 0 and is_map(metadata) do
+    execute(@reconciler_orphan_retry, %{duration_ms: duration_ms}, metadata)
+  end
+
   @typedoc """
   Closed measurement set permitted for the agent runtime completion event.
 
@@ -84,7 +146,7 @@ defmodule ForemanServer.Telemetry do
         }
   @type completion_metadata :: %{
           required(:status) => atom(),
-          required(:task_type) => atom() | nil,
+          required(:task_type) => atom() | String.t() | nil,
           required(:attempted_backends) => [atom()],
           required(:successful_backend) => atom() | nil,
           required(:final_backend) => atom() | nil,
@@ -119,7 +181,7 @@ defmodule ForemanServer.Telemetry do
       when is_integer(duration_us) and duration_us >= 0 and
              is_integer(attempt_count) and attempt_count >= 0 and
              is_atom(status) and
-             (is_atom(task_type) or is_nil(task_type)) and
+             (is_atom(task_type) or is_binary(task_type) or is_nil(task_type)) and
              is_list(attempted_backends) and
              (is_atom(successful_backend) or is_nil(successful_backend)) and
              (is_atom(final_backend) or is_nil(final_backend)) do

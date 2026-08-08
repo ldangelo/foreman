@@ -49,9 +49,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
   def child_spec({candidates, policy, request, caller, ref, task_type}) do
     %{
       id: __MODULE__,
-      start:
-        {__MODULE__, :start_link,
-         [{candidates, policy, request, caller, ref, task_type}]},
+      start: {__MODULE__, :start_link, [{candidates, policy, request, caller, ref, task_type}]},
       restart: :temporary
     }
   end
@@ -108,6 +106,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
         final_backend: final_backend
       }
     )
+
     send(caller, {:agent_runtime_invocation_complete, ref, final})
 
     {:stop, :normal, state}

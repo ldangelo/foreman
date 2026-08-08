@@ -250,6 +250,51 @@ defmodule ForemanServer.AC1AggregateActorTest do
     assert Map.get(state, :status) == "archived"
   end
 
+  test "AC1.3b: project archive active-run conflict returns detailed domain error without crashing the actor" do
+    project_id = "proj-#{uuid()}"
+    run_id = "run-#{uuid()}"
+    agg_stream = "project:#{project_id}"
+
+    assert {:ok, _} =
+             CommandRouter.dispatch(%{
+               type: "project.register",
+               payload: %{project_id: project_id, path: "/tmp/p"},
+               aggregate_id: agg_stream
+             })
+
+    assert {:ok, _} =
+             CommandRouter.dispatch(%{
+               command_id: "reserve:#{project_id}:#{run_id}",
+               type: "project.reserve_run",
+               payload: %{
+                 project_id: project_id,
+                 run_id: run_id,
+                 command_id: "run-start:#{project_id}:#{run_id}",
+                 sequence: 1,
+                 run_start_payload: %{
+                   project_id: project_id,
+                   run_id: run_id,
+                   task_id: "task-#{uuid()}",
+                   workflow_snapshot: %{}
+                 }
+               },
+               aggregate_id: agg_stream
+             })
+
+    assert {:error, :project_has_active_runs, [^run_id]} =
+             CommandRouter.dispatch(%{
+               type: "project.archive",
+               payload: %{project_id: project_id},
+               aggregate_id: agg_stream
+             })
+
+    actor_pid = aggregate_pid(agg_stream)
+    assert Process.alive?(actor_pid)
+    state = Aggregate.Actor.get_state(actor_pid)
+    assert Map.get(state, :archived?) == false
+    assert Map.has_key?(state.active_run_reservations, run_id)
+  end
+
   test "AC1.3: Task :permanent crash, immediate restart, stream replay" do
     id = "task-#{uuid()}"
     project_id = "proj-#{uuid()}"
@@ -525,6 +570,47 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
     assert completed_count == 1,
            "exactly one PhaseCompleted must exist — the loser's retry must not append"
+  end
+
+  test "AC1.5b: retry exhaustion returns the actor's last reloaded stream version" do
+    agg_id = "blocking:#{uuid()}"
+    ref = make_ref()
+    test_pid = self()
+
+    task =
+      Task.async(fn ->
+        TestRouter.dispatch(%BlockCommand{
+          aggregate_id: agg_id,
+          aggregate_type: :retry_exhaustion,
+          ref: ref,
+          notify_pid: test_pid
+        })
+      end)
+
+    actor_pid =
+      Enum.reduce(0..3, nil, fn expected_version, previous_pid ->
+        assert_receive {:block_entered, ^ref, pid}, 5_000
+        assert previous_pid in [nil, pid]
+
+        :ok =
+          Store.append_to_stream(agg_id, expected_version, [
+            %Elixir.EventStore.EventData{
+              event_type: "BlockEvent",
+              data: %{aggregate_id: agg_id, aggregate_type: :retry_exhaustion},
+              metadata: %{}
+            }
+          ])
+
+        send(pid, {:release, ref})
+        pid
+      end)
+
+    assert {:error, {:wrong_expected_version, 3}} = Task.await(task, 5_000)
+    assert %{version: 3} = :sys.get_state(actor_pid)
+
+    {:ok, events} = Store.read_stream_forward(agg_id, 0, 10)
+    assert length(events) == 4
+    assert Enum.all?(events, &(&1.event_type == "BlockEvent"))
   end
 
   # ---------------------------------------------------------------------------

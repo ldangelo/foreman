@@ -75,7 +75,8 @@ defmodule ForemanServer.Architecture.AliasBoundaryTest do
 
   defp expand_alias_target({:__aliases__, _, parts}) when is_list(parts), do: [parts]
 
-  defp expand_alias_target({{:., _, [prefix, :{}]}, _, nested_aliases}) when is_list(nested_aliases) do
+  defp expand_alias_target({{:., _, [prefix, :{}]}, _, nested_aliases})
+       when is_list(nested_aliases) do
     prefix_parts = alias_parts(prefix)
 
     Enum.flat_map(nested_aliases, fn nested_alias ->
@@ -145,4 +146,3 @@ defmodule ForemanServer.Architecture.AliasBoundaryTest do
     end)
   end
 end
-

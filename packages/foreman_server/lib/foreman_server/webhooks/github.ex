@@ -107,6 +107,7 @@ defmodule ForemanServer.Webhooks.Github do
   defp derive_status("closed", %{"merged" => true}), do: @merged_status
   defp derive_status("closed", _), do: @closed_status
   defp derive_status("reopened", _), do: @open_status
+
   defp derive_status(_action, %{"mergeable_state" => state})
        when state in ["dirty", "blocked"],
        do: @conflicted_status

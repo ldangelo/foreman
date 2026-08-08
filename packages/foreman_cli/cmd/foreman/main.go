@@ -6,12 +6,13 @@
 //
 // Subcommands:
 //
-//	task create       POST /api/commands with type=task.create
-//	task approve      POST /api/commands with type=task.approve
-//	task get <id>     GET /api/tasks/:id
-//	run get <id>      GET /api/runs/:id
-//	workflow install  POST /api/admin/workflows/install
-//
+//	project create      POST /api/commands with type=project.register
+//	project get <id>    GET /api/projects/:id
+//	project update <id> POST /api/commands with type=project.update
+//	project delete <id> POST /api/commands with type=project.archive
+//	project list        GET /api/projects
+//	task create         POST /api/commands with type=task.create
+//	task approve        POST /api/commands with type=task.approve
 // Environment:
 //
 //	FOREMAN_API_URL    Base URL (default http://127.0.0.1:4000)
@@ -19,6 +20,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -31,12 +33,16 @@ Usage:
   foreman <command> [flags]
 
 Commands:
-  task create        Register a new task
-  task approve       Approve a task and bind it to a workflow
-  task get <id>      Fetch a task projection
-  run get <id>       Fetch a run projection
-  workflow install   Install a workflow from a directory
-
+  project create      Register a new project
+  project get <id>    Fetch a project projection
+  project update <id> Update a project's task provider
+  project delete <id> Soft-delete (archive) a project
+  project list        List project projections
+  task create         Register a new task
+  task approve        Approve a task and bind it to a workflow
+  task get <id>       Fetch a task projection
+  run get <id>        Fetch a run projection
+  workflow install    Install workflow assets
 Env:
   FOREMAN_API_URL    Base URL (default http://127.0.0.1:4000)
   FOREMAN_API_TOKEN  Bearer token (optional; bypassed in dev when unset)
@@ -46,8 +52,7 @@ Run 'foreman <command> -h' for command-specific help.
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(2)
+		exitWithError(usageTextError("foreman: missing command", usage))
 	}
 
 	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
@@ -61,6 +66,8 @@ func main() {
 	var err error
 
 	switch os.Args[1] {
+	case "project":
+		err = runProject(c, args)
 	case "task":
 		err = runTask(c, args)
 	case "run":
@@ -68,12 +75,28 @@ func main() {
 	case "workflow":
 		err = runWorkflow(c, args)
 	default:
-		fmt.Fprintf(os.Stderr, "foreman: unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		err = usageTextError(fmt.Sprintf("foreman: unknown command %q", os.Args[1]), usage)
 	}
 
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "foreman:", err)
-		os.Exit(1)
+	exitWithError(err)
+}
+
+func exitWithError(err error) {
+	if err == nil {
+		return
 	}
+
+	var helpErr *client.HelpError
+	if errors.As(err, &helpErr) {
+		if helpErr.Text != "" {
+			fmt.Fprintln(os.Stdout, helpErr.Text)
+		}
+		os.Exit(client.ExitCode(err))
+	}
+
+	if text := err.Error(); text != "" {
+		fmt.Fprintln(os.Stderr, text)
+	}
+
+	os.Exit(client.ExitCode(err))
 }

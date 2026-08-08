@@ -63,6 +63,7 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
                :argv,
                :error
              ]
+
     assert taxonomy[[:foreman_server, :task_provider, :beads_adapter, :fail, :success]].metadata_keys ==
              [
                :argv
@@ -74,7 +75,6 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
                :raw_code,
                :task_id
              ]
-
 
     assert taxonomy[[:foreman_server, :task_provider, :beads, :temp_file, :leaked]].metadata_keys ==
              [

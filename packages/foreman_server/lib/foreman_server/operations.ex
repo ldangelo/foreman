@@ -19,7 +19,7 @@ defmodule ForemanServer.Operations do
   """
   @spec inspect_run(String.t()) :: map() | {:error, :not_found}
   def inspect_run(run_id) when is_binary(run_id) do
-    case ProjectionStore.run_projection(run_id) do
+    case ProjectionStore.run(run_id) do
       nil -> {:error, :not_found}
       projection -> projection
     end
@@ -35,6 +35,7 @@ defmodule ForemanServer.Operations do
       %{run_id: run_id}
       |> maybe_put(:detected_at_ms, Keyword.get(opts, :detected_at_ms))
       |> maybe_put(:detector, Keyword.get(opts, :detector))
+
     CommandGateway.dispatch_system(%{
       aggregate_id: "recovery:#{run_id}",
       type: "recovery.detected",

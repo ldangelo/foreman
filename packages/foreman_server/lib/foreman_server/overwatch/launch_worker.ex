@@ -134,6 +134,7 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
                 )
 
                 Process.monitor(worker_pid)
+
                 state = %{
                   worker_id: worker_id,
                   run_id: run_id,
@@ -187,9 +188,7 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
   end
 
   def handle_info(:activation_timeout, state) do
-    Logger.error(
-      "LaunchWorker: activation timeout for #{state.worker_id}/#{state.run_id}"
-    )
+    Logger.error("LaunchWorker: activation timeout for #{state.worker_id}/#{state.run_id}")
 
     _ = Tracker.unregister(state.worker_id, state.run_id)
     safe_stop(state.worker_pid)

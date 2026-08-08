@@ -133,7 +133,8 @@ defmodule ForemanServer.Overwatch.Tracker do
        sequences: %{},
        timers: %{},
        monitors: %{},
-       heartbeat_timeout_ms: Keyword.get(opts, :heartbeat_timeout_ms, @default_heartbeat_timeout_ms)
+       heartbeat_timeout_ms:
+         Keyword.get(opts, :heartbeat_timeout_ms, @default_heartbeat_timeout_ms)
      }}
   end
 
@@ -230,7 +231,6 @@ defmodule ForemanServer.Overwatch.Tracker do
         {:reply, :ok, state}
     end
   end
-
 
   def handle_call({:heartbeat, worker_id, run_id}, _from, state) do
     k = key(worker_id, run_id)
@@ -338,7 +338,8 @@ defmodule ForemanServer.Overwatch.Tracker do
         current_seq = get_sequence(state, k) || 0
         new_seq = current_seq + 1
 
-        command_id = command_id_for(worker.worker_id, worker.run_id, "WorkerUnresponsive", new_seq)
+        command_id =
+          command_id_for(worker.worker_id, worker.run_id, "WorkerUnresponsive", new_seq)
 
         payload = %{
           "event_type" => "WorkerUnresponsive",
@@ -400,7 +401,6 @@ defmodule ForemanServer.Overwatch.Tracker do
     end
   end
 
-
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     k = find_key_by_monitor_ref(state, ref)
 
@@ -420,11 +420,11 @@ defmodule ForemanServer.Overwatch.Tracker do
   end
 
   # Forward worker DOWN to the crash-loop detector (TRD-012) when present.
- # The detector is an optional sibling supervisor child; in tests and
- # dev where it is not started, this is a silent no-op. Failure to
- # notify is logged at debug level — it MUST NOT crash the Tracker.
- defp notify_crash_loop_detector(%{worker_id: worker_id, run_id: run_id}, reason)
-     when is_binary(worker_id) and is_binary(run_id) do
+  # The detector is an optional sibling supervisor child; in tests and
+  # dev where it is not started, this is a silent no-op. Failure to
+  # notify is logged at debug level — it MUST NOT crash the Tracker.
+  defp notify_crash_loop_detector(%{worker_id: worker_id, run_id: run_id}, reason)
+       when is_binary(worker_id) and is_binary(run_id) do
     case Process.whereis(ForemanServer.Overwatch.CrashLoopDetector) do
       nil ->
         :ok
@@ -448,7 +448,6 @@ defmodule ForemanServer.Overwatch.Tracker do
     new_seq = current_seq + 1
 
     now_ms = System.system_time(:millisecond)
-
 
     command_id = command_id_for(worker.worker_id, worker.run_id, "WorkerHeartbeat", new_seq)
 
@@ -545,7 +544,9 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     state =
       case Map.pop(state.timers, k) do
-        {nil, timers} -> %{state | timers: timers}
+        {nil, timers} ->
+          %{state | timers: timers}
+
         {ref, timers} ->
           Process.cancel_timer(ref)
           %{state | timers: timers}
@@ -553,7 +554,9 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     state =
       case Map.pop(state.monitors, k) do
-        {nil, monitors} -> %{state | monitors: monitors}
+        {nil, monitors} ->
+          %{state | monitors: monitors}
+
         {ref, monitors} ->
           Process.demonitor(ref, [:flush])
           %{state | monitors: monitors}
@@ -568,7 +571,9 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     state =
       case Map.pop(state.timers, k) do
-        {nil, timers} -> %{state | timers: timers}
+        {nil, timers} ->
+          %{state | timers: timers}
+
         {ref, timers} ->
           Process.cancel_timer(ref)
           %{state | timers: timers}
@@ -576,7 +581,9 @@ defmodule ForemanServer.Overwatch.Tracker do
 
     state =
       case Map.pop(state.monitors, k) do
-        {nil, monitors} -> %{state | monitors: monitors}
+        {nil, monitors} ->
+          %{state | monitors: monitors}
+
         {ref, monitors} ->
           Process.demonitor(ref, [:flush])
           %{state | monitors: monitors}
@@ -596,9 +603,7 @@ defmodule ForemanServer.Overwatch.Tracker do
     end
   rescue
     exception ->
-      Logger.warning(
-        "Overwatch.Tracker: dispatch raised: #{Exception.message(exception)}"
-      )
+      Logger.warning("Overwatch.Tracker: dispatch raised: #{Exception.message(exception)}")
 
       {:error, {:dispatch_raised, exception}}
   end

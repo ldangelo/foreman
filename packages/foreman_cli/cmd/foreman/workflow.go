@@ -1,9 +1,7 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -11,17 +9,20 @@ import (
 
 func runWorkflow(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "foreman workflow: missing subcommand (install)")
-		os.Exit(2)
+		return usageTextError(
+			"foreman workflow: missing subcommand (install)",
+			"Usage:\n  foreman workflow install [flags]",
+		)
 	}
 
 	switch args[0] {
 	case "install":
 		return workflowInstall(c, args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "foreman workflow: unknown subcommand %q\n", args[0])
-		os.Exit(2)
-		return nil
+		return usageTextError(
+			fmt.Sprintf("foreman workflow: unknown subcommand %q", args[0]),
+			"Usage:\n  foreman workflow install [flags]",
+		)
 	}
 }
 
@@ -31,24 +32,22 @@ func runWorkflow(c *client.Client, args []string) error {
 // consumes `:source_dir` / `:target_dir` / `:remote_url` plus retry
 // knobs. See WorkflowInstallController for the canonical mapping.
 func workflowInstall(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("workflow install", flag.ExitOnError)
+	fs := newFlagSet("workflow install")
 	targetDir := fs.String("target", "", "Target directory (required)")
 	sourceDir := fs.String("source", "", "Source directory of workflow assets")
 	remoteURL := fs.String("remote", "", "Remote URL of the workflow bundle")
 	retryAttempts := fs.Int("retries", 3, "Retry attempts for remote installs")
 	retryDelay := fs.Int("retry-delay-ms", 250, "Delay between retries (ms)")
-	_ = fs.Parse(args)
+	if err := fs.parse(args); err != nil {
+		return err
+	}
 
 	if *targetDir == "" {
-		fmt.Fprintln(os.Stderr, "foreman workflow install: --target is required")
-		fs.Usage()
-		os.Exit(2)
+		return usageError(fs, "foreman workflow install: --target is required")
 	}
 
 	if *sourceDir == "" && *remoteURL == "" {
-		fmt.Fprintln(os.Stderr, "foreman workflow install: --source or --remote is required")
-		fs.Usage()
-		os.Exit(2)
+		return usageError(fs, "foreman workflow install: --source or --remote is required")
 	}
 
 	abs, err := filepath.Abs(*targetDir)

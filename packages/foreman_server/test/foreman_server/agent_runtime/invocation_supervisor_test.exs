@@ -6,7 +6,10 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
   describe "start_invocation/4" do
     test "returns {:ok, pid, ref} on success" do
       sup_name = :"InvocationSupervisor.Test.unique"
-      start_supervised!({InvocationSupervisor, [name: sup_name]}, id: :invocation_supervisor_start)
+
+      start_supervised!({InvocationSupervisor, [name: sup_name]},
+        id: :invocation_supervisor_start
+      )
 
       # Minimal adapter for testing
       defmodule MinimalAdapter do
@@ -22,6 +25,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
             supported_contexts: []
           }
         end
+
         @impl true
         def available?, do: true
         @impl true
@@ -40,7 +44,10 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
   describe "DynamicSupervisor configuration" do
     test "uses :one_for_one strategy" do
       sup_name = :"InvocationSupervisor.Test.config"
-      start_supervised!({InvocationSupervisor, [name: sup_name]}, id: :invocation_supervisor_config)
+
+      start_supervised!({InvocationSupervisor, [name: sup_name]},
+        id: :invocation_supervisor_config
+      )
 
       # The supervisor should be running
       assert is_pid(Process.whereis(sup_name))

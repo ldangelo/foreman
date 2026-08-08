@@ -66,7 +66,9 @@ defmodule ForemanServer.VcsAdapter.Default do
 
     emit_started(operation_id, "create_pr", target)
 
-    case System.cmd("gh", ["pr", "create", "--title", title, "--body", body, "--base", base], cd: path) do
+    case System.cmd("gh", ["pr", "create", "--title", title, "--body", body, "--base", base],
+           cd: path
+         ) do
       {output, 0} ->
         {url, number} = parse_pr_output(output)
         result = %{url: url, number: number}
@@ -100,6 +102,7 @@ defmodule ForemanServer.VcsAdapter.Default do
   end
 
   defp classify_git_error(128, _output), do: {:transient, "git error 128"}
+
   defp classify_git_error(_code, output) do
     cond do
       output =~ ~r/Authentication failed/ -> :auth
@@ -111,6 +114,7 @@ defmodule ForemanServer.VcsAdapter.Default do
 
   defp classify_gh_error(4, _output), do: :auth
   defp classify_gh_error(8, _output), do: :not_found
+
   defp classify_gh_error(_code, output) do
     cond do
       output =~ ~r/could not resolve|network/i -> {:transient, "gh transient"}

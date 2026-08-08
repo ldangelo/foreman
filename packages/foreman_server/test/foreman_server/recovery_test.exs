@@ -5,13 +5,25 @@ defmodule ForemanServer.RecoveryTest do
   alias ForemanServer.{Aggregate, CommandRouter, ProjectionStore}
 
   setup do
-    :sys.replace_state(ProjectionStore, fn _ ->
-      %{projects: %{}, runs: %{}, pr_associations: %{}, scheduler_intents: %{}}
+    :sys.replace_state(ProjectionStore, fn state ->
+      %{
+        state
+        | projects: %{},
+          runs: %{},
+          pr_associations: %{},
+          scheduler_intents: %{}
+      }
     end)
 
     on_exit(fn ->
-      :sys.replace_state(ProjectionStore, fn _ ->
-        %{projects: %{}, runs: %{}, pr_associations: %{}, scheduler_intents: %{}}
+      :sys.replace_state(ProjectionStore, fn state ->
+        %{
+          state
+          | projects: %{},
+            runs: %{},
+            pr_associations: %{},
+            scheduler_intents: %{}
+        }
       end)
     end)
 
@@ -163,7 +175,8 @@ defmodule ForemanServer.RecoveryTest do
         payload: %{
           run_id: run_id,
           task_id: "task-#{run_id}",
-          project_id: "proj-1"
+          project_id: "proj-1",
+          workflow_snapshot: %{phases: []}
         }
       })
 
@@ -180,7 +193,7 @@ defmodule ForemanServer.RecoveryTest do
         ])
 
       true ->
-        run = ProjectionStore.run_projection(run_id)
+        run = ProjectionStore.run(run_id)
         updated = Map.merge(run, %{status: status, terminal?: terminal, run_id: run_id})
 
         ProjectionStore.apply_events([

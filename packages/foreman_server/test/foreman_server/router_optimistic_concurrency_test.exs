@@ -41,7 +41,14 @@ defmodule ForemanServer.RouterOptimisticConcurrencyTest do
   defp completed_event_data(run_id, phase_id) do
     %Elixir.EventStore.EventData{
       event_type: "PhaseCompleted",
-      data: %{run_id: run_id, phase_id: phase_id},
+      data: %{
+        run_id: run_id,
+        phase_id: phase_id,
+        index: 1,
+        artifact_path: "report.md",
+        artifact_sha256: String.duplicate("a", 64),
+        artifact_bytes: 1
+      },
       metadata: %{}
     }
   end
@@ -55,7 +62,14 @@ defmodule ForemanServer.RouterOptimisticConcurrencyTest do
     {:ok, _} =
       CommandRouter.dispatch(%{
         type: "phase.start",
-        payload: %{phase_id: phase_id, run_id: run_id},
+        payload: %{
+          phase_id: phase_id,
+          run_id: run_id,
+          index: 1,
+          name: "build",
+          attempt: 1,
+          artifact_template: "report.md"
+        },
         aggregate_id: stream
       })
 

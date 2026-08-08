@@ -1,5 +1,6 @@
 defmodule ForemanServer.Aggregate.Actor do
   import Bitwise
+
   @moduledoc """
   Supervised GenServer that holds aggregate state and stream version.
 
@@ -72,9 +73,15 @@ defmodule ForemanServer.Aggregate.Actor do
       else
         Aggregate.load(aggregate_module, aggregate_id)
       end
+
     Telemetry.aggregate_rehydrated(version)
 
-    Phoenix.PubSub.broadcast(ForemanServer.PubSub, "debug:aggregates", {:actor_loaded, aggregate_id})
+    Phoenix.PubSub.broadcast(
+      ForemanServer.PubSub,
+      "debug:aggregates",
+      {:actor_loaded, aggregate_id}
+    )
+
     track_presence(aggregate_id, aggregate_module, version)
 
     state = %{
@@ -104,6 +111,7 @@ defmodule ForemanServer.Aggregate.Actor do
       }
     end)
   end
+
   @impl true
   def handle_call(:get_state, _from, state) do
     {:reply, state.module_state, state}
@@ -184,28 +192,32 @@ defmodule ForemanServer.Aggregate.Actor do
                 do_dispatch(rehydrated, cmd, new_version, retries_left - 1)
 
               {:error, reason} ->
-                {:reply,
-                 {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
+                {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
                  state}
             end
 
           {:error, ^ref, :wrong_expected_version, append_latency_ms} ->
             {:reply,
-             {:telemetry, {:error, :wrong_expected_version},
+             {:telemetry, {:error, {:wrong_expected_version, state.version}},
               %{append_latency_ms: append_latency_ms}}, state}
 
           {:error, ^ref, :wrong_expected_version} ->
             {:reply,
-             {:telemetry, {:error, :wrong_expected_version}, %{append_latency_ms: 0}}, state}
+             {:telemetry, {:error, {:wrong_expected_version, state.version}},
+              %{append_latency_ms: 0}}, state}
 
           {:error, ^ref, reason, append_latency_ms} ->
-            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
+            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
+             state}
 
           {:error, ^ref, reason} ->
             {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: 0}}, state}
         end
 
       {:error, _reason} = error ->
+        {:reply, error, state}
+
+      {:error, _reason, _details} = error ->
         {:reply, error, state}
     end
   end
@@ -262,7 +274,10 @@ defmodule ForemanServer.Aggregate.Actor do
   # When event_id is provided (commands with command_id), it is set on the
   # %EventData{} so EventStore uses it as the persisted event_id — enabling
   # database-level deduplication via the events_pkey unique constraint.
-  defp normalize_to_event_data(%{stream_id: _stream_id, event_type: event_type, payload: payload}, event_id) do
+  defp normalize_to_event_data(
+         %{stream_id: _stream_id, event_type: event_type, payload: payload},
+         event_id
+       ) do
     %EventData{event_id: event_id, event_type: event_type, data: payload}
   end
 
@@ -293,8 +308,11 @@ defmodule ForemanServer.Aggregate.Actor do
   # Convert a stored %RecordedEvent{} to an event_spec map with string keys.
   # Used for returning existing events on duplicate idempotent hits.
   defp recorded_event_to_event_spec(recorded) do
-    %{"stream_id" => recorded.stream_uuid, "event_type" => recorded.event_type,
-      "payload" => recorded.data}
+    %{
+      "stream_id" => recorded.stream_uuid,
+      "event_type" => recorded.event_type,
+      "payload" => recorded.data
+    }
   end
 
   # -------------------------------------------------------------------------
@@ -308,16 +326,21 @@ defmodule ForemanServer.Aggregate.Actor do
     # NUL-delimited input guarantees that distinct (aggregate_id, command_id)
     # pairs cannot collide through concatenation. For example,
     # `{"ab", "c"}` and `{"a", "bc"}` produce different SHA-256 digests.
-    <<first16::binary-size(16), _::binary>> = :crypto.hash(:sha256, aggregate_id <> "\0" <> command_id)
-    <<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8, b8::8,
-      b9::8, b10::8, b11::8, b12::8, b13::8, b14::8, b15::8>> =
+    <<first16::binary-size(16), _::binary>> =
+      :crypto.hash(:sha256, aggregate_id <> "\0" <> command_id)
+
+    <<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8, b8::8, b9::8, b10::8, b11::8,
+      b12::8, b13::8, b14::8,
+      b15::8>> =
       first16
 
     b6 = bor(band(b6, 0x0F), 0x40)
     b8 = bor(band(b8, 0x3F), 0x80)
 
-    Elixir.EventStore.UUID.binary_to_string!(<<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8,
-                                     b8::8, b9::8, b10::8, b11::8, b12::8, b13::8, b14::8, b15::8>>)
+    Elixir.EventStore.UUID.binary_to_string!(
+      <<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8, b8::8, b9::8, b10::8, b11::8,
+        b12::8, b13::8, b14::8, b15::8>>
+    )
   end
 
   # Page through the stream looking for an event with the given event_id.
@@ -335,7 +358,9 @@ defmodule ForemanServer.Aggregate.Actor do
         :not_found
 
       {:ok, events} ->
-        case Enum.find(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} -> id == event_id end) do
+        case Enum.find(events, fn %Elixir.EventStore.RecordedEvent{event_id: id} ->
+               id == event_id
+             end) do
           nil -> find_event_by_id(stream_id, event_id, start_version + length(events))
           recorded -> {:ok, recorded_event_to_event_spec(recorded)}
         end
@@ -374,12 +399,11 @@ defmodule ForemanServer.Aggregate.Actor do
   defp handle_duplicate_event(state, aggregate_id, event_id, append_latency_ms) do
     with {:ok, persisted} <- lookup_persisted_event_spec(aggregate_id, event_id),
          {:ok, %{state: rehydrated}} <- reload_after_conflict(state) do
-      {:reply,
-       {:telemetry, {:ok, persisted}, %{append_latency_ms: append_latency_ms}}, rehydrated}
+      {:reply, {:telemetry, {:ok, persisted}, %{append_latency_ms: append_latency_ms}},
+       rehydrated}
     else
       {:error, reason} ->
-        {:reply,
-         {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
+        {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
     end
   end
 end

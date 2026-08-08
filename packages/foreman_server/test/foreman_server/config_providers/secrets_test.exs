@@ -4,7 +4,9 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
   alias ForemanServer.ConfigProviders.Secrets
 
   test "init/1 preserves provider state and load/2 resolves secrets from a release-local env file" do
-    tmp_dir = Path.join(System.tmp_dir!(), "foreman-secrets-#{System.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "foreman-secrets-#{System.unique_integer([:positive])}")
+
     env_file = Path.join(tmp_dir, ".env")
 
     File.mkdir_p!(tmp_dir)
@@ -24,18 +26,48 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
       source: "env_file",
       env_file: env_file,
       mappings: [
-        [app: :foreman_server, key: ForemanServer.EventStore, config_key: :url, env: "EVENTSTORE_URL", secret_key: :eventstore_url],
-        [app: :foreman_server, key: ForemanServer.Repo, config_key: :url, env: "DATABASE_URL", secret_key: :database_url],
-        [app: :foreman_server, key: ForemanServerWeb.Endpoint, config_key: :secret_key_base, env: "SECRET_KEY_BASE", secret_key: :secret_key_base],
-        [app: :foreman_server, key: ForemanServerWeb.Endpoint, config_key: :signing_salt, env: "SIGNING_SALT", secret_key: :signing_salt, nested: :live_view]
+        [
+          app: :foreman_server,
+          key: ForemanServer.EventStore,
+          config_key: :url,
+          env: "EVENTSTORE_URL",
+          secret_key: :eventstore_url
+        ],
+        [
+          app: :foreman_server,
+          key: ForemanServer.Repo,
+          config_key: :url,
+          env: "DATABASE_URL",
+          secret_key: :database_url
+        ],
+        [
+          app: :foreman_server,
+          key: ForemanServerWeb.Endpoint,
+          config_key: :secret_key_base,
+          env: "SECRET_KEY_BASE",
+          secret_key: :secret_key_base
+        ],
+        [
+          app: :foreman_server,
+          key: ForemanServerWeb.Endpoint,
+          config_key: :signing_salt,
+          env: "SIGNING_SALT",
+          secret_key: :signing_salt,
+          nested: :live_view
+        ]
       ]
     ]
 
     original_endpoint = Application.get_env(:foreman_server, ForemanServerWeb.Endpoint)
     endpoint_overrides = Application.get_env(:foreman_server, ForemanServerWeb.Endpoint, [])
     Application.delete_env(:foreman_server, ForemanServerWeb.Endpoint)
+
     on_exit(fn ->
-      Application.put_env(:foreman_server, ForemanServerWeb.Endpoint, original_endpoint || endpoint_overrides)
+      Application.put_env(
+        :foreman_server,
+        ForemanServerWeb.Endpoint,
+        original_endpoint || endpoint_overrides
+      )
     end)
 
     original = Application.get_env(:foreman_server, :prod_secret_provider)
@@ -58,6 +90,7 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
     assert Keyword.fetch!(init_state, :source) == "env_file"
 
     mappings = Keyword.fetch!(init_state, :mappings)
+
     assert Enum.map(mappings, &Keyword.fetch!(&1, :secret_key)) == [
              :eventstore_url,
              :database_url,
@@ -68,7 +101,9 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
     merged = Secrets.load([foreman_server: []], state)
     foreman_config = Keyword.fetch!(merged, :foreman_server)
 
-    assert Keyword.get(foreman_config, ForemanServer.EventStore)[:url] =~ "foreman_eventstore_prod"
+    assert Keyword.get(foreman_config, ForemanServer.EventStore)[:url] =~
+             "foreman_eventstore_prod"
+
     assert Keyword.get(foreman_config, ForemanServer.Repo)[:url] =~ "foreman_prod"
     endpoint_config = Keyword.get(foreman_config, ForemanServerWeb.Endpoint, [])
     assert endpoint_config[:secret_key_base] == "super-secret-key-base"
@@ -79,7 +114,9 @@ defmodule ForemanServer.ConfigProviders.SecretsTest do
     # cannot pre-set it and make the test fail spuriously.
     missing_env = "FOREMAN_TEST_MISSING_SECRET_#{System.unique_integer([:positive])}"
 
-    tmp_dir = Path.join(System.tmp_dir!(), "foreman-secrets-#{System.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "foreman-secrets-#{System.unique_integer([:positive])}")
+
     env_file = Path.join(tmp_dir, ".env")
 
     File.mkdir_p!(tmp_dir)

@@ -356,3 +356,78 @@ Unhealthy reports expose only the allowlisted error fields:
 `code`, `message`, `hint`, `exit_code`, `stderr_byte_count`, and
 `redacted_fields`. Raw `stderr` is never printed, even for
 `DATABASE_NOT_FOUND`.
+
+
+## 13. Project CRUD from the CLI
+
+The project CRUD surface is intentionally small: all mutations go
+through `POST /api/commands`, while reads come from project
+projections.
+
+### Create a project
+
+Register a project and opt it into a task provider:
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider beads
+```
+
+Use `--format=json` when you want the accepted command envelope back
+instead of the summary line.
+
+### Get one project
+
+Read the current projection for a single project:
+
+```
+foreman project get project-123
+```
+
+Add `--format=json` to print the raw API response.
+
+### Update a project
+
+Update the task-provider assignment for an existing project:
+
+```
+foreman project update --task-provider beads project-123
+```
+
+The CLI sends `project.update` through `/api/commands`; it does not
+write directly to the event store or projections.
+
+### Delete a project
+
+Archive a project:
+
+```
+foreman project delete project-123
+```
+
+This command is a soft-delete, not a hard purge. Archived projects stay
+queryable via the read model. If active runs still exist, the server
+rejects the archive; rerun with `--force` to print the blocking run ids
+to stderr before the CLI exits non-zero.
+
+### List projects
+
+List visible projects:
+
+```
+foreman project list
+```
+
+By default the CLI prints a table with `ID`, `PATH`, `ARCHIVED`,
+`REGISTERED`, and `VERSION`. Add `--include-archived` to include
+archived rows, `--format=json` for a JSON array, or `--format=ndjson`
+for one JSON object per line.
+
+### Performance and scaling note
+
+The server caps project-list responses at 1000 rows per request. When
+that cap is hit, the CLI prints a truncation warning and the HTTP
+response carries `X-Total-Count` with the full matching count so you can
+measure how much data was omitted.

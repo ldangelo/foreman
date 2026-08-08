@@ -27,7 +27,8 @@ defmodule ForemanServer.Architecture.SystemCmdBrTest do
       |> Code.string_to_quoted!(lines: true, columns: true)
       |> Macro.prewalk([], &collect_system_cmd_br/2)
 
-    assert hits == [3], "expected collector to detect fixture call at line 3, got #{inspect(hits)}"
+    assert hits == [3],
+           "expected collector to detect fixture call at line 3, got #{inspect(hits)}"
   end
 
   test "no System.cmd(\"br\", ...) calls in lib/foreman_server/" do

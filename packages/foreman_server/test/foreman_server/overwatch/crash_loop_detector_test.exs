@@ -21,7 +21,12 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
     threshold = Keyword.get(opts, :threshold, 3)
 
     tracker = start_supervised!({Tracker, []}, id: :tracker)
-    detector = start_supervised!({CrashLoopDetector, window_ms: window_ms, threshold: threshold}, id: :detector)
+
+    detector =
+      start_supervised!({CrashLoopDetector, window_ms: window_ms, threshold: threshold},
+        id: :detector
+      )
+
     %{tracker: tracker, detector: detector}
   end
 

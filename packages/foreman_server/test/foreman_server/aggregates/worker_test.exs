@@ -52,7 +52,8 @@ defmodule ForemanServer.Aggregates.WorkerTest do
       assert {:ok, event_spec} =
                Worker.handle_command(Worker.initial_state(), %{
                  type: "worker.record",
-                 payload: payload |> Map.put(:event_type, "WorkerStarted") |> Map.put(:sequence, 0)
+                 payload:
+                   payload |> Map.put(:event_type, "WorkerStarted") |> Map.put(:sequence, 0)
                })
 
       assert event_spec.event_type == "WorkerStarted"
@@ -168,7 +169,8 @@ defmodule ForemanServer.Aggregates.WorkerTest do
     end
 
     test "non-worker.record commands return :unhandled" do
-      assert :unhandled = Worker.handle_command(Worker.initial_state(), %{type: "other", payload: %{}})
+      assert :unhandled =
+               Worker.handle_command(Worker.initial_state(), %{type: "other", payload: %{}})
     end
 
     test "rejects WorkerStarted missing session_id with :malformed_event (replay-safety)" do
@@ -350,7 +352,12 @@ defmodule ForemanServer.Aggregates.WorkerTest do
       state =
         Worker.apply_event(state_after_started, %{
           event_type: "WorkerHeartbeat",
-          payload: %{worker_id: worker_id, run_id: run_id, sequence: 1, timestamp: 1_700_000_000_000}
+          payload: %{
+            worker_id: worker_id,
+            run_id: run_id,
+            sequence: 1,
+            timestamp: 1_700_000_000_000
+          }
         })
 
       assert state.last_sequence == 1
@@ -519,7 +526,12 @@ defmodule ForemanServer.Aggregates.WorkerTest do
       completed =
         Worker.apply_event(state_after_started, %{
           event_type: "RunCompleted",
-          payload: %{run_id: run_id, sequence: 1, status: "completed"}
+          payload: %{
+            run_id: run_id,
+            project_id: "project-1",
+            sequence: 1,
+            status: "completed"
+          }
         })
 
       assert completed.terminal? == true
@@ -528,7 +540,7 @@ defmodule ForemanServer.Aggregates.WorkerTest do
       failed =
         Worker.apply_event(state_after_started, %{
           event_type: "RunFailed",
-          payload: %{run_id: run_id, sequence: 1, reason: "boom"}
+          payload: %{run_id: run_id, project_id: "project-1", sequence: 1, reason: "boom"}
         })
 
       assert failed.terminal? == true
@@ -594,17 +606,16 @@ defmodule ForemanServer.Aggregates.WorkerTest do
       assert exited.terminal? == true
       assert exited.status == "crashed"
     end
-
-   end
+  end
 
   # ---------------------------------------------------------------------------
   # EventCodec contract for typed events
   # ---------------------------------------------------------------------------
 
   describe "EventCodec contract" do
-    test "registered/0 returns all 12 typed event types" do
+    test "registered/0 includes every worker-relevant typed event" do
       expected =
-        Enum.sort([
+        MapSet.new([
           "WorkerStarted",
           "WorkerHeartbeat",
           "WorkerUnresponsive",
@@ -619,7 +630,7 @@ defmodule ForemanServer.Aggregates.WorkerTest do
           "RunPaused"
         ])
 
-      assert Enum.sort(EventCodec.registered()) == expected
+      assert MapSet.subset?(expected, MapSet.new(EventCodec.registered()))
     end
 
     test "decode!/2 round-trips a WorkerStarted plain map" do

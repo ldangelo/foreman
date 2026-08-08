@@ -63,7 +63,10 @@ defmodule ForemanServerWeb.DebugDashboardLiveTest do
       rendered_to_string(
         ForemanServerWeb.RunDebugLive.render(%{
           run_id: "run-123",
-          snapshot: %{pid: self(), state: %{run_id: "run-123", status: "in_progress", task_id: "task-1"}}
+          snapshot: %{
+            pid: self(),
+            state: %{run_id: "run-123", status: "in_progress", task_id: "task-1"}
+          }
         })
       )
 
@@ -87,7 +90,10 @@ defmodule ForemanServerWeb.DebugDashboardLiveTest do
         ForemanServerWeb.WorkerDebugLive.render(%{
           run_id: "run-123",
           worker_id: "worker-1",
-          snapshot: %{pid: self(), state: %{status: "running", tool_events: 3, assistant_messages: 4}}
+          snapshot: %{
+            pid: self(),
+            state: %{status: "running", tool_events: 3, assistant_messages: 4}
+          }
         })
       )
 

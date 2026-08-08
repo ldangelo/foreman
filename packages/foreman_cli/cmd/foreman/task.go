@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 
@@ -12,8 +11,10 @@ import (
 // runTask dispatches `foreman task <subcommand>`.
 func runTask(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "foreman task: missing subcommand (create|approve|get)")
-		os.Exit(2)
+		return usageTextError(
+			"foreman task: missing subcommand (create|approve|get)",
+			"Usage:\n  foreman task create [flags]\n  foreman task approve [flags]\n  foreman task get <id>",
+		)
 	}
 
 	switch args[0] {
@@ -24,9 +25,10 @@ func runTask(c *client.Client, args []string) error {
 	case "get":
 		return taskGet(c, args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "foreman task: unknown subcommand %q\n", args[0])
-		os.Exit(2)
-		return nil
+		return usageTextError(
+			fmt.Sprintf("foreman task: unknown subcommand %q", args[0]),
+			"Usage:\n  foreman task create [flags]\n  foreman task approve [flags]\n  foreman task get <id>",
+		)
 	}
 }
 
@@ -38,19 +40,19 @@ type commandEnvelope struct {
 	Payload   map[string]any `json:"payload"`
 }
 func taskCreate(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("task create", flag.ExitOnError)
+	fs := newFlagSet("task create")
 	taskID := fs.String("id", "", "Task ID (required)")
 	projectID := fs.String("project", "", "Project ID (required)")
 	title := fs.String("title", "", "Task title (required)")
 	description := fs.String("description", "", "Task description")
 	status := fs.String("status", "open", "Initial status (default: open)")
 	taskType := fs.String("task-type", "", "Task type discriminator")
-	_ = fs.Parse(args)
+	if err := fs.parse(args); err != nil {
+		return err
+	}
 
 	if *taskID == "" || *projectID == "" || *title == "" {
-		fmt.Fprintln(os.Stderr, "foreman task create: --id, --project, --title are required")
-		fs.Usage()
-		os.Exit(2)
+		return usageError(fs, "foreman task create: --id, --project, --title are required")
 	}
 
 	payload := map[string]any{
@@ -73,16 +75,16 @@ func taskCreate(c *client.Client, args []string) error {
 }
 
 func taskApprove(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("task approve", flag.ExitOnError)
+	fs := newFlagSet("task approve")
 	taskID := fs.String("id", "", "Task ID (required)")
 	approvedBy := fs.String("approved-by", "operator", "Approver name (default: operator)")
 	commandID := fs.String("command-id", "", "Optional client-supplied command_id; doubles as approval_id")
-	_ = fs.Parse(args)
+	if err := fs.parse(args); err != nil {
+		return err
+	}
 
 	if *taskID == "" {
-		fmt.Fprintln(os.Stderr, "foreman task approve: --id is required")
-		fs.Usage()
-		os.Exit(2)
+		return usageError(fs, "foreman task approve: --id is required")
 	}
 
 	// The server enriches approval_id, approved_at, run_id,
@@ -105,13 +107,13 @@ func taskApprove(c *client.Client, args []string) error {
 }
 
 func taskGet(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("task get", flag.ExitOnError)
-	_ = fs.Parse(args)
+	fs := newFlagSet("task get")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "foreman task get: expected one argument: <task-id>")
-		fs.Usage()
-		os.Exit(2)
+		return usageError(fs, "foreman task get: expected one argument: <task-id>")
 	}
 
 	var out map[string]any
@@ -124,11 +126,20 @@ func taskGet(c *client.Client, args []string) error {
 	return printJSON(out)
 }
 
-// postCommand centralizes the POST /api/commands path. The server
-// returns 201 on success with `{status: "accepted", result: ...}`.
-func postCommand(c *client.Client, body any) error {
+// postCommandWithResponse centralizes the POST /api/commands path.
+// The server returns 201 on success with `{status: "accepted", result: ...}`.
+func postCommandWithResponse(c *client.Client, body any) (map[string]any, error) {
 	var out map[string]any
 	if err := c.PostJSON("/api/commands", body, &out); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
+func postCommand(c *client.Client, body any) error {
+	out, err := postCommandWithResponse(c, body)
+	if err != nil {
 		return err
 	}
 

@@ -297,9 +297,7 @@ defmodule ForemanServer.Aggregates.PhaseTest do
                })
     end
 
-
     test "rejects from skipped with :phase_not_retryable" do
-
       started = started_state()
 
       {:ok, skip_spec} =

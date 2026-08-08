@@ -65,7 +65,8 @@ defmodule ForemanServer.AgentRuntime.ContractsTest do
     def capabilities do
       %{
         type: :language_model,
-        strengths: "should_be_a_list",  # wrong type
+        # wrong type
+        strengths: "should_be_a_list",
         weaknesses: [],
         supported_contexts: []
       }
@@ -113,11 +114,11 @@ defmodule ForemanServer.AgentRuntime.ContractsTest do
     test "register/1 and BackendAdapter.validate_capabilities/1 produce identical error reasons for the same input" do
       # Missing field
       assert AgentRuntime.register(MissingFieldAdapter) ==
-             BackendAdapter.validate_capabilities(MissingFieldAdapter)
+               BackendAdapter.validate_capabilities(MissingFieldAdapter)
 
       # Wrong type
       assert AgentRuntime.register(WrongTypeAdapter) ==
-             BackendAdapter.validate_capabilities(WrongTypeAdapter)
+               BackendAdapter.validate_capabilities(WrongTypeAdapter)
     end
 
     test "register/1 is referentially transparent (same input → same output across repeated calls)" do

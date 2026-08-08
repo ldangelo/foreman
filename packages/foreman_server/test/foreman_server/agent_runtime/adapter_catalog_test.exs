@@ -17,6 +17,7 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogTest do
         supported_contexts: [:chat]
       }
     end
+
     @impl true
     def available?, do: true
     @impl true
@@ -36,6 +37,7 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogTest do
         supported_contexts: [:analysis]
       }
     end
+
     @impl true
     def available?, do: true
     @impl true
@@ -55,6 +57,7 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogTest do
         supported_contexts: [:creative]
       }
     end
+
     @impl true
     def available?, do: false
     @impl true
@@ -84,7 +87,8 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogTest do
         @impl true
         def name, do: :invalid
         @impl true
-        def capabilities, do: %{type: :language_model}  # missing required fields
+        # missing required fields
+        def capabilities, do: %{type: :language_model}
         @impl true
         def available?, do: true
         @impl true
@@ -156,8 +160,10 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogTest do
     test "returns cached availability" do
       cat_name = start_adapter_catalog(:available)
 
-      AdapterCatalog.register(AdapterA, cat_name)  # available: true
-      AdapterCatalog.register(AdapterC, cat_name)  # available: false
+      # available: true
+      AdapterCatalog.register(AdapterA, cat_name)
+      # available: false
+      AdapterCatalog.register(AdapterC, cat_name)
 
       assert AdapterCatalog.available?(AdapterA, cat_name) == true
       assert AdapterCatalog.available?(AdapterC, cat_name) == false

@@ -100,7 +100,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     )
 
     ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
-    ensure_started(ForemanServer.AgentRuntime.AdapterCatalog, ForemanServer.AgentRuntime.AdapterCatalog)
+
+    ensure_started(
+      ForemanServer.AgentRuntime.AdapterCatalog,
+      ForemanServer.AgentRuntime.AdapterCatalog
+    )
 
     ensure_started(
       ForemanServer.AgentRuntime.InvocationSupervisor,
@@ -173,6 +177,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     start_schema_cache!()
 
     {collector, ref} = start_telemetry_collector([@route_ok_event])
+
     on_exit(fn ->
       :telemetry.detach(ref)
       stop_telemetry_collector(collector)
@@ -283,7 +288,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert %{status: "completed"} =
              poll_until(
                fn ->
-                 case ProjectionStore.run_projection(run_id) do
+                 case ProjectionStore.run(run_id) do
                    %{status: "completed"} = run -> {:ok, run}
                    other -> {:error, other}
                  end
@@ -328,12 +333,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert transitions == [:claim, :close]
   end
 
-  test "failure path invokes fail on TaskExecutionFailed with deterministic default transition comment", %{
-    temp_dir: temp_dir
-  } do
+  test "failure path invokes fail on TaskExecutionFailed with deterministic default transition comment",
+       %{
+         temp_dir: temp_dir
+       } do
     start_schema_cache!()
 
     {collector, ref} = start_telemetry_collector([@route_ok_event])
+
     on_exit(fn ->
       :telemetry.detach(ref)
       stop_telemetry_collector(collector)
@@ -446,8 +453,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert {:adapter_execute, "Run phase implement", _context} = receive_message()
 
-    assert {:runner_cmd,
-            :fail,
+    assert {:runner_cmd, :fail,
             {:update,
              %{
                flags: [

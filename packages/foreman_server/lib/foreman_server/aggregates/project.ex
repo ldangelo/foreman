@@ -3,6 +3,7 @@ defmodule ForemanServer.Aggregates.Project do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.Events.{ProjectRunReservationReleased, ProjectRunReserved}
 
   defmodule State do
     @enforce_keys [:exists?, :project_id, :path, :status, :default_branch, :archived?]
@@ -14,6 +15,7 @@ defmodule ForemanServer.Aggregates.Project do
       :default_branch,
       :archived?,
       :task_provider,
+      active_run_reservations: %{},
       config: %{},
       health: %{ok: true}
     ]
@@ -31,6 +33,7 @@ defmodule ForemanServer.Aggregates.Project do
       default_branch: "main",
       archived?: false,
       task_provider: nil,
+      active_run_reservations: %{},
       config: %{},
       health: %{ok: true}
     }
@@ -51,6 +54,7 @@ defmodule ForemanServer.Aggregates.Project do
             status: Aggregate.get(payload, :status, "active"),
             default_branch: Aggregate.get(payload, :default_branch, "main"),
             task_provider: task_provider,
+            active_run_reservations: %{},
             config: project_config(payload, task_provider),
             health: Aggregate.get(payload, :health, %{ok: true}),
             archived?: false
@@ -77,6 +81,12 @@ defmodule ForemanServer.Aggregates.Project do
 
       "ProjectReactivated" ->
         %State{state | status: "active", archived?: false}
+
+      "ProjectRunReserved" ->
+        put_run_reservation(state, payload)
+
+      "ProjectRunReservationReleased" ->
+        release_run_reservation(state, payload)
 
       _ ->
         state
@@ -150,6 +160,61 @@ defmodule ForemanServer.Aggregates.Project do
     end
   end
 
+  def handle_command(state, %{type: "project.reserve_run", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, command_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :command_id), :command_id),
+         {:ok, sequence} <- validate_sequence(Aggregate.get(payload, :sequence)),
+         {:ok, run_start_payload} <-
+           validate_run_start_payload(Aggregate.get(payload, :run_start_payload)),
+         :ok <- require_exists(state, project_id),
+         :ok <- reject_archived(state, project_id) do
+      if reserved_run(state, run_id) do
+        {:ok, nil}
+      else
+        {:ok,
+         %{
+           stream_id: "project:#{project_id}",
+           event_type: "ProjectRunReserved",
+           payload: %ProjectRunReserved{
+             project_id: project_id,
+             run_id: run_id,
+             command_id: command_id,
+             sequence: sequence,
+             run_start_payload: run_start_payload
+           }
+         }}
+      end
+    end
+  end
+
+  def handle_command(state, %{type: "project.release_run_reservation", payload: payload}) do
+    with {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, project_id) do
+      case reserved_run(state, run_id) do
+        nil ->
+          {:ok, nil}
+
+        reservation ->
+          {:ok,
+           %{
+             stream_id: "project:#{project_id}",
+             event_type: "ProjectRunReservationReleased",
+             payload: %ProjectRunReservationReleased{
+               project_id: project_id,
+               run_id: run_id,
+               sequence: Aggregate.get(reservation, :sequence),
+               reason: Aggregate.get(payload, :reason)
+             }
+           }}
+      end
+    end
+  end
+
   def handle_command(_state, _command), do: :unhandled
 
   defp require_absent(%State{exists?: true}, project_id),
@@ -171,10 +236,20 @@ defmodule ForemanServer.Aggregates.Project do
   defp validate_status(status), do: {:error, {:invalid_project_status, status}}
 
   defp validate_archive(%State{archived?: true}), do: {:error, {:already_archived, :project}}
+
+  defp validate_archive(%State{active_run_reservations: reservations})
+       when map_size(reservations) > 0,
+       do: {:error, :project_has_active_runs, Map.keys(reservations)}
+
   defp validate_archive(_state), do: :ok
 
   defp validate_reactivate(%State{archived?: false}), do: {:error, {:not_archived, :project}}
   defp validate_reactivate(_state), do: :ok
+
+  defp reject_archived(%State{archived?: true}, project_id),
+    do: {:error, {:project_archived, project_id}}
+
+  defp reject_archived(_state, _project_id), do: :ok
 
   defp update_status(state, payload) do
     if status = Aggregate.get(payload, :status),
@@ -287,5 +362,39 @@ defmodule ForemanServer.Aggregates.Project do
       Map.has_key?(map, string_key) -> Map.put(map, string_key, value)
       true -> Map.put(map, key, value)
     end
+  end
+
+  defp validate_sequence(sequence) when is_integer(sequence), do: {:ok, sequence}
+  defp validate_sequence(_sequence), do: {:error, {:missing_or_invalid, :sequence}}
+
+  defp validate_run_start_payload(run_start_payload) when is_map(run_start_payload),
+    do: {:ok, run_start_payload}
+
+  defp validate_run_start_payload(_run_start_payload),
+    do: {:error, {:missing_or_invalid, :run_start_payload}}
+
+  defp reserved_run(%State{active_run_reservations: reservations}, run_id),
+    do: Aggregate.get(reservations, run_id)
+
+  defp put_run_reservation(state, payload) do
+    run_id = Aggregate.get(payload, :run_id)
+
+    reservation = %{
+      project_id: Aggregate.get(payload, :project_id),
+      sequence: Aggregate.get(payload, :sequence),
+      command_id: Aggregate.get(payload, :command_id),
+      run_start_payload: Aggregate.get(payload, :run_start_payload)
+    }
+
+    %State{
+      state
+      | active_run_reservations: Map.put(state.active_run_reservations, run_id, reservation)
+    }
+  end
+
+  defp release_run_reservation(state, payload) do
+    run_id = Aggregate.get(payload, :run_id)
+
+    %State{state | active_run_reservations: Map.delete(state.active_run_reservations, run_id)}
   end
 end

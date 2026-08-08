@@ -5,8 +5,8 @@ defmodule ForemanServerWeb.CommandController do
   `POST /api/commands` is the **sole** external mutation surface. The
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on allowed types
-  (`project.register`, `task.create`, `task.approve`), enriches the
-  payload, and dispatches to `CommandRouter`.
+  (`project.register`, `project.update`, `project.archive`, `task.create`,
+  `task.approve`), enriches the payload, and dispatches to `CommandRouter`.
 
   The `aggregate_id` is derived from the payload (e.g. `task:<task_id>`
   for `task.create`); operators may supply it explicitly but the value
@@ -17,14 +17,15 @@ defmodule ForemanServerWeb.CommandController do
 
   alias ForemanServer.CommandGateway
 
-  @allowed_types ~w(project.register task.create task.approve)
+  @default_command_gateway_module CommandGateway
+  @allowed_types ~w(project.register project.update project.archive task.create task.approve)
 
   def create(conn, params) do
     envelope = build_envelope(params)
 
     case envelope do
       {:ok, command} ->
-        case CommandGateway.dispatch_operator(command) do
+        case dispatch_operator(command) do
           {:ok, result} ->
             conn
             |> put_status(:created)
@@ -40,6 +41,21 @@ defmodule ForemanServerWeb.CommandController do
             |> put_status(:bad_request)
             |> json(%{error: "invalid_envelope", reason: inspect(reason)})
 
+          {:error, {:wrong_expected_version, current_version}} ->
+            conn
+            |> put_status(:conflict)
+            |> json(%{code: "version_conflict", current_version: current_version})
+
+          {:error, :project_has_active_runs, run_ids} ->
+            conn
+            |> put_status(:conflict)
+            |> json(%{code: "project_has_active_runs", run_ids: run_ids})
+
+          {:error, reason, detail} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: inspect(reason), detail: detail})
+
           {:error, reason} ->
             conn
             |> put_status(:unprocessable_entity)
@@ -53,20 +69,37 @@ defmodule ForemanServerWeb.CommandController do
     end
   end
 
+  defp dispatch_operator(command) do
+    case command_gateway_module() do
+      @default_command_gateway_module -> CommandGateway.dispatch_operator(command)
+      module -> module.dispatch_operator(command)
+    end
+  end
+
+  defp command_gateway_module do
+    Application.get_env(:foreman_server, :command_gateway_module, @default_command_gateway_module)
+  end
+
   defp build_envelope(params) when is_map(params) do
     type = get_value(params, :type) || get_value(params, "type")
     payload = get_value(params, :payload) || get_value(params, "payload") || %{}
 
     cond do
-      not (is_binary(type) and type != "") -> {:error, :invalid_envelope}
-      not (type in @allowed_types and is_map(payload)) -> {:error, :invalid_envelope}
+      not (is_binary(type) and type != "") ->
+        {:error, :invalid_envelope}
+
+      not (type in @allowed_types and is_map(payload)) ->
+        {:error, :invalid_envelope}
+
       true ->
         case resolve_aggregate_id(type, payload, params) do
           {:ok, aggregate_id} ->
             {:ok,
              %{
                type: type,
-               command_id: get_value(params, :command_id) || get_value(params, "command_id") || default_command_id(),
+               command_id:
+                 get_value(params, :command_id) || get_value(params, "command_id") ||
+                   default_command_id(),
                aggregate_id: aggregate_id,
                payload: payload
              }}
@@ -105,11 +138,15 @@ defmodule ForemanServerWeb.CommandController do
   end
 
   defp aggregate_prefix("project.register"), do: "project"
+  defp aggregate_prefix("project.update"), do: "project"
+  defp aggregate_prefix("project.archive"), do: "project"
   defp aggregate_prefix("task.create"), do: "task"
   defp aggregate_prefix("task.approve"), do: "task"
   defp aggregate_prefix(_), do: ""
 
   defp id_field_for("project.register"), do: :project_id
+  defp id_field_for("project.update"), do: :project_id
+  defp id_field_for("project.archive"), do: :project_id
   defp id_field_for("task.create"), do: :task_id
   defp id_field_for("task.approve"), do: :task_id
   defp id_field_for(_), do: nil
@@ -132,6 +169,21 @@ defmodule ForemanServerWeb.CommandController do
     Map.get(map, String.to_existing_atom(key))
   rescue
     ArgumentError -> Map.get(map, key)
+  end
+
+  defp serialize(result) when is_map(result) do
+    payload = get_value(result, :payload)
+
+    cond do
+      is_map(payload) and is_binary(get_value(payload, :project_id)) ->
+        %{project_id: get_value(payload, :project_id)}
+
+      is_map(payload) and is_binary(get_value(payload, :task_id)) ->
+        %{task_id: get_value(payload, :task_id)}
+
+      true ->
+        %{raw: inspect(result)}
+    end
   end
 
   defp serialize({:ok, _events}), do: %{events: 1}

@@ -28,7 +28,12 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
     invocation_name = Keyword.get(opts, :invocation_supervisor_name, InvocationSupervisor)
 
     # Get adapters from config or opts
-    adapters = Keyword.get(opts, :adapters, Application.get_env(:foreman_server, :agent_runtime, [])[:adapters] || [])
+    adapters =
+      Keyword.get(
+        opts,
+        :adapters,
+        Application.get_env(:foreman_server, :agent_runtime, [])[:adapters] || []
+      )
 
     children = [
       {AdapterCatalog, [name: catalog_name, adapters: adapters]},

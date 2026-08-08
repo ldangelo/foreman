@@ -35,12 +35,12 @@ defmodule ForemanServer.CommandGateway do
   to succeed even if the assets have since changed.
   """
 
-  alias ForemanServer.{CommandRouter, ProjectionStore}
+  alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Workflow.Approval
 
-  @allowed_operator_types ~w(project.register task.create task.approve)
+  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve)
 
-  @type dispatch_result :: {:ok, map() | nil} | {:error, term()}
+  @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
   @doc """
   Dispatch a command originating from a public operator path.
@@ -56,7 +56,7 @@ defmodule ForemanServer.CommandGateway do
     with {:ok, normalized} <- normalize_operator_envelope(command),
          :ok <- validate_aggregate_id(normalized),
          {:ok, prepared} <- enrich_operator_command(normalized) do
-      CommandRouter.dispatch(prepared, timeout)
+      dispatch_and_emit_project_telemetry(prepared, timeout)
     end
   end
 
@@ -69,7 +69,7 @@ defmodule ForemanServer.CommandGateway do
   """
   @spec dispatch_system(map(), integer()) :: dispatch_result()
   def dispatch_system(command, timeout \\ 5_000) when is_map(command) do
-    CommandRouter.dispatch(command, timeout)
+    dispatch_and_emit_project_telemetry(command, timeout)
   end
 
   # ---------------------------------------------------------------------------
@@ -113,6 +113,50 @@ defmodule ForemanServer.CommandGateway do
 
   defp validate_aggregate_id(%{
          type: "project.register",
+         aggregate_id: aggregate_id,
+         payload: payload
+       }) do
+    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("project", project_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{
+         type: "project.update",
+         aggregate_id: aggregate_id,
+         payload: payload
+       }) do
+    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("project", project_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_aggregate_id(%{
+         type: "project.archive",
          aggregate_id: aggregate_id,
          payload: payload
        }) do
@@ -277,6 +321,105 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp enrich_operator_command(command), do: {:ok, command}
+
+  defp dispatch_and_emit_project_telemetry(command, timeout) do
+    started_at = System.monotonic_time()
+    result = CommandRouter.dispatch(command, timeout)
+    emit_project_telemetry(command, result, started_at)
+    result
+  end
+
+  defp emit_project_telemetry(command, result, started_at) do
+    case project_telemetry_fun(get_value(command, :type) || get_value(command, "type")) do
+      nil ->
+        :ok
+
+      telemetry_fun ->
+        metadata =
+          %{
+            project_id: project_id(command),
+            outcome: telemetry_outcome(result)
+          }
+          |> maybe_put_project_error_metadata(result)
+
+        apply(Telemetry, telemetry_fun, [duration_ms_since(started_at), metadata])
+    end
+  end
+
+  defp project_telemetry_fun("project.register"), do: :project_register
+  defp project_telemetry_fun("project.update"), do: :project_update
+  defp project_telemetry_fun("project.archive"), do: :project_archive
+  defp project_telemetry_fun(_), do: nil
+
+  defp project_id(command) do
+    payload = get_value(command, :payload) || get_value(command, "payload") || %{}
+
+    case get_value(payload, :project_id) || get_value(payload, "project_id") do
+      project_id when is_binary(project_id) and project_id != "" ->
+        project_id
+
+      _ ->
+        project_id_from_aggregate_id(
+          get_value(command, :aggregate_id) || get_value(command, "aggregate_id")
+        )
+    end
+  end
+
+  defp project_id_from_aggregate_id("project:" <> project_id), do: project_id
+  defp project_id_from_aggregate_id(_), do: nil
+
+  defp telemetry_outcome({:ok, _}), do: :ok
+  defp telemetry_outcome({:error, _}), do: :error
+  defp telemetry_outcome({:error, _, _}), do: :error
+
+  defp maybe_put_project_error_metadata(metadata, {:ok, _}), do: metadata
+
+  defp maybe_put_project_error_metadata(metadata, {:error, reason}) do
+    Map.merge(metadata, project_error_metadata(reason))
+  end
+
+  defp maybe_put_project_error_metadata(metadata, {:error, reason, detail}) do
+    Map.merge(metadata, project_error_metadata({reason, detail}))
+  end
+
+  defp project_error_metadata({:already_exists, :project, _}) do
+    %{code: "already_exists", retryable: false}
+  end
+
+  defp project_error_metadata({:project_has_active_runs, _run_ids}) do
+    %{code: "project_has_active_runs", retryable: false}
+  end
+
+  defp project_error_metadata({:wrong_expected_version, _current_version}) do
+    %{code: "version_conflict", retryable: false}
+  end
+
+  defp project_error_metadata(:project_not_found),
+    do: %{code: "project_not_found", retryable: false}
+
+  defp project_error_metadata({:project_not_found, _}),
+    do: %{code: "project_not_found", retryable: false}
+
+  defp project_error_metadata(:project_archived),
+    do: %{code: "project_archived", retryable: false}
+
+  defp project_error_metadata({code, _detail}) when is_atom(code) do
+    %{code: Atom.to_string(code), retryable: false}
+  end
+
+  defp project_error_metadata({code, _, _}) when is_atom(code) do
+    %{code: Atom.to_string(code), retryable: false}
+  end
+
+  defp project_error_metadata(code) when is_atom(code) do
+    %{code: Atom.to_string(code), retryable: false}
+  end
+
+  defp project_error_metadata(_), do: %{code: "unknown_error", retryable: false}
+
+  defp duration_ms_since(started_at) do
+    System.convert_time_unit(System.monotonic_time() - started_at, :native, :millisecond)
+  end
 
   defp rebuild_approval_payload(task, original_payload) do
     approved_by =

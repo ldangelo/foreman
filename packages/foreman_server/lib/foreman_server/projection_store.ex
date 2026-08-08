@@ -21,7 +21,7 @@ defmodule ForemanServer.ProjectionStore do
   ## Query
 
   `project/1` returns the projected state for a given project_id.
-  `run_projection/1` returns the projected state for a given run_id.
+  `run/1` returns the projected state for a given run_id.
   `pr_association/1` returns the current PR association for a given run_id.
   """
 
@@ -61,9 +61,34 @@ defmodule ForemanServer.ProjectionStore do
 
   Called by CommandRouter after a successful append, before replying to the actor.
   """
-  @spec apply_events([EventData.t() | map()]) :: :ok
+  @spec apply_events([EventData.t() | RecordedEvent.t() | map()]) :: :ok
   def apply_events(events) do
     GenServer.call(__MODULE__, {:apply_events, events, resolve_now_ms_fun()})
+  end
+
+  @doc """
+  Rebuild the entire projection from the committed event log.
+
+  Leaves the current projection state untouched if the rebuild read fails.
+  """
+  @spec rebuild([EventData.t() | RecordedEvent.t() | map()]) :: :ok | {:error, term()}
+  def rebuild(recovered_events) when is_list(recovered_events) do
+    GenServer.call(__MODULE__, {:rebuild, recovered_events, resolve_now_ms_fun()})
+  end
+
+  @doc """
+  Rebuild one project's projection from its committed aggregate stream.
+
+  Leaves the current projection state untouched if the stream read fails.
+  """
+  @spec rebuild_project(String.t(), [EventData.t() | RecordedEvent.t() | map()]) ::
+          :ok | {:error, term()}
+  def rebuild_project(project_id, recovered_events)
+      when is_binary(project_id) and project_id != "" and is_list(recovered_events) do
+    GenServer.call(
+      __MODULE__,
+      {:rebuild_project, project_id, recovered_events, resolve_now_ms_fun()}
+    )
   end
 
   @spec subscribe() :: :ok
@@ -71,11 +96,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :subscribe)
   end
 
-  @doc "Return the projected state for a run, or nil if not found."
   @doc "Return the projected state for a task, or nil if not found."
   @spec task_projection(String.t()) :: map() | nil
   def task_projection(task_id) when is_binary(task_id) and task_id != "" do
     GenServer.call(__MODULE__, {:task_projection, task_id})
+  end
+
+  @doc "Return the projected state for a run, or nil if not found."
+  @spec run(String.t()) :: map() | nil
+  def run(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:run, run_id})
   end
 
   @doc "Return the projected state for a phase, or nil if not found."
@@ -96,12 +126,6 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_workflow_tasks)
   end
 
-  @doc "Return the projected state for a run, or nil if not found."
-  @spec run_projection(String.t()) :: map() | nil
-  def run_projection(run_id) when is_binary(run_id) and run_id != "" do
-    GenServer.call(__MODULE__, {:run_projection, run_id})
-  end
-
   @doc "Return the PR association for a run_id, or :not_found."
   @spec pr_association(String.t()) :: {:ok, map()} | {:error, :not_found}
   def pr_association(run_id) when is_binary(run_id) do
@@ -118,6 +142,12 @@ defmodule ForemanServer.ProjectionStore do
   @spec list_projects() :: [map()]
   def list_projects do
     GenServer.call(__MODULE__, :list_projects)
+  end
+
+  @doc "Return projects with reserved active run ids for reconciler enumeration only."
+  @spec list_projects_with_active_runs() :: [{String.t(), [String.t()]}]
+  def list_projects_with_active_runs do
+    GenServer.call(__MODULE__, :list_projects_with_active_runs)
   end
 
   @doc "Return every projected run."
@@ -142,6 +172,11 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:project, project_id}, _from, state) do
     {:reply, Map.get(state.projects, project_id), state}
+  end
+
+  @impl true
+  def handle_call({:run, run_id}, _from, state) do
+    {:reply, Map.get(state.runs, run_id), state}
   end
 
   @impl true
@@ -179,6 +214,57 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:rebuild, recovered_events, now_ms_fun}, _from, state) do
+    case rebuild_state_from_event_log(now_ms_fun) do
+      {:ok, rebuilt_state} ->
+        new_state =
+          rebuilt_state
+          |> Map.put(:subscribers, state.subscribers)
+          |> broadcast_events(recovered_events)
+
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(
+        {:rebuild_project, project_id, recovered_events, now_ms_fun},
+        _from,
+        state
+      ) do
+    case rebuild_project_state(project_id, now_ms_fun) do
+      {:ok, rebuilt_project_state} ->
+        projects =
+          replace_project_entry(
+            state.projects,
+            rebuilt_project_state.projects,
+            project_id
+          )
+
+        project_active_runs =
+          replace_project_entry(
+            state.project_active_runs,
+            rebuilt_project_state.project_active_runs,
+            project_id
+          )
+
+        new_state =
+          state
+          |> Map.put(:projects, projects)
+          |> Map.put(:project_active_runs, project_active_runs)
+          |> broadcast_events(recovered_events)
+
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
   def handle_call(:subscribe, {pid, _ref}, state) do
     Process.put(:projection_subscribers, Map.put(state.subscribers, pid, true))
     Process.monitor(pid)
@@ -200,11 +286,6 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call({:run_projection, run_id}, _from, state) do
-    {:reply, Map.get(state.runs, run_id), state}
-  end
-
-  @impl true
   def handle_call({:pr_association, run_id}, _from, state) do
     case Map.get(state.pr_associations, run_id) do
       nil -> {:reply, {:error, :not_found}, state}
@@ -220,6 +301,23 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call(:list_projects, _from, state) do
     {:reply, Map.values(state.projects), state}
+  end
+
+  @impl true
+  def handle_call(:list_projects_with_active_runs, _from, state) do
+    reply =
+      state
+      |> Map.get(:project_active_runs, %{})
+      |> Enum.reduce([], fn
+        {project_id, run_ids}, acc when is_binary(project_id) and run_ids != [] ->
+          [{project_id, Enum.sort(run_ids)} | acc]
+
+        _, acc ->
+          acc
+      end)
+      |> Enum.sort_by(fn {project_id, _run_ids} -> project_id end)
+
+    {:reply, reply, state}
   end
 
   @impl true
@@ -263,19 +361,49 @@ defmodule ForemanServer.ProjectionStore do
   def handle_call(:list_scheduler_intents, _from, state) do
     {:reply, Map.values(state.scheduler_intents), state}
   end
+
   # -------------------------------------------------------------------------
   # Projection logic
   # -------------------------------------------------------------------------
 
   defp rebuild_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
+    case rebuild_state_from_event_log(now_ms_fun) do
+      {:ok, rebuilt_state} -> rebuilt_state
+      {:error, _reason} -> initial_state()
+    end
+  end
+
+  defp rebuild_state_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
     case EventStore.read_all_streams_forward(0, 99_999_999) do
       {:ok, events} ->
-        Enum.reduce(events, initial_state(), fn event, acc ->
-          apply_event(acc, event, now_ms_fun)
-        end)
+        {:ok,
+         Enum.reduce(events, initial_state(), fn event, acc ->
+           apply_event(acc, event, now_ms_fun)
+         end)}
 
-      {:error, _} ->
-        initial_state()
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp rebuild_project_state(project_id, now_ms_fun)
+       when is_binary(project_id) and is_function(now_ms_fun, 0) do
+    case EventStore.read_stream_forward("project:#{project_id}", 0, 99_999_999) do
+      {:ok, events} ->
+        {:ok,
+         Enum.reduce(events, initial_state(), fn event, acc ->
+           apply_event(acc, event, now_ms_fun)
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replace_project_entry(current, rebuilt, project_id) do
+    case Map.fetch(rebuilt, project_id) do
+      {:ok, value} -> Map.put(current, project_id, value)
+      :error -> Map.delete(current, project_id)
     end
   end
 
@@ -287,7 +415,8 @@ defmodule ForemanServer.ProjectionStore do
       phases: %{},
       pr_associations: %{},
       scheduler_intents: %{},
-      subscribers: %{}
+      subscribers: %{},
+      project_active_runs: %{}
     }
   end
 
@@ -295,7 +424,7 @@ defmodule ForemanServer.ProjectionStore do
     payload =
       recorded.data
       |> to_payload_map()
-      |> with_event_at_ms(recorded_event_at_ms(recorded, now_ms_fun))
+      |> with_recorded_projection_metadata(recorded, now_ms_fun)
 
     apply_event_by_type(state, recorded.event_type, payload)
   end
@@ -363,6 +492,7 @@ defmodule ForemanServer.ProjectionStore do
         |> maybe_put(:name, get(payload, :name))
         |> maybe_put(:task_provider, get(payload, :task_provider))
         |> put_project_config(get(payload, :config, %{}))
+        |> put_project_projection_metadata(payload)
 
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
     else
@@ -379,6 +509,7 @@ defmodule ForemanServer.ProjectionStore do
         |> Map.get(project_id, %{status: "archived", archived?: true})
         |> Map.put(:status, "archived")
         |> Map.put(:archived?, true)
+        |> put_project_projection_metadata(payload)
 
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
     else
@@ -395,8 +526,41 @@ defmodule ForemanServer.ProjectionStore do
         |> Map.get(project_id, %{status: "active", archived?: false})
         |> Map.put(:status, "active")
         |> Map.put(:archived?, false)
+        |> put_project_projection_metadata(payload)
 
       put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectRunReserved", payload) do
+    project_id = get(payload, :project_id)
+    run_id = get(payload, :run_id)
+
+    if valid_id?(project_id) and valid_id?(run_id) do
+      active_runs =
+        state
+        |> Map.get(:project_active_runs, %{})
+        |> Map.update(project_id, [run_id], &add_project_run_id(&1, run_id))
+
+      Map.put(state, :project_active_runs, active_runs)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "ProjectRunReservationReleased", payload) do
+    project_id = get(payload, :project_id)
+    run_id = get(payload, :run_id)
+
+    if valid_id?(project_id) and valid_id?(run_id) do
+      active_runs =
+        state
+        |> Map.get(:project_active_runs, %{})
+        |> remove_project_run_id(project_id, run_id)
+
+      Map.put(state, :project_active_runs, active_runs)
     else
       state
     end
@@ -503,7 +667,6 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
-
   defp apply_event_by_type(state, "PhaseCompleted", payload) do
     case decode_for_projection("PhaseCompleted", payload) do
       %ForemanServer.Events.PhaseCompleted{phase_id: phase_id} = event
@@ -528,7 +691,6 @@ defmodule ForemanServer.ProjectionStore do
         touch_run_for_payload(state, payload)
     end
   end
-
 
   defp apply_event_by_type(state, "PhaseFailed", payload) do
     case decode_for_projection("PhaseFailed", payload) do
@@ -784,7 +946,27 @@ defmodule ForemanServer.ProjectionStore do
       health: get(payload, :health, %{ok: true}),
       name: get(payload, :name)
     }
+    |> put_project_projection_metadata(payload)
   end
+
+  defp put_project_projection_metadata(project, payload)
+       when is_map(project) and is_map(payload) do
+    project
+    |> maybe_put(:version, get(payload, :_projection_stream_version))
+    |> put_registered_projection_timestamp(get(payload, :_projection_recorded_at))
+  end
+
+  defp put_registered_projection_timestamp(project, recorded_at) when is_binary(recorded_at) do
+    if is_binary(Map.get(project, :registered_at)) do
+      project
+    else
+      project
+      |> Map.put(:registered, recorded_at)
+      |> Map.put(:registered_at, recorded_at)
+    end
+  end
+
+  defp put_registered_projection_timestamp(project, _recorded_at), do: project
 
   defp put_project_config(project, config) do
     Map.put(project, :config, shallow_merge(get(project, :config, %{}), config))
@@ -796,6 +978,17 @@ defmodule ForemanServer.ProjectionStore do
 
   defp shallow_merge(_left, right) when is_map(right), do: right
   defp shallow_merge(left, _right), do: left
+
+  defp add_project_run_id(run_ids, run_id) when is_list(run_ids) do
+    if run_id in run_ids, do: run_ids, else: [run_id | run_ids]
+  end
+
+  defp remove_project_run_id(active_runs, project_id, run_id) when is_map(active_runs) do
+    case Map.get(active_runs, project_id, []) |> Enum.reject(&(&1 == run_id)) do
+      [] -> Map.delete(active_runs, project_id)
+      remaining -> Map.put(active_runs, project_id, remaining)
+    end
+  end
 
   defp apply_terminal_run_event(state, payload, status) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
@@ -813,7 +1006,6 @@ defmodule ForemanServer.ProjectionStore do
       run
     end)
   end
-
 
   defp update_run_projection(state, run_id, event_at_ms, updater) when is_function(updater, 1) do
     if valid_id?(run_id) do
@@ -886,14 +1078,37 @@ defmodule ForemanServer.ProjectionStore do
   # in `with_event_at_ms/2` so `payload_event_at_ms/1` can read it without
   # coupling handlers to metadata storage. Strip it before decoding so
   # typed-event validation does not reject the private key.
-  defp decode_for_projection(event_type, payload) when is_binary(event_type) and is_map(payload) do
+  defp decode_for_projection(event_type, payload)
+       when is_binary(event_type) and is_map(payload) do
     EventCodec.decode!(event_type, drop_projection_meta(payload))
   end
+
+  defp with_recorded_projection_metadata(payload, %RecordedEvent{} = recorded, now_ms_fun) do
+    payload
+    |> with_event_at_ms(recorded_event_at_ms(recorded, now_ms_fun))
+    |> Map.put(:_projection_stream_version, recorded.stream_version)
+    |> maybe_put(:_projection_recorded_at, recorded_event_timestamp(recorded))
+  end
+
+  defp recorded_event_timestamp(%RecordedEvent{created_at: %DateTime{} = created_at}) do
+    DateTime.to_iso8601(created_at)
+  end
+
+  defp recorded_event_timestamp(%RecordedEvent{created_at: created_at})
+       when is_binary(created_at) do
+    created_at
+  end
+
+  defp recorded_event_timestamp(_recorded), do: nil
 
   defp drop_projection_meta(payload) do
     payload
     |> Map.delete(:_projection_event_at_ms)
     |> Map.delete("_projection_event_at_ms")
+    |> Map.delete(:_projection_stream_version)
+    |> Map.delete("_projection_stream_version")
+    |> Map.delete(:_projection_recorded_at)
+    |> Map.delete("_projection_recorded_at")
   end
 
   defp to_payload_map(%{} = payload) do

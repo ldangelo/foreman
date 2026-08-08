@@ -260,9 +260,7 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   defp try_pause(state, key, worker_id, run_id) do
     case emit_run_paused(worker_id, run_id) do
       :ok ->
-        Logger.info(
-          "Overwatch.CrashLoopDetector: run.pause accepted for #{worker_id}/#{run_id}"
-        )
+        Logger.info("Overwatch.CrashLoopDetector: run.pause accepted for #{worker_id}/#{run_id}")
 
         %{state | paused_sealed: Map.put(state.paused_sealed, key, true)}
 
@@ -316,7 +314,10 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
     end
   rescue
     exception ->
-      Logger.error("Overwatch.CrashLoopDetector: run.pause dispatch raised: #{Exception.message(exception)}")
+      Logger.error(
+        "Overwatch.CrashLoopDetector: run.pause dispatch raised: #{Exception.message(exception)}"
+      )
+
       {:error, {:dispatch_raised, exception}}
   end
 

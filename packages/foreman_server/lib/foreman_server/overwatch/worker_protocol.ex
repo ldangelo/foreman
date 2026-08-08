@@ -93,9 +93,16 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
   supplies the launch-context payload for `:worker_started` from its
   opts.
   """
-  @spec emit(:heartbeat | :worker_started | :worker_exited | :tool_call_finished |
-              :assistant_message | :worker_stdout | :worker_stderr,
-            map()) ::
+  @spec emit(
+          :heartbeat
+          | :worker_started
+          | :worker_exited
+          | :tool_call_finished
+          | :assistant_message
+          | :worker_stdout
+          | :worker_stderr,
+          map()
+        ) ::
           {:ok, non_neg_integer()} | :ok | {:error, term()}
   def emit(:heartbeat, %{worker_id: worker_id, run_id: run_id}) do
     Tracker.heartbeat(worker_id, run_id)

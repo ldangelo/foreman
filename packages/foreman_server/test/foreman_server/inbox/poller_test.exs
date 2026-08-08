@@ -23,7 +23,6 @@ defmodule ForemanServer.Inbox.PollerTest do
         if not Process.alive?(pid), do: {:ok, _pid} = Poller.start_link([])
     end
 
-
     # Clear stats from any previous test.
     try do
       :ets.delete_all_objects(:foreman_inbox_poller_stats)
@@ -50,7 +49,9 @@ defmodule ForemanServer.Inbox.PollerTest do
       [{TestSource, {:stub_handler, _pid}}] = Poller.handlers()
 
       assert {:ok, :started, %InboxItemStarted{} = item} =
-               SharedInbox.ingest(TestSource, %{"id" => "poller-test-#{System.unique_integer([:positive])}"})
+               SharedInbox.ingest(TestSource, %{
+                 "id" => "poller-test-#{System.unique_integer([:positive])}"
+               })
 
       stats = Poller.synchronize()
       assert stats.started >= 1
@@ -60,7 +61,9 @@ defmodule ForemanServer.Inbox.PollerTest do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
 
       assert {:ok, :started, _item} =
-               SharedInbox.ingest(OtherSource, %{"id" => "no-handler-#{System.unique_integer([:positive])}"})
+               SharedInbox.ingest(OtherSource, %{
+                 "id" => "no-handler-#{System.unique_integer([:positive])}"
+               })
 
       refute_receive {:inbox_item_started, _, _}, 100
     end

@@ -5,12 +5,12 @@ defmodule ForemanServer.ProjectionStoreTest do
 
   setup do
     :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, runs: %{}}
+      %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
     end)
 
     on_exit(fn ->
       :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{state | projects: %{}, runs: %{}}
+        %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
       end)
     end)
 
@@ -135,5 +135,58 @@ defmodule ForemanServer.ProjectionStoreTest do
              ])
 
     assert %{task_provider: %{provider: :custom}} = ProjectionStore.project(project_id)
+  end
+
+  test "enumerates reserved runs by project and removes released reservations" do
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "ProjectRunReserved",
+                 payload: %{project_id: "project-a", run_id: "run-2"}
+               },
+               %{
+                 event_type: "ProjectRunReserved",
+                 payload: %{project_id: "project-a", run_id: "run-1"}
+               },
+               %{
+                 event_type: "ProjectRunReserved",
+                 payload: %{project_id: "project-b", run_id: "run-9"}
+               },
+               %{
+                 event_type: "ProjectRunReserved",
+                 payload: %{project_id: "project-a", run_id: "run-1"}
+               }
+             ])
+
+    assert ProjectionStore.list_projects_with_active_runs() == [
+             {"project-a", ["run-1", "run-2"]},
+             {"project-b", ["run-9"]}
+           ]
+
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "ProjectRunReservationReleased",
+                 payload: %{project_id: "project-a", run_id: "run-2"}
+               },
+               %{
+                 event_type: "ProjectRunReservationReleased",
+                 payload: %{project_id: "project-b", run_id: "run-9"}
+               }
+             ])
+
+    assert ProjectionStore.list_projects_with_active_runs() == [{"project-a", ["run-1"]}]
+  end
+
+  test "lists no active runs when the projection store is empty" do
+    assert ProjectionStore.list_projects_with_active_runs() == []
+  end
+
+  test "legacy run_projection/1 is removed" do
+    refute function_exported?(ProjectionStore, :run_projection, 1)
+
+    assert_raise UndefinedFunctionError, fn ->
+      apply(ProjectionStore, :run_projection, ["run-legacy"])
+    end
   end
 end

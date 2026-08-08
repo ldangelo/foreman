@@ -9,10 +9,18 @@ defmodule ForemanServer.Aggregates.RunFlagStuckTest do
     {:ok, start_event} =
       Run.handle_command(initial_state, %{
         type: "run.start",
-        payload: %{run_id: run_id, task_id: task_id}
+        payload: %{
+          run_id: run_id,
+          project_id: "project-1",
+          task_id: task_id,
+          workflow_snapshot: %{}
+        }
       })
 
-    Run.apply_event(initial_state, %{event_type: start_event.event_type, payload: start_event.payload})
+    Run.apply_event(initial_state, %{
+      event_type: start_event.event_type,
+      payload: start_event.payload
+    })
   end
 
   test "run.flag_stuck emits RunFlaggedStuck for an active run" do
@@ -28,6 +36,7 @@ defmodule ForemanServer.Aggregates.RunFlagStuckTest do
     assert event_spec.event_type == "RunFlaggedStuck"
     assert event_spec.stream_id == "run:#{run_id}"
     assert event_spec.payload.run_id == run_id
+    assert event_spec.payload.project_id == "project-1"
     assert event_spec.payload.flagged_at == 1_725_000_000_000
   end
 
@@ -59,7 +68,11 @@ defmodule ForemanServer.Aggregates.RunFlagStuckTest do
       start_run_state("run-3")
       |> Run.apply_event(%{
         event_type: "RunFlaggedStuck",
-        payload: %{run_id: "run-3", flagged_at: 1_725_000_060_000}
+        payload: %{
+          run_id: "run-3",
+          project_id: "project-1",
+          flagged_at: 1_725_000_060_000
+        }
       })
 
     assert state.status == "stuck"

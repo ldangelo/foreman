@@ -77,10 +77,20 @@ defmodule ForemanServer.Aggregates.VcsOperation do
         %State{state | status: "started", operation_id: Aggregate.get(payload, :operation_id)}
 
       "VcsOperationCompleted" ->
-        %State{state | status: "completed", terminal?: true, operation_id: Aggregate.get(payload, :operation_id)}
+        %State{
+          state
+          | status: "completed",
+            terminal?: true,
+            operation_id: Aggregate.get(payload, :operation_id)
+        }
 
       "VcsOperationFailed" ->
-        %State{state | status: "failed", terminal?: true, operation_id: Aggregate.get(payload, :operation_id)}
+        %State{
+          state
+          | status: "failed",
+            terminal?: true,
+            operation_id: Aggregate.get(payload, :operation_id)
+        }
 
       "MergeBlocked" ->
         %State{

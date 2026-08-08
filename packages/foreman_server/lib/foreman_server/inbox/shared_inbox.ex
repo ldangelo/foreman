@@ -30,7 +30,11 @@ defmodule ForemanServer.Inbox.SharedInbox do
   Returns the configured dedupe window in seconds, or the default.
   """
   def dedupe_window_seconds do
-    Application.get_env(:foreman_server, :inbox_dedupe_window_seconds, @default_dedupe_window_seconds)
+    Application.get_env(
+      :foreman_server,
+      :inbox_dedupe_window_seconds,
+      @default_dedupe_window_seconds
+    )
   end
 
   @doc """
@@ -55,7 +59,7 @@ defmodule ForemanServer.Inbox.SharedInbox do
 
     cond do
       not function_exported?(source_module, :correlation_id, 1) ->
-         {:error, {:unknown_source, source_module}}
+        {:error, {:unknown_source, source_module}}
 
       true ->
         case source_module.correlation_id(payload) do
@@ -99,6 +103,7 @@ defmodule ForemanServer.Inbox.SharedInbox do
   # (eg. in a minimal test setup), the call is silently dropped.
   defp notify(kind, event) do
     alias ForemanServer.Inbox.Poller
+
     if Process.whereis(Poller) do
       GenServer.cast(Poller, {:inbox_event, event})
     end

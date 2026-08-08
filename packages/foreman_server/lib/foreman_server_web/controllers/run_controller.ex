@@ -10,7 +10,7 @@ defmodule ForemanServerWeb.RunController do
   alias ForemanServer.ProjectionStore
 
   def show(conn, %{"id" => run_id}) do
-    case ProjectionStore.run_projection(run_id) do
+    case ProjectionStore.run(run_id) do
       nil ->
         conn
         |> put_status(:not_found)

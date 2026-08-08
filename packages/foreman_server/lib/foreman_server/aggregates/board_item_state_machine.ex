@@ -122,7 +122,9 @@ defmodule ForemanServer.Aggregates.BoardItemStateMachine do
             status: status,
             terminal?: status == "done",
             created_at_ms: Aggregate.get(payload, :created_at_ms) || now_ms(),
-            history: state.history ++ [{:created, status, Aggregate.get(payload, :created_at_ms, now_ms())}]
+            history:
+              state.history ++
+                [{:created, status, Aggregate.get(payload, :created_at_ms, now_ms())}]
         }
 
       "BoardItemTransitioned" ->

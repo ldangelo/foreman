@@ -1,12 +1,22 @@
 defmodule StuckDetectorTestHelper do
   def reset_projection_store do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn _ -> %{projects: %{}, runs: %{}} end)
+    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
+      %{state | projects: %{}, runs: %{}}
+    end)
   end
 
   def seed_run_started(run_id, last_event_at_ms) do
     :ok =
       ForemanServer.ProjectionStore.apply_events([
-        %{event_type: "RunStarted", payload: %{run_id: run_id, task_id: "task-stub"}}
+        %{
+          event_type: "RunStarted",
+          payload: %{
+            run_id: run_id,
+            task_id: "task-stub",
+            project_id: "project-stub",
+            workflow_snapshot: %{phases: []}
+          }
+        }
       ])
 
     # Force the projection's last_event_at_ms to the requested value so tests
@@ -29,7 +39,7 @@ defmodule StuckDetectorTestHelper do
   end
 
   def last_event_at_ms(run_id) do
-    case ForemanServer.ProjectionStore.run_projection(run_id) do
+    case ForemanServer.ProjectionStore.run(run_id) do
       %{last_event_at_ms: last} -> last
       _ -> nil
     end

@@ -19,9 +19,17 @@ defmodule ForemanServer.Aggregates.SchedulerIntent do
 
   defmodule State do
     @enforce_keys [:exists?, :status]
-    defstruct [:exists?, :status, :intent_id, :task_id, :run_id, :scheduled_for, confirmed_at: nil, marked_stale_at: nil]
+    defstruct [
+      :exists?,
+      :status,
+      :intent_id,
+      :task_id,
+      :run_id,
+      :scheduled_for,
+      confirmed_at: nil,
+      marked_stale_at: nil
+    ]
   end
-
 
   @impl true
   def initial_state,

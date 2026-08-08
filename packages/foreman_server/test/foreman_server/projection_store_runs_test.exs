@@ -1,6 +1,17 @@
 defmodule ProjectionStoreRunsTestHelper do
   def reset_projection_store do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn _ -> %{projects: %{}, runs: %{}} end)
+    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
+      %{
+        projects: %{},
+        runs: %{},
+        tasks: %{},
+        phases: %{},
+        pr_associations: %{},
+        scheduler_intents: %{},
+        subscribers: Map.get(state, :subscribers, %{}),
+        project_active_runs: %{}
+      }
+    end)
   end
 
   def set_now_ms(now_ms) when is_integer(now_ms) do
@@ -53,7 +64,15 @@ defmodule ForemanServer.ProjectionStoreRunsTest do
 
     assert :ok =
              ProjectionStore.apply_events([
-               %{event_type: "RunStarted", payload: %{run_id: run_id, task_id: "task-1"}}
+               %{
+                 event_type: "RunStarted",
+                 payload: %{
+                   run_id: run_id,
+                   task_id: "task-1",
+                   project_id: "project-1",
+                   workflow_snapshot: %{}
+                 }
+               }
              ])
 
     assert ProjectionStore.active_runs() == [run_id]
@@ -64,7 +83,17 @@ defmodule ForemanServer.ProjectionStoreRunsTest do
 
     assert :ok =
              ProjectionStore.apply_events([
-               %{event_type: "PhaseStarted", payload: %{run_id: run_id, phase_id: "phase-1"}}
+               %{
+                 event_type: "PhaseStarted",
+                 payload: %{
+                   run_id: run_id,
+                   phase_id: "phase-1",
+                   index: 1,
+                   name: "build",
+                   attempt: 1,
+                   artifact_template: "report.md"
+                 }
+               }
              ])
 
     assert ProjectionStore.stuck_runs(60_000, phase_event_at_ms + 59_999) == []
@@ -88,7 +117,15 @@ defmodule ForemanServer.ProjectionStoreRunsTest do
 
     assert :ok =
              ProjectionStore.apply_events([
-               %{event_type: "RunStarted", payload: %{run_id: run_id, task_id: "task-2"}}
+               %{
+                 event_type: "RunStarted",
+                 payload: %{
+                   run_id: run_id,
+                   task_id: "task-2",
+                   project_id: "project-1",
+                   workflow_snapshot: %{}
+                 }
+               }
              ])
 
     assert ProjectionStore.active_runs() == [run_id]
@@ -99,7 +136,11 @@ defmodule ForemanServer.ProjectionStoreRunsTest do
              ProjectionStore.apply_events([
                %{
                  event_type: "RunFlaggedStuck",
-                 payload: %{run_id: run_id, flagged_at: flagged_at_ms}
+                 payload: %{
+                   run_id: run_id,
+                   project_id: "project-1",
+                   flagged_at: flagged_at_ms
+                 }
                }
              ])
 

@@ -66,6 +66,33 @@ defmodule ForemanServer.Identity do
   end
 
   @doc """
+  Deterministic system command ID for run admission.
+
+  The command ID is derived from the project, run, and workflow snapshot hash so
+  retries of the same admitted run collapse onto the same reservation + start
+  sequence.
+  """
+  @spec run_start_command_id(String.t(), String.t(), String.t()) :: String.t()
+  def run_start_command_id(project_id, run_id, workflow_snapshot_hash)
+      when is_binary(project_id) and project_id != "" and
+             is_binary(run_id) and run_id != "" and
+             is_binary(workflow_snapshot_hash) and workflow_snapshot_hash != "" do
+    sha256("run.start." <> project_id <> "." <> run_id <> "." <> workflow_snapshot_hash)
+  end
+
+  @doc """
+  Deterministic system command ID for releasing a project's reserved run slot.
+  """
+  @spec project_run_reservation_release_command_id(String.t(), String.t(), String.t()) ::
+          String.t()
+  def project_run_reservation_release_command_id(project_id, run_id, reason)
+      when is_binary(project_id) and project_id != "" and
+             is_binary(run_id) and run_id != "" and
+             is_binary(reason) and reason != "" do
+    sha256("project.release_run_reservation." <> project_id <> "." <> run_id <> "." <> reason)
+  end
+
+  @doc """
   System command ID for starting a phase.
 
       iex> ForemanServer.Identity.phase_start_command_id("run-abc", 1)

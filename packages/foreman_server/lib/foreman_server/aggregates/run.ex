@@ -28,6 +28,7 @@ defmodule ForemanServer.Aggregates.Run do
       :exists?,
       :run_id,
       :task_id,
+      :project_id,
       :status,
       :terminal?,
       :last_sequence,
@@ -36,12 +37,14 @@ defmodule ForemanServer.Aggregates.Run do
       retry_history: []
     ]
   end
+
   @impl true
   def initial_state,
     do: %State{
       exists?: false,
       run_id: nil,
       task_id: nil,
+      project_id: nil,
       status: nil,
       terminal?: false,
       last_sequence: 0,
@@ -61,7 +64,9 @@ defmodule ForemanServer.Aggregates.Run do
           | exists?: true,
             run_id: Aggregate.get(payload, :run_id),
             task_id: Aggregate.get(payload, :task_id),
-            status: "in_progress"
+            project_id: Aggregate.get(payload, :project_id),
+            status: "in_progress",
+            last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
       "RunUpdated" ->
@@ -69,7 +74,8 @@ defmodule ForemanServer.Aggregates.Run do
           state
           | exists?: true,
             run_id: Aggregate.get(payload, :run_id),
-            task_id: Aggregate.get(payload, :task_id) || state.task_id
+            task_id: Aggregate.get(payload, :task_id) || state.task_id,
+            project_id: Aggregate.get(payload, :project_id) || state.project_id
         }
 
       type when type in ["PrUpdated", "PrReady", "PrRetargeted", "PrReset", "PrMerged"] ->
@@ -81,6 +87,7 @@ defmodule ForemanServer.Aggregates.Run do
           | status: "completed",
             terminal?: true,
             run_id: Aggregate.get(payload, :run_id),
+            project_id: Aggregate.get(payload, :project_id) || state.project_id,
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
@@ -90,6 +97,7 @@ defmodule ForemanServer.Aggregates.Run do
           | status: "failed",
             terminal?: true,
             run_id: Aggregate.get(payload, :run_id),
+            project_id: Aggregate.get(payload, :project_id) || state.project_id,
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
@@ -99,14 +107,17 @@ defmodule ForemanServer.Aggregates.Run do
           | status: "blocked",
             terminal?: true,
             run_id: Aggregate.get(payload, :run_id),
+            project_id: Aggregate.get(payload, :project_id) || state.project_id,
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
+
       "RunFlaggedStuck" ->
         %State{
           state
           | status: "stuck",
             terminal?: true,
             run_id: Aggregate.get(payload, :run_id),
+            project_id: Aggregate.get(payload, :project_id) || state.project_id,
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
@@ -124,6 +135,7 @@ defmodule ForemanServer.Aggregates.Run do
           | status: "cancelled",
             terminal?: true,
             run_id: Aggregate.get(payload, :run_id),
+            project_id: Aggregate.get(payload, :project_id) || state.project_id,
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
@@ -131,8 +143,8 @@ defmodule ForemanServer.Aggregates.Run do
         # Idempotent dispatch against a terminal run — state MUST remain unchanged.
         state
 
-       "RunDeleted" ->
-         %State{state | status: "deleted", terminal?: true}
+      "RunDeleted" ->
+        %State{state | status: "deleted", terminal?: true}
 
       "PhaseStarted" ->
         put_phase(state, payload, "in_progress")
@@ -158,7 +170,6 @@ defmodule ForemanServer.Aggregates.Run do
       "ToolCallFinished" ->
         put_worker(state, payload, "running")
 
-
       "RunRecoveryEvent" ->
         # Recovery-scanner emits this on startup for stale runs. The recovery
         # action sequence is owned by the Recovery aggregate; this event is
@@ -166,7 +177,6 @@ defmodule ForemanServer.Aggregates.Run do
         state
     end
   end
-
 
   @impl true
   def handle_command(state, %{type: "run.start", payload: payload}) do
@@ -250,7 +260,10 @@ defmodule ForemanServer.Aggregates.Run do
              %{
                stream_id: "run:#{run_id}",
                event_type: "RunCompleted",
-               payload: Map.put(payload, :run_id, run_id)
+               payload:
+                 payload
+                 |> Map.put(:run_id, run_id)
+                 |> Map.put(:project_id, state.project_id)
              }}
           end
       end
@@ -291,6 +304,7 @@ defmodule ForemanServer.Aggregates.Run do
          payload:
            payload
            |> Map.put(:run_id, run_id)
+           |> Map.put(:project_id, state.project_id)
            |> Map.put_new(:status, "cancelled")
        }}
     end
@@ -308,10 +322,14 @@ defmodule ForemanServer.Aggregates.Run do
        %{
          stream_id: "run:#{run_id}",
          event_type: event_type,
-         payload: Map.put(payload, :run_id, run_id)
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:project_id, state.project_id)
        }}
     end
   end
+
   def handle_command(state, %{type: "run.flag_stuck", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
@@ -323,11 +341,11 @@ defmodule ForemanServer.Aggregates.Run do
          payload:
            payload
            |> Map.put(:run_id, run_id)
+           |> Map.put(:project_id, state.project_id)
            |> Map.put_new(:flagged_at, System.system_time(:millisecond))
        }}
     end
   end
-
 
   def handle_command(state, %{type: type, payload: payload})
       when type in [
@@ -373,7 +391,6 @@ defmodule ForemanServer.Aggregates.Run do
        }}
     end
   end
-
 
   def handle_command(_state, _command), do: :unhandled
 
@@ -498,9 +515,11 @@ defmodule ForemanServer.Aggregates.Run do
   defp require_sequence(%State{last_sequence: last_sequence}, sequence)
        when is_integer(sequence) and sequence == last_sequence + 1,
        do: :ok
+
   defp require_sequence(%State{last_sequence: last_sequence}, sequence)
        when is_integer(sequence) and sequence > last_sequence + 1,
        do: {:error, :out_of_order}
+
   defp require_sequence(%State{}, nil), do: :ok
   defp require_sequence(%State{}, _sequence), do: {:error, :out_of_order}
 
@@ -514,9 +533,11 @@ defmodule ForemanServer.Aggregates.Run do
   defp require_terminal_sequence(%State{last_sequence: last_sequence}, sequence)
        when is_integer(sequence) and sequence <= last_sequence + 1,
        do: :ok
+
   defp require_terminal_sequence(%State{last_sequence: last_sequence}, sequence)
        when is_integer(sequence) and sequence > last_sequence + 1,
        do: {:error, :out_of_order}
+
   defp require_terminal_sequence(%State{}, nil), do: :ok
   defp require_terminal_sequence(%State{}, _sequence), do: {:error, :out_of_order}
   # NOTE: guard on terminal? rather than status string so any new terminal
