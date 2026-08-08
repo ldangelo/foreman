@@ -104,10 +104,10 @@ defmodule ForemanServer.Workflow.ApprovalTest do
       description: Create draft product and technical requirements for later refinement.
       phases:
         - name: create-prd
-          command: "/skill:ensemble-full-create-prd --draft"
+          command: "/skill:ensemble-full-create-prd --foreman"
           requiredFile: planning.prd_path
         - name: create-trd
-          command: "/skill:ensemble-full-create-trd --draft"
+          command: "/skill:ensemble-full-create-trd --foreman"
           requiredFile: planning.trd_path
       """)
 
@@ -125,14 +125,14 @@ defmodule ForemanServer.Workflow.ApprovalTest do
       [prd, trd] = phases
       assert prd["name"] == "create-prd"
       assert prd.action == :command
-      assert prd.command == "/skill:ensemble-full-create-prd --draft"
+      assert prd.command == "/skill:ensemble-full-create-prd --foreman"
       assert prd.required_file == "planning.prd_path"
       assert prd.index == 1
       assert is_binary(prd.phase_id)
 
       assert trd["name"] == "create-trd"
       assert trd.action == :command
-      assert trd.command == "/skill:ensemble-full-create-trd --draft"
+      assert trd.command == "/skill:ensemble-full-create-trd --foreman"
       assert trd.required_file == "planning.trd_path"
       assert trd.index == 2
       assert is_binary(trd.phase_id)

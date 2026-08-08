@@ -195,10 +195,10 @@ foreman task create \
 
 Once approved, the run executes two phases:
 
-1. `create-prd` — invokes `/skill:ensemble-full-create-prd --draft`
+1. `create-prd` — invokes `/skill:ensemble-full-create-prd --foreman`
    and writes the draft PRD to `planning.prd_path` in the project's
    registered path.
-2. `create-trd` — invokes `/skill:ensemble-full-create-trd --draft`
+2. `create-trd` — invokes `/skill:ensemble-full-create-trd --foreman`
    and writes the draft TRD to `planning.trd_path` in the same root.
 
 Each phase receives a `planning.*` context block (see

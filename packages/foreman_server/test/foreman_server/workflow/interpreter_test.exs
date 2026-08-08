@@ -68,7 +68,7 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     name: command-only
     phases:
       - name: create-prd
-        command: "/skill:ensemble-full-create-prd --draft"
+        command: "/skill:ensemble-full-create-prd --foreman"
         requiredFile: planning.prd_path
     """)
 
@@ -76,7 +76,7 @@ defmodule ForemanServer.Workflow.InterpreterTest do
 
     [phase] = workflow["phases"]
     assert phase["name"] == "create-prd"
-    assert phase["command"] == "/skill:ensemble-full-create-prd --draft"
+    assert phase["command"] == "/skill:ensemble-full-create-prd --foreman"
     assert phase["requiredFile"] == "planning.prd_path"
   end
 

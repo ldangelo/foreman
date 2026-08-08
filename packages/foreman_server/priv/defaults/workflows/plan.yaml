@@ -2,8 +2,8 @@ name: plan
 description: Create draft product and technical requirements for later refinement.
 phases:
   - name: create-prd
-    command: "/skill:ensemble-full-create-prd --draft"
+    command: "/skill:ensemble-full-create-prd --foreman"
     requiredFile: planning.prd_path
   - name: create-trd
-    command: "/skill:ensemble-full-create-trd --draft"
+    command: "/skill:ensemble-full-create-trd --foreman"
     requiredFile: planning.trd_path

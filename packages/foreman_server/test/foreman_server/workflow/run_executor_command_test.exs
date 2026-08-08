@@ -171,7 +171,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         %{
           name: :create_prd,
           action: :command,
-          command: "/skill:ensemble-full-create-prd --draft",
+          command: "/skill:ensemble-full-create-prd --foreman",
           required_file: "planning.prd_path",
           index: 1,
           phase_id: Identity.phase_id(run_id, 1),

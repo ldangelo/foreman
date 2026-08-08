@@ -310,14 +310,14 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       context = Map.put(%{working_directory: System.tmp_dir!()}, :key, "value")
 
-      request = %{prompt: "/skill:ensemble-full-create-prd --draft", context: context}
+      request = %{prompt: "/skill:ensemble-full-create-prd --foreman", context: context}
       PiAdapter.execute(request, [])
 
       content = File.read!("/tmp/pi_contract_request.txt")
       json_segment = Jason.encode!(stringify_keys(context))
 
       expected =
-        "/skill:ensemble-full-create-prd --draft\n\n# Context (JSON)\n\n" <>
+        "/skill:ensemble-full-create-prd --foreman\n\n# Context (JSON)\n\n" <>
           json_segment <> "\n"
 
       assert content == expected
