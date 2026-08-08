@@ -30,6 +30,13 @@ defmodule ForemanServer.Application do
         ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
         ForemanServer.Aggregator,
+        # JsonSchemaCache owns the cached `br schema ... --json` payload
+        # schemas used by every BeadsAdapter parser (claim, list_ready,
+        # complete, fail, reopen, etc.). It MUST start before any code
+        # path that resolves a Beads provider, including the
+        # TaskProvider.Registry snapshot and BootReconciliation's lazy
+        # orphan-reopen pass.
+        ForemanServer.TaskProviders.JsonSchemaCache,
         # TaskProvider.Registry owns configured task provider routing and must
         # start before dispatch paths resolve a provider snapshot.
         ForemanServer.TaskProvider.Registry
