@@ -7,8 +7,10 @@ defmodule ForemanServer.Workflow.Interpreter do
   Loads workflow YAML files and validates their required phase structure.
   """
   @required_top_level_keys ~w(name phases)
-
+  @required_phase_keys ~w(name)
+  @allowed_phase_actions ~w(prompt command bash)
   @spec load(Path.t()) :: {:ok, map()} | {:error, term()}
+
   def load(path) when is_binary(path) do
     try do
       load!(path)
@@ -168,16 +170,137 @@ defmodule ForemanServer.Workflow.Interpreter do
 
     phases = Map.get(workflow, "phases")
 
-    has_named_phase =
-      is_list(phases) and
-        Enum.any?(phases, fn phase ->
-          is_map(phase) and present?(Map.get(phase, "name"))
-        end)
+    cond do
+      missing_top_level_keys != [] ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} must define top-level keys \"name\" and \"phases\", and \"phases\" must contain at least one entry with a \"name\" key"
 
-    if missing_top_level_keys != [] or not has_named_phase do
+      not is_list(phases) ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} must define \"phases\" as a list of named phase entries"
+
+      true ->
+        validate_phases!(phases, path)
+    end
+  end
+
+  defp validate_phases!(phases, path) do
+    named_count = Enum.count(phases, fn phase -> is_map(phase) and present?(Map.get(phase, "name")) end)
+
+    if named_count == 0 do
       raise Workflow.MissingRequiredPhaseError,
         message:
-          "workflow template #{path} must define top-level keys \"name\" and \"phases\", and \"phases\" must contain at least one entry with a \"name\" key"
+          "workflow template #{path} must define at least one phase entry with a \"name\" key"
+    end
+
+    phases
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_phase!(phase, index, path) end)
+  end
+
+  defp validate_phase!(phase, index, path) do
+    cond do
+      not is_map(phase) ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} must be a mapping with a \"name\" key"
+
+      true ->
+        missing_required =
+          Enum.filter(@required_phase_keys, fn key ->
+            missing_or_blank?(Map.get(phase, key))
+          end)
+
+        if missing_required != [] do
+          raise Workflow.MissingRequiredPhaseError,
+            message:
+              "workflow template #{path} phase #{index} must define a non-empty \"name\" key"
+        else
+          validate_phase_actions!(phase, index, path)
+        end
+    end
+  end
+  defp validate_phase_actions!(phase, index, path) do
+    actions =
+      @allowed_phase_actions
+      |> Enum.filter(fn action -> present?(Map.get(phase, action)) end)
+
+
+    case actions do
+      [] ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) must define exactly one of: prompt, command, bash"
+
+      [single] ->
+        validate_phase_action_value!(phase, index, single, path)
+
+      _multiple ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) must define exactly one of: prompt, command, bash (found #{length(actions)})"
+    end
+  end
+
+  defp validate_phase_action_value!(phase, index, action, path) do
+    value = Map.get(phase, action)
+
+    case action do
+      "command" ->
+        unless is_binary(value) and String.starts_with?(value, "/") do
+          raise Workflow.MissingRequiredPhaseError,
+            message:
+              "workflow template #{path} phase #{index} (#{phase["name"]}) \"command\" must be a non-empty slash invocation beginning with \"/\""
+        end
+
+      "bash" ->
+        :ok
+
+      _ ->
+        :ok
+    end
+
+    validate_required_file_key!(phase, index, path)
+  end
+
+  defp validate_required_file_key!(phase, index, path) do
+    case Map.get(phase, "requiredFile") do
+      nil ->
+        :ok
+
+      "" ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"requiredFile\" must be a non-empty dotted context key"
+
+      key when is_binary(key) ->
+        validate_dotted_key!(key, phase, index, path)
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"requiredFile\" must be a non-empty dotted context key"
+    end
+  end
+
+  defp validate_dotted_key!(key, phase, index, path) do
+    segments = String.split(key, ".")
+
+    cond do
+      segments == [] ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"requiredFile\" must be a non-empty dotted context key"
+
+      Enum.any?(segments, fn segment -> segment == "" end) ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"requiredFile\" must be a non-empty dotted context key with no empty segments"
+
+      true ->
+        :ok
     end
   end
 

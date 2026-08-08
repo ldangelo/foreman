@@ -431,3 +431,68 @@ The server caps project-list responses at 1000 rows per request. When
 that cap is hit, the CLI prints a truncation warning and the HTTP
 response carries `X-Total-Count` with the full matching count so you can
 measure how much data was omitted.
+
+## 14. The plan workflow
+
+The `plan` workflow turns a single task into a two-phase Ensemble run that
+produces a draft PRD and a draft TRD. Both phases are `command:` phases,
+so the agent runtime forwards a slash command at byte zero (no `# Prompt`
+header) and Ensemble handles the rest of the artifact flow.
+
+### Manifest shape
+
+`plan.yaml` declares two phases; both require a planning context key
+to exist before they run:
+
+```yaml
+name: plan
+description: Create draft product and technical requirements for later refinement.
+phases:
+  - name: create-prd
+    command: "/skill:ensemble-full-create-prd --draft"
+    requiredFile: planning.prd_path
+  - name: create-trd
+    command: "/skill:ensemble-full-create-trd --draft"
+    requiredFile: planning.trd_path
+```
+
+- `command:` — non-empty string beginning with `/`. Passes through to
+  the Pi adapter as the prompt body, so the skill sees a slash command
+  at byte zero.
+- `requiredFile:` (singular) — dotted scalar in the planning context
+  (e.g. `planning.prd_path`). The phase gate fails with
+  `:required_file_missing` if the resolved path does not exist on disk
+  when the phase starts.
+
+### What the plan phase receives
+
+The runtime builds a `PlanContext` for plan tasks and merges it into
+the standard phase context. The agent's `request.context` map carries:
+
+- `working_directory` — the project's registered path.
+- `planning.prd_path` / `planning.trd_path` — absolute paths Ensemble
+  must write to, derived from the project path, document year
+  (UTC of the frozen `approved_at`), and a slug from the task title.
+- `planning.correlation_id` — first 8 lowercase hex characters of the
+  run id (e.g. `720139c8`).
+- `planning.document_year` — UTC year of the frozen `approved_at`.
+- `planning.slug` — lowercase ASCII slug from the task title (≤48 chars).
+
+If the project path does not exist on disk, `PlanContext.build/1`
+returns `{:ok, _}` with deterministic paths but the gate will still
+fire `:required_file_missing` when the phase actually starts.
+
+### Failure mode
+
+When `required_file` points to a file that does not exist, the phase
+is marked `failed` with `failure_reason` containing
+`{:required_file_missing, planning_key, resolved_path}`. Operators see
+the inspected failure in the phase projection and can fix the upstream
+artifact or the project registration before retrying.
+
+### Where the manifest lives
+
+The bundled `plan.yaml` ships under
+`packages/foreman_server/priv/defaults/workflows/`. Re-run
+`foreman init --force` to refresh the installed copy at
+`~/.foreman/workflows/plan.yaml` after a Foreman upgrade.

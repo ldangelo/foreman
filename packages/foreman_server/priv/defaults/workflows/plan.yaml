@@ -1,12 +1,9 @@
 name: plan
-description: Produce the design, task decomposition, and execution plan.
+description: Create draft product and technical requirements for later refinement.
 phases:
-  - name: design-and-decompose
-    prompt: plan.md
-    models:
-      default: MiniMax
-    maxTurns: 50
-    artifact: "{task.projectReportsDir}/PLAN_REPORT.md"
-    mail:
-      onStart: true
-      onComplete: true
+  - name: create-prd
+    command: "/skill:ensemble-full-create-prd --draft"
+    requiredFile: planning.prd_path
+  - name: create-trd
+    command: "/skill:ensemble-full-create-trd --draft"
+    requiredFile: planning.trd_path

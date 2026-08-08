@@ -91,6 +91,32 @@ defmodule ForemanServer.Workflow.CatalogTest do
     end
   end
 
+  describe "plan workflow (command: phases)" do
+    test "loading plan.yaml yields two command phases with requiredFile", %{tmp: tmp, server_name: name} do
+      start_catalog(tmp, name)
+
+      assert {:ok, wf} = Catalog.load("plan.yaml")
+      assert wf.name == "plan"
+      assert is_list(wf.phases)
+      assert length(wf.phases) == 2
+
+      [create_prd, create_trd] = wf.phases
+
+      assert create_prd["name"] == "create-prd"
+      assert create_prd.action == :command
+      assert create_prd.command == "/skill:ensemble-full-create-prd --draft"
+      assert create_prd.required_file == "planning.prd_path"
+      assert create_prd.prompt_path in [nil, ""]
+
+      assert create_trd["name"] == "create-trd"
+      assert create_trd.action == :command
+      assert create_trd.command == "/skill:ensemble-full-create-trd --draft"
+      assert create_trd.required_file == "planning.trd_path"
+      assert create_trd.prompt_path in [nil, ""]
+  end
+  end
+
+
   describe "read_prompt/1" do
     test "returns the tracked prompt content", %{tmp: tmp, server_name: name} do
       start_catalog(tmp, name)

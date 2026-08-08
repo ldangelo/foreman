@@ -303,6 +303,27 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       # map (TRD-004 §"Pi Process Protocol" semantic verification).
       assert Jason.decode!(json_segment) == stringify_keys(request_context)
     end
+
+    test "request file omits the # Prompt header when prompt starts with / (slash command)",
+         %{contract_path: path} do
+      Application.put_env(:foreman_server, PiAdapter, executable: path)
+
+      context = Map.put(%{working_directory: System.tmp_dir!()}, :key, "value")
+
+      request = %{prompt: "/skill:ensemble-full-create-prd --draft", context: context}
+      PiAdapter.execute(request, [])
+
+      content = File.read!("/tmp/pi_contract_request.txt")
+      json_segment = Jason.encode!(stringify_keys(context))
+
+      expected =
+        "/skill:ensemble-full-create-prd --draft\n\n# Context (JSON)\n\n" <>
+          json_segment <> "\n"
+
+      assert content == expected
+      refute String.starts_with?(content, "# Prompt\n\n"),
+             "slash command prompt must not be prefixed by the # Prompt header"
+    end
   end
 
   describe "execute/2 — failure" do

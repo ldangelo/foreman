@@ -94,4 +94,48 @@ defmodule ForemanServer.Workflow.ApprovalTest do
       assert phase.prompt_path == prompt_path
     end
   end
+
+  describe "plan workflow (command: phases)" do
+    test "prepare/2 freezes both command phases with required_file", %{tmp: tmp} do
+      manifest_path = Path.join(tmp, "plan.yaml")
+
+      File.write!(manifest_path, """
+      name: plan
+      description: Create draft product and technical requirements for later refinement.
+      phases:
+        - name: create-prd
+          command: "/skill:ensemble-full-create-prd --draft"
+          requiredFile: planning.prd_path
+        - name: create-trd
+          command: "/skill:ensemble-full-create-trd --draft"
+          requiredFile: planning.trd_path
+      """)
+
+      :ok = Catalog.reload()
+
+      assert {:ok, prepared} =
+               Approval.prepare(
+                 %{task_id: "task-plan-1", task_type: "plan"},
+                 approval_id: "approval-plan-1"
+               )
+
+      assert prepared.workflow_name == "plan"
+      phases = prepared.workflow_snapshot.phases
+      assert length(phases) == 2
+      [prd, trd] = phases
+      assert prd["name"] == "create-prd"
+      assert prd.action == :command
+      assert prd.command == "/skill:ensemble-full-create-prd --draft"
+      assert prd.required_file == "planning.prd_path"
+      assert prd.index == 1
+      assert is_binary(prd.phase_id)
+
+      assert trd["name"] == "create-trd"
+      assert trd.action == :command
+      assert trd.command == "/skill:ensemble-full-create-trd --draft"
+      assert trd.required_file == "planning.trd_path"
+      assert trd.index == 2
+      assert is_binary(trd.phase_id)
+    end
+  end
 end

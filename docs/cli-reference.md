@@ -177,3 +177,36 @@ The auto-install performed by `Workflow.Catalog.init/1` at boot is
 a **no-op** when this command (or any other process) has already
 materialised at least one `*.yaml` manifest under the target — see
 `docs/user-guide.md` §7 for the exact condition.
+
+### `foreman task create --task-type plan`
+
+Create a task that flows through the `plan` workflow. The Go CLI
+posts the standard `task.create` command to `/api/commands` with
+`task_type: "plan"`. `--id`, `--project`, and `--title` are required;
+`--task-type` selects the workflow discriminator.
+
+```
+foreman task create \
+  --id task-plan-1 \
+  --project proj-abc \
+  --title "Plan feature workflow" \
+  --task-type plan
+```
+
+Once approved, the run executes two phases:
+
+1. `create-prd` — invokes `/skill:ensemble-full-create-prd --draft`
+   and writes the draft PRD to `planning.prd_path` in the project's
+   registered path.
+2. `create-trd` — invokes `/skill:ensemble-full-create-trd --draft`
+   and writes the draft TRD to `planning.trd_path` in the same root.
+
+Each phase receives a `planning.*` context block (see
+`docs/user-guide.md` §14) covering the document year, correlation id,
+slug, and the absolute paths Ensemble must use.
+
+The required-file gate fires `:required_file_missing` if the
+resolved path does not exist on disk when the phase starts. Operators
+can inspect the failure via `foreman run get <run_id>` — the phase
+projection records `failure_reason` containing the dotted key and
+resolved path.

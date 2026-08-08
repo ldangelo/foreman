@@ -50,7 +50,6 @@ defmodule ForemanServer.Workflow.PromptRendererTest do
       for {filename, manifest_name, phase_name} <- [
             {"discover.md", "discover", "scope-and-explore"},
             {"assess.md", "assess", "impact-analysis"},
-            {"plan.md", "plan", "design-and-decompose"},
             {"implement.md", "implement", "code-generation"},
             {"verify.md", "verify", "test-and-validate"},
             {"release.md", "release", "finalize-and-release"}

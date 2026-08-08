@@ -38,18 +38,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   require Logger
 
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
-
-  @type phase_spec :: map()
   @type state :: %{
           run_id: String.t(),
           task: map(),
-          phase_specs: [phase_spec],
+          phase_specs: [map()],
           current_phase: non_neg_integer() | nil,
           completed: [non_neg_integer()],
           status: :ready | :in_progress | :completed | :failed,
-          artifact_base: String.t()
+          artifact_base: String.t(),
+          plan_context: map() | nil
         }
-
   @spec start_link(String.t(), map()) :: GenServer.on_start()
   def start_link(run_id, task_projection) do
     GenServer.start_link(
@@ -123,6 +121,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         _ -> []
       end
 
+    plan_context =
+      case plan_context_for(task_projection) do
+        {:ok, ctx} -> ctx
+        {:not_applicable, _} -> nil
+        {:error, reason} -> %{__plan_context_error__: reason}
+      end
+
     state = %{
       run_id: run_id,
       task: task_projection,
@@ -130,7 +135,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       current_phase: nil,
       completed: [],
       status: :ready,
-      artifact_base: default_artifact_base()
+      artifact_base: default_artifact_base(),
+      plan_context: plan_context
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -139,17 +145,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @impl true
   def handle_info(:kickoff, state) do
-    case maybe_claim_task(state) do
-      :ok ->
-        case start_phase_at_index(state, 0) do
-          {:ok, next_state} -> {:noreply, next_state}
-          {:noop, next_state} -> {:noreply, next_state}
-          {:error, _reason} -> {:stop, :normal, state}
-        end
-
+    case plan_context_error(state) do
       {:error, reason} ->
-        Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}")
+        Logger.warning(
+          "RunExecutor plan context for #{state.run_id} rejected: #{inspect(reason)}"
+        )
+
+        _ = dispatch_task_execution_fail(state, {:plan_context_error, reason})
         {:stop, :normal, %{state | status: :failed}}
+
+      :ok ->
+        case maybe_claim_task(state) do
+          :ok ->
+            case start_phase_at_index(state, 0) do
+              {:ok, next_state} -> {:noreply, next_state}
+              {:noop, next_state} -> {:noreply, next_state}
+              {:error, _reason} -> {:stop, :normal, state}
+            end
+
+          {:error, reason} ->
+            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}")
+            {:stop, :normal, %{state | status: :failed}}
+        end
     end
   end
 
@@ -200,10 +217,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp run_single_phase(state, phase_spec, index) do
     phase_index = phase_number(phase_spec, index)
 
-    with {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
+    with {:ok, _} <- validate_phase_action(phase_spec, phase_index),
+         {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
          {:ok, output} <- execute_agent(state, phase_spec, index),
          {:ok, artifact_path} <-
            __MODULE__.ArtifactTemplate.write(state, phase_spec, phase_index, output),
+         {:ok, _required_file} <- enforce_required_file(state, phase_spec, phase_index),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, _} <- emit_phase_complete(state, phase_index, artifact) do
       next_state = %{state | current_phase: index, status: :in_progress}
@@ -218,9 +237,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  defp validate_phase_action(phase_spec, _phase_index) do
+    case Map.get(phase_spec, :action) do
+      :command ->
+        if is_binary(Map.get(phase_spec, :command)) and Map.get(phase_spec, :command) != "" do
+          {:ok, :ok}
+        else
+          {:error, {:invalid_phase_command, phase_spec_name(phase_spec)}}
+        end
+
+      :bash ->
+        {:error, {:unsupported_phase_action, :bash}}
+
+      _ -> {:ok, :ok}
+    end
+  end
+
   defp emit_phase_start(state, phase_spec, phase_index) do
     phase_id = Identity.phase_id(state.run_id, phase_index)
-
     payload = %{
       run_id: state.run_id,
       phase_id: phase_id,
@@ -242,17 +276,23 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp execute_agent(state, phase_spec, index) do
-    request = build_request(state, phase_spec, phase_number(phase_spec, index))
+    phase_index = phase_number(phase_spec, index)
+    request = build_request(state, phase_spec, phase_index)
+
+    prompt =
+      case Map.get(phase_spec, :action) do
+        :command -> Map.get(phase_spec, :command) || request.prompt
+        _ -> request.prompt
+      end
 
     AgentRuntime.execute(
-      request.prompt,
+      prompt,
       request.context,
       backend: :pi,
       strategy: :manual,
       task_type: phase_spec_name(phase_spec)
     )
   end
-
   defmodule ArtifactTemplate do
     @moduledoc """
     Renders phase output to a file using the phase's `artifact_template`
@@ -432,13 +472,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp base_context(state, phase_spec, index) do
-    %{
+    base = %{
       "phase_id" => Identity.phase_id(state.run_id, index),
       "run_id" => state.run_id,
       "task_id" => task_id(state),
       "working_directory" => working_directory(state.task)
     }
-    |> Map.merge(Map.get(phase_spec, :context) || Map.get(phase_spec, "context") || %{})
+
+    base = Map.merge(base, state.plan_context || %{})
+    Map.merge(base, Map.get(phase_spec, :context) || Map.get(phase_spec, "context") || %{})
   end
 
   defp working_directory(task) do
@@ -706,4 +748,76 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp to_dispatch_result({:ok, _result}), do: :ok
   defp to_dispatch_result({:error, reason}), do: {:error, reason}
+
+  defp plan_context_for(task_projection) do
+    ForemanServer.Workflow.PlanContext.build(task_projection)
+  end
+
+  defp plan_context_error(state) do
+    case Map.get(state.plan_context || %{}, :__plan_context_error__) do
+      nil -> :ok
+      reason -> {:error, reason}
+    end
+  end
+
+  defp enforce_required_file(state, phase_spec, phase_index) do
+    case Map.get(phase_spec, :required_file) do
+      nil ->
+        {:ok, :no_gate}
+
+      "" ->
+        {:error, {:required_file_blank, phase_index}}
+
+      key when is_binary(key) ->
+        case resolve_context_key(state, key, phase_index) do
+          {:ok, path} ->
+            if is_binary(path) and File.regular?(path) do
+              {:ok, path}
+            else
+              {:error, {:required_file_missing, key, path}}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      _ ->
+        {:error, {:required_file_invalid, phase_index}}
+    end
+  end
+
+  defp resolve_context_key(state, key, phase_index) when is_binary(key) do
+    segments = String.split(key, ".", trim: true)
+    cond do
+      segments == [] -> {:error, {:required_file_blank_key, key}}
+      Enum.any?(segments, &(&1 == "")) -> {:error, {:required_file_blank_segment, key}}
+      true -> traverse_context_key(context_for(state, phase_index), segments)
+    end
+  end
+
+  defp context_for(state, phase_index) do
+    base = %{
+      "phase_id" => Identity.phase_id(state.run_id, phase_index),
+      "run_id" => state.run_id,
+      "task_id" => task_id(state)
+    }
+
+    Map.merge(base, state.plan_context || %{})
+  end
+  defp traverse_context_key(_ctx, []), do: {:error, :required_file_traversal_failed}
+
+  defp traverse_context_key(ctx, [segment]) when is_map(ctx) do
+    case Map.get(ctx, segment) do
+      nil -> {:error, {:required_file_unknown_key, segment}}
+      path when is_binary(path) -> {:ok, path}
+      _ -> {:error, {:required_file_invalid_path, segment}}
+    end
+  end
+
+  defp traverse_context_key(ctx, [segment | rest]) when is_map(ctx) do
+    case Map.get(ctx, segment) do
+      %{} = next -> traverse_context_key(next, rest)
+      _ -> {:error, {:required_file_unknown_key, segment}}
+    end
+  end
 end

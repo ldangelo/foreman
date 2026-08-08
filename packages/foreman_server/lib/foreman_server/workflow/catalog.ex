@@ -373,9 +373,25 @@ defmodule ForemanServer.Workflow.Catalog do
         description: workflow["description"],
         phases:
           Enum.map(workflow["phases"], fn phase ->
-            phase
-            |> Map.put(:prompt_path, AssetCatalog.resolve_prompt(catalog, phase["prompt"]))
-            |> Map.put(:artifact_template, phase["artifact"])
+            resolved_phase =
+              phase
+              |> Map.put(:prompt_path, AssetCatalog.resolve_prompt(catalog, phase["prompt"]))
+              |> Map.put(:artifact_template, phase["artifact"])
+              |> Map.put(:command, phase["command"])
+              |> Map.put(:required_file, phase["requiredFile"])
+              |> Map.put(:bash, phase["bash"])
+              |> Map.put(:index, phase["index"])
+              |> Map.put(:models, phase["models"])
+              |> Map.put(:max_turns, phase["maxTurns"])
+              |> Map.put(:mail, phase["mail"])
+            action =
+              cond do
+                is_binary(phase["command"]) and phase["command"] != "" -> :command
+                is_binary(phase["bash"]) and phase["bash"] != "" -> :bash
+                true -> :prompt
+              end
+
+            Map.put(resolved_phase, :action, action)
           end),
         manifest_path: path,
         digest: workflow["digest"]

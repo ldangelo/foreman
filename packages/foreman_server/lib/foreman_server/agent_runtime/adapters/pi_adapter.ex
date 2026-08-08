@@ -113,16 +113,28 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
       request_file = Path.join(tmp_dir, "request.txt")
       context_json = Jason.encode!(request.context)
 
-      request_content = <<
-        @request_prompt_header::binary,
-        "\n\n",
-        request.prompt::binary,
-        "\n\n",
-        @request_context_header::binary,
-        "\n\n",
-        context_json::binary,
-        "\n"
-      >>
+      request_content =
+        if is_binary(request.prompt) and String.starts_with?(request.prompt, "/") do
+          <<
+            request.prompt::binary,
+            "\n\n",
+            @request_context_header::binary,
+            "\n\n",
+            context_json::binary,
+            "\n"
+          >>
+        else
+          <<
+            @request_prompt_header::binary,
+            "\n\n",
+            request.prompt::binary,
+            "\n\n",
+            @request_context_header::binary,
+            "\n\n",
+            context_json::binary,
+            "\n"
+          >>
+        end
 
       # Write with mode 0600 - use exclusive + explicit chmod
       :file.write_file(request_file, request_content, [:write, :exclusive])

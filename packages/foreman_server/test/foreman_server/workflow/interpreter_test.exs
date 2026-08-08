@@ -27,6 +27,139 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                    Workflow.Interpreter.load!(path)
                  end
   end
+  test "load!/1 raises when no phase has a name" do
+    path = write_temp_yaml!("name: nameless\nphases:\n  - prompt: discover.md\n")
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/at least one phase entry with a \"name\" key/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
+
+  test "load!/1 raises when a phase defines no action" do
+    path = write_temp_yaml!("name: empty-action\nphases:\n  - name: only\n")
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/must define exactly one of: prompt, command, bash/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
+
+  test "load!/1 raises when a phase defines two actions" do
+    path = write_temp_yaml!("""
+    name: dual-action
+    phases:
+      - name: only
+        prompt: discover.md
+        command: "/skill:x"
+    """)
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/must define exactly one of: prompt, command, bash \(found 2\)/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
+
+  test "load!/1 accepts a command: phase with a leading slash and requiredFile" do
+    path = write_temp_yaml!("""
+    name: command-only
+    phases:
+      - name: create-prd
+        command: "/skill:ensemble-full-create-prd --draft"
+        requiredFile: planning.prd_path
+    """)
+
+    assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+    [phase] = workflow["phases"]
+    assert phase["name"] == "create-prd"
+    assert phase["command"] == "/skill:ensemble-full-create-prd --draft"
+    assert phase["requiredFile"] == "planning.prd_path"
+  end
+
+  test "load!/1 rejects a command: phase without a leading slash" do
+    path = write_temp_yaml!("""
+    name: bad-command
+    phases:
+      - name: only
+        command: "skill:ensemble-full-create-prd"
+    """)
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/\"command\" must be a non-empty slash invocation beginning with \"\/\"/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
+
+  test "load!/1 rejects an empty command: value" do
+    path = write_temp_yaml!("""
+    name: empty-command
+    phases:
+      - name: only
+        command: ""
+    """)
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/must define exactly one of: prompt, command, bash/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
+
+  test "load!/1 accepts a bash: phase syntactically" do
+    path = write_temp_yaml!("""
+    name: bash-phase
+    phases:
+      - name: only
+        bash: "echo hello"
+    """)
+
+    assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+  end
+
+  test "load!/1 rejects a non-mapping phase entry at the parser level" do
+    path = write_temp_yaml!("name: bad-shape\nphases:\n  - \"not-a-map\"\n")
+
+    assert_raise ArgumentError, ~r/not-a-map/, fn ->
+      Workflow.Interpreter.load!(path)
+    end
+  end
+
+  test "load!/1 rejects a malformed requiredFile dotted key" do
+    path = write_temp_yaml!("""
+    name: bad-required-file
+    phases:
+      - name: only
+        command: "/skill:x"
+        requiredFile: "planning..prd_path"
+    """)
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/\"requiredFile\" must be a non-empty dotted context key/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
+
+  test "load!/1 rejects an empty requiredFile value" do
+    path = write_temp_yaml!("""
+    name: empty-required-file
+    phases:
+      - name: only
+        command: "/skill:x"
+        requiredFile: ""
+    """)
+
+    assert_raise Workflow.MissingRequiredPhaseError,
+                 ~r/\"requiredFile\" must be a non-empty dotted context key/,
+                 fn ->
+                   Workflow.Interpreter.load!(path)
+                 end
+  end
 
   defp write_temp_yaml!(contents) do
     directory =
