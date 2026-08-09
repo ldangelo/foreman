@@ -18,6 +18,21 @@ config :foreman_server, :agent_runtime,
   adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
 ```
 
+By default `packages/foreman_server/config/config.exs` already registers
+`ForemanServer.AgentRuntime.Adapters.PiAdapter` under
+`:agent_runtime.adapters` whenever the runtime is enabled, so an
+out-of-the-box `MIX_ENV=dev` (or `prod`) boot has the local `pi` backend
+available without further configuration. `PiAdapter.available?/0`
+self-gates on `System.find_executable/1` returning a path for the
+configured executable (default `"pi"`), so the registration is safe to
+leave in place even on hosts where the binary is missing — the adapter
+just becomes unreachable and the catalog returns
+`{:error, :no_available_backend}` until the binary is installed. The
+test environment (`config/test.exs`) deliberately overrides
+`adapters: []` so individual adapter tests can opt in explicitly and
+stay isolated from production wiring.
+
+
 When `enabled: true`, `ForemanServer.Application` starts
 `ForemanServer.AgentRuntime.Supervisor`, which boots the catalog and
 the dynamic invocation supervisor. Setting `enabled: false` (or

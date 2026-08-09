@@ -267,6 +267,20 @@ config :foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter,
 
 Remote/optional adapters are registered only when their modules are explicitly configured. Availability checks for local adapters inspect an executable path; remote adapters validate locally available, parseable credentials without a live network call.
 
+Default registration in `packages/foreman_server/config/config.exs`
+places `ForemanServer.AgentRuntime.Adapters.PiAdapter` under
+`:agent_runtime.adapters` whenever the runtime is enabled, so a stock
+`MIX_ENV=dev` (or `prod`) boot has the local `pi` backend available
+without further wiring. `PiAdapter.available?/0` resolves the
+configured executable via `System.find_executable/1` and returns
+`false` when no binary is found, so the registration is safe on hosts
+where `pi` is absent: the adapter simply becomes unreachable and the
+public façade returns `{:error, :no_available_backend}` until the
+binary is installed. The test environment
+(`packages/foreman_server/config/test.exs`) intentionally overrides
+`adapters: []` so individual adapter tests opt in explicitly and
+remain isolated from production wiring.
+
 ## Master Task List
 
 ### PR 1: Stable Runtime Contract and Manual Execution
