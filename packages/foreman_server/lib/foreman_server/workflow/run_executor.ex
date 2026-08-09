@@ -588,11 +588,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp dispatch_run_complete(state) do
+    # Sequence is intentionally omitted — the Run aggregate normalizes a
+    # nil/missing sequence against its in-memory `last_sequence`, so the
+    # executor does not need to know the next expected version.
     dispatch_system_command(
       "run.complete",
       Identity.run_complete_command_id(state.run_id),
       "run:#{state.run_id}",
-      %{run_id: state.run_id, sequence: 1}
+      %{run_id: state.run_id}
     )
   end
 

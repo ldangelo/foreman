@@ -255,7 +255,8 @@ defmodule ForemanServer.Aggregates.Run do
           end
 
         _ ->
-          with :ok <- require_sequence(state, Aggregate.get(payload, :sequence)) do
+          with {:ok, sequence} <- complete_sequence(state, Aggregate.get(payload, :sequence)),
+               :ok <- require_sequence(state, sequence) do
             {:ok,
              %{
                stream_id: "run:#{run_id}",
@@ -263,12 +264,13 @@ defmodule ForemanServer.Aggregates.Run do
                payload:
                  payload
                  |> Map.put(:run_id, run_id)
+                 |> Map.put(:sequence, sequence)
                  |> Map.put(:project_id, state.project_id)
              }}
           end
+        end
       end
     end
-  end
 
   # run.pause — emits `RunPaused` (NON-terminal; state shape `paused`,
   # `terminal?: false` so `run.resume` is accepted). Pause is distinct
@@ -522,6 +524,19 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp require_sequence(%State{}, nil), do: :ok
   defp require_sequence(%State{}, _sequence), do: {:error, :out_of_order}
+
+  # Sequence normalization for `run.complete` against a non-terminal run.
+  # When the caller does not supply a sequence (nil) — common for trusted
+  # system actors like RunExecutor completing its own run — derive the
+  # next expected sequence from authoritative in-memory state so the
+  # aggregate remains the single source of truth for run-stream ordering.
+  # An explicitly supplied sequence is passed through for `require_sequence`
+  # to validate against the current `last_sequence`.
+  defp complete_sequence(%State{last_sequence: last_sequence}, nil),
+    do: {:ok, last_sequence + 1}
+
+  defp complete_sequence(_state, sequence) when is_integer(sequence),
+    do: {:ok, sequence}
 
   # Idempotent re-dispatch on a terminal run uses a relaxed sequence guard.
   # `sequence == last_sequence`: the bounded-retry race path — the racing
