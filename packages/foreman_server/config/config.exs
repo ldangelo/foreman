@@ -20,7 +20,7 @@ config :foreman_server, ForemanServerWeb.Endpoint,
 
 config :foreman_server, :agent_runtime,
   enabled: true,
-  adapters: []
+  adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
 
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
