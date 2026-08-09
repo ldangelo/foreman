@@ -163,7 +163,7 @@ None for this smoke. Run id, task id, correlation id, slug, and artifact paths a
 - [x] Acceptance criteria cover all requirements
 - [x] Risks captured
 - [x] Dependencies listed
-- [ ] Paired TRD created
+- [x] Paired TRD created
 
 ---
 
