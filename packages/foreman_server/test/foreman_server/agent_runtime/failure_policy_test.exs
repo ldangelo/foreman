@@ -203,6 +203,50 @@ defmodule ForemanServer.AgentRuntime.FailurePolicyTest do
     end
   end
 
+  describe "resolve/2 — plan workflow phase policies (string-keyed)" do
+    # The plan workflow YAML (./.foreman/workflows/plan.yaml) defines phases with
+    # string names like "create-prd" / "create-trd". RunExecutor passes those
+    # string names unchanged as `task_type` to FailurePolicy.resolve/2. The
+    # resolution path does an exact Map.get — atom keys would silently miss
+    # and the global default (60_000) would abort long-running skills.
+    test "create-prd string-keyed policy resolves to timeout_ms 600_000" do
+      with_rt_config(
+        rt(%{
+          "create-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000}
+        }),
+        fn ->
+          assert FailurePolicy.resolve("create-prd", []) ==
+                   expected(false, 1, 600_000)
+        end
+      )
+    end
+
+    test "create-trd string-keyed policy resolves to timeout_ms 600_000" do
+      with_rt_config(
+        rt(%{
+          "create-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000}
+        }),
+        fn ->
+          assert FailurePolicy.resolve("create-trd", []) ==
+                   expected(false, 1, 600_000)
+        end
+      )
+    end
+
+    test "atom-keyed lookup misses the string-keyed policy (falls back to default)" do
+      with_rt_config(
+        rt(%{
+          "create-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000}
+        }),
+        fn ->
+          # Atom key would NOT match a string-keyed policy — proves the
+          # operator-facing rule "keys must be strings" is real, not folklore.
+          assert FailurePolicy.resolve(:create_prd, []).timeout_ms == 60_000
+        end
+      )
+    end
+  end
+
   describe "integration with AgentRuntime facade" do
     test "failure_policy/2 delegates to FailurePolicy.resolve/2" do
       with_rt_config(
