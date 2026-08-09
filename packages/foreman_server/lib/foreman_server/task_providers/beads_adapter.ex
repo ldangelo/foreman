@@ -687,7 +687,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     )
   end
 
-  defp parse_closed_issue_response(stdout) when is_binary(stdout) do
+  defp parse_closed_issue_response(stdout, task_id) when is_binary(stdout) do
     case String.trim(stdout) do
       "" ->
         {:error, build_complete_parse_error()}
@@ -695,7 +695,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       json ->
         case Jason.decode(json) do
           {:ok, %{} = payload} ->
-            parse_closed_issue_payload(payload)
+            parse_closed_issue_payload(payload, task_id)
+
+          {:ok, [%{} = payload]} ->
+            parse_closed_issue_payload(payload, task_id)
 
           {:ok, _other} ->
             {:error,
@@ -709,13 +712,14 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp parse_closed_issue_response(_stdout) do
+  defp parse_closed_issue_response(_stdout, _task_id) do
     {:error, build_complete_parse_error()}
   end
 
-  defp parse_closed_issue_payload(%{} = payload) do
-    with :ok <- JsonSchemaCache.validate(:closed_issue, payload),
-         {:ok, id} <- fetch_required_string(payload, :id),
+  defp parse_closed_issue_payload(%{} = payload, task_id) do
+    with {:ok, id} <- fetch_required_string(payload, :id),
+         :ok <- assert_close_id_matches(id, task_id),
+         :ok <- assert_close_status(payload),
          {:ok, title} <- fetch_required_string(payload, :title),
          {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
          {:ok, dependencies} <-
@@ -745,16 +749,30 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          metadata: metadata
        }}
     else
-      {:error, errors} when is_list(errors) ->
-        {:error, build_complete_schema_validation_error(errors)}
-
       {:error, provider_error} ->
         {:error, provider_error}
     end
   end
 
-  defp parse_closed_issue_payload(_payload) do
+  defp parse_closed_issue_payload(_payload, _task_id) do
     {:error, build_complete_contract_error("Beads closed issue payload must be a JSON object.")}
+  end
+
+  defp assert_close_id_matches(id, id), do: :ok
+
+  defp assert_close_id_matches(_id, _expected) do
+    {:error,
+     build_complete_contract_error(
+       "Beads close ack id does not match the requested task."
+     )}
+  end
+
+  defp assert_close_status(%{"status" => "closed"}), do: :ok
+  defp assert_close_status(%{status: "closed"}), do: :ok
+
+  defp assert_close_status(_payload) do
+    {:error,
+     build_complete_contract_error("Beads close ack did not return status: closed.")}
   end
 
   defp build_complete_error(stdout, stderr, result) do
@@ -791,20 +809,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp build_complete_schema_validation_error(errors) do
-    CodeMap.build_provider_error(
-      ProviderErrorInput.from_local(
-        "SCHEMA_VALIDATION_FAILED",
-        "Beads closed issue payload failed schema validation.",
-        "Refresh the cached schema or re-fetch the Beads payload.",
-        false,
-        missing_fields_from(errors)
-      ),
-      "br close",
-      0
-    )
-  end
-
   defp build_complete_contract_error(message) do
     CodeMap.build_provider_error(
       ProviderErrorInput.from_local(
@@ -839,6 +843,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       json ->
         case Jason.decode(json) do
           {:ok, %{} = payload} ->
+            parse_failed_issue_payload(payload, task_id, argv)
+
+          {:ok, [%{} = payload]} ->
             parse_failed_issue_payload(payload, task_id, argv)
 
           {:ok, _other} ->
@@ -1573,7 +1580,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
              timeout_ms: 30_000
            ) do
         {:ok, %{stdout: stdout}} ->
-          parse_closed_issue_response(stdout)
+          parse_closed_issue_response(stdout, task_id)
 
         {:error, %{stdout: stdout, stderr: stderr} = result} ->
           build_complete_error(stdout, stderr, result)
@@ -1719,6 +1726,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       json ->
         case Jason.decode(json) do
           {:ok, %{} = payload} ->
+            parse_reopened_issue_payload(payload, task_id, argv)
+
+          {:ok, [%{} = payload]} ->
             parse_reopened_issue_payload(payload, task_id, argv)
 
           {:ok, _other} ->
@@ -2101,6 +2111,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       json ->
         case Jason.decode(json) do
           {:ok, %{} = payload} ->
+            parse_updated_issue_payload(payload, dependency_id)
+
+          {:ok, [%{} = payload]} ->
             parse_updated_issue_payload(payload, dependency_id)
 
           {:ok, _other} ->
