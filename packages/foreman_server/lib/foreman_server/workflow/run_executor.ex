@@ -187,9 +187,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     case Enum.at(state.phase_specs, next_index) do
       nil ->
+        Logger.info(
+          "RunExecutor #{state.run_id} all #{length(state.phase_specs)} phases complete; finalizing"
+        )
+
         case finalize_run(next_state) do
-          {:ok, finalized_state} -> {:noreply, finalized_state}
-          {:error, _reason} -> {:stop, :normal, %{next_state | status: :failed}}
+          {:ok, finalized_state} ->
+            {:noreply, finalized_state}
+
+          {:error, reason} ->
+            Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}")
+
+            {:stop, :normal, %{next_state | status: :failed}}
         end
 
       _phase_spec ->
@@ -413,13 +422,42 @@ defmodule ForemanServer.Workflow.RunExecutor do
            ),
          :ok <- maybe_fail_task(state, phase_spec, phase_index, reason) do
       :ok
+    else
+      {:error, reason} ->
+        Logger.error(
+          "RunExecutor phase.fail dispatch for #{state.run_id}/#{phase_id} failed: #{inspect(reason)}"
+        )
+
+        {:error, reason}
     end
   end
 
   defp finalize_run(state) do
-    with :ok <- maybe_complete_task(state),
-         {:ok, _} <- dispatch_run_complete(state) do
-      {:ok, %{state | status: :completed}}
+    Logger.info("RunExecutor #{state.run_id} finalize_run: maybe_complete_task")
+
+    case maybe_complete_task(state) do
+      :ok ->
+        Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
+
+        case dispatch_run_complete(state) do
+          {:ok, _} ->
+            Logger.info("RunExecutor #{state.run_id} finalize_run: dispatched run.complete")
+            {:ok, %{state | status: :completed}}
+
+          {:error, reason} = err ->
+            Logger.error(
+              "RunExecutor #{state.run_id} finalize_run: dispatch_run_complete returned: #{inspect(reason)}"
+            )
+
+            err
+        end
+
+      {:error, reason} = err ->
+        Logger.error(
+          "RunExecutor #{state.run_id} finalize_run: maybe_complete_task returned: #{inspect(reason)}"
+        )
+
+        err
     end
   end
 
