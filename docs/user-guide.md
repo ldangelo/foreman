@@ -25,9 +25,12 @@ out-of-the-box `MIX_ENV=dev` (or `prod`) boot has the local `pi` backend
 available without further configuration. `PiAdapter.available?/0`
 self-gates on `System.find_executable/1` returning a path for the
 configured executable (default `"pi"`), so the registration is safe to
-leave in place even on hosts where the binary is missing — the adapter
-just becomes unreachable and the catalog returns
-`{:error, :no_available_backend}` until the binary is installed. The
+leave in place even on hosts where the binary is missing. When
+`available?/0` returns `false` Pi is silently excluded from routing in
+`:automatic` / `:policy` modes (and `:manual` calls to it return
+`:backend_unavailable`); the caller observes
+`{:error, :no_available_backend}` only when **no** eligible adapter is
+available for the request. The
 test environment (`config/test.exs`) deliberately overrides
 `adapters: []` so individual adapter tests can opt in explicitly and
 stay isolated from production wiring.

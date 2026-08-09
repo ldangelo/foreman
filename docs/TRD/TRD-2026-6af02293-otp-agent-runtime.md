@@ -274,9 +274,11 @@ places `ForemanServer.AgentRuntime.Adapters.PiAdapter` under
 without further wiring. `PiAdapter.available?/0` resolves the
 configured executable via `System.find_executable/1` and returns
 `false` when no binary is found, so the registration is safe on hosts
-where `pi` is absent: the adapter simply becomes unreachable and the
-public façade returns `{:error, :no_available_backend}` until the
-binary is installed. The test environment
+where `pi` is absent. When `available?/0` returns `false` Pi is
+silently excluded from routing in `:automatic` / `:policy` modes (and
+a `:manual` call naming it returns `:backend_unavailable`); the
+caller observes `{:error, :no_available_backend}` only when **no**
+eligible adapter is available for the request. The test environment
 (`packages/foreman_server/config/test.exs`) intentionally overrides
 `adapters: []` so individual adapter tests opt in explicitly and
 remain isolated from production wiring.
