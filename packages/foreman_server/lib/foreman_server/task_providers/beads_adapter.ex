@@ -720,6 +720,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     with {:ok, id} <- fetch_required_string(payload, :id),
          :ok <- assert_close_id_matches(id, task_id),
          :ok <- assert_close_status(payload),
+         :ok <- JsonSchemaCache.validate(:closed_issue, payload),
          {:ok, title} <- fetch_required_string(payload, :title),
          {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
          {:ok, dependencies} <-
@@ -749,6 +750,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          metadata: metadata
        }}
     else
+      {:error, errors} when is_list(errors) ->
+        {:error, build_complete_schema_validation_error(errors)}
+
       {:error, provider_error} ->
         {:error, provider_error}
     end
@@ -762,17 +766,14 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   defp assert_close_id_matches(_id, _expected) do
     {:error,
-     build_complete_contract_error(
-       "Beads close ack id does not match the requested task."
-     )}
+     build_complete_contract_error("Beads close ack id does not match the requested task.")}
   end
 
   defp assert_close_status(%{"status" => "closed"}), do: :ok
   defp assert_close_status(%{status: "closed"}), do: :ok
 
   defp assert_close_status(_payload) do
-    {:error,
-     build_complete_contract_error("Beads close ack did not return status: closed.")}
+    {:error, build_complete_contract_error("Beads close ack did not return status: closed.")}
   end
 
   defp build_complete_error(stdout, stderr, result) do
@@ -807,6 +808,20 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          )
          |> maybe_put_exit_code(result)}
     end
+  end
+
+  defp build_complete_schema_validation_error(errors) do
+    CodeMap.build_provider_error(
+      ProviderErrorInput.from_local(
+        "SCHEMA_VALIDATION_FAILED",
+        "Beads closed issue payload failed schema validation.",
+        "Refresh the cached schema or re-fetch the Beads payload.",
+        false,
+        missing_fields_from(errors)
+      ),
+      "br close",
+      0
+    )
   end
 
   defp build_complete_contract_error(message) do

@@ -67,7 +67,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
     payload = %{
       "id" => "bead-801",
       "title" => "Ship TRD-014",
-      "status" => "open",
+      "status" => "closed",
       "priority" => 2,
       "dependencies" => ["opaque:dep-1"],
       "assignee" => "operator",
@@ -109,6 +109,80 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
              labels: ["backend", "complete"],
              metadata: %{"provider_id" => "beads", "source" => "br close"}
            }
+  end
+
+  test "accepts singleton JSON array emitted by br close", %{temp_dir: temp_dir} do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/complete/array.db"
+    project_config = register_project!("proj-complete-array", cached_database_path)
+
+    payload = %{
+      "id" => "bead-806",
+      "title" => "Close from array output",
+      "status" => "closed",
+      "priority" => 1,
+      "dependencies" => [],
+      "assignee" => nil,
+      "description" => nil,
+      "notes" => nil,
+      "design" => nil,
+      "labels" => [],
+      "metadata" => %{}
+    }
+
+    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: "bead-806"}},
+                                     %{database_path: ^cached_database_path},
+                                     [timeout_ms: 30_000] ->
+      assert_translated_argv(
+        temp_dir,
+        {:close, %{id: "bead-806"}},
+        %{database_path: cached_database_path},
+        ["close", "--db", cached_database_path, "bead-806", "--json"]
+      )
+
+      {:ok, %{stdout: Jason.encode!([payload]), stderr: "", exit_code: 0}}
+    end)
+
+    assert {:ok, %Issue{id: "bead-806", status: "closed"}} =
+             BeadsAdapter.complete("bead-806", :ignored, project_config)
+  end
+
+  test "open close ack returns a contract error" do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/complete/open-ack.db"
+    project_config = register_project!("proj-complete-open-ack", cached_database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: "bead-807"}},
+                                     %{database_path: ^cached_database_path},
+                                     [timeout_ms: 30_000] ->
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(%{
+             "id" => "bead-807",
+             "title" => "Still open",
+             "status" => "open",
+             "priority" => 1,
+             "dependencies" => [],
+             "assignee" => nil,
+             "description" => nil,
+             "notes" => nil,
+             "design" => nil,
+             "labels" => [],
+             "metadata" => %{}
+           }),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    assert {:error, %ProviderError{} = provider_error} =
+             BeadsAdapter.complete("bead-807", :ignored, project_config)
+
+    assert provider_error.code == "BR_CONTRACT_MISMATCH"
+    assert provider_error.context.command == "br close"
   end
 
   test "br error envelope returns a mapped ProviderError", %{temp_dir: temp_dir} do
