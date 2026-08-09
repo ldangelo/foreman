@@ -19,6 +19,27 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
   @default_refresh_interval_ms 24 * 60 * 60 * 1000
   @refresh_event [:foreman_server, :task_provider, :beads, :capabilities, :refreshed]
   @version_changed_event [:foreman_server, :task_provider, :beads, :contract, :version_changed]
+
+  # The real `br close --json` output is `{id, title, status, closed_at, close_reason}`.
+  # br does not publish a separate `closed-issue` schema and this shape does NOT match
+  # `:ready_issue` (which requires priority, issue_type, created_at, updated_at, etc.).
+  # We pin the expected close-ack shape here so the validate(:closed_issue, payload)
+  # TRD-mandated contract rejects drift instead of silently accepting garbage.
+  @closed_issue_schema %{
+    "$schema" => "https://json-schema.org/draft/2020-12/schema",
+    "title" => "BeadsClosedIssue",
+    "description" => "br close --json acknowledgement payload (minimal contract)",
+    "type" => "object",
+    "required" => ["id", "title", "status"],
+    "properties" => %{
+      "id" => %{"type" => "string"},
+      "title" => %{"type" => "string"},
+      "status" => %{"type" => "string", "enum" => ["closed"]},
+      "closed_at" => %{"type" => "string"},
+      "close_reason" => %{"type" => ["string", "null"]}
+    }
+  }
+
   @schema_requests %{
     ready_issue: "ready-issue",
     issue_details: "issue-details",
@@ -75,7 +96,7 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
     normalized_schema =
       case schema_atom do
         :commands -> :commands
-        schema when schema in [:claimed_issue, :closed_issue, :updated_issue] -> :ready_issue
+        schema when schema in [:claimed_issue, :updated_issue] -> :ready_issue
         schema when schema in [:failed_issue, :reopened_issue] -> :issue_details
         other -> other
       end
@@ -201,6 +222,8 @@ defmodule ForemanServer.TaskProviders.JsonSchemaCache do
       end
     end
   end
+
+  defp fetch_schema(_state, :closed_issue), do: {:ok, @closed_issue_schema}
 
   defp fetch_schema(%State{schemas: schemas}, schema_atom) do
     case Map.fetch(schemas, schema_atom) do

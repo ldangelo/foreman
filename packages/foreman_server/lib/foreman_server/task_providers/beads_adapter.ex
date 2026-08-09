@@ -717,10 +717,10 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   defp parse_closed_issue_payload(%{} = payload, task_id) do
-    with {:ok, id} <- fetch_required_string(payload, :id),
+    with :ok <- JsonSchemaCache.validate(:closed_issue, payload),
+         {:ok, id} <- fetch_required_string(payload, :id),
          :ok <- assert_close_id_matches(id, task_id),
          :ok <- assert_close_status(payload),
-         :ok <- JsonSchemaCache.validate(:closed_issue, payload),
          {:ok, title} <- fetch_required_string(payload, :title),
          {:ok, priority} <- parse_priority(fetch_payload_value(payload, :priority)),
          {:ok, dependencies} <-
