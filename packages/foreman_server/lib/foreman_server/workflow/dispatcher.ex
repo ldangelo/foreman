@@ -11,6 +11,11 @@ defmodule ForemanServer.Workflow.Dispatcher do
     * `TaskDispatched` — enters the run admission flow through
       `RunAdmission.start/2`, which reserves the project slot and appends
       `RunStarted` before handing the run off to `RunSupervisor`.
+    * `RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed` —
+      fans out to `BootReconciliation.run_terminated/2` so the orphan-task
+      dispatch path is identical to the boot scan. Earlier builds only
+      reacted to `RunCancelled`; the other terminal events were silently
+      dropped, leaving tasks bound to dead runs.
   The dispatcher is the bridge between the operator-facing task
   lifecycle and the supervised executor. Subscriptions are
   per-process and unlink automatically when the subscriber exits.
@@ -20,6 +25,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   alias ForemanServer.{ProjectionStore, RunAdmission}
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Workflow.BootReconciliation
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
@@ -51,77 +57,62 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  @task_dispatch_event_types ~w(TaskApproved TaskDispatched)
+  @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed)
+
+  for event_type <- @task_dispatch_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      apply_task_dispatch_handler(unquote(event_type), envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      apply_task_dispatch_handler(unquote(event_type), envelope, state)
+    end
+  end
+
+  for event_type <- @run_terminated_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_run_terminated(unquote(event_type), envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_run_terminated(unquote(event_type), envelope, state)
+    end
+  end
+
   @impl true
-  def handle_info({:projection_event, %{"event_type" => "TaskApproved"} = envelope}, state) do
-    handle_task_approved(envelope, state)
-  end
-
-  def handle_info({:projection_event, %{event_type: "TaskApproved"} = envelope}, state) do
-    handle_task_approved(envelope, state)
-  end
-
-  def handle_info({:projection_event, %{"event_type" => "TaskDispatched"} = envelope}, state) do
-    handle_task_dispatched(envelope, state)
-  end
-
-  def handle_info({:projection_event, %{event_type: "TaskDispatched"} = envelope}, state) do
-    handle_task_dispatched(envelope, state)
-  end
-
-  def handle_info({:projection_event, %{"event_type" => "RunCancelled"} = envelope}, state) do
-    handle_run_cancelled(envelope, state)
-  end
-
-  def handle_info({:projection_event, %{event_type: "RunCancelled"} = envelope}, state) do
-    handle_run_cancelled(envelope, state)
-  end
-
   def handle_info({:projection_event, _envelope}, state) do
     {:noreply, state}
   end
 
+  @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp handle_run_cancelled(envelope, state) do
+  defp apply_task_dispatch_handler("TaskApproved", envelope, state),
+    do: handle_task_approved(envelope, state)
+
+  defp apply_task_dispatch_handler("TaskDispatched", envelope, state),
+    do: handle_task_dispatched(envelope, state)
+
+  defp handle_run_terminated(event_type, envelope, state) do
     payload = unwrap_data(envelope)
     run_id = payload["run_id"] || payload[:run_id]
-    reason = payload["reason"] || payload[:reason] || "run_cancelled"
+    reason = payload["reason"] || payload[:reason] || terminal_reason_from_event_type(event_type)
 
     if is_binary(run_id) and run_id != "" do
-      tasks = ProjectionStore.tasks_by_run_id(run_id)
-
-      Enum.each(tasks, fn task ->
-        task_id = Map.get(task, :task_id) || Map.get(task, "task_id")
-
-        if is_binary(task_id) and task_id != "" do
-          _ =
-            CommandGateway.dispatch_system(%{
-              type: "task.run_terminated",
-              command_id: "foreman:task-ack:#{task_id}:#{run_id}",
-              aggregate_id: "task:#{task_id}",
-              payload: %{
-                task_id: task_id,
-                run_id: run_id,
-                reason: reason,
-                acknowledged_at: iso8601_now()
-              }
-            })
-        end
-      end)
+      BootReconciliation.run_terminated(run_id, reason)
     end
 
     {:noreply, state}
   end
 
-  defp iso8601_now do
-    {{y, mo, d}, {h, mi, s}} = :calendar.universal_time()
-
-    :io_lib.format(
-      "~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ",
-      [y, mo, d, h, mi, s]
-    )
-    |> List.to_string()
-  end
+  defp terminal_reason_from_event_type("RunCancelled"), do: "run_cancelled"
+  defp terminal_reason_from_event_type("RunFlaggedStuck"), do: "run_flagged_stuck"
+  defp terminal_reason_from_event_type("RunCompleted"), do: "run_completed"
+  defp terminal_reason_from_event_type("RunFailed"), do: "run_failed"
+  defp terminal_reason_from_event_type(_), do: "run_terminated"
 
   defp handle_task_approved(envelope, state) do
     payload = unwrap_data(envelope)

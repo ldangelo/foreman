@@ -58,7 +58,10 @@ defmodule ForemanServer.Application do
           # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
           ForemanServer.Workflow.Catalog,
           ForemanServer.Workflow.RunSupervisor,
-          # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched.
+          # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched
+          # AND terminal run events (RunCancelled, RunFlaggedStuck, RunCompleted,
+          # RunFailed), forwarding the latter to BootReconciliation.run_terminated/2
+          # so orphan-task scans during normal operation mirror the boot path.
           ForemanServer.Workflow.Dispatcher,
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter,
