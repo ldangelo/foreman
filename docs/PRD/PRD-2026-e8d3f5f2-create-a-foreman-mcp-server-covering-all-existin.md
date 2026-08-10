@@ -303,7 +303,7 @@ The paired TRD must record decisions for:
 - [x] CLI/HTTP reconciliation required
 - [x] Risks captured
 - [x] Dependencies listed
-- [ ] Paired TRD created
+- [x] Paired TRD created
 
 ---
 
