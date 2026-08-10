@@ -2,7 +2,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
   use ExUnit.Case, async: false
 
   import Mox
-
+  alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
@@ -50,7 +50,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     )
 
     stop_schema_cache()
-    ensure_started(TaskProviderRegistry, TaskProviderRegistry)
+    ForemanServer.TestSupport.TestApplication.reset_application_child!(TaskProviderRegistry)
     cleanup_boot_reconciliation_state()
 
     stub(BrRunnerMock, :cmd, fn
@@ -394,6 +394,264 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     assert healthy_metadata.issue_id == task_id
 
     refute_receive {@orphan_reopen_event, ^ref, _, _}, 100
+  end
+
+  describe "task-run orphan scan" do
+    test "dispatches task.run_terminated when in_progress task is bound to terminal run with no ack",
+         %{temp_dir: _temp_dir} do
+      task_id = unique_id("task")
+      run_id = unique_id("run")
+
+      seed_orphan_task!(task_id, run_id)
+
+      assert :ok = BootReconciliation.scan_task_run_orphans()
+
+      assert {:ok, _task} =
+               wait_until(
+                 fn ->
+                   case ProjectionStore.task_projection(task_id) do
+                     nil ->
+                       :retry
+
+                     task ->
+                       if Map.get(task, :acknowledged_run_id) == run_id,
+                         do: {:ok, task},
+                         else: :retry
+                   end
+                 end,
+                 "orphan scan to acknowledge terminal run",
+                 1_000
+               )
+    end
+
+    test "skips task whose status is closed", %{temp_dir: _temp_dir} do
+      task_id = unique_id("task-closed")
+      run_id = unique_id("run-closed")
+
+      seed_terminal_status_task!(task_id, run_id, "closed")
+
+      assert :ok = BootReconciliation.scan_task_run_orphans()
+
+      Process.sleep(100)
+      assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
+    end
+
+    test "skips task whose status is failed", %{temp_dir: _temp_dir} do
+      task_id = unique_id("task-failed")
+      run_id = unique_id("run-failed")
+
+      seed_terminal_status_task!(task_id, run_id, "failed")
+
+      assert :ok = BootReconciliation.scan_task_run_orphans()
+
+      Process.sleep(100)
+      assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
+    end
+
+    test "skips task whose run_id is already acknowledged", %{temp_dir: _temp_dir} do
+      task_id = unique_id("task-acked")
+      run_id = unique_id("run-acked")
+
+      seed_acknowledged_task!(task_id, run_id)
+
+      assert :ok = BootReconciliation.scan_task_run_orphans()
+
+      Process.sleep(100)
+      assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
+    end
+
+    test "skips task when bound run is not terminal", %{temp_dir: _temp_dir} do
+      task_id = unique_id("task-running")
+      run_id = unique_id("run-running")
+
+      seed_running_task!(task_id, run_id)
+
+      assert :ok = BootReconciliation.scan_task_run_orphans()
+
+      Process.sleep(100)
+      assert [] = Registry.lookup(ForemanServer.AggregateRegistry, "task:" <> task_id)
+    end
+  end
+
+  describe "boot scan API contracts" do
+    test "scan_task_run_orphans/0 returns :ok and dispatches asynchronously",
+         %{temp_dir: _temp_dir} do
+      task_id = unique_id("task-cast")
+      run_id = unique_id("run-cast")
+
+      seed_orphan_task!(task_id, run_id)
+
+      assert :ok = BootReconciliation.scan_task_run_orphans()
+
+      assert {:ok, _pid} =
+               wait_until_actor("task:" <> task_id, "cast to dispatch orphan", 1_000)
+    end
+
+    test "run_terminated/2 fans out via cast", %{temp_dir: _temp_dir} do
+      task_id = unique_id("task-terminated")
+      run_id = unique_id("run-terminated")
+
+      seed_orphan_task!(task_id, run_id)
+
+      assert :ok = BootReconciliation.run_terminated(run_id, "run_flagged_stuck")
+
+      assert {:ok, _pid} =
+               wait_until_actor("task:" <> task_id, "run_terminated to dispatch", 1_000)
+    end
+  end
+
+  describe "boot scan startup deferral" do
+    test "run_terminated/2 defers dispatch when CommandRouter is not registered", %{
+      temp_dir: _temp_dir
+    } do
+      task_id = unique_id("task-defer")
+      run_id = unique_id("run-defer")
+
+      seed_in_progress_task!(task_id, run_id)
+
+      app_sup = Process.whereis(ForemanServer.Application)
+      assert is_pid(app_sup)
+
+      :ok = Supervisor.terminate_child(app_sup, ForemanServer.CommandRouter)
+      assert is_nil(Process.whereis(ForemanServer.CommandRouter))
+
+      on_exit(fn ->
+        case Process.whereis(ForemanServer.CommandRouter) do
+          nil -> Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+          _pid -> :ok
+        end
+      end)
+
+      seed_terminal_run!(run_id)
+
+      # Cast run_terminated directly to exercise the
+      # handle_cast({:run_terminated, _, _}) -> schedule_scan(:not_ready)
+      # path while the router is down.
+      assert :ok = BootReconciliation.run_terminated(run_id, "run_flagged_stuck")
+
+      Process.sleep(20)
+      assert Map.get(ProjectionStore.task_projection(task_id), :acknowledged_run_id) == nil
+
+      {:ok, _} = Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+
+      assert {:ok, _task} =
+               wait_until(
+                 fn ->
+                   case ProjectionStore.task_projection(task_id) do
+                     %{acknowledged_run_id: ^run_id} = task -> {:ok, task}
+                     _ -> :retry
+                   end
+                 end,
+                 "deferred scan to acknowledge terminal run",
+                 2_000
+               )
+    end
+  end
+
+  defp seed_orphan_task!(task_id, run_id) do
+    seed_in_progress_task!(task_id, run_id)
+    seed_terminal_run!(run_id)
+  end
+
+  defp seed_terminal_status_task!(task_id, run_id, "closed") do
+    seed_in_progress_task!(task_id, run_id)
+
+    append_and_apply("task:" <> task_id, 3, "TaskExecutionCompleted", %{
+      task_id: task_id,
+      run_id: run_id
+    })
+
+    seed_terminal_run!(run_id)
+  end
+
+  defp seed_terminal_status_task!(task_id, run_id, "failed") do
+    seed_in_progress_task!(task_id, run_id)
+
+    append_and_apply("task:" <> task_id, 3, "TaskExecutionFailed", %{
+      task_id: task_id,
+      run_id: run_id,
+      reason: "boom"
+    })
+
+    seed_terminal_run!(run_id)
+  end
+
+  defp seed_acknowledged_task!(task_id, run_id) do
+    seed_in_progress_task!(task_id, run_id)
+
+    append_and_apply(
+      "task:" <> task_id,
+      3,
+      "TaskRunTerminated",
+      %{
+        task_id: task_id,
+        run_id: run_id,
+        reason: "run_cancelled",
+        acknowledged_at: "2026-08-10T00:01:00Z"
+      }
+    )
+
+    seed_terminal_run!(run_id)
+  end
+
+  defp seed_running_task!(task_id, run_id) do
+    seed_in_progress_task!(task_id, run_id)
+  end
+
+  defp seed_in_progress_task!(task_id, run_id) do
+    project_id = unique_id("project-orphan")
+
+    append_and_apply("task:" <> task_id, 0, "TaskCreated", %{
+      task_id: task_id,
+      project_id: project_id,
+      title: "orphan #{task_id}",
+      status: "open",
+      task_type: "implementation"
+    })
+
+    append_and_apply("task:" <> task_id, 1, "TaskApproved", %{
+      task_id: task_id,
+      approval_id: unique_id("approval"),
+      approved_by: "alice",
+      approved_at: "2026-08-10T00:00:00Z",
+      run_id: run_id,
+      workflow_snapshot: %{run_id: run_id, phases: []}
+    })
+
+    append_and_apply("task:" <> task_id, 2, "TaskUpdated", %{
+      task_id: task_id,
+      status: "in_progress"
+    })
+  end
+
+  defp seed_terminal_run!(run_id) do
+    append_and_apply("run:" <> run_id, 0, "RunFlaggedStuck", %{
+      run_id: run_id,
+      project_id: unique_id("project-orphan"),
+      flagged_at: 1_700_000_000_000
+    })
+  end
+
+  defp append_and_apply(stream_uuid, expected_version, event_type, payload) do
+    :ok =
+      Store.append_to_stream(stream_uuid, expected_version, [
+        %EventStore.EventData{event_type: event_type, data: payload, metadata: %{}}
+      ])
+
+    :ok = ProjectionStore.apply_events([%{event_type: event_type, payload: payload}])
+  end
+
+  defp wait_until_actor(aggregate_id, label, timeout_ms) do
+    wait_until(
+      fn ->
+        case Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id) do
+          [{pid, _}] -> {:ok, pid}
+          [] -> :retry
+        end
+      end,
+      label,
+      timeout_ms
+    )
   end
 
   defp attach_boot_events(events) do
