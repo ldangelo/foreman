@@ -704,6 +704,46 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute Regex.match?(~r/\.\s*reopen\(/, source)
   end
 
+  test "RunExecutor.claim/3 resolves BeadsAdapter via Registry.route for short-name providers" do
+    start_schema_cache!()
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    database_path = unique_database_path(unique_id("db"))
+
+    seed_project!(project_id, project_task_provider(database_path))
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      send(test_pid, {:claim_cmd, request, runner_project_config})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    result = RunExecutor.claim(project_id, task_id, "foreman-runner")
+
+    refute match?({:error, :task_provider_not_configured}, result)
+    assert {:ok, %Issue{status: "in_progress", id: ^task_id}} = result
+
+    assert_received {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}, _project_config}
+  end
+
   defp ensure_started(child_spec, name) do
     if Process.whereis(name) do
       :ok
