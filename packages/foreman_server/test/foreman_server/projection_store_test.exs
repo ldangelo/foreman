@@ -5,12 +5,12 @@ defmodule ForemanServer.ProjectionStoreTest do
 
   setup do
     :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
+      %{state | projects: %{}, tasks: %{}, runs: %{}, phases: %{}, project_active_runs: %{}}
     end)
 
     on_exit(fn ->
       :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
+        %{state | projects: %{}, tasks: %{}, runs: %{}, phases: %{}, project_active_runs: %{}}
       end)
     end)
 
@@ -184,9 +184,103 @@ defmodule ForemanServer.ProjectionStoreTest do
 
   test "legacy run_projection/1 is removed" do
     refute function_exported?(ProjectionStore, :run_projection, 1)
+  end
 
-    assert_raise UndefinedFunctionError, fn ->
-      apply(ProjectionStore, :run_projection, ["run-legacy"])
+  describe "task queries for orphan-run recovery" do
+    test "list_tasks/0 returns every projected task sorted by task_id" do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "TaskCreated",
+                   payload: %{
+                     task_id: "task-z",
+                     project_id: "p",
+                     title: "z",
+                     status: "open",
+                     task_type: "ops"
+                   }
+                 },
+                 %{
+                   event_type: "TaskCreated",
+                   payload: %{
+                     task_id: "task-a",
+                     project_id: "p",
+                     title: "a",
+                     status: "open",
+                     task_type: "ops"
+                   }
+                 }
+               ])
+
+      assert [%{task_id: "task-a"}, %{task_id: "task-z"}] = ProjectionStore.list_tasks()
+    end
+
+    test "tasks_by_run_id/1 returns in-progress tasks bound to the given run, filtering already-acknowledged" do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "TaskCreated",
+                   payload: %{
+                     task_id: "task-1",
+                     project_id: "p",
+                     title: "1",
+                     status: "open",
+                     task_type: "ops"
+                   }
+                 },
+                 %{
+                   event_type: "TaskCreated",
+                   payload: %{
+                     task_id: "task-2",
+                     project_id: "p",
+                     title: "2",
+                     status: "open",
+                     task_type: "ops"
+                   }
+                 }
+               ])
+
+      run_id = "run-orphan-1"
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "TaskApproved",
+                   payload: %{
+                     task_id: "task-1",
+                     run_id: run_id,
+                     approval_id: "approval-1",
+                     approved_by: "tester",
+                     approved_at: "2026-08-10T00:00:00Z",
+                     workflow_snapshot: nil
+                   }
+                 },
+                 %{
+                   event_type: "TaskApproved",
+                   payload: %{
+                     task_id: "task-2",
+                     run_id: run_id,
+                     approval_id: "approval-1",
+                     approved_by: "tester",
+                     approved_at: "2026-08-10T00:00:00Z",
+                     workflow_snapshot: nil
+                   }
+                 },
+                 %{
+                   event_type: "TaskRunTerminated",
+                   payload: %{
+                     task_id: "task-1",
+                     run_id: run_id,
+                     acknowledged_at: "2026-08-10T00:00:00Z"
+                   }
+                 }
+               ])
+
+      assert [%{task_id: "task-2"}] = ProjectionStore.tasks_by_run_id(run_id)
+    end
+
+    test "tasks_by_run_id/1 returns empty list when no tasks are bound to the run" do
+      assert [] = ProjectionStore.tasks_by_run_id("run-nothing")
     end
   end
 end

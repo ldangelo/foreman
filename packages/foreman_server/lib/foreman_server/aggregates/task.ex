@@ -27,8 +27,12 @@ defmodule ForemanServer.Aggregates.Task do
       :title,
       :description,
       :priority,
+      :acknowledged_run_id,
+      :run_terminal_reason,
+      :run_terminal_at,
       dependencies: [],
-      annotations: []
+      annotations: [],
+      retry_history: []
     ]
   end
 
@@ -51,8 +55,12 @@ defmodule ForemanServer.Aggregates.Task do
       title: nil,
       description: nil,
       priority: nil,
+      acknowledged_run_id: nil,
+      run_terminal_reason: nil,
+      run_terminal_at: nil,
       dependencies: [],
-      annotations: []
+      annotations: [],
+      retry_history: []
     }
 
   @impl true
@@ -139,6 +147,12 @@ defmodule ForemanServer.Aggregates.Task do
 
       "RunFailed" ->
         maybe_apply_terminal_run(state, payload, "failed")
+
+      "TaskRunTerminated" ->
+        apply_task_run_terminated(state, payload)
+
+      "TaskRetried" ->
+        apply_task_retried(state, payload)
 
       _ ->
         state
@@ -320,12 +334,110 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
+  def handle_command(state, %{type: "task.run_terminated", payload: payload}) do
+    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, task_id),
+         :ok <- require_in_progress(state),
+         :ok <- require_run_matches_bound(state, run_id) do
+      {:ok,
+       %{
+         stream_id: "task:#{task_id}",
+         event_type: "TaskRunTerminated",
+         payload: %{
+           task_id: task_id,
+           run_id: run_id,
+           reason: Aggregate.get(payload, :reason),
+           acknowledged_at: DateTime.utc_now() |> DateTime.to_iso8601()
+         }
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "task.retry", payload: payload}) do
+    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         :ok <- require_exists(state, task_id),
+         :ok <- require_run_acknowledged_terminal(state) do
+      {:ok,
+       %{
+         stream_id: "task:#{task_id}",
+         event_type: "TaskRetried",
+         payload: %{
+           task_id: task_id,
+           previous_run_id: state.run_id,
+           reason: Aggregate.get(payload, :reason),
+           retried_at: DateTime.utc_now() |> DateTime.to_iso8601()
+         }
+       }}
+    end
+  end
+
   def handle_command(_state, _command), do: :unhandled
 
   defp maybe_apply_terminal_run(state, payload, status) do
     if Aggregate.get(payload, :task_id) == Map.get(state, :task_id),
       do: %State{state | status: status},
       else: state
+  end
+
+  # `task.run_terminated` (and thus the subscription it triggers) MUST
+  # only commit when the run it names is the run this task is currently
+  # bound to. Mismatched run_ids are silently rejected — they signal a
+  # stale subscriber re-fire, not a new remediation event. The aggregate
+  # NEVER transitions status here: the design intent is a two-step gate
+  # (acknowledge, then retry). `TaskRetried` is the only event that
+  # resets status back to `open`.
+  defp apply_task_run_terminated(state, payload) do
+    event_run_id = Aggregate.get(payload, :run_id)
+
+    cond do
+      not is_binary(event_run_id) or event_run_id == "" ->
+        state
+
+      event_run_id != state.run_id ->
+        state
+
+      true ->
+        %State{
+          state
+          | exists?: true,
+            acknowledged_run_id: event_run_id,
+            run_terminal_reason: Aggregate.get(payload, :reason),
+            run_terminal_at: Aggregate.get(payload, :acknowledged_at)
+        }
+    end
+  end
+
+  # `task.retry` is the unconditional reset. The precondition guard at
+  # handle-command time guarantees `state.run_id == state.acknowledged_run_id`,
+  # so we trust the payload and clear every run-bound field the same way
+  # `Approval.prepare/1` rebuilds them — and append to retry_history so the
+  # operator path leaves a forensic trail.
+  defp apply_task_retried(state, payload) do
+    previous_run_id = state.run_id
+    retried_at = Aggregate.get(payload, :retried_at)
+    reason = Aggregate.get(payload, :reason)
+
+    history_entry = %{
+      run_id: previous_run_id,
+      reason: reason,
+      retried_at: retried_at
+    }
+
+    %State{
+      state
+      | exists?: true,
+        status: "open",
+        approval_id: nil,
+        approved_by: nil,
+        approved_at: nil,
+        run_id: nil,
+        workflow_snapshot: nil,
+        acknowledged_run_id: nil,
+        run_terminal_reason: nil,
+        run_terminal_at: nil,
+        retry_history: state.retry_history ++ [history_entry]
+    }
   end
 
   defp require_absent(%State{exists?: true}, task_id),
@@ -367,6 +479,45 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp require_executing(%State{status: "in_progress"}), do: :ok
   defp require_executing(%State{status: status}), do: {:error, {:task_not_executing, status}}
+
+  # `task.run_terminated` MUST only fire while the run it names is the run
+  # the task is currently bound to — otherwise a stale subscriber would
+  # rewrite the acknowledgement against a previous run.
+  defp require_in_progress(%State{status: "in_progress"}), do: :ok
+  defp require_in_progress(%State{status: status}), do: {:error, {:task_not_in_progress, status}}
+
+  defp require_run_matches_bound(%State{run_id: run_id}, run_id)
+       when is_binary(run_id) and run_id != "",
+       do: :ok
+
+  defp require_run_matches_bound(%State{run_id: bound}, run_id),
+    do: {:error, {:run_id_mismatch, bound, run_id}}
+
+  # `task.retry` is only valid when a terminal-run acknowledgement is in
+  # place: `state.acknowledged_run_id` matches the currently-bound run.
+  # This guards against both stale retries (acknowledged_run_id is nil
+  # because no run_terminated ever landed) and out-of-order retries
+  # against a different run.
+  defp require_run_acknowledged_terminal(%State{run_id: nil}), do: {:error, :no_run_bound}
+
+  defp require_run_acknowledged_terminal(%State{
+         run_id: run_id,
+         acknowledged_run_id: run_id
+       })
+       when is_binary(run_id),
+       do: :ok
+
+  defp require_run_acknowledged_terminal(%State{
+         run_id: run_id,
+         acknowledged_run_id: nil
+       }),
+       do: {:error, {:run_acknowledgement_pending, run_id}}
+
+  defp require_run_acknowledged_terminal(%State{
+         run_id: bound,
+         acknowledged_run_id: ack
+       }),
+       do: {:error, {:run_acknowledgement_stale, bound, ack}}
 
   defp allow_transition(%State{status: status}, new_status)
        when status == "merged" and new_status != status,

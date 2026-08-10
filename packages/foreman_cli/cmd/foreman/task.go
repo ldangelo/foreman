@@ -12,8 +12,8 @@ import (
 func runTask(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman task: missing subcommand (create|approve|get)",
-			"Usage:\n  foreman task create [flags]\n  foreman task approve [flags]\n  foreman task get <id>",
+			"foreman task: missing subcommand (create|approve|retry|get)",
+			"Usage:\n  foreman task create [flags]\n  foreman task approve [flags]\n  foreman task retry --id <task-id> [--reason <text>]\n  foreman task get <id>",
 		)
 	}
 
@@ -22,14 +22,37 @@ func runTask(c *client.Client, args []string) error {
 		return taskCreate(c, args[1:])
 	case "approve":
 		return taskApprove(c, args[1:])
+	case "retry":
+		return taskRetry(c, args[1:])
 	case "get":
 		return taskGet(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman task: unknown subcommand %q", args[0]),
-			"Usage:\n  foreman task create [flags]\n  foreman task approve [flags]\n  foreman task get <id>",
+			"Usage:\n  foreman task create [flags]\n  foreman task approve [flags]\n  foreman task retry --id <task-id> [--reason <text>]\n  foreman task get <id>",
 		)
 	}
+}
+
+func taskRetry(c *client.Client, args []string) error {
+	fs := newFlagSet("task retry")
+	taskID := fs.String("id", "", "Task ID (required)")
+	reason := fs.String("reason", "", "Optional reason recorded on the retry event")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *taskID == "" {
+		return usageError(fs, "foreman task retry: --id is required")
+	}
+
+	payload := map[string]any{"task_id": *taskID}
+	if *reason != "" {
+		payload["reason"] = *reason
+	}
+
+	body := commandEnvelope{Type: "task.retry", Payload: payload}
+	return postCommand(c, body)
 }
 
 // commandEnvelope is the JSON envelope sent to /api/commands.

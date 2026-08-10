@@ -329,6 +329,132 @@ defmodule ForemanServer.Aggregates.TaskTest do
     end
   end
 
+  describe "handle_command/2 — task.run_terminated" do
+    test "emits TaskRunTerminated when run matches bound run" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          status: "in_progress",
+          run_id: "run-xyz"
+      }
+
+      assert {:ok, event_spec} =
+               Task.handle_command(state, %{
+                 type: "task.run_terminated",
+                 payload: %{
+                   task_id: "t-1",
+                   run_id: "run-xyz",
+                   reason: "run_cancelled"
+                 }
+               })
+
+      assert event_spec.event_type == "TaskRunTerminated"
+      assert event_spec.payload.run_id == "run-xyz"
+      assert event_spec.payload.reason == "run_cancelled"
+    end
+
+    test "rejects when task is not in_progress" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          status: "open",
+          run_id: "run-xyz"
+      }
+
+      assert {:error, {:task_not_in_progress, "open"}} =
+               Task.handle_command(state, %{
+                 type: "task.run_terminated",
+                 payload: %{task_id: "t-1", run_id: "run-xyz"}
+               })
+    end
+
+    test "rejects when run_id does not match bound run" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          status: "in_progress",
+          run_id: "run-xyz"
+      }
+
+      assert {:error, {:run_id_mismatch, "run-xyz", "run-other"}} =
+               Task.handle_command(state, %{
+                 type: "task.run_terminated",
+                 payload: %{task_id: "t-1", run_id: "run-other"}
+               })
+    end
+
+    test "rejects when run_id is missing" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          status: "in_progress"
+      }
+
+      assert {:error, {:missing_or_invalid, :run_id}} =
+               Task.handle_command(state, %{
+                 type: "task.run_terminated",
+                 payload: %{task_id: "t-1"}
+               })
+    end
+  end
+
+  describe "handle_command/2 — task.retry" do
+    test "emits TaskRetried when run has been acknowledged" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          run_id: "run-xyz",
+          acknowledged_run_id: "run-xyz"
+      }
+
+      assert {:ok, event_spec} =
+               Task.handle_command(state, %{
+                 type: "task.retry",
+                 payload: %{task_id: "t-1", reason: "remediation"}
+               })
+
+      assert event_spec.event_type == "TaskRetried"
+      assert event_spec.payload.previous_run_id == "run-xyz"
+      assert event_spec.payload.reason == "remediation"
+    end
+
+    test "rejects when run acknowledgement is pending" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          run_id: "run-xyz",
+          acknowledged_run_id: nil
+      }
+
+      assert {:error, {:run_acknowledgement_pending, "run-xyz"}} =
+               Task.handle_command(state, %{
+                 type: "task.retry",
+                 payload: %{task_id: "t-1"}
+               })
+    end
+
+    test "rejects when no run is bound" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          run_id: nil
+      }
+
+      assert {:error, :no_run_bound} =
+               Task.handle_command(state, %{
+                 type: "task.retry",
+                 payload: %{task_id: "t-1"}
+               })
+    end
+  end
+
   describe "handle_command/2 — unknown" do
     test "returns :unhandled" do
       assert :unhandled ==

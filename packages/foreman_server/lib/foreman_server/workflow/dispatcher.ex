@@ -68,11 +68,60 @@ defmodule ForemanServer.Workflow.Dispatcher do
     handle_task_dispatched(envelope, state)
   end
 
+  def handle_info({:projection_event, %{"event_type" => "RunCancelled"} = envelope}, state) do
+    handle_run_cancelled(envelope, state)
+  end
+
+  def handle_info({:projection_event, %{event_type: "RunCancelled"} = envelope}, state) do
+    handle_run_cancelled(envelope, state)
+  end
+
   def handle_info({:projection_event, _envelope}, state) do
     {:noreply, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp handle_run_cancelled(envelope, state) do
+    payload = unwrap_data(envelope)
+    run_id = payload["run_id"] || payload[:run_id]
+    reason = payload["reason"] || payload[:reason] || "run_cancelled"
+
+    if is_binary(run_id) and run_id != "" do
+      tasks = ProjectionStore.tasks_by_run_id(run_id)
+
+      Enum.each(tasks, fn task ->
+        task_id = Map.get(task, :task_id) || Map.get(task, "task_id")
+
+        if is_binary(task_id) and task_id != "" do
+          _ =
+            CommandGateway.dispatch_system(%{
+              type: "task.run_terminated",
+              command_id: "foreman:task-ack:#{task_id}:#{run_id}",
+              aggregate_id: "task:#{task_id}",
+              payload: %{
+                task_id: task_id,
+                run_id: run_id,
+                reason: reason,
+                acknowledged_at: iso8601_now()
+              }
+            })
+        end
+      end)
+    end
+
+    {:noreply, state}
+  end
+
+  defp iso8601_now do
+    {{y, mo, d}, {h, mi, s}} = :calendar.universal_time()
+
+    :io_lib.format(
+      "~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ",
+      [y, mo, d, h, mi, s]
+    )
+    |> List.to_string()
+  end
 
   defp handle_task_approved(envelope, state) do
     payload = unwrap_data(envelope)

@@ -38,7 +38,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Workflow.Approval
 
-  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve run.cancel)
+  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -334,6 +334,19 @@ defmodule ForemanServer.CommandGateway do
       |> Map.put_new(:trace_event_id, nil)
 
     {:ok, %{command | payload: enriched}}
+  end
+
+  defp enrich_operator_command(%{type: "task.retry"} = command) do
+    task_id =
+      get_value(command.payload, :task_id) || get_value(command.payload, "task_id")
+
+    cond do
+      not is_binary(task_id) or task_id == "" ->
+        {:error, {:invalid_envelope, :missing_task_id}}
+
+      true ->
+        {:ok, command}
+    end
   end
 
   defp enrich_operator_command(command), do: {:ok, command}

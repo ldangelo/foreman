@@ -102,6 +102,26 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:task_projection, task_id})
   end
 
+  @doc """
+  Return every task projection that is currently bound to `run_id`.
+
+  Used by the run-cancellation fanout path so the dispatcher can
+  emit a `task.run_terminated` for each affected task. Tasks whose
+  previous run already had a terminal acknowledgement are filtered
+  out — the operator path is idempotent and a stale re-fire MUST NOT
+  rewrite `acknowledged_run_id` against the same run twice.
+  """
+  @spec tasks_by_run_id(String.t()) :: [map()]
+  def tasks_by_run_id(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:tasks_by_run_id, run_id})
+  end
+
+  @doc "Return every projected task. Used by boot reconciliation to scan run orphans."
+  @spec list_tasks() :: [map()]
+  def list_tasks do
+    GenServer.call(__MODULE__, :list_tasks)
+  end
+
   @doc "Return the projected state for a run, or nil if not found."
   @spec run(String.t()) :: map() | nil
   def run(run_id) when is_binary(run_id) and run_id != "" do
@@ -328,6 +348,30 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:task_projection, task_id}, _from, state) do
     {:reply, Map.get(state.tasks, task_id), state}
+  end
+
+  @impl true
+  def handle_call({:tasks_by_run_id, run_id}, _from, state) do
+    tasks =
+      state.tasks
+      |> Map.values()
+      |> Enum.filter(fn task ->
+        get(task, :run_id) == run_id and
+          get(task, :acknowledged_run_id) != run_id
+      end)
+      |> Enum.sort_by(fn task -> get(task, :task_id, "") end)
+
+    {:reply, tasks, state}
+  end
+
+  @impl true
+  def handle_call(:list_tasks, _from, state) do
+    tasks =
+      state.tasks
+      |> Map.values()
+      |> Enum.sort_by(fn task -> get(task, :task_id, "") end)
+
+    {:reply, tasks, state}
   end
 
   @impl true
@@ -815,6 +859,42 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.get(task_id, %{})
           |> Map.put(:status, "failed")
           |> Map.put(:failure_reason, event.reason)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskRunTerminated", payload) do
+    case decode_for_projection("TaskRunTerminated", payload) do
+      %ForemanServer.Events.TaskRunTerminated{task_id: task_id, run_id: run_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:acknowledged_run_id, run_id)
+          |> Map.put(:run_terminal_reason, event.reason)
+          |> Map.put(:run_terminal_at, event.acknowledged_at)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskRetried", payload) do
+    case decode_for_projection("TaskRetried", payload) do
+      %ForemanServer.Events.TaskRetried{task_id: task_id} ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "open")
+          |> Map.put(:approval_id, nil)
+          |> Map.put(:approved_by, nil)
+          |> Map.put(:approved_at, nil)
+          |> Map.put(:run_id, nil)
+          |> Map.put(:workflow_snapshot, nil)
+          |> Map.put(:acknowledged_run_id, nil)
+          |> Map.put(:run_terminal_reason, nil)
+          |> Map.put(:run_terminal_at, nil)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
 
         %{state | tasks: Map.put(state.tasks, task_id, task)}

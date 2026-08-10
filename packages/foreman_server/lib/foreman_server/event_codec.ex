@@ -44,6 +44,8 @@ defmodule ForemanServer.EventCodec do
     TaskDispatched,
     TaskExecutionCompleted,
     TaskExecutionFailed,
+    TaskRetried,
+    TaskRunTerminated,
     TaskUpdated,
     ToolCallFinished,
     WorkerCrashed,
@@ -84,7 +86,9 @@ defmodule ForemanServer.EventCodec do
     "TaskApproved" => TaskApproved,
     "TaskDispatched" => TaskDispatched,
     "TaskExecutionCompleted" => TaskExecutionCompleted,
-    "TaskExecutionFailed" => TaskExecutionFailed
+    "TaskExecutionFailed" => TaskExecutionFailed,
+    "TaskRunTerminated" => TaskRunTerminated,
+    "TaskRetried" => TaskRetried
   }
 
   # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
@@ -134,7 +138,9 @@ defmodule ForemanServer.EventCodec do
     ],
     TaskDispatched => [:task_id, :run_id, :approval_id],
     TaskExecutionCompleted => [:task_id, :run_id],
-    TaskExecutionFailed => [:task_id, :run_id, :reason]
+    TaskExecutionFailed => [:task_id, :run_id, :reason],
+    TaskRunTerminated => [:task_id, :run_id],
+    TaskRetried => [:task_id, :previous_run_id]
   }
 
   @type event_type :: String.t()
