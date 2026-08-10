@@ -56,7 +56,7 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
   defp collect_reopen_calls(node, acc), do: {node, acc}
 
   defp positive_control_hit do
-    {Path.relative_to_cwd(@positive_control_file), 114, "provider_module.reopen/3"}
+    {Path.relative_to_cwd(@positive_control_file), 193, "provider_module.reopen/3"}
   end
 
   defp elixir_files(root) do
