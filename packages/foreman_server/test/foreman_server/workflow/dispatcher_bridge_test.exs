@@ -67,11 +67,35 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     ensure_started(ForemanServer.Workflow.RunSupervisor, ForemanServer.Workflow.RunSupervisor)
     ensure_started(ForemanServer.Workflow.Dispatcher, ForemanServer.Workflow.Dispatcher)
     ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
+
+    on_exit(fn -> terminate_run_supervisor_children() end)
+
     :ok
   end
 
+  defp terminate_run_supervisor_children do
+    sup = Process.whereis(ForemanServer.Workflow.RunSupervisor)
+
+    if sup do
+      ForemanServer.Workflow.RunSupervisor.which_runs()
+      |> Enum.each(fn
+        {_id, pid, _type, _modules} when is_pid(pid) ->
+          terminate_run_supervisor_child(sup, pid)
+
+        _ ->
+          :ok
+      end)
+    end
+
+    :ok
+  end
+
+  defp terminate_run_supervisor_child(sup, pid) do
+    :ok = DynamicSupervisor.terminate_child(sup, pid)
+  end
+
   defp unique_id(prefix) do
-    suffix = System.unique_integer([:positive])
+    suffix = Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
     "#{prefix}-dispatcher-bridge-#{suffix}"
   end
 
@@ -120,6 +144,18 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
     )
   end
 
+  defp wait_for_project(project_id) do
+    poll_until(
+      fn ->
+        case ProjectionStore.project_projection(project_id) do
+          %{project_id: ^project_id} = project -> {:ok, project}
+          nil -> {:error, :missing}
+        end
+      end,
+      "project #{project_id}"
+    )
+  end
+
   describe "approval → dispatch → run.start bridge" do
     test "TaskApproved triggers task.dispatch then run.start via the wired Dispatcher" do
       project_id = unique_id("proj")
@@ -140,6 +176,8 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
                    path: System.tmp_dir!()
                  }
                })
+
+      wait_for_project(project_id)
 
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{
