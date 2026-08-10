@@ -201,6 +201,57 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
     assert {:ok, ConfiguredProvider} = Registry.route(:claim, {"project-1", "/tmp/project-1.db"})
   end
 
+  test "ProjectRegistered resolves provider short names passed as strings via the registry snapshot" do
+    assert :ok =
+             ProjectProviderProjector.process_event(%{
+               event_type: "ProjectRegistered",
+               payload: %{
+                 project_id: "project-1",
+                 path: "/tmp/project-1",
+                 task_provider: %{
+                   provider: "configured_provider",
+                   config: %{"database_path" => "/tmp/project-1.db"}
+                 }
+               }
+             })
+
+    assert {:ok, ConfiguredProvider} = Registry.route(:claim, {"project-1", "/tmp/project-1.db"})
+
+    refute :sys.get_state(Registry).per_project == %{}
+  end
+
+  test "ProjectRegistered with an invalid provider string leaves the project unrouted without interning the input" do
+    invalid = "invalid provider name with spaces #{System.unique_integer([:positive])}"
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert :ok =
+               ProjectProviderProjector.process_event(%{
+                 event_type: "ProjectRegistered",
+                 payload: %{
+                   project_id: "project-invalid",
+                   path: "/tmp/project-invalid",
+                   task_provider: %{
+                     provider: invalid,
+                     config: %{"database_path" => "/tmp/project-invalid.db"}
+                   }
+                 }
+               })
+    end)
+
+    # On failure the projector calls Registry.unregister_for_project/2, which
+    # leaves the project as {:unavailable, :task_provider_not_configured};
+    # route/2 surfaces that as :provider_unavailable_for_project.
+    assert {:error, :provider_unavailable_for_project} =
+             Registry.route(:claim, {"project-invalid", "/tmp/project-invalid.db"})
+
+    assert {:unavailable, :task_provider_not_configured} =
+             :sys.get_state(Registry).per_project["project-invalid"]
+
+    # The invalid string must not have been interned as an atom. If safe_concat
+    # is replaced with concat (or String.to_atom is reintroduced), this fails.
+    assert_raise ArgumentError, fn -> String.to_existing_atom(invalid) end
+  end
+
   test "ProjectUpdated without task_provider preserves existing per-project routing" do
     assert :ok =
              ProjectProviderProjector.process_event(%{

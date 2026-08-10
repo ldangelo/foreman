@@ -222,12 +222,42 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   end
 
   defp resolve_provider_module(provider_module) when is_binary(provider_module) do
-    module = Module.concat([provider_module])
+    case try_full_module(provider_module) do
+      {:ok, _} = ok ->
+        ok
 
-    if Code.ensure_loaded?(module) do
-      {:ok, module}
-    else
-      {:error, :task_provider_not_configured}
+      :not_full_module ->
+        # Short name like "beads" — look up the loaded module via the routing
+        # snapshot. The comparison uses Atom.to_string/1 on existing keys
+        # only, so the input string never becomes an atom.
+        match =
+          Enum.find_value(TaskProviderRegistry.routing_snapshot(), fn {id, module} ->
+            if Atom.to_string(id) == provider_module, do: module
+          end)
+
+        if is_atom(match) and not is_nil(match) do
+          {:ok, match}
+        else
+          {:error, :task_provider_not_configured}
+        end
+    end
+  end
+
+  # Validate a full module name without interning arbitrary input.
+  # Module.safe_concat/1 raises ArgumentError on invalid aliases (lowercase,
+  # spaces, reserved words, etc.) BEFORE creating the atom, so a malformed
+  # config string can never grow the atom table.
+  defp try_full_module(provider_module) when is_binary(provider_module) do
+    try do
+      candidate = Module.safe_concat([provider_module])
+
+      if Code.ensure_loaded?(candidate) and function_exported?(candidate, :capabilities, 0) do
+        {:ok, candidate}
+      else
+        :not_full_module
+      end
+    rescue
+      ArgumentError -> :not_full_module
     end
   end
 
