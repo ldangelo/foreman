@@ -665,6 +665,10 @@ defmodule ForemanServer.ProjectionStore do
     apply_terminal_run_event(state, payload, "stuck")
   end
 
+  defp apply_event_by_type(state, "RunCancelled", payload) do
+    apply_terminal_run_event(state, payload, "cancelled")
+  end
+
   defp apply_event_by_type(state, "PhaseStarted", payload) do
     case decode_for_projection("PhaseStarted", payload) do
       %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event

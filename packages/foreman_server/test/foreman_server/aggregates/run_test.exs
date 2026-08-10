@@ -147,8 +147,8 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert cancel_event.stream_id == "run:#{run_id}"
     assert cancel_event.payload.run_id == run_id
     assert cancel_event.payload.project_id == "project-test-run_id"
-    assert cancel_event.payload.status == "cancelled"
     assert cancel_event.payload.reason == "user_abort"
+    assert cancel_event.payload.status == "cancelled"
 
     cancelled_state =
       Run.apply_event(started_state, %{

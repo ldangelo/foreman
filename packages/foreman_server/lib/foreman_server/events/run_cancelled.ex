@@ -5,8 +5,9 @@ defmodule ForemanServer.Events.RunCancelled do
           run_id: String.t(),
           project_id: String.t(),
           reason: String.t() | nil,
+          status: String.t() | nil,
           sequence: non_neg_integer() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :project_id, :reason, :sequence]
+  defstruct [:run_id, :project_id, :reason, :status, :sequence]
 end

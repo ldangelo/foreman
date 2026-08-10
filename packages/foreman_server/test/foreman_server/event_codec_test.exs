@@ -168,6 +168,27 @@ defmodule ForemanServer.EventCodecTest do
         EventCodec.decode!("RunFlaggedStuck", %{run_id: "r1", flagged_at: 1_234})
       end
     end
+
+    test "RunCancelled round-trips the operator-supplied status field" do
+      # `run.cancel` injects `status: "cancelled"` into the persisted
+      # payload. The typed struct declares that field so replay decoding
+      # accepts it; apply_event hardcodes "cancelled" on the in-memory
+      # state but the event itself preserves the operator intent.
+      assert EventCodec.decode!("RunCancelled", %{
+               run_id: "r1",
+               project_id: "p1",
+               reason: "operator_abort",
+               status: "cancelled",
+               sequence: 9
+             }) ==
+               %RunCancelled{
+                 run_id: "r1",
+                 project_id: "p1",
+                 reason: "operator_abort",
+                 status: "cancelled",
+                 sequence: 9
+               }
+    end
   end
 
   describe "decode!/2 paused run events" do

@@ -268,9 +268,9 @@ defmodule ForemanServer.Aggregates.Run do
                  |> Map.put(:project_id, state.project_id)
              }}
           end
-        end
       end
     end
+  end
 
   # run.pause — emits `RunPaused` (NON-terminal; state shape `paused`,
   # `terminal?: false` so `run.resume` is accepted). Pause is distinct
