@@ -252,6 +252,42 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(invalid) end
   end
 
+  test "ProjectRegistered iterates the routing snapshot safely when active project entries (string keys) coexist with provider entries (atom keys)" do
+    # Pre-register an active project so the routing snapshot contains a
+    # string-keyed entry (`"foreman" => ConfiguredProvider`) alongside the
+    # atom-keyed provider entry (`{:configured_provider, ConfiguredProvider}`).
+    # Without the `is_atom` guard, the resolver's Enum.find_value callback
+    # would receive a string key and crash inside `Atom.to_string/1`.
+    :ok =
+      Registry.register_for_project(
+        "foreman",
+        ConfiguredProvider,
+        %{"database_path" => "/tmp/foreman.db"}
+      )
+
+    # The new event's provider name is the atom key; resolution must skip the
+    # string entry and match the atom entry without raising.
+    assert :ok =
+             ProjectProviderProjector.process_event(%{
+               event_type: "ProjectRegistered",
+               payload: %{
+                 project_id: "project-mixed-keys",
+                 path: "/tmp/project-mixed-keys",
+                 task_provider: %{
+                   provider: "configured_provider",
+                   config: %{"database_path" => "/tmp/project-mixed-keys.db"}
+                 }
+               }
+             })
+
+    assert {:ok, ConfiguredProvider} =
+             Registry.route(:claim, {"project-mixed-keys", "/tmp/project-mixed-keys.db"})
+
+    # The pre-registered string-keyed project must remain reachable.
+    assert {:ok, ConfiguredProvider} =
+             Registry.route(:claim, {"foreman", "/tmp/foreman.db"})
+  end
+
   test "ProjectUpdated without task_provider preserves existing per-project routing" do
     assert :ok =
              ProjectProviderProjector.process_event(%{

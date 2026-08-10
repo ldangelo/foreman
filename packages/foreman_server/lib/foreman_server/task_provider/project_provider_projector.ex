@@ -228,11 +228,19 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
 
       :not_full_module ->
         # Short name like "beads" — look up the loaded module via the routing
-        # snapshot. The comparison uses Atom.to_string/1 on existing keys
-        # only, so the input string never becomes an atom.
+        # snapshot. The snapshot shape is mixed: atom-keyed provider entries
+        # (`%{beads => BeadsAdapter, ...}`) merged with string-keyed active
+        # project entries (`%{"project-1" => BeadsAdapter, ...}`). We only
+        # match against atom keys — a project ID must never be resolved as a
+        # provider module. Atom.to_string/1 is only called on existing atoms,
+        # so the input string is never interned.
         match =
-          Enum.find_value(TaskProviderRegistry.routing_snapshot(), fn {id, module} ->
-            if Atom.to_string(id) == provider_module, do: module
+          Enum.find_value(TaskProviderRegistry.routing_snapshot(), fn
+            {id, module} when is_atom(id) ->
+              if Atom.to_string(id) == provider_module, do: module
+
+            _ ->
+              nil
           end)
 
         if is_atom(match) and not is_nil(match) do
