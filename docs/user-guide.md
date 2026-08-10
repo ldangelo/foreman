@@ -514,3 +514,68 @@ The bundled `plan.yaml` ships under
 `packages/foreman_server/priv/defaults/workflows/`. Re-run
 `foreman init --force` to refresh the installed copy at
 `~/.foreman/workflows/plan.yaml` after a Foreman upgrade.
+
+## 15. Cancelling a stuck run
+
+Runs that have lost their worker, are wedged in a phase retry loop, or
+are otherwise uninteresting can be terminated by an operator via the
+`run.cancel` command. This is the only sanctioned way to mark a run
+`terminal: true` with status `cancelled` — the worker protocol has no
+equivalent on the operator surface.
+
+### CLI
+
+```text
+foreman run cancel --id <run-id> [--reason <reason>]
+```
+
+Flags:
+
+- `--id` (required) — the run ID to cancel.
+- `--reason` (optional) — human-readable reason stored in the
+  `RunCancelled` event payload. Defaults to `operator_cancel`.
+
+Example:
+
+```text
+foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
+```
+
+### HTTP
+
+The same command is exposed via `POST /api/commands`:
+
+```json
+{
+  "type": "run.cancel",
+  "command_id": "op-cancel-1",
+  "payload": {
+    "run_id": "run-f971378012da4da2fec3ec74dbac325d",
+    "reason": "stuck_in_recovery"
+  }
+}
+```
+
+### Validation
+
+The envelope is validated at two layers before the Run aggregate
+processes it:
+
+1. `ForemanServerWeb.CommandController` accepts the request only if
+   `run.cancel` is in the operator allowlist and the derived
+   `aggregate_id` matches `"run:<run_id>"`.
+2. `ForemanServer.CommandGateway` enforces a non-empty `payload.run_id`
+   and rejects envelopes whose `aggregate_id` does not match the
+   prefixed run ID.
+
+On success the Run aggregate emits `RunCancelled` with the supplied
+`reason` and marks the run `terminal: true` with status `cancelled`.
+The projection is rebuilt from the event stream on the next read.
+
+### When to use
+
+- A worker's terminal event was lost and `RunLifecycleReconciler` has
+  not yet observed the disconnect.
+- A phase is stuck in retry and you want to stop retrying before the
+  next dispatch.
+- A run was started in error and should not have been.

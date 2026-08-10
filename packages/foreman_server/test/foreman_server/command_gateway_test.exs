@@ -162,6 +162,75 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
+  describe "run.cancel validation" do
+    test "rejects missing run_id" do
+      assert {:error, {:invalid_envelope, :missing_run_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-1",
+                 aggregate_id: "run:abc",
+                 type: "run.cancel",
+                 payload: %{}
+               })
+    end
+
+    test "rejects empty run_id" do
+      assert {:error, {:invalid_envelope, :missing_run_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-1",
+                 aggregate_id: "run:abc",
+                 type: "run.cancel",
+                 payload: %{run_id: ""}
+               })
+    end
+
+    test "rejects non-binary run_id" do
+      assert {:error, {:invalid_envelope, :missing_run_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-1",
+                 aggregate_id: "run:abc",
+                 type: "run.cancel",
+                 payload: %{run_id: 123}
+               })
+    end
+
+    test "rejects mismatched aggregate_id" do
+      assert {:error, {:invalid_envelope, :aggregate_id_mismatch}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-1",
+                 aggregate_id: "run:wrong",
+                 type: "run.cancel",
+                 payload: %{run_id: "abc"}
+               })
+    end
+
+    test "rejects non-prefixed aggregate_id" do
+      assert {:error, {:invalid_envelope, :aggregate_id_mismatch}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-1",
+                 aggregate_id: "abc",
+                 type: "run.cancel",
+                 payload: %{run_id: "abc"}
+               })
+    end
+
+    test "accepts well-formed run.cancel and surfaces aggregate-layer error" do
+      # No run exists for this id, so dispatch will fail at the aggregate
+      # layer with {:error, {:run_not_found, _}} or similar. The test
+      # confirms envelope validation succeeds and the failure is NOT an
+      # envelope error.
+      result =
+        CommandGateway.dispatch_operator(%{
+          command_id: "cid-1",
+          aggregate_id: "run:run-no-such",
+          type: "run.cancel",
+          payload: %{run_id: "run-no-such", reason: "test"}
+        })
+
+      refute match?({:error, {:invalid_envelope, _}}, result)
+      refute match?({:error, {:command_not_allowed, _}}, result)
+    end
+  end
+
   describe "task.approve validation" do
     test "rejects missing task_id" do
       assert {:error, {:invalid_envelope, :missing_task_id}} =

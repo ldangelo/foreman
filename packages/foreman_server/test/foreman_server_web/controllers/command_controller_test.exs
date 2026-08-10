@@ -213,4 +213,43 @@ defmodule ForemanServerWeb.CommandControllerTest do
     body_json = json_response(conn, 422)
     refute body_json["error"] =~ "invalid_envelope"
   end
+
+  test "POST /api/commands rejects run.cancel with mismatched aggregate_id" do
+    body = %{
+      type: "run.cancel",
+      aggregate_id: "run:wrong-id",
+      payload: %{run_id: "run-real", reason: "test"}
+    }
+
+    conn = build_conn() |> post("/api/commands", body)
+    assert json_response(conn, 400)["error"] == "invalid_envelope"
+  end
+
+  test "POST /api/commands accepts run.cancel envelope and reaches dispatch" do
+    # No run exists for this id, so dispatch itself will fail at the
+    # aggregate layer; what we verify here is that envelope validation
+    # accepts the body and yields a structured non-400 response.
+    body = %{
+      type: "run.cancel",
+      payload: %{run_id: "run-does-not-exist-yet", reason: "test"}
+    }
+
+    conn = build_conn() |> post("/api/commands", body)
+    body_json = json_response(conn, 422)
+    refute body_json["error"] =~ "invalid_envelope"
+  end
+
+  test "POST /api/commands accepts run.cancel with explicit matching aggregate_id" do
+    run_id = "run-cancel-explicit"
+
+    body = %{
+      type: "run.cancel",
+      aggregate_id: "run:#{run_id}",
+      payload: %{run_id: run_id, reason: "test"}
+    }
+
+    conn = build_conn() |> post("/api/commands", body)
+    body_json = json_response(conn, 422)
+    refute body_json["error"] =~ "invalid_envelope"
+  end
 end

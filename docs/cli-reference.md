@@ -114,6 +114,25 @@ foreman project list --include-archived
 
 Fetch a run projection. Issues `GET /api/runs/:id`.
 
+### `foreman run cancel --id <run-id> [--reason <reason>]`
+
+Operator-initiated cancellation. Issues `POST /api/commands` with a
+`run.cancel` envelope. The server validates the envelope, the
+`CommandGateway` enforces `aggregate_id == "run:<run_id>"`, and the Run
+aggregate emits `RunCancelled` (terminal, status `cancelled`).
+
+Flags:
+
+- `--id` (required) — the run ID to cancel.
+- `--reason` (optional) — human-readable reason stored in the
+  `RunCancelled` event payload. Defaults to `operator_cancel`.
+
+Example:
+
+```text
+foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
+```
+
 ### `foreman doctor task_provider`
 
 Run the task-provider health check. The command emits one JSON object

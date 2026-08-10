@@ -38,7 +38,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Workflow.Approval
 
-  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve)
+  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve run.cancel)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -231,14 +231,30 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp validate_aggregate_id(%{type: "run.cancel", aggregate_id: aggregate_id, payload: payload}) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+
+    cond do
+      not is_binary(run_id) or run_id == "" ->
+        {:error, {:invalid_envelope, :missing_run_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("run", run_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
   @reserved_approval_fields ~w(approval_id approved_at run_id workflow_snapshot)a
   defp reserved_approval_field?(payload) do
     Enum.any?(@reserved_approval_fields, fn key ->
       get_value(payload, key) not in [nil, ""]
     end)
   end
-
-  defp validate_aggregate_id(_), do: :ok
 
   # Canonical stream ID for a domain entity. Mirrors the convention used by
   # `Aggregate.Aggregator` and the existing actor tests (`run:abc`,
