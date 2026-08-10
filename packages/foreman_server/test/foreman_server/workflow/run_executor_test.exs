@@ -156,7 +156,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       :sys.suspend(dispatcher)
 
       on_exit(fn ->
-        if Process.alive?(dispatcher), do: :sys.resume(dispatcher)
+        kill_and_restart_dispatcher(dispatcher)
       end)
     end
 
@@ -277,7 +277,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
        }}
     end)
 
-    assert {:ok, _pid} = start_run_executor!(run_id, task_id)
+    assert is_pid(start_run_executor!(run_id, task_id))
 
     assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
              receive_message()
@@ -464,7 +464,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
        }}
     end)
 
-    assert {:ok, _pid} = start_run_executor!(run_id, task_id)
+    assert is_pid(start_run_executor!(run_id, task_id))
 
     assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
              receive_message()
@@ -653,7 +653,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       {:error, %{stdout: "", stderr: stderr, exit_code: 9}}
     end)
 
-    assert {:ok, _pid} = start_run_executor!(run_id, task_id)
+    assert is_pid(start_run_executor!(run_id, task_id))
 
     assert {:runner_cmd, :claim, {:update, %{flags: ["--claim", ^task_id]}}, _, _} =
              receive_message()
@@ -1080,7 +1080,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
   defp start_run_executor!(run_id, task_id) do
     task = ProjectionStore.task_projection(task_id)
-    RunExecutor.start_link(run_id, task)
+
+    start_supervised!(%{
+      id: {RunExecutor, run_id},
+      start: {RunExecutor, :start_link, [run_id, task]},
+      restart: :transient,
+      shutdown: 5_000,
+      type: :worker
+    })
   end
 
   defp poll_until(fun, label) do
@@ -1121,6 +1128,17 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       message -> message
     after
       timeout -> flunk("expected message within #{timeout}ms")
+    end
+  end
+
+  defp kill_and_restart_dispatcher(_dispatcher) do
+    app_sup = Process.whereis(ForemanServer.Application)
+
+    if app_sup do
+      :ok = Supervisor.terminate_child(app_sup, ForemanServer.Workflow.Dispatcher)
+
+      {:ok, _new_dispatcher} =
+        Supervisor.restart_child(app_sup, ForemanServer.Workflow.Dispatcher)
     end
   end
 end

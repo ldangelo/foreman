@@ -136,7 +136,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       :sys.suspend(dispatcher)
 
       on_exit(fn ->
-        if Process.alive?(dispatcher), do: :sys.resume(dispatcher)
+        kill_and_restart_dispatcher(dispatcher)
       end)
     end
 
@@ -254,7 +254,17 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end)
 
     task = ProjectionStore.task_projection(task_id)
-    assert {:ok, _pid} = RunExecutor.start_link(run_id, task)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :transient,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
 
     # Adapter must receive the slash command at byte zero.
     assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
@@ -536,5 +546,16 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         "name" => %{"type" => "string"}
       }
     }
+  end
+
+  defp kill_and_restart_dispatcher(_dispatcher) do
+    app_sup = Process.whereis(ForemanServer.Application)
+
+    if app_sup do
+      :ok = Supervisor.terminate_child(app_sup, ForemanServer.Workflow.Dispatcher)
+
+      {:ok, _new_dispatcher} =
+        Supervisor.restart_child(app_sup, ForemanServer.Workflow.Dispatcher)
+    end
   end
 end
