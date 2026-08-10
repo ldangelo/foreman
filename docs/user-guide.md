@@ -579,3 +579,87 @@ The projection is rebuilt from the event stream on the next read.
 - A phase is stuck in retry and you want to stop retrying before the
   next dispatch.
 - A run was started in error and should not have been.
+
+## 16. Retrying a task bound to an orphaned run
+
+Tasks whose bound run has already terminated (orphan remediation) are
+recovered via the `task.retry` operator command. `task.retry` is the
+only sanctioned way to clear a task's bound run id and put the task
+back into `open` so a fresh dispatch can re-approve it.
+
+### CLI
+
+```text
+foreman task retry --id <task-id> [--reason <text>]
+```
+
+Flags:
+
+- `--id` (required) — the task ID to retry.
+- `--reason` (optional) — human-readable reason recorded on the
+  `TaskRetried` event payload. Omitted when not supplied.
+
+Example:
+
+```text
+foreman task retry --id foreman-vcs-worktree-support --reason orphan_remediation_smoke
+```
+
+### HTTP
+
+The same command is exposed via `POST /api/commands`:
+
+```json
+{
+  "type": "task.retry",
+  "command_id": "op-retry-1",
+  "payload": {
+    "task_id": "foreman-vcs-worktree-support",
+    "reason": "orphan_remediation_smoke"
+  }
+}
+```
+
+### Terminal-attestation contract
+
+`CommandGateway` reads the task projection, looks up the bound run
+projection through `ProjectionStore.run/1`, requires the run to be
+`terminal? == true` with a matching `task_id`, and attaches
+`acknowledged_run_id`, `acknowledged_at`, and `run_terminal_reason`
+to the payload as the single trusted boundary for terminal
+attestation. The Task aggregate then enforces
+`payload.acknowledged_run_id == state.run_id` before emitting
+`TaskRetried`.
+
+On success `TaskRetried` clears `run_id`, `approval_id`,
+`approved_by`, `approved_at`, `workflow_snapshot`,
+`acknowledged_run_id`, `run_terminal_reason`, and `run_terminal_at`,
+and resets `status` to `open`. The projection is rebuilt from the
+event stream on the next read.
+
+### When the retry is rejected
+
+The retry is rejected when:
+
+- the task is not found (`task_not_found`),
+- the task has no bound run (`missing_or_invalid` / `:run_id`),
+- the run projection is missing (`run_not_found`),
+- the run's `task_id` no longer matches the task
+  (`run_task_binding_drift`),
+- the run is not terminal (`run_not_terminal`; the gateway surfaces
+  the current `status` so operators can diagnose
+  stuck-but-not-yet-terminal runs).
+
+### When to use
+
+- Boot scan or `Dispatcher` fan-out observed a terminal run but the
+  task is still `in_progress` against a dead run.
+- A phase is stuck in retry and the run has gone terminal without
+  emitting `task.run_terminated`.
+- A worker session was lost and `RunLifecycleReconciler` has already
+  marked the run terminal.
+
+The Dispatcher subscriber path (`run.cancel` →
+`task.run_terminated`) remains in place for newly observed terminal
+events; both paths converge on the same payload shape. Operators use
+`task.retry` directly for already-terminal orphans.
