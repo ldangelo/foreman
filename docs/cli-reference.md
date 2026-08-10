@@ -229,3 +229,49 @@ resolved path does not exist on disk when the phase starts. Operators
 can inspect the failure via `foreman run get <run_id>` — the phase
 projection records `failure_reason` containing the dotted key and
 resolved path.
+
+### `foreman task retry --id <task-id> [--reason <text>]`
+
+Operator remediation path for tasks bound to orphaned runs. Issues
+`POST /api/commands` with a `task.retry` envelope. The
+`CommandGateway` reads the task projection, looks up the bound run
+projection through `ProjectionStore.run/1`, requires the run to be
+`terminal? == true` with a matching `task_id`, and attaches
+`acknowledged_run_id`, `acknowledged_at`, and `run_terminal_reason`
+to the payload as the single trusted boundary for terminal
+attestation. The Task aggregate then enforces
+`payload.acknowledged_run_id == state.run_id` and emits
+`TaskRetried`, which clears `run_id`, `approval_id`, `approved_by`,
+`approved_at`, `workflow_snapshot`, `acknowledged_run_id`,
+`run_terminal_reason`, and `run_terminal_at`, and resets `status`
+to `open`.
+
+| Flag | Description |
+|---|---|
+| `--id ID` | **Required.** Task identifier. |
+| `--reason TEXT` | Optional reason recorded on `TaskRetried`. |
+| `--format json` | Print the accepted command response as JSON. |
+
+The retry is rejected when:
+
+- the task is not found (`task_not_found`),
+- the task has no bound run (`missing_or_invalid` / `:run_id`),
+- the run projection is missing (`run_not_found`),
+- the run's `task_id` no longer matches the task
+  (`run_task_binding_drift`),
+- the run is not terminal (`run_not_terminal`; the gateway surfaces
+  the current `status` so operators can diagnose
+  stuck-but-not-yet-terminal runs).
+
+The Dispatcher subscriber path (`run.cancel` →
+`task.run_terminated`) remains in place for newly observed terminal
+events; both paths converge on the same payload shape. Operators use
+`task.retry` directly for already-terminal orphans.
+
+Example:
+
+```
+foreman task retry \
+  --id foreman-vcs-worktree-support \
+  --reason orphan_remediation_smoke
+```
