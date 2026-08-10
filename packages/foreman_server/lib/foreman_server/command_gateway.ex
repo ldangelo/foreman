@@ -231,6 +231,24 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
+  defp validate_aggregate_id(%{type: "task.retry", aggregate_id: aggregate_id, payload: payload}) do
+    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
+
+    cond do
+      not is_binary(task_id) or task_id == "" ->
+        {:error, {:invalid_envelope, :missing_task_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("task", task_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
   defp validate_aggregate_id(%{type: "run.cancel", aggregate_id: aggregate_id, payload: payload}) do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
 
@@ -345,8 +363,80 @@ defmodule ForemanServer.CommandGateway do
         {:error, {:invalid_envelope, :missing_task_id}}
 
       true ->
-        {:ok, command}
+        enrich_task_retry_with_bound_run(command, task_id)
     end
+  end
+
+  # `task.retry` is the unconditional operator remediation path. It MUST
+  # only commit when the task is bound to a run that is currently
+  # terminal — so we look up the bound run projection through the
+  # gateway (single trusted boundary), refuse to enrich otherwise, and
+  # attach the terminal evidence to the payload. The aggregate then
+  # validates that the attached `acknowledged_run_id` matches its own
+  # currently-bound run before emitting `TaskRetried`.
+  #
+  # The Dispatcher subscriber path (run.cancel → task.run_terminated)
+  # remains in place for newly observed terminal events; the aggregate
+  # also accepts that path. Both paths converge on the same payload
+  # shape, so the aggregate needs only one precondition:
+  # `payload.acknowledged_run_id == state.run_id`.
+  defp enrich_task_retry_with_bound_run(command, task_id) do
+    task = ProjectionStore.task_projection(task_id)
+
+    cond do
+      task == nil ->
+        {:error, {:task_not_found, task_id}}
+
+      true ->
+        enrich_task_retry_with_run_projection(command, task)
+    end
+  end
+
+  defp enrich_task_retry_with_run_projection(command, task) do
+    bound_run_id = Map.get(task, :run_id)
+
+    cond do
+      not is_binary(bound_run_id) or bound_run_id == "" ->
+        {:error, {:missing_or_invalid, :run_id}}
+
+      true ->
+        run = ProjectionStore.run(bound_run_id)
+
+        cond do
+          run == nil ->
+            {:error, {:run_not_found, bound_run_id}}
+
+          Map.get(run, :task_id) != Map.get(task, :task_id) ->
+            {:error,
+             {:run_task_binding_drift, bound_run_id, Map.get(run, :task_id),
+              Map.get(task, :task_id)}}
+
+          Map.get(run, :terminal?) != true ->
+            {:error, {:run_not_terminal, Map.get(run, :status)}}
+
+          true ->
+            attach_retry_evidence(command, run)
+        end
+    end
+  end
+
+  defp attach_retry_evidence(command, run) do
+    acknowledged_at =
+      case Map.get(run, :last_event_at_ms) do
+        ms when is_integer(ms) ->
+          DateTime.from_unix!(ms, :millisecond) |> DateTime.to_iso8601()
+
+        _ ->
+          DateTime.utc_now() |> DateTime.to_iso8601()
+      end
+
+    enriched_payload =
+      command.payload
+      |> Map.put(:acknowledged_run_id, Map.get(run, :run_id))
+      |> Map.put(:acknowledged_at, acknowledged_at)
+      |> Map.put(:run_terminal_reason, Map.get(run, :failure_reason))
+
+    {:ok, %{command | payload: enriched_payload}}
   end
 
   defp enrich_operator_command(command), do: {:ok, command}

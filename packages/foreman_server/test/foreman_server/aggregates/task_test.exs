@@ -403,19 +403,23 @@ defmodule ForemanServer.Aggregates.TaskTest do
   end
 
   describe "handle_command/2 — task.retry" do
-    test "emits TaskRetried when run has been acknowledged" do
+    test "emits TaskRetried when payload carries gateway-attested run evidence" do
       state = %State{
         Task.initial_state()
         | exists?: true,
           task_id: "t-1",
           run_id: "run-xyz",
-          acknowledged_run_id: "run-xyz"
+          status: "in_progress"
       }
 
       assert {:ok, event_spec} =
                Task.handle_command(state, %{
                  type: "task.retry",
-                 payload: %{task_id: "t-1", reason: "remediation"}
+                 payload: %{
+                   task_id: "t-1",
+                   acknowledged_run_id: "run-xyz",
+                   reason: "remediation"
+                 }
                })
 
       assert event_spec.event_type == "TaskRetried"
@@ -423,19 +427,38 @@ defmodule ForemanServer.Aggregates.TaskTest do
       assert event_spec.payload.reason == "remediation"
     end
 
-    test "rejects when run acknowledgement is pending" do
+    test "rejects when payload has no gateway-attested run evidence" do
       state = %State{
         Task.initial_state()
         | exists?: true,
           task_id: "t-1",
           run_id: "run-xyz",
-          acknowledged_run_id: nil
+          status: "in_progress"
       }
 
-      assert {:error, {:run_acknowledgement_pending, "run-xyz"}} =
+      assert {:error, {:missing_or_invalid, :acknowledged_run_id}} =
                Task.handle_command(state, %{
                  type: "task.retry",
                  payload: %{task_id: "t-1"}
+               })
+    end
+
+    test "rejects when attested run_id does not match bound run" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          run_id: "run-xyz",
+          status: "in_progress"
+      }
+
+      assert {:error, {:run_id_mismatch, "run-xyz", "run-other"}} =
+               Task.handle_command(state, %{
+                 type: "task.retry",
+                 payload: %{
+                   task_id: "t-1",
+                   acknowledged_run_id: "run-other"
+                 }
                })
     end
 
@@ -447,10 +470,32 @@ defmodule ForemanServer.Aggregates.TaskTest do
           run_id: nil
       }
 
-      assert {:error, :no_run_bound} =
+      assert {:error, {:run_id_mismatch, nil, "run-xyz"}} =
                Task.handle_command(state, %{
                  type: "task.retry",
-                 payload: %{task_id: "t-1"}
+                 payload: %{
+                   task_id: "t-1",
+                   acknowledged_run_id: "run-xyz"
+                 }
+               })
+    end
+
+    test "rejects when task is not in_progress" do
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          run_id: "run-xyz",
+          status: "open"
+      }
+
+      assert {:error, {:task_not_in_progress, "open"}} =
+               Task.handle_command(state, %{
+                 type: "task.retry",
+                 payload: %{
+                   task_id: "t-1",
+                   acknowledged_run_id: "run-xyz"
+                 }
                })
     end
   end

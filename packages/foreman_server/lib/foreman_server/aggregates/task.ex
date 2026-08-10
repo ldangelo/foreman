@@ -356,8 +356,14 @@ defmodule ForemanServer.Aggregates.Task do
 
   def handle_command(state, %{type: "task.retry", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         {:ok, ack_id} <-
+           Aggregate.required_binary(
+             Aggregate.get(payload, :acknowledged_run_id),
+             :acknowledged_run_id
+           ),
          :ok <- require_exists(state, task_id),
-         :ok <- require_run_acknowledged_terminal(state) do
+         :ok <- require_run_matches_bound(state, ack_id),
+         :ok <- require_in_progress(state) do
       {:ok,
        %{
          stream_id: "task:#{task_id}",
@@ -492,32 +498,6 @@ defmodule ForemanServer.Aggregates.Task do
 
   defp require_run_matches_bound(%State{run_id: bound}, run_id),
     do: {:error, {:run_id_mismatch, bound, run_id}}
-
-  # `task.retry` is only valid when a terminal-run acknowledgement is in
-  # place: `state.acknowledged_run_id` matches the currently-bound run.
-  # This guards against both stale retries (acknowledged_run_id is nil
-  # because no run_terminated ever landed) and out-of-order retries
-  # against a different run.
-  defp require_run_acknowledged_terminal(%State{run_id: nil}), do: {:error, :no_run_bound}
-
-  defp require_run_acknowledged_terminal(%State{
-         run_id: run_id,
-         acknowledged_run_id: run_id
-       })
-       when is_binary(run_id),
-       do: :ok
-
-  defp require_run_acknowledged_terminal(%State{
-         run_id: run_id,
-         acknowledged_run_id: nil
-       }),
-       do: {:error, {:run_acknowledgement_pending, run_id}}
-
-  defp require_run_acknowledged_terminal(%State{
-         run_id: bound,
-         acknowledged_run_id: ack
-       }),
-       do: {:error, {:run_acknowledgement_stale, bound, ack}}
 
   defp allow_transition(%State{status: status}, new_status)
        when status == "merged" and new_status != status,
