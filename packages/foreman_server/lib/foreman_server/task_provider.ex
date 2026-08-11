@@ -3,8 +3,8 @@ defmodule ForemanServer.TaskProvider do
   TRD-2026-48f7b420 §PR 1a: behaviour for task provider integrations.
 
   Providers expose three metadata callbacks (`name/0`, `capabilities/0`,
-  `available?/0`) plus eight operational callbacks (`list_ready/2`, `get/2`,
-  `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, and
+  `available?/0`) plus nine operational callbacks (`create/2`, `list_ready/2`,
+  `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, and
   `add_dependency/3`). The `@callback` declarations define the contract and
   provide the `behaviour_info(:callbacks)` reflection used by TRD-001-TEST.
   """
@@ -44,6 +44,22 @@ defmodule ForemanServer.TaskProvider do
 
   @doc "Stable provider name used for registration and routing."
   @callback name() :: String.t()
+  @doc """
+  Create a new issue in the upstream provider, returning a
+  `ForemanServer.TaskProvider.Issue{}` carrying the provider-side identifier.
+
+  The canonical seven-key `attrs` map (see TRD-2026-81315f37 Architecture
+  Decision #12) carries the two correlation handles (`task_id`, `command_id`)
+  that link the new provider issue back to the dispatching Foreman command,
+  plus the five data fields (`title`, `description`, `priority`, `task_type`,
+  `dedupe_key`) that drive the provider-side argv flags.
+
+  `task_id` and `command_id` are required — the provider MUST populate them
+  into the linkage envelope (e.g. `--agent-context`) so the bead record can
+  be correlated back to the Foreman task that created it (REQ-020 / REQ-021).
+  """
+  @callback create(project_id :: String.t(), attrs :: map()) ::
+              {:ok, Issue.t()} | {:error, ProviderError.t()}
 
   @doc "Provider capability map advertised at registration time."
   @callback capabilities() :: map()
