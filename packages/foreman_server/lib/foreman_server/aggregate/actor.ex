@@ -88,7 +88,13 @@ defmodule ForemanServer.Aggregate.Actor do
       aggregate_module: aggregate_module,
       aggregate_id: aggregate_id,
       module_state: module_state,
-      version: version
+      version: version,
+      # CLOSE-ONLY-ONCE guarantee: the cache is consulted before any
+      # `BeadsAdapter.complete/3` call; once cleared, no subsequent close
+      # is issued for the same logical `command_id`. The cache is
+      # process-local and does NOT survive a crash (AC-024-3) — rehydration
+      # starts with an empty map and the orphan janitor absorbs stragglers.
+      in_flight_beads: %{}
     }
 
     {:ok, state}
