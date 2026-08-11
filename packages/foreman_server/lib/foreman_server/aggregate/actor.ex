@@ -277,6 +277,16 @@ defmodule ForemanServer.Aggregate.Actor do
         stage2_then_stage3(state, cmd, provider, stage1_event_spec)
 
       cached_bead_id ->
+        Telemetry.execute(
+          [:foreman_server, :aggregate, :in_flight_beads, :reused],
+          %{},
+          %{
+            command_id: cmd.command_id,
+            aggregate_id: state.aggregate_id,
+            bead_id: cached_bead_id
+          }
+        )
+
         enrich_with_cached_bead_id(state, cmd, cached_bead_id)
     end
   end
@@ -307,6 +317,12 @@ defmodule ForemanServer.Aggregate.Actor do
           state
           | in_flight_beads: Map.put(state.in_flight_beads, cmd.command_id, bead_id)
         }
+
+        Telemetry.execute(
+          [:foreman_server, :aggregate, :in_flight_beads, :populated],
+          %{},
+          %{command_id: cmd.command_id, aggregate_id: state.aggregate_id, bead_id: bead_id}
+        )
 
         enrich_with_cached_bead_id(new_state, cmd, bead_id)
 
