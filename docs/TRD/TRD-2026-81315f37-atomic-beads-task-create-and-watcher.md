@@ -1,17 +1,17 @@
 ---
 document_id: TRD-2026-81315f37
 label: trd-atomic-beads-task-create-and-watcher
-version: 1.0.5
-status: Ready for Implementation
-date: 2026-08-10
-prd_reference: PRD-2026-81315f37
+version: 1.0.6
+status: Draft
+date: 2026-08-11
+prd_reference: docs/PRD/PRD-2026-81315f37-atomic-beads-task-create-and-watcher.md
 prd_label: prd-atomic-beads-task-create-and-watcher
 scale_depth: STANDARD
 total_requirements: 7
 total_acceptance_criteria: 30
+total_tasks: 31
 design_readiness_score: 4.0
 readiness_score: 4.0
-total_tasks: 24
 kind: trd
 ---
 
@@ -19,566 +19,823 @@ kind: trd
 
 ## 1. Executive Summary
 
-This TRD specifies the implementation of the design contract in `PRD-2026-81315f37-atomic-beads-task-create-and-watcher`. It is the work that closes the loop between Foreman and Beads in both directions: every `task.create` for a Beads-backed project materialises a Beads issue synchronously inside the Actor hook (Foreman → Beads), and a tail-mode JSONL watcher plus an orphan janitor absorb the opposite direction (Beads → Foreman) and the divergence cases. The contract is **compensating consistency, not true atomicity**: the in-process synchronous hook delivers synchronous all-or-nothing for the normal path (a `br create` failure returns the provider error and produces no `TaskCreated` event), and the orphan janitor absorbs the residual gap from Actor crashes and failed-compensation paths within a configurable grace window — never "no divergence under any failure".
+This TRD turns PRD `PRD-2026-81315f37-atomic-beads-task-create-and-watcher` (v1.0.5, readiness 4.0, 7 REQs, 30 ACs) into a concrete implementation plan for the synchronous `task.create` ↔ Beads Rust `br create` linkage slice. The PRD micro UUID `81315f37` is preserved across artifacts so PRD/TRD pairs correlate 1:1. The label prefix changes from `prd-` to `trd-` (`trd-atomic-beads-task-create-and-watcher`); the label is display-only and all cross-references use the micro UUID.
 
-The slice ships as **three PRs** that decompose the work into reviewable, independently deployable chunks:
+The implementation lives under `packages/foreman_server/` (the Fortium foreman repo's existing Phoenix package — paths in this TRD are package-relative). The slice is supervised by the existing `ForemanServer.Application` supervisor tree; the new supervisor(s) are children, not a parallel OTP application.
 
-1. **PR 1 — `TaskProvider` behaviour extension + `BeadsAdapter.create/2`.** Add the `create/2` callback to the behaviour, implement it on `BeadsAdapter`, advertise `:create` in `capabilities/0`, route the `INVALID_TITLE` / `INVALID_PRIORITY` / `INVALID_ISSUE_TYPE` / `DUPLICATE_TASK_ID` / `CREATE_FAILED` error codes through `BeadsAdapter.CodeMap`. Touches the BEHAVIOUR layer — gets the callback count from 11 → 12 and the argv-construction helpers ready.
-2. **PR 2 — Actor hook + in-flight cache + watcher-import branch + CommandGateway boundary invariant.** Wires the two-stage aggregate finalization contract (stage 1 validate; stage 2 `BeadsAdapter.create/2` if validation succeeds; stage 3 re-decide with the enriched command payload) into `Aggregate.Actor.do_dispatch/4`; adds the `in_flight_beads: %{command_id => bead_handle}` cache consulted before any `BeadsAdapter.create/2` call; implements the watcher-import branch (skip stage 2 when `payload["external_id"]` is pre-populated); enforces the CommandGateway boundary invariant (`dispatch_operator/2` rejects `task.create` with non-nil `external_id` at the existing envelope allowlist). Touches the COMMAND-DISPATCH layer — the synchronous round-trip is wired; no second event is appended.
-3. **PR 3 — Watcher + orphan janitor + opt-in supervision.** Adds `BeadsWatcher` and `BeadsOrphanJanitor` GenServers, the `maybe_*_child/0` helpers in `application.ex`, the `:start_beads_watcher?` / `:start_beads_orphan_janitor?` config flags, and the documentation updates per `foreman-doc-gate`. Touches the SUPERVISION layer — the bi-directional sync is live.
+The TRD delivers, in three vertical slices:
 
-The work is bounded: the synchronous hook reuses `br` version 0.2.19 (already on disk), the Actor hook insertion point is named at `aggregate/actor.ex:156-223`, the projection map extension is a 1-line addition, and the architectural invariants (single `CodeMap` factory, `command_id`-keyed dedup, CommandGateway boundary guard at the envelope allowlist) are already enforced by existing tests.
+1. **PR 1 — `TaskProvider` behaviour extension + `BeadsAdapter.create/2` + `SystemBrRunner` `:create` support** (6 implementation tasks + 6 paired test tasks). The `TaskProvider` behaviour gains the `create/2` callback (callback count 11 → 12); `BeadsAdapter.create/2` is implemented with `--agent-context` JSON carrying the Foreman tag; 5 new CodeMap rows cover `br create` failure modes; the capability list advertises `:create`; `SystemBrRunner` gains a dedicated `:create` clause in `build_action_argv/2` with validate-first ordering. The synchronous Actor hook is NOT yet wired — the Actor still produces a `TaskCreated` event with `external_id: nil` at the end of PR 1.
+2. **PR 2 — Actor two-stage finalization + in-flight cache + boundary invariant** (4 implementation + 4 paired test). The Actor's `do_dispatch/4` runs a two-stage aggregate finalization for `task.create` (stage 1 validate; stage 2 `BeadsAdapter.create/2` I/O; stage 3 re-decide with `external_id` enriched; stage 4 normalize + append). The `in_flight_beads: %{command_id => bead_handle}` cache lives on Actor state and prevents two `br create` invocations for the same logical command. `CommandGateway.dispatch_operator/2` rejects `task.create` envelopes with non-nil `payload.external_id`; `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch.
+3. **PR 3 — JSONL watcher + orphan janitor + opt-in supervision + docs** (5 implementation + 5 paired test + 1 docs). `BeadsWatcher` tails `.beads/issues.jsonl` per registered project, with boot replay + tail mode under a 3-way cursor priority (single-cursor invariant). `BeadsOrphanJanitor` periodically scans for foreman-tagged orphans. Both are opt-in via `:start_beads_watcher?` / `:start_beads_orphan_janitor?` (default `false`). The `ProjectionStore` `TaskCreated` handler stores `external_id`. Docs (`docs/user-guide.md`, `docs/cli-reference.md`, `README.md`, `CLAUDE.md`) are updated per the `foreman-doc-gate` skill.
 
-**Out-of-scope (verbatim from PRD §7):** streaming watcher (FSEvents/inotify), multi-project scan optimisation, `foreman doctor` orphan backlog ranking, interactive orphan conflict resolution, `task.update` operator flows, `foreman bead audit` CLI surface.
+The slice is intentionally bounded: it integrates new modules into the aggregation pipeline (`TaskCreated` projection, Actor hook, CommandGateway boundary, opt-in supervisor children) but does not migrate any existing functionality. Existing Task/Run/Project aggregates that do not opt into `task_provider` continue to operate exactly as before.
+
+**Central commitments:**
+
+- **Compensating consistency, not true atomicity.** The in-process synchronous hook delivers synchronous all-or-nothing for the normal path (`br create` failure returns the provider error and produces no `TaskCreated` event); the orphan janitor (REQ-023) absorbs the residual gap from Actor crashes and failed-compensation paths within a configurable grace window (default 300s).
+- **Single-event design.** The bead-linkage signal rides entirely on `TaskCreated.external_id` (an existing optional field). The aggregate stays pure throughout — the Actor enriches the COMMAND payload with `external_id` and re-runs `handle_command/2` so the aggregate emits the enriched event itself. The Actor never fabricates events or merges fields into event specs. No `EventCodec` re-registration is required because no new typed event is introduced.
+- **CommandGateway boundary invariant.** `dispatch_operator/2` rejects `task.create` envelopes with non-nil `payload.external_id` at the existing envelope allowlist guard; `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch. The invariant is enforced once at the boundary; the Actor does not duplicate the origin check.
+
+**Total task count: 31 entries** (15 implementation tasks + 15 paired test tasks + 1 docs-only task). Implementation + paired test for the 6 docs-eligible areas is the smallest correct shape; the 1 docs-only task (`TRD-015-TASK`) covers the user-guide / cli-reference / README / CLAUDE.md updates per the `foreman-doc-gate` skill.
 
 ---
 
 ## 2. Architecture Decision
 
-This section documents the options considered, the chosen architecture, and the rationale for the choice.
-
 ### 2.1 Options Considered
 
-#### Option A — Simple async bridge (background handler + polling)
-A `task.create` event handler runs OUTSIDE the Actor, subscribed to the event stream via the projection pipeline, and asynchronously calls `br create`. The bead ID becomes available eventually (within a bounded scan window); the linkage would have to be reified through a separate domain event or projection-side merge.
+The PRD frames the work as "synchronous in-process all-or-nothing for the normal path with compensating recovery for the residual gap." Three architectural approaches were considered for the write-side (`task.create` → Beads bead creation):
 
-- **Cons:** violates the PRD's compensating-consistency requirement (REQ-020). Operators see a Foreman task whose `external_id` is `nil` for some time, and the design's central commitment — that a `task.create` either materialises a Beads issue together with the Foreman task or fails the create — is undermined. A retry-mid-async-bridge can leave the bead orphaned or the linkage stamped twice.
-- **Status:** rejected — synchronous in-process all-or-nothing (with compensating recovery for the residual cases) is the design's central commitment.
+#### 2.1.1 Option A — Asynchronous bridge
 
-#### Option B — Eventual-consistency side channel (separate column + reconciler)
-A `task.create` always records `external_id: nil` on the event. A separate reconciler (`BeadsReconciler`) periodically scans unmatched tasks and tries to match them against Beads issues by exact title match. Matched tasks would have to stamp the linkage through a projection-side merge or follow-up command, since this design predates advisory #6's deletion of the dedicated linkage event.
-- **Pros:** zero latency on the create path; the reconciler is easy to reason about in isolation.
-- **Cons:** title-based matching is fragile (operators rename tasks); the Foreman task can DO WORK before the linkage is established (workflows start; commands run before the bead exists), violating the data-model invariant that `task.create` is the moment of bead birth; the entire PRD's compensating-consistency property is unachievable because the design treats the Foreman task and the Beads issue as independently creatable.
-- **Status:** rejected — the reconciler is the wrong abstraction. The PRD requires the bead to exist when the task exists.
+A `BeadsBridge` supervisor subscribes to `TaskCreated` events from the projection stream. On each `TaskCreated` (with `external_id: nil`), the bridge dispatches a side-channel `br create` call asynchronously and updates the projection with the resulting bead ID via a separate event.
 
-#### Option C — Synchronous Actor hook + compensation + janitor (chosen)
-The Actor calls `BeadsAdapter.create/2` synchronously inside `do_dispatch/4` between `handle_command/2` returning `{:ok, event_spec}` and `normalize_to_event_data`. The bead ID is merged into the event spec's `external_id`. On append-conflict the Actor compensates by closing the bead. On Actor crash between bead creation and append, the orphan janitor (REQ-023) closes the strander on its grace-window scan. The watcher (REQ-022) closes the reverse direction (Beads → Foreman). All Foreman-originated beads carry `agent_context.foreman` so the watcher and janitor can scope their work.
+- **Pros:** The Actor path stays untouched (no I/O inside the dispatcher); a single failure mode (bridge crash) is contained; the existing `TaskCreated` event shape is unchanged.
+- **Cons:** Two stores can disagree for arbitrarily long windows — the user sees a Foreman task with `external_id: nil` until the bridge catches up. There is no in-process "I just dispatched a `task.create`; the bead now exists" guarantee. Operator UX degrades because the bead ID is not immediately available after a CLI invocation.
+- **Complexity impact:** Lowest at the integration boundary (no Actor change); highest at the consistency boundary (eventual consistency spans the bridge latency).
+- **Risk profile:** A bridge backlog is a correctness bug — beads can be created much later than the user expects, and the projection map will surface a `nil` `external_id` in the interim. Lost bridges (e.g. bridge crash with no replay) are stranded beads that no janitor can recover (the bridge never recorded the bridge's own pending list). Tagged with `risk: HIGH` for the user-facing inconsistency window.
 
-- **Pros:** compensating consistency for the write path (REQ-020) — synchronous in-process all-or-nothing for the normal path, with the orphan janitor (REQ-023) closing the residual gap from Actor crashes and failed-compensation paths within the configurable grace window; the data-model invariant holds (the bead exists iff the Foreman task exists, except within the grace window); the orphan janitor absorbs the failures of the synchronous hook's presuppositions; the tagging differentiates Foreman-managed from operator-managed beads; the per-project gate keeps non-Beads projects behaviour-equivalent.
-- **Cons:** adds `br create` latency to every `task.create` (bounded by PRD-2026-48f7b420 REQ-009 30s default); the Actor hook insertion is the single critical line. (Earlier drafts considered a separate `TaskBeadLinked` event for audit; that design was deleted in advisory #6 because it would have fabricated a domain event outside an aggregate's `handle_command/2`.)
-- **Status:** **CHOSEN.** This is the architecture the PRD specifies.
+#### 2.1.2 Option B — Standalone reconciler
 
-### 2.2 Chosen Architecture
+A `BeadsReconciler` GenServer periodically (every N seconds) scans the projection store for tasks with `external_id: nil` and dispatches `br create` for each, with the bead ID landing as a `TaskBeadLinked` event on a separate stream. The reconciler is the sole bead-creation path.
 
-The rest of this section decomposes Option C into its component boundaries, data flow, integration points, technology choices, and telemetry taxonomy.
+- **Pros:** All bead creation is funneled through one component; the reconciler is a natural place to centralise rate-limiting, retry, and audit logging; the Actor path is unchanged.
+- **Cons:** Latency between `task.create` and bead materialization is at minimum the reconciler period (default 30s, configurable). Operator CLI returns a task ID but not a bead ID — the bead appears minutes later. A second event (`TaskBeadLinked`) is required, which violates the slice invariant ("every emitted event is owned by an aggregate's `handle_command/2`; no module fabricates events"). Two new typed events and two new operator types are required.
+- **Complexity impact:** High — new event types, new projection handler, new operator type allowlist extension, new architecture-test enforcement.
+- **Risk profile:** A reconciler crash is recoverable (the next scan picks up the backlog), but the in-process hook guarantee is permanently sacrificed. The slice invariant is violated; downstream architecture tests must be amended to allow `TaskBeadLinked` as a non-aggregate-emitted event, weakening the invariant's value. Tagged with `risk: HIGH` for the invariant violation.
+
+#### 2.1.3 Option C — Two-stage aggregate finalization in the Actor hook (CHOSEN)
+
+The Actor's `do_dispatch/4` runs a two-stage aggregate finalization for `task.create`:
+
+- **Stage 1 (validate, pure):** `aggregate.handle_command(state, original_cmd)` returns `{:ok, %{event_type: "TaskCreated", payload: %{...external_id: nil...}}}` or `{:error, _}`. No I/O.
+- **Stage 2 (Beads I/O):** If stage 1 returned `{:ok, _}` AND the project has Beads-management enabled with `:create` in `capabilities.supports` AND `cmd.payload.external_id` is `nil` (atom key), the Actor invokes `BeadsAdapter.create/2`. On `{:error, %ProviderError{}}` the Actor returns the error from `do_dispatch/4` — no event is emitted. On `{:ok, %TaskProvider.Issue{id: bead_id}}` the Actor stores `bead_id` in `state.in_flight_beads[command_id]`.
+- **Stage 3 (re-decide, pure):** The Actor enriches the command payload with `:external_id = bead_id` and calls `aggregate.handle_command/2` again, which deterministically produces `event_spec.payload.external_id == bead_id`.
+- **Stage 4 (existing Actor↔CommandRouter append/ack protocol — NOT a direct `EventStore` call):** the Actor's existing protocol is the SOLE append point in the codebase (per the architecture test enforcing `CommandRouter` as the sole `EventStore.append_to_stream` caller). The Actor sends `{:append, aggregate_id, [event_data], expected_version, ref, self()}` to `CommandRouter`; `CommandRouter` calls `EventStore.append_to_stream/3` and replies with `{:append_ok, ref, count, append_latency_ms}` (or `{:error, ref, reason, append_latency_ms}`). On `{:append_ok, _, _, _}` the Actor calls `commit_event/3` (which calls `aggregate.apply_event/2` and bumps `state.version`) AND clears `state.in_flight_beads[command_id]`. On `{:error, ^ref, :wrong_expected_version, _}` with `retries_left > 0` the Actor calls `reload_after_conflict/1` (which preserves `in_flight_beads` via `%{state | module_state: …, version: …}`) and recurses through `do_dispatch/4`. The recursive call re-runs `handle_command/2` (re-decide with cached `external_id` in stage 3) and re-sends to `CommandRouter` — NO additional `BeadsAdapter.create/2` invocation.
+
+The slice invariant ("every emitted event is owned by an aggregate's `handle_command/2`; no module fabricates events") is preserved end-to-end: the Actor enriches the COMMAND payload, not the event spec, and the aggregate emits the enriched event on the second `handle_command/2` invocation.
+
+- **Pros:** The in-process hook delivers synchronous all-or-nothing for the normal path (AC-020-1 happy path; AC-020-5 failure path — no `TaskCreated` event is emitted when `br create` fails). The bead ID is available on the projection immediately after a successful create. The slice invariant is preserved. No new typed event, no new operator type, no codec re-registration. The orphan janitor (REQ-023) closes the residual gap (Actor crash between `br create` success and append confirmation, or compensation `br close` failure) within a configurable grace window.
+- **Cons:** Every `task.create` now waits on `br create` (bounded by the per-call timeout from `PRD-2026-48f7b420` REQ-009 — 30s default). The synchronous hook is a single point of latency. An Actor crash between `br create` success and append confirmation is a recovery problem (the orphan janitor absorbs the strander on its grace-window scan).
+- **Complexity impact:** Medium at the Actor hook (two-stage finalization in `do_dispatch/4`, in-flight cache, compensation path); low at the projection layer (1-line addition of `external_id` to the existing `TaskCreated` handler); medium at the supervision layer (two new opt-in children).
+- **Risk profile:** The synchronous latency is bounded and observable; the compensation path (AC-020-3) handles append-conflict failures; the orphan janitor (REQ-023) handles cron-drop cases. Tagged with `risk: MEDIUM` for the latency profile, mitigated by the documented compensation + janitor safety net.
+
+### 2.2 Chosen Architecture: Option C — Two-Stage Aggregate Finalization
+
+The chosen architecture is **Option C: Two-stage aggregate finalization in the Actor hook**. The decision is justified by the PRD's compensating-consistency requirement (REQ-020) and the slice invariant ("every emitted event is owned by an aggregate's `handle_command/2`"). Option A sacrifices the in-process guarantee and risks a long inconsistency window; Option B violates the slice invariant by introducing a non-aggregate-emitted event. Option C is the smallest correct fix that delivers synchronous all-or-nothing for the normal path while preserving the invariant end-to-end.
 
 #### 2.2.1 Component Boundaries
 
-**`ForemanServer.TaskProvider` behaviour** — extended with `create/2` callback.
+The new components and the modules they integrate with:
 
-> `(callback: @callback create(project_id :: String.t(), attrs :: map()) :: {:ok, Issue.t()} | {:error, ProviderError.t()})`
+| Component | Path | Responsibility |
+|---|---|---|
+| `ForemanServer.TaskProvider` (behaviour) | `lib/foreman_server/task_provider.ex` | Declare the new `@callback create/2` (callback count 11 → 12) |
+| `ForemanServer.TaskProviders.BeadsAdapter` | `lib/foreman_server/task_providers/beads_adapter.ex` | Implement `create/2`; extend `capabilities/0` to advertise `:create`; construct `--agent-context` JSON; route `br create` failure modes through `CodeMap` |
+| `ForemanServer.TaskProviders.BeadsAdapter.CodeMap` | `lib/foreman_server/task_providers/beads_adapter_code_map.ex` | Add 5 new rows: `INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`, `DUPLICATE_TASK_ID`, `CREATE_FAILED` (fallback) |
+| `ForemanServer.TaskProviders.BeadsWatcher` | `lib/foreman_server/task_providers/beads_watcher.ex` (new) | Supervised GenServer; one tail process per registered project; boot replay + tail mode with single-cursor invariant (3-way cursor priority); dispatches synthetic `task.create` via `CommandGateway.dispatch_system/2` with `external_id` pre-populated |
+| `ForemanServer.TaskProviders.BeadsOrphanJanitor` | `lib/foreman_server/task_providers/beads_orphan_janitor.ex` (new) | Supervised GenServer; one scanner per registered project; first scan after grace window; closes foreman-tagged orphans with `transition_comment: "foreman-orphan:no-task"` or `"…terminal-task"` |
+| `ForemanServer.Aggregate.Actor` | `lib/foreman_server/aggregate/actor.ex` | Extend state with `in_flight_beads: %{command_id => bead_handle}`; insert two-stage finalization in `do_dispatch/4` (stage 1 validate; stage 2 `BeadsAdapter.create/2`; stage 3 re-decide; stage 4 normalize + append); compensation path on append-conflict |
+| `ForemanServer.CommandGateway` | `lib/foreman_server/command_gateway.ex` | Extend `dispatch_operator/2` envelope allowlist guard to reject `task.create` with non-nil `payload.external_id` (return `{:error, :external_id_not_allowed_via_operator}`); `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch |
+| `ForemanServer.ProjectionStore` | `lib/foreman_server/projection_store.ex` | Extend `apply_event_by_type(state, "TaskCreated", payload)` to include `external_id` in the task map (default `nil` for legacy events) |
+| `ForemanServer.Application` | `lib/foreman_server/application.ex` | Add `maybe_beads_watcher_child/0` and `maybe_beads_orphan_janitor_child/0` (mirrors `maybe_json_schema_cache_child/0` / `maybe_project_provider_projector_child/0`); opt-in via `:start_beads_watcher?` / `:start_beads_orphan_janitor?` config flags (default `false`) |
+| `ForemanServer.TaskProvider.Registry` | `lib/foreman_server/task_providers/registry.ex` | Update `route/2` (line 69) to dispatch `:create` to the same per-project state; `register_for_project/3` likely needs no change |
+| `ForemanServer.EventCodec` | `lib/foreman_server/event_codec.ex` | NO changes; `external_id` is an existing optional field on `Events.TaskCreated` so no re-registration is required |
 
-The position of `create/2` in the callback list is between `name/0` and `capabilities/0` (callbacks are returned in declaration order from `behaviour_info(:callbacks)`; placing `create/2` after `name/0` and `capabilities/0` keeps the meta-data callbacks at the front). The total callback count moves from 11 to 12 (AC-026-3).
+The new modules are supervised by the existing `ForemanServer.Application` supervisor tree. No new OTP application is introduced.
 
-**`ForemanServer.TaskProviders.BeadsAdapter.create/2`** — implementation of the new callback. Constructs the argv:
-
-```
-br create --title <title> --type <task_type> --priority <priority> --description <description>
-       --agent-context '{"foreman":{"task_id":"<task_id>","command_id":"<command_id>","origin":"foreman","linked_at":"<iso8601-utc>"}}'
-       --db <database_path>
-       --json
-```
-
-Invokes `BrRunner.run/1` (the `@runner` compile-time resolved module — `BrRunner` in production, `BrRunnerMock` in tests per `config/test.exs:23`). The argv-construction helpers (`scrub_argv/1`, `assign_argv/2`) are reused from the existing `BeadsAdapter`. The `id` returned from `br create --json` is wrapped in `TaskProvider.Issue{id: <id>, ...}` with the remaining fields populated from the JSON envelope.
-
-**`ForemanServer.Aggregate.Actor` (extended)** — holds the state field `in_flight_beads: %{command_id => bead_handle}` in addition to the existing `module_state` / `version` / `aggregate_id` / `aggregate_module`. The `do_dispatch/4` function gains the **two-stage aggregate finalization** sub-step: stage 1 calls `aggregate.handle_command/2` with the original command; if that returns `{:ok, %{} = event_spec}` for `task.create` with `external_id: nil` in the payload, the Actor enters stage 2 (synchronous `br create`) or the watcher-import branch (skip stage 2); stage 3 re-calls `aggregate.handle_command/2` with the enriched payload so the aggregate itself emits the `external_id` field. The actual contract that `do_dispatch/4` consumes from `aggregate.handle_command/2` is `{:ok, event_spec}` where `event_spec` is a single map (NOT a list of typed structs):
-
-```
-# stage1: pure aggregate decision on the original command
-case aggregate_module.handle_command(state.module_state, original_cmd) do
-  {:error, _reason} = err ->
-    # Stage 1 rejected (e.g. :task_already_exists, :invalid_priority) — no I/O, no event
-    {:reply, err, state}
-
-  {:ok, %{event_type: "TaskCreated", payload: stage1_payload} = event_spec}
-  when is_nil(stage1_payload.external_id) ->
-    # Stage 1 succeeded for task.create with no pre-supplied external_id.
-    # Decide whether to enter stage 2 (Beads I/O) before re-deciding.
-    cond do
-      # Per-project gate (AC-020-4): the project's provider does not advertise :create
-      not :create in provider_capabilities_for(state, original_cmd).supports ->
-        # stage1_payload.external_id is nil and no provider create capability →
-        # the event emits with external_id: nil, exactly as today.
-        proceed_to_normalize_and_append(event_spec)
-
-      # Cache hit (AC-024-1): a prior attempt created the bead; reuse its ID
-      cached = Map.get(state.in_flight_beads, original_cmd.command_id) ->
-        enriched_payload = Map.put(stage1_payload, :external_id, cached.bead_id)
-        # Stage 3: re-decide with enriched payload (deterministic).
-        {:ok, enriched_event_spec} =
-          aggregate_module.handle_command(state.module_state,
-            %{original_cmd | payload: Map.put(original_cmd.payload, :external_id, cached.bead_id)})
-        proceed_to_normalize_and_append(enriched_event_spec)
-
-      true ->
-        # Stage 2: synchronous br create via the project's configured provider.
-        case provider.create(project_id, attrs_with_command_id) do
-          {:ok, %TaskProvider.Issue{id: bead_id} = issue} ->
-            new_in_flight =
-              Map.put(state.in_flight_beads, original_cmd.command_id,
-                %{bead_id: bead_id, issue: issue, inserted_at: DateTime.utc_now()})
-            state = %{state | in_flight_beads: new_in_flight}
-
-            # Stage 3: re-decide with external_id injected into the command payload.
-            # The aggregate emits TaskCreated with external_id: bead_id deterministically.
-            enriched_cmd = %{original_cmd | payload: Map.put(original_cmd.payload, :external_id, bead_id)}
-            {:ok, enriched_event_spec} =
-              aggregate_module.handle_command(state.module_state, enriched_cmd)
-
-            proceed_to_normalize_and_append(state, enriched_event_spec)
-
-          {:error, %TaskProvider.ProviderError{} = err} ->
-            # AC-020-5: stage 2 failed → no stage 3, no normalize, no append,
-            # no TaskCreated event. Surface err with retryable? for the caller.
-            :telemetry.execute(
-              [:foreman_server, :task_provider, :beads, :create, :failure],
-              %{count: 1}, %{command_id: original_cmd.command_id, code: err.code,
-                retryable?: err.retryable?, project_id: project_id})
-            {:reply, {:error, err}, state}
-        end
-    end
-
-  {:ok, %{event_type: "TaskCreated", payload: stage1_payload} = event_spec}
-  when not is_nil(stage1_payload.external_id) ->
-    # AC-020-6 watcher-import fast path: stage1_payload already carries external_id
-    # (mirrored from original_cmd.payload.external_id by Aggregate.get). No stage 2.
-    proceed_to_normalize_and_append(event_spec)
-
-  {:ok, %{} = other_event_spec} ->
-    # Any other command type (task.update, task.close, etc.) — pass through unchanged.
-    proceed_to_normalize_and_append(other_event_spec)
-
-  {:ok, nil} ->
-    {:reply, {:ok, nil}, state}
-end
-
-# After normalize_to_event_data + EventStore.append_to_stream + receive {:append_ok, ^ref, ...}:
-#   on append_ok -> Map.delete(state.in_flight_beads, cmd.command_id) and commit_event/3
-# After normalize_to_event_data + EventStore.append_to_stream + receive {:error, ^ref, :wrong_expected_version, ...}:
-#   when retries_left > 0:
-#     case reload_after_conflict(state) do
-#       {:ok, %{state: rehydrated, version: new_version}} ->
-#         # AC-020-3 cache hit: REUSE cached external_id by injecting it into cmd BEFORE
-#         # the recursive do_dispatch call. do_dispatch then re-decides with the
-#         # enriched cmd and retries append with new_version. NO close, NO cache clear.
-#         cmd_for_retry = case Map.get(rehydrated.in_flight_beads, cmd.command_id) do
-#           nil -> cmd  # cache miss after crash recovery; proceed with fresh stage 2
-#           %{bead_id: bead_id} ->
-#             %{cmd | payload: Map.put(cmd.payload, :external_id, bead_id)}
-#         end
-#         do_dispatch(rehydrated, cmd_for_retry, new_version, retries_left - 1)
-#       {:error, reason} -> {:reply, {:telemetry, {:error, reason}, %{...}}, state}
-#     end
-#   when retries_left == 0:
-#     # AC-020-3 retry exhausted: compensate (close bead, clear cache, surface error)
-#     compensate_and_clear_cache!(cmd)
-#     {:reply, {:telemetry, {:error, :wrong_expected_version}, %{...}}, state}
-#
-# Post-reload re-decision rejection (e.g. :task_already_exists, :phase_terminal):
-#   the re-decision returns {:error, _} from handle_command; do_dispatch returns
-#   the error WITHOUT re-entering the append loop. compensate_and_clear_cache! runs.
-#
-# Actor crash: in_flight_beads is process-local state, lost on restart. The replayed
-# stream is the source of truth. If the append had succeeded, the bead ID is in the
-# persisted event. If it had not, the orphan janitor (REQ-023) handles the strander.
-```
-
-**Two-stage contract rationale.** The aggregate remains a pure decision function at every stage — it NEVER performs I/O, never knows about Beads, and never sees `provider.create/2`. The Actor sequences the I/O between two `handle_command/2` invocations: stage 1 validates the unenriched command (this catches `:task_already_exists` and other domain rejections without ever touching the filesystem); stage 3 re-runs the same `handle_command/2` with `:external_id` injected into the command payload, which deterministically produces `event_spec.payload.external_id == bead_id`. The aggregate NEVER sees the bead ID — only the enriched payload's `:external_id`. This preserves the slice invariant ("every emitted event is owned by an aggregate's `handle_command/2`, no module fabricates events") and matches the actual `ForemanServer.Aggregates.Task.handle_command/2` contract: it returns `{:ok, %{stream_id:, event_type:, payload: %{...}}}` (a single event-spec map, NOT a list of typed structs).
-
-**Watcher-import branch rationale.** When the JSONL watcher (REQ-022) reads a new Beads issue, it synthesizes a `task.create` envelope via `CommandGateway.dispatch_system/2` with `external_id: bead.id` already populated in the payload (Beads is the source; the bead is on disk; the Foreman task is the destination). The Actor detects this at stage 1 because `original_cmd.payload.external_id` is set, and because `Aggregate.get(payload, :external_id)` mirrors that into the stage-1 event-spec payload. The second stage-1 clause (`when not is_nil(stage1_payload.external_id)`) catches this and short-circuits straight to `proceed_to_normalize_and_append` — no `br create` is issued, because the bead already exists. This preserves the bead already on disk and avoids creating a duplicate.
-
-**CommandGateway boundary invariant.** `ForemanServer.CommandGateway.dispatch_operator/2` MUST reject `task.create` with non-nil `payload.external_id` at the existing envelope allowlist guard — the check is `get_in(envelope, [:payload, :external_id]) != nil` and the rejection returns `{:error, :external_id_not_allowed_via_operator}`. `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch and any future system-issued dispatch that needs to supply a pre-existing `external_id`. The boundary invariant is enforced once at the CommandGateway allowlist; the Actor does NOT perform its own origin check (avoiding redundant enforcement). This invariant prevents operator-issued payloads from bypassing `BeadsAdapter.create/2` by adding an `external_id` to the envelope.
-
-The placement is between the existing `case aggregate_module.handle_command(state.module_state, cmd)` head and the `normalize_to_event_data/2` call. Line numbers are anchored on `packages/foreman_server/lib/foreman_server/aggregate/actor.ex:156-223` (the existing `do_dispatch/4` body). The bounded conflict-recovery loop already exists at `actor.ex:188-207` (the `retries_left > 0` recursion); the new code intercepts the recursive call to inject the cached `external_id` into the `cmd` map before re-deciding.
-
-**`ForemanServer.TaskProviders.BeadsWatcher`** — supervised GenServer. One process per registered project. `@behaviour GenServer`. State: `%{project_id: String.t(), jsonl_path: Path.t(), file_handle: :file.handle(), read_offset: non_neg_integer(), partial_line: binary()}`. **On `init/1`:** resolves the JSONL path via `BrRunner.run(["where", "--db", db_path, "--json"])`, opens the file for reading via `:file.open/2` with `[:read, :binary, :raw]`, calls `BeadsWatcher.boot_replay/1` which reads from offset 0 to current EOF, parses each line, suppresses foreman-tagged beads (AC-022-3 emits `[:watcher, :skipped]`), checks `ProjectionStore` for an existing task with `external_id == bead.id` and skips if already imported (AC-022-2 emits `[:watcher, :reconciled]`), and dispatches a synthetic `task.create` for NEW operator-originated beads (AC-022-2 emits `[:watcher, :imported]`). On replay completion emits `[:watcher, :replay_completed]` with `lines_processed` / `lines_imported` / `lines_suppressed` / `lines_reconciled`. **Boot cursor semantics (3-way cursor priority):** the same single-cursor invariant applies to the boot replay. `BeadsWatcher.boot_replay/1` invokes the same read function with `read_offset = 0`; the function reads from offset 0 to EOF, splits on `\n`, processes complete lines sequentially (terminal dispatch advances `read_offset` past `byte_size(line) + 1`; transient dispatch holds `read_offset` and stops the loop), and on completion sets `read_offset` to the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; or (c) the file size (EOF) if the file ends on a terminator. `partial_line` is the cached bytes of that first undispatched line (transient-line bytes, trailing-fragment bytes, or `""` respectively). The boot replay therefore preserves partial trailing bytes AND queued lines across the boot→tail-mode transition — when the loop stops at a transient, the cursor HOLDS at the first transient complete-line's start, so queued lines behind the transient are not skipped; a fragment written just before the watcher boots is recognised again on the next poll (the cursor is at the fragment seat or the first transient complete-line seat; the next poll re-reads the fragment plus any newly appended bytes) without a head-of-file rewrite. Schedules the first poll via `Process.send_after(self(), :read_more, @poll_ms)`. **On `:read_more` (single-cursor invariant — 3-way cursor priority):** `read_offset` is the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; or (c) the file size (EOF) if the file ends on a terminator. `partial_line` is the cached bytes of that first undispatched line (transient-line bytes, trailing-fragment bytes, or `""` respectively); it is kept for observability only and is never required for correctness on the next poll. On every poll: (1) read from `read_offset` to current EOF via `:file.read(file_handle, eof - read_offset)` — the fragment at the seat (if any) is part of the read result and is re-read on transient retries; do NOT prepend `partial_line`; (2) split the bytes on `\n`; (3) process complete lines sequentially in order, stopping at the first transient dispatch; (4) on a terminal dispatch, advance `read_offset` past `byte_size(line) + 1` (the line and its terminator); (5) on a transient dispatch, HOLD `read_offset` and stop the loop (the first transient complete-line is seated at `read_offset` — it is re-read on the next poll, dispatched with the same deterministic `command_id`, and processing continues with any queued lines behind it; if a trailing fragment is also present, it is resolved after the transient-line is terminally dispatched); (6) finally set `partial_line` to the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the transient-line bytes from the split if the loop stopped at a transient; (b) the trailing fragment bytes from `last_segment` if the file ends on an unterminated JSONL line; (c) `""` if the file ends on a terminator and the loop processed all lines terminally. `partial_line` is kept for observability only and is never required for correctness on the next poll. The terminal set is the EXHAUSTIVE list defined in the paragraph immediately below — "Terminal vs transient dispatch outcomes" — for the gateway return-shape classifier; the only non-success terminal reasons are the four aggregate domain rejections wrapped by the gateway: `{:error, {:already_exists, :task, _}}`, `{:error, {:invalid_task_status, _}}`, `{:error, {:project_archived, _}}`, `{:error, :project_id_required}`); every other dispatch return is transient and retries with the same deterministic `command_id` (AC-022-2). Reschedules via `Process.send_after(self(), :read_more, @poll_ms)`.
-**Terminal vs transient dispatch outcomes (Watcher offset-advance rule).** Every synthetic `task.create` dispatched via `CommandGateway.dispatch_system/2` MUST be classified as either **terminal** (`read_offset` advances to the post-dispatch byte position) or **transient** (`read_offset` is held; the same deterministic `command_id` is retried on the next `:read_more` poll with no head-of-file rewrite). The gateway's return type is `{:ok, map() | nil} | {:error, term()} | {:error, term(), term()}` (per `@type dispatch_result` in `packages/foreman_server/lib/foreman_server/command_gateway.ex:43`); the watcher pattern-matches the FULL gateway return — the outer `{:error, _}` wrapper is part of the classifier, not stripped. The classification is EXHAUSTIVE: a dispatch is terminal iff the gateway returns one of the FIVE wrapped shapes below. Terminal set (all five are wrapped; the inner reason is the aggregate's `handle_command/2` rejection):
-1. `{:ok, _}` — successful dispatch; event appended.
-2. `{:error, {:already_exists, :task, task_id}}` — rare race; the ProjectionStore dedupe missed but the task already exists (source: `require_absent/2` at `packages/foreman_server/lib/foreman_server/aggregates/task.ex:449-450`).
-3. `{:error, {:invalid_task_status, status}}` — defensive; the watcher always sends `"open"` by default, but a status override could trigger this (source: `validate_status/1` at `task.ex:457-470`).
-4. `{:error, {:project_archived, project_id}}` — project was archived mid-watch (source: `validate_project_allows_tasks/1` at `task.ex:513-518`).
-5. `{:error, :project_id_required}` — defensive; the watcher always carries `project_id` from the registered project (source: `validate_project_allows_tasks/1` at `task.ex:511`).
-Every other return shape — `{:error, {:missing_or_invalid, :task_id, _}}`, `{:error, {:wrong_expected_version, _, _}}`, `{:error, term(), term()}` (3-tuple), `{:exit, reason}` from a crashed dispatch, any `ProviderError` shape — is classified **transient**: `read_offset` is held and the same deterministic `command_id` is retried on the next `:read_more` poll. Note: `ProviderError` is NEVER produced by the watcher-import branch because the branch dispatches via `CommandGateway.dispatch_system/2` directly into the aggregate's `handle_command/2` and bypasses `BeadsAdapter.create/2` (the synchronous `br create` hook is skipped per AC-020-6); the synthetic `ProviderError` cases in the transient set are forward-compatibility assertions only — the current implementation cannot emit them. The terminal set is closed: implementers MUST NOT introduce additional terminal atoms without bumping the TRD/PRD; any return value outside the five terminal shapes is transient by construction. This parallels the broader gateway `ProviderError.retryable?` convention without extending it: the only terminal errors in the watcher-import branch are the aggregate's own domain rejections wrapped by the gateway. See AC-022-1 for the offset-advance assertion, AC-022-2 for the dedupe + retry path, and §2.2.6 issue #9 for the slice invariant.
-
-**`ForemanServer.TaskProviders.BeadsOrphanJanitor`** — supervised GenServer. One process per registered project. On `init/1`: logs the boot timestamp and schedules the first scan via `Process.send_after(self(), :scan, @grace_ms)` (the grace window covers the FOREMAN side's worst-case `br create` + append latency; first scan on grace-window expiry, not on boot). On `:scan`: reads the JSONL, filters for `agent_context.foreman`, checks each against `ProjectionStore` for the corresponding task's existence and status, and closes orphans via `BeadsAdapter.complete/3` with the deterministic transition-comments per AC-023-2 / AC-023-3. Reschedules on `@scan_interval_ms`.
-
-**`ForemanServer.Application` (extended)** — two new `maybe_*_child/0` helpers:
-
-- `maybe_beads_watcher_child/0` — returns `Supervisor.child_spec(...)` if `:start_beads_watcher?` is `true`, else `[]`.
-- `maybe_beads_orphan_janitor_child/0` — returns `Supervisor.child_spec(...)` if `:start_beads_orphan_janitor?` is `true`, else `[]`.
-
-Mirrors the existing `maybe_json_schema_cache_child/0` and `maybe_project_provider_projector_child/0` pattern at `application.ex:114-132`.
-
-**`ForemanServer.ProjectionStore` (extended)** — `TaskCreated` handler stores `external_id` on the task map (currently absent per PRD §2.1 evidence). NO new event handler — the bead-linkage signal rides entirely on the existing `TaskCreated.external_id` field; idempotency is provided by the aggregate's stream-version semantics, not by a separate handler.
-
-#### 2.2.2 Data Flow
-
-**Happy path (write-side, `task.create` for Beads-backed project):**
+#### 2.2.2 Data Flow — Synchronous Hook (Operator-Driven `task.create`)
 
 ```
-1.  Operator: foreman task create --project-id <p> --title <t> --description <d> --priority <p> --task-type <ty>
-2.  Go CLI: POST /api/commands {command_id: <uuid>, command_type: "task.create", payload: {project_id, title, description, priority, task_type}, envelope: {actor: "operator", timestamp: <iso8601>}}
-3.  Phoenix: CommandGateway.dispatch_operator/2 — allowed (task.create is in allowlist; payload.external_id MUST be nil or dispatch returns {:error, :external_id_not_allowed_via_operator})
-4.  CommandRouter.dispatch(command)
-5.  Aggregator.start_aggregate(Task, project_id:<prj>:<task_id>) — starts Actor if not running
-6.  Actor.handle_call({:command, cmd}, ...)
-7.  Actor.do_dispatch(state, cmd, expected_version, retries_left)
-8.  STAGE 1: aggregate_module.handle_command(state.module_state, cmd) returns {:ok, %{event_type: "TaskCreated", payload: %{...external_id: nil...}}}
-9.  Watcher-import fast path (AC-020-6): if cmd.payload.external_id is set, stage1_payload.external_id is also set (mirrored by Aggregate.get) — short-circuit directly to step 13. NO br create is issued.
-10. Per-project gate (AC-020-4): if :create not in capabilities.supports, proceed directly to step 13. event_spec.payload.external_id remains nil.
-11. In-flight cache lookup (AC-024-1): if Map.get(state.in_flight_beads, cmd.command_id) hits, REUSE cached bead_id; STAGE 3 enriches cmd.payload.external_id = cached.bead_id; jump to step 13.
-12. STAGE 2: BeadsAdapter.create/2 (BrRunner.run(["create", "--title", title, "--type", task_type, "--priority", priority, "--description", description, "--agent-context", '<json>', "--db", db_path, "--json"]))
-    - On {:ok, %TaskProvider.Issue{id: "foreman-abc", ...}}: state.in_flight_beads[command_id] = %{bead_id: "foreman-abc", issue: <issue>, inserted_at: <iso8601>}
-    - STAGE 3: re-decide aggregate_module.handle_command(state, %{cmd | payload: Map.put(cmd.payload, :external_id, "foreman-abc")}) → returns {:ok, %{event_type: "TaskCreated", payload: %{...external_id: "foreman-abc"...}}}
-    - On {:error, %TaskProvider.ProviderError{code: "INVALID_TITLE", retryable?: false}}: see Error Path 1 below.
-13. normalize_to_event_data(event_spec, event_id)
-14. CommandRouter {:append, aggregate_id, [event_data], expected_version, ref, self()}
-15. Receive {:append_ok, ^ref, count, append_latency_ms}:
-    - state.module_state = aggregate_module.apply_event(state.module_state, event_data)
-    - state.version = expected_version + 1
-    - Map.delete(state.in_flight_beads, cmd.command_id) (terminal cache cleanup)
-    - commit_event(state, event_spec, append_latency_ms)
-16. Actor returns {:ok, event_spec} to caller
-17. Phoenix responds 200 OK to Go CLI
-18. Go CLI prints task_id and bead_id (if JSON output)
+Operator (Go CLI) — `foreman task create --project-id <id> --title <t> --priority <p> --type <ty> --description <d>`
+  │
+  ▼
+Phoenix POST /api/commands  (existing boundary)
+  │
+  ▼
+CommandGateway.dispatch_operator/2  (envelope allowlist guard)
+  │   ▲
+  │   └── REJECT: {:error, :external_id_not_allowed_via_operator} if payload.external_id != nil
+  │         (AC-020-7 boundary invariant)
+  ▼
+CommandRouter.dispatch(command)  (existing; dedup by command_id)
+  │
+  ▼
+Aggregator.start_aggregate(module, id)  (existing; supervised; restart: :permanent)
+  │
+  ▼
+Actor.do_dispatch/4  (TWO-STAGE FINALIZATION)
+  │
+  │   Stage 1 (validate, pure):
+  │     aggregate.handle_command(state, original_cmd)
+  │     → {:ok, %{event_type: "TaskCreated", payload: %{...external_id: nil...}}}
+  │     → {:error, _} (e.g. {:already_exists, :task, task_id}) — return error, no event
+  │
+  │   Per-project gate:
+  │     IF cmd.payload.external_id is nil
+  │        AND BeadsAdapter.capabilities().supports has :create
+  │        AND state.in_flight_beads[command_id] is NOT present
+  │     THEN stage 2
+  │
+│   Stage 2 (Beads I/O):
+│     BeadsAdapter.create(project_id, attrs)   where attrs is the canonical seven-key map (see Architecture Decision #12)
+│       attrs shape: %{task_id :: String.t(), command_id :: String.t(), title :: String.t(),
+│                      description :: String.t() | nil, priority :: non_neg_integer(),
+│                      task_type :: String.t(), dedupe_key :: String.t() | nil}
+│       internal: TaskProvider.Registry.project_config(project_id) → {:ok, %{config: %{database_path: db_path}}}
+│                                            or {:error, reason} → return CREATE_FAILED (AC-020-5; terminal; no br create)
+│       internal: pre-emptive Foreman-side validation (reject missing title / out-of-range priority / out-of-enum task_type
+│                                            / missing task_id or command_id) BEFORE constructing argv (TRD-003 Action #3)
+│       transform: attrs → runner-payload  (TRD-003 Action #5; runs after pre-emptive validation, before BrRunner.cmd/3)
+│                                            (1) :task_type → :type rename (the ONLY key rename; matches `br create --type`)
+│                                            (2) :description nil → "" normalization (the ONLY nullable field)
+│                                            (3) :agent_context = Jason.encode!(%{foreman: %{task_id: attrs.task_id,
+│                                                command_id: attrs.command_id, origin: "foreman",
+│                                                linked_at: iso8601_utc_now()}}) — constructed from canonical attrs
+│                                                correlation handles; never accepted from caller
+│                                            (4) :title → :title, :priority → :priority passthrough
+│                                            (5) :task_id / :command_id / :dedupe_key preserved on canonical attrs but
+│                                                do NOT enter the runner-payload (correlation / future-extension only)
+│       call: BrRunner.cmd({:create, payload}, project_config, opts)  where payload is the runner-payload (NOT attrs;
+│                                  Decision #14 defines it as a SUBSIDIARY of Decision #12's canonical attrs) and
+│                                  project_config = %{database_path: db_path} (from Registry.project_config/1; Decision #13).
+│                                  SystemBrunner owns ALL argv construction (Decision #14); the dedicated :create clause
+│                                  in build_action_argv/2 validates the payload shape FIRST then emits:
+│       argv: br create --title <payload.title> --type <payload.type> --priority <payload.priority-as-string>
+│             --description <payload.description>          (payload.description is "" when attrs.description was nil)
+│             --agent-context <payload.agent_context>      (payload.agent_context is the Jason.encode!(...) JSON string
+│                                                              constructed in the transform step above)
+│             --db <db_path> --json   (db_path resolved via Registry.project_config/1; TRD-005)
+│     → {:ok, %TaskProvider.Issue{id: bead_id}}  ─ store in state.in_flight_beads[command_id]
+│     → {:error, %ProviderError{code: _, retryable?: _, ...}}  ─ RETURN error from do_dispatch/4
+│         (AC-020-5 failure-as-error contract; telemetry [:create, :failure]; NO event emitted)
+  │
+  │   Stage 3 (re-decide, pure):
+  │     aggregate.handle_command(state, %{original_cmd | payload: Map.put(original_cmd.payload, :external_id, bead_id)})
+  │     → {:ok, %{event_type: "TaskCreated", payload: %{...external_id: bead_id...}}}  (deterministic)
+  │
+  │   Stage 4 (Actor↔CommandRouter append/ack protocol — NOT a direct EventStore call):
+  │     event_data = normalize_to_event_data(event_spec)
+  │     send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}
+  │     receive {:append_ok, ^ref, count, append_latency_ms}
+  │       → commit_event(state, event_spec, append_latency_ms)  (call apply_event/2; bump state.version)
+  │       → clear state.in_flight_beads[command_id]
+  │     receive {:error, ^ref, :wrong_expected_version, _}  with retries_left > 0
+  │       → reload_after_conflict/1 (preserves in_flight_beads via %{state | module_state: …, version: …})
+  │       → recursive do_dispatch/4 (re-runs handle_command/2 with cached external_id; NO second br create)
+  │     Bounded retry exhaustion or post-reload re-decision rejection → compensation path (AC-020-3); see §2.2.4
+  │
+  ▼
+CommandRouter returns :ok to the caller
 ```
 
-**Error path 1 — `br create` fails (write-side):**
+The Actor's `in_flight_beads` cache prevents two `br create` invocations for the same logical command (initial dispatch + `reload_after_conflict` retry). On a retry, the Actor consults the cache first; on cache hit, stage 2 is skipped and the cached `bead_id` is reused in stage 3.
+
+#### 2.2.3 Data Flow — Watcher-Import Branch (System-Issued `task.create`)
+
+The watcher's synthetic `task.create` envelope carries a pre-populated `external_id` and routes through `CommandGateway.dispatch_system/2` (the trusted system path):
 
 ```
-12. BeadsAdapter.create/2 returns {:error, %ProviderError{code: "INVALID_TITLE", retryable?: false}}
-    - The Actor returns {:error, %ProviderError{}} from do_dispatch/4 directly to the caller
-    - NO call to normalize_to_event_data
-    - NO EventStore.append_to_stream — no TaskCreated event is emitted
-    - NO Foreman task is created — the operator's `foreman task create` call fails with the provider error in the response body
-    - state.in_flight_beads[command_id] is NOT populated (no bead_handle to track; no bead was actually created)
-    - NO Foreman task exists, so there is no second-event linkage to skip — the single TaskCreated event is simply not emitted
-    - Emit [:foreman_server, :task_provider, :beads, :create, :failure] with command_id, code, retryable?, the proposal task_id, project_id
-    - The orchestration layer (CommandRouter / Phoenix) decides whether to retry; the `retryable?` flag from the CodeMap row is the signal:
-      - retryable?: false (INVALID_TITLE, INVALID_PRIORITY, INVALID_ISSUE_TYPE, DUPLICATE_TASK_ID) → surface the error to the operator; the operator sees the failure and decides whether to retry with different inputs
-      - retryable?: true (CREATE_FAILED, transient subprocess failures) → the orchestration layer reissues the command; on retry state.in_flight_beads[command_id] is empty (no entry was created) so the synchronous hook re-attempts br create
+BeadsWatcher tail process  (BeadsWatcher.read_more/1)
+  │
+  ▼
+For each new JSONL line:
+  │   parse JSON
+  │   IF agent_context.foreman present → skip (emit [:watcher, :skipped])
+  │   ELIF ProjectionStore.get_task(external_id: bead.id) hits → reconcile (emit [:watcher, :reconciled])
+  │   ELSE → dispatch:
+  │     envelope = %{
+  │       command_id: "beads-cmd:" <> project_id <> ":" <> bead_id,  (deterministic)
+  │       aggregate_id: "task:" <> task_id,
+  │       payload: %{
+  │         external_id: bead.id,
+  │         title: bead.title,
+  │         description: bead.description,
+  │         priority: bead.priority,
+  │         task_type: bead.issue_type,
+  │         project_id: project_id
+  │       }
+  │     }
+  ▼
+CommandGateway.dispatch_system/2  (trusted; not rejected)
+  │
+  ▼
+CommandRouter.dispatch → Actor.do_dispatch/4
+  │
+  │   Stage 1 (validate, pure):
+  │     aggregate.handle_command(state, original_cmd)
+  │     → {:ok, %{event_type: "TaskCreated", payload: %{...external_id: bead_id...}}}  (already populated)
+  │
+  │   Per-project gate detects pre-populated external_id:
+  │     SKIP stage 2 (no br create — bead already exists in .beads/issues.jsonl)
+  │     Telemetry: [:foreman_server, :task_provider, :beads, :create, :skipped_watcher_import]
+  │
+  │   Stage 4 (Actor↔CommandRouter append/ack protocol — pre-populated external_id, no I/O): stage-1 event_spec passes through unchanged; Actor sends {:append, …} to CommandRouter and commits on {:append_ok, …}; nothing in the in-flight cache for this command_id (skill 2 was skipped).
+  ▼
+CommandRouter returns :ok
 ```
 
-This is the **synchronous all-or-nothing guarantee for the in-process path**: when `BeadsAdapter.create/2` returns `{:ok, _}`, the Actor proceeds with append; when it returns `{:error, %ProviderError{}}`, the Actor returns the error WITHOUT appending — NO `TaskCreated` event is emitted, NO Foreman task exists, and the operator sees the create fail with the provider error.
+The watcher-import branch uses the same single-event linkage path as the operator-driven case: `TaskCreated.payload.external_id == bead_id` is the linkage; no second event is emitted.
 
-The two failure paths that escape this in-process guarantee — (a) Actor crash between `br create` returning success and the `EventStore.append_to_stream` confirmation, and (b) `br close` compensation failure on an append-conflict — explicitly leave an orphan bead on disk in Beads with no Foreman task until the orphan janitor (REQ-023) recovers it on its grace-window scan. The cross-store contract is therefore **compensating consistency, not true atomicity**: the design's promise is "no eventual divergence within the configurable grace window", not "no divergence under any failure".
+#### 2.2.4 Error Paths and Recovery
 
-**Error path 2 — append-conflict (write-side, after `br create` succeeded):**
+| Failure | Detection Point | Recovery |
+|---|---|---|
+| `CommandRouter` returns `{:error, ^ref, :wrong_expected_version, _}` to Actor (cache hit; pre-append conflict) | Stage 4 (compensation path) | Actor consults `state.in_flight_beads[command_id]`; on hit, calls `reload_after_conflict/1` (preserves the cache via `%{state | module_state: …, version: …}`), re-runs `do_dispatch/4` which re-runs stage 3 with the cached `external_id` and re-sends to `CommandRouter`. NO `br close` and NO cache clear on transient retry. (AC-020-3, AC-024-1) |
+| Bounded retry exhaustion (`@max_conflict_retries` reached) or post-reload re-decision rejection | Stage 4 (compensation terminal) | Actor calls `BeadsAdapter.complete(project_id, bead_id, %{transition_comment: "foreman-compensation:append-conflict-retry-exhausted"})` (or `"…re-decision-rejected"` respectively) — this is subprocess I/O, NOT a `CommandRouter` event; emits `[:create, :compensated]`, clears the cache entry, returns the error from `do_dispatch/4`. (AC-020-3, CLOSE-ONLY-ONCE) |
+| Compensation `br close` itself fails | Stage 4 (compensation failure) | Actor emits `[:foreman_server, :task_provider, :beads, :create, :compensate_failure]`. The orphan janitor (REQ-023) takes over on its next grace-window scan. |
+| Actor crashes after `br create` returns success but before receiving `{:append_ok, …}` from CommandRouter | Actor supervisor restart | Cache is process-local and does NOT survive the crash. Orphan janitor (REQ-023) closes the strander on its grace-window scan (default 300s). (AC-024-3) |
+| Watcher dispatch returns `{:ok, _}` (terminal) | Watcher `read_offset` advance | `read_offset` advances past `byte_size(line) + 1`; next poll reads from the advanced offset. (AC-022-1) |
+| Watcher dispatch returns `{:error, {:already_exists, :task, _}}` / `{:error, {:invalid_task_status, _}}` / `{:error, {:project_archived, _}}` / `{:error, :project_id_required}` (terminal — aggregate domain rejections) | Watcher `read_offset` advance | Same as `{:ok, _}` — terminal set is exhaustive per AC-022-1. |
+| Watcher dispatch returns transient (`ProviderError{retryable?: true}`, `:wrong_expected_version` after Actor retry, `:exit, :killed`, etc.) | Watcher transient | `read_offset` HOLDS at the transient-line start byte; `partial_line` is the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED; next poll re-reads the held line and re-attempts with the same deterministic `command_id`. (AC-022-1, 3-way cursor priority) |
+| Foreman-tagged bead with no corresponding Foreman task after grace window | OrphanJanitor scan | Bead is closed via `BeadsAdapter.complete(project_id, bead_id, %{transition_comment: "foreman-orphan:no-task"})`. Telemetry `[:orphan, :janitor, :closed]`. (AC-023-2) |
+| Foreman-tagged bead with corresponding Foreman task in `closed` / `failed` state | OrphanJanitor scan | Bead is closed with `transition_comment: "foreman-orphan:terminal-task"`. Telemetry `[:orphan, :janitor, :closed]`. (AC-023-3) |
+| Non-foreman-tagged bead | OrphanJanitor scan | Skipped. Telemetry `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]`. Untouched. (AC-023-4) |
+
+#### 2.2.5 Reused Capabilities
+
+The slice reuses the following existing infrastructure (no new code or contracts; integration only):
+
+- **`ForemanServer.TaskProvider` behaviour** — declares 11 callbacks; extended with `create/2` (callback count 11 → 12 per AC-025-3). The behaviour shape test at `packages/foreman_server/test/foreman_server/task_provider_test.exs:12` and `:24` is updated from `assert length(callbacks) == 11` to `assert length(callbacks) == 12` and adds `assert {:create, 2} in callbacks`.
+- **`ForemanServer.TaskProviders.BeadsAdapter`** — existing 8 operational callbacks (list_ready, get, claim, complete, fail, reopen, set_priority, add_dependency) remain unchanged. `create/2` is added as a 9th operational callback. `capabilities/0` is extended to advertise `:create` (AC-025-2).
+- **`ForemanServer.TaskProviders.BeadsAdapter.CodeMap`** — the existing 8-key allowlist for `ProviderError.context` is unchanged; 5 new rows are added for `br create` failure modes (AC-026-1 through AC-026-5). All new rows reuse the existing context shape (no new keys).
+- **`ForemanServer.CommandGateway.dispatch_operator/2`** — existing envelope allowlist guard; extended at the allowlist guard to reject non-nil `payload.external_id` (AC-020-7) with `{:error, :external_id_not_allowed_via_operator}`. `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch.
+- **`ForemanServer.Aggregate.Actor.do_dispatch/4`** — existing command dispatch path (lines 156-223). Two-stage finalization inserts between the `aggregate.handle_command/2` call and the `send CommandRouter, {:append, …}` call (the new path runs the validation, the I/O, the re-decide, and then uses the existing `send/receive` protocol + `commit_event/3` to persist the enriched event spec). The Actor NEVER calls `EventStore.append_to_stream/3` directly.
+- **`ForemanServer.Aggregate.Actor` bounded-retry path** — existing `reload_after_conflict/1` (lines 248-267). The compensation path (AC-020-3) integrates with the existing `{:error, ^ref, :wrong_expected_version, _}` return-value handling from CommandRouter. The compensation calls `BeadsAdapter.complete/3` (subprocess I/O) and emits telemetry — it does NOT route through `CommandRouter` (it is not a domain event).
+- **`ForemanServer.Application` `maybe_*_child/0` pattern** — opt-in supervisor child pattern (existing; mirrored for the watcher and janitor).
+- **`ForemanServer.Events.TaskCreated`** — existing event struct with `@enforce_keys [:task_id, :project_id, :title, :status, :task_type]`; `external_id` is an existing optional field. No `EventCodec` re-registration is required.
+- **`ForemanServer.TaskProvider.Registry`** — existing per-project routing; extended with (a) `:create` transition support in `route/2` (no signature change) and (b) a new public helper `project_config/1` (added in TRD-005-TASK) that returns `{:ok, %{provider_module: module(), config: map()}} | {:error, atom()}`. `BeadsAdapter.create/2` calls `Registry.project_config(project_id)` as its first line to resolve the `database_path` it needs for the `--db` argv flag — `route/2` returns only the module and is therefore insufficient for `create/2`. The 3-case match in `handle_call({:project_config, project_id}, ...)` mirrors the existing `route_provider/3` for `{project_id, database_path}` and returns `:task_provider_not_configured` / `:provider_unavailable_for_project` for the same failure modes (without the `database_path_mismatch` cross-check, which is a `route/2` concern).
+
+#### 2.2.6 Architecture Decisions (Numbered)
+
+The architecture is committed to the following decisions. Each is named and justified; deviations require a TRD revision.
+1. **Single-event linkage design.** The bead-linkage signal rides on `TaskCreated.external_id` (an existing optional field). No new typed event (`TaskBeadLinked` was considered and rejected in PRD 1.0.2). Justification: the slice invariant ("every emitted event is owned by an aggregate's `handle_command/2`; no module fabricates events") is preserved end-to-end; the two-stage finalization lets the Actor sequence I/O without manufacturing a second event. The projection map and the read-side `GET /api/tasks/:id` already expose the linkage through `external_id`.
+2. **Two-stage aggregate finalization contract.** The Actor's `do_dispatch/4` runs four stages: validate (pure), I/O (only if validation passed + project supports `:create` + `cmd.payload.external_id` is `nil`), re-decide (pure, with `external_id` enriched), and finally the existing Actor↔CommandRouter append/ack protocol (`send CommandRouter, {:append, …}` + `receive {:append_ok, …}` + `commit_event/3`). The aggregate stays pure throughout (no I/O at any stage); the Actor NEVER mutates `event_spec` after `handle_command/2` returns and NEVER calls `EventStore.append_to_stream/3` directly (architecture test enforces CommandRouter as the sole append point). The Actor enriches the COMMAND payload, not the event spec.
 
 
-```
-13. EventStore.append_to_stream returns {:error, :wrong_expected_version}
-14. [PRD ADD] Bounded retry path (AC-020-3, AC-024-1) — cache-aware:
-    - CONSULT state.in_flight_beads[command_id] FIRST before any close or re-create:
-      - Cache HIT (a previous attempt already created the bead):
-        - REUSE cached bead_id; do NOT call br close; do NOT clear cache
-        - reload_after_conflict(state) → rehydrate state + new_version
-        - INJECT cached bead_id into cmd: %{cmd | payload: Map.put(cmd.payload, :external_id, cached.bead_id)}
-        - Recursive do_dispatch(rehydrated_state, enriched_cmd, new_version, retries_left - 1)
-        - If the re-decision rejects ({:error, :phase_terminal} or {:error, :task_already_exists, _}):
-            → compensate (BeadsAdapter.complete with transition_comment "foreman-compensation:re-decision-rejected")
-            → Map.delete(state.in_flight_beads, command_id)
-            → surface {:error, _} to caller; do NOT re-enter the append loop
-        - If retries_left == 0 (cache hit + retry exhaustion):
-            → compensate (BeadsAdapter.complete with transition_comment "foreman-compensation:append-conflict-retry-exhausted")
-            → Map.delete(state.in_flight_beads, command_id)
-            → surface {:telemetry, {:error, :wrong_expected_version}, ...} to caller
-      - Cache MISS (e.g. the previous attempt crashed and lost in_flight_beads, OR this is a brand-new conflict with no cached bead):
-        - reload_after_conflict(state) → rehydrate state + new_version
-        - Recursive do_dispatch(rehydrated_state, cmd, new_version, retries_left - 1)
-        - On the next dispatch the cond branches re-evaluate; if cmd.payload.external_id is still nil, stage 2 (br create) runs again — a NEW bead is created and the cache is repopulated
-        - On retries_left == 0: surface {:telemetry, {:error, :wrong_expected_version}, ...}; no compensation (nothing to close)
-15. CLOSE-ONLY-ONCE: every BeadsAdapter.complete call MUST consult state.in_flight_beads[command_id] FIRST. Once an entry is removed, subsequent retries MUST NOT call close on the same logical command (defeats REQ-024's one-br-create-per-command_id invariant).
-16. Telemetry:
-    - On cache-hit + retry exhausted close: [:foreman_server, :task_provider, :beads, :create, :compensated] with command_id, bead_id, compensation_reason: :retry_exhausted
-    - On cache-hit + re-decision rejected close: [:foreman_server, :task_provider, :beads, :create, :compensated] with command_id, bead_id, compensation_reason: :re_decision_rejected
-    - On close failure: [:foreman_server, :task_provider, :beads, :create, :compensate_failure] with command_id, bead_id, close_error
-    - Orphan janitor (REQ-023) absorbs residual compensation failures on grace-window scan
-```
-**Read-side path (Beads → Foreman, watcher):**
+3. **In-flight bead cache (process-local).** `state.in_flight_beads: %{command_id => bead_handle}` lives on the Actor's state. The cache prevents two `br create` invocations for the same logical command (initial dispatch + `reload_after_conflict` retry). The cache is cleared only on terminal success or terminal compensation; transient retries NEVER clear the cache. The cache is process-local and does NOT survive a crash; the orphan janitor absorbs crash-stranded beads on its grace-window scan.
 
-```
-1. Operator: echo "Manual note" | br create --title "Manual note" --db .beads/beads.db --json
-2. Beads appends the issue to .beads/issues.jsonl
-3. BeadsWatcher reads the new line
-4. Parses the JSONL entry; checks agent_context.foreman — absent
-5. Get-or-create the Foreman task on the corresponding project (via ProjectionStore lookup by external_id, then by title)
-6. Synthesizes a command envelope: {command_id: <new uuid>, command_type: "task.create", payload: {project_id, title, description, priority, task_type, external_id: bead_id}, envelope: {actor: "system:beads-watcher", timestamp: <iso8601>}}
-7. CommandGateway.dispatch_system/2 (system origin, no allowlist check)
-8. CommandRouter.dispatch(command)
-9. Aggregator.start_aggregate(Task, ...) — starts Actor
-10. Actor enters do_dispatch/4
-11. [PRD ADD] Check cmd.payload.external_id: present → skip br create (the bead is the source, Beads already has it)
-12. The event_spec proceeds to normalize_to_event_data with external_id: bead_id (the bead's ID is already in the payload)
-13. EventStore.append_to_stream succeeds
-14. ProjectionStore writes task map with external_id: bead_id
-```
+4. **CommandGateway boundary invariant.** `dispatch_operator/2` MUST reject `task.create` envelopes with non-nil `payload.external_id` at the existing envelope allowlist guard. `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch. The invariant is enforced ONCE at the boundary; the Actor does not duplicate the origin check. Adding a new dispatch path (or a new operator type) requires re-validating the boundary invariant.
 
-**Cleanup path (orphan janitor, post-grace-window):**
+5. **Pre-emptive Foreman-side validation.** `BeadsAdapter.create/2` rejects out-of-range priority (must be 0..P4) and out-of-enum `task_type` BEFORE constructing argv. This prevents the CodeMap's `INVALID_PRIORITY` / `INVALID_ISSUE_TYPE` rows from firing on inputs the system could have rejected earlier; the CodeMap rows remain reachable only when `br`'s own validation finds something Foreman's check missed (e.g. a future schema change).
 
-```
-1. BeadsOrphanJanitor scans .beads/issues.jsonl
-2. Filter: agent_context.foreman present (Foreman-originated)
-3. For each match, check ProjectionStore for corresponding task:
-   - (a) No task exists → call BeadsAdapter.complete with transition_comment: "foreman-orphan:no-task"
-   - (b) Task exists but is closed/failed → call BeadsAdapter.complete with transition_comment: "foreman-orphan:terminal-task"
-   - (c) Task exists and is in active state → skip (not an orphan)
-4. Emit telemetry events per the matrix in §2.2.5
-```
+6. **Watcher single-cursor invariant (3-way cursor priority).** `read_offset` is the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; (c) the file size (EOF) if the file ends on a terminator. `partial_line` is the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED — transient-line bytes from the split, trailing fragment bytes from `last_segment`, or `""` respectively (observability only, NOT required for correctness on the next poll). Terminal advance moves `read_offset` past `byte_size(line) + 1`; transient holds `read_offset` at the transient-line start and stops the loop. A write that straddles a poll boundary is never dropped or double-counted; a transient dispatch never skips queued lines.
 
-#### 2.2.3 Integration Points
+7. **Watcher terminal-vs-transient dispatch classification (EXHAUSTIVE).** The watcher's terminal set is the aggregate's `task.create` domain rejection set wrapped by the gateway: `{:ok, _}`; `{:error, {:already_exists, :task, _}}`; `{:error, {:invalid_task_status, _}}`; `{:error, {:project_archived, _}}`; `{:error, :project_id_required}`. Every other return is transient (retryable). The classifier pattern-matches the FULL gateway return shape (outer wrapper preserved, inner reason matched by arity); the watcher's terminal set is the EXHAUSTIVE list of `CommandGateway.dispatch_system/2` returns that are NOT transient. `ProviderError` is NEVER produced by the watcher-import branch because the watcher dispatches via `dispatch_system/2` and bypasses `BeadsAdapter.create/2`.
 
-| Integration | Direction | Trigger | Surface |
-|---|---|---|---|
-| Go CLI → Phoenix | inbound | every command | `POST /api/commands` (existing; no change) |
-| Phoenix → CommandGateway | inbound | every command | `dispatch_operator/2` (existing; extended with `external_id` guard at AC-020-7) / `dispatch_system/2` (existing; trusted path for the watcher) |
-| CommandGateway → CommandRouter | outbound | every command | `dispatch/1` (existing; no change) |
-| CommandRouter → Aggregator | outbound | every command | `start_aggregate/2` (existing) |
-| Aggregator → Actor | outbound | every command | `GenServer.call/3` (existing) |
-| Actor → BeadsAdapter (NEW) | outbound | only for `task.create` on Beads-backed projects, when `cmd.payload.external_id` is `nil` | `BeadsAdapter.create/2` (extended) |
-| BeadsAdapter → BrRunner | outbound | every `br` invocation | `BrRunner.run/1` (existing; `@runner` resolved at compile time) |
-| BrRunner → `br` subprocess | outbound | every `br` invocation | `System.cmd/3` (existing; SIGTERM-then-SIGKILL per PRD-2026-48f7b420 REQ-009-2) |
-| ProjectionStore → Read API | outbound | every event | `apply_event_by_type/3` (extended to read `payload.external_id` for `TaskCreated`; no new event handler) |
-| Read API → Go CLI | outbound | every read | `GET /api/tasks/:id` (existing; `external_id` returned in JSON when present) |
-| BeadsWatcher → CommandGateway | outbound | every new JSONL line | `dispatch_system/2` of `task.create` with `external_id` pre-populated (NEW) |
-| BeadsOrphanJanitor → BeadsAdapter | outbound | every orphan match | `BeadsAdapter.complete/3` (existing) |
-| BeadsOrphanJanitor → ProjectionStore | outbound | every scan | `get_task/2` and `all_tasks/1` (existing) |
-| BeadsWatcher → BeadsAdapter | outbound | at boot for `br where` | `BrRunner.run(["where", "--db", db_path, "--json"])` (NEW) |
-| Actor → in-flight cache (NEW, process-local state) | outbound | every `task.create` decision | `Map.put/Map.delete` on `state.in_flight_beads` (no I/O; consulted before any `br create` and cleared on terminal success or compensation) |
+8. **Watcher restart contract (full-replay-on-every-boot).** The watcher does NOT maintain a durable offset. On every boot, the watcher reads the JSONL from offset 0 to current EOF, applies the parse + dedupe + suppress + dispatch pipeline, then captures the boot-completion cursor and enters tail mode via `:file.open/2` + `Process.send_after(self(), :read_more, @poll_ms)` polling. The `ProjectionStore` dedupe check is the cross-restart safety net — operator beads that arrived during downtime are recovered on the next boot's replay.
 
-#### 2.2.4 Technology Choices
+9. **Opt-in supervisor children.** `:start_beads_watcher?` and `:start_beads_orphan_janitor?` both default to `false` in `config/test.exs` and `config/runtime.exs`. The `maybe_beads_watcher_child/0` and `maybe_beads_orphan_janitor_child/0` helpers mirror the existing `maybe_json_schema_cache_child/0` / `maybe_project_provider_projector_child/0` pattern. Operators opt into both flags for production but the flags exist for staged rollouts.
 
-- **JSONL tail mode:** `:file.open/2` + read-until-EOF + `Process.send_after(self(), :read_more, @poll_ms)` polling. The 2s poll interval is the trade-off between latency and resource usage; the PRD allows override via `:beads_watcher_poll_ms`. Streaming via `:file_system` (FSEvents on macOS, inotify on Linux) is intentionally deferred (see PRD §7 "out-of-scope gaps" #1).
-- **JSONL parsing:** `Jason.decode!/1` per line. The JSONL format is one JSON object per line; line-delimited, no nested arrays. Each line is parsed independently.
-- **Boot replay (full-replay-on-every-boot):** every watcher's `init/1` reads the JSONL from offset 0 to current EOF, applying the same parse + dedupe + dispatch pipeline as tail mode. Replay is bounded by `lines_processed * (read + parse + ProjectionStore lookup)`; already-imported beads are no-op via AC-022-2 dedupe so the steady-state cost is bounded. After replay, the watcher captures the current EOF as the tail-mode `read_offset` start and enters tail mode. **No durable offset store is required**: the `ProjectionStore` dedupe is the cross-restart safety net (AC-022-2), and the orphan janitor (REQ-023) absorbs any foreman-tagged residual. The trade-off is O(N) boot work per restart vs. correctness across VM crash; this is intentionally accepted because the JSONL is bounded by bead volume and the replay is mostly no-op dedupe hits once steady-state is reached.
-- **Supervisor strategy:** `rest_for_one` is the natural choice for the watcher / janitor pair — if the registry is restarted, both children must restart. The existing `ForemanServer.TaskProvider.Supervisor` (or equivalent) is the parent supervisor; the new children are added to its child list.
-- **Single-event design rationale:** the bead-linkage signal rides entirely on the existing `TaskCreated.external_id` field; no `TaskBeadLinked` event exists, no second append happens, and no codec dual-registration is required. The slice invariant ("every domain event is emitted by an aggregate's `handle_command/2` routed through `CommandRouter` — no module emits events directly") is preserved because the Actor enriches the COMMAND payload (not the event spec) and re-invokes `handle_command/2` so the aggregate itself emits the enriched event.
-- **Two-stage finalization rationale:** the Actor sequences the I/O between two `handle_command/2` invocations so the aggregate stays a pure decision function at every stage. Stage 1 validates the unenriched command (catches `:task_already_exists` and other domain rejections without filesystem I/O); stage 2 calls `BeadsAdapter.create/2`; stage 3 re-runs `handle_command/2` with `:external_id` injected into the command payload so the aggregate emits `event_spec.payload.external_id == bead_id` deterministically. The aggregate NEVER sees the bead ID — only the enriched payload's `:external_id` field.
-- **Watcher-import branch rationale:** the JSONL watcher synthesizes a `task.create` envelope via `CommandGateway.dispatch_system/2` with `external_id` already populated (Beads is the source; the bead is on disk). The Actor detects this at stage 1 because `Aggregate.get(payload, :external_id)` mirrors the value into the stage-1 event-spec payload; the second stage-1 clause (`when not is_nil(stage1_payload.external_id)`) short-circuits straight to normalization-and-append. No `br create` is issued, preserving the bead already on disk.
-- **CommandGateway boundary invariant rationale:** `dispatch_operator/2` rejects `task.create` with non-nil `payload.external_id` at the existing envelope allowlist guard (returns `{:error, :external_id_not_allowed_via_operator}`); `dispatch_system/2` is unchanged. The boundary invariant is enforced once at the CommandGateway allowlist; the Actor does NOT perform its own origin check. This prevents operator-issued payloads from bypassing `BeadsAdapter.create/2` by adding `external_id` to operator envelopes.
-- **Command dedup:** CommandRouter's existing `command_id`-keyed dedup applies to the SINGLE append — a retry by the same operator reuses the same `command_id` and is dropped before reaching the Actor. The `in_flight_beads` cache key is the FIRST command's `command_id`; the cache survives the conflict-recovery recursion because it lives on `state.in_flight_beads` (process-local, NOT request-local).
-- **CodeMap factory:** all `ProviderError` constructions continue through `BeadsAdapter.CodeMap.map_error/2`. The 5 new rows reuse the existing helper functions for `retryable?` propagation and context-marshal.
+10. **Orphan janitor close-only-our-orphans.** The janitor closes ONLY foreman-tagged beads (`Map.has_key?(parsed["agent_context"] || %{}, "foreman")`). Untagged beads are NEVER touched. The check is at the top of the scan loop, before any `br close` call. The check is the architectural invariant that prevents the janitor from closing operator-managed beads.
 
-#### 2.2.5 Telemetry Taxonomy
-
-All events emitted under `[:foreman_server, :task_provider, :beads, ...]` (consistent with the existing `[:foreman_server, :task_provider, ...]` taxonomy from PRD-2026-48f7b420):
-
-| Event | Direction | Trigger | Metadata |
-|---|---|---|---|
-| `[:create, :success]` | outbound | `br create` succeeds; bead ID is on disk | `command_id`, `bead_id`, `task_id`, `project_id`, `?duration_ms` (always) |
-| `[:create, :failure]` | outbound | `br create` fails (any CodeMap row) | `command_id`, `?bead_id` (nil on failure), `code`, `retryable?`, `task_id`, `project_id` |
-| `[:create, :compensated]` | outbound | append-conflict triggers compensation; br close succeeds | `command_id`, `bead_id`, `task_id`, `project_id`, `?duration_ms` |
-| `[:create, :compensate_failure]` | outbound | append-conflict triggers compensation; br close fails | `command_id`, `bead_id`, `task_id`, `project_id`, `close_code` |
-| `[:create, :command_id_mismatch]` | outbound | orphan janitor finds a foreman-tagged bead whose `command_id` does not match any Foreman command (suspected tag spoofing) | `bead_id`, `spoofed_command_id`, `?duration_ms` |
-| `[:watcher, :imported]` | outbound | watcher reads a new non-Foreman bead and synthesizes a `task.create` envelope | `bead_id`, `task_id`, `project_id`, `?duration_ms` |
-| `[:watcher, :skipped]` | outbound | watcher reads a new foreman-tagged bead (suppression) | `bead_id`, `project_id` |
-| `[:watcher, :reconciled]` | outbound | watcher reads a new bead that already has a Foreman task (no-op) | `bead_id`, `task_id`, `project_id` |
-| `[:watcher, :replay_started]` | outbound | watcher boot — full replay begins (offset 0 → EOF) | `project_id`, `bytes_to_process` |
-| `[:watcher, :replay_completed]` | outbound | watcher boot replay finished | `project_id`, `lines_processed`, `lines_imported`, `lines_suppressed`, `lines_reconciled`, `?duration_ms` |
-| `[:orphan, :janitor, :closed]` | outbound | janitor closes a foreman-tagged orphan | `bead_id`, `?task_id`, `project_id`, `reason` ("no-task" or "terminal-task"), `?duration_ms` |
-| `[:orphan, :janitor, :retained]` | outbound | janitor inspects a non-foreman-tagged bead (skipped) | `bead_id`, `project_id` |
-| `[:orphan, :janitor, :grace_expired]` | outbound | janitor scans but the grace window has not yet elapsed for a particular bead | `bead_id`, `linked_at_age_ms`, `grace_ms` |
-
-Telemetry handler: the existing `[:foreman_server, :task_provider, :beads, :create, :success|:failure|:compensated]` handler at `config/runtime.exs` (or equivalent) is extended with the new events; the handler dispatches to operational dashboards in the same style as the existing telemetry.
-
-#### 2.2.6 Reused Capabilities
-
-- **`ForemanServer.CommandGateway.dispatch_operator/2`** — operator envelope routing; allowlist filter (already enforced for `task.create`); extended at the allowlist guard to reject non-nil `payload.external_id` (AC-020-7) with `{:error, :external_id_not_allowed_via_operator}`.
-- **`ForemanServer.CommandGateway.dispatch_system/2`** — system envelope routing; no allowlist filter; the trusted path for the watcher (REQ-022) and any future system-issued dispatch that needs to pre-populate `external_id`. Unchanged.
-- **`ForemanServer.CommandRouter.dispatch/1`** — `command_id`-keyed dedup (applied to the single append only).
-
-- **`ForemanServer.Aggregate.Actor.do_dispatch/4`** — command dispatch and append-confirmation loop (extended in-place with the two-stage finalization hook at lines 156-223).
-- **`ForemanServer.Aggregate.Actor.reload_after_conflict/1`** — append-conflict recovery (reused for the single append; the in-flight cache survives the recursion).
-- **`ForemanServer.TaskProvider.Registry.route/2`** — per-project provider resolution (already supports routing on a method-name; the `:create` route is added with the same shape as `:claim`).
-- **`ForemanServer.TaskProviders.BeadsAdapter.capabilities/0`** — extended with `:create` (one entry added).
-- **`ForemanServer.TaskProviders.BeadsAdapter.CodeMap.map_error/2`** — factory for `ProviderError` (5 new rows added).
-- **`ForemanServer.ProjectionStore.apply_event_by_type/3`** — projection handler (extended to read `event_spec.payload.external_id` for `TaskCreated`; no new event handler).
-- **`ForemanServer.TaskProvider.Issue`** — wraps the `br create --json` output (existing 12-field struct; the optional fields are populated as the JSON envelope carries them).
-- **`BrRunner.run/1`** — `br` subprocess layer (existing; `@runner` resolved at compile time; `BrRunnerMock` in tests).
-- **`ForemanServer.Application.maybe_*_child/0` pattern** — opt-in supervisor child pattern (existing; mirrored for the watcher and janitor).
-
-Issues that explicitly land inside the slice:
-
-1. **Existing `command_id` dedup covers the new path.** `CommandRouter` dedupes on `command_id`; retries by the same operator reuse the same `command_id` and are dropped before reaching the Actor. The `in_flight_beads` cache key is the FIRST command's `command_id`; the cache survives the conflict-recovery recursion because it lives on `state.in_flight_beads` (process-local, NOT request-local). There is exactly ONE append per logical command.
-
-2. **The synchronous hook REPLACES no existing aggregate behaviour.** The `task.create` handler in `packages/foreman_server/lib/foreman_server/aggregates/task.ex:163-195` already extracts `external_id` from the payload via `Aggregate.get(payload, :external_id)` (the field has been optional but unused for years). The handler does not need to change. The Actor hook is the only path that supplies the new `external_id` value; the aggregate emits the enriched `event_spec` on the second `handle_command/2` invocation.
-
-3. **The `in_flight_beads` cache is process-local and NOT replicated across Actor restarts.** The cache is a process state field, not a GenServer-managed state. On crash, the cache is rehydrated from nothing (and the orphan janitor absorbs the strander). This is the simpler design and avoids the dual-writer problem (state vs CommandRouter dedup).
-
-4. **The orchestrator's `BeadsAdapter` is the ONLY module that constructs `br` subprocess argv.** Per the PRD-2026-48f7b420 architectural invariant (REQ-008-5a), all `ProviderError` constructions pass through `BeadsAdapter.CodeMap`. The synchronous hook does NOT introduce a new error-construction path. The architecture test (`test/foreman_server/task_providers/provider_error_factory_test.exs`) walks the codebase and asserts that every `%ProviderError{...}` struct literal lives inside `BeadsAdapter.CodeMap`.
-
-5. **The `external_id` field addition to the `TaskCreated` projection map is BACKWARDS-compatible.** Existing `TaskCreated` events in the event store do not carry `external_id`; the projection handler reads `event_spec.payload.external_id` (default `nil` via `Map.get(payload, :external_id)` semantics) and writes the field. Foreman's read API returns `external_id: nil` for legacy tasks; for new tasks, it returns the bead ID. The change is additive; no codec re-registration is required because `external_id` was already an optional field on `Events.TaskCreated`.
-
-6. **CommandGateway boundary invariant (architectural).** `dispatch_operator/2` MUST reject `task.create` envelopes with non-nil `payload.external_id` at the existing envelope allowlist guard. `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch. The invariant is enforced ONCE at the CommandGateway boundary; the Actor does not duplicate the origin check. Adding a new dispatch path (or a new operator type) requires re-validating the boundary invariant; this is the architectural invariant that prevents operator-side payload forgery from skipping `BeadsAdapter.create/2`.
-
-7. **Watcher terminal-vs-transient dispatch classification is EXHAUSTIVE (architectural).** The watcher-import branch in `BeadsWatcher` dispatches synthetic `task.create` commands via `CommandGateway.dispatch_system/2` (the trusted system path, NOT through `BeadsAdapter.create/2`, per AC-020-6). The classification of every gateway return value as **terminal** (advance `read_offset`) or **transient** (hold `read_offset`; retry on next poll with same deterministic `command_id`) MUST be exhaustive and is defined in §2.2.2 paragraph "Terminal vs transient dispatch outcomes" — there is no third outcome. **Terminal set (exhaustive, wrapped shapes):** `{:ok, _}`; `{:error, {:already_exists, :task, _}}`; `{:error, {:invalid_task_status, _}}`; `{:error, {:project_archived, _}}`; `{:error, :project_id_required}`. Every other gateway return is transient (including `ProviderError{retryable?: true}`, `:wrong_expected_version` bubbling past actor retry, subprocess timeouts, DB locks, `{:exit, :killed}`). The classifier pattern-matches the FULL gateway return shape (outer `{:error, _}` wrapper preserved, inner reason matched by arity-distinct patterns). Critically, `ProviderError` is NEVER produced by this branch because the branch bypasses `BeadsAdapter.create/2` — the synthetic `ProviderError{retryable?: true}` transient test is forward-compatibility scaffolding only, ensuring the classifier rejects it correctly if any future refactor routes the watcher through `BeadsAdapter`.
+11. **Backwards-compatible projection extension.** The `external_id` field addition to the `TaskCreated` projection map is additive. Existing `TaskCreated` events in the event store do not carry `external_id`; the projection handler reads `event_spec.payload.external_id` (default `nil` via `Map.get(payload, :external_id)` semantics) and writes the field. Foreman's read API returns `external_id: nil` for legacy tasks; for new tasks, it returns the bead ID. The change is additive; no codec re-registration is required.
+12. **Canonical attrs contract (7-key map, FOREMAN-SIDE).** `BeadsAdapter.create/2` accepts a single `attrs` map whose keys are FIXED at the boundary: `%{task_id :: String.t(), command_id :: String.t(), title :: String.t(), description :: String.t() | nil, priority :: non_neg_integer(), task_type :: String.t(), dedupe_key :: String.t() | nil}`. The two correlation handles `task_id` and `command_id` live INSIDE `attrs` (PRD AC-020-1 and AC-021-3 trace both to this map; PRD 2-arity `create(project_id, attrs)` signature is preserved). Missing any required key at the call site is a pre-emptive validation failure (per Decision #5) routed to the appropriate CodeMap row before argv construction. `source_repo` is a derived field on `%TaskProvider.Issue{}` (Section 2.2.1 Component Boundaries BEAD_CREATED row), NOT a key on `attrs`. `dedupe_key` is preserved on attrs for future-extension `--dedupe-key` argv flag (TRD-003 Action #5). **`description` is `String.t() | nil` on attrs** — nil is the operator-omitted-description case; the runner-payload (Decision #14) normalizes nil → `""`. **No `:agent_context` key on attrs** — the agent_context JSON is CONSTRUCTED in the attrs → runner-payload transform (Decision #14) from `attrs.task_id` + `attrs.command_id` + the static `origin: "foreman"` + an ISO8601 UTC `linked_at` timestamp captured at the call site. **The attrs shape is the FOREMAN-SIDE boundary contract** — the runner-payload map consumed by `SystemBrunner` (Decision #14) is a SUBSIDIARY shape constructed at the `BeadsAdapter.create/2` boundary via a one-key rename (`:task_type` → `:type`), a nil normalization (`:description` nil → `""`), and a constructed string field (`:agent_context` from the four foreman tag fields).
+13. **`TaskProvider.Registry.project_config/1` helper.** `BeadsAdapter.create/2` resolves the per-project `database_path` via `Registry.project_config(project_id)` as its first line. The helper's return shape is `{:ok, %{provider_module: module(), config: map()}} | {:error, atom()}` where `config` carries `:database_path`. The 3-case match in `handle_call({:project_config, project_id}, …)` mirrors the existing `route_provider/3` for `{project_id, database_path}` and returns `:task_provider_not_configured` / `:provider_unavailable_for_project` for the same failure modes (without the `database_path_mismatch` cross-check, which is a `route/2` concern). `BeadsAdapter.create/2` propagates a `Registry.project_config/1` failure as terminal `CREATE_FAILED` (AC-020-5; no `br create` argv construction). `route/2` signature is UNCHANGED (no backwards-incompatible change); `project_config/1` is a new public helper (TRD-005-TASK).
+14. **`BrRunner.cmd/3` sole public API; `SystemBrunner` owns argv construction; runner-payload is the SUBSIDIARY shape (DERIVED from canonical attrs).** The `BrRunner` behaviour is `cmd(request, project_config, opts)` (defined at `br_runner.ex:28-30`). `SystemBrunner` owns ALL argv construction — it is the only place the `br create` argv shape can change. **Runner-payload shape (SUBSIDIARY to the canonical attrs map from Decision #12):** `%{title :: String.t(), type :: String.t(), priority :: non_neg_integer(), description :: String.t(), agent_context :: String.t()}`. Note `type` (matching `br create --type`), NOT `task_type` (which is the Foreman-side canonical key — renamed in the transform). `description` is `String.t()` (NOT nullable) — nil on attrs is normalized to `""` at the transform boundary. `agent_context` is `String.t()` — the JSON is CONSTRUCTED at the transform boundary (NOT a key on attrs). **Attrs → runner-payload transform (TRD-003 Action #5; runs after pre-emptive validation, before `BrRunner.cmd/3`):** (1) `attrs.task_type` → `payload.type` (the ONLY key rename); (2) `attrs.description` → `payload.description` with nil → `""` normalization (the ONLY nullable field); (3) Construct `payload.agent_context` = `Jason.encode!(%{foreman: %{task_id: attrs.task_id, command_id: attrs.command_id, origin: "foreman", linked_at: <iso8601-utc-now>}})` built from canonical attrs correlation handles + the static `origin: "foreman"` + an ISO8601 UTC timestamp captured at the call site (the JSON is never accepted from the call site — `BeadsAdapter` owns its construction); (4) `attrs.title` → `payload.title` (passthrough); (5) `attrs.priority` → `payload.priority` (passthrough); (6) `attrs.task_id`, `attrs.command_id`, `attrs.dedupe_key` are preserved on the canonical attrs map for correlation and future-extension `--dedupe-key` argv flag, but do NOT enter the runner-payload (they live in the adapter boundary only). The transform is centralized at TRD-003 to make every key decision explicit and testable. A dedicated `build_action_argv(:create, payload)` clause MUST call `validate_payload_shape!(:create, payload)` FIRST (line 1 of the body), mirroring the existing `:set_priority` pattern at `system_br_runner.ex:176-185`. The default `tap`-deferred validator at line 198-204 only works for `:flags`-extracted actions and would crash with `KeyError` / `Protocol.UndefinedError` on direct `payload.field` access if a dedicated clause tried to defer validation. Action-specific argv order: `["--title", payload.title, "--type", payload.type, "--priority", Integer.to_string(payload.priority), "--description", payload.description, "--agent-context", payload.agent_context] |> maybe_append_json_flag()`. The `--json` flag is appended by the existing `maybe_append_json_flag/1` helper at line 307. Payload keys read by `SystemBrunner`: `[:title, :type, :priority, :description, :agent_context]`. `project_config` shape passed to `BrRunner.cmd/3`: `%{database_path: db_path}`. Extension is TRD-016-TASK.
 
 ---
 
-## 3. Master Task List (PR-by-PR)
+## Master Task List
 
-The work is shipped as **3 PRs** with **24 atomic tasks** (rows prefixed with task IDs). AC traceability is encoded in the `satisfies` and `validates` columns. Each PR has a `**Shippable State:**` line that names the integration point that PR makes runnable.
+The work is shipped as **3 PRs** with **31 master entries** (15 implementation tasks + 15 paired test tasks + 1 docs-only task). Each PR has a `**Shippable State:**` line that names the integration point that PR makes runnable. Tasks are formatted in the parser-compatible checklist shape:
+
+`- [ ] **TRD-NNN-TASK**: <description> [satisfies REQ-NNN] [depends: TRD-NNN, TRD-NNN]`
+
+followed by a `Validates PRD ACs: AC-NNN-M, AC-NNN-M` body line, optional `Target File:` / `Actions:` lines, and optional sub-checklists.
 
 ### PR 1 — `TaskProvider` behaviour extension + `BeadsAdapter.create/2`
 
-**Shippable State:** `BeadsAdapter.create/2` is runnable end-to-end with mocked `BrRunner`; an Actor invocation that exercises the path will get the bead ID from the mocked subprocess without yet wiring the synchronous hook (the synchronous hook lands in PR 2).
+**Shippable State:** `BeadsAdapter.create/2` is runnable end-to-end with mocked `BrRunner`; the `TaskProvider` behaviour advertises the new callback (12 entries); `BeadsAdapter.capabilities/0` advertises `:create`. An Actor invocation that exercises the path will get the bead ID from the mocked subprocess without yet wiring the synchronous hook (the synchronous hook lands in PR 2). The 5 new CodeMap rows are in place; pre-emptive Foreman-side validation rejects out-of-range inputs before constructing argv. The Actor still produces a `TaskCreated` event with `external_id: nil` at the end of PR 1.
 
-| id | task | est. | deps | satisfies | validates |
-|---|---|---|---|---|---|
-| TRD-001-TASK | Extend `ForemanServer.TaskProvider` behaviour with `@callback create/2` declaration (between `name/0` and `capabilities/0`); add `create/2` to the `@doc` summary | S | — | REQ-025 | AC-025-3 |
-| TRD-002-TASK | Update `task_provider_test.exs`: `length(callbacks) == 12` at lines 12 AND 24; add `assert {:create, 2} in callbacks` after the existing `add_dependency` assertion; extend the capabilities assertion to verify `:create` is in `BeadsAdapter.capabilities().supports` | S | TRD-001-TASK | REQ-025 | AC-025-2, AC-025-3 |
-| TRD-003-TASK | Implement `BeadsAdapter.create/2` — construct argv (with `--agent-context` JSON containing the four tag fields: `foreman.task_id`, `foreman.command_id`, `foreman.origin` = `"foreman"`, `foreman.linked_at` ISO8601 UTC), call `BrRunner.run/1`, parse the JSON output, wrap into `TaskProvider.Issue{}` | M | TRD-001-TASK | REQ-020, REQ-021 | AC-020-1, AC-021-1, AC-021-3 |
-| TRD-004-TASK | Add `BR_TIMEOUT_SUBPROCESS` mapping usage in `create/2` for the per-call timeout (reuses the existing 30s default from PRD-2026-48f7b420 REQ-009-2); add `preflight_database/2` re-validate plus the existing `BrRunner.run/1` (no new pattern) | S | TRD-003-TASK | REQ-020 | AC-020-1 |
-| TRD-005-TASK | Add 5 new CodeMap rows: `INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`, `DUPLICATE_TASK_ID`, `CREATE_FAILED` (fallback); each row sets `retryable?` per AC-026-1 through AC-026-5; all 5 reuse the existing 8-key allowlist (no new context keys) | S | TRD-003-TASK | REQ-026 | AC-026-1, AC-026-2, AC-026-3, AC-026-4, AC-026-5 |
-| TRD-006-TASK | Extend `BeadsAdapter.capabilities/0` to include `:create` in `supports` (now `[:claim, :close, :reopen, :annotate, :set_priority, :set_assignee, :list_dependencies, :add_dependency, :remove_dependency, :create]`) | XS | TRD-001-TASK | REQ-025 | AC-025-2 |
-| TRD-007-TASK | Update `TaskProvider.Registry.route/2` (line 69) to dispatch `:create` to the same per-project state; update `register_for_project/3` (line 89) if the routing shape needs adjustment (likely no change) | S | TRD-001-TASK, TRD-003-TASK | REQ-020 | AC-020-4 |
-| TRD-008-TASK | Pre-emptive Foreman-side validation in `BeadsAdapter.create/2`: reject out-of-range priority (must be 0..P4) and out-of-enum task_type before constructing argv; this prevents the CodeMap's `INVALID_PRIORITY` / `INVALID_ISSUE_TYPE` rows from firing on inputs the system could have rejected earlier | S | TRD-003-TASK | REQ-026 | AC-026-2, AC-026-3 |
-| TRD-009-TASK | Write `BeadsAdapter.create/2` test suite — happy path (mock `BrRunner` returns `{:ok, JSON}`); `INVALID_TITLE` path (mock returns VALIDATION envelope); `INVALID_PRIORITY` path; `INVALID_ISSUE_TYPE` path; `DUPLICATE_TASK_ID` path; `CREATE_FAILED` fallback path; the `agent_context` JSON-shape assertion (all 4 fields present, `origin` literal `"foreman"`, `linked_at` ISO8601 UTC) | M | TRD-003-TASK, TRD-005-TASK, TRD-008-TASK | REQ-020, REQ-021, REQ-026 | AC-020-1, AC-021-1, AC-026-1, AC-026-2, AC-026-3, AC-026-4, AC-026-5 |
+- [ ] **TRD-001-TASK**: Extend `ForemanServer.TaskProvider` behaviour with `@callback create/2` declaration (between `name/0` and `capabilities/0`); add a `@doc` line for `create/2` describing the `TaskProvider.Issue` return shape and the `command_id` correlation handle. [satisfies REQ-025]
+  Validates PRD ACs: AC-025-3
+  Target File: `packages/foreman_server/lib/foreman_server/task_provider.ex`
+  Actions:
+  1. Add `@callback create(project_id :: String.t(), attrs :: map()) :: {:ok, %TaskProvider.Issue{}} | {:error, %ProviderError{}}` after the existing callbacks. The canonical `attrs` map carries seven keys (see Architecture Decision #12): `task_id :: String.t()` (correlation handle from `cmd.payload.task_id`), `command_id :: String.t()` (correlation handle from the dispatching `cmd.command_id` — the same correlation handle referenced in PRD AC-020-1 and AC-021-3), `title :: String.t()`, `description :: String.t() | nil`, `priority :: non_neg_integer()` (must be 0..P4), `task_type :: String.t()` (closed enum), `dedupe_key :: String.t() | nil`. All seven keys are required at the boundary; `task_id` and `command_id` are the two correlation handles that flow into the `--agent-context` JSON (AC-021-1), and the five data fields drive the `br create` argv. Missing any required key at the call site is a pre-emptive validation failure (`INVALID_TITLE` / `INVALID_PRIORITY` / `INVALID_ISSUE_TYPE` CodeMap rows per TRD-004-TASK).
+  2. Update the behaviour `@moduledoc` callback list to include `create/2` and document the canonical attrs shape from Action #1.
+  3. Verify `behaviour_info(:callbacks)` returns 12 entries with `{:create, 2}` as the new tuple.
 
-**PR 1 shippable:** `BeadsAdapter.create/2` is runnable from REPL with a mocked `BrRunner`. The synchronous hook is not yet wired; the Actor still produces a `TaskCreated` event with `external_id: nil`.
+- [ ] **TRD-001-TEST**: Update `task_provider_test.exs` behaviour-shape test: `length(callbacks) == 12` at lines 12 AND 24; add `assert {:create, 2} in callbacks` after the existing `add_dependency` assertion. [verifies TRD-001] [satisfies REQ-025]
+  Validates PRD ACs: AC-025-3
+  Target File: `packages/foreman_server/test/foreman_server/task_provider_test.exs`
 
-### PR 2 — Actor hook + in-flight cache + watcher-import branch + boundary invariant
+- [ ] **TRD-002-TASK**: Extend `BeadsAdapter.capabilities/0` to include `:create` in the `supports` list (now `[:claim, :close, :reopen, :annotate, :set_priority, :set_assignee, :list_dependencies, :add_dependency, :remove_dependency, :create]`); update the `@doc` to describe the new capability. [satisfies REQ-025] [depends: TRD-001-TASK]
+  Validates PRD ACs: AC-025-2
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter.ex`
 
-**Shippable State:** The synchronous two-stage finalization hook is wired into `do_dispatch/4` end-to-end. Issuing a `task.create` for a Beads-backed project produces a `TaskCreated` event with `external_id` populated via the second `handle_command/2` invocation. The watcher and janitor are not yet active (lands in PR 3).
+- [ ] **TRD-002-TEST**: Add a capabilities assertion in `beads_adapter_test.exs`: `assert :create in BeadsAdapter.capabilities().supports`; verify the 10-entry support list. [verifies TRD-002] [satisfies REQ-025]
+  Validates PRD ACs: AC-025-2
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_test.exs`
 
-| id | task | est. | deps | satisfies | validates |
-|---|---|---|---|---|---|
-| TRD-010-TASK | Extend `ForemanServer.Aggregate.Actor` state with `in_flight_beads: %{command_id => bead_handle}` field (default `%{}` in `init/1`); the field is part of the state struct, not a GenServer-managed state | S | — | REQ-024 | AC-024-1, AC-024-2, AC-024-3, AC-024-4 |
-| TRD-011-TASK | Insert two-stage finalization hook in `do_dispatch/4` (between `aggregate.handle_command/2` returning `{:ok, event_spec}` and `normalize_to_event_data`): (stage 1) call `aggregate.handle_command/2` with the original command; if `stage1_payload.external_id` is `nil` and `original_cmd.payload.external_id` is `nil`, proceed to stage 2; if non-nil, watcher-import branch — proceed directly to stage 5 (normalize-and-append). (stage 2) per-project gate via `provider_capabilities_for(state, original_cmd).supports` membership — if `:create` not in supports, proceed to stage 5 with `event_spec.payload.external_id == nil`. (stage 3) in-flight cache lookup — if `Map.get(state.in_flight_beads, cmd.command_id)` hits, REUSE cached bead ID and jump to stage…
-| TRD-012-TASK | Append-conflict compensation: on `:wrong_expected_version` after `br create` has populated the cache, the recursive `do_dispatch` reloads state and re-decides with the cached `bead_id`. On retry exhaustion (`@max_conflict_retries` reached) OR on re-decision rejection (`{:error, _}` from `handle_command/2`), close the bead via `BeadsAdapter.complete/3` with `transition_comment: "foreman-compensation:append-conflict-retry-exhausted"` (or `"…re-decision-rejected"` respectively), emit `[:foreman_server, :task_provider, :beads, :create, :compensated]`, clear the cache entry, return the error from `do_dispatch/4`. CLOSE-ONLY-ONCE: `in_flight_beads[command_id]` consulted before any close; once cleared, no subsequent close for the same logical comma…
-| TRD-013-TASK | CommandGateway boundary invariant: extend `ForemanServer.CommandGateway.dispatch_operator/2` (existing envelope allowlist guard at `command_gateway.ex`) to reject `task.create` envelopes with non-nil `payload.external_id` — return `{:error, :external_id_not_allowed_via_operator}`. `dispatch_system/2` is unchanged and remains the trusted path for the watcher. The Actor does NOT duplicate this check | S | TRD-011-TASK | REQ-020 | AC-020-7 |
-| TRD-014-TASK | Write `actor_hook_test.exs` — happy path (mock `BrRunner` returns bead ID; verify `event_spec.payload.external_id == bead_id` in the normalized event data); append-conflict path (mock append returns `wrong_expected_version`; verify compensation closes the bead; verify `in_flight_beads` is cleared after compensation); in-flight cache hit (replay the same `command_id`; verify the second call uses the cached bead ID and does NOT re-invoke `br create`); non-Beads project (no `:create` in capabilities; verify the hook is a no-op and `external_id` remains `nil`); watcher-import branch (synthesize `task.create` via `dispatch_system/2` with `external_id: bead.id`; verify `BeadsAdapter.create/2` is NOT invoked and the bead ID is preserved on the pers…
+- [ ] **TRD-003-TASK**: Implement `ForemanServer.TaskProviders.BeadsAdapter.create/2` — build the `:create` request payload (with `--agent-context` JSON containing the four tag fields `foreman.task_id`, `foreman.command_id`, `foreman.origin = "foreman"`, `foreman.linked_at` ISO8601 UTC), call `BrRunner.cmd/3` with the request tuple, parse the JSON output, wrap into `TaskProvider.Issue{id, title, description, status, priority, issue_type, source_repo, ...}`. Pre-emptive Foreman-side validation rejects out-of-range priority (must be 0..P4) and out-of-enum `task_type` before constructing the payload (routes to `INVALID_PRIORITY` / `INVALID_ISSUE_TYPE` CodeMap rows). [satisfies REQ-020] [satisfies REQ-021] [satisfies REQ-026] [depends: TRD-001-TASK] [depends: TRD-002-TASK] [depends: TRD-004-TASK]
+  Validates PRD ACs: AC-020-1, AC-021-1, AC-021-3, AC-026-2, AC-026-3
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter.ex`
+  Actions:
+1. Add the `create/2` public function. Signature: `def create(project_id, attrs)` per PRD AC-020 — `project_id` is the Foreman-side opaque string; `attrs` is the canonical seven-key map (see Architecture Decision #12): `%{task_id, command_id, title, description, priority, task_type, dedupe_key}`. The two correlation handles (`task_id`, `command_id`) flow into the `--agent-context` JSON (Action #4); the five data fields (`title`, `description`, `priority`, `task_type`, `dedupe_key`) drive the `br create` argv flags (Action #5). The `source_repo` field on the returned `TaskProvider.Issue` is a derived field populated from the `br create` JSON envelope (line 13 of the bead record), NOT an input on `attrs`.
+2. **Resolve `database_path` via `TaskProvider.Registry.project_config/1`.** The first line of `create/2` calls `TaskProvider.Registry.project_config(project_id)` and matches `{:ok, %{config: %{database_path: db_path}}}`. On `{:error, reason}` return `{:error, %ProviderError{code: :CREATE_FAILED, retryable?: false, message: "registry config unresolved", context: %{project_id: project_id, reason: reason}}}` — this is a terminal config error, NOT transient. The existing `Registry.project_config/1` helper is added in TRD-005-TASK; the helper returns `{:ok, %{provider_module: ..., config: ...}}` so future providers can resolve their own per-project config without exposing the registry internals.
+3. **Pre-emptive Foreman-side validation (before constructing the request payload).** In order: (a) reject missing or empty `title` with `INVALID_TITLE`; (b) reject `priority` outside 0..P4 with `INVALID_PRIORITY`; (c) reject `task_type` not in the closed enum with `INVALID_ISSUE_TYPE`; (d) reject missing `task_id` or missing `command_id` (the two correlation handles required by the `--agent-context` JSON per AC-021-3) with `INVALID_TITLE` CodeMap row (treat empty correlation handles as a title-equivalent validation failure since the bead record cannot be linked back to a Foreman task without them). All four checks happen BEFORE `BeadsAdapter.scrub_argv/1` and BEFORE the `BrRunner.cmd/3` call.
+4. Use `BeadsAdapter.scrub_argv/1` per `PRD-2026-48f7b420` REQ-019 to escape the four tag fields.
+5. **Build the action-specific request payload (the `br` boundary is `BrRunner.cmd/3` per `br_runner.ex:28-30`, NOT `run/1`).** Construct the payload map and call `BrRunner.cmd({:create, payload}, project_config, opts)`:
+   - The `agent_context` JSON is `#{Jason.encode!(%{foreman: %{task_id: attrs.task_id, command_id: attrs.command_id, origin: "foreman", linked_at: DateTime.utc_now() |> DateTime.to_iso8601()}})}` — atom keys per `CommandGateway`'s payload-key convention; both correlation IDs are sourced from the `attrs` map (Action #1), NOT regenerated; the `origin` literal is `"foreman"`; `linked_at` is `DateTime.utc_now() |> DateTime.to_iso8601()`.
+   - The request payload is `%{title: attrs.title, type: attrs.task_type, priority: attrs.priority, description: attrs.description, agent_context: agent_context_json}` — these are the action-specific keys `SystemBrRunner.build_action_argv(:create, payload)` reads (see TRD-016-TASK).
+   - `project_config = %{database_path: db_path}` is the `:config` map resolved in Action #2 (`Registry.project_config/1` returns `{:ok, %{provider_module: ..., config: cfg}}`; BeadsAdapter extracts `cfg` and passes it directly to the runner — matching the existing `BrRunner.cmd/3` call pattern used by `list_ready/2`, `coordination_status/2`, etc. in `beads_adapter.ex:72, 110, 143`).
+   - `opts = [timeout_ms: 30_000]` per the existing `BR_TIMEOUT_SUBPROCESS` mapping (`PRD-2026-48f7b420` REQ-009-2).
+   - The `dedupe_key` is held on the `attrs` map for future use (Beads adapter passes it as a future-extension `--dedupe-key` argv flag in a follow-up PRD — this slice does not wire it; it is preserved on `attrs` only).
+   - **`BrRunner.run/1` does not exist** — the only public API on `ForemanServer.TaskProviders.BrRunner` is `cmd/3` (`br_runner.ex:28-30`). All argv construction is owned by `ForemanServer.TaskProviders.SystemBrRunner`; the `:create` action is added in TRD-016-TASK.
+6. Parse the JSON envelope and return `{:ok, %TaskProvider.Issue{id: bead_id, ...}}` on success; route failure modes through `CodeMap` for `{:error, %ProviderError{}}`. On `BrRunner.cmd/3` failure modes, `CodeMap` translates `{:error, %ProviderError{code: ..., retryable?: ..., message: ..., context: ...}}` per TRD-004-TASK rows.
 
-**PR 2 shippable:** `foreman task create --project-id <beads-backed> --title "..."` produces a `TaskCreated` event with `external_id` populated via the synchronous two-stage hook. The watcher and orphan janitor are not yet booted (they are opt-in via `start_beads_watcher?` / `start_beads_orphan_janitor?` flags; PR 3 activates them).
+- [ ] **TRD-003-TEST**: Comprehensive `BeadsAdapter.create/2` test suite covering the canonical seven-key attrs shape (see Architecture Decision #12). The boundary under test is `BrRunner.cmd/3` (the only public API on `ForemanServer.TaskProviders.BrRunner` per `br_runner.ex:28-30`); `BrRunner.run/1` does NOT exist and is NEVER asserted against. Argv construction is delegated to `SystemBrRunner` and is covered by TRD-016-TEST, not here. (1) **happy path** — call `BeadsAdapter.create("proj-x", %{task_id: "tsk-1", command_id: "cmd-1", title: "Add login", description: "OAuth flow", priority: 2, task_type: "feature", dedupe_key: "dk-1"})` with mocked `TaskProvider.Registry.project_config/1` returning `{:ok, %{provider_module: BeadsAdapter, config: %{database_path: "/abs/beads.db"}}}` and `BrRunnerMock` stubbed to return `{:ok, %{stdout: ~s({"id":"foreman-abc","title":"Add login","priority":2,"issue_type":"feature"})}}` — assert Mox captured the `cmd({:create, payload}, %{database_path: "/abs/beads.db"}, _opts)` call with `payload.title == "Add login"`, `payload.type == "feature"`, `payload.priority == 2`, `payload.description == "OAuth flow"`, and `payload.agent_context` is a JSON string (not a parsed map); (2) **`--agent-context` JSON shape assertion** — parse `payload.agent_context` (the JSON string passed in the request payload) and assert the decoded JSON has `foreman.task_id == "tsk-1"`, `foreman.command_id == "cmd-1"`, `foreman.origin == "foreman"`, and `foreman.linked_at` parses as ISO8601 UTC; (3) **request payload shape (not argv)** — assert Mox captured exactly one `cmd/3` call with `payload` containing keys `[:title, :type, :priority, :description, :agent_context]` and `project_config` equal to `%{database_path: "/abs/beads.db"}` (the `Registry.project_config/1` `:config` map); argv-level assertions live in TRD-016-TEST where `SystemBrRunner` is the unit under test; (4) **pre-emptive validation** — (a) `attrs.title = ""` routes to `INVALID_TITLE` CodeMap row (non-retryable); (b) `attrs.priority = 5` routes to `INVALID_PRIORITY` (non-retryable); (c) `attrs.task_type = "bogus"` routes to `INVALID_ISSUE_TYPE` (non-retryable); (d) `attrs.task_id = nil` (or `attrs.command_id = nil`) routes to `INVALID_TITLE` (treat missing correlation handles as title-equivalent validation failure per TRD-003-TASK Action #3); (5) **registry config resolution failure (`:task_provider_not_configured`)** — `Registry.project_config/1` returns `{:error, :task_provider_not_configured}`; assert `create/2` returns `{:error, %ProviderError{code: :CREATE_FAILED, retryable?: false, context: %{project_id: "proj-x", reason: :task_provider_not_configured}}}` and NO `BrRunner.cmd/3` invocation occurs (Mox expectation fails if called); (6) **registry config resolution failure (`:provider_unavailable_for_project`)** — `Registry.project_config/1` returns `{:error, :provider_unavailable_for_project}`; assert `create/2` returns the same `CREATE_FAILED` envelope with `reason: :provider_unavailable_for_project` (terminal, non-retryable); (7) **attrs contract regression** — call `create/2` with `attrs = %{title: "x"}` (missing five keys); assert a clear pre-emptive validation error and NO `BrRunner.cmd/3` invocation. [verifies TRD-003] [satisfies REQ-020] [satisfies REQ-021] [satisfies REQ-026] [depends: TRD-016-TASK]
+  Validates PRD ACs: AC-020-1, AC-021-1, AC-021-3, AC-026-2, AC-026-3
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_create_test.exs`
 
-### PR 3 — Watcher + orphan janitor + opt-in supervision
-| id | task | est. | deps | satisfies | validates |
-|---|---|---|---|---|---|
-| TRD-015-TASK | Implement `ForemanServer.TaskProviders.BeadsWatcher` — supervised GenServer; one process per registered project; state `%{project_id, jsonl_path, file_handle, read_offset, partial_line}`; on `init/1`: resolve JSONL path via `BrRunner.run(["where", "--db", db_path, "--json"])`, open file with `:file.open/2` `[:read, :binary, :raw]`, run `BeadsWatcher.boot_replay/1` (reads offset 0 → EOF, applies parse + dedupe + dispatch pipeline; emits `[:watcher, :replay_started]` / `[:watcher, :replay_completed]`), set `read_offset` to the byte position of the START of any unterminated JSONL fragment (or the file size if the file ends on a terminator) and `partial_line` to the cached fragment bytes (or `""` if the file ends on a terminator), then schedule `Process.send_after(self(), :read_more, @poll_ms)` (default 2s) | M | — | REQ-022 | AC-022-1, AC-022-4 |
-| TRD-016-TASK | In `BeadsWatcher.read_more/1` (tail mode): seek to `read_offset`, read bytes to current EOF (do NOT prepend `partial_line`), split on newlines — for each COMPLETE line: parse JSON; check `agent_context.foreman` (skip + emit `[:watcher, :skipped]`); check `ProjectionStore` for `external_id == bead.id` (no-op + emit `[:watcher, :reconciled]`); otherwise synthesize a `task.create` command envelope with `external_id: bead_id` and dispatch via `CommandGateway.dispatch_system/2` (emit `[:watcher, :imported]`). **Trailing-line buffer (single-cursor invariant — 3-way cursor priority):** `read_offset` is the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; (c) the file size (EOF) if the file ends on a terminator. `partial_line` is the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED — the transient-line bytes from the split if the loop stopped at a transient; the trailing fragment bytes from `last_segment` if the file ends on an unterminated JSONL line; or `""` if the file ends on a terminator and the loop processed all lines terminally. `partial_line` is kept for observability only and is never required for correctness on the next poll (the file read on the next poll seeks to `read_offset` and reads to EOF — the fragment at the seat, if any, is part of the read result and is re-read on transient retries; do NOT prepend `partial_line`). On a terminal advance, `read_offset` is moved past `byte_size(line) + 1` (the line and its terminator); on a transient dispatch, `read_offset` is held and the loop stops (the first transient complete-line is seated at `read_offset` — it is re-read on the next poll, dispatched with the same deterministic `command_id`, and processing continues with any queued lines behind it; if a trailing fragment is also present, it is resolved after the transient-line is terminally dispatched). **Offset advance — terminal set:** the dispatch return value is matched against the EXHAUSTIVE terminal set defined in §2.2.2 (paragraph "Terminal vs transient dispatch outcomes"). The classification uses the FULL gateway return shape — the outer `{:error, _}` wrapper is part of the classifier. Five wrapped shapes are terminal: (a) `{:ok, _}`; (b) `{:error, {:already_exists, :task, _}}`; (c) `{:error, {:invalid_task_status, _}}`; (d) `{:error, {:project_archived, _}}`; (e) `{:error, :project_id_required}`. On a terminal outcome the `read_offset` advances to the post-dispatch byte position. Every other shape — `{:error, {:missing_or_invalid, :task_id, _}}`, `{:error, {:wrong_expected_version, _, _}}`, the 3-tuple `{:error, term(), term()}`, `{:exit, _}`, and any `ProviderError` shape — is **transient**: `read_offset` is held and the same deterministic `command_id` is retried on the next `:read_more` poll. The classification is implemented as a single `case` over the gateway return with the five terminal arms above plus a fallback `_ -> :transient` clause; each terminal arm uses the exact wrapped shape (note that arms (b)/(c)/(d) match 2-/3-tuple reasons while arm (e) matches a bare atom inside the wrapper — the `case` patterns are intentionally arity-distinct). `ProviderError` is never produced by the watcher-import branch (the branch dispatches via `dispatch_system/2` directly into `handle_command/2`, bypassing `BeadsAdapter.create/2` per AC-020-6); any `ProviderError` reaching the classifier is transient by design. Same function is called by `BeadsWatcher.boot_replay/1` on `init/1` for the offset-0 read. | M | TRD-015-TASK | REQ-022 | AC-022-1, AC-022-2, AC-022-3 |
-| TRD-017-TASK | Implement `ForemanServer.TaskProviders.BeadsOrphanJanitor` — supervised GenServer; one process per registered project; first scan on `@grace_ms` expiry (default 300s); subsequent scans on `@scan_interval_ms` (default 60s) | M | — | REQ-023 | AC-023-1 |
-| TRD-018-TASK | In `BeadsOrphanJanitor.scan/1`: read JSONL; filter for `agent_context.foreman`; for each match, check `ProjectionStore` for the corresponding task's existence and status; for case (a) no task → close with `transition_comment: "foreman-orphan:no-task"`; for case (b) task closed/failed → close with `transition_comment: "foreman-orphan:terminal-task"`; for non-foreman-tagged beads → skip with `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]`. **NEW:** extract `BeadsAdapter.recognise_foreman_tag/1` helper returning `%{command_id: ..., task_id: ..., origin: ..., linked_at: ...} \| :not_foreman`; implement the `foreman doctor task_provider` handler that scans the JSONL, partitions beads into Foreman-managed and external, and emits a per-project summary listing Foreman-tagged beads (`bead_id`, `task_id`, `command_id`, `linked_at`) and the orphan backlog count (case (a) + case (b)). The doctor reads-only — no close actions; cleanup is janitor-only. | M | TRD-017-TASK | REQ-021, REQ-023 | AC-023-2, AC-023-3, AC-023-4, AC-021-2 |
-| TRD-019-TASK | Extend `ForemanServer.ProjectionStore.apply_event_by_type(state, "TaskCreated", payload)` (lines 775-791) to include `external_id: payload["external_id"]` (or `event_spec.payload.external_id`) in the task map (default `nil` for legacy events); idempotency is provided by the aggregate's stream-version semantics, not by a separate handler | S | TRD-011-TASK | REQ-025 | AC-025-1 |
-| TRD-020-TASK | Add `maybe_beads_watcher_child/0` and `maybe_beads_orphan_janitor_child/0` to `ForemanServer.Application`; both follow the existing `maybe_json_schema_cache_child/0` / `maybe_project_provider_projector_child/0` pattern; opt-in via `:start_beads_watcher?` / `:start_beads_orphan_janitor?` config flags (default `false`); update `config/test.exs` to set both flags to `false`; update `config/runtime.exs` to document the flags | S | TRD-016-TASK, TRD-018-TASK | REQ-022, REQ-023 | AC-022-4, AC-023-1 |
-| TRD-021-TASK | Write `beads_watcher_test.exs` — boot replay (full read of offset 0 → EOF, applies dedupe + suppress + dispatch pipeline); verify each line takes the right branch (foreman-tagged → `[:watcher, :skipped]`; already-imported → `[:watcher, :reconciled]`; new operator bead → `[:watcher, :imported]`; `[:watcher, :replay_started]` / `[:watcher, :replay_completed]` emitted with `lines_processed` / `lines_imported` / `lines_suppressed` / `lines_reconciled`); tail mode captures the boot-completion cursor (fragment seat or file size) and subsequent `:read_more` reads from `read_offset` to EOF; transient dispatch failure does NOT advance `read_offset` and retries with the same deterministic `command_id`; single-cursor invariant (3-way cursor priority): `read_offset` is the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; (c) the file size (EOF) if the file ends on a terminator. `partial_line` is the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED — transient-line bytes from the split, trailing fragment bytes from `last_segment`, or `""` respectively (observability only). On a terminal advance, `read_offset` is moved past `byte_size(line) + 1` (the line and its terminator); on a transient dispatch, `read_offset` is held and the loop stops (the first transient complete-line is seated at `read_offset` — it is re-read on the next poll, dispatched with the same deterministic `command_id`, and processing continues with any queued lines behind it); **boot fragment retention test** — fixture ends with an unterminated fragment (e.g. `{"id":"bead-9","title":"bootstrap-frag`); the watcher boots, reads offset 0 → EOF, processes complete lines, and on completion sets `read_offset` to the byte position of the fragment START (not the EOF); `partial_line` is the cached fragment. Subsequent `:read_more` polls (no new bytes yet) re-read the fragment from `read_offset`; once a subsequent writer appends a newline-completing suffix, the next poll splits the now-complete line and dispatches it — no head-of-file rewrite, no fragment loss; **boot transient retention test** — fixture contains a transient complete-line followed by N queued complete-lines (e.g. `{"id":"bead-3",...}\n{"id":"bead-4",...}\n{"id":"bead-5",...}\n`); the watcher boots, reads offset 0 → EOF, dispatches `bead-3` and the dispatch returns transient (e.g. `{:error, %ProviderError{retryable?: true, code: "BR_TIMEOUT_SUBPROCESS"}}`); the loop stops at the transient, `read_offset` HOLDS at the byte position of `bead-3`'s start (NOT advanced to `bead-4`'s start); `partial_line` is the cached bytes of `bead-3`. Subsequent `:read_more` polls (no new bytes yet) re-read from `read_offset` and re-attempt `bead-3` with the same deterministic `command_id`. Once the transient is resolved to a terminal, the watcher advances `read_offset` past `bead-3` and dispatches `bead-4` and `bead-5` — lines 4..5 are NOT skipped or duplicated; AC-022-2 dedupe via `ProjectionStore` short-circuits already-imported beads on replay | M | TRD-016-TASK, TRD-020-TASK | REQ-022 | AC-022-1, AC-022-2, AC-022-3 |
-| TRD-022-TASK | Write `beads_orphan_janitor_test.exs` — grace-window semantics (no scan before grace expires); case (a) `no-task` close; case (b) `terminal-task` close; non-foreman-tagged bead is skipped (with `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]` telemetry); the `BeadsAdapter.complete/3` call carries the correct transition-comment; **`BeadsAdapter.recognise_foreman_tag/1` unit test** — assert the helper returns the parsed tag map for valid JSONL lines, returns `:not_foreman` for lines without `agent_context.foreman`, and returns `:not_foreman` for malformed JSON. **NEW `foreman_doctor_test.exs`** — `foreman doctor task_provider` partition test (Foreman-tagged beads listed with `task_id`, `command_id`, `linked_at`; non-foreman beads listed separately or omitted); orphan backlog count test (count = case (a) + case (b) from a fixture JSONL). | M | TRD-018-TASK, TRD-020-TASK | REQ-021, REQ-023 | AC-021-2, AC-023-1, AC-023-2, AC-023-3, AC-023-4 |
-| TRD-023-TASK | Update `docs/user-guide.md` per `foreman-doc-gate` skill — per-project `task_provider` registration extension (`:create` capability), watcher / janitor opt-in semantics, `foreman doctor task_provider` orphan backlog lines, `foreman task create` output shape (bead ID printed when present) | M | TRD-020-TASK | (docs) | (docs) |
-| TRD-024-TASK | Update `docs/cli-reference.md`, `README.md`, `CLAUDE.md` — `foreman task create` output shape; `foreman doctor task_provider` adds watcher / janitor / orphan backlog lines; `--json` output now includes `external_id` when the project is Beads-backed; high-level overview of the synchronous create + bi-directional sync with compensating consistency; boundary reminder on the Actor hook insertion point (`aggregate/actor.ex` lines 156-223 are the synchronous hook insertion point, NOT the aggregate handlers) | S | TRD-020-TASK | (docs) | (docs) |
-**Shippable State:** The bi-directional sync is live. The watcher forwards Beads-side issues to Foreman; the orphan janitor closes the Foreman-side strands. The flags `:start_beads_watcher?` / `:start_beads_orphan_janitor?` default to `false` in `config/test.exs` and are documented in `config/runtime.exs`. The `foreman doctor task_provider` handler (TRD-018 + TRD-022) reports Foreman-managed beads and the orphan backlog count.
+- [ ] **TRD-004-TASK**: Add 5 new CodeMap rows to `BeadsAdapter.CodeMap`: `INVALID_TITLE` (non-retryable, `retryable?: false`), `INVALID_PRIORITY` (non-retryable, `retryable?: false`), `INVALID_ISSUE_TYPE` (non-retryable, `retryable?: false`), `DUPLICATE_TASK_ID` (non-retryable, `retryable?: false`), `CREATE_FAILED` (fallback, `retryable?: true` — propagated from `br.retryable` per `PRD-2026-48f7b420` REQ-008-2 unknown-code policy). Each row sets `code`, `retryable?`, `message` template, `hint` template, and reuses the existing 8-key `context` allowlist (no new keys). [satisfies REQ-026]
+  Validates PRD ACs: AC-026-1, AC-026-2, AC-026-3, AC-026-4, AC-026-5
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter_code_map.ex`
+
+- [ ] **TRD-004-TEST**: CodeMap routing tests for all 5 rows: (1) `{error: {code: "VALIDATION", hint: "title required"}}` → `INVALID_TITLE` (non-retryable); (2) `{error: {code: "VALIDATION", hint: "priority must be 0-4"}}` → `INVALID_PRIORITY` (non-retryable); (3) `{error: {code: "VALIDATION", hint: "issue_type must be one of ..."}}` → `INVALID_ISSUE_TYPE` (non-retryable); (4) `{error: {code: "DUPLICATE", hint: "id collision"}}` → `DUPLICATE_TASK_ID` (non-retryable); (5) signal / timeout / generic envelope / unexpected exit code → `CREATE_FAILED` (retryable, `retryable?` propagated from `br.retryable`). [verifies TRD-004] [satisfies REQ-026]
+  Validates PRD ACs: AC-026-1, AC-026-2, AC-026-3, AC-026-4, AC-026-5
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_code_map_test.exs`
+
+- [ ] **TRD-005-TASK**: (a) Extend `TaskProvider.Registry` with a NEW public helper `project_config/1 :: (project_id :: String.t()) :: {:ok, %{provider_module: module(), config: map()}} | {:error, atom()}` that resolves the per-project registration state (currently held internally in `state.per_project[project_id]`) and returns BOTH the provider module AND the per-project config map (containing `:database_path`). This is what `BeadsAdapter.create/2` calls to look up the `database_path` it needs for the `--db` argv flag (the existing `route/2` returns `{:ok, provider_module}` only and is therefore insufficient for `create/2`). (b) Wire the helper into the `handle_call({:project_config, project_id}, ...)` callback with the exact 3-case match on `state.per_project[project_id]`: `{:ok, {:active, %{provider_module: pm, config: config}}}` → `{:ok, %{provider_module: pm, config: config}}`; `{:ok, {:unavailable, reason}}` → `{:error, :provider_unavailable_for_project}`; `:error` → `{:error, :task_provider_not_configured}`. (c) Update `route/2` (line 69) to keep dispatching `:create` to the same per-project state (no signature change — `route/2` still returns `{:ok, module()}` for capability gating; `project_config/1` is the resolution path). (d) `register_for_project/3` (line 89) is unchanged (the `:create` action reuses the same per-project state as the other 8 operational callbacks). [satisfies REQ-020] [satisfies REQ-025] [depends: TRD-001-TASK] [depends: TRD-003-TASK]
+  Validates PRD ACs: AC-020-4
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/registry.ex`
+
+- [ ] **TRD-005-TEST**: Registry `:create` routing + `project_config/1` resolution tests: (1) register a project with `BeadsAdapter` as the `task_provider` and `%{database_path: "/abs/beads.db"}` as the config; invoke `TaskProvider.Registry.route(:create, %{project_id: id})` and assert the returned provider is `BeadsAdapter`; (2) invoke `TaskProvider.Registry.project_config(project_id)` and assert it returns `{:ok, %{provider_module: BeadsAdapter, config: %{database_path: "/abs/beads.db"}}}`; (3) gate semantics for `route/2`: a project with NO `task_provider` registered returns `{:error, :no_provider}`; a project with a provider that does NOT advertise `:create` returns `{:error, :capability_not_supported}`; (4) gate semantics for `project_config/1`: an unregistered project_id returns `{:error, :task_provider_not_configured}`; a project marked `{:unavailable, :br_binary_missing}` returns `{:error, :provider_unavailable_for_project}`; a project registered with `BeadsAdapter` but with `config = %{}` (no `:database_path`) returns `{:ok, %{provider_module: BeadsAdapter, config: %{}}}` (the registry does NOT validate the config shape — `BeadsAdapter.create/2` raises on missing `database_path` per the existing pattern in `list_ready/2`). [verifies TRD-005] [satisfies REQ-020] [satisfies REQ-025]
+  Validates PRD ACs: AC-020-4
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/registry_test.exs`
+- [ ] **TRD-016-TASK**: Extend `ForemanServer.TaskProviders.SystemBrRunner` with a new `:create` action. The `BrRunner` behaviour is `cmd(request, project_config, opts)` (`br_runner.ex:28-30`); `SystemBrRunner` owns ALL argv construction and is the only place the `br create` argv shape can change. Concrete changes in `packages/foreman_server/lib/foreman_server/task_providers/system_br_runner.ex`: (1) **Extend `@action_subcommands` (line 10)** with `create: "create"` so `Map.fetch!(@action_subcommands, :create)` returns the `"create"` subcommand (matches the existing `:ready`, `:show`, etc. pattern). (2) **Add `build_argv({:create, _payload} = request, project_config)` clause** that returns `["br", "create", "--db", database_path | action_argv]` where `database_path = fetch_database_path!(project_config)` and `action_argv = build_action_argv(:create, payload)` (mirrors the existing `build_argv({:coordination_status, _}, project_config)` clause at line 115-119). (3) **Add `build_action_argv(:create, payload)` clause** as a DEDICATED clause that mirrors the `:set_priority` pattern at line 176-185 — NOT the default `extract_flags!`-based clause. Order matters: **call `validate_payload_shape!(:create, payload)` FIRST** (line 1 of the body), THEN build the action-specific argv in documented order: `["--title", payload.title, "--type", payload.type, "--priority", Integer.to_string(payload.priority), "--description", payload.description, "--agent-context", payload.agent_context] |> maybe_append_json_flag()`. The `--json` flag is appended by the existing `maybe_append_json_flag/1` helper at line 307. **Why dedicated-with-validate-first and not the generic default clause:** the default `build_action_argv(action, payload)` at line 198-204 calls `validate_payload_shape!(action, payload)` via `tap(...)` AFTER argv construction — that ordering only works because the default clause uses `extract_flags!` and never indexes `payload.field` directly. A dedicated `:create` clause that builds `["--title", payload.title, ...]` will crash with `KeyError` (missing key) or `Protocol.UndefinedError` (`Integer.to_string(nil)`) BEFORE the `tap`-wrapped validator runs, which would produce confusing errors instead of the explicit `ArgumentError` the validator emits. The dedicated clauses `:set_priority` (line 176-185) and `:add_dependency` (line 187-196) both follow the validate-first ordering — `:create` must too. (4) **Add `validate_payload_shape!(:create, payload)` clause** that raises `ArgumentError` if any of `:title` (non-empty binary), `:type` (non-empty binary), `:priority` (integer in 0..4), `:description` (binary, may be empty for `nil`-equivalent — `BeadsAdapter.create/2` always passes a string, even for empty descriptions), `:agent_context` (non-empty binary) is malformed — mirrors the existing `:set_priority` shape validator at line 214-230. The validator runs as line 1 of the dedicated `:create` clause (NOT deferred to a `tap`); it is the primary shape contract and the only line that catches a missing `:title` BEFORE `payload.title` is dereferenced. This validator is a defensive net against `BeadsAdapter.create/2` bugs, not a primary input-validation layer (TRD-003 Action #3 owns primary validation at the BeadsAdapter boundary). [satisfies REQ-020] [satisfies REQ-021] [satisfies REQ-026]
+  Validates PRD ACs: AC-020-1, AC-021-1, AC-021-3
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/system_br_runner.ex`
+
+- [ ] **TRD-016-TEST**: `system_br_runner_create_test.exs` — covers the `:create` action argv construction and payload shape validation. This is where the argv-array assertions live (NOT in TRD-003-TEST, where only the `BrRunner.cmd/3` request payload is asserted): (1) **happy-path argv construction** — call `SystemBrRunner.cmd({:create, %{title: "Add login", type: "feature", priority: 2, description: "OAuth flow", agent_context: ~s({"foreman":{"task_id":"tsk-1","command_id":"cmd-1","origin":"foreman","linked_at":"2026-08-11T06:39:00Z"}})}}, %{database_path: "/abs/beads.db"}, [])` and assert the resulting argv (intercepted at the `:erlang.open_port/2` boundary or via a Port-mock helper) is exactly `["br", "create", "--db", "/abs/beads.db", "--title", "Add login", "--type", "feature", "--priority", "2", "--description", "OAuth flow", "--agent-context", <agent_context_json>, "--json"]` in documented order; (2) **`--agent-context` argv passes through verbatim** — the value of `payload.agent_context` is the exact JSON string emitted to argv (NOT re-encoded); (3) **`--json` appended by default** — same call without an explicit `flags: ["--json"]` in the payload still produces `--json` at the end (matches the `:set_priority` argv fixture); (4) **payload shape validation — `:title` missing** — `SystemBrunner.cmd({:create, %{type: "feature", priority: 2, description: "x", agent_context: "{}"}}, project_config, [])` raises `ArgumentError` with a message referencing `:title`; (5) **payload shape validation — `:priority` out of range** — `priority: 5` raises `ArgumentError` referencing `:priority` and `0..4`; (6) **payload shape validation — `:type` missing** — `:type` absent raises `ArgumentError`; (7) **unknown action rejected by `validate_request!`** — `:bogus` action raises `ArgumentError` with `"unknown br action: :bogus"` (confirms the new `:create` entry is correctly registered in `@action_subcommands`); (8) **missing `:database_path` in `project_config`** — `cmd({:create, %{title: "x", type: "feature", priority: 2, description: "y", agent_context: "{}"}}, %{}, [])` raises `ArgumentError` referencing `:database_path` (defensive — TRD-003-TEST already covers the higher-level `Registry.project_config/1` failure mode that prevents this). [verifies TRD-016] [satisfies REQ-020] [satisfies REQ-021] [satisfies REQ-026]
+  Validates PRD ACs: AC-020-1, AC-021-1, AC-021-3
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/system_br_runner_create_test.exs`
+
+**PR 1 shippable:** `BeadsAdapter.create/2` is runnable from REPL with a mocked `BrRunner`. The synchronous hook is not yet wired; the Actor still produces a `TaskCreated` event with `external_id: nil`. Pre-emptive Foreman-side validation rejects out-of-range inputs before constructing argv. All 5 new CodeMap rows are in place; the 8-key `context` allowlist is unchanged.
+
+### PR 2 — Actor two-stage finalization + in-flight cache + boundary invariant
+
+**Shippable State:** The synchronous two-stage finalization hook is wired into `do_dispatch/4` end-to-end. Issuing `foreman task create` for a Beads-backed project produces a `TaskCreated` event with `external_id` populated via the second `handle_command/2` invocation. The Actor's `in_flight_beads` cache prevents two `br create` calls for the same `command_id`. The `CommandGateway` boundary invariant (`dispatch_operator/2` rejects `task.create` with non-nil `external_id`) is enforced at the existing envelope allowlist guard. The watcher and janitor are not yet active (lands in PR 3).
+
+- [ ] **TRD-006-TASK**: Extend `ForemanServer.Aggregate.Actor` state with `in_flight_beads: %{command_id => bead_handle}` field (default `%{}` in `init/1`); the field is part of the state struct (or map), not a GenServer-managed state. Update `reload_after_conflict/1` and `do_dispatch/4` to carry the field through rehydration. The cache is process-local and does NOT survive a crash (AC-024-3). [satisfies REQ-024]
+  Validates PRD ACs: AC-024-1, AC-024-2, AC-024-3, AC-024-4
+  Target File: `packages/foreman_server/lib/foreman_server/aggregate/actor.ex`
+  Actions:
+  1. Add `in_flight_beads: %{}` to the initial state in `init/1`.
+  2. Carry the field through the recursion (no special handling — it lives on the state, like `version`).
+  3. Document the CLOSE-ONLY-ONCE guarantee in a code comment: the cache is consulted before any `BeadsAdapter.complete/3` call; once cleared, no subsequent close is issued for the same logical command.
+
+- [ ] **TRD-006-TEST**: Actor state init test: `init/1` returns state with `in_flight_beads: %{}`; a state round-trip through `reload_after_conflict/1` preserves the field when present. State-after-step assertion: invoke `do_dispatch/4` once; verify the field is populated on the success path; verify the field is cleared after the append confirmation. [verifies TRD-006] [satisfies REQ-024]
+  Validates PRD ACs: AC-024-1, AC-024-2, AC-024-3, AC-024-4
+  Target File: `packages/foreman_server/test/foreman_server/aggregate/actor_in_flight_cache_test.exs`
+
+- [ ] **TRD-007-TASK**: Insert two-stage finalization hook in `do_dispatch/4` (between `aggregate.handle_command/2` returning `{:ok, event_spec}` and the existing Actor↔CommandRouter append/ack protocol). Stage 1: call `aggregate.handle_command/2` with the original command. Per-project gate: if `cmd.payload.external_id` is `nil` AND `BeadsAdapter.capabilities().supports` has `:create` AND `state.in_flight_beads[cmd.command_id]` is absent, proceed to stage 2; if `cmd.payload.external_id` is non-nil, watcher-import branch — proceed to stage 4 with the stage-1 event_spec (no `br create`); if `:create` not in `supports`, proceed to stage 4 with `event_spec.payload.external_id == nil` (no `br create`). Stage 2: in-flight cache lookup (if `Map.get(state.in_flight_beads, cmd.command_id)` hits, REUSE cached bead ID and jump to stage 3); otherwise call `BeadsAdapter.create/2` and store the returned `bead_id` in `state.in_flight_beads[cmd.command_id]`. On `{:error, %ProviderError{}}` (any of `INVALID_TITLE` / `INVALID_PRIORITY` / `INVALID_ISSUE_TYPE` / `DUPLICATE_TASK_ID` / `CREATE_FAILED`) return the error from `do_dispatch/4` (AC-020-5 — NO `TaskCreated` event, telemetry `[:create, :failure]`, NO cache population for this `command_id`). Stage 3: re-run `aggregate.handle_command/2` with `%{original_cmd | payload: Map.put(original_cmd.payload, :external_id, bead_id)}` — the aggregate deterministically returns `{:ok, %{event_type: "TaskCreated", payload: %{...external_id: bead_id...}}}`. The Actor NEVER mutates `event_spec` after `handle_command/2` returns. Stage 4: hand off the (stage-1 or stage-3) event_spec to the existing Actor↔CommandRouter append/ack protocol — `event_data = normalize_to_event_data(event_spec)`; `ref = make_ref()`; `send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}`; on `receive {:append_ok, ^ref, count, append_latency_ms}` call `commit_event/3` (which calls `state.aggregate_module.apply_event(state.module_state, event_spec)` and bumps `state.version`); clear `state.in_flight_beads[cmd.command_id]` on terminal success. The Actor NEVER calls `EventStore.append_to_stream/3` directly. [satisfies REQ-020] [depends: TRD-003-TASK] [depends: TRD-005-TASK] [depends: TRD-006-TASK]
+  Validates PRD ACs: AC-020-1, AC-020-4, AC-020-5, AC-020-6
+  Target File: `packages/foreman_server/lib/foreman_server/aggregate/actor.ex`
+  Actions:
+  1. Refactor `do_dispatch/4` to call `handle_command/2` first (stage 1); the existing `event_spec` becomes the stage-1 event spec.
+  2. Add the per-project gate after stage 1; branch into stage 2, watcher-import branch, or direct stage 4.
+  3. Implement stage 2 with in-flight cache lookup; on `BeadsAdapter.create/2` error return the error from `do_dispatch/4` (no `normalize_to_event_data`, no append).
+  4. Implement stage 3 with command-payload enrichment; verify the aggregate emits the enriched event.
+  5. Implement stage 4 with `normalize_to_event_data` + the existing Actor↔CommandRouter append/ack protocol (`send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}` → `receive {:append_ok, ^ref, count, append_latency_ms}` → `commit_event/3` which calls `aggregate.apply_event/2` and bumps `state.version`); clear the cache on terminal success. The Actor NEVER calls `EventStore.append_to_stream/3` directly (architecture test enforces this).
+  6. Emit `[:foreman_server, :task_provider, :beads, :create, :skipped_watcher_import]` for the watcher-import branch with `command_id`, `bead_id`, `task_id`, `project_id`.
+
+- [ ] **TRD-007-TEST**: Comprehensive `actor_hook_test.exs`: (1) AC-020-1 happy path — mock `BrRunner` returns bead ID; assert `send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}` was invoked; on `receive {:append_ok, ^ref, count, latency_ms}` verify `commit_event/3` was called and the normalized event data has `external_id == bead_id`; (2) AC-020-4 non-Beads project — capabilities without `:create`; verify the hook is a no-op (no `BeadsAdapter.create/2`, no `send CommandRouter, {:append, …}` for the bead); verify `external_id` remains `nil` in the persisted event; (3) AC-020-5 failure path — `BeadsAdapter.create/2` returns `{:error, %ProviderError{code: "INVALID_TITLE"}}`; verify the Actor returns the error from `do_dispatch/4` WITHOUT invoking `normalize_to_event_data` or sending `{:append, …}` to CommandRouter; verify `[:create, :failure]` telemetry; verify NO `TaskCreated` event in the event store; (4) AC-020-6 watcher-import branch — synthesize `task.create` via `dispatch_system/2` with `external_id: bead.id`; verify `BeadsAdapter.create/2` is NOT invoked; verify the bead ID is preserved on the persisted `TaskCreated` event; (5) AC-024-1 in-flight cache hit — replay the same `command_id`; verify the second call uses the cached bead ID and does NOT re-invoke `BeadsAdapter.create/2`; (6) AC-024-2 cache clear on terminal success — assert cache cleared after `receive {:append_ok, ^ref, count, …}`; (7) AC-024-4 concurrent `command_id`s — two concurrent `task.create` commands for DIFFERENT `command_id`s; each carries its own cache entry; no collision. [verifies TRD-007] [satisfies REQ-020] [satisfies REQ-024]
+  Validates PRD ACs: AC-020-1, AC-020-4, AC-020-5, AC-020-6, AC-024-1, AC-024-2, AC-024-4
+  Target File: `packages/foreman_server/test/foreman_server/aggregate/actor_hook_test.exs`
+
+- [ ] **TRD-008-TASK**: Append-conflict compensation path. On `receive {:error, ^ref, :wrong_expected_version, _}` from CommandRouter (after `BeadsAdapter.create/2` has populated the cache) with bounded retries remaining: the recursive `do_dispatch` reloads state via `reload_after_conflict/1` (which preserves `state.in_flight_beads` via `%{state | module_state: …, version: …}`), re-runs `aggregate.handle_command/2` with the cached `bead_id` already present in the payload (the AC-020-3 stage-3 path, NOT a fresh `BeadsAdapter.create/2` call), and re-sends the enriched event spec to CommandRouter with the new `expected_version`. NO `BeadsAdapter.complete/3` and NO cache clear happens on a transient retry attempt. Compensation (`BeadsAdapter.complete(project_id, bead_id, %{transition_comment: "foreman-compensation:append-conflict-retry-exhausted"})` OR `"foreman-compensation:re-decision-rejected"` respectively) + cache clear + error surfaced to caller triggers ONLY on (a) bounded-retry exhaustion (`@max_conflict_retries` reached) or (b) post-reload re-decision rejection (`{:error, _}` from `handle_command/2`). Compensation is subprocess I/O against the Beads CLI; it does NOT route through CommandRouter (not a domain event). On compensation failure emit `[:foreman_server, :task_provider, :beads, :create, :compensate_failure]` and the orphan janitor (REQ-023) takes over on its next grace-window scan. Emit `[:foreman_server, :task_provider, :beads, :create, :compensated]` on successful compensation. CLOSE-ONLY-ONCE: `in_flight_beads[command_id]` consulted before any close; once cleared, no subsequent close for the same logical command. [satisfies REQ-020] [satisfies REQ-024] [depends: TRD-007-TASK]
+  Validates PRD ACs: AC-020-3
+  Target File: `packages/foreman_server/lib/foreman_server/aggregate/actor.ex`
+
+- [ ] **TRD-008-TEST**: Compensation path test: (1) append-conflict on first attempt — CommandRouter stub sends back `{:error, ^ref, :wrong_expected_version, latency_ms}` once, then `{:append_ok, ^ref, count, latency_ms}`; verify the Actor consults the cache, reloads state via `reload_after_conflict/1`, re-runs `handle_command/2` with the cached `external_id`, re-sends the enriched event spec to CommandRouter; verify NO `BeadsAdapter.create/2` call on retry; verify `in_flight_beads` is preserved across the reload (NOT cleared); verify the eventual `TaskCreated` event has `external_id: bead_id`; (2) bounded-retry exhaustion — CommandRouter stub returns `:wrong_expected_version` `@max_conflict_retries + 1` times; verify `BeadsAdapter.complete/3` is called with `transition_comment: "foreman-compensation:append-conflict-retry-exhausted"`; verify the cache is cleared; verify `[:create, :compensated]` telemetry is emitted; verify the error is returned from `do_dispatch/4`; verify NO further `send CommandRouter, {:append, …}` after exhaustion; (3) post-reload re-decision rejection — CommandRouter stub returns `:wrong_expected_version` once, but the reloaded state makes the original command invalid (e.g. `{:error, :phase_terminal}`); verify compensation closes the bead with `transition_comment: "foreman-compensation:re-decision-rejected"`; (4) compensation failure — mock `BeadsAdapter.complete/3` returns error; verify `[:create, :compensate_failure]` telemetry is emitted; the cache is cleared. [verifies TRD-008] [satisfies REQ-020] [satisfies REQ-024]
+  Validates PRD ACs: AC-020-3
+  Target File: `packages/foreman_server/test/foreman_server/aggregate/actor_compensation_test.exs`
+
+- [ ] **TRD-009-TASK**: CommandGateway boundary invariant. Extend `ForemanServer.CommandGateway.dispatch_operator/2` (existing envelope allowlist guard at `command_gateway.ex`) to reject `task.create` envelopes with non-nil `payload.external_id` — return `{:error, :external_id_not_allowed_via_operator}`. The check is `get_in(envelope, [:payload, :external_id]) != nil` (atom keys per `CommandGateway`'s payload-key convention). `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch. The Actor does NOT duplicate this check (avoiding redundant enforcement). [satisfies REQ-020] [depends: TRD-007-TASK]
+  Validates PRD ACs: AC-020-7
+  Target File: `packages/foreman_server/lib/foreman_server/command_gateway.ex`
+
+- [ ] **TRD-009-TEST**: CommandGateway boundary invariant test: (1) `dispatch_operator/2` with `task.create` and `payload.external_id: nil` is accepted (reaches `CommandRouter`); (2) `dispatch_operator/2` with `task.create` and `payload.external_id: "foreman-abc"` returns `{:error, :external_id_not_allowed_via_operator}` BEFORE reaching the Actor; (3) `dispatch_system/2` with `task.create` and `payload.external_id: "foreman-abc"` is accepted (trusted path). The test asserts the rejection happens at the CommandGateway allowlist, NOT in the Actor. [verifies TRD-009] [satisfies REQ-020]
+  Validates PRD ACs: AC-020-7
+  Target File: `packages/foreman_server/test/foreman_server/command_gateway_external_id_guard_test.exs`
+
+**PR 2 shippable:** `foreman task create --project-id <beads-backed> --title "..."` produces a `TaskCreated` event with `external_id` populated via the synchronous two-stage hook. The Actor's `in_flight_beads` cache prevents two `br create` calls for the same `command_id`. The `CommandGateway` boundary invariant (`dispatch_operator/2` rejects `task.create` with non-nil `external_id`) is enforced at the existing envelope allowlist guard. The watcher and orphan janitor are not yet booted (they are opt-in via `:start_beads_watcher?` / `:start_beads_orphan_janitor?` flags; PR 3 activates them).
+
+### PR 3 — JSONL watcher + orphan janitor + opt-in supervision + docs
+
+**Shippable State:** The bi-directional sync is live. The watcher forwards Beads-side operator-managed beads to Foreman as `task.create` commands via `CommandGateway.dispatch_system/2`; the orphan janitor closes the Foreman-side strands. The `ProjectionStore` `TaskCreated` handler stores `external_id` (legacy events default to `nil`). The flags `:start_beads_watcher?` / `:start_beads_orphan_janitor?` default to `false` in `config/test.exs` and are documented in `config/runtime.exs`. With both flags `true`, the supervisor boots `BeadsWatcher` and `BeadsOrphanJanitor` per registered project.
+
+- [ ] **TRD-010-TASK**: Extend `ForemanServer.ProjectionStore.apply_event_by_type(state, "TaskCreated", payload)` (lines 775-791) to include `external_id: payload["external_id"]` (or `event_spec.payload.external_id`) in the task map. The new field is inserted after `task_id` and is always present in the task map (default `nil` for legacy events that did not carry `external_id`). Idempotency is provided by the aggregate's stream-version semantics, not by a separate handler. [satisfies REQ-025] [depends: TRD-007-TASK]
+  Validates PRD ACs: AC-025-1
+  Target File: `packages/foreman_server/lib/foreman_server/projection_store.ex`
+
+- [ ] **TRD-010-TEST**: `projection_store_task_external_id_test.exs`: (1) `TaskCreated` event with `external_id: "foreman-abc"` → task map includes `external_id: "foreman-abc"`; (2) `TaskCreated` event WITHOUT `external_id` (legacy) → task map includes `external_id: nil`; (3) `ProjectionStore.get_task/2` returns the task map including `external_id`; (4) the read-side `GET /api/tasks/:id` returns the bead ID in the response body when `external_id` is populated. [verifies TRD-010] [satisfies REQ-025]
+  Validates PRD ACs: AC-025-1
+  Target File: `packages/foreman_server/test/foreman_server/projection_store_task_external_id_test.exs`
+
+- [ ] **TRD-011-TASK**: Implement `ForemanServer.TaskProviders.BeadsWatcher` — supervised GenServer; one process per registered project. State shape: `%{project_id, jsonl_path, file_handle, read_offset, partial_line, poll_ms}`. On `init/1`: resolve JSONL path via `BrRunner.cmd({:where, %{database_path: db_path}}, %{database_path: db_path}, timeout_ms: 30_000)` (the `BrRunner` behaviour is `cmd/3` per `br_runner.ex:28-30`; `:where` is already supported by `SystemBrRunner` per `@action_subcommands` at line 10 of `system_br_runner.ex` and matches the existing pattern at `beads_adapter.ex:1424`), open file with `:file.open/2` `[:read, :binary, :raw]`, run `BeadsWatcher.boot_replay/1` (reads offset 0 → EOF, applies parse + dedupe + dispatch pipeline; emits `[:watcher, :replay_started]` and `[:watcher, :replay_completed]` with `lines_processed`, `lines_imported`, `lines_suppressed`, `lines_reconciled`). On boot completion, set `read_offset` to the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED (3-way cursor priority — `(a)` the start byte of the first transient complete-line if the loop stopped at a transient; `(b)` the start byte of any trailing fragment if the file ends on an unterminated JSONL line; `(c)` the file size (EOF) if the file ends on a terminator). `partial_line` is the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED — transient-line bytes from the split, trailing fragment bytes from `last_segment`, or `""` respectively (observability only, NOT required for correctness on the next poll). Tail mode (`handle_info(:read_more, state)`) reads from `read_offset` to EOF, splits on newlines, processes each complete line, and reschedules itself with `Process.send_after(self(), :read_more, state.poll_ms)`. [satisfies REQ-022] [satisfies REQ-024] [depends: TRD-016-TASK]
+  Validates PRD ACs: AC-022-1
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/beads_watcher.ex`
+  Actions:
+  1. Define the module with `use GenServer`; state struct (or map) with the six fields above.
+  2. Implement `init/1` that resolves the JSONL path, opens the file, calls `boot_replay/1`, and schedules the first `:read_more`.
+  3. Implement `boot_replay/1` that reads offset 0 → EOF, applies the parse + dedupe + suppress + dispatch pipeline (delegated to `read_more/1` for the loop body), and emits the boot telemetry.
+  4. Implement `handle_info(:read_more, state)` that reads from `read_offset` to EOF, splits on newlines, processes each complete line, and schedules the next `:read_more`.
+  5. Implement the 3-way cursor priority for boot and tail mode (per Architecture Decision §2.2.6 item 6).
+
+- [ ] **TRD-011-TEST**: `beads_watcher_test.exs` boot replay and tail mode tests: (1) boot replay reads offset 0 → EOF and applies the parse + dedupe + dispatch pipeline; (2) foreman-tagged bead → `[:watcher, :skipped]`; (3) already-imported bead (dedupe hit on `ProjectionStore.get_task(external_id: bead.id)`) → `[:watcher, :reconciled]`; (4) new operator bead → `[:watcher, :imported]` (asserts `dispatch_system/2` was called with the deterministic envelope); (5) `[:watcher, :replay_started]` and `[:watcher, :replay_completed]` emitted with the four counters; (6) tail mode captures the boot-completion cursor; (7) subsequent `:read_more` reads from `read_offset` to EOF (does NOT prepend `partial_line`); (8) transient dispatch failure does NOT advance `read_offset` and retries with the same deterministic `command_id`; (9) **single-cursor invariant (3-way cursor priority)** — `read_offset` HOLDS at the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED (first transient complete-line, trailing fragment start, or EOF); `partial_line` is the bytes of that first undispatched line; terminal advance moves `read_offset` past `byte_size(line) + 1`; (10) **boot transient retention test** — fixture contains a transient complete-line followed by N queued complete-lines; the watcher boots, dispatches the first bead, the dispatch returns transient; `read_offset` HOLDS at the transient-line start (NOT advanced); subsequent polls re-read the transient complete-line and re-attempt with the same deterministic `command_id`; (11) **boot fragment retention test** — fixture ends on an unterminated JSONL fragment; the watcher reads the fragment, sets `read_offset` to the fragment start byte, sets `partial_line` to the fragment bytes; subsequent poll completes the fragment and processes the resulting line. [verifies TRD-011] [satisfies REQ-022]
+  Validates PRD ACs: AC-022-1
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/beads_watcher_test.exs`
+
+- [ ] **TRD-012-TASK**: In `BeadsWatcher.read_more/1` (tail mode), implement the per-line pipeline: parse JSON; check `agent_context.foreman` (suppress + emit `[:foreman_server, :task_provider, :beads, :watcher, :skipped]` per AC-022-3); check `ProjectionStore` for `external_id == bead.id` (no-op + emit `[:watcher, :reconciled]` per AC-022-2); otherwise synthesize a `task.create` command envelope with `command_id = "beads-cmd:" <> project_id <> ":" <> bead_id`, `aggregate_id = "task:" <> task_id` (where `task_id = "beads:" <> project_id <> ":" <> bead_id`), and payload `{external_id: bead_id, title, description, priority, task_type: issue_type, project_id}`. Dispatch via `CommandGateway.dispatch_system/2` (the trusted system path; emit `[:watcher, :imported]`). Implement the 3-way cursor priority + Option A single-cursor invariant for the line loop: `read_offset` HOLDS at the transient-line start and stops the loop on transient; terminal advance moves `read_offset` past `byte_size(line) + 1`. The terminal set is exhaustive: `{:ok, _}`; `{:error, {:already_exists, :task, _}}`; `{:error, {:invalid_task_status, _}}`; `{:error, {:project_archived, _}}`; `{:error, :project_id_required}`. Every other return is transient. [satisfies REQ-022] [depends: TRD-011-TASK]
+  Validates PRD ACs: AC-022-2, AC-022-3
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/beads_watcher.ex`
+
+- [ ] **TRD-012-TEST**: Watcher pipeline tests: (1) foreman-tagged bead is suppressed; `[:watcher, :skipped]` telemetry carries the bead ID; (2) already-imported bead (ProjectionStore hit) is a no-op; `[:watcher, :reconciled]` telemetry; (3) new operator-originated bead triggers `dispatch_system/2` with the deterministic envelope (`command_id`, `aggregate_id`, `task_id`, `external_id`); `[:watcher, :imported]` telemetry; (4) `dispatch_system/2` is REJECTED via `dispatch_operator/2` if the test mistakenly routes there (boundary invariant verification); (5) transient dispatch (`ProviderError{retryable?: true}` synthetic; `{:error, {:wrong_expected_version, 5, 6}}`; `{:exit, :killed}`) does NOT advance `read_offset` and retries with the same `command_id`; (6) terminal dispatch (`{:ok, _}`; `{:error, {:already_exists, :task, _}}`; `{:error, {:invalid_task_status, _}}`; `{:error, {:project_archived, _}}`; `{:error, :project_id_required}`) advances `read_offset`. [verifies TRD-012] [satisfies REQ-022]
+  Validates PRD ACs: AC-022-2, AC-022-3
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/beads_watcher_pipeline_test.exs`
+
+- [ ] **TRD-013-TASK**: Implement `ForemanServer.TaskProviders.BeadsOrphanJanitor` — supervised GenServer; one process per registered project. State shape: `%{project_id, jsonl_path, grace_ms, scan_interval_ms}`. On `init/1`: resolve JSONL path; the first scan happens after `@grace_ms` (default 300s) to avoid racing the synchronous hook on first boot; subsequent scans on `@scan_interval_ms` (default 60s). The scan loop: read the JSONL; filter for `agent_context.foreman` (untagged beads are NEVER touched); for each match, check `ProjectionStore` for the corresponding task's existence and status; for case (a) no task → close via `BeadsAdapter.complete/3` with `transition_comment: "foreman-orphan:no-task"`; for case (b) task closed/failed → close with `transition_comment: "foreman-orphan:terminal-task"`; for non-foreman-tagged beads → skip with `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]`. On close, emit `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :closed]` carrying `bead_id`, `project_id`, and the elapsed milliseconds since `linked_at`. [satisfies REQ-023]
+  Validates PRD ACs: AC-023-1, AC-023-2, AC-023-3, AC-023-4
+  Target File: `packages/foreman_server/lib/foreman_server/task_providers/beads_orphan_janitor.ex`
+
+- [ ] **TRD-013-TEST**: `beads_orphan_janitor_test.exs`: (1) grace-window semantics — no scan before `@grace_ms`; (2) case (a) — foreman-tagged bead with NO corresponding Foreman task → close with `transition_comment: "foreman-orphan:no-task"`; `[:orphan, :janitor, :closed]` telemetry with `bead_id`, `project_id`, elapsed ms; (3) case (b) — foreman-tagged bead with corresponding Foreman task in `closed` / `failed` state → close with `transition_comment: "foreman-orphan:terminal-task"`; (4) non-foreman-tagged bead → skip; `[:orphan, :janitor, :retained]` telemetry; (5) `BeadsAdapter.complete/3` is NOT called for non-foreman-tagged beads (the architectural invariant). [verifies TRD-013] [satisfies REQ-023]
+  Validates PRD ACs: AC-023-1, AC-023-2, AC-023-3, AC-023-4
+  Target File: `packages/foreman_server/test/foreman_server/task_providers/beads_orphan_janitor_test.exs`
+
+- [ ] **TRD-014-TASK**: Add `maybe_beads_watcher_child/0` and `maybe_beads_orphan_janitor_child/0` to `ForemanServer.Application`. Both follow the existing `maybe_json_schema_cache_child/0` / `maybe_project_provider_projector_child/0` pattern. Opt-in via `:start_beads_watcher?` / `:start_beads_orphan_janitor?` config flags (default `false`). Update `config/test.exs` to set both flags to `false` (per the existing `start_json_schema_cache?` precedent). Update `config/runtime.exs` to document the flags. [satisfies REQ-022] [satisfies REQ-023] [depends: TRD-012-TASK] [depends: TRD-013-TASK]
+  Validates PRD ACs: AC-022-4, AC-023-1
+  Target File: `packages/foreman_server/lib/foreman_server/application.ex`, `packages/foreman_server/config/test.exs`, `packages/foreman_server/config/runtime.exs`
+
+- [ ] **TRD-014-TEST**: Application supervisor child opt-in tests: (1) with `:start_beads_watcher?` `false`, `BeadsWatcher` is NOT in the supervision tree; (2) with `:start_beads_watcher?` `true`, `BeadsWatcher` IS in the supervision tree; (3) with `:start_beads_orphan_janitor?` `false`, `BeadsOrphanJanitor` is NOT in the supervision tree; (4) with `:start_beads_orphan_janitor?` `true`, `BeadsOrphanJanitor` IS in the supervision tree. Tests run with the flags set per the default `config/test.exs` to avoid booting the watcher/janitor in unit-test mode. [verifies TRD-014] [satisfies REQ-022] [satisfies REQ-023]
+  Validates PRD ACs: AC-022-4, AC-023-1
+  Target File: `packages/foreman_server/test/foreman_server/application_supervisor_test.exs`
+
+- [ ] **TRD-015-TASK**: Update documentation per the `foreman-doc-gate` skill: (1) `docs/user-guide.md` — per-project `task_provider` registration extension (`:create` capability), watcher / janitor opt-in semantics, `foreman doctor task_provider` orphan backlog lines, `foreman task create` output shape (bead ID printed when present); (2) `docs/cli-reference.md` — `foreman task create` output shape, `foreman doctor task_provider` adds watcher / janitor / orphan backlog lines, `--json` output now includes `external_id` when the project is Beads-backed; (3) `README.md` — high-level overview of the synchronous create + bi-directional sync with compensating consistency, boundary reminder on the Actor hook insertion point (`aggregate/actor.ex` lines 156-223 are the synchronous hook insertion point, NOT the aggregate handlers); (4) `CLAUDE.md` — slice invariant reminder ("every emitted event is owned by an aggregate's `handle_command/2`; no module fabricates events") and the two opt-in flags. [depends: TRD-014-TASK]
+  Validates PRD ACs: (docs — no PRD ACs; per `foreman-doc-gate` skill)
+  Target File: `docs/user-guide.md`, `docs/cli-reference.md`, `README.md`, `CLAUDE.md`
 
 **PR 3 shippable:** The bi-directional sync is live. With `:start_beads_watcher?` and `:start_beads_orphan_janitor?` set to `true` in `config/runtime.exs`, the supervisor boots `BeadsWatcher` and `BeadsOrphanJanitor` per registered project. A `foreman task create` for a Beads-backed project materialises a bead synchronously with the synchronous in-process all-or-nothing guarantee (and compensating recovery for the residual cases); an operator-managed bead whose title matches a Foreman project's intent is auto-imported by the watcher; orphaned foreman-tagged beads are recovered by the janitor within the grace window.
+
 ---
 
-## 4. Sprint Planning
+## Acceptance Criteria Traceability
 
-The work ships as **3 PRs** (each PR is a single sprint). Sprints are sequenced to maximise independence and minimise review surface area. The earlier 4-PR split that included a `TaskBeadLinked` linkage event is gone: advisory #6 deleted the `TaskBeadLinked` event and the codec dual-registration architecture entirely, and the slice invariant ("every domain event is emitted by an aggregate's `handle_command/2`") is now satisfied by the single-event design — the bead-linkage signal rides on `TaskCreated.external_id`, which is enriched via the second `handle_command/2` invocation in the Actor hook.
-
-### Sprint 1 — PR 1: `TaskProvider` behaviour extension + `BeadsAdapter.create/2`
-- **Tasks:** TRD-001-TASK through TRD-009-TASK (9 tasks)
-- **Effort:** S mostly, TRD-003-TASK and TRD-009-TASK are M
-- **Owner:** one engineer (the `:create` callback, the CodeMap rows, the capabilities change, the test suite)
-- **Review surface:** `task_provider.ex`, `task_provider_test.exs`, `beads_adapter.ex`, `beads_adapter_code_map.ex`, the new `test/foreman_server/task_providers/beads_adapter_create_test.exs`
-- **Exit criteria:** `BeadsAdapter.create/2` is runnable end-to-end with mocked `BrRunner`; 5 CodeMap rows map correctly; capabilities advertisement includes `:create`; the behaviour-test callback count is 12 and includes `{:create, 2}`; an Actor invocation that exercises the path will get the bead ID from the mocked subprocess without yet wiring the synchronous hook (the synchronous hook lands in Sprint 2).
-
-### Sprint 2 — PR 2: Actor hook + in-flight cache + watcher-import branch + CommandGateway boundary invariant
-- **Tasks:** TRD-010-TASK through TRD-014-TASK (5 tasks)
-- **Effort:** M mostly, TRD-011-TASK is M (the load-bearing hook; describes the two-stage finalization contract)
-- **Owner:** one engineer (the synchronous hook, the in-flight cache, the watcher-import branch, the boundary invariant, the Actor test suite)
-- **Review surface:** `aggregate/actor.ex`, `command_gateway.ex`, the new `test/foreman_server/aggregate/actor_hook_test.exs`
-- **Exit criteria:** `foreman task create --project-id <beads-backed> --title "..."` produces a `TaskCreated` event with `external_id` populated via the synchronous two-stage hook; `:wrong_expected_version` retry consults the in-flight cache and reuses the cached bead ID (no second `br create`); retry-exhausted compensation closes the bead via `BeadsAdapter.complete/3` with the deterministic `transition_comment` and clears the cache (CLOSE-ONLY-ONCE); the watcher-import branch (`payload["external_id"]` pre-populated) skips `BeadsAdapter.create/2`; `CommandGateway.dispatch_operator/2` rejects` task.create` with non-nil `external_id` at the envelope allowlist (`dispatch_system/2` is unchanged); non-Beads projects emit `TaskCreated` with `external_id: nil` (legacy behaviour).
-
-### Sprint 3 — PR 3: Watcher + orphan janitor + opt-in supervision
-- **Tasks:** TRD-015-TASK through TRD-024-TASK (10 tasks)
-- **Effort:** M mostly, the docs tasks (TRD-023-TASK, TRD-024-TASK) are M-S
-- **Owner:** one engineer (the watcher + janitor GenServers, the supervision tree, the projection map extension, the documentation)
-- **Review surface:** `task_providers/beads_watcher.ex`, `task_providers/beads_orphan_janitor.ex`, `application.ex`, `projection_store.ex`, `config/test.exs`, `config/runtime.exs`, the new `beads_watcher_test.exs`, `beads_orphan_janitor_test.exs`, `docs/user-guide.md`, `docs/cli-reference.md`, `README.md`, `CLAUDE.md`
-- **Exit criteria:** With `:start_beads_watcher?` and `:start_beads_orphan_janitor?` set to `true`, the bi-directional sync is live; the watcher suppresses foreman-tagged beads and routes non-foreman beads through `CommandGateway.dispatch_system/2`; the janitor closes foreman-tagged orphans on the grace-window schedule (default 300s); the orphan janitor NEVER closes a non-foreman-tagged bead; the projection map stores `external_id` on `TaskCreated`.
-## 5. AC Traceability
-
-| AC | Master Task | Validates | Notes |
+| REQ-NNN | Description | Implementation Tasks | Test Tasks |
 |---|---|---|---|
-| AC-020-1 (synchronous create in Actor hook — happy path) | TRD-011-TASK, TRD-014-TASK | REQ-020 | Actor test asserts the bead ID returned by `BeadsAdapter.create/2` flows into `event_spec.payload.external_id` and the normalized event data carries it on the `TaskCreated` recorded event. Happy-path verification only — the failure path is AC-020-5. |
-| AC-020-2 (round-trip through projection) | TRD-019-TASK, TRD-014-TASK | REQ-020, REQ-025 | Projection test asserts `external_id` is in the task map after rebuild of the `TaskCreated` event. |
-| AC-020-3 (compensation on append-conflict) | TRD-012-TASK, TRD-014-TASK | REQ-020 | Actor test asserts that on `:wrong_expected_version` (cache hit), the cache is consulted, no second `br create` is issued, and the re-decide with enriched payload is used. On retry exhaustion the Actor closes the bead via `BeadsAdapter.complete/3` with the deterministic `transition_comment` and emits `[:create, :compensated]`. |
-| AC-020-4 (per-project gate via capabilities) | TRD-006-TASK, TRD-007-TASK, TRD-011-TASK, TRD-014-TASK | REQ-020 | Actor test asserts the hook is a no-op when `provider_capabilities_for(state, cmd).supports` does not include `:create`; the `TaskCreated` event is emitted with `external_id: nil` (legacy behaviour). |
-| AC-020-5 (failure-as-error contract) | TRD-011-TASK, TRD-014-TASK | REQ-020 | Actor test asserts `BeadsAdapter.create/2` returning `{:error, %ProviderError{code: code, retryable?: retryable, ...}}` returns `{:error, %ProviderError{}}` from `do_dispatch/4` without invoking stage 3 (`handle_command/2` re-decide), without invoking `normalize_to_event_data`, and without calling `EventStore.append_to_stream`. No `TaskCreated` event is emitted, no Foreman task is created. Telemetry `[:foreman_server, :task_provider, :beads, :create, :failure]` carries `command_id`, `code`, `retryable?`, `task_id`, `project_id`. |
-| AC-020-6 (watcher-import branch — pre-populated `external_id`) | TRD-011-TASK, TRD-014-TASK, TRD-016-TASK | REQ-020 | Actor test asserts that when `cmd.payload["external_id"]` is pre-populated (synthesised by the watcher via `dispatch_system/2`), the Actor skips stage 2 entirely and proceeds to stage 3 with the bead ID already in the payload. No `BeadsAdapter.create/2` invocation. |
-| AC-020-7 (CommandGateway boundary invariant) | TRD-013-TASK, TRD-014-TASK | REQ-020 | `CommandGateway.dispatch_operator/2` unit test asserts `task.create` with non-nil `payload.external_id` is rejected with `{:error, :external_id_not_allowed_via_operator}`. `dispatch_system/2` is unchanged. The Actor does NOT duplicate this check (single source of truth). |
-| AC-021-1 (`agent_context` tag contains 4 fields) | TRD-003-TASK, TRD-009-TASK | REQ-021 | Test asserts the constructed `--agent-context` JSON shape contains all four fields: `foreman.task_id`, `foreman.command_id`, `foreman.origin` (literal `"foreman"`), `foreman.linked_at` (ISO8601 UTC). The fields are escaped per `BeadsAdapter.scrub_argv/1` per `PRD-2026-48f7b420` REQ-019. |
-| AC-021-2 (orphan janitor + `foreman doctor` recognise tag) | TRD-018-TASK, TRD-022-TASK | REQ-021 | Janitor test asserts `agent_context.foreman.command_id` is consulted on the recovery path; `foreman doctor task_provider` test asserts the operator read path recognises the tag and reports the bead as Foreman-managed. Watcher suppression (AC-022-3) is a separate AC. |
-| AC-021-3 (tag fields are exact) | TRD-003-TASK, TRD-009-TASK | REQ-021 | Test asserts the four tag fields (`task_id`, `command_id`, `origin`, `linked_at`) are always present in the JSON output and are passed through verbatim — no remapping, no truncation, no silent dropping. `origin` is the literal string `"foreman"`; `linked_at` is ISO8601 UTC. |
-| AC-022-1 (watcher boot replay + tail mode + offset advance rule + 3-way cursor priority + boot fragment retention + boot transient retention) | TRD-015-TASK, TRD-016-TASK, TRD-021-TASK | REQ-022 | Watcher test asserts the boot replay reads the JSONL from offset 0 to current EOF, applies the dedupe + suppress + dispatch pipeline to every line, emits `[:watcher, :replay_started]` / `[:watcher, :replay_completed]` with `lines_processed` / `lines_imported` / `lines_suppressed` / `lines_reconciled`, then sets `read_offset` to the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED (3-way cursor priority) — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; (c) the file size (EOF) if the file ends on a terminator — and `partial_line` to the bytes of that first undispatched line (transient-line bytes, trailing fragment bytes, or `""` respectively), and schedules `Process.send_after(self(), :read_more, @poll_ms)`. **Boot fragment retention test:** the test fixture ends with an unterminated fragment (e.g. `{"id":"bead-9","title":"bootstrap-frag`); the watcher boots, reads offset 0 → EOF, processes complete lines, and on completion sets `read_offset` to the byte position of the fragment START (not the EOF); `partial_line` is the cached fragment. On subsequent `:read_more` polls (no new bytes yet), the watcher reads from `read_offset` to EOF and re-reads the fragment; once a subsequent writer appends a newline-completing suffix, the next poll splits the now-complete line and dispatches it — no head-of-file rewrite, no fragment loss. **Boot transient retention test:** the test fixture contains a transient complete-line followed by N queued complete-lines (e.g. `{"id":"bead-3",...}\n{"id":"bead-4",...}\n{"id":"bead-5",...}\n`); the watcher boots, reads offset 0 → EOF, dispatches `bead-3` and the dispatch returns transient (e.g. `{:error, %ProviderError{retryable?: true, code: "BR_TIMEOUT_SUBPROCESS"}}`); the loop stops at the transient, `read_offset` HOLDS at the byte position of `bead-3`'s start (NOT advanced to `bead-4`'s start); `partial_line` is the cached bytes of `bead-3`. Subsequent `:read_more` polls (no new bytes yet) re-read from `read_offset` and re-attempt `bead-3` with the same deterministic `command_id`. Once the transient is resolved to a terminal, the watcher advances `read_offset` past `bead-3` and dispatches `bead-4` and `bead-5` — lines 4..5 are NOT skipped or duplicated. **Offset-advance classifier — terminal set (5 arms, wrapped):** the test asserts the dispatch classifier matches the FULL gateway return shape (the outer `{:error, _}` wrapper is part of the classifier) with five distinct wrapped terminal arms — (a) `{:ok, _}`; (b) `{:error, {:already_exists, :task, _}}` (3-tuple reason); (c) `{:error, {:invalid_task_status, _}}` (2-tuple reason); (d) `{:error, {:project_archived, _}}` (2-tuple reason); (e) `{:error, :project_id_required}` (bare-atom reason) — plus a fallback `_ -> :transient` clause. Each terminal arm is stubbed separately via Mox with the exact wrapped shape (e.g. `expect(gateway, :dispatch_system, fn _, _ -> {:error, {:already_exists, :task, "bead-7"}} end`); on a terminal return the test asserts `read_offset` advances to the post-dispatch byte position, while on a transient return the test asserts `read_offset` is held and the same deterministic `command_id` is retried on the next `:read_more` poll. **Complementary transient test:** the test additionally stubs `dispatch_system/2` to return `{:error, %ProviderError{retryable?: true, code: "BR_TIMEOUT_SUBPROCESS"}}`, `{:error, {:wrong_expected_version, 5, 6}}`, and `{:exit, :killed}` respectively and asserts all three are classified transient (no `read_offset` advance). **Forward-compatibility note:** `ProviderError` is NEVER produced by the watcher-import branch in production — the branch dispatches via `CommandGateway.dispatch_system/2` directly into the aggregate's `handle_command/2` and bypasses `BeadsAdapter.create/2` (the synchronous `br create` hook is skipped per AC-020-6). The `ProviderError` stub in the transient test is defensive scaffolding: if a future change ever makes the branch emit `ProviderError` (e.g. via a new gateway decorator or a retry-stage decorator), the classifier will reject it as transient and the test will catch a regression to a wrong classification. The terminal set is closed; implementers MUST NOT introduce additional terminal atoms without bumping the TRD/PRD. Tail-mode test additionally asserts the **single-cursor invariant (3-way cursor priority)**: `read_offset` is the byte position of the START of the FIRST LINE NOT TERMINALLY DISPATCHED — (a) the start byte of the first transient complete-line if the loop stopped at a transient; (b) the start byte of any trailing fragment if the file ends on an unterminated JSONL line; (c) the file size (EOF) if the file ends on a terminator. `read_offset` does NOT advance on transient dispatch failure (retried with the same deterministic `command_id`); on every poll the watcher reads from `read_offset` to EOF (the fragment at the seat, if any, is part of the read result and is re-read on transient retries; no `partial_line` prepending); on terminal advance `read_offset` is moved past `byte_size(line) + 1` (the line and its terminator); `partial_line` is the bytes of the FIRST LINE NOT TERMINALLY DISPATCHED — transient-line bytes from the split, trailing fragment bytes from `last_segment`, or `""` respectively (observability only, NOT required for correctness); and on a transient dispatch the transient-line seat is preserved at `read_offset` so the next poll re-reads the transient line (with the same deterministic `command_id`) and continues with the queued lines behind it (no duplication, no loss, no skipping). |
-| AC-022-2 (synthetic create envelope for non-foreman beads) | TRD-016-TASK, TRD-021-TASK | REQ-022 | Watcher test asserts the synthetic envelope is dispatched via `CommandGateway.dispatch_system/2` with `payload.external_id` set to the bead ID, and the trusted-system path is used (operator path is rejected by AC-020-7). |
-| AC-022-3 (skip foreman-tagged beads) | TRD-016-TASK, TRD-021-TASK | REQ-022 | Watcher test asserts the skip and `[:foreman_server, :task_provider, :beads, :watcher, :skipped]` telemetry on the `agent_context.foreman` path. |
-| AC-022-4 (opt-in flag controls supervisor) | TRD-015-TASK, TRD-020-TASK, TRD-021-TASK | REQ-022 | Application boot test asserts the watcher child is added when `:start_beads_watcher?` is `true` and absent otherwise. `config/test.exs` sets the flag to `false`; `config/runtime.exs` documents the flag. |
-| AC-023-1 (janitor boot + grace-window semantics) | TRD-017-TASK, TRD-020-TASK, TRD-022-TASK | REQ-023 | Janitor test asserts the first scan happens after `@grace_ms` expiry (default 300s); subsequent scans on `@scan_interval_ms` (default 60s). |
-| AC-023-2 (case (a) `no-task` close) | TRD-018-TASK, TRD-022-TASK | REQ-023 | Janitor test asserts the `foreman-orphan:no-task` `transition_comment` is passed to `BeadsAdapter.complete/3` when the projection lookup finds no corresponding task. |
-| AC-023-3 (case (b) `terminal-task` close) | TRD-018-TASK, TRD-022-TASK | REQ-023 | Janitor test asserts the `foreman-orphan:terminal-task` `transition_comment` is passed when the task exists but is terminal (closed/failed). |
-| AC-023-4 (skip non-foreman-tagged beads) | TRD-018-TASK, TRD-022-TASK | REQ-023 | Janitor test asserts the skip and `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]` telemetry on the non-foreman-tagged path (found-but-skipped, distinct from the watcher `[:skipped]` event on AC-022-3). |
-| AC-024-1 (cache lookup before `br create`) | TRD-010-TASK, TRD-011-TASK, TRD-014-TASK | REQ-024 | Actor test asserts `state.in_flight_beads[cmd.command_id]` is consulted before `BeadsAdapter.create/2`; on cache hit the `br create` call is skipped and the cached bead ID is reused for stage-3 re-decide. On cache miss the `br create` call is issued and the returned `bead_handle` is stored under `command_id`. |
-| AC-024-2 (cache cleared on terminal) | TRD-010-TASK, TRD-012-TASK, TRD-011-TASK, TRD-014-TASK | REQ-024 | Actor test asserts the `command_id` entry is removed from `in_flight_beads` only on terminal success (after append confirmation) and on terminal compensation (after `br close` completes). The cache is NEVER cleared between append attempts — only on terminal success or terminal compensation, never on transient `:wrong_expected_version`. |
-| AC-024-3 (cache is process-local) | TRD-010-TASK, TRD-014-TASK | REQ-024 | Actor test asserts the cache is empty after a simulated crash + supervisor restart. The replay via `Aggregate.load/2` commits the append outcome; if the append had succeeded the bead ID is in the event and the next command proceeds normally; if not, the orphan janitor (REQ-023) absorbs the gap. |
-| AC-024-4 (cache keyed by `command_id`) | TRD-010-TASK, TRD-014-TASK | REQ-024 | Actor test asserts two concurrent `task.create` commands for different `command_id`s do not collide on the bead ID lookup. The cache is a `:map` keyed by `command_id`, not a single slot. |
-| AC-025-1 (projection map stores `external_id`) | TRD-019-TASK, TRD-014-TASK | REQ-025 | Projection test asserts `ProjectionStore.apply_event_by_type(state, "TaskCreated", payload)` writes `external_id: payload["external_id"]` (default `nil` for legacy events) into the task map alongside the existing fields. The new field is inserted after `task_id` and is always present. Idempotency is provided by the aggregate's stream-version semantics, not by a separate handler. |
-| AC-025-2 (capabilities advertises `:create`) | TRD-006-TASK, TRD-002-TASK | REQ-025 | `task_provider_test.exs` assertion: `BeadsAdapter.capabilities().supports` includes `:create` (now `[:claim, :close, :reopen, :annotate, :set_priority, :set_assignee, :list_dependencies, :add_dependency, :remove_dependency, :create]`). The capability test asserts the new entry and the callback count (12 rather than 11). |
-| AC-025-3 (callback count 12 + `:create` tuple) | TRD-001-TASK, TRD-002-TASK | REQ-025 | `task_provider_test.exs` assertions: `length(callbacks) == 12` at lines 12 AND 24; `assert {:create, 2} in callbacks` after the existing `add_dependency` assertion. Both line-12 and line-24 length assertions are kept (the duplicate is intentional, matches the existing test). |
-| AC-026-1 (INVALID_TITLE CodeMap row) | TRD-005-TASK, TRD-009-TASK | REQ-026 | CodeMap test translates the `br create` VALIDATION envelope (hint `title required`) into `%ProviderError{code: "INVALID_TITLE", retryable?: false, ...}`. `BeadsAdapter` test asserts the rejection surfaces at the adapter boundary. |
-| AC-026-2 (INVALID_PRIORITY CodeMap row) | TRD-005-TASK, TRD-008-TASK, TRD-009-TASK | REQ-026 | CodeMap test + BeadsAdapter test + pre-emptive validation test (out-of-range priority `P0..P4` rejected before argv construction). The `INVALID_PRIORITY` row is non-retryable. |
-| AC-026-3 (INVALID_ISSUE_TYPE CodeMap row) | TRD-005-TASK, TRD-008-TASK, TRD-009-TASK | REQ-026 | CodeMap test + BeadsAdapter test + pre-emptive validation test (out-of-enum `task_type` rejected before argv construction). The `INVALID_ISSUE_TYPE` row is non-retryable. Symmetric with AC-026-2. |
-| AC-026-4 (DUPLICATE_TASK_ID CodeMap row) | TRD-005-TASK, TRD-009-TASK | REQ-026 | CodeMap test translates the `br create` DUPLICATE envelope (rare; can occur if a bead with the same logical content is created concurrently) into `%ProviderError{code: "DUPLICATE_TASK_ID", retryable?: false, ...}`. The caller is expected to re-decide or surface to the operator. |
-| AC-026-5 (CREATE_FAILED fallback CodeMap row) | TRD-005-TASK, TRD-004-TASK, TRD-009-TASK | REQ-026 | CodeMap test + BeadsAdapter test. The `CREATE_FAILED` fallback row carries `retryable?: true` (the failure may be transient — signal, timeout, generic envelope, unexpected exit code). `BR_TIMEOUT_SUBPROCESS` mapping is consulted per call. The fallback follows the unknown-code policy from PRD-2026-48f7b420 REQ-008-2: `retryable?` is propagated from `br.retryable`. |
-## 6. Traceability Validation
+| REQ-020 | Two-stage aggregate finalization: synchronous `task.create` bead creation in the Actor hook (compensating consistency, not true atomicity) | TRD-003-TASK, TRD-005-TASK, TRD-007-TASK, TRD-008-TASK, TRD-009-TASK | TRD-003-TEST, TRD-005-TEST, TRD-007-TEST, TRD-008-TEST, TRD-009-TEST |
+| REQ-021 | Foreman-originated beads carry an `agent_context` tag | TRD-003-TASK | TRD-003-TEST |
+| REQ-022 | JSONL watcher for bi-directional sync | TRD-011-TASK, TRD-012-TASK, TRD-014-TASK | TRD-011-TEST, TRD-012-TEST, TRD-014-TEST |
+| REQ-023 | Orphan janitor closes Foreman's stranded beads | TRD-013-TASK, TRD-014-TASK | TRD-013-TEST, TRD-014-TEST |
+| REQ-024 | Actor hook guard via `command_id`-keyed in-flight bead cache | TRD-006-TASK, TRD-007-TASK, TRD-008-TASK | TRD-006-TEST, TRD-007-TEST, TRD-008-TEST |
+| REQ-025 | Projection map stores `external_id`; BeadsAdapter advertises `:create` | TRD-001-TASK, TRD-002-TASK, TRD-010-TASK | TRD-001-TEST, TRD-002-TEST, TRD-010-TEST |
+| REQ-026 | `br create` failure modes mapped in `BeadsAdapter.CodeMap` | TRD-003-TASK, TRD-004-TASK | TRD-003-TEST, TRD-004-TEST |
 
-The PRD's 7 requirements (REQ-020 through REQ-026) map to 30 acceptance criteria and 24 master tasks across 3 PRs. The matrix above shows 1-to-1 traceability from each AC to the task(s) that satisfy it and the test(s) that validate it. Every PRD requirement has at least one AC whose validation is a named test file.
+**Coverage:** 7 REQs / 30 ACs / 15 implementation tasks + 15 paired test tasks + 1 docs-only task = 31 master entries. Every PRD REQ-NNN has ≥ 1 implementation task and ≥ 1 test task.
 
-**Coverage:** 30 ACs / 30 ACs covered. 24 master tasks / 24 master tasks. 7 REQs / 7 REQs.
+### Per-AC traceability (verbatim cross-reference to PRD §4)
 
-**Task-ID ranges per PR:**
-- PR 1 (`TaskProvider` behaviour + `BeadsAdapter.create/2`): TRD-001-TASK through TRD-009-TASK (9 tasks) — covers REQ-020 (Actor-hook payload plumbing), REQ-021 (tag fields), REQ-025 (capabilities + callback count + projection map), REQ-026 (5 CodeMap rows).
-- PR 2 (Actor hook + in-flight cache + watcher-import branch + boundary invariant): TRD-010-TASK through TRD-014-TASK (5 tasks) — covers REQ-020 (synchronous hook, capabilities gate, compensation, boundary invariant, watcher-import branch) and REQ-024 (cache semantics).
-- PR 3 (Watcher + orphan janitor + opt-in supervision + doctor + docs): TRD-015-TASK through TRD-024-TASK (10 tasks) — covers REQ-021 (`foreman doctor` recognition), REQ-022 (watcher), REQ-023 (janitor), and documentation.
-
-**Architectural invariants enforced:**
-
-1. **CommandGateway boundary invariant** (REQ-020 / AC-020-7) — TRD-013-TASK extends `ForemanServer.CommandGateway.dispatch_operator/2` to reject `task.create` envelopes with non-nil `payload.external_id` at the existing envelope allowlist guard, returning `{:error, :external_id_not_allowed_via_operator}`. `dispatch_system/2` is unchanged and remains the trusted path for the watcher-import branch (AC-020-6). The Actor does NOT duplicate this check — single source of truth at the boundary.
-
-2. **In-flight cache invariants** (REQ-024 / AC-024-1..4) — TRD-010-TASK adds `state.in_flight_beads: %{command_id => bead_handle}` to the Actor state struct; TRD-011-TASK inserts the cache-lookup stage into `do_dispatch/4`; TRD-014-TASK validates the four cache ACs via the actor test suite. Specifically:
-   - AC-024-1: cache consulted BEFORE `BeadsAdapter.create/2`; on hit, the cached bead ID is reused (no second `br create`).
-   - AC-024-2: cache cleared ONLY on terminal success (after append confirmation) or terminal compensation (after `br close` completes). NEVER cleared between append attempts — protects one-`br create`-per-`command_id` against create-close-recreate oscillation.
-   - AC-024-3: cache is process-local; empty after crash + supervisor restart; orphan janitor (REQ-023) absorbs the gap.
-   - AC-024-4: cache is a `:map` keyed by `command_id`, not a single slot; concurrent commands for different `command_id`s do not collide.
-
-3. **Slice invariant preservation** — there is NO `TaskBeadLinked` event, NO codec dual-registration, and NO second append. The bead-linkage signal rides entirely on the existing `TaskCreated.external_id` field. The Actor enriches the COMMAND payload (not the event spec) and re-invokes `handle_command/2` so the aggregate itself emits the enriched event. This satisfies the slice invariant ("every domain event is emitted by an aggregate's `handle_command/2` routed through `CommandRouter` — no module emits events directly").
-
-4. **Single `ProviderError` factory** (inherited from PRD-2026-48f7b420 REQ-008-5a, extended by this TRD) — TRD-005-TASK adds 5 new CodeMap rows (`INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`, `DUPLICATE_TASK_ID`, `CREATE_FAILED`); all `%ProviderError{...}` struct literals still live inside `BeadsAdapter.CodeMap`. The existing `provider_error_factory_test.exs` architecture test continues to walk the codebase and pass.
-
-5. **Per-project gate** (REQ-020 / AC-020-4) — TRD-006-TASK extends `BeadsAdapter.capabilities/0` to advertise `:create`; TRD-007-TASK wires `TaskProvider.Registry.route/2` to dispatch `:create` to the same per-project state. The Actor hook (TRD-011-TASK) is a no-op when `provider_capabilities_for(state, cmd).supports` does not include `:create`; the `TaskCreated` event is emitted with `external_id: nil` (legacy behaviour). Non-Beads projects skip the synchronous create entirely.
-
-6. **`command_id` dedup** (CommandRouter's existing invariant) — the single append uses the operator-issued `command_id`; retries by the same operator reuse the same `command_id` and are dropped at the CommandRouter dedup gate before reaching the Actor. The `in_flight_beads` cache key is the FIRST command's `command_id`; the cache survives conflict-recovery recursion because it lives on `state.in_flight_beads` (process-local, NOT request-local).
-
-7. **Orphan janitor close-only-our-orphans** (REQ-023 / AC-023-4) — TRD-018-TASK scopes the janitor to beads carrying `agent_context.foreman`; the close-only-our-orphans property is enforced by the tag filter, not by checking the bead ID against Foreman's internal state. Non-foreman-tagged beads are skipped with `[:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained]` telemetry (AC-023-4, distinct from the watcher `[:skipped]` event on AC-022-3).
-
-8. **Watcher-import branch** (REQ-020 / AC-020-6 + REQ-022 / AC-022-2) — TRD-011-TASK detects pre-populated `cmd.payload["external_id"]` at stage 1 and skips stage 2 entirely; TRD-016-TASK synthesizes the envelope via `CommandGateway.dispatch_system/2` (trusted path) so the bead on disk is preserved.
-
-**Test baseline:**
-- The slice is run against the project's pre-existing test suite. Pre-existing failures in suites outside this slice's scope (`Recovery`, `StuckDetector`, `AgentRuntime.*`, `Overwatch.*`, `Inbox.*`, `ProjectRegistrySupervisor*`, `RouterOptimisticConcurrency`, `DoctorTaskProviderTest`) are out-of-scope for this TRD; the baseline count is to be re-validated before merge per `/ensemble:implement-trd-beads`.
-- Existing test suite targets `mix test test/foreman_server/architecture_test.exs test/foreman_server/workflow_test.exs test/foreman_server/task_providers/enforcement_test.exs` → 92 tests, 0 failures.
-- The slice adds: 24 master tasks (TRD-001-TASK through TRD-024-TASK), 6 new test files (`beads_adapter_create_test.exs`, `actor_hook_test.exs`, `beads_watcher_test.exs`, `beads_orphan_janitor_test.exs` (includes the `BeadsAdapter.recognise_foreman_tag/1` unit test), `foreman_doctor_test.exs`, `projection_store_task_external_id_test.exs`), and 1 modified test file (`task_provider_test.exs` extended for the callback count + capabilities assertion).
-- The slice does NOT regress the existing 92-test Architecture / Workflow / Enforcement suite.
+| AC ID | Description (abbreviated) | Master Task |
+|---|---|---|
+| AC-020-1 | Happy path: stage 1 validate → stage 2 `BeadsAdapter.create/2` → stage 3 re-decide with `external_id` → stage 4 append; aggregate emits `TaskCreated{external_id: bead_id}` | TRD-003-TASK, TRD-007-TASK |
+| AC-020-2 | `TaskCreated.external_id` round-trips through projection to `GET /api/tasks/:id` | TRD-010-TASK |
+| AC-020-3 | Append-conflict compensation: CommandRouter returns `{:error, ref, :wrong_expected_version, _}` → Actor cache hit → reload_after_conflict/1 (preserves `in_flight_beads`) → re-decide + re-send to CommandRouter; bounded-retry exhaustion OR post-reload re-decision rejection → `BeadsAdapter.complete/3` (subprocess I/O, NOT a CommandRouter event) + cache clear + clear error from `do_dispatch/4`; CLOSE-ONLY-ONCE | TRD-007-TASK, TRD-008-TASK |
+| AC-020-4 | Non-Beads project: stage 2 is a no-op; `external_id` remains `nil` | TRD-005-TASK, TRD-007-TASK |
+| AC-020-5 | Failure-as-error: `br create` error returns from `do_dispatch/4` without `normalize_to_event_data` / `send CommandRouter, {:append, …}`; telemetry `[:create, :failure]` | TRD-007-TASK |
+| AC-020-6 | Watcher-import branch: pre-populated `external_id` skips `BeadsAdapter.create/2`; telemetry `[:create, :skipped_watcher_import]` | TRD-007-TASK |
+| AC-020-7 | `CommandGateway.dispatch_operator/2` rejects non-nil `external_id`; `dispatch_system/2` is unchanged | TRD-009-TASK |
+| AC-021-1 | `--agent-context` JSON carries four Foreman tag fields | TRD-003-TASK |
+| AC-021-2 | Foreman-tagged beads recognised by watcher and janitor; untagged beads NEVER touched | TRD-012-TASK, TRD-013-TASK |
+| AC-021-3 | Tag shape: `task_id`, `command_id`, `origin = "foreman"`, `linked_at` ISO8601 UTC | TRD-003-TASK |
+| AC-022-1 | Watcher boot replay + tail mode with single-cursor invariant (3-way cursor priority + Option A) | TRD-011-TASK, TRD-012-TASK |
+| AC-022-2 | Watcher dedupe via `ProjectionStore` (no-op for already-imported); synthetic envelope routing via `dispatch_system/2` with deterministic `command_id` | TRD-012-TASK |
+| AC-022-3 | Watcher suppresses foreman-tagged beads | TRD-012-TASK |
+| AC-022-4 | `:start_beads_watcher?` opt-in: `false` → no watcher; `true` → one tail per registered project | TRD-014-TASK |
+| AC-023-1 | Janitor first scan after grace window (default 300s); subsequent scans on interval (default 60s) | TRD-013-TASK, TRD-014-TASK |
+| AC-023-2 | Case (a) — foreman-tagged with no task → close with `"foreman-orphan:no-task"` | TRD-013-TASK |
+| AC-023-3 | Case (b) — foreman-tagged with task in `closed` / `failed` → close with `"foreman-orphan:terminal-task"` | TRD-013-TASK |
+| AC-023-4 | Non-foreman-tagged beads NEVER touched | TRD-013-TASK |
+| AC-024-1 | In-flight cache consulted before any `br create`; cache hit reuses cached bead ID | TRD-006-TASK, TRD-007-TASK |
+| AC-024-2 | Cache cleared on terminal success OR terminal compensation; NEVER cleared on transient | TRD-006-TASK, TRD-008-TASK |
+| AC-024-3 | Cache is process-local; does NOT survive a crash; orphan janitor absorbs strander | TRD-006-TASK |
+| AC-024-4 | Concurrent `command_id`s each carry their own cache entry; no collision | TRD-006-TASK |
+| AC-025-1 | `ProjectionStore.TaskCreated` handler stores `external_id` (default `nil` for legacy) | TRD-010-TASK |
+| AC-025-2 | `BeadsAdapter.capabilities/0` advertises `:create` in `supports` | TRD-002-TASK |
+| AC-025-3 | `TaskProvider` behaviour callback count 12 with `{:create, 2}` tuple | TRD-001-TASK |
+| AC-026-1 | `INVALID_TITLE` CodeMap row (non-retryable) | TRD-003-TASK, TRD-004-TASK |
+| AC-026-2 | `INVALID_PRIORITY` CodeMap row (non-retryable); pre-emptive Foreman-side validation | TRD-003-TASK, TRD-004-TASK |
+| AC-026-3 | `INVALID_ISSUE_TYPE` CodeMap row (non-retryable); pre-emptive Foreman-side validation | TRD-003-TASK, TRD-004-TASK |
+| AC-026-4 | `DUPLICATE_TASK_ID` CodeMap row (non-retryable) | TRD-004-TASK |
+| AC-026-5 | `CREATE_FAILED` fallback row (retryable; `retryable?` propagated from `br.retryable`) | TRD-004-TASK |
 
 ---
 
-## 7. Next Steps
+## Sprint Planning
 
-1. **Run `/ensemble:refine-trd`** to validate the trace matrix, the architecture decision, and the 3-PR task list against the PRD's 7 requirements. Refine any task row that fails the trace validation.
-2. **Open PR 1 (`TaskProvider` behaviour extension + `BeadsAdapter.create/2`)** — start with TRD-001-TASK through TRD-009-TASK (9 tasks). Verify the `BeadsAdapter.create/2` callback is runnable end-to-end with a mocked `BrRunner` before merging. The 5 CodeMap rows must be exercised in the test suite; the behaviour-test callback count is 12 and includes `{:create, 2}`. `foreman doctor task_provider` and the watcher / janitor are NOT in this PR.
-3. **Open PR 2 (Actor hook + in-flight cache + watcher-import branch + CommandGateway boundary invariant)** — start with TRD-010-TASK through TRD-014-TASK (5 tasks). The boundary-invariant test (TRD-013-TASK) and the actor-hook test (TRD-014-TASK, covers all 5 Actor scenarios: happy path, append-conflict, in-flight cache hit, non-Beads project, watcher-import branch) are the load-bearing PR-2 deliverables. The watcher and orphan janitor are NOT in this PR.
-4. **Open PR 3 (Watcher + orphan janitor + opt-in supervision + `foreman doctor` + docs)** — start with TRD-015-TASK through TRD-024-TASK (10 tasks). The watcher (TRD-015, TRD-016, TRD-021) and the orphan janitor (TRD-017, TRD-018, TRD-022, including the `foreman doctor task_provider` handler + test) activate under the opt-in flags `:start_beads_watcher?` and `:start_beads_orphan_janitor?` (TRD-020), both defaulting to `false` in `config/test.exs`. Docs (TRD-023, TRD-024) ship in the same PR.
-5. **After PR 3 merges:** the bi-directional sync is live. `foreman task create --project-id <beads-backed>` materialises a bead synchronously with the in-process all-or-nothing guarantee (and compensating recovery for the residual cases); an operator-managed bead whose title matches a Foreman project's intent is auto-imported by the watcher; orphaned foreman-tagged beads are recovered by the janitor within the grace window. The dispatcher operator (a future PRD) will pick up the orphan backlog, the `foreman bead audit` CLI, and `task.update` flows as next-on-deck work.
+The 3 PRs are time-boxed into 3 calendar sprints. This section is **informational only** — `implement-trd-beads` does not parse sprint headings; it parses the `### PR N:` headings in the Master Task List.
+
+### Sprint 1 — `TaskProvider` behaviour extension + `BeadsAdapter.create/2`
+
+Calendar: ~1 week. Tasks: TRD-001 through TRD-005 + TRD-016 (6 implementation + 6 paired test = 12 master entries). PR 1 is independently shippable: `BeadsAdapter.create/2` is runnable from REPL with a mocked `BrRunner`; the `SystemBrunner` dedicated `:create` clause in `build_action_argv/2` (validate-first ordering, mirroring `:set_priority`; TRD-016) is wired; the synchronous Actor hook is NOT yet wired. This lets the team land the adapter and its CodeMap in isolation, with the Actor hook as a follow-up PR.
+
+### Sprint 2 — Actor two-stage finalization + in-flight cache + boundary invariant
+
+Calendar: ~1 week. Tasks: TRD-006 through TRD-009 (4 implementation + 4 paired test = 8 master entries). PR 2 is the load-bearing slice — the two-stage finalization, in-flight cache, compensation path, and `CommandGateway` boundary invariant. All 30 PRD ACs in REQ-020, REQ-024 are exercised here. Tests: `actor_hook_test.exs` covers AC-020-1, AC-020-4, AC-020-5, AC-020-6, AC-024-1, AC-024-2, AC-024-4; `actor_compensation_test.exs` covers AC-020-3; `command_gateway_external_id_guard_test.exs` covers AC-020-7.
+
+### Sprint 3 — JSONL watcher + orphan janitor + opt-in supervision + docs
+
+Calendar: ~1 week. Tasks: TRD-010 through TRD-015 (5 implementation + 5 paired test + 1 docs-only = 11 master entries). PR 3 activates the bi-directional sync. Tests: `beads_watcher_test.exs` and `beads_watcher_pipeline_test.exs` cover AC-022-1, AC-022-2, AC-022-3; `beads_orphan_janitor_test.exs` covers AC-023-1, AC-023-2, AC-023-3, AC-023-4; `application_supervisor_test.exs` covers AC-022-4, AC-023-1. Docs (`TRD-015-TASK`) ship in the same PR per the `foreman-doc-gate` skill.
+
+### After PR 3 merges
+
+The bi-directional sync is live. `foreman task create --project-id <beads-backed>` materialises a bead synchronously with the in-process all-or-nothing guarantee (and compensating recovery for the residual cases); an operator-managed bead whose title matches a Foreman project's intent is auto-imported by the watcher; orphaned foreman-tagged beads are recovered by the janitor within the grace window. The next-on-deck work (out of scope here) is the `foreman bead audit` CLI surface, `task.update` flows, and a streaming watcher upgrade (`:file.inotify` / FSEvents).
 
 ---
 
-## 8. Changelog
+## Reused Capabilities
+
+The slice reuses the following existing infrastructure (no new code or contracts; integration only). Cross-references use the foundational TRD's micro UUID or the module path. Per the create-trd skill's Capability Reuse Check, the existing `TRD-2026-48f7b420-foreman-beads-task-provider` TRD is the foundation for this slice; the capability tokens it provides (BeadsAdapter, BeadsAdapter.CodeMap, BrRunner boundary, TaskProvider behaviour, JsonSchemaCache, ConcurrencyLimiter) are referenced by capability, not by label.
+
+| Capability | Source | Where reused |
+|---|---|---|
+| `TaskProvider` behaviour (11 callbacks) | `TRD-2026-48f7b420` | TRD-001-TASK (extended with `create/2`) |
+| `BeadsAdapter` adapter (8 operational callbacks) | `TRD-2026-48f7b420` | TRD-003-TASK (extended with `create/2`) |
+| `BeadsAdapter.CodeMap` factory | `TRD-2026-48f7b420` | TRD-004-TASK (extended with 5 new rows) |
+| `BrRunner` boundary (`SystemBrRunner` is the sole `System.cmd("br", ...)` site) | `TRD-2026-48f7b420` | TRD-003-TASK (argv construction; existing runner) |
+| `BrRunnerMock` (test support) | `TRD-2026-48f7b420` | TRD-003-TEST, TRD-004-TEST (Mox stubs) |
+| `TaskProvider.Registry` (per-project routing) | `TRD-2026-48f7b420` | TRD-005-TASK (extended to dispatch `:create`) |
+| `ProviderError` typed struct with 8-key `context` allowlist | `TRD-2026-48f7b420` | TRD-004-TASK (5 new rows reuse the existing context shape) |
+| `Aggregate.Actor.do_dispatch/4` command dispatch | `lib/foreman_server/aggregate/actor.ex` (existing) | TRD-007-TASK (two-stage finalization inserted) |
+| `Aggregate.Actor.reload_after_conflict/1` bounded retry | `lib/foreman_server/aggregate/actor.ex` (existing) | TRD-008-TASK (compensation path integrates) |
+| `ProjectionStore.apply_event_by_type/3` `TaskCreated` handler | `lib/foreman_server/projection_store.ex` (existing) | TRD-010-TASK (extended to include `external_id`) |
+| `CommandGateway.dispatch_operator/2` envelope allowlist | `lib/foreman_server/command_gateway.ex` (existing) | TRD-009-TASK (extended to reject non-nil `external_id`) |
+| `CommandGateway.dispatch_system/2` trusted path | `lib/foreman_server/command_gateway.ex` (existing) | TRD-007-TASK (watcher-import branch); TRD-012-TASK (watcher dispatch) |
+| `Application.maybe_*_child/0` opt-in pattern | `lib/foreman_server/application.ex` (existing) | TRD-014-TASK (two new opt-in children) |
+| `Events.TaskCreated` (existing optional `external_id` field) | `lib/foreman_server/events/task_created.ex` (existing) | TRD-007-TASK (single-event linkage); TRD-010-TASK (projection extension) |
+
+No new typed events are introduced (no `EventCodec` re-registration required). No new operator types are added (no `CommandGateway.@allowed_operator_types` extension required). The single-event design preserves the slice invariant end-to-end.
+
+---
+
+## Architecture Self-Critique
+
+The chosen architecture (Option C — two-stage aggregate finalization) was reviewed against the following gaps and risks. Each item is named with a recommended resolution.
+
+### AC-1: Synchronous hook is a single point of latency
+
+**Issue.** Every `task.create` now waits on `br create`. If `br` is misbehaving, every create hangs for the full timeout.
+
+**Resolution.** The synchronous hook is bounded by the per-call timeout from `PRD-2026-48f7b420` REQ-009-2 (30s default). The compensation path (AC-020-3) handles append-conflict failures; the orphan janitor (REQ-023) handles cron-drop cases. The latency is on the create path only; read paths (`list_ready`, `get`) are unchanged. The latency is observable via `[:foreman_server, :task_provider, :beads, :create, :failure]` telemetry (carries `append_latency_ms`).
+
+**Severity:** Low — bounded by an existing timeout; observable; recovery paths named.
+
+### AC-2: Actor crash between `br create` success and the Actor↔CommandRouter `{:append_ok, …}` confirmation
+
+**Issue.** If the Actor crashes after `BeadsAdapter.create/2` returns success but before receiving `{:append_ok, ^ref, count, append_latency_ms}` from CommandRouter, the bead is on disk in Beads but no Foreman task exists (CommandRouter's append is the event-log write that materialises the task projection).
+
+**Resolution.** AC-024-3 makes the in-flight cache process-local so it does not survive the crash. The orphan janitor (REQ-023) picks up the bead on its grace-window scan (configurable, default 300s — covers normal `br create` latency + append latency + restart time). The append that succeeded before the crash is durable; the crash is a recovery problem, not a correctness one.
+
+**Severity:** Low — recoverable within the grace window; the residual window is bounded.
+
+### AC-3: Watcher-storm scenario (boot replay)
+
+**Issue.** On every boot, the watcher reads the entire JSONL from offset 0 (full replay per AC-022-1). For a JSONL with N existing entries, replay is O(N) reads where each line takes one of three paths: foreman-tagged → skip (cheap), already-imported → no-op ProjectionStore check (cheap), operator-originated → dispatch.
+
+**Resolution.** AC-022-2 dedupe makes the steady-state replay cost ~1 read + 1 short ProjectionStore lookup per line (no event-store appends for already-imported beads). The orphan janitor (REQ-023) absorbs any foreman-tagged residual the replay missed. Telemetry `[:watcher, :replay_started]` / `[:watcher, :replay_completed]` carries `lines_processed` / `lines_imported` / `lines_suppressed` / `lines_reconciled` so operators can size the storm. A future ops decision (out of scope here) is to add a JSONL compaction step or a streaming FSEvents watcher if N grows past operator tolerance.
+
+**Severity:** Low — bounded by the existing JSONL size; observable; future-proofing documented.
+
+### AC-4: Tag-spoofing risk
+
+**Issue.** A Beads CLI operator could theoretically write `agent_context.foreman` themselves on a bead that Foreman did not create, fooling the watcher into suppressing it.
+
+**Resolution.** The orphan janitor (REQ-023) is the safety valve — even a spoofed-tagged bead is closed only if no corresponding Foreman task exists with `external_id == bead.id` after the grace window. The Foreman-origination signal is "linked_at + command_id from THIS command" — the Actor captures `command_id` from the dispatching envelope and uses it both in the tag AND as the in-flight cache key (AC-024-1), so a spoofed tag without a matching `command_id` audit trail is detectable. The detection path is the `command_id` mismatch between the tag and the in-flight cache; the operational surface is the `[:foreman_server, :task_provider, :beads, :create, :command_id_mismatch]` telemetry (planned for a future slice).
+
+**Severity:** Low — the orphan janitor is the safety valve; spoofing only delays the close, not the correctness.
+
+### AC-5: Two supervisor flags default to `false`
+
+**Issue.** A first-deploy environment that wants the watcher but not the janitor (or vice versa) gets mismatched behaviour.
+
+**Resolution.** The four combinations are observable in `foreman doctor task_provider` output (each flag's state appears with a green check or red minus). Operators are expected to opt into both for production but the flags exist for staged rollouts. Documented in the docs-only task (`TRD-015-TASK`).
+
+**Severity:** Informational — operator decision; no correctness impact.
+
+---
+
+## Task Coverage Analysis
+
+| Coverage Dimension | Result |
+|---|---|
+| Every PRD REQ-NNN has ≥ 1 TRD task with `[satisfies REQ-NNN]` | YES — REQ-020, REQ-021, REQ-022, REQ-023, REQ-024, REQ-025, REQ-026 each have ≥ 1 implementation task and ≥ 1 test task |
+| Every PRD AC-NNN-N has a paired master task | YES — see Per-AC traceability table above |
+| Every user-facing implementation task has a paired `TRD-NNN-TEST` | YES — 15 implementation tasks with paired tests; 1 docs-only task (`TRD-015-TASK`) has no test (per `foreman-doc-gate` skill) |
+| Every `### PR N:` section has a `**Shippable State:**` line | YES — PR 1, PR 2, PR 3 each have a `**Shippable State:**` line immediately after the heading |
+| No PR `**Shippable State:**` is infrastructure-only | YES — PR 1: "BeadsAdapter.create/2 is runnable end-to-end with mocked BrRunner"; PR 2: "`foreman task create` for a Beads-backed project produces a `TaskCreated` event with `external_id` populated"; PR 3: "The bi-directional sync is live. The watcher forwards Beads-side operator-managed beads to Foreman; the orphan janitor closes the Foreman-side strands" |
+| Forward dependencies (PR N task depends on PR N+1 task) | NONE — all dependencies flow backward (PR 1 → PR 2 → PR 3) |
+| No circular dependencies | VERIFIED — the dependency graph is acyclic |
+| Tasks estimated at ≥ 8h | NONE — all implementation tasks are S/M; no task ≥ 8h |
+| `Total tasks` frontmatter matches actual count | 15 implementation + 15 paired test + 1 docs-only = 31 entries (frontmatter says 31) |
+
+---
+
+## Dependency and Estimate Review
+
+### Dependency graph (acyclic)
+
+```
+TRD-001-TASK ──┬──> TRD-002-TASK ──┐
+                │                    ├──> TRD-003-TASK ──┬──> TRD-004-TASK
+                └──> TRD-005-TASK ──┘                    │
+                                                          │
+TRD-006-TASK ──> TRD-007-TASK ──> TRD-008-TASK           │
+                                │                        │
+                                └──> TRD-009-TASK        │
+                                                          │
+TRD-010-TASK <────────────────  TRD-007-TASK ─────────────┤
+                                                          │
+TRD-011-TASK ──> TRD-012-TASK ────────────────────────────┤
+                                                          │
+TRD-013-TASK ─────────────────────────────────────────────┤
+                                                          │
+TRD-014-TASK <── (TRD-012, TRD-013) ─────────────────────┤
+                                                          │
+TRD-015-TASK <── TRD-014-TASK
+```
+
+Critical path: TRD-001 → TRD-003 → TRD-007 → TRD-008 (estimated ~14h including test).
+
+### Estimate confidence
+
+| Range | Count | Notes |
+|---|---|---|
+| XS (< 1h) | 0 | — |
+| S (1-2h) | 18 | Most implementation + test tasks; conservative |
+| M (2-4h) | 12 | Watcher GenServer, Actor hook, OrphanJanitor |
+| L (4-8h) | 0 | — |
+| ≥ 8h | 0 | None — all tasks are granular and reviewable in isolation |
+
+Estimates are conservative; the synchronous hook (TRD-007-TASK) and the compensation path (TRD-008-TASK) are the most complex items, but each is a single 2-4h task with a single test pairing. The watcher single-cursor invariant (TRD-011-TASK) and pipeline (TRD-012-TASK) are well-scoped thanks to the 3-way cursor priority + Option A in AC-022-1.
+
+---
+
+## Testability Review
+
+| Implementation AC | Testability | Notes |
+|---|---|---|
+| AC-020-1 happy path | Verifiable via state-after-step assertion on a stubbed Actor harness; mock `BrRunner` returns `{:ok, %{"id" => "foreman-abc", ...}}`; assert `send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}` was invoked with `external_id == "foreman-abc"` in the normalized event data; on `receive {:append_ok, ^ref, count, …}` assert `commit_event/3` was called and `state.version` was bumped | TRD-007-TEST scenario 1 |
+| AC-020-2 round-trip | Verifiable via `ProjectionStore.get_task/2` returning the task map with `external_id`; `GET /api/tasks/:id` integration test | TRD-010-TEST scenarios 3, 4 |
+| AC-020-3 compensation | Verifiable via CommandRouter stub that returns `:wrong_expected_version` once then `:ok`; assert `BeadsAdapter.create/2` is NOT called on retry; assert `in_flight_beads` is preserved across `reload_after_conflict/1` (cache hit poisons the retry path); assert eventual `TaskCreated` event has `external_id: bead_id`; bounded-retry exhaustion → `BeadsAdapter.complete/3` with `transition_comment: "foreman-compensation:append-conflict-retry-exhausted"` | TRD-008-TEST scenarios 1, 2, 3, 4 |
+| AC-020-4 non-Beads project | Verifiable via Mox stub that returns a capability map without `:create`; assert the hook is a no-op and `external_id` remains `nil` | TRD-007-TEST scenario 2 |
+| AC-020-5 failure-as-error | Verifiable via Mox stub that returns `{:error, %ProviderError{code: "INVALID_TITLE"}}`; assert the Actor returns the error from `do_dispatch/4` WITHOUT `normalize_to_event_data` or `send CommandRouter, {:append, …}` | TRD-007-TEST scenario 3 |
+| AC-020-6 watcher-import | Verifiable via synthetic envelope via `dispatch_system/2`; assert `BeadsAdapter.create/2` is NOT invoked; assert bead ID is preserved | TRD-007-TEST scenario 4 |
+| AC-020-7 boundary invariant | Verifiable via `dispatch_operator/2` unit test asserting `task.create` with non-nil `external_id` is REJECTED at the allowlist | TRD-009-TEST scenarios 1, 2, 3 |
+| AC-021-1 tag shape | Verifiable via argv assertion on Mox; the exact `--agent-context` JSON is captured and parsed | TRD-003-TEST scenario 2 |
+| AC-021-2 foreman-tag check | Verifiable via JSONL fixture with foreman-tagged and untagged beads; assert watcher suppresses foreman-tagged; janitor closes foreman-tagged orphans | TRD-012-TEST scenario 1; TRD-013-TEST scenarios 2, 3, 4 |
+| AC-021-3 ISO8601 + origin | Verifiable via JSON parse of the captured argv | TRD-003-TEST scenario 2 |
+| AC-022-1 single-cursor invariant | Verifiable via 3 JSONL fixture scenarios: tail-mode transient; boot-mode transient; boot-mode fragment | TRD-011-TEST scenarios 9, 10, 11 |
+| AC-022-2 dedupe | Verifiable via ProjectionStore stub returning a hit; assert no-op | TRD-012-TEST scenario 2 |
+| AC-022-3 suppression | Verifiable via JSONL fixture with foreman-tagged bead; assert skip + telemetry | TRD-012-TEST scenario 1 |
+| AC-022-4 opt-in | Verifiable via supervisor test asserting child presence/absence based on flag | TRD-014-TEST scenarios 1, 2 |
+| AC-023-1 grace window | Verifiable via timing mock; assert no scan before grace; assert scan after grace | TRD-013-TEST scenario 1 |
+| AC-023-2 case (a) | Verifiable via ProjectionStore stub returning no task; assert close with `"foreman-orphan:no-task"` | TRD-013-TEST scenario 2 |
+| AC-023-3 case (b) | Verifiable via ProjectionStore stub returning task in `closed` / `failed`; assert close with `"foreman-orphan:terminal-task"` | TRD-013-TEST scenario 3 |
+| AC-023-4 non-foreman skip | Verifiable via JSONL fixture with untagged bead; assert `BeadsAdapter.complete/3` is NOT called | TRD-013-TEST scenarios 4, 5 |
+| AC-024-1 cache hit | Verifiable via state-after-step assertion; replay the same `command_id`; assert second call uses cached bead ID | TRD-007-TEST scenario 5; TRD-006-TEST |
+| AC-024-2 cache clear on terminal | Verifiable via state-after-step; assert cache cleared after `{:append_ok, count}`; assert NOT cleared on transient | TRD-006-TEST; TRD-008-TEST |
+| AC-024-3 process-local | Verifiable via Actor crash simulation; assert cache is empty after restart | TRD-006-TEST |
+| AC-024-4 concurrent `command_id`s | Verifiable via two concurrent `Task.async` calls; assert each cache entry is distinct | TRD-007-TEST scenario 7 |
+| AC-025-1 projection | Verifiable via ProjectionStore test | TRD-010-TEST scenarios 1, 2 |
+| AC-025-2 capabilities | Verifiable via unit test on `BeadsAdapter.capabilities/0` | TRD-002-TEST |
+| AC-025-3 callback count | Verifiable via `behaviour_info(:callbacks)` length assertion | TRD-001-TEST |
+| AC-026-1..5 CodeMap rows | Verifiable via 5 scenario tests on `CodeMap` with Mox returning the corresponding `br` envelope | TRD-004-TEST scenarios 1-5 |
+
+All implementation ACs are objectively verifiable. No subjective language (fast, good, user-friendly) appears in the ACs; all ACs have specific pass/fail criteria.
+
+---
+
+## Design Readiness Gate
+
+| Dimension | Score (1-5) | Notes |
+|---|---|---|
+| Completeness | 4 | All 7 PRD requirements have ≥ 1 implementation task and ≥ 1 test task. 30 PRD ACs map to master tasks across the implementation/test pairs. Architecture options A/B/C are documented; Option C is justified. Slice invariant preserved end-to-end. CommandGateway boundary invariant and watcher single-cursor invariant are named and mapped to existing enforcement points. |
+| Testability | 4 | All 30 implementation ACs are objectively verifiable via the test tasks. State-after-step assertions on a stubbed Actor harness. Mox stubs for `BrRunner` and `BeadsAdapter.complete/3` are the primary test mechanism. JSONL fixtures exercise the watcher's 3-way cursor priority under transient, fragment, and boot scenarios. No subjective language. |
+| Clarity | 4 | The two-stage aggregate finalization contract is documented with four explicit stages. The Actor hook insertion point (`do_dispatch/4` between `handle_command/2` and `normalize_to_event_data`) is named. The single-event design (`TaskCreated.external_id`) is named in §2.1.3 and §2.2.6. The `CommandGateway` boundary invariant is named in §2.2.6 item 4. The in-flight cache is named in §2.2.6 item 3. The watcher single-cursor invariant is named in §2.2.6 item 6 with the 3-way cursor priority. |
+| Feasibility | 4 | All `br` commands cited were observed at version 0.2.19 (PRD §2.2). The synchronous hook's worst-case latency is bounded by `PRD-2026-48f7b420` REQ-009-2 (30s default). The orphan janitor's grace window is configurable to absorb boot-time append latency. The projection map extension is a 1-line addition. The two opt-in supervisor flags mirror the existing `JsonSchemaCache` / `ProjectProviderProjector` pattern. |
+
+**Overall: 4.0 — READY FOR IMPLEMENTATION.**
+
+**Gate decision: READY FOR IMPLEMENTATION.** All 7 PRD REQs are mapped to 15 implementation tasks + 15 paired test tasks + 1 docs-only task. The dependency graph is acyclic and bounded. The compensating-consistency contract (synchronous in-process all-or-nothing for the normal path with the orphan janitor + `br close` compensation closing the residual gap within the configurable grace window) is the design's central commitment, and every code path has a named recovery mechanism (compensation, janitor, supervisor restart). The CommandGateway boundary invariant (`dispatch_operator/2` rejects `task.create` with non-nil `external_id`; system dispatch is the only path that can supply a pre-existing `external_id`) is a hard prerequisite (AC-020-7) enforced at the existing envelope allowlist. The slice invariant (`every emitted event is owned by an aggregate's handle_command/2; no module fabricates events`) is preserved end-to-end. The slice is ready for implement-trd-beads.
+
+---
+
+## Traceability Validation
+
+```
+Traceability check: 7 requirements covered, 0 uncovered, 0 orphaned annotations
+Requirement coverage: REQ-020 (5 impl tasks, 5 test tasks), REQ-021 (1 impl, 1 test), REQ-022 (3 impl, 3 test), REQ-023 (2 impl, 2 test), REQ-024 (3 impl, 3 test), REQ-025 (3 impl, 3 test), REQ-026 (2 impl, 2 test).
+AC coverage: 30/30 (100%).
+Task count: 31 master entries (15 implementation + 15 paired test + 1 docs-only).
+PR count: 3.
+```
+
+**Zero uncovered PRD requirements.** **Zero orphaned `[satisfies REQ-NNN]` annotations.**
+
+---
+
+## Risks and Open Questions
+
+### Risks
+
+1. **Synchronous `br create` latency.** Each `task.create` now incurs a `br` subprocess round-trip inside the Actor hook. **Mitigation:** bounded by `PRD-2026-48f7b420` REQ-009-2 (30s default); compensation (AC-020-3) handles append-conflict; orphan janitor (REQ-023) handles cron-drop; latency is on the create path only.
+2. **Actor crash between bead creation and append.** If the Actor crashes after `BeadsAdapter.create/2` returns success but before receiving `{:append_ok, ^ref, count, …}` from CommandRouter, the bead is on disk in Beads but no Foreman task exists. **Mitigation:** REQ-023 orphan janitor picks up the bead on its grace-window scan (default 300s). AC-024-3 makes the in-flight cache process-local; the janitor is the recovery path.
+3. **Watcher-storm scenario (boot replay).** On every boot, the watcher reads the entire JSONL from offset 0. **Mitigation:** AC-022-2 dedupe makes the steady-state replay cost ~1 read + 1 short ProjectionStore lookup per line. Telemetry `[:watcher, :replay_started]` / `[:watcher, :replay_completed]` carries counters for sizing. A future ops decision is to add a JSONL compaction step or a streaming FSEvents watcher.
+4. **Tag-spoofing risk.** A Beads CLI operator could theoretically write `agent_context.foreman` themselves. **Mitigation:** the orphan janitor (REQ-023) is the safety valve — a spoofed-tagged bead is closed only if no corresponding Foreman task exists with `external_id == bead.id` after the grace window.
+
+### Open Questions
+
+None — all 3 PRD ambiguity markers are resolved (see PRD §5).
+
+### Known out-of-scope gaps (not blocking v1)
+
+1. **No streaming watcher upgrade.** REQ-022 polls the JSONL on a 2s tick. A `:file.inotify` / FSEvents-based tail would reduce steady-state latency but is not portable and adds a dep. Deferred.
+2. **No multi-project scan optimisation.** The orphan janitor (REQ-023) and watcher (REQ-022) iterate registered projects independently. A shared scanner with one tail per `.beads/` directory and per-project routing would reduce resource usage on N-project deployments. Deferred.
+3. **No `foreman bead audit` CLI.** A future PRD will add a CLI surface to look up bead ID → task ID → run ID → command_id. Deferred.
+4. **No `task.update` integration.** The PRD does not add `external_id` mutation paths through the operator surface. A future PRD will reconcile task-title changes, priority changes, and dependency adds against Beads. Deferred.
+5. **No interactive UI for orphan conflict resolution.** The janitor closes beads automatically when the linked task is `closed` / `failed`. A future PRD will add an `OrphanHoldQueue` for operator review. Deferred.
+
+---
+
+## Files Touched (when implemented)
+
+This TRD is the **design contract only**. Implementation will add:
+
+- `packages/foreman_server/lib/foreman_server/task_providers/beads_watcher.ex` — supervised GenServer; one tail process per registered project
+- `packages/foreman_server/lib/foreman_server/task_providers/beads_orphan_janitor.ex` — supervised GenServer; one scanner per registered project
+- Additions to `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter.ex` — new `create/2` callback implementation; `capabilities/0` extended to advertise `:create`; argv-construction helpers; pre-emptive Foreman-side validation
+- Additions to `packages/foreman_server/lib/foreman_server/task_provider.ex` — new `@callback create/2` declaration (callback count grows 11 → 12)
+- Additions to `packages/foreman_server/lib/foreman_server/aggregate/actor.ex` — two-stage aggregate finalization in `do_dispatch/4`; `in_flight_beads: %{command_id => bead_handle}` state field; pre-populated `external_id` skip branch (AC-020-6); compensation path (AC-020-3)
+- Additions to `packages/foreman_server/lib/foreman_server/command_gateway.ex` — `dispatch_operator/2` rejects `task.create` with non-nil `envelope.payload.external_id` at the allowlist guard (AC-020-7); `dispatch_system/2` is unchanged
+- Additions to `packages/foreman_server/lib/foreman_server/projection_store.ex` — `TaskCreated` task map extended with `external_id` (no new event handler)
+- Additions to `packages/foreman_server/lib/foreman_server/event_codec.ex` — NO changes; `external_id` is an existing optional field on `TaskCreated`
+- Additions to `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter_code_map.ex` — five new rows (`INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`, `DUPLICATE_TASK_ID`, `CREATE_FAILED`)
+- Additions to `packages/foreman_server/lib/foreman_server/task_providers/registry.ex` — `route/2` dispatches `:create` to the same per-project state
+- Additions to `packages/foreman_server/lib/foreman_server/application.ex` — two `maybe_*_child/0` helpers (`maybe_beads_watcher_child/0`, `maybe_beads_orphan_janitor_child/0`); flags `:start_beads_watcher?` / `:start_beads_orphan_janitor?` (default `false`)
+- Additions to `packages/foreman_server/config/test.exs` — both flags set to `false`
+- Additions to `packages/foreman_server/config/runtime.exs` — document the flags
+- Additions to `packages/foreman_server/test/foreman_server/task_provider_test.exs` — `length(callbacks) == 12` (lines 12 and 24); `assert {:create, 2} in callbacks`
+- `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_create_test.exs` — REQ-020 + REQ-021 happy path + 5 CodeMap rows
+- `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_code_map_test.exs` — 5 CodeMap row routing
+- `packages/foreman_server/test/foreman_server/task_providers/registry_test.exs` — `:create` routing
+- `packages/foreman_server/test/foreman_server/aggregate/actor_in_flight_cache_test.exs` — cache state, init, process-local semantics
+- `packages/foreman_server/test/foreman_server/aggregate/actor_hook_test.exs` — 7 scenarios covering AC-020-1, AC-020-4, AC-020-5, AC-020-6, AC-024-1, AC-024-2, AC-024-4
+- `packages/foreman_server/test/foreman_server/aggregate/actor_compensation_test.exs` — 4 scenarios covering AC-020-3
+- `packages/foreman_server/test/foreman_server/command_gateway_external_id_guard_test.exs` — AC-020-7 boundary rejection
+- `packages/foreman_server/test/foreman_server/projection_store_task_external_id_test.exs` — AC-025-1 round-trip
+- `packages/foreman_server/test/foreman_server/task_providers/beads_watcher_test.exs` — boot replay + tail mode + 3-way cursor priority + 11 scenarios
+- `packages/foreman_server/test/foreman_server/task_providers/beads_watcher_pipeline_test.exs` — 6 scenarios covering AC-022-2, AC-022-3
+- `packages/foreman_server/test/foreman_server/task_providers/beads_orphan_janitor_test.exs` — 5 scenarios covering AC-023-1, AC-023-2, AC-023-3, AC-023-4
+- `packages/foreman_server/test/foreman_server/application_supervisor_test.exs` — 4 opt-in flag scenarios
+- `docs/user-guide.md`, `docs/cli-reference.md`, `README.md`, `CLAUDE.md` — per `foreman-doc-gate` skill
+
+No existing test, projection, or aggregate code is modified without a documented reason tied to a REQ above.
+
+---
+
+## Changelog
+### 1.0.6 — 2026-08-11 (working-tree cascade: 4 architecture redesigns + cycle fix + TRD-016 insertion)
+
+- **Scope.** This entry consolidates ALL working-tree changes that diverge from origin's `1.0.5`. The branch went through four architectural redesigns during a single session, plus a dependency-cycle fix, plus the insertion of TRD-016. Origin's `1.0.0`–`1.0.5` entries are preserved verbatim below this entry; the working tree's `1.0.0`–`1.0.3` cascade entries have been collapsed into this single `1.0.6` entry to avoid factually-impossible claims about divergent task counts (origin's `1.0.4`/`1.0.5` describe 24 tasks across 3 PRs; the working tree's `1.0.6` describes 31 tasks across 3 PRs).
+
+- **Architecture redesign #1 — Actor↔CommandRouter append/ack protocol.** Stage 4 of the two-stage `do_dispatch/4` finalization hook now uses the EXISTING Actor↔CommandRouter append/ack protocol (`send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}` → `receive {:append_ok, ^ref, count, append_latency_ms}` → `commit_event/3` which calls `aggregate.apply_event/2` and bumps `state.version`). The Actor NEVER calls `EventStore.append_to_stream/3` directly — that is the architectural invariant the existing architecture test enforces. Section updates: §2.1.3 Stage 4, §2.2.2 Data Flow Stage 4, §2.2.3 Watcher Stage 4, §2.2.4 Error Paths rows 1–4, §2.2.5 Reused Capabilities `do_dispatch/4` and bounded-retry rows, §2.2.6 Architecture Decision #2 (re-numbered), TRD-007-TASK Stage 4 + Action #5, TRD-007-TEST scenarios 1/5/6, TRD-008-TASK compensation path, TRD-008-TEST scenarios 1–4, AC-020-3/AC-020-5 traceability rows. `in_flight_beads` cache preservation through `reload_after_conflict/1` is documented: the existing `rehydrated = %{state | module_state: …, version: …}` pattern preserves the cache, so the retry path hits the cache, skips a second `BeadsAdapter.create/2`, and re-runs stage 3 with the cached `external_id`.
+
+- **Architecture redesign #2 — TaskProvider.Registry.project_config/1 helper.** `BeadsAdapter.create/2` resolves the per-project `database_path` via `Registry.project_config(project_id)` as its first line. The helper's return shape is `{:ok, %{provider_module: module(), config: map()}} | {:error, atom()}` where `config` carries `:database_path`. The 3-case match in `handle_call({:project_config, project_id}, …)` mirrors the existing `route_provider/3` for `{project_id, database_path}` and returns `:task_provider_not_configured` / `:provider_unavailable_for_project` for the same failure modes (without the `database_path_mismatch` cross-check, which is a `route/2` concern). `BeadsAdapter.create/2` propagates a `Registry.project_config/1` failure as terminal `CREATE_FAILED` (non-retryable) — no retry loop on registry failure.
+
+- **Architecture redesign #3 — Canonical 7-key attrs map (Option B).** `BeadsAdapter.create/2` accepts a single `attrs` map whose keys are FIXED at the boundary: `%{task_id :: String.t(), command_id :: String.t(), title :: String.t(), description :: String.t() | nil, priority :: non_neg_integer(), task_type :: String.t(), dedupe_key :: String.t() | nil}`. Both correlation handles (`task_id`, `command_id`) live INSIDE `attrs` (PRD AC-020-1, AC-021-3 trace both to this map; PRD 2-arity `create(project_id, attrs)` signature preserved). Missing any required key at the call site is a pre-emptive validation failure routed to the appropriate CodeMap row before argv construction. `source_repo` is a derived field on `%TaskProvider.Issue{}`, NOT a key on `attrs`. `dedupe_key` is preserved on `attrs` for future-extension `--dedupe-key` argv flag. `description` is `String.t() | nil` on `attrs` — `nil` is the operator-omitted-description case. **No `:agent_context` key on `attrs`** — the `agent_context` JSON payload is CONSTRUCTED in the `attrs → runner-payload` transform boundary (TRD-003 Action #5).
+
+- **Architecture redesign #4 — Runner boundary contract.** The `BrRunner` behaviour is `cmd(request, project_config, opts)` (`br_runner.ex:28-30`); `BrRunner.run/1` does not exist and is NOT introduced. ALL argv construction is owned by `SystemBrunner`. The dedicated `build_action_argv(:create, payload)` clause in `SystemBrunner` MUST call `validate_payload_shape!(:create, payload)` FIRST (line 1 of the body), mirroring the existing `:set_priority` pattern at `system_br_runner.ex:176-185`; the default `tap`-deferred validator at line 198-204 only works for `:flags`-extracted actions and would crash with `KeyError` / `Protocol.UndefinedError` on direct `payload.field` access. **Runner-payload is SUBSIDIARY to the canonical attrs map**: the 6-step transform at TRD-003 Action #5 normalises `attrs → payload`, performing the one rename (`attrs.task_type → payload.type`), one normalisation (`nil → ""` on description), and one construction step (build `agent_context` JSON with `foreman: %{task_id: task_id, command_id: command_id, origin: "foreman", linked_at: iso8601_utc_now()}`). Action-specific argv order: `["--title", payload.title, "--type", payload.type, "--priority", Integer.to_string(payload.priority), "--description", payload.description, "--agent-context", payload.agent_context] |> maybe_append_json_flag()`. The `project_config` passed to `BrRunner.cmd/3` is the `:config` map from `Registry.project_config/1`.
+
+- **TRD-016 inserted (29 → 31 master entries).** New implementation + paired-test task extending `SystemBrunner` with a dedicated `:create` clause. Total master entries grow from 29 (in 1.0.0–1.0.3 cascade baseline) to 31: 15 implementation tasks + 15 paired test tasks + 1 docs-only task. PR 1 grows from 10 → 12 entries (TRD-001–TRD-005 + TRD-016).
+
+- **Dependency cycle fix.** `TRD-003-TASK [depends: TRD-004-TASK]` AND `TRD-004-TASK [depends: TRD-003-TASK]` declared a direct cycle. Removed the back-edge `[depends: TRD-003-TASK]` from `TRD-004-TASK`. Topological rationale: `TRD-004-TASK` (CodeMap rows for `INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`, `DUPLICATE_TASK_ID`, `CREATE_FAILED`) must exist before `TRD-003-TASK` (`BeadsAdapter.create/2`) because `create/2` emits CodeMap rows on validation failures. The corrected graph is acyclic:
+  - Level 1: TRD-001, TRD-016, TRD-006, TRD-013 (no deps)
+  - Level 2: TRD-002 (←TRD-001), TRD-004 (no deps), TRD-011 (←TRD-016)
+  - Level 3: TRD-003 (←TRD-001, TRD-002, TRD-004), TRD-012 (←TRD-011)
+  - Level 4: TRD-005 (←TRD-001, TRD-003), TRD-014 (←TRD-012, TRD-013)
+  - Level 5: TRD-007 (←TRD-003, TRD-005, TRD-006), TRD-015 (←TRD-014)
+  - Level 6: TRD-008, TRD-009, TRD-010 (←TRD-007)
+  Critical path: TRD-001 → TRD-002 → TRD-003 → TRD-005 → TRD-007 → TRD-008 = 6 hops.
+
+- **REQ coverage (verified):** REQ-020 → TRD-003, TRD-005, TRD-007, TRD-008, TRD-009, TRD-016; REQ-021 → TRD-003, TRD-016; REQ-022 → TRD-011, TRD-012, TRD-014; REQ-023 → TRD-013, TRD-014; REQ-024 → TRD-006, TRD-007, TRD-008, TRD-011; REQ-025 → TRD-001, TRD-002, TRD-005, TRD-010; REQ-026 → TRD-003, TRD-004, TRD-016.
+
+- **Frontmatter:** `version: 1.0.5` → `1.0.6`. `total_tasks: 24` → `31`. `total_requirements: 7`, `total_acceptance_criteria: 30` unchanged.
+
+- **No code reverted.** None of origin's `1.0.0`–`1.0.5` design decisions (e.g. AC-022-1's 3-way cursor priority, AC-020-5's failure-contract fix, REQ-024's in-flight cache semantics, the `BeadsAdapter.recognise_foreman_tag/1` helper for `foreman doctor task_provider`, the `BeadsWatcher` boot-replay + dedupe contract) is undone. The working tree's changes are purely additive at the architectural level — they tighten the runner boundary contract and pin the registry / adapter / argv-construction seams that origin's earlier entries left abstract.
+
+- **Why this entry collapses 1.0.0–1.0.3 of the working tree.** Origin's `1.0.0`–`1.0.5` history describes a coherent progression (8 REQs → 7 REQs; 31 ACs → 30 ACs; 20 tasks → 24 tasks across 4 → 3 PRs). The working tree diverged from origin at every version: 7 REQs / 30 ACs / 29 → 31 tasks / 3 PRs. Recording the working tree's `1.0.0`–`1.0.3` entries separately (as the previous version of this file did) made it factually impossible: e.g. `1.0.3` (2026-08-11, working tree) said "29 → 31 tasks" while `1.0.4`/`1.0.5` (2026-08-10, origin) said "Counts unchanged: 7 requirements, 30 ACs, 24 tasks" — but the working tree never had `1.0.4`/`1.0.5` entries of its own, and origin's `1.0.4`/`1.0.5` describe 24 tasks in a state the working tree never reached. This entry records all of the working tree's changes in a single coherent block; origin's `1.0.0`–`1.0.5` entries follow it unchanged.
 
 ### 1.0.5 — 2026-08-10 (3-way cursor priority for boot + tail-mode read)
 
