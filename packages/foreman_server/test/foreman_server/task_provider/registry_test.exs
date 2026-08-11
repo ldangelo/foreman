@@ -43,6 +43,10 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def create(_attrs, _project_config),
+      do: {:error, ForemanServer.TaskProviders.ProviderError.new("test", "create not supported")}
   end
 
   defmodule IncompatibleProvider do
@@ -83,6 +87,10 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def create(_attrs, _project_config),
+      do: {:error, ForemanServer.TaskProviders.ProviderError.new("test", "create not supported")}
   end
 
   defmodule ConcurrentProvider do
@@ -123,6 +131,10 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def create(_attrs, _project_config),
+      do: {:error, ForemanServer.TaskProviders.ProviderError.new("test", "create not supported")}
   end
 
   defmodule UnavailableProvider do
@@ -163,6 +175,10 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def add_dependency(_id, _depends_on_id, _project_config), do: :ok
+
+    @impl true
+    def create(_attrs, _project_config),
+      do: {:error, ForemanServer.TaskProviders.ProviderError.new("test", "create not supported")}
   end
 
   setup_all do
@@ -485,6 +501,89 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     assert metadata.registry == Registry
     assert metadata.providers == [:beads]
     assert metadata.restart_count == 1
+  end
+
+  describe "TRD-005 :create routing via %{project_id: id} + project_config/1" do
+    test "route(:create, %{project_id: id}) returns the registered provider module" do
+      assert :ok =
+               Registry.register_for_project(
+                 "project-create-route",
+                 ForemanServer.TaskProviders.BeadsAdapter,
+                 %{database_path: "/abs/beads.db"}
+               )
+
+      assert {:ok, ForemanServer.TaskProviders.BeadsAdapter} =
+               Registry.route(:create, %{project_id: "project-create-route"})
+    end
+
+    test "project_config/1 returns {:ok, %{provider_module, config}} for an active project" do
+      assert :ok =
+               Registry.register_for_project(
+                 "project-active",
+                 ForemanServer.TaskProviders.BeadsAdapter,
+                 %{database_path: "/abs/beads.db"}
+               )
+
+      assert {:ok, config} = Registry.project_config("project-active")
+
+      assert config.provider_module == ForemanServer.TaskProviders.BeadsAdapter
+
+      assert config.config == %{database_path: "/abs/beads.db"}
+    end
+
+    test "project_config/1 returns {:error, :task_provider_not_configured} for an unknown project" do
+      assert {:error, :task_provider_not_configured} =
+               Registry.project_config("project-ghost")
+    end
+
+    test "project_config/1 returns the registered config map verbatim (empty config: %{} accepted)" do
+      assert :ok =
+               Registry.register_for_project(
+                 "project-empty-config",
+                 ForemanServer.TaskProviders.BeadsAdapter,
+                 %{}
+               )
+
+      assert {:ok, config} = Registry.project_config("project-empty-config")
+
+      assert config.provider_module == ForemanServer.TaskProviders.BeadsAdapter
+      assert config.config == %{}
+    end
+
+    test "project_config/1 returns {:error, :provider_unavailable_for_project} after unregister" do
+      :ok =
+        Registry.register_for_project(
+          "project-down",
+          ForemanServer.TaskProviders.BeadsAdapter,
+          %{database_path: "/tmp/project-down.db"}
+        )
+
+      :ok = Registry.unregister_for_project("project-down", :br_binary_missing)
+
+      assert {:error, :provider_unavailable_for_project} =
+               Registry.project_config("project-down")
+    end
+
+    test "project_config/1 returns {:error, :invalid_project_id} for non-binary input" do
+      assert {:error, :invalid_project_id} = Registry.project_config(:not_a_string)
+    end
+
+    test "route(:create, %{project_id: id}) returns :no_provider for unregistered projects" do
+      assert {:error, :no_provider} =
+               Registry.route(:create, %{project_id: "project-missing"})
+    end
+
+    test "route(:create, %{project_id: id}) returns :capability_not_supported when the registered provider does not advertise :create" do
+      assert :ok =
+               Registry.register_for_project(
+                 "project-no-create",
+                 CompatibleProvider,
+                 %{database_path: "/tmp/project-no-create.db"}
+               )
+
+      assert {:error, :capability_not_supported} =
+               Registry.route(:create, %{project_id: "project-no-create"})
+    end
   end
 
   defp wait_for_restart(name, previous_pid, attempts \\ 40)

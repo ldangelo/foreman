@@ -313,6 +313,23 @@ defmodule ForemanServer.TaskProvider.Registry do
     end
   end
 
+  defp route_provider(state, :create, %{project_id: project_id}) when is_binary(project_id) do
+    case Map.fetch(state.per_project, project_id) do
+      {:ok, {:active, %{provider_module: provider_module, config: _config}}} ->
+        if supports_transition?(provider_module, :create) do
+          {:ok, provider_module}
+        else
+          {:error, :capability_not_supported}
+        end
+
+      {:ok, {:unavailable, _reason}} ->
+        {:error, :provider_unavailable_for_project}
+
+      :error ->
+        {:error, :no_provider}
+    end
+  end
+
   defp route_provider(state, transition, routing_key) do
     route_global_provider(state.routing, transition, routing_key)
   end
