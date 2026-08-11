@@ -5,11 +5,11 @@ defmodule ForemanServer.TaskProviderTest do
     assert is_list(ForemanServer.TaskProvider.behaviour_info(:callbacks))
   end
 
-  test "behaviour_info(:callbacks) returns 11 expected callbacks" do
+  test "behaviour_info(:callbacks) returns 12 expected callbacks" do
     callbacks = ForemanServer.TaskProvider.behaviour_info(:callbacks)
 
     assert Keyword.keyword?(callbacks)
-    assert length(callbacks) == 11
+    assert length(callbacks) == 12
     assert {:name, 0} in callbacks
     assert {:capabilities, 0} in callbacks
     assert {:available?, 0} in callbacks
@@ -21,6 +21,7 @@ defmodule ForemanServer.TaskProviderTest do
     assert {:reopen, 3} in callbacks
     assert {:set_priority, 3} in callbacks
     assert {:add_dependency, 3} in callbacks
-    assert length(callbacks) == 11
+    assert {:create, 2} in callbacks
+    assert length(callbacks) == 12
   end
 end
