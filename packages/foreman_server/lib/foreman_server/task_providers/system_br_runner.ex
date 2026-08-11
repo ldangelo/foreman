@@ -15,6 +15,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     update: "update",
     set_priority: "update",
     add_dependency: "dep",
+    create: "create",
     coordination_status: "coordination",
     close: "close",
     where: "where",
@@ -104,6 +105,15 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ["br", subcommand, "--db", database_path | action_argv]
   end
 
+  defp build_argv({:create, _payload} = request, project_config) do
+    {action, payload} = validate_request!(request)
+    database_path = fetch_database_path!(project_config)
+    subcommand = Map.fetch!(@action_subcommands, action)
+    action_argv = build_action_argv(action, payload)
+
+    ["br", subcommand, "--db", database_path | action_argv]
+  end
+
   defp build_argv({:add_dependency, _payload} = request, project_config) do
     {action, payload} = validate_request!(request)
     database_path = fetch_database_path!(project_config)
@@ -184,6 +194,24 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     |> maybe_append_json_flag()
   end
 
+  defp build_action_argv(:create, payload) do
+    validate_payload_shape!(:create, payload)
+
+    [
+      "--title",
+      fetch_optional(payload, :title),
+      "--type",
+      fetch_optional(payload, :type),
+      "--priority",
+      Integer.to_string(fetch_optional(payload, :priority)),
+      "--description",
+      fetch_optional(payload, :description),
+      "--agent-context",
+      fetch_optional(payload, :agent_context)
+    ]
+    |> maybe_append_json_flag()
+  end
+
   defp build_action_argv(:add_dependency, payload) do
     validate_payload_shape!(:add_dependency, payload)
 
@@ -226,6 +254,50 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
 
       other ->
         raise ArgumentError, "expected :priority to be an integer in 0..4, got: #{inspect(other)}"
+    end
+  end
+
+  defp validate_payload_shape!(:create, payload) do
+    case fetch_optional(payload, :title) do
+      title when is_binary(title) and title != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :title to be a non-empty binary, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :type) do
+      type when is_binary(type) and type != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :type to be a non-empty binary, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :priority) do
+      priority when is_integer(priority) and priority in 0..4 ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "expected :priority to be an integer in 0..4, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :description) do
+      description when is_binary(description) ->
+        :ok
+
+      other ->
+        raise ArgumentError, "expected :description to be a binary, got: #{inspect(other)}"
+    end
+
+    case fetch_optional(payload, :agent_context) do
+      agent_context when is_binary(agent_context) and agent_context != "" ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "expected :agent_context to be a non-empty binary, got: #{inspect(other)}"
     end
   end
 
