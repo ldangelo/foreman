@@ -22,6 +22,15 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   @impl true
   def name, do: :beads
 
+  @doc """
+  Advertises the upstream `:br` capability contract for the BeadsAdapter provider.
+
+  `supports` lists every operation the adapter implements, including the new
+  `:create` operation that delegates to `br create` and links the new bead
+  back to the dispatching Foreman task via the `--agent-context` JSON envelope
+  (REQ-020 / REQ-021). The remaining nine entries cover the existing
+  lifecycle, priority, dependency, and assignment operations.
+  """
   @impl true
   def capabilities do
     %{
@@ -37,7 +46,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         :set_assignee,
         :list_dependencies,
         :add_dependency,
-        :remove_dependency
+        :remove_dependency,
+        :create
       ]
     }
   end
