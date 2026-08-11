@@ -15,6 +15,20 @@ defmodule ForemanServer.Telemetry do
   @run_stuck [:foreman, :run, :stuck]
   @reconciler_terminal_release [:foreman_server, :reconciler, :terminal_release]
   @reconciler_orphan_retry [:foreman_server, :reconciler, :orphan_retry]
+  @task_provider_beads_create_skipped_watcher_import [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :create,
+    :skipped_watcher_import
+  ]
+  @task_provider_beads_create_failure [
+    :foreman_server,
+    :task_provider,
+    :beads,
+    :create,
+    :failure
+  ]
 
   @all_events [
     @command_dispatch,
@@ -30,7 +44,9 @@ defmodule ForemanServer.Telemetry do
     @agent_runtime_invocation_complete,
     @run_stuck,
     @reconciler_terminal_release,
-    @reconciler_orphan_retry
+    @reconciler_orphan_retry,
+    @task_provider_beads_create_skipped_watcher_import,
+    @task_provider_beads_create_failure
   ]
 
   def all_events, do: @all_events

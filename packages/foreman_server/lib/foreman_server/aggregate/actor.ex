@@ -35,7 +35,7 @@ defmodule ForemanServer.Aggregate.Actor do
      - On conflict/error: version unchanged, returns `{:reply, {:error, reason}, old_state}`
   """
 
-  alias ForemanServer.{Aggregate, CommandRouter, Telemetry}
+  alias ForemanServer.{Aggregate, CommandRouter, TaskProvider, Telemetry}
   alias EventStore.EventData
   alias ForemanServer.EventStore
 
@@ -159,65 +159,44 @@ defmodule ForemanServer.Aggregate.Actor do
   end
 
   # Dispatch loop with bounded conflict recovery.
+  #
+  # Stage 1 — `aggregate_module.handle_command/2` produces the
+  # stage-1 event_spec from current state.
+  #
+  # Stage 2/3 — `resolve_enriched_event_spec/3` runs the per-project
+  # synchronous hook (gated to TaskCreated events on projects with a
+  # configured :create provider): it calls `provider.create/2` and
+  # re-decides with the resulting `bead_id` populated as
+  # `payload.external_id`. The `state` returned by the resolver carries
+  # the in-flight cache so transient stream-version conflicts preserve
+  # the bead handle (TRD-008 compensation path).
+  #
+  # Stage 4 — `append_and_commit/7` does the existing normalize /
+  # append / ack / retry / commit dance. `do_commit/4` clears the
+  # in-flight cache entry on terminal success.
   defp do_dispatch(state, cmd, expected_version, retries_left) do
-    aggregate_module = state.aggregate_module
     aggregate_id = state.aggregate_id
     event_id = event_id_for(aggregate_id, cmd)
 
-    case aggregate_module.handle_command(state.module_state, cmd) do
+    case state.aggregate_module.handle_command(state.module_state, cmd) do
       {:ok, nil} ->
         {:reply, {:ok, nil}, state}
 
-      {:ok, event_spec} when is_map(event_spec) ->
-        event_data = normalize_to_event_data(event_spec, event_id)
-        ref = make_ref()
+      {:ok, stage1_event_spec} when is_map(stage1_event_spec) ->
+        case resolve_enriched_event_spec(state, cmd, stage1_event_spec) do
+          {:ok, event_spec, state_with_cache} ->
+            append_and_commit(
+              state_with_cache,
+              aggregate_id,
+              event_id,
+              event_spec,
+              expected_version,
+              retries_left,
+              cmd
+            )
 
-        send(
-          CommandRouter,
-          {:append, aggregate_id, [event_data], expected_version, ref, self()}
-        )
-
-        receive do
-          {:append_ok, ^ref, _event_count, append_latency_ms} ->
-            commit_event(state, event_spec, append_latency_ms)
-
-          {:append_ok, ^ref, _event_count} ->
-            commit_event(state, event_spec, 0)
-
-          {:error, ^ref, :duplicate_event, append_latency_ms}
-          when not is_nil(event_id) ->
-            handle_duplicate_event(state, aggregate_id, event_id, append_latency_ms)
-
-          {:error, ^ref, :duplicate_event} when not is_nil(event_id) ->
-            handle_duplicate_event(state, aggregate_id, event_id, 0)
-
-          {:error, ^ref, :wrong_expected_version, append_latency_ms}
-          when retries_left > 0 ->
-            case reload_after_conflict(state) do
-              {:ok, %{state: rehydrated, version: new_version}} ->
-                do_dispatch(rehydrated, cmd, new_version, retries_left - 1)
-
-              {:error, reason} ->
-                {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
-                 state}
-            end
-
-          {:error, ^ref, :wrong_expected_version, append_latency_ms} ->
-            {:reply,
-             {:telemetry, {:error, {:wrong_expected_version, state.version}},
-              %{append_latency_ms: append_latency_ms}}, state}
-
-          {:error, ^ref, :wrong_expected_version} ->
-            {:reply,
-             {:telemetry, {:error, {:wrong_expected_version, state.version}},
-              %{append_latency_ms: 0}}, state}
-
-          {:error, ^ref, reason, append_latency_ms} ->
-            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
-             state}
-
-          {:error, ^ref, reason} ->
-            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: 0}}, state}
+          {:error, reason, state_with_cache} ->
+            {:reply, {:error, reason}, state_with_cache}
         end
 
       {:error, _reason} = error ->
@@ -225,6 +204,253 @@ defmodule ForemanServer.Aggregate.Actor do
 
       {:error, _reason, _details} = error ->
         {:reply, error, state}
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # TRD-007 synchronous hook: per-project bead creation
+  # -------------------------------------------------------------------------
+  #
+  # Gate fires ONLY for stage-1 `event_type == "TaskCreated"` events on
+  # commands carrying a `project_id` payload field. Other command types
+  # (project, run, phase, etc.) and stage-1 events that aren't
+  # TaskCreated go straight to the legacy no-op branch with the
+  # stage-1 event_spec unchanged.
+  #
+  # Returns one of:
+  #   `{:ok, event_spec, state}` — fully resolved. `state` carries the
+  #     in-flight cache (populated when stage 2 succeeded).
+  #   `{:error, reason, state}` — stage 2 failed OR stage 3 re-decision
+  #     rejected. When stage 2 succeeded but stage 3 failed, `state`
+  #     carries the cached bead_id so TRD-008 compensation can `br
+  #     close` it. When stage 2 failed, `state` is unchanged (no cache
+  #     entry was created).
+  defp resolve_enriched_event_spec(state, cmd, stage1_event_spec) do
+    cond do
+      not task_create_event?(stage1_event_spec) ->
+        {:ok, stage1_event_spec, state}
+
+      external_id = Aggregate.get(cmd.payload || %{}, :external_id) ->
+        emit_watcher_import_skip_telemetry(cmd, external_id)
+        {:ok, stage1_event_spec, state}
+
+      project_id = Aggregate.get(cmd.payload || %{}, :project_id) ->
+        route_and_enrich(state, cmd, project_id, stage1_event_spec)
+
+      true ->
+        {:ok, stage1_event_spec, state}
+    end
+  end
+
+  defp task_create_event?(%{event_type: "TaskCreated"}), do: true
+  defp task_create_event?(_), do: false
+
+  # Per-project gate via the routing boundary, not `project_config/1`.
+  # PRD AC-020-1: the gate must call `Registry.route(:create,
+  # %{project_id: id})` to resolve the provider polymorphically.
+  # `project_config/1` is internal to `BeadsAdapter.create/2` for DB
+  # config and is not the gate.
+  defp route_and_enrich(state, cmd, project_id, stage1_event_spec) do
+    case TaskProvider.Registry.route(:create, %{project_id: project_id}) do
+      {:ok, provider} ->
+        enrich_via_provider(state, cmd, provider, stage1_event_spec)
+
+      {:error, _reason} ->
+        # AC-020-4: no provider registered for this project, or the
+        # provider's capability set does not include :create. Legacy
+        # no-op branch — stage-1 event_spec proceeds unchanged.
+        {:ok, stage1_event_spec, state}
+    end
+  end
+
+  # Cache hit: the same command_id has already populated the cache
+  # (previous attempt succeeded at stage 2 but failed later). Skip
+  # stage 2 and re-run handle_command with the cached bead_id so the
+  # event spec carries `payload.external_id`.
+  #
+  # Stage-2 success path: call provider.create, populate cache, then
+  # fall through to `enrich_with_cached_bead_id/4` with the new
+  # bead_id to run stage 3.
+  defp enrich_via_provider(state, cmd, provider, stage1_event_spec) do
+    case Map.get(state.in_flight_beads, cmd.command_id) do
+      nil ->
+        stage2_then_stage3(state, cmd, provider, stage1_event_spec)
+
+      cached_bead_id ->
+        enrich_with_cached_bead_id(state, cmd, cached_bead_id)
+    end
+  end
+
+  # Stage 2: invoke `provider.create/2`. On success, populate
+  # `state.in_flight_beads[cmd.command_id] = bead_id` and proceed to
+  # stage 3 (re-decide with bead_id in payload.external_id).
+  #
+  # On stage-2 failure, return `{:error, reason, state}` WITHOUT
+  # populating the cache — there is no bead to compensate for.
+  defp stage2_then_stage3(state, cmd, provider, _stage1_event_spec) do
+    payload = cmd.payload || %{}
+    project_id = Aggregate.get(payload, :project_id)
+
+    attrs = %{
+      task_id: Aggregate.get(payload, :task_id),
+      command_id: cmd.command_id,
+      title: Aggregate.get(payload, :title),
+      description: Aggregate.get(payload, :description),
+      priority: Aggregate.get(payload, :priority),
+      task_type: Aggregate.get(payload, :task_type),
+      dedupe_key: Aggregate.get(payload, :dedupe_key)
+    }
+
+    case provider.create(project_id, attrs) do
+      {:ok, %{id: bead_id}} when is_binary(bead_id) ->
+        new_state = %{
+          state
+          | in_flight_beads: Map.put(state.in_flight_beads, cmd.command_id, bead_id)
+        }
+
+        enrich_with_cached_bead_id(new_state, cmd, bead_id)
+
+      {:error, reason} ->
+        # AC-020-5: emit the actor-level failure telemetry BEFORE
+        # returning the error tuple. The adapter's internal
+        # `[:beads_adapter, :create, :error]` event is a separate
+        # concern — the actor must surface its own event so
+        # observers can correlate a TaskCreated failure with the
+        # specific command/task/project triplet.
+        emit_create_failure_telemetry(cmd, reason, payload)
+        {:error, reason, state}
+    end
+  end
+
+  # Stage 3: re-run `aggregate_module.handle_command/2` with the
+  # `bead_id` pre-populated as `payload.external_id`. The aggregate
+  # mirrors this field into the event_spec payload (AC-020-6) so the
+  # persisted TaskCreated event carries the bead linkage.
+  defp enrich_with_cached_bead_id(state, cmd, bead_id) do
+    payload = cmd.payload || %{}
+    enriched_payload = Map.put(payload, :external_id, bead_id)
+    enriched_cmd = %{cmd | payload: enriched_payload}
+
+    case state.aggregate_module.handle_command(state.module_state, enriched_cmd) do
+      {:ok, enriched_event_spec} when is_map(enriched_event_spec) ->
+        {:ok, enriched_event_spec, state}
+
+      {:error, reason} ->
+        # Stage 3 rejected: cache carries the bead_id so a retry can
+        # compensate via TRD-008 (`br close`). Do NOT clear.
+        {:error, reason, state}
+    end
+  end
+
+  # AC-020-5: actor-level failure telemetry for the per-project
+  # synchronous hook. The metadata fields are exactly the PRD
+  # contract: `command_id`, `code`, `retryable?`, `task_id`,
+  # `project_id`. Generic (non-ProviderError) reasons fall back to
+  # `{nil, false}` so the event still fires with useful metadata.
+  defp emit_create_failure_telemetry(cmd, reason, payload) do
+    {code, retryable?} = extract_failure_code_and_retryable(reason)
+
+    Telemetry.execute(
+      [:foreman_server, :task_provider, :beads, :create, :failure],
+      %{},
+      %{
+        command_id: cmd.command_id,
+        code: code,
+        retryable?: retryable?,
+        task_id: Aggregate.get(payload, :task_id),
+        project_id: Aggregate.get(payload, :project_id)
+      }
+    )
+  end
+
+  defp extract_failure_code_and_retryable(%{code: code, retryable?: retryable?})
+       when is_atom(code) or is_binary(code),
+       do: {code, !!retryable?}
+
+  defp extract_failure_code_and_retryable(%{code: code}) when is_atom(code) or is_binary(code),
+    do: {code, false}
+
+  defp extract_failure_code_and_retryable(_), do: {nil, false}
+
+  # Watcher-import branch telemetry: command reached the actor with a
+  # pre-populated `external_id` (the watcher already created the bead
+  # before dispatching the command). We skip br create and use the
+  # stage-1 event_spec as-is.
+  defp emit_watcher_import_skip_telemetry(cmd, bead_id) do
+    payload = cmd.payload || %{}
+
+    Telemetry.execute(
+      [:foreman_server, :task_provider, :beads, :create, :skipped_watcher_import],
+      %{},
+      %{
+        command_id: cmd.command_id,
+        bead_id: bead_id,
+        task_id: Aggregate.get(payload, :task_id),
+        project_id: Aggregate.get(payload, :project_id)
+      }
+    )
+  end
+
+  # Stage 4: the existing normalize / append / ack / retry / commit
+  # dance, extracted from `do_dispatch/4` so the synchronous hook can
+  # run between stage 1 and stage 4.
+  defp append_and_commit(
+         state,
+         aggregate_id,
+         event_id,
+         event_spec,
+         expected_version,
+         retries_left,
+         cmd
+       ) do
+    event_data = normalize_to_event_data(event_spec, event_id)
+    ref = make_ref()
+
+    send(
+      CommandRouter,
+      {:append, aggregate_id, [event_data], expected_version, ref, self()}
+    )
+
+    receive do
+      {:append_ok, ^ref, _event_count, append_latency_ms} ->
+        do_commit(state, event_spec, append_latency_ms, cmd)
+
+      {:append_ok, ^ref, _event_count} ->
+        do_commit(state, event_spec, 0, cmd)
+
+      {:error, ^ref, :duplicate_event, append_latency_ms}
+      when not is_nil(event_id) ->
+        handle_duplicate_event(state, aggregate_id, event_id, append_latency_ms)
+
+      {:error, ^ref, :duplicate_event} when not is_nil(event_id) ->
+        handle_duplicate_event(state, aggregate_id, event_id, 0)
+
+      {:error, ^ref, :wrong_expected_version, append_latency_ms}
+      when retries_left > 0 ->
+        case reload_after_conflict(state) do
+          {:ok, %{state: rehydrated, version: new_version}} ->
+            do_dispatch(rehydrated, cmd, new_version, retries_left - 1)
+
+          {:error, reason} ->
+            {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}},
+             state}
+        end
+
+      {:error, ^ref, :wrong_expected_version, append_latency_ms} ->
+        {:reply,
+         {:telemetry, {:error, {:wrong_expected_version, state.version}},
+          %{append_latency_ms: append_latency_ms}}, state}
+
+      {:error, ^ref, :wrong_expected_version} ->
+        {:reply,
+         {:telemetry, {:error, {:wrong_expected_version, state.version}},
+          %{append_latency_ms: 0}}, state}
+
+      {:error, ^ref, reason, append_latency_ms} ->
+        {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
+
+      {:error, ^ref, reason} ->
+        {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: 0}}, state}
     end
   end
 
@@ -239,15 +465,36 @@ defmodule ForemanServer.Aggregate.Actor do
     end
   end
 
-  # Apply confirmed event to actor state and bump version.
-  defp commit_event(state, event_spec, append_latency_ms) do
+  # Apply confirmed event to actor state, bump version, and clear the
+  # in-flight cache entry on terminal success (AC-024-2). The cache is
+  # only cleared when the actor reaches the terminal-success branch of
+  # the append/ack protocol — transient `:wrong_expected_version`
+  # retries preserve the cache so TRD-008 compensation can `br close`
+  # the bead if retries are exhausted.
+  defp do_commit(state, event_spec, append_latency_ms, cmd) do
     new_module_state = state.aggregate_module.apply_event(state.module_state, event_spec)
     new_version = state.version + 1
     update_presence(state.aggregate_id, state.aggregate_module, new_version)
 
+    cleared_state = clear_cache_on_success(state, cmd)
+
     {:reply,
      {:telemetry, {:ok, to_string_keys(event_spec)}, %{append_latency_ms: append_latency_ms}},
-     %{state | module_state: new_module_state, version: new_version}}
+     %{cleared_state | module_state: new_module_state, version: new_version}}
+  end
+
+  # Drop the cache entry for `cmd.command_id`. Only runs on terminal
+  # success; transient retries and stage-2 successes (without
+  # commit) never call this. `cmd.command_id` is the cache key by
+  # construction (see `stage2_then_stage3/4`).
+  defp clear_cache_on_success(state, cmd) do
+    case cmd do
+      %{command_id: command_id} when is_binary(command_id) ->
+        %{state | in_flight_beads: Map.delete(state.in_flight_beads, command_id)}
+
+      _ ->
+        state
+    end
   end
 
   # Re-read state + version from the event store after a stream-version conflict.

@@ -212,9 +212,16 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
 
       assert_received {:captured, captured_request}
       assert {:create, payload} = captured_request
-      assert payload |> Map.keys() |> Enum.sort() == [:agent_context, :description, :priority, :title, :type]
+
+      assert payload |> Map.keys() |> Enum.sort() == [
+               :agent_context,
+               :description,
+               :priority,
+               :title,
+               :type
+             ]
     end
-   end
+  end
 
   describe "create/2 pre-emptive validation" do
     test "rejects empty :title as INVALID_TITLE (non-retryable)" do
@@ -320,7 +327,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
       assert err.code == "INVALID_TITLE"
       assert err.retryable? == false
     end
-   end
+  end
 
   describe "create/2 registry resolution failures" do
     test "returns CREATE_FAILED (non-retryable) when Registry.project_config/1 is missing the project" do
