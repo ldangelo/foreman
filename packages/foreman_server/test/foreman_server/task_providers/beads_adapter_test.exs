@@ -23,7 +23,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
       :set_assignee,
       :list_dependencies,
       :add_dependency,
-      :remove_dependency
+      :remove_dependency,
+      :create
     ]
   }
   @expected_callbacks TaskProvider.behaviour_info(:callbacks)
@@ -61,6 +62,39 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
     assert BeadsAdapter.capabilities() == @expected_capabilities
   end
 
+  describe "capabilities/0 :create support" do
+    test ":create is advertised in the supports list" do
+      assert :create in BeadsAdapter.capabilities().supports
+    end
+
+    test "supports list has exactly 10 entries" do
+      assert length(BeadsAdapter.capabilities().supports) == 10
+    end
+
+    test ":create appears as the tenth (final) entry" do
+      supports = BeadsAdapter.capabilities().supports
+      assert List.last(supports) == :create
+    end
+
+    test "supports list preserves the existing 9 operations" do
+      supports = BeadsAdapter.capabilities().supports
+
+      expected_existing = [
+        :claim,
+        :close,
+        :reopen,
+        :annotate,
+        :set_priority,
+        :set_assignee,
+        :list_dependencies,
+        :add_dependency,
+        :remove_dependency
+      ]
+
+      assert supports -- [:create] == expected_existing
+    end
+  end
+
   test "available?/0 returns false when br is not on PATH" do
     original_path = System.get_env("PATH")
 
@@ -81,8 +115,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
     assert BeadsAdapter.available?() == true
   end
 
-  test "11 callbacks are defined" do
-    assert length(@expected_callbacks) == 11
+  test "12 callbacks are defined" do
+    assert length(@expected_callbacks) == 12
     assert BeadsAdapter.behaviour_info(:callbacks) == @expected_callbacks
 
     Enum.each(@expected_callbacks, fn {name, arity} ->
