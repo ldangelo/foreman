@@ -14,13 +14,17 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     },
     "ISSUE_NOT_FOUND" => %{foreman_code: "ISSUE_NOT_FOUND", retryable?: false},
     "INVALID_TASK_ID" => %{foreman_code: "INVALID_TASK_ID", retryable?: false},
+    "INVALID_PRIORITY" => %{foreman_code: "INVALID_PRIORITY", retryable?: false},
+    "INVALID_TITLE" => %{foreman_code: "INVALID_TITLE", retryable?: false},
+    "INVALID_ISSUE_TYPE" => %{foreman_code: "INVALID_ISSUE_TYPE", retryable?: false},
+    "DUPLICATE_TASK_ID" => %{foreman_code: "DUPLICATE_TASK_ID", retryable?: false},
+    "CREATE_FAILED" => %{foreman_code: "CREATE_FAILED", retryable?: true},
     "INVALID_TRANSITION_COMMENT" => %{
       foreman_code: "INVALID_TRANSITION_COMMENT",
       retryable?: false
     },
     "ALREADY_CLOSED" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
     "ALREADY_OPEN" => %{foreman_code: "ALREADY_TERMINAL", retryable?: false},
-    "INVALID_PRIORITY" => %{foreman_code: "INVALID_PRIORITY", retryable?: false},
     "DEPENDENCY_CYCLE" => %{foreman_code: "DEPENDENCY_CYCLE", retryable?: false},
     "DEPENDENCY_EXISTS" => %{foreman_code: "DEPENDENCY_EXISTS", retryable?: false},
     "VALIDATION_FAILED" => %{foreman_code: "VALIDATION_FAILED", retryable?: false},
@@ -104,6 +108,34 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
       translate(normalized_input, command, stderr_byte_count)
     else
       translate_unknown(normalized_input, command, stderr_byte_count)
+    end
+  end
+
+  @doc """
+  Translates a `br create` error envelope into a typed Foreman provider error.
+
+  Applies the create-specific classifier (mapping `{code, hint}` combinations
+  to the four dedicated create Foreman codes) before dispatching to the
+  translator. Only `INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`,
+  and `DUPLICATE_TASK_ID` go through `translate/3` (using the row's
+  `retryable?`). Every other create failure — including explicit
+  `"CREATE_FAILED"` envelopes and any other upstream code — falls through to
+  `translate_create_failed/3`, which yields `CREATE_FAILED` with
+  `retryable?` propagated verbatim from `input.retryable?` (per
+  PRD-2026-48f7b420 REQ-008-2 unknown-code policy).
+  """
+  @spec build_create_provider_error(ProviderErrorInput.t(), String.t() | nil, non_neg_integer()) ::
+          ProviderError.t()
+  def build_create_provider_error(%ProviderErrorInput{} = input, command, stderr_byte_count)
+      when (is_binary(command) or is_nil(command)) and
+             is_integer(stderr_byte_count) and stderr_byte_count >= 0 do
+    classified_input = classify_create_error(input)
+    normalized_input = %{classified_input | code: normalize_code(classified_input.code)}
+
+    if create_known_code?(normalized_input.code) do
+      translate(normalized_input, command, stderr_byte_count)
+    else
+      translate_create_failed(normalized_input, command, stderr_byte_count)
     end
   end
 
@@ -250,4 +282,76 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     {"Beads CLI contract does not match the adapter expectations.",
      "Update the adapter or install a supported Beads CLI version."}
   end
+
+  defp templates_for("INVALID_TITLE") do
+    {"Issue title must be a non-empty string.",
+     "Pass a non-empty title before retrying the create operation."}
+  end
+
+  defp templates_for("INVALID_ISSUE_TYPE") do
+    {"Issue type must be one of the supported Beads issue types.",
+     "Pass a supported issue_type before retrying the create operation."}
+  end
+
+  defp templates_for("DUPLICATE_TASK_ID") do
+    {"Beads rejected the create as a duplicate task identifier.",
+     "Pass a unique task identifier or reconcile with the existing issue."}
+  end
+
+  defp templates_for("CREATE_FAILED") do
+    {"Beads create operation failed with an unmapped envelope.",
+     "Retry the create operation per the upstream retryable flag."}
+  end
+
+  # The four dedicated create-validation/duplicate Foreman codes route through
+  # `translate/3` (using the row's `retryable?`). All other create failures —
+  # including explicit `"CREATE_FAILED"` envelopes and any other upstream
+  # code — route through `translate_create_failed/3` so `input.retryable?` is
+  # propagated verbatim.
+  @create_known_codes ~w(INVALID_TITLE INVALID_PRIORITY INVALID_ISSUE_TYPE DUPLICATE_TASK_ID)
+
+  defp create_known_code?(code) when is_binary(code), do: code in @create_known_codes
+  defp create_known_code?(_), do: false
+
+  defp classify_create_error(%ProviderErrorInput{} = input) do
+    case {normalize_code(input.code), hint_string(input)} do
+      {"VALIDATION", hint} when is_binary(hint) ->
+        cond do
+          title_hint?(hint) -> %{input | code: "INVALID_TITLE"}
+          priority_hint?(hint) -> %{input | code: "INVALID_PRIORITY"}
+          issue_type_hint?(hint) -> %{input | code: "INVALID_ISSUE_TYPE"}
+          true -> input
+        end
+
+      {"DUPLICATE", hint} when is_binary(hint) ->
+        if duplicate_hint?(hint) do
+          %{input | code: "DUPLICATE_TASK_ID"}
+        else
+          input
+        end
+
+      _ ->
+        input
+    end
+  end
+
+  defp translate_create_failed(%ProviderErrorInput{} = input, command, stderr_byte_count) do
+    {message, hint} = templates_for("CREATE_FAILED")
+
+    build_error(
+      "CREATE_FAILED",
+      message,
+      hint,
+      input.retryable?,
+      build_context(input, command, stderr_byte_count, [])
+    )
+  end
+
+  defp hint_string(%ProviderErrorInput{hint: hint}) when is_binary(hint), do: hint
+  defp hint_string(_), do: nil
+
+  defp title_hint?(hint), do: hint =~ ~r/title/i
+  defp priority_hint?(hint), do: hint =~ ~r/priority/i
+  defp issue_type_hint?(hint), do: hint =~ ~r/issue_type|issue type/i
+  defp duplicate_hint?(hint), do: hint =~ ~r/id|identifier|collision/i
 end

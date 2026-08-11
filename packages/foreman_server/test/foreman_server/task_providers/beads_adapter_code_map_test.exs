@@ -10,9 +10,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                  __DIR__
                )
 
-  test "20-row mapping is deterministic per Foreman.code" do
+  test "24-row mapping is deterministic per Foreman.code" do
     rows = mapping_rows()
-    assert length(rows) == 20
+    assert length(rows) == 24
 
     Enum.each(rows, fn %{br_code: br_code, foreman_code: foreman_code, retryable?: retryable?} ->
       input =
@@ -207,6 +207,112 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
 
   test "CodeMap compiles" do
     assert Code.ensure_loaded?(CodeMap)
+  end
+
+  describe "build_create_provider_error/3 — AC-026 scenarios" do
+    test "AC-026-1: VALIDATION + 'title required' hint yields INVALID_TITLE (non-retryable)" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "VALIDATION",
+          message: "br rejected the create",
+          hint: "title is required and must be non-empty",
+          retryable?: false
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "INVALID_TITLE", retryable?: false} = result
+      assert result.message =~ "title"
+      assert byte_size(result.hint || "") > 0
+    end
+
+    test "AC-026-2: VALIDATION + 'priority must be 0..4' hint yields INVALID_PRIORITY (non-retryable)" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "VALIDATION",
+          message: "br rejected the create",
+          hint: "priority must be in the inclusive range 0..4",
+          retryable?: false
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "INVALID_PRIORITY", retryable?: false} = result
+      assert result.message =~ "priority"
+    end
+
+    test "AC-026-3: VALIDATION + 'issue_type must be one of ...' hint yields INVALID_ISSUE_TYPE (non-retryable)" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "VALIDATION",
+          message: "br rejected the create",
+          hint: "issue_type must be one of task|bug|feature|epic|chore",
+          retryable?: false
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "INVALID_ISSUE_TYPE", retryable?: false} = result
+      assert result.message =~ "issue type" or result.message =~ "issue_type"
+    end
+
+    test "AC-026-4: DUPLICATE + 'id collision' hint yields DUPLICATE_TASK_ID (non-retryable)" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "DUPLICATE",
+          message: "br rejected the create",
+          hint: "id collision: task already exists in this database",
+          retryable?: false
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "DUPLICATE_TASK_ID", retryable?: false} = result
+    end
+
+    test "AC-026-5: unmapped envelope falls back to CREATE_FAILED with input.retryable? propagated" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "BR_TIMEOUT_QUEUE",
+          message: "br create timed out waiting for slot",
+          hint: nil,
+          retryable?: true
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "CREATE_FAILED", retryable?: true} = result
+      assert byte_size(result.message) > 0
+      assert byte_size(result.hint || "") > 0
+    end
+
+    test "AC-026-5: non-retryable unmapped envelope propagates input.retryable? false" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "BR_PERMISSIONS_DENIED",
+          message: "br create permission denied",
+          hint: nil,
+          retryable?: false
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "CREATE_FAILED", retryable?: false} = result
+    end
+
+    test "explicit CREATE_FAILED envelope from br routes through fallback with input.retryable?" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          code: "CREATE_FAILED",
+          message: "br reported CREATE_FAILED",
+          hint: nil,
+          retryable?: false
+        })
+
+      result = CodeMap.build_create_provider_error(input, "br create --db x", 42)
+
+      assert %ProviderError{code: "CREATE_FAILED", retryable?: false} = result
+    end
   end
 
   defp code_map_source, do: File.read!(@source_file)
