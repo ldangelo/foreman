@@ -90,6 +90,14 @@ defmodule ForemanServer.TaskProvider.Registry do
     GenServer.call(__MODULE__, {:register_for_project, project_id, provider_module, config})
   end
 
+  @spec project_config(project_id :: String.t()) ::
+          {:ok, %{provider_module: module(), config: map()}} | {:error, atom()}
+  def project_config(project_id) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:project_config, project_id})
+  end
+
+  def project_config(_project_id), do: {:error, :invalid_project_id}
+
   @spec unregister_for_project(String.t(), atom()) :: :ok | {:error, :not_found}
   def unregister_for_project(project_id, reason) do
     GenServer.call(__MODULE__, {:unregister_for_project, project_id, reason})
@@ -177,6 +185,11 @@ defmodule ForemanServer.TaskProvider.Registry do
     {:reply, :ok, %{state | per_project: per_project}}
   end
 
+  def handle_call({:project_config, project_id}, _from, state) do
+    reply = resolve_project_config(state.per_project, project_id)
+    {:reply, reply, state}
+  end
+
   def handle_call({:route, transition, routing_key}, _from, state) do
     reply = route_provider(state, transition, routing_key)
     emit_route_telemetry(reply, transition, routing_key)
@@ -187,6 +200,19 @@ defmodule ForemanServer.TaskProvider.Registry do
   def handle_info(_msg, state), do: {:noreply, state}
 
   ## Internal
+
+  defp resolve_project_config(per_project, project_id) do
+    case Map.fetch(per_project, project_id) do
+      {:ok, {:active, %{provider_module: provider_module, config: config}}} ->
+        {:ok, %{provider_module: provider_module, config: config}}
+
+      {:ok, {:unavailable, _reason}} ->
+        {:error, :provider_unavailable_for_project}
+
+      :error ->
+        {:error, :task_provider_not_configured}
+    end
+  end
 
   defp provider_config do
     config = Application.get_env(:foreman_server, :task_provider, [])
