@@ -821,8 +821,8 @@ No existing test, projection, or aggregate code is modified without a documented
 - **TRD-016 inserted (29 → 31 master entries).** New implementation + paired-test task extending `SystemBrunner` with a dedicated `:create` clause. Total master entries grow from 29 (in 1.0.0–1.0.3 cascade baseline) to 31: 15 implementation tasks + 15 paired test tasks + 1 docs-only task. PR 1 grows from 10 → 12 entries (TRD-001–TRD-005 + TRD-016).
 
 - **Dependency cycle fix.** `TRD-003-TASK [depends: TRD-004-TASK]` AND `TRD-004-TASK [depends: TRD-003-TASK]` declared a direct cycle. Removed the back-edge `[depends: TRD-003-TASK]` from `TRD-004-TASK`. Topological rationale: `TRD-004-TASK` (CodeMap rows for `INVALID_TITLE`, `INVALID_PRIORITY`, `INVALID_ISSUE_TYPE`, `DUPLICATE_TASK_ID`, `CREATE_FAILED`) must exist before `TRD-003-TASK` (`BeadsAdapter.create/2`) because `create/2` emits CodeMap rows on validation failures. The corrected graph is acyclic:
-  - Level 1: TRD-001, TRD-016, TRD-006, TRD-013 (no deps)
-  - Level 2: TRD-002 (←TRD-001), TRD-004 (no deps), TRD-011 (←TRD-016)
+  - Level 1: TRD-001, TRD-004, TRD-006, TRD-013, TRD-016 (no deps)
+  - Level 2: TRD-002 (←TRD-001), TRD-011 (←TRD-016)
   - Level 3: TRD-003 (←TRD-001, TRD-002, TRD-004), TRD-012 (←TRD-011)
   - Level 4: TRD-005 (←TRD-001, TRD-003), TRD-014 (←TRD-012, TRD-013)
   - Level 5: TRD-007 (←TRD-003, TRD-005, TRD-006), TRD-015 (←TRD-014)
