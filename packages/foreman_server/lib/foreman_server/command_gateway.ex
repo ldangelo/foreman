@@ -178,10 +178,14 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp validate_aggregate_id(%{type: "task.create", aggregate_id: aggregate_id, payload: payload}) do
+    external_id = Map.get(payload, :external_id)
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
 
     cond do
+      external_id != nil ->
+        {:error, :external_id_not_allowed_via_operator}
+
       not is_binary(task_id) or task_id == "" ->
         {:error, {:invalid_envelope, :missing_task_id}}
 
