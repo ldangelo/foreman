@@ -380,6 +380,7 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, Map.get(state.tasks, task_id), state}
   end
 
+  @impl true
   def handle_call({:tasks_by_run_id, run_id}, _from, state) do
     tasks =
       state.tasks

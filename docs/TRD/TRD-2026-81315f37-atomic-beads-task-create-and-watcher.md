@@ -432,7 +432,7 @@ followed by a `Validates PRD ACs: AC-NNN-M, AC-NNN-M` body line, optional `Targe
   Validates PRD ACs: AC-025-1
   Target File: `packages/foreman_server/lib/foreman_server/projection_store.ex`
 
-- [ ] **TRD-010-TEST**: `projection_store_task_external_id_test.exs`: (1) `TaskCreated` event with `external_id: "foreman-abc"` → task map includes `external_id: "foreman-abc"`; (2) `TaskCreated` event WITHOUT `external_id` (legacy) → task map includes `external_id: nil`; (3) `ProjectionStore.get_task/2` returns the task map including `external_id`; (4) the read-side `GET /api/tasks/:id` returns the bead ID in the response body when `external_id` is populated. [verifies TRD-010] [satisfies REQ-025]
+- [ ] **TRD-010-TEST**: `projection_store_task_external_id_test.exs`: (1) `TaskCreated` event with `external_id: "foreman-abc"` → task map includes `external_id: "foreman-abc"`; (2) `TaskCreated` event WITHOUT `external_id` (legacy) → task map includes `external_id: nil`; (3) `ProjectionStore.get_task(external_id: bead_id)` (keyword arity, `/1`) returns the task map including `external_id`; (4) the read-side `GET /api/tasks/:id` returns the bead ID in the response body when `external_id` is populated. [verifies TRD-010] [satisfies REQ-025]
   Validates PRD ACs: AC-025-1
   Target File: `packages/foreman_server/test/foreman_server/projection_store_task_external_id_test.exs`
 
@@ -687,7 +687,7 @@ Estimates are conservative; the synchronous hook (TRD-007-TASK) and the compensa
 | Implementation AC | Testability | Notes |
 |---|---|---|
 | AC-020-1 happy path | Verifiable via state-after-step assertion on a stubbed Actor harness; mock `BrRunner` returns `{:ok, %{"id" => "foreman-abc", ...}}`; assert `send CommandRouter, {:append, aggregate_id, [event_data], expected_version, ref, self()}` was invoked with `external_id == "foreman-abc"` in the normalized event data; on `receive {:append_ok, ^ref, count, …}` assert `commit_event/3` was called and `state.version` was bumped | TRD-007-TEST scenario 1 |
-| AC-020-2 round-trip | Verifiable via `ProjectionStore.get_task/2` returning the task map with `external_id`; `GET /api/tasks/:id` integration test | TRD-010-TEST scenarios 3, 4 |
+| AC-020-2 round-trip | Verifiable via `ProjectionStore.get_task(external_id: bead_id)` (keyword arity, `/1`) returning the task map with `external_id`; `GET /api/tasks/:id` integration test | TRD-010-TEST scenarios 3, 4 |
 | AC-020-3 compensation | Verifiable via CommandRouter stub that returns `:wrong_expected_version` once then `:ok`; assert `BeadsAdapter.create/2` is NOT called on retry; assert `in_flight_beads` is preserved across `reload_after_conflict/1` (cache hit poisons the retry path); assert eventual `TaskCreated` event has `external_id: bead_id`; bounded-retry exhaustion → `BeadsAdapter.complete/3` with `transition_comment: "foreman-compensation:append-conflict-retry-exhausted"` | TRD-008-TEST scenarios 1, 2, 3, 4 |
 | AC-020-4 non-Beads project | Verifiable via Mox stub that returns a capability map without `:create`; assert the hook is a no-op and `external_id` remains `nil` | TRD-007-TEST scenario 2 |
 | AC-020-5 failure-as-error | Verifiable via Mox stub that returns `{:error, %ProviderError{code: "INVALID_TITLE"}}`; assert the Actor returns the error from `do_dispatch/4` WITHOUT `normalize_to_event_data` or `send CommandRouter, {:append, …}` | TRD-007-TEST scenario 3 |
