@@ -37,7 +37,7 @@ defmodule ForemanServer.CommandGateway do
 
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Workflow.Approval
-
+  alias ForemanServer.Workflow.ImplementationContext
   @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
@@ -277,7 +277,6 @@ defmodule ForemanServer.CommandGateway do
       get_value(payload, key) not in [nil, ""]
     end)
   end
-
   # Canonical stream ID for a domain entity. Mirrors the convention used by
   # `Aggregate.Aggregator` and the existing actor tests (`run:abc`,
   # `task:abc`, `project:abc`). Any caller that supplies an `aggregate_id`
@@ -326,18 +325,52 @@ defmodule ForemanServer.CommandGateway do
       end
 
     with {:ok, prepared} <-
-           Approval.prepare(payload_with_type, approval_id: approval_id) do
+           Approval.prepare(payload_with_type, approval_id: approval_id),
+         {:ok, snapshot} <- freeze_implementation_context(task_projection, prepared) do
       enriched_payload =
         payload
         |> Map.put(:approval_id, prepared.approval_id)
         |> Map.put(:run_id, prepared.run_id)
-        |> Map.put(:workflow_snapshot, prepared.workflow_snapshot)
+        |> Map.put(:workflow_snapshot, snapshot)
         |> Map.put(:approved_at, approved_at)
         |> Map.put(:workflow_name, prepared.workflow_name)
         |> Map.put(:workflow_digest, prepared.workflow_digest)
 
       {:ok, %{command | payload: enriched_payload}}
     end
+  end
+
+  # For tasks registered with a workflow that requires a frozen
+  # implementation context (`implement-trd` or `implement-trd-beads`),
+  # build the context from the trusted task projection and persist it
+  # inside `workflow_snapshot.implementation`. The nested map is the
+  # authoritative store; it is replayed via `TaskApproved` and read
+  # back on idempotent re-approval.
+  #
+  # All other tasks keep their existing approval contract; the
+  # implementation context is unbuilt and `workflow_snapshot` is passed
+  # through unchanged.
+  defp freeze_implementation_context(task_projection, prepared) do
+    workflow_type = get_value(task_projection, :workflow_type)
+
+    if workflow_type in ["implement-trd", "implement-trd-beads"] do
+      build = ImplementationContext.build(%{
+        project_id: get_value(task_projection, :project_id),
+        workflow_type: workflow_type,
+        trd_path: get_value(task_projection, :trd_path)
+      })
+
+      with {:ok, context} <- build do
+        {:ok,
+         Map.put(
+           prepared.workflow_snapshot || %{},
+           "implementation",
+           ImplementationContext.to_payload(context)
+         )}
+      end
+     else
+       {:ok, prepared.workflow_snapshot || %{}}
+     end
   end
 
   defp enrich_operator_command(%{type: "task.create"} = command) do
