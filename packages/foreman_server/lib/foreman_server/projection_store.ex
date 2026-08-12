@@ -103,6 +103,26 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
+  Return the projected task that owns the given bead id (`:external_id`), or nil.
+
+  Used by the Beads watcher dedupe path: before dispatching
+  `task.create`, the watcher looks up the existing task by its
+  `external_id` to decide between `[:watcher, :reconciled]`
+  (already imported) and `[:watcher, :imported]` (new).
+  """
+  @spec get_task(keyword()) :: map() | nil
+  def get_task(opts) when is_list(opts) do
+    case opts do
+      [external_id: external_id] when is_binary(external_id) and external_id != "" ->
+        GenServer.call(__MODULE__, {:get_task_by_external_id, external_id})
+
+      _ ->
+        raise ArgumentError,
+              "ProjectionStore.get_task/1 expects [external_id: binary]; got #{inspect(opts)}"
+    end
+  end
+
+  @doc """
   Return every task projection that is currently bound to `run_id`.
 
   Used by the run-cancellation fanout path so the dispatcher can
@@ -346,11 +366,20 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:get_task_by_external_id, external_id}, _from, state) do
+    task =
+      Enum.find_value(state.tasks, fn {_task_id, task} ->
+        if get(task, :external_id) == external_id, do: task, else: nil
+      end)
+
+    {:reply, task, state}
+  end
+
+  @impl true
   def handle_call({:task_projection, task_id}, _from, state) do
     {:reply, Map.get(state.tasks, task_id), state}
   end
 
-  @impl true
   def handle_call({:tasks_by_run_id, run_id}, _from, state) do
     tasks =
       state.tasks

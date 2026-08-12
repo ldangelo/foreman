@@ -89,8 +89,9 @@ defmodule ForemanServer.ProjectionStoreTaskExternalIdTest do
     assert task.external_id == nil
   end
 
-  test "ProjectionStore.task_projection/1 returns the task map including external_id" do
+  test "ProjectionStore.get_task(external_id: bead_id) returns the task map including external_id" do
     task_id = unique_task_id()
+    bead_id = "foreman-abc"
 
     assert :ok =
              ProjectionStore.apply_events([
@@ -99,18 +100,29 @@ defmodule ForemanServer.ProjectionStoreTaskExternalIdTest do
                  payload: %{
                    task_id: task_id,
                    project_id: "p-1",
-                   title: "read roundtrip",
+                   title: "watcher dedupe",
                    status: "open",
                    task_type: "implement",
-                   external_id: "foreman-xyz"
+                   external_id: bead_id
                  }
                }
              ])
 
-    assert %{external_id: "foreman-xyz", task_id: ^task_id} =
-             ProjectionStore.task_projection(task_id)
+    assert %{external_id: ^bead_id, task_id: ^task_id} =
+             ProjectionStore.get_task(external_id: bead_id)
 
-    assert is_map_key(ProjectionStore.task_projection(task_id), :external_id)
+    assert is_map_key(ProjectionStore.get_task(external_id: bead_id), :external_id)
+
+    refute ProjectionStore.get_task(external_id: "foreman-not-imported")
+
+    # Empty / malformed option lists are rejected.
+    assert_raise ArgumentError, fn ->
+      ProjectionStore.get_task([])
+    end
+
+    assert_raise ArgumentError, fn ->
+      ProjectionStore.get_task(project_id: "p-1")
+    end
   end
 
   test "GET /api/tasks/:id returns the bead ID (external_id) in the response body" do
