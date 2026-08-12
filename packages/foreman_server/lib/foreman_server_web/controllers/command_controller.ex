@@ -188,8 +188,11 @@ defmodule ForemanServerWeb.CommandController do
         external_id = get_value(payload, :external_id)
         # Surface the Bead ID (payload.external_id) when present so
         # `foreman task create` can print the linked bead on stdout.
-        # Operator-issued tasks omit the field entirely; system-issued
-        # tasks (e.g. via BeadsWatcher) populate it from the provider.
+        # The Actor hook populates this for any task.create project that
+        # has a configured :create provider (e.g. BeadsAdapter) — the
+        # Bead ID is set even when the operator issued the command.
+        # Operator-issued tasks on projects WITHOUT a :create provider
+        # omit the field entirely.
         if is_binary(external_id) and external_id != "" do
           %{task_id: task_id, external_id: external_id}
         else

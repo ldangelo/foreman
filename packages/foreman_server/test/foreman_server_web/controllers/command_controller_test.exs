@@ -173,7 +173,7 @@ defmodule ForemanServerWeb.CommandControllerTest do
              json_response(archive_conn, 409)
   end
 
-  test "POST /api/commands creates a task through the gateway and returns external_id: nil for operator-issued tasks" do
+  test "POST /api/commands task.create omits external_id when no provider linked a bead" do
     project_id = unique_id("proj")
 
     project_body = %{
@@ -194,9 +194,9 @@ defmodule ForemanServerWeb.CommandControllerTest do
     }
 
     conn2 = build_conn() |> post("/api/commands", task_body)
-    # Operator-issued task.create runs through the gateway without a
-    # provider, so payload.external_id is nil and the response OMITS
-    # the key entirely. The CLI `foreman task create` should treat
+    # The test project has no :create provider configured, so the
+    # Actor hook does not invoke a provider and payload.external_id
+    # is nil. The response OMITS the key entirely. The CLI treats
     # absence as "no Bead linked yet".
     response = json_response(conn2, 201)
     result = response["result"]
