@@ -774,6 +774,7 @@ defmodule ForemanServer.ProjectionStore do
       %ForemanServer.Events.TaskCreated{task_id: task_id} = event ->
         task = %{
           task_id: task_id,
+          external_id: event.external_id,
           project_id: event.project_id,
           title: event.title,
           description: event.description,
