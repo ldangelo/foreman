@@ -173,7 +173,6 @@ defmodule ForemanServer.Aggregate.Actor do
   #
   # Stage 4 — `append_and_commit/7` does the existing normalize /
   # append / ack / retry / commit dance. `do_commit/4` clears the
-  # in-flight cache entry on terminal success.
   defp do_dispatch(state, cmd, expected_version, retries_left) do
     aggregate_id = state.aggregate_id
     event_id = event_id_for(aggregate_id, cmd)
@@ -183,7 +182,7 @@ defmodule ForemanServer.Aggregate.Actor do
         {:reply, {:ok, nil}, state}
 
       {:ok, stage1_event_spec} when is_map(stage1_event_spec) ->
-        case resolve_enriched_event_spec(state, cmd, stage1_event_spec) do
+        case resolve_enriched_event_spec(state, cmd, stage1_event_spec, retries_left) do
           {:ok, event_spec, state_with_cache} ->
             append_and_commit(
               state_with_cache,
@@ -199,12 +198,30 @@ defmodule ForemanServer.Aggregate.Actor do
             {:reply, {:error, reason}, state_with_cache}
         end
 
+      {:error, _reason} = error when retries_left < @max_conflict_retries ->
+        # AC-020-3 post-reload outer rejection (e.g. :phase_terminal).
+        # The rehydrated state rejected the original command before
+        # enrichment ran — compensate the bead cached from the prior
+        # attempt's stage 2 success and propagate the error to caller.
+        compensate_and_reply(state, cmd, error, "foreman-compensation:re-decision-rejected")
+
       {:error, _reason} = error ->
         {:reply, error, state}
+
+      {:error, _reason, _details} = error when retries_left < @max_conflict_retries ->
+        compensate_and_reply(state, cmd, error, "foreman-compensation:re-decision-rejected")
 
       {:error, _reason, _details} = error ->
         {:reply, error, state}
     end
+  end
+
+  # TRD-008 AC-020-3 post-reload compensation helper. Calls
+  # `compensate_for_conflict/3` and returns a `{:reply, error, state}`
+  # tuple — preserving the existing `do_dispatch` contract.
+  defp compensate_and_reply(state, cmd, error, transition_comment) do
+    new_state = compensate_for_conflict(state, cmd, transition_comment)
+    {:reply, error, new_state}
   end
 
   # -------------------------------------------------------------------------
@@ -224,8 +241,7 @@ defmodule ForemanServer.Aggregate.Actor do
   #     rejected. When stage 2 succeeded but stage 3 failed, `state`
   #     carries the cached bead_id so TRD-008 compensation can `br
   #     close` it. When stage 2 failed, `state` is unchanged (no cache
-  #     entry was created).
-  defp resolve_enriched_event_spec(state, cmd, stage1_event_spec) do
+  defp resolve_enriched_event_spec(state, cmd, stage1_event_spec, retries_left) do
     cond do
       not task_create_event?(stage1_event_spec) ->
         {:ok, stage1_event_spec, state}
@@ -235,7 +251,7 @@ defmodule ForemanServer.Aggregate.Actor do
         {:ok, stage1_event_spec, state}
 
       project_id = Aggregate.get(cmd.payload || %{}, :project_id) ->
-        route_and_enrich(state, cmd, project_id, stage1_event_spec)
+        route_and_enrich(state, cmd, project_id, stage1_event_spec, retries_left)
 
       true ->
         {:ok, stage1_event_spec, state}
@@ -250,10 +266,10 @@ defmodule ForemanServer.Aggregate.Actor do
   # %{project_id: id})` to resolve the provider polymorphically.
   # `project_config/1` is internal to `BeadsAdapter.create/2` for DB
   # config and is not the gate.
-  defp route_and_enrich(state, cmd, project_id, stage1_event_spec) do
+  defp route_and_enrich(state, cmd, project_id, stage1_event_spec, retries_left) do
     case TaskProvider.Registry.route(:create, %{project_id: project_id}) do
       {:ok, provider} ->
-        enrich_via_provider(state, cmd, provider, stage1_event_spec)
+        enrich_via_provider(state, cmd, provider, stage1_event_spec, retries_left)
 
       {:error, _reason} ->
         # AC-020-4: no provider registered for this project, or the
@@ -271,7 +287,7 @@ defmodule ForemanServer.Aggregate.Actor do
   # Stage-2 success path: call provider.create, populate cache, then
   # fall through to `enrich_with_cached_bead_id/4` with the new
   # bead_id to run stage 3.
-  defp enrich_via_provider(state, cmd, provider, stage1_event_spec) do
+  defp enrich_via_provider(state, cmd, provider, stage1_event_spec, retries_left) do
     case Map.get(state.in_flight_beads, cmd.command_id) do
       nil ->
         stage2_then_stage3(state, cmd, provider, stage1_event_spec)
@@ -287,7 +303,7 @@ defmodule ForemanServer.Aggregate.Actor do
           }
         )
 
-        enrich_with_cached_bead_id(state, cmd, cached_bead_id)
+        enrich_with_cached_bead_id(state, cmd, cached_bead_id, retries_left)
     end
   end
 
@@ -324,7 +340,7 @@ defmodule ForemanServer.Aggregate.Actor do
           %{command_id: cmd.command_id, aggregate_id: state.aggregate_id, bead_id: bead_id}
         )
 
-        enrich_with_cached_bead_id(new_state, cmd, bead_id)
+        enrich_with_cached_bead_id(new_state, cmd, bead_id, @max_conflict_retries)
 
       {:error, reason} ->
         # AC-020-5: emit the actor-level failure telemetry BEFORE
@@ -342,7 +358,7 @@ defmodule ForemanServer.Aggregate.Actor do
   # `bead_id` pre-populated as `payload.external_id`. The aggregate
   # mirrors this field into the event_spec payload (AC-020-6) so the
   # persisted TaskCreated event carries the bead linkage.
-  defp enrich_with_cached_bead_id(state, cmd, bead_id) do
+  defp enrich_with_cached_bead_id(state, cmd, bead_id, retries_left) do
     payload = cmd.payload || %{}
     enriched_payload = Map.put(payload, :external_id, bead_id)
     enriched_cmd = %{cmd | payload: enriched_payload}
@@ -351,9 +367,20 @@ defmodule ForemanServer.Aggregate.Actor do
       {:ok, enriched_event_spec} when is_map(enriched_event_spec) ->
         {:ok, enriched_event_spec, state}
 
+      {:error, reason} when retries_left < @max_conflict_retries ->
+        # AC-020-3 inner post-reload rejection: a stream-version conflict
+        # already triggered `reload_after_conflict/1`, and the rehydrated
+        # aggregate rejected the enriched command. The bead cache survives
+        # only to enable this compensation — close it and propagate.
+        new_state =
+          compensate_for_conflict(state, cmd, "foreman-compensation:re-decision-rejected")
+
+        {:error, reason, new_state}
+
       {:error, reason} ->
-        # Stage 3 rejected: cache carries the bead_id so a retry can
-        # compensate via TRD-008 (`br close`). Do NOT clear.
+        # Initial stage 3 rejection (not yet post-reload). Cache is kept
+        # so Trigger 1 (bounded-retry exhaustion in `append_and_commit/7`)
+        # can close the orphaned bead if a stream-version conflict follows.
         {:error, reason, state}
     end
   end
@@ -453,14 +480,31 @@ defmodule ForemanServer.Aggregate.Actor do
         end
 
       {:error, ^ref, :wrong_expected_version, append_latency_ms} ->
+        # AC-020-3 Trigger 1 — bounded-retry exhaustion. After three
+        # stream-version conflicts the actor gives up; close the
+        # orphaned Beads bead via subprocess I/O and surface the error.
+        compensated_state =
+          compensate_for_conflict(
+            state,
+            cmd,
+            "foreman-compensation:append-conflict-retry-exhausted"
+          )
+
         {:reply,
          {:telemetry, {:error, {:wrong_expected_version, state.version}},
-          %{append_latency_ms: append_latency_ms}}, state}
+          %{append_latency_ms: append_latency_ms}}, compensated_state}
 
       {:error, ^ref, :wrong_expected_version} ->
+        compensated_state =
+          compensate_for_conflict(
+            state,
+            cmd,
+            "foreman-compensation:append-conflict-retry-exhausted"
+          )
+
         {:reply,
          {:telemetry, {:error, {:wrong_expected_version, state.version}},
-          %{append_latency_ms: 0}}, state}
+          %{append_latency_ms: 0}}, compensated_state}
 
       {:error, ^ref, reason, append_latency_ms} ->
         {:reply, {:telemetry, {:error, reason}, %{append_latency_ms: append_latency_ms}}, state}
@@ -511,6 +555,91 @@ defmodule ForemanServer.Aggregate.Actor do
       _ ->
         state
     end
+  end
+
+  # TRD-008 AC-020-3 compensation helper.
+  #
+  # Called on bounded-retry exhaustion (`append_and_commit/7` retries_left
+  # == 0 branch) and on post-reload re-decision rejection (Trigger 2 in
+  # `do_dispatch/4` outer branches and `enrich_with_cached_bead_id/4`
+  # inner post-reload branch). Looks up `state.in_flight_beads[command_id]`,
+  # resolves the project's Beads database path via
+  # `TaskProvider.Registry.project_config/1`, calls
+  # `BeadsAdapter.complete/3` with a map-shaped `completion_token` carrying
+  # the canonical `transition_comment`, and emits telemetry.
+  #
+  # CLOSE-ONLY-ONCE: if the cache has no entry for `command_id` the
+  # function returns the unchanged state (no close issued, no telemetry).
+  # This guards against double-close if REQ-023's orphan janitor runs
+  # concurrently. After a successful close (or even on subprocess
+  # failure) the cache entry is cleared so the next attempt sees a
+  # clean slate.
+  defp compensate_for_conflict(state, cmd, transition_comment) do
+    command_id = Map.get(cmd, :command_id)
+    payload = Map.get(cmd, :payload, %{})
+    project_id = Aggregate.get(payload, :project_id)
+
+    case Map.get(state.in_flight_beads, command_id) do
+      nil ->
+        # CLOSE-ONLY-ONCE: nothing to close, or already compensated by
+        # a prior invocation. Also covers commands that never went through
+        # stage-2 enrichment (e.g. phase.complete): no :command_id, so the
+        # error propagates unchanged.
+        state
+
+      bead_id when is_binary(project_id) ->
+        result = run_beads_complete(project_id, bead_id, transition_comment)
+        emit_compensation_telemetry(state, command_id, bead_id, transition_comment, result)
+        %{state | in_flight_beads: Map.delete(state.in_flight_beads, command_id)}
+
+      _bead_id ->
+        # No project_id to resolve a database path — nothing safe to do.
+        # Clear the cache entry so a subsequent retry doesn't loop on a
+        # stub bead handle.
+        %{state | in_flight_beads: Map.delete(state.in_flight_beads, command_id)}
+    end
+  end
+
+  defp run_beads_complete(project_id, bead_id, transition_comment) do
+    case TaskProvider.Registry.project_config(project_id) do
+      {:ok, %{config: %{database_path: db_path}}}
+      when is_binary(db_path) and db_path != "" ->
+        ForemanServer.TaskProviders.BeadsAdapter.complete(
+          bead_id,
+          %{transition_comment: transition_comment},
+          %{database_path: db_path}
+        )
+
+      _ ->
+        {:error, :missing_project_config}
+    end
+  end
+
+  defp emit_compensation_telemetry(state, command_id, bead_id, reason, {:ok, _issue}) do
+    Telemetry.execute(
+      [:foreman_server, :task_provider, :beads, :create, :compensated],
+      %{},
+      %{
+        command_id: command_id,
+        aggregate_id: state.aggregate_id,
+        bead_id: bead_id,
+        reason: reason
+      }
+    )
+  end
+
+  defp emit_compensation_telemetry(state, command_id, bead_id, reason, {:error, reason_inspect}) do
+    Telemetry.execute(
+      [:foreman_server, :task_provider, :beads, :create, :compensate_failure],
+      %{},
+      %{
+        command_id: command_id,
+        aggregate_id: state.aggregate_id,
+        bead_id: bead_id,
+        reason: reason,
+        close_error: inspect(reason_inspect)
+      }
+    )
   end
 
   # Re-read state + version from the event store after a stream-version conflict.

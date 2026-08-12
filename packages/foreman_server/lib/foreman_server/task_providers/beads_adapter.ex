@@ -1651,7 +1651,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   @impl true
-  def complete(task_id, _completion_token, project_config) when is_map(project_config) do
+  def complete(task_id, completion_token, project_config) when is_map(project_config) do
     if is_binary(task_id) and String.trim(task_id) != "" do
       database_path =
         case project_config do
@@ -1666,7 +1666,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
                   "expected project_config with binary :database_path, got: #{inspect(other)}"
         end
 
-      case @runner.cmd({:close, %{id: task_id}}, %{database_path: database_path},
+      close_payload = build_close_payload(task_id, completion_token)
+
+      case @runner.cmd({:close, close_payload}, %{database_path: database_path},
              timeout_ms: 30_000
            ) do
         {:ok, %{stdout: stdout}} ->
@@ -1689,6 +1691,21 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
        )}
     end
   end
+
+  # TRD-008 contract reconciliation: `complete/3` honors a map-shaped
+  # `completion_token` with a `:transition_comment` key (consumed by the
+  # Actor's bounded-retry-exhaustion and post-reload re-decision compensation
+  # paths in `ForemanServer.Aggregate.Actor`). When the token is not a map
+  # (legacy atom/nil callers) the close payload is unchanged — pre-existing
+  # `BeadsAdapterCompleteTest` assertions of `{:close, %{id: ...}}` remain
+  # green. The `:reason` key is forwarded to `SystemBrRunner`, which
+  # translates it to `br close --transition-comment <reason>`.
+  defp build_close_payload(task_id, %{transition_comment: comment})
+       when is_binary(comment) and comment != "" do
+    %{id: task_id, reason: comment}
+  end
+
+  defp build_close_payload(task_id, _completion_token), do: %{id: task_id}
 
   @impl true
   def fail(task_id, failure_token, project_config) when is_map(project_config) do

@@ -223,6 +223,16 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
     ]
   end
 
+  defp build_action_argv(:close, payload) do
+    validate_payload_shape!(:close, payload)
+
+    payload
+    |> extract_flags!()
+    |> maybe_prepend_id(:close, payload)
+    |> maybe_append_transition_comment(payload)
+    |> maybe_append_json_flag()
+  end
+
   defp build_action_argv(action, payload) do
     payload
     |> extract_flags!()
@@ -378,6 +388,19 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
 
   defp maybe_append_json_flag(flags) do
     if Enum.member?(flags, "--json"), do: flags, else: flags ++ ["--json"]
+  end
+
+  defp maybe_append_transition_comment(flags, payload) do
+    case fetch_optional(payload, :reason) do
+      nil ->
+        flags
+
+      reason when is_binary(reason) and reason != "" ->
+        flags ++ ["--transition-comment", reason]
+
+      other ->
+        raise ArgumentError, "expected :reason to be a non-empty binary, got: #{inspect(other)}"
+    end
   end
 
   defp build_shell_command(argv, temp_files) do
