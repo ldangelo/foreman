@@ -62,6 +62,7 @@ type commandEnvelope struct {
 	CommandID string         `json:"command_id,omitempty"`
 	Payload   map[string]any `json:"payload"`
 }
+
 func taskCreate(c *client.Client, args []string) error {
 	fs := newFlagSet("task create")
 	taskID := fs.String("id", "", "Task ID (required)")
@@ -69,7 +70,9 @@ func taskCreate(c *client.Client, args []string) error {
 	title := fs.String("title", "", "Task title (required)")
 	description := fs.String("description", "", "Task description")
 	status := fs.String("status", "open", "Initial status (default: open)")
-	taskType := fs.String("task-type", "", "Task type discriminator")
+	taskType := fs.String("task-type", "", "Task type discriminator (legacy field; preserves existing task classification)")
+	workflowType := fs.String("workflow-type", "", "Workflow type used by server-side approval precedence (workflow_type || task_type || default)")
+	trdPath := fs.String("trd-path", "", "Path to the TRD document that drives this task; consumed by ForemanServer.Workflow.ImplementationContext")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -91,6 +94,18 @@ func taskCreate(c *client.Client, args []string) error {
 
 	if *taskType != "" {
 		payload["task_type"] = *taskType
+	}
+
+	// workflow_type is independent of task_type: it captures the
+	// workflow-name precedence used at approval time (workflow_type
+	// || task_type || default). Existing task_type classification is
+	// preserved for backward compatibility.
+	if *workflowType != "" {
+		payload["workflow_type"] = *workflowType
+	}
+
+	if *trdPath != "" {
+		payload["trd_path"] = *trdPath
 	}
 
 	body := commandEnvelope{Type: "task.create", Payload: payload}

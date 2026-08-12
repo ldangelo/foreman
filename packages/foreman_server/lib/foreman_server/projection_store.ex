@@ -811,6 +811,8 @@ defmodule ForemanServer.ProjectionStore do
           priority: event.priority,
           status: event.status,
           task_type: event.task_type,
+          workflow_type: event.workflow_type,
+          trd_path: event.trd_path,
           approval_id: nil,
           approved_by: nil,
           approved_at: nil,

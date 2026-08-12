@@ -19,6 +19,7 @@ defmodule ForemanServer.Workflow.Approval do
           :task_id => String.t(),
           optional(:approval_id) => String.t() | nil,
           optional(:task_type) => String.t() | nil,
+          optional(:workflow_type) => String.t() | nil,
           optional(atom()) => any()
         }
 
@@ -88,7 +89,8 @@ defmodule ForemanServer.Workflow.Approval do
 
   defp resolve_workflow_snapshot(payload, run_id) do
     task_type =
-      payload[:task_type] ||
+      payload[:workflow_type] ||
+        payload[:task_type] ||
         Application.get_env(:foreman_server, :default_task_type, "implement")
 
     case Catalog.load(task_type <> ".yaml") do

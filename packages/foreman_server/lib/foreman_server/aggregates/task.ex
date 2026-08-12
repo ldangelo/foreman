@@ -22,6 +22,8 @@ defmodule ForemanServer.Aggregates.Task do
       :approved_at,
       :run_id,
       :workflow_snapshot,
+      :workflow_type,
+      :trd_path,
       :failure_reason,
       :task_type,
       :title,
@@ -37,7 +39,6 @@ defmodule ForemanServer.Aggregates.Task do
   end
 
   @valid_statuses MapSet.new(["open", "ready", "in_progress", "blocked", "closed", "failed"])
-
   @impl true
   def initial_state,
     do: %State{
@@ -50,6 +51,8 @@ defmodule ForemanServer.Aggregates.Task do
       approved_at: nil,
       run_id: nil,
       workflow_snapshot: nil,
+      workflow_type: nil,
+      trd_path: nil,
       failure_reason: nil,
       task_type: nil,
       title: nil,
@@ -76,6 +79,8 @@ defmodule ForemanServer.Aggregates.Task do
             project_id: Aggregate.get(payload, :project_id),
             status: Aggregate.get(payload, :status, "open"),
             task_type: Aggregate.get(payload, :task_type),
+            workflow_type: Aggregate.get(payload, :workflow_type),
+            trd_path: Aggregate.get(payload, :trd_path),
             title: Aggregate.get(payload, :title),
             description: Aggregate.get(payload, :description),
             priority: Aggregate.get(payload, :priority),
@@ -180,6 +185,8 @@ defmodule ForemanServer.Aggregates.Task do
            status: Aggregate.get(payload, :status, "open"),
            dependencies: Aggregate.get(payload, :dependencies, []),
            task_type: Aggregate.get(payload, :task_type) || Aggregate.get(payload, :type),
+           workflow_type: Aggregate.get(payload, :workflow_type),
+           trd_path: Aggregate.get(payload, :trd_path),
            source: Aggregate.get(payload, :source),
            external_id: Aggregate.get(payload, :external_id),
            external_link: Aggregate.get(payload, :external_link),
