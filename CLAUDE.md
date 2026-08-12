@@ -304,16 +304,19 @@ these invariants. Drift without a tracked TRD is a regression.
   minted but not committed"; clearing it after compensation prevents
   double-close on a subsequent retry. (Other append-failure modes
   outside the conflict-retry path are not characterized here.)
-- **`external_id` surface contract (success path only).** When
-  `BeadsAdapter` (or any `:create` provider) successfully mints a
-  Bead, `task.create` responses include an `external_id` field
-  carrying the Bead ID. When no provider is configured (operator-only
-  path) on a successful command, the field is **omitted from the
-  response entirely** — not surfaced as `null`. Provider failure is a
-  different case: a `{:error, _}` from `provider.create/2` aborts the
-  command (no event, no successful response, no `external_id`
-  surface). `CommandController.serialize/1` enforces the omission on
-  success; do not weaken it.
+- **`external_id` surface contract.** The successful `task.create`
+  HTTP response (HTTP 201 with `status: "accepted"`,
+  `result: %{events: 1}`) does **not** carry `external_id` —
+  `CommandController.serialize/1` returns `%{events: 1}` for
+  `{:ok, _events}` and does not enrich the response with the
+  persisted event's fields. Operators retrieve the bead linkage by
+  reading the task projection (`GET /api/tasks/:id`,
+  surfaced via `foreman task get`), whose `external_id` field is
+  populated on the persisted `TaskCreated` event when the
+  project's `task_provider` capabilities advertised `:create`.
+  Provider failure aborts the command entirely (no event, no
+  successful response, no `external_id` surface).
+
 - **Operator-issued ≠ no-Bead.** A `task.create` issued by the
   operator on a project with a configured `:create` provider still
   gets an `external_id`. The presence/absence of `external_id` means
@@ -338,12 +341,14 @@ these invariants. Drift without a tracked TRD is a regression.
   remain adapter callbacks. No operator surface promotes them into
   Foreman commands in this slice.
 - **Doctor surface is honest about current scope.**
-  `foreman doctor task_provider` reports only the fields it actually
-  emits (`project_id`, `healthy`, `provider_id`, `contract_version`,
-  `br_version`, `capabilities`, `sample_ready`,
-  `schema_validation_failures`, `error`). Watcher / janitor /
-  orphan-backlog output are **not** yet implemented in the doctor in
-  this slice. Do not document the missing fields as if they existed;
-  operators needing runtime visibility into those subsystems should
-  rely on the `[:foreman_server, :task_provider, :beads, ...]`
-  telemetry events.
+  `foreman doctor task_provider` reports the fields it actually
+  emits per project: `project_id`, `healthy`, `provider_id`,
+  `contract_version`, `br_version`, `capabilities`, `sample_ready`,
+  `schema_validation_failures`, `janitor_enabled`, `janitor_running`,
+  `orphan_backlog`, and (on the unhappy branch) `error`. The
+  janitor fields are a CQRS read of the cached snapshot maintained
+  by `BeadsOrphanJanitor`'s own scan loop; the doctor MUST NOT
+  invoke `BeadsOrphanJanitor.run_scan/2` itself. Operators needing
+  finer-grained runtime visibility (per-scan event streams,
+  supervisor lifecycle transitions) should rely on the
+  `[:foreman_server, :task_provider, :beads, ...]` telemetry events.

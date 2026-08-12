@@ -48,7 +48,14 @@ with the watcher enabled, inbound Beads appear as Foreman tasks.
   `config :foreman_server, :start_beads_orphan_janitor?, true`. After a
   grace window, `BeadsOrphanJanitor` closes Beads whose matching
   Foreman task never landed (stranded issuance) or whose Foreman task
-  already terminated.
+  already terminated. The janitor caches its last scan counters as
+  `orphan_backlog` (8 fields: `lines_processed`, `lines_tagged`,
+  `lines_untagged`, `lines_malformed`, `lines_retained`,
+  `lines_closed`, `lines_age_young`, `lines_no_linked_at`).
+  `foreman doctor task_provider` reads this snapshot via the
+  supervisor's CQRS read boundary — the doctor never triggers a
+  scan itself, and `orphan_backlog` is `nil` until the first scan
+  completes for a registered project.
 - **Operator remediation.** `foreman task retry` is the remediation
   path for tasks whose bound run is already terminal (see
   `docs/user-guide.md` §16).
