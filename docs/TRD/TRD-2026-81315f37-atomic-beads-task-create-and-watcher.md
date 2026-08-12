@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-81315f37
 label: trd-atomic-beads-task-create-and-watcher
-version: 1.0.6
+version: 1.0.7
 status: Draft
 date: 2026-08-11
 prd_reference: docs/PRD/PRD-2026-81315f37-atomic-beads-task-create-and-watcher.md
@@ -806,6 +806,13 @@ No existing test, projection, or aggregate code is modified without a documented
 ---
 
 ## Changelog
+### 1.0.7 — 2026-08-11 (ProjectionStore.get_task arity correction)
+
+- **Stale arity typo correction.** Two TRD rows referenced `ProjectionStore.get_task/2` as if it were a positional 2-arity call, but the only concrete call sites in the spec — the Beads watcher dedupe path (TRD line 206 and the TRD-011-TEST spec at line 449) — use the keyword form `ProjectionStore.get_task(external_id: bead.id)`. The `/2` label was a stale typo from an earlier draft that defined a project-scoped lookup and was never updated when the design collapsed to a single-keyword lookup.
+- **Rows updated.** TRD-010-TEST spec (line 435) and the AC-020-2 traceability row (line 690) now read `ProjectionStore.get_task(external_id: bead_id)` with an explicit `(keyword arity, /1)` annotation.
+- **Implementation already matches.** `ProjectionStore.get_task/1` (keyword arity) was implemented as part of the TRD-010-TASK reopen in commit `e69ad7a5`; the test suite (`projection_store_task_external_id_test.exs` scenario 3) exercises the keyword form directly. No PRD mirror changes required — the PRD §4 row never carried the `/2` typo.
+- **No AC / task count changes:** 7 REQs / 30 ACs / 31 tasks / 3 PRs unchanged.
+
 ### 1.0.6 — 2026-08-11 (working-tree cascade: 4 architecture redesigns + cycle fix + TRD-016 insertion)
 
 - **Scope.** This entry consolidates ALL working-tree changes that diverge from origin's `1.0.5`. The branch went through four architectural redesigns during a single session, plus a dependency-cycle fix, plus the insertion of TRD-016. Origin's `1.0.0`–`1.0.5` entries are preserved verbatim below this entry; the working tree's `1.0.0`–`1.0.3` cascade entries have been collapsed into this single `1.0.6` entry to avoid factually-impossible claims about divergent task counts (origin's `1.0.4`/`1.0.5` describe 24 tasks across 3 PRs; the working tree's `1.0.6` describes 31 tasks across 3 PRs).
