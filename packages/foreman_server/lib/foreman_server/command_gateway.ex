@@ -38,6 +38,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
+
   @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
@@ -277,6 +278,7 @@ defmodule ForemanServer.CommandGateway do
       get_value(payload, key) not in [nil, ""]
     end)
   end
+
   # Canonical stream ID for a domain entity. Mirrors the convention used by
   # `Aggregate.Aggregator` and the existing actor tests (`run:abc`,
   # `task:abc`, `project:abc`). Any caller that supplies an `aggregate_id`
@@ -354,11 +356,12 @@ defmodule ForemanServer.CommandGateway do
     workflow_type = get_value(task_projection, :workflow_type)
 
     if workflow_type in ["implement-trd", "implement-trd-beads"] do
-      build = ImplementationContext.build(%{
-        project_id: get_value(task_projection, :project_id),
-        workflow_type: workflow_type,
-        trd_path: get_value(task_projection, :trd_path)
-      })
+      build =
+        ImplementationContext.build(%{
+          project_id: get_value(task_projection, :project_id),
+          workflow_type: workflow_type,
+          trd_path: get_value(task_projection, :trd_path)
+        })
 
       with {:ok, context} <- build do
         {:ok,
@@ -368,9 +371,9 @@ defmodule ForemanServer.CommandGateway do
            ImplementationContext.to_payload(context)
          )}
       end
-     else
-       {:ok, prepared.workflow_snapshot || %{}}
-     end
+    else
+      {:ok, prepared.workflow_snapshot || %{}}
+    end
   end
 
   defp enrich_operator_command(%{type: "task.create"} = command) do

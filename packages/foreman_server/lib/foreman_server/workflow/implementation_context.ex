@@ -241,9 +241,15 @@ defmodule ForemanServer.Workflow.ImplementationContext do
 
   defp normalize_trd_path(path) when is_binary(path) do
     cond do
-      path == "" -> {:error, {:implementation_context_failed, :trd_path_blank}}
-      String.contains?(path, "\0") -> {:error, {:implementation_context_failed, :trd_path_invalid}}
-      String.starts_with?(path, "/") -> {:error, {:implementation_context_failed, :trd_path_not_project_relative}}
+      path == "" ->
+        {:error, {:implementation_context_failed, :trd_path_blank}}
+
+      String.contains?(path, "\0") ->
+        {:error, {:implementation_context_failed, :trd_path_invalid}}
+
+      String.starts_with?(path, "/") ->
+        {:error, {:implementation_context_failed, :trd_path_not_project_relative}}
+
       true ->
         case safe_relative(path) do
           {:ok, ""} -> {:error, {:implementation_context_failed, :trd_path_blank}}
@@ -300,25 +306,37 @@ defmodule ForemanServer.Workflow.ImplementationContext do
   # any intermediate or the final — is rejected.
   defp assert_regular_file_under(canonical_root, normalized) do
     case Path.split(normalized) do
-      [] -> {:error, {:implementation_context_failed, :trd_path_blank}}
-      components -> walk_user_components(components, canonical_root, MapSet.new(), @max_symlink_depth)
+      [] ->
+        {:error, {:implementation_context_failed, :trd_path_blank}}
+
+      components ->
+        walk_user_components(components, canonical_root, MapSet.new(), @max_symlink_depth)
     end
   end
 
   defp walk_user_components([], _root, _visited, _depth), do: :ok
 
-  defp walk_user_components(_components, _root, _visited, 0), do:
-    {:error, {:implementation_context_failed, :trd_path_too_deep}}
+  defp walk_user_components(_components, _root, _visited, 0),
+    do: {:error, {:implementation_context_failed, :trd_path_too_deep}}
 
   defp walk_user_components([component], root, _visited, _depth) do
     absolute = join_absolute(root, component)
 
     case File.lstat(absolute) do
-      {:ok, %File.Stat{type: :regular}} -> :ok
-      {:ok, %File.Stat{type: :symlink}} -> {:error, {:implementation_context_failed, :trd_path_is_symlink}}
-      {:ok, %File.Stat{type: :directory}} -> {:error, {:implementation_context_failed, :trd_path_is_directory}}
-      {:ok, %File.Stat{}} -> {:error, {:implementation_context_failed, :trd_path_not_regular_file}}
-      _ -> {:error, {:implementation_context_failed, :trd_path_missing}}
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, {:implementation_context_failed, :trd_path_is_symlink}}
+
+      {:ok, %File.Stat{type: :directory}} ->
+        {:error, {:implementation_context_failed, :trd_path_is_directory}}
+
+      {:ok, %File.Stat{}} ->
+        {:error, {:implementation_context_failed, :trd_path_not_regular_file}}
+
+      _ ->
+        {:error, {:implementation_context_failed, :trd_path_missing}}
     end
   end
 

@@ -132,6 +132,7 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       # git rm removes empty parent dirs in modern git; recreate before
       # replacing the entry with a symlink.
       File.mkdir_p!(Path.join(repo, "docs/TRD"))
+
       {_, 0} =
         System.cmd(
           "ln",
@@ -236,6 +237,7 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       File.write!(Path.join([outside, "TRD", "x.md"]), "# outside\n")
 
       File.rm_rf!(Path.join(repo, "docs"))
+
       {_, 0} =
         System.cmd("ln", ["-s", outside, Path.join(repo, "docs")])
 
