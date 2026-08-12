@@ -346,6 +346,39 @@ Runtime ownership is split deliberately:
   boundary, but this slice does not introduce an operator CLI surface
   for them.
 
+### Flag-gated supervisor children (opt-in Bi-directional sync)
+
+The bi-directional sync with Beads (`BeadsWatcher` + `BeadsOrphanJanitor`)
+is **opt-in per supervisor**. Both supervisors are flag-gated siblings of
+the existing `JsonSchemaCache` / `ProjectProviderProjector` pattern. With
+both flags `false`, the supervisors never start and a project's Beads
+JSONL is never tailed.
+
+| Config key | Default | Effect when `true` |
+|---|---|---|
+| `:foreman_server, :start_beads_watcher?` | `false` | `ForemanServer.TaskProviders.BeadsWatcherSupervisor` is added under `ForemanServer.Application`; the supervisor reconciles its child set from the projector (`spawn_project_children/2`) on every project register / unregister. With this flag on but `:start_beads_orphan_janitor?` off, the watcher tails every registered project's JSONL but orphaned foreman-issued beads stay open. |
+| `:foreman_server, :start_beads_orphan_janitor?` | `false` | `ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor` is added under `ForemanServer.Application`; the supervisor spawns a scanner per registered project that closes stranded foreman-issued beads after the grace window. With this flag on but `:start_beads_watcher?` off, a stranded bead stays stranded — there is no inbound path to issue the matching Foreman task. |
+
+Operational notes:
+
+- Operators are expected to opt into **both** flags for production. The
+  flags are independent so that staged rollouts can enable one direction
+  at a time; an asymmetric combination (watcher-only or janitor-only)
+  leaves stranded foreman-issued beads accumulating in Beads without a
+  matching Foreman task. Run `foreman doctor task_provider` to inspect
+  each project's Beads-side health (the supervisor flag state itself is
+  reported by the application supervisor, not by the doctor).
+- `config/config.exs` and `config/test.exs` both set both flags to
+  `false` — the same default the test suite relies on. For production
+  override these via `Application.put_env/3` at boot (or via a release
+  config that uses `REPLACE_OS_VARS` / runtime env var substitution)
+  before enabling production sync. Leave them `false` when running
+  tests to avoid spawning per-project workers.
+- The Projector (`ForemanServer.TaskProvider.ProjectProviderProjector`)
+  checks both flags before reconciling: with both `false`,
+  `register_or_unregister_project/2` no-ops and never invokes the
+  supervisors, regardless of how many projects are registered.
+
 ## 12. `foreman doctor task_provider`
 
 Run the operator-facing command:

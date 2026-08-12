@@ -43,6 +43,8 @@ defmodule ForemanServer.Application do
           # start before dispatch paths resolve a provider snapshot.
           ForemanServer.TaskProvider.Registry
         ] ++
+        maybe_beads_watcher_child() ++
+        maybe_beads_orphan_janitor_child() ++
         maybe_project_provider_projector_child() ++
         [
           # BootReconciliation runs once after the projector has rebuilt
@@ -118,6 +120,22 @@ defmodule ForemanServer.Application do
         # per-project task provider routing inside the Registry.
         ForemanServer.TaskProvider.ProjectProviderProjector
       ]
+    else
+      []
+    end
+  end
+
+  def maybe_beads_watcher_child do
+    if Application.get_env(:foreman_server, :start_beads_watcher?, false) do
+      [ForemanServer.TaskProviders.BeadsWatcherSupervisor]
+    else
+      []
+    end
+  end
+
+  def maybe_beads_orphan_janitor_child do
+    if Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false) do
+      [ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor]
     else
       []
     end
