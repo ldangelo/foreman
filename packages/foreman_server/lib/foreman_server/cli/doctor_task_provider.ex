@@ -6,6 +6,8 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProviders.JsonSchemaCache
   alias ForemanServer.TaskProviders.ProviderError
+  alias ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor
+  alias ForemanServer.TaskProviders.BeadsOrphanJanitor
 
   @runner Application.compile_env(
             :foreman_server,
@@ -61,6 +63,16 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
         schema_validation_failures: []
       }
 
+      janitor_enabled = Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false)
+      {janitor_running, orphan_backlog} = orphan_backlog_snapshot(project_id, janitor_enabled)
+
+      report =
+        Map.merge(report, %{
+          janitor_enabled: janitor_enabled,
+          janitor_running: janitor_running,
+          orphan_backlog: orphan_backlog
+        })
+
       cond do
         not is_binary(database_path) or database_path == "" ->
           put_unhealthy(report, %{
@@ -87,6 +99,11 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
       end
     else
       {:error, reason} ->
+        janitor_enabled =
+          Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false)
+
+        {janitor_running, orphan_backlog} = orphan_backlog_snapshot(project_id, janitor_enabled)
+
         %{
           project_id: project_id,
           healthy: false,
@@ -96,6 +113,9 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
           capabilities: nil,
           sample_ready: nil,
           schema_validation_failures: [],
+          janitor_enabled: janitor_enabled,
+          janitor_running: janitor_running,
+          orphan_backlog: orphan_backlog,
           error: %{
             code: "TASK_PROVIDER_NOT_CONFIGURED",
             message: "task_provider could not be resolved",
@@ -128,6 +148,41 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
       {:error, error} ->
         put_unhealthy(report, provider_error_map(error))
     end
+  end
+
+  # CQRS read path: NEVER call BeadsOrphanJanitor.run_scan/2 from here.
+  # The janitor maintains its own scan loop and caches the most recent
+  # counters in state.last_counters; we read that snapshot via the
+  # supervisor. Calling run_scan/2 here would invoke
+  # BeadsAdapter.complete/3 and mutate provider state from a read path.
+  defp orphan_backlog_snapshot(project_id, janitor_enabled) do
+    if janitor_enabled do
+      case BeadsOrphanJanitorSupervisor.snapshot(project_id) do
+        {:ok, %BeadsOrphanJanitor.Counters{} = counters} ->
+          {true, counters_to_map(counters)}
+
+        {:ok, nil} ->
+          {true, nil}
+
+        {:error, :not_running} ->
+          {false, nil}
+      end
+    else
+      {false, nil}
+    end
+  end
+
+  defp counters_to_map(counters) do
+    %{
+      lines_processed: counters.lines_processed,
+      lines_tagged: counters.lines_tagged,
+      lines_untagged: counters.lines_untagged,
+      lines_malformed: counters.lines_malformed,
+      lines_retained: counters.lines_retained,
+      lines_closed: counters.lines_closed,
+      lines_age_young: counters.lines_age_young,
+      lines_no_linked_at: counters.lines_no_linked_at
+    }
   end
 
   defp apply_text_probe({report, errors}, field, {:ok, value}),

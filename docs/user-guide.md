@@ -338,6 +338,44 @@ The `database_path` must be absolute. `ProjectRegistered` /
 paths before any `br` invocation is attempted. Projects with no
 `task_provider` block continue to run without this boundary.
 
+Projects whose `task_provider` capabilities advertise `:create`
+(as reported by `br capabilities --json` and validated by the
+projector against the contract schema) participate in a
+**pre-append synchronous bead-creation hook**. For a `task.create`
+command:
+
+1. `Aggregate.Actor.handle_call({:command, …})` produces the
+   stage-1 `TaskCreated` event spec via
+   `aggregate.handle_command/2`.
+2. The actor calls `TaskProvider.Registry.route(:create, …)` and,
+   when a provider is registered, invokes `provider.create/2`
+   synchronously. The resulting bead id is cached against the
+   command id in `state.in_flight_beads` before any append occurs.
+3. The actor re-runs `aggregate.handle_command/2` with the bead id
+   populated as `payload.external_id`; the persisted event then
+   records the bead id on `TaskCreated.external_id`.
+4. Only after the enriched event spec is built does the actor
+   append to the event store.
+
+If `provider.create/2` itself fails, no append happens and no bead
+is created — the error propagates back to the caller as the
+command's rejection. If the cache is populated (stage 2 succeeded)
+but a later stage rejects — a re-decision returns `{:error, …}`, or
+the append-conflict retry loop exhausts its attempts — the actor
+runs compensation via `BeadsAdapter.complete/3` with a canonical
+`transition_comment`. The close is **best-effort** — `complete/3`
+itself can fail (the actor emits
+`[:foreman_server, :task_provider, :beads, :create, :compensate_failure]`
+telemetry and clears the cache entry either way to prevent
+double-close), so the cached bead is closed before the error
+returns to the caller on the characterized success path but may
+remain open if the close itself fails. Other append-failure modes
+outside the conflict-retry path are not characterized here.
+Projects that do not advertise `:create` skip the hook entirely;
+`TaskCreated` records `external_id: nil`, and downstream tooling
+distinguishes the two cases by reading the task projection via
+`foreman task get`.
+
 Runtime ownership is split deliberately:
 
 - `RunExecutor` drives `claim/3`, `complete/3`, and `fail/3`.
@@ -345,6 +383,39 @@ Runtime ownership is split deliberately:
 - `set_priority/3` and `add_dependency/3` exist at the adapter
   boundary, but this slice does not introduce an operator CLI surface
   for them.
+
+### Flag-gated supervisor children (opt-in Bi-directional sync)
+
+The bi-directional sync with Beads (`BeadsWatcher` + `BeadsOrphanJanitor`)
+is **opt-in per supervisor**. Both supervisors are flag-gated siblings of
+the existing `JsonSchemaCache` / `ProjectProviderProjector` pattern. With
+both flags `false`, the supervisors never start and a project's Beads
+JSONL is never tailed.
+
+| Config key | Default | Effect when `true` |
+|---|---|---|
+| `:foreman_server, :start_beads_watcher?` | `false` | `ForemanServer.TaskProviders.BeadsWatcherSupervisor` is added under `ForemanServer.Application`; the supervisor reconciles its child set from the projector (`spawn_project_children/2`) on every project register / unregister. With this flag on but `:start_beads_orphan_janitor?` off, the watcher tails every registered project's JSONL but orphaned foreman-issued beads stay open. |
+| `:foreman_server, :start_beads_orphan_janitor?` | `false` | `ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor` is added under `ForemanServer.Application`; the supervisor spawns a scanner per registered project that closes stranded foreman-issued beads after the grace window. With this flag on but `:start_beads_watcher?` off, a stranded bead stays stranded — there is no inbound path to issue the matching Foreman task. |
+
+Operational notes:
+
+- Operators are expected to opt into **both** flags for production. The
+  flags are independent so that staged rollouts can enable one direction
+  at a time; an asymmetric combination (watcher-only or janitor-only)
+  leaves stranded foreman-issued beads accumulating in Beads without a
+  matching Foreman task. Run `foreman doctor task_provider` to inspect
+  each project's Beads-side health (the supervisor flag state itself is
+  reported by the application supervisor, not by the doctor).
+- `config/config.exs` and `config/test.exs` both set both flags to
+  `false` — the same default the test suite relies on. For production
+  override these via `Application.put_env/3` at boot (or via a release
+  config that uses `REPLACE_OS_VARS` / runtime env var substitution)
+  before enabling production sync. Leave them `false` when running
+  tests to avoid spawning per-project workers.
+- The Projector (`ForemanServer.TaskProvider.ProjectProviderProjector`)
+  checks both flags before reconciling: with both `false`,
+  `register_or_unregister_project/2` no-ops and never invokes the
+  supervisors, regardless of how many projects are registered.
 
 ## 12. `foreman doctor task_provider`
 
@@ -364,6 +435,26 @@ includes:
 - `capabilities` (`br capabilities --json`)
 - `sample_ready` (`br ready --limit 1 --json`)
 - `schema_validation_failures`
+- `janitor_enabled` — whether the server-level flag
+  `:start_beads_orphan_janitor?` is currently set in the merged
+  runtime config. The doctor reads this via `Application.get_env/3`,
+  independent of supervisor liveness; a true value here does not
+  imply the supervisor is currently running.
+
+- `janitor_running` — boolean. `true` only when
+  `BeadsOrphanJanitorSupervisor` is registered AND a janitor child
+  exists for this `project_id`. `false` when the supervisor
+  process is absent (e.g. started with `--no-start`) or no child
+  has been started for the project.
+- `orphan_backlog` — the janitor's last scan snapshot, `nil` until
+  the first scan completes after registration. When present, an
+  8-field map with keys `lines_processed`, `lines_tagged`,
+  `lines_untagged`, `lines_malformed`, `lines_retained`,
+  `lines_closed`, `lines_age_young`, `lines_no_linked_at`. This is
+  a CQRS read of the cached snapshot maintained by the janitor's
+  own scan loop — the doctor MUST NOT call
+  `BeadsOrphanJanitor.run_scan/2` itself. The snapshot lag depends
+  on the scan interval configured for the project.
 
 Exit behavior is strict:
 
@@ -374,7 +465,6 @@ Unhealthy reports expose only the allowlisted error fields:
 `code`, `message`, `hint`, `exit_code`, `stderr_byte_count`, and
 `redacted_fields`. Raw `stderr` is never printed, even for
 `DATABASE_NOT_FOUND`.
-
 
 ## 13. Project CRUD from the CLI
 

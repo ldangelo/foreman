@@ -148,6 +148,20 @@ Per-project fields include:
 - `capabilities`
 - `sample_ready`
 - `schema_validation_failures`
+- `janitor_enabled` — whether the `:start_beads_orphan_janitor?`
+  flag is set for the running server (read from
+  `Application.get_env/3`, not from supervisor liveness).
+- `janitor_running` — whether `BeadsOrphanJanitorSupervisor` is
+  currently registered and a janitor child exists for this project
+  (boolean). `false` when the supervisor process is not running or
+  no child is registered for `project_id`.
+- `orphan_backlog` — snapshot of the janitor's last scan counters,
+  `nil` when no scan has completed yet. When present it is a map
+  with keys `lines_processed`, `lines_tagged`, `lines_untagged`,
+  `lines_malformed`, `lines_retained`, `lines_closed`,
+  `lines_age_young`, `lines_no_linked_at`. This is a CQRS read of
+  the cached snapshot maintained by the janitor's own scan loop —
+  the doctor MUST NOT call `BeadsOrphanJanitor.run_scan/2` itself.
 
 Unhealthy reports surface only the allowlisted error fields:
 `code`, `message`, `hint`, `exit_code`, `stderr_byte_count`, and
@@ -202,7 +216,9 @@ materialised at least one `*.yaml` manifest under the target — see
 Create a task that flows through the `plan` workflow. The Go CLI
 posts the standard `task.create` command to `/api/commands` with
 `task_type: "plan"`. `--id`, `--project`, and `--title` are required;
-`--task-type` selects the workflow discriminator.
+`--task-type` selects the workflow discriminator. The CLI always
+pretty-prints the raw command response (HTTP 201 with
+`status: "accepted"`); there is no `--format` flag.
 
 ```
 foreman task create \
@@ -211,6 +227,29 @@ foreman task create \
   --title "Plan feature workflow" \
   --task-type plan
 ```
+
+For Beads-backed projects (those whose `task_provider` capabilities
+advertise `:create`), the Actor's synchronous hook
+(`Aggregate.Actor.resolve_enriched_event_spec/3`) calls
+`provider.create/2` **before** the event append, caches the
+returned bead id against the command id in
+`state.in_flight_beads`, then re-runs
+`aggregate.handle_command/2` with the bead id populated as
+`payload.external_id` so the persisted `TaskCreated` event records
+the bead linkage. The CLI does not surface the bead id inline — the
+command response itself only confirms acceptance. To retrieve the
+bead id, run `foreman task get <task-id>` (which hits
+`GET /api/tasks/:id`); the returned task projection includes
+`external_id` for Beads-backed projects and `external_id: null` for
+projects without a `:create` capability. Downstream tooling
+correlates the Foreman task with its Beads bead by reading that
+field, not from the create response. The actor's compensation path
+(called when a stage-2 cache hit loses the append-conflict retry or
+when a post-reload re-decision rejects) closes the cached bead via
+`BeadsAdapter.complete/3` with a canonical `transition_comment`, so
+on those characterized failure paths the Beads row is closed before
+the error returns to the caller. Other append-failure modes outside
+the conflict-retry path are not characterized here.
 
 Once approved, the run executes two phases:
 
@@ -229,6 +268,22 @@ resolved path does not exist on disk when the phase starts. Operators
 can inspect the failure via `foreman run get <run_id>` — the phase
 projection records `failure_reason` containing the dotted key and
 resolved path.
+
+### `foreman task get <task-id>`
+
+Fetch the task projection by hitting `GET /api/tasks/:id`. The CLI
+pretty-prints the returned JSON. On success the projection carries:
+
+| Field | Meaning |
+|---|---|
+| `task_id` | The Foreman task id (matches the `:id` flag used to create it). |
+| `external_id` | The Beads issue id linked to this task, when the project's `task_provider` capabilities advertised `:create` at creation time. `null` when no provider was registered or the project has no `:create` capability. |
+| `status` | Lifecycle status (`open`, `approved`, `retrying`, …). |
+| `project_id` | Owning project. |
+
+Operators correlate the Foreman task with its Beads bead by reading
+`external_id` from this command's output — not from the
+`foreman task create` response, which only confirms acceptance.
 
 ### `foreman task retry --id <task-id> [--reason <text>]`
 
@@ -250,7 +305,6 @@ to `open`.
 |---|---|
 | `--id ID` | **Required.** Task identifier. |
 | `--reason TEXT` | Optional reason recorded on `TaskRetried`. |
-| `--format json` | Print the accepted command response as JSON. |
 
 The retry is rejected when:
 

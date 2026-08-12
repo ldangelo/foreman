@@ -173,7 +173,7 @@ defmodule ForemanServerWeb.CommandControllerTest do
              json_response(archive_conn, 409)
   end
 
-  test "POST /api/commands creates a task through the gateway" do
+  test "POST /api/commands task.create omits external_id when no provider linked a bead" do
     project_id = unique_id("proj")
 
     project_body = %{
@@ -194,7 +194,54 @@ defmodule ForemanServerWeb.CommandControllerTest do
     }
 
     conn2 = build_conn() |> post("/api/commands", task_body)
-    assert json_response(conn2, 201)["status"] == "accepted"
+    # The test project has no :create provider configured, so the
+    # Actor hook does not invoke a provider and payload.external_id
+    # is nil. The response OMITS the key entirely. The CLI treats
+    # absence as "no Bead linked yet".
+    response = json_response(conn2, 201)
+    result = response["result"]
+
+    assert %{"status" => "accepted"} = response
+    assert is_binary(result["task_id"])
+    refute Map.has_key?(result, "external_id")
+  end
+
+  defmodule WithExternalIdGateway do
+    def dispatch_operator(%{type: "task.create", payload: payload} = _command) do
+      task_id =
+        Map.get(payload, :task_id) ||
+          Map.get(payload, "task_id") ||
+          "task-stub"
+
+      {:ok,
+       %{
+         payload: %{
+           task_id: task_id,
+           project_id: "proj-stub",
+           external_id: "br-123"
+         }
+       }}
+    end
+  end
+
+  test "POST /api/commands task.create result surfaces external_id when provider links a bead" do
+    Application.put_env(
+      :foreman_server,
+      :command_gateway_module,
+      WithExternalIdGateway
+    )
+
+    conn =
+      build_conn()
+      |> post("/api/commands", %{
+        type: "task.create",
+        payload: %{task_id: "task-stub", project_id: "proj-stub", title: "demo"}
+      })
+
+    assert %{
+             "status" => "accepted",
+             "result" => %{"task_id" => "task-stub", "external_id" => "br-123"}
+           } = json_response(conn, 201)
   end
 
   test "aggregate_id is preserved when explicitly provided and matches" do

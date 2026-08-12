@@ -30,4 +30,10 @@ config :foreman_server, :task_provider,
   accepted_contract_versions: ["br.capabilities.v1"],
   providers: [ForemanServer.TaskProviders.BeadsAdapter]
 
+# Per-project Beads JSONL watcher + orphan janitor supervisors (TRD-014).
+# Both default `false` — operators opt in for production via
+# Application.put_env/3 at boot (or a release config that uses
+# REPLACE_OS_VARS / runtime env var substitution). Leave `false` for tests.
+config :foreman_server, :start_beads_watcher?, false
+config :foreman_server, :start_beads_orphan_janitor?, false
 import_config "#{config_env()}.exs"

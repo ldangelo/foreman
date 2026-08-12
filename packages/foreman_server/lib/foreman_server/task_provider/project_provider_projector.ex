@@ -19,6 +19,8 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   alias EventStore.{EventData, RecordedEvent}
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor
+  alias ForemanServer.TaskProviders.BeadsWatcherSupervisor
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -161,17 +163,66 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   defp register_or_unregister_project(project_id, task_provider) do
     provider_ref = Map.get(task_provider, :provider) || Map.get(task_provider, "provider")
     config = Map.get(task_provider, :config) || Map.get(task_provider, "config") || %{}
+    database_path = project_database_path(config)
 
     with {:ok, provider_module} <- resolve_provider_module(provider_ref),
          :ok <- preflight_provider(provider_module, config),
          :ok <- TaskProviderRegistry.register_for_project(project_id, provider_module, config) do
+      reconcile_beads_children(project_id, provider_module, database_path)
       :ok
     else
       {:error, reason} ->
         _ = TaskProviderRegistry.unregister_for_project(project_id, reason)
+        stop_project_children(project_id)
         :ok
     end
   end
+
+  # BeadsWatcher / BeadsOrphanJanitor are Beads-only. For other providers we
+  # must NOT spawn JSONL workers (they don't speak beads), and we MUST tear
+  # down any previously-running Beads children when the project switches away.
+  defp reconcile_beads_children(project_id, provider_module, database_path) do
+    if beads_provider?(provider_module) and is_binary(database_path) do
+      spawn_project_children(project_id, database_path)
+    else
+      stop_project_children(project_id)
+    end
+  end
+
+  defp beads_provider?(ForemanServer.TaskProviders.BeadsAdapter), do: true
+  defp beads_provider?(_), do: false
+
+  # Start per-project BeadsWatcher + BeadsOrphanJanitor children. Each
+  # supervisor call is gated on its own `:start_beads_*?` flag because the
+  # supervisor process is absent from the supervision tree when disabled —
+  # calling `start_child` against an unregistered module name would `:noproc`.
+  defp spawn_project_children(project_id, database_path)
+       when is_binary(project_id) and is_binary(database_path) do
+    if beads_watcher_enabled?(),
+      do: _ = BeadsWatcherSupervisor.start_child(project_id, database_path)
+
+    if beads_orphan_janitor_enabled?(),
+      do: _ = BeadsOrphanJanitorSupervisor.start_child(project_id, database_path)
+
+    :ok
+  end
+
+  defp spawn_project_children(_project_id, _database_path), do: :ok
+
+  defp stop_project_children(project_id) when is_binary(project_id) do
+    if beads_watcher_enabled?(), do: _ = BeadsWatcherSupervisor.stop_child(project_id)
+
+    if beads_orphan_janitor_enabled?(),
+      do: _ = BeadsOrphanJanitorSupervisor.stop_child(project_id)
+
+    :ok
+  end
+
+  defp beads_watcher_enabled?,
+    do: Application.get_env(:foreman_server, :start_beads_watcher?, false)
+
+  defp beads_orphan_janitor_enabled?,
+    do: Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false)
 
   defp preflight_provider(provider_module, config)
        when is_atom(provider_module) and is_map(config) do
@@ -251,6 +302,8 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
     end
   end
 
+  defp resolve_provider_module(_provider_module), do: {:error, :task_provider_not_configured}
+
   # Validate a full module name without interning arbitrary input.
   # Module.safe_concat/1 raises ArgumentError on invalid aliases (lowercase,
   # spaces, reserved words, etc.) BEFORE creating the atom, so a malformed
@@ -268,8 +321,6 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
       ArgumentError -> :not_full_module
     end
   end
-
-  defp resolve_provider_module(_provider_module), do: {:error, :task_provider_not_configured}
 
   defp project_database_path(config) when is_map(config) do
     Map.get(config, :database_path) || Map.get(config, "database_path")

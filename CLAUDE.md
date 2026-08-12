@@ -278,3 +278,77 @@ event store; it only materialises assets on disk.
 RunExecutor drives claim/complete/fail. Workflow.BootReconciliation
 drives orphan-reopen. `set_priority` and `add_dependency` stay at the
 adapter boundary until a separate operator surface TRD introduces them.
+
+## 13. Beads sync invariants (Go/Elixir CQRS slice)
+
+Atomic `task.create` and bidirectional Beads sync are governed by
+these invariants. Drift without a tracked TRD is a regression.
+
+- **Atomic `task.create`.** `Task.create` flows through the `Task`
+  aggregate in a four-stage pipeline (`actor.ex`: `do_dispatch/4`):
+  (1) `handle_command/2` produces the stage-1 event spec;
+  (2) `resolve_enriched_event_spec/3` invokes the project's configured
+  `:create` provider (`TaskProvider.Registry.route(:create, ...)` →
+  `provider.create/2`) to mint a Bead **before** the append;
+  (3) the actor re-decides `handle_command/2` with the Bead ID
+  populated as `payload.external_id` on the event spec;
+  (4) `append_and_commit/7` performs the append/ack/commit.
+  **Provider failure aborts the command entirely**: a `{:error, _}`
+  from `provider.create/2` returns `{:error, reason, state}` with no
+  append, no event, and no compensation (no Bead was minted to close).
+  **Conflict / re-decision failures compensate the Bead**: on the
+  bounded retry path, `compensate_for_conflict/3` closes the Bead via
+  `BeadsAdapter.complete/3` with the canonical `transition_comment`
+  so a successful stage 2 does not strand. The cache entry in
+  `state.in_flight_beads` is the single source of truth for "Bead
+  minted but not committed"; clearing it after compensation prevents
+  double-close on a subsequent retry. (Other append-failure modes
+  outside the conflict-retry path are not characterized here.)
+- **`external_id` surface contract.** The successful `task.create`
+  HTTP response (HTTP 201 with `status: "accepted"`,
+  `result: %{events: 1}`) does **not** carry `external_id` —
+  `CommandController.serialize/1` returns `%{events: 1}` for
+  `{:ok, _events}` and does not enrich the response with the
+  persisted event's fields. Operators retrieve the bead linkage by
+  reading the task projection (`GET /api/tasks/:id`,
+  surfaced via `foreman task get`), whose `external_id` field is
+  populated on the persisted `TaskCreated` event when the
+  project's `task_provider` capabilities advertised `:create`.
+  Provider failure aborts the command entirely (no event, no
+  successful response, no `external_id` surface).
+
+- **Operator-issued ≠ no-Bead.** A `task.create` issued by the
+  operator on a project with a configured `:create` provider still
+  gets an `external_id`. The presence/absence of `external_id` means
+  "Bead linked" vs "Bead not linked", **not** "operator-issued" vs
+  "system-issued".
+- **Beads → Foreman (inbound) is opt-in.** The
+  `BeadsWatcherSupervisor` is added to `ForemanServer.Application`
+  only when `config :foreman_server, :start_beads_watcher?, true`.
+  The watcher dispatches `task.create` for each new Bead it sees in
+  the project's JSONL; that `task.create` re-enters the same Actor
+  hook path, so a Bead originated by the watcher does **not** cause
+  another Bead to be minted (provider skips when the Bead already
+  exists).
+- **Orphan janitor is opt-in.** `BeadsOrphanJanitorSupervisor` is
+  added only when `config :foreman_server, :start_beads_orphan_janitor?,
+  true`. The janitor closes stranded issuance (Bead minted but no
+  Foreman task landed within the grace window) and stranded execution
+  (Foreman task terminal but Bead never closed by `RunExecutor`). Both
+  flags are required for production: watcher-only strands execution,
+  janitor-only strands inbound issuance.
+- **Adapter boundary holds.** `set_priority` and `add_dependency`
+  remain adapter callbacks. No operator surface promotes them into
+  Foreman commands in this slice.
+- **Doctor surface is honest about current scope.**
+  `foreman doctor task_provider` reports the fields it actually
+  emits per project: `project_id`, `healthy`, `provider_id`,
+  `contract_version`, `br_version`, `capabilities`, `sample_ready`,
+  `schema_validation_failures`, `janitor_enabled`, `janitor_running`,
+  `orphan_backlog`, and (on the unhappy branch) `error`. The
+  janitor fields are a CQRS read of the cached snapshot maintained
+  by `BeadsOrphanJanitor`'s own scan loop; the doctor MUST NOT
+  invoke `BeadsOrphanJanitor.run_scan/2` itself. Operators needing
+  finer-grained runtime visibility (per-scan event streams,
+  supervisor lifecycle transitions) should rely on the
+  `[:foreman_server, :task_provider, :beads, ...]` telemetry events.
