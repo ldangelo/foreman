@@ -82,6 +82,38 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor do
     end
   end
 
+  @doc """
+  Read the janitor's most recent scan counters for `project_id`.
+
+  Returns:
+    * `{:ok, counters}` — janitor is running and has completed at least one scan.
+    * `{:ok, nil}` — janitor is running but no scan has completed yet.
+    * `{:error, :not_running}` — no janitor is registered for `project_id`.
+
+  This is a SIDE-EFFECT-FREE read against the janitor's in-memory state.
+  It does NOT invoke `run_scan/2`, does NOT call `BeadsAdapter.complete/3`,
+  and does NOT dispatch through `CommandRouter`. The doctor and other
+  diagnostic surfaces MUST use this entry point; calling `run_scan/2`
+  from a read path would mutate provider state and violate the CQRS
+  query boundary.
+  """
+  @spec snapshot(String.t()) ::
+          {:ok, BeadsOrphanJanitor.counters() | nil} | {:error, :not_running}
+  def snapshot(project_id) when is_binary(project_id) do
+    # Guard: the supervisor (and its co-located Registry) may not be started
+    # when `:start_beads_orphan_janitor?` is false. `Registry.lookup/2` would
+    # crash with ArgumentError if the Registry process is not running, so
+    # we surface `:not_running` instead of letting the doctor crash.
+    if Process.whereis(__MODULE__) == nil do
+      {:error, :not_running}
+    else
+      case lookup(project_id) do
+        nil -> {:error, :not_running}
+        pid -> {:ok, BeadsOrphanJanitor.get_counters(pid)}
+      end
+    end
+  end
+
   @impl true
   def init(_opts) do
     case Registry.start_link(keys: :unique, name: @registry) do

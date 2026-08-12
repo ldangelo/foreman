@@ -254,6 +254,85 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
     end
   end
 
+  describe "get_counters/1 — CQRS read path (state.last_counters cache)" do
+    setup :set_mox_global
+    setup :verify_on_exit!
+
+    setup %{state: state} do
+      jsonl_path = state.database_path <> ".jsonl"
+      File.write!(jsonl_path, "")
+      on_exit(fn -> File.rm(jsonl_path) end)
+
+      expect(BrRunnerMock, :cmd, fn {:where, %{database_path: db_path}}, _config, _opts ->
+        {:ok, %{stdout: Jason.encode!(%{"jsonl_path" => db_path <> ".jsonl"})}}
+      end)
+
+      :ok
+    end
+
+    test "returns nil before any scan has completed", %{state: state} do
+      {:ok, pid} =
+        start_supervised(
+          {BeadsOrphanJanitor,
+           project_id: state.project_id,
+           database_path: state.database_path,
+           grace_ms: 60_000,
+           scan_interval_ms: 60_000,
+           name: :"janitor-counters-pre-#{state.project_id}"}
+        )
+
+      # grace_ms is 60s, so no scan has fired yet; last_counters is nil.
+      assert BeadsOrphanJanitor.get_counters(pid) == nil
+    end
+
+    test "returns cached counters after state.last_counters is populated", %{
+      state: state,
+      now_ms: now_ms
+    } do
+      jsonl_path = state.database_path <> ".jsonl"
+      File.write!(jsonl_path, foreman_line("foreman-young", now_ms - 5_000))
+
+      {:ok, pid} =
+        start_supervised(
+          {BeadsOrphanJanitor,
+           project_id: state.project_id,
+           database_path: state.database_path,
+           grace_ms: 60_000,
+           scan_interval_ms: 60_000,
+           name: :"janitor-counters-post-#{state.project_id}"}
+        )
+
+      # Inject the cache write directly to simulate handle_info(:scan, state)
+      # having completed without waiting for grace_ms.
+      :sys.replace_state(pid, fn s ->
+        %{s | last_counters: BeadsOrphanJanitor.run_scan(s, now_ms: now_ms)}
+      end)
+
+      assert %BeadsOrphanJanitor.Counters{lines_processed: 1, lines_retained: 1} =
+               BeadsOrphanJanitor.get_counters(pid)
+    end
+
+    test "counter cache is NOT recomputed on successive reads", %{state: state} do
+      {:ok, pid} =
+        start_supervised(
+          {BeadsOrphanJanitor,
+           project_id: state.project_id,
+           database_path: state.database_path,
+           grace_ms: 60_000,
+           scan_interval_ms: 60_000,
+           name: :"janitor-counters-cache-#{state.project_id}"}
+        )
+
+      # Three reads in a row; if get_counters/1 were to invoke run_scan/2,
+      # line counts would tick. They must stay nil (no scan yet).
+      Enum.each(1..3, fn _ ->
+        assert BeadsOrphanJanitor.get_counters(pid) == nil
+      end)
+
+      assert :sys.get_state(pid).last_counters == nil
+    end
+  end
+
   describe "telemetry events" do
     test "closed event carries bead_id, project_id, transition_comment, elapsed_ms", %{
       state: state,

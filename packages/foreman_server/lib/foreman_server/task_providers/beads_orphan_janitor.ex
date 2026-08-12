@@ -128,14 +128,20 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
           database_path: String.t(),
           jsonl_path: String.t(),
           grace_ms: non_neg_integer(),
-          scan_interval_ms: pos_integer()
+          scan_interval_ms: pos_integer(),
+          # Cached snapshot of the most recent run_scan/2 result. nil
+          # until the first scan completes. The doctor reads this via
+          # `get_counters/1`; the value is NEVER recomputed on read
+          # (CQRS read path: no `run_scan/2`, no `BeadsAdapter.complete/3`).
+          last_counters: counters() | nil
         }
 
   defstruct project_id: nil,
             database_path: nil,
             jsonl_path: nil,
             grace_ms: @grace_ms,
-            scan_interval_ms: @scan_interval_ms
+            scan_interval_ms: @scan_interval_ms,
+            last_counters: nil
 
   # ---------------------------------------------------------------------
   # Public API
@@ -164,6 +170,26 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
       shutdown: 5_000,
       type: :worker
     }
+  end
+
+  @doc """
+  Read the most recent scan counters for a janitor process.
+
+  This is a SIDE-EFFECT-FREE read against the janitor's in-memory state.
+  It does NOT invoke `run_scan/2`, does NOT call `BeadsAdapter.complete/3`,
+  and does NOT dispatch through `CommandRouter`. The doctor and other
+  diagnostic surfaces MUST use this entry point; calling `run_scan/2`
+  from a read path would mutate provider state and violate the CQRS
+  query boundary.
+
+  `server` is any value accepted by `GenServer.call/2` (pid, registered
+  name, or `{:via, Registry, _}`). Returns the cached counters, or `nil`
+  if no scan has completed yet. Errors from a dead/wedged process
+  propagate as `GenServer.call/2` exits (`:noproc`, `:timeout`).
+  """
+  @spec get_counters(GenServer.server()) :: counters() | nil
+  def get_counters(server) do
+    GenServer.call(server, :get_counters)
   end
 
   # ---------------------------------------------------------------------
@@ -225,6 +251,13 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
   end
 
   @impl true
+  def handle_call(:get_counters, _from, state) do
+    # Side-effect-free read; doctor and other diagnostic surfaces use this
+    # instead of run_scan/2 (which mutates BeadsAdapter.complete/3).
+    {:reply, state.last_counters, state}
+  end
+
+  @impl true
   def handle_info(:scan, state) do
     TaskProviderTelemetry.emit(
       @scan_started_event,
@@ -258,6 +291,10 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitor do
         lines_no_linked_at: counters.lines_no_linked_at
       }
     )
+
+    # Cache the counters in state for the CQRS read path (`get_counters/1`).
+    # The doctor reads this snapshot; it does NOT re-run the scan.
+    state = %{state | last_counters: counters}
 
     Process.send_after(self(), :scan, state.scan_interval_ms)
     {:noreply, state}
