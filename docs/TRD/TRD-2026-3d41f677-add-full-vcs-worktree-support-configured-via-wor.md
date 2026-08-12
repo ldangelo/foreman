@@ -599,9 +599,6 @@ Implementation must be careful in Elixir to retain worktree context in failure b
    `WorktreeCreated` only after the command is appended. On adapter
    failure, `RunExecutor` does NOT dispatch and NO `WorktreeCreated`
    event is appended.
-8. Return `%{working_directory: worktree_path, worktree_path:
-   worktree_path, operation_id: operation_id, implementation_key:
-   context.implementation_key}`.
 7b. If the `vcs.worktree.create` dispatch through `CommandRouter` fails
     AFTER `git worktree add` succeeded, branch on the worktree state
     observed at decision time (see Decision 4 for the full contract):
@@ -622,6 +619,11 @@ Implementation must be careful in Elixir to retain worktree context in failure b
       the orphan-record dispatch itself fails, `create_orphan_unrecorded`
       telemetry carries the path and correlation IDs, and the case
       degrades to operator-only visibility.
+8. Return `%{working_directory: worktree_path, worktree_path:
+   worktree_path, operation_id: operation_id, implementation_key:
+   context.implementation_key}`. Step 8 is the SUCCESS path only —
+   it is unreachable after step 7b fires because the phase is then
+   reported failed.
 
 The logical aggregate event and generic adapter lifecycle events intentionally both exist:
 - `vcs.worktree.create` records domain worktree state.
@@ -651,20 +653,34 @@ that mirrors the create pipeline:
    (`wt-<run_id>-<phase_id>`) and equal to the create `operation_id`,
    so `WorktreeCleaned` is keyed by the same id and the projection is
    symmetric.
-3. `VcsAdapter.Default` runs `git worktree remove` (no `--force`) and
-   returns `{:ok, ...}` only when the shell command exits zero. The
-   adapter does NOT append domain events; per the project architecture,
-   `CommandRouter` is the sole domain-event append point.
-4. On adapter success, `RunExecutor` dispatches `vcs.worktree.clean`
+3. **Idempotent absent-path**: `VcsAdapter.Default.clean_worktree/2`
+   first probes the worktree path. If the path is absent AND the
+   `git worktree list` entry for the path is absent, the adapter
+   returns `{:ok, %{noop?: true}}` and `RunExecutor` still dispatches
+   `vcs.worktree.clean` so `WorktreeCleaned` is appended and the
+   unresolved-worktree projection closes. This handles the case where
+   a prior operator manually removed the worktree.
+4. If the path is present, `VcsAdapter.Default` runs `git worktree
+   remove` (no `--force`) and returns `{:ok, ...}` only when the shell
+   command exits zero. The adapter does NOT append domain events; per
+   the project architecture, `CommandRouter` is the sole domain-event
+   append point.
+5. On adapter success, `RunExecutor` dispatches `vcs.worktree.clean`
    through `CommandRouter.dispatch_system/1`. The aggregate emits
-   `WorktreeCleaned` only after the command is appended. On adapter
-   failure, `RunExecutor` does NOT dispatch and NO `WorktreeCleaned`
-   event is appended.
-5. Emit `[:foreman_server, :vcs, :worktree, :clean]` on success or
-   `[:foreman_server, :vcs, :worktree, :clean_failed]` on failure. The
-   failure telemetry and the absent `WorktreeCleaned` together keep the
-   worktree in the unresolved-worktree projection.
-6. `RunExecutor` does NOT retry cleanup inline. The unresolved worktree
+   `WorktreeCleaned` only after the command is appended. If the
+   dispatch itself fails AFTER the side effect succeeded, the worktree
+   is gone on disk but no `WorktreeCleaned` is recorded. `RunExecutor`
+   emits `clean_dispatch_failed` telemetry with the correlation
+   tuple. The unresolved-worktree projection entry remains. The
+   worktree is NOT re-removed; `BootReconciliation` will resolve the
+   entry on the next boot via the idempotent absent-path branch in
+   step 3, which appends `WorktreeCleaned` and closes the projection.
+   `WorktreeCleaned` MUST NOT be fabricated inline.
+6. On adapter failure (clean error or dirty worktree), `RunExecutor`
+   does NOT dispatch `vcs.worktree.clean` and NO `WorktreeCleaned`
+   event is appended. Emit `clean_failed` telemetry. The worktree
+   stays in the unresolved-worktree projection.
+7. `RunExecutor` does NOT retry cleanup inline. The unresolved worktree
    is resolved only by `BootReconciliation` after operator visibility.
 
 `BootReconciliation` runs at supervisor boot. It re-reads the
@@ -686,6 +702,7 @@ Emit these events:
 | `[:foreman_server, :vcs, :worktree, :create_failed]` | create failure | `%{duration_ms: non_neg_integer}` | success metadata plus classified reason |
 | `[:foreman_server, :vcs, :worktree, :clean_failed]` | clean failure | `%{duration_ms: non_neg_integer}` | success metadata plus classified reason |
 | `[:foreman_server, :vcs, :worktree, :create_compensated]` | compensation success | `%{duration_ms: non_neg_integer}` | success metadata |
+| `[:foreman_server, :vcs, :worktree, :clean_dispatch_failed]` | clean side effect succeeded but `CommandRouter` dispatch of `vcs.worktree.clean` failed | `%{duration_ms: non_neg_integer}` | success metadata plus classified reason |
 | `[:foreman_server, :vcs, :worktree, :create_compensation_failed]` | compensation failure (e.g. TOCTOU dirtied worktree) | `%{duration_ms: non_neg_integer}` | success metadata plus classified reason |
 | `[:foreman_server, :vcs, :worktree, :create_orphan_unrecorded]` | fallback when even orphan-record dispatch fails | `%{}` | `run_id`, `phase_id`, `operation_id`, `worktree_path` |
 
@@ -796,24 +813,39 @@ Add tests:
      directory absent, NO `WorktreeCreated` appended, and the phase
      fails with the original dispatch error attached.
 4d. `append-failure records the orphan via WorktreeCreateOrphanRecorded
-    when the worktree is dirty (and surfaces it durably)`
-   - Stub the worktree path to start dirty (added uncommitted file).
-   - Stub `CommandRouter.dispatch` so the first `vcs.worktree.create`
-     fails.
-   - RunExecutor dispatches `vcs.worktree.create.orphan_record` (a
-     dedicated command whose only effect is to append
-     `WorktreeCreateOrphanRecorded`); the projection captures the
-     orphan path keyed by `operation_id`.
-   - If that orphan-record dispatch also fails, the failure is
-     emitted via `[:foreman_server, :vcs, :worktree,
-     :create_orphan_unrecorded]` telemetry with the worktree path
-     and correlation IDs; the case degrades to operator-only
-     visibility. The unresolved-worktree projection MUST NOT be
-     claimed as a fallback for this path.
-   - `BootReconciliation` scans the orphan-record projection and
-     attempts a clean (no `--force`) removal only when the worktree
-     is clean, mirroring the same dirty-skip rule as the rest of
-     reconciliation.
+   when the worktree is dirty (and surfaces it durably)`
+  - Stub the worktree path to start dirty (added uncommitted file).
+  - Stub `CommandRouter.dispatch` so the first `vcs.worktree.create`
+    fails.
+  - RunExecutor dispatches `vcs.worktree.create.orphan_record` (a
+    dedicated command whose only effect is to append
+    `WorktreeCreateOrphanRecorded`); the projection captures the
+    orphan path keyed by `operation_id`.
+  - If that orphan-record dispatch also fails, the failure is
+    emitted via `[:foreman_server, :vcs, :worktree,
+    :create_orphan_unrecorded]` telemetry with the worktree path
+    and correlation IDs; the case degrades to operator-only
+    visibility. The unresolved-worktree projection MUST NOT be
+    claimed as a fallback for this path.
+  - `BootReconciliation` scans the orphan-record projection and
+    attempts a clean (no `--force`) removal only when the worktree
+    is clean, mirroring the same dirty-skip rule as the rest of
+    reconciliation.
+4e. `cleanup side effect succeeds but vcs.worktree.clean dispatch fails`
+  - Stub `git worktree remove` to succeed and `CommandRouter.dispatch`
+    to fail; assert `clean_dispatch_failed` telemetry, NO
+    `WorktreeCleaned` appended, the worktree directory absent on
+    disk, and the unresolved-worktree projection entry remains.
+4f. `cleanup idempotent absent-path`
+  - Manually remove the worktree directory and `git worktree prune`
+    before cleanup runs; assert adapter returns `{:ok, %{noop?:
+    true}}`, `vcs.worktree.clean` is still dispatched, and
+    `WorktreeCleaned` is appended so the projection closes.
+4g. `boot reconciliation on absent-path resolves the projection`
+  - After a clean-dispatch-failed test scenario, restart the
+    supervisor; assert the absent-path branch of `clean_worktree`
+    appends `WorktreeCleaned` exactly once and the projection
+    closes.
 5. `workflow without worktree unchanged`
    - Existing phase with task `working_directory`.
    - Assert no VCS adapter calls and context cwd equals original task path.
