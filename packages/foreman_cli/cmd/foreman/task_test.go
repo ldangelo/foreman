@@ -168,6 +168,174 @@ func TestTaskApproveSendsOnlyRequiredFields(t *testing.T) {
 	}
 }
 
+// TestTaskCreateRejectsUnknownWorkflowType ensures the CLI rejects
+// any --workflow-type value outside the supported pair before the
+// server sees it, instead of silently falling back to the default.
+func TestTaskCreateRejectsUnknownWorkflowType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called for invalid input; body=%s", r.Body)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := taskCreate(c, []string{
+		"-id", "task-x",
+		"-project", "proj-1",
+		"-title", "Implement X",
+		"-workflow-type", "implement-bogus",
+		"-trd-path", "docs/trd.md",
+	})
+	if err == nil {
+		t.Fatalf("expected error for unsupported --workflow-type, got nil")
+	}
+	if !strings.Contains(err.Error(), "--workflow-type must be one of") {
+		t.Fatalf("error lacks selector guidance: %v", err)
+	}
+}
+
+// TestTaskCreateRequiresTrdPathForWorkflowType ensures that any
+// --workflow-type selector must be paired with a nonblank --trd-path.
+func TestTaskCreateRequiresTrdPathForWorkflowType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called when --trd-path missing; body=%s", r.Body)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := taskCreate(c, []string{
+		"-id", "task-x",
+		"-project", "proj-1",
+		"-title", "Implement X",
+		"-workflow-type", "implement-trd",
+	})
+	if err == nil {
+		t.Fatalf("expected error when --workflow-type is set without --trd-path")
+	}
+	if !strings.Contains(err.Error(), "--trd-path is required") {
+		t.Fatalf("error lacks trd-path guidance: %v", err)
+	}
+}
+
+// TestTaskCreateRejectsAbsoluteTrdPath ensures the CLI rejects
+// absolute --trd-path values, since the server expects a
+// project-relative path.
+func TestTaskCreateRejectsAbsoluteTrdPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called for absolute path; body=%s", r.Body)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := taskCreate(c, []string{
+		"-id", "task-x",
+		"-project", "proj-1",
+		"-title", "Implement X",
+		"-trd-path", "/etc/passwd",
+	})
+	if err == nil {
+		t.Fatalf("expected error for absolute --trd-path")
+	}
+	if !strings.Contains(err.Error(), "project-relative") {
+		t.Fatalf("error lacks relative-path guidance: %v", err)
+	}
+}
+
+// TestTaskCreateRejectsTraversingTrdPath ensures the CLI rejects
+// --trd-path values that traverse outside the project root.
+func TestTaskCreateRejectsTraversingTrdPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called for traversal; body=%s", r.Body)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := taskCreate(c, []string{
+		"-id", "task-x",
+		"-project", "proj-1",
+		"-title", "Implement X",
+		"-trd-path", "../outside.md",
+	})
+	if err == nil {
+		t.Fatalf("expected error for traversing --trd-path")
+	}
+	if !strings.Contains(err.Error(), "traverse outside the project root") {
+		t.Fatalf("error lacks traversal guidance: %v", err)
+	}
+}
+
+// TestTaskCreateValidEnvelopes asserts that the CLI passes the
+// --workflow-type and --trd-path fields through to the server when
+// they are present and valid, and trims surrounding whitespace.
+func TestTaskCreateValidEnvelopes(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantKey string
+		want    string
+	}{
+		{
+			name:    "implement-trd",
+			args:    []string{"-id", "t1", "-project", "p1", "-title", "T1", "-workflow-type", "implement-trd", "-trd-path", "docs/TRD-1.md"},
+			wantKey: "workflow_type",
+			want:    "implement-trd",
+		},
+		{
+			name:    "implement-trd-beads",
+			args:    []string{"-id", "t2", "-project", "p1", "-title", "T2", "-workflow-type", "implement-trd-beads", "-trd-path", "docs/TRD-2.md"},
+			wantKey: "workflow_type",
+			want:    "implement-trd-beads",
+		},
+		{
+			name:    "trim whitespace",
+			args:    []string{"-id", "t3", "-project", "p1", "-title", "T3", "-workflow-type", "  implement-trd  ", "-trd-path", "  docs/TRD-3.md  "},
+			wantKey: "workflow_type",
+			want:    "implement-trd",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captured, _ = io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer srv.Close()
+
+			c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+			if err := taskCreate(c, tc.args); err != nil {
+				t.Fatalf("taskCreate: %v", err)
+			}
+
+			var env commandEnvelope
+			if err := json.Unmarshal(captured, &env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			got, ok := env.Payload[tc.wantKey]
+			if !ok {
+				t.Fatalf("payload missing %q: %v", tc.wantKey, env.Payload)
+			}
+			if got != tc.want {
+				t.Fatalf("payload[%q] = %v, want %q", tc.wantKey, got, tc.want)
+			}
+
+			trdPath, ok := env.Payload["trd_path"]
+			if !ok {
+				t.Fatalf("payload missing trd_path: %v", env.Payload)
+			}
+			if strings.TrimSpace(trdPath.(string)) == "" {
+				t.Fatalf("trd_path is empty after trimming")
+			}
+		})
+	}
+}
+
 func keysOf(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

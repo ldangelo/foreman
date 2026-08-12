@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
@@ -71,14 +73,31 @@ func taskCreate(c *client.Client, args []string) error {
 	description := fs.String("description", "", "Task description")
 	status := fs.String("status", "open", "Initial status (default: open)")
 	taskType := fs.String("task-type", "", "Task type discriminator (legacy field; preserves existing task classification)")
-	workflowType := fs.String("workflow-type", "", "Workflow type used by server-side approval precedence (workflow_type || task_type || default)")
-	trdPath := fs.String("trd-path", "", "Path to the TRD document that drives this task; consumed by ForemanServer.Workflow.ImplementationContext")
+	workflowType := fs.String("workflow-type", "", "Implementation workflow selector; one of "+strings.Join(supportedWorkflowTypes(), ", "))
+	trdPath := fs.String("trd-path", "", "Project-relative TRD path; required when --workflow-type is set")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
 
 	if *taskID == "" || *projectID == "" || *title == "" {
 		return usageError(fs, "foreman task create: --id, --project, --title are required")
+	}
+
+	workflowTypeValue := strings.TrimSpace(*workflowType)
+	trdPathValue := strings.TrimSpace(*trdPath)
+
+	if workflowTypeValue != "" {
+		if !validWorkflowType(workflowTypeValue) {
+			return usageError(fs, "foreman task create: --workflow-type must be one of %s (got %q)", strings.Join(supportedWorkflowTypes(), ", "), workflowTypeValue)
+		}
+		if trdPathValue == "" {
+			return usageError(fs, "foreman task create: --trd-path is required when --workflow-type is set")
+		}
+	}
+	if trdPathValue != "" {
+		if err := validateProjectRelativePath("trd-path", trdPathValue); err != nil {
+			return err
+		}
 	}
 
 	payload := map[string]any{
@@ -100,16 +119,51 @@ func taskCreate(c *client.Client, args []string) error {
 	// workflow-name precedence used at approval time (workflow_type
 	// || task_type || default). Existing task_type classification is
 	// preserved for backward compatibility.
-	if *workflowType != "" {
-		payload["workflow_type"] = *workflowType
+	if workflowTypeValue != "" {
+		payload["workflow_type"] = workflowTypeValue
 	}
 
-	if *trdPath != "" {
-		payload["trd_path"] = *trdPath
+	if trdPathValue != "" {
+		payload["trd_path"] = trdPathValue
 	}
 
 	body := commandEnvelope{Type: "task.create", Payload: payload}
 	return postCommand(c, body)
+}
+
+// supportedWorkflowTypes lists the implementation workflow selectors
+// the server recognizes. Server-side approval precedence
+// (workflow_type || task_type || default) only resolves to a known
+// implementation manifest when the value matches; unknown values are
+// rejected at the CLI so the failure is visible rather than silently
+// falling back to the default task workflow.
+func supportedWorkflowTypes() []string {
+	return []string{"implement-trd", "implement-trd-beads"}
+}
+
+func validWorkflowType(s string) bool {
+	for _, v := range supportedWorkflowTypes() {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// validateProjectRelativePath rejects absolute paths and traversals
+// that could escape the project root. The server's
+// ImplementationContext re-validates via Path.safe_relative/2 and
+// rejects symlink escapes; this gate catches obvious mistakes at the
+// CLI boundary for a clearer error message.
+func validateProjectRelativePath(flagName, raw string) error {
+	if path.IsAbs(raw) {
+		return fmt.Errorf("foreman task create: --%s must be project-relative (got %q)", flagName, raw)
+	}
+	cleaned := path.Clean(raw)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, "/../") || strings.HasSuffix(cleaned, "/..") {
+		return fmt.Errorf("foreman task create: --%s must not traverse outside the project root (got %q)", flagName, raw)
+	}
+	return nil
 }
 
 func taskApprove(c *client.Client, args []string) error {
