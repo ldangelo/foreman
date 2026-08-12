@@ -18,7 +18,7 @@ end
 defmodule ForemanServer.CommandGatewayTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{CommandGateway, ProjectStore}
+  alias ForemanServer.{CommandGateway, ProjectStore, ProjectionStore}
 
   describe "envelope validation" do
     test "rejects command without command_id" do
@@ -646,6 +646,84 @@ defmodule ForemanServer.CommandGatewayTest do
       after
         :telemetry.detach(handler_id)
       end
+    end
+  end
+
+  describe "external_id boundary invariant (AC-020-7)" do
+    setup do
+      project_id = unique_id("project")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{project_id}",
+                 type: "project.register",
+                 payload: %{project_id: project_id, path: "/tmp/#{project_id}"}
+               })
+
+      %{project_id: project_id}
+    end
+
+    test "dispatch_operator task.create with external_id: nil is accepted", %{
+      project_id: project_id
+    } do
+      task_id = unique_id("task")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "implement",
+                   title: "boundary test",
+                   external_id: nil
+                 }
+               })
+    end
+
+    test "dispatch_operator task.create with non-nil external_id is rejected before Actor", %{
+      project_id: project_id
+    } do
+      task_id = unique_id("task")
+
+      assert {:error, :external_id_not_allowed_via_operator} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "implement",
+                   title: "boundary test",
+                   external_id: "foreman-abc"
+                 }
+               })
+
+      assert ProjectionStore.task_projection(task_id) == nil
+    end
+
+    test "dispatch_system task.create with non-nil external_id is accepted (watcher path)", %{
+      project_id: project_id
+    } do
+      task_id = unique_id("task")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "implement",
+                   title: "watcher import",
+                   external_id: "foreman-abc"
+                 }
+               })
     end
   end
 
