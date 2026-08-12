@@ -33,10 +33,16 @@ end
 defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
   use ExUnit.Case, async: false
 
+  import Mox
+
   alias ForemanServer.TaskProviders.BeadsOrphanJanitor
+  alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.FakeJanitor, as: Fake
 
   @moduletag :tmp_dir
+
+  setup :set_mox_global
+  setup :verify_on_exit!
 
   setup do
     :ets.new(:janitor_projection, [:named_table, :public, :set])
@@ -328,6 +334,85 @@ defmodule ForemanServer.TaskProviders.BeadsOrphanJanitorTest do
       assert counters.lines_tagged == 1
       assert counters.lines_retained == 1
       assert counters.lines_closed == 0
+    end
+  end
+
+  describe "init/1 — grace-window semantics (PRD AC-023-1)" do
+    test "no scan fires before grace_ms elapses", %{state: state} do
+      test_pid = self()
+      handler_id = "janitor-scan-pre-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :orphan, :janitor, :scan_started],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:scan_started, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      # The mocked `br where` resolves `jsonl_path` to `<database_path>.jsonl`.
+      # Pre-writing an empty file ensures the eventual scan (after grace) reads
+      # zero lines instead of emitting `[:jsonl_read_failed, ...]` telemetry.
+      jsonl_path = state.database_path <> ".jsonl"
+      File.write!(jsonl_path, "")
+
+      expect(BrRunnerMock, :cmd, fn {:where, %{database_path: db_path}}, _config, _opts ->
+        {:ok, %{stdout: Jason.encode!(%{"jsonl_path" => db_path <> ".jsonl"})}}
+      end)
+
+      {:ok, _pid} =
+        start_supervised(
+          {BeadsOrphanJanitor,
+           project_id: state.project_id,
+           database_path: state.database_path,
+           grace_ms: 200,
+           scan_interval_ms: 60_000,
+           name: :"janitor-grace-pre-#{state.project_id}"}
+        )
+
+      # Sleep well below grace_ms (200ms) — no scan should have fired.
+      Process.sleep(50)
+      refute_received {:scan_started, _}
+    end
+
+    test "scan fires after grace_ms elapses", %{state: state} do
+      test_pid = self()
+      handler_id = "janitor-scan-post-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:foreman_server, :task_provider, :beads, :orphan, :janitor, :scan_started],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:scan_started, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      jsonl_path = state.database_path <> ".jsonl"
+      File.write!(jsonl_path, "")
+
+      expect(BrRunnerMock, :cmd, fn {:where, %{database_path: db_path}}, _config, _opts ->
+        {:ok, %{stdout: Jason.encode!(%{"jsonl_path" => db_path <> ".jsonl"})}}
+      end)
+
+      {:ok, _pid} =
+        start_supervised(
+          {BeadsOrphanJanitor,
+           project_id: state.project_id,
+           database_path: state.database_path,
+           grace_ms: 100,
+           scan_interval_ms: 60_000,
+           name: :"janitor-grace-post-#{state.project_id}"}
+        )
+
+      # Sleep well above grace_ms (100ms) so the deferred :scan has fired.
+      Process.sleep(250)
+      assert_received {:scan_started, _}
     end
   end
 
