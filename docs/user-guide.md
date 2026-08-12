@@ -408,6 +408,11 @@ Unhealthy reports expose only the allowlisted error fields:
 `redacted_fields`. Raw `stderr` is never printed, even for
 `DATABASE_NOT_FOUND`.
 
+Watcher / janitor lifecycle state and per-project orphan-backlog
+output are **not** yet implemented in `foreman doctor task_provider`
+in this slice. The doctor reports only the fields listed above. For
+runtime visibility into those subsystems in the meantime, use the
+`[:foreman_server, :task_provider, :beads, ...]` telemetry events.
 
 ## 13. Project CRUD from the CLI
 

@@ -153,6 +153,12 @@ Unhealthy reports surface only the allowlisted error fields:
 `code`, `message`, `hint`, `exit_code`, `stderr_byte_count`, and
 `redacted_fields`. Raw `stderr` is never printed.
 
+Watcher / janitor lifecycle state and per-project orphan-backlog
+output are **not** yet implemented in the doctor's per-project report
+in this slice. The doctor reports only the fields listed above. For
+runtime visibility into those subsystems in the meantime, use the
+`[:foreman_server, :task_provider, :beads, ...]` telemetry events.
+
 ### `foreman workflow install`
 
 The CLI resolves the flag values to absolute paths via

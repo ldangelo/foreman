@@ -21,6 +21,46 @@ contains:
 | `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). This slice did not add a CLI; see the Go CLI slice when it lands. |
 | Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` has no `*.yaml`. |
 
+## Beads sync (atomic task.create + bidirectional sync)
+
+The Go/Elixir CQRS slice wires Beads (the `br` CLI) into Foreman so
+that projects with a configured `:create` task provider get
+atomic `task.create` (mint Bead + emit `TaskCreated` together) and,
+with the watcher enabled, inbound Beads appear as Foreman tasks.
+
+- **Atomic `task.create` (provider-backed projects).** For projects
+  with a configured `:create` provider, `POST /api/commands` with
+  `task.create` runs the four-stage actor pipeline: the aggregate
+  emits a stage-1 `TaskCreated` event spec, the actor calls
+  `provider.create/2` to mint a Bead, the actor re-decides with the
+  Bead ID as `payload.external_id`, and `CommandRouter` appends the
+  committed event. The Bead ID is surfaced in the HTTP response, so
+  `foreman task create` prints the linked Bead ID on stdout. Projects
+  without a `:create` provider take the no-op path: no Bead is
+  minted, no `external_id` is surfaced, and the `task.create`
+  response carries only the Foreman `task_id`.
+- **Beads → Foreman (inbound).** Opt in with
+  `config :foreman_server, :start_beads_watcher?, true`. The
+  `BeadsWatcherSupervisor` spawns one `BeadsWatcher` per registered
+  project; each watcher tails the project's JSONL and dispatches
+  `task.create` for new Beads that Foreman doesn't yet own.
+- **Orphan janitor.** Opt in with
+  `config :foreman_server, :start_beads_orphan_janitor?, true`. After a
+  grace window, `BeadsOrphanJanitor` closes Beads whose matching
+  Foreman task never landed (stranded issuance) or whose Foreman task
+  already terminated.
+- **Operator remediation.** `foreman task retry` is the remediation
+  path for tasks whose bound run is already terminal (see
+  `docs/user-guide.md` §16).
+
+Enablement, the per-project `task_provider` block, the doctor health
+check (`foreman doctor task_provider`), and the orphan janitor's
+opt-in semantics are documented in
+[`docs/user-guide.md`](./docs/user-guide.md) (§11–§12, §16). See
+[`docs/cli-reference.md`](./docs/cli-reference.md) for the CLI surface
+and [`CLAUDE.md`](./CLAUDE.md) §11–§13 for the architectural
+invariants.
+
 ## Task-provider boundary overview
 
 The Go/Elixir CQRS task-provider slice keeps task-tracker ownership on
@@ -33,7 +73,6 @@ the Beads side and splits Foreman's responsibilities by lifecycle:
 
 Enablement, the per-project `task_provider` block, and doctor output are
 documented in the [task-provider enablement guide](./docs/user-guide.md#11-task-provider-enablement).
-
 
 The agent runtime is an OTP-supervised, backend-agnostic façade over
 pluggable adapters. Callers register a module that implements
