@@ -704,12 +704,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> sanitize_slug()
   end
 
-  # Canonical Ensemble slug alphabet (matches the slugification rule in
-  # `trd-cli.js` and bead title generation): `[a-z0-9-]` only. Operators
-  # who name TRDs with uppercase letters, spaces, dots, or underscores
-  # get those folded to `-` so the scope tag remains shell-safe and bead
-  # title-safe. The slug is a human-readable scope tag, not an identity
-  # claim; the upstream `implementation_key` is the binding identity.
+  # Canonical slug alphabet for shell-safe, bead-title-safe scope tags:
+  # `[a-z0-9-]` only. Operators who name TRDs with uppercase letters,
+  # spaces, dots, or underscores get those folded to `-`. The slug is a
+  # human-readable scope tag, not an identity claim; the upstream
+  # `implementation_key` is the binding identity.
   defp sanitize_slug(value) when is_binary(value) do
     value
     |> String.replace(~r/[^a-z0-9]+/, "-")
