@@ -2015,6 +2015,72 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert {:ok, state} = RunExecutor.init({"run-atom", projection})
       assert length(state.phase_specs) == 1
     end
+
+    test "string-keyed :command phase advances past validate_phase_action and runs the configured command" do
+      # Mirror the persisted shape after a JSON round-trip through
+      # EventStore: the `TaskApproved` event payload is JSON-encoded,
+      # so on replay every key is a string and atom-valued fields like
+      # `action: :command` come back as the binary "command". Before
+      # the `phase_action/1` and `phase_value/2` fix, two bugs
+      # collided:
+      #
+      #   1. `validate_phase_action` read
+      #      `Map.get(phase_spec, :command)` (atom key only) and saw
+      #      nil, returning `{:invalid_phase_command, name}` and
+      #      terminating the run before `AgentRuntime.execute` was
+      #      called.
+      #
+      #   2. Even if validation passed, `execute_agent` matched
+      #      `case ... do :command -> ...`, which fails to match the
+      #      string "command", so the configured `/skill:...` would
+      #      silently fall through to `request.prompt`.
+      #
+      # The fix routes both call sites through `phase_action/1`
+      # (closed-string remap) and `phase_value/2` (atom/string key
+      # fallback) so the persisted shape is accepted end to end.
+      script_key = unique_id("strict-script")
+
+      LifecycleStore.put(script_key, %{
+        test_pid: self(),
+        adapter_results: [{:ok, "ok", %{}}]
+      })
+
+      configured_command = "/skill:regression-check --strict-cmd"
+      artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+      File.mkdir_p!(artifact_dir)
+
+      projection = %{
+        task_id: "task-strict",
+        project_id: "project-strict",
+        workflow_type: "implement",
+        workflow_snapshot: %{
+          "workflow_name" => "implement",
+          "phases" => [
+            %{
+              "action" => "command",
+              "name" => "strict-phase",
+              "command" => configured_command,
+              "artifact_template" => %{
+                "path" => Path.join([artifact_dir, "{run_id}-{task_id}.md"])
+              },
+              "context" => %{"script_key" => script_key}
+            }
+          ]
+        }
+      }
+
+      {:ok, state} = RunExecutor.init({"run-strict", projection})
+      assert length(state.phase_specs) == 1
+
+      # Drive :kickoff synchronously so the assertion below observes
+      # the exact message that TestAdapter forwards to the test pid.
+      # This bypasses the GenServer mailbox and avoids any
+      # `:transient` crash-restart noise; the validation under test
+      # runs entirely inside `handle_info/2`.
+      {:noreply, _next_state} = RunExecutor.handle_info(:kickoff, state)
+
+      assert_receive {:adapter_execute, ^configured_command, _context}, 1_000
+    end
   end
 
   defp kill_and_restart_dispatcher(_dispatcher) do

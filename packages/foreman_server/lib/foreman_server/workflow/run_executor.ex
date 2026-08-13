@@ -288,9 +288,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp validate_phase_action(phase_spec, _phase_index) do
-    case Map.get(phase_spec, :action) do
+    case phase_action(phase_spec) do
       :command ->
-        if is_binary(Map.get(phase_spec, :command)) and Map.get(phase_spec, :command) != "" do
+        command = phase_value(phase_spec, :command)
+
+        if is_binary(command) and command != "" do
           {:ok, :ok}
         else
           {:error, {:invalid_phase_command, phase_spec_name(phase_spec)}}
@@ -332,8 +334,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     request = build_request(state, phase_spec, phase_index, worktree_record)
 
     prompt =
-      case Map.get(phase_spec, :action) do
-        :command -> Map.get(phase_spec, :command) || request.prompt
+      case phase_action(phase_spec) do
+        :command -> phase_value(phase_spec, :command) || request.prompt
         _ -> request.prompt
       end
 
@@ -991,6 +993,46 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp project_id(state) do
     Map.get(state.task, :project_id) || Map.get(state.task, "project_id") || ""
+  end
+
+  # Phase specs reach the executor via the persisted workflow_snapshot,
+  # which `Approval.prepare/1` canonicalizes to string keys (see the
+  # `render_strict_fields` contract in `command_gateway.ex`). The
+  # `TaskApproved` event is JSON-encoded for EventStore persistence, so
+  # on replay the snapshot is fully string-keyed AND atom-valued
+  # fields like `action: :command` come back as the binary "command".
+  # A few atom keys (`:action`, `:phase_id`, `:index`) survive the
+  # in-process `Catalog.resolve_workflow/3` atomization for callers
+  # that build the snapshot from memory. Use `phase_value/2` to read
+  # either shape (atom- or string-keyed map) so the validation and
+  # execution paths cannot drift across the two. `Map.fetch` is
+  # preferred to `||` so a phase value of `false` (or any other non-nil
+  # falsy) is preserved instead of silently falling through to the
+  # alternate key. Values are returned untouched — never coerced to
+  # atoms — because user-defined command strings can legitimately
+  # collide with atoms that happen to be loaded by the runtime.
+  defp phase_value(phase_spec, key) when is_atom(key) do
+    case Map.fetch(phase_spec, key) do
+      {:ok, value} -> value
+      :error -> Map.get(phase_spec, Atom.to_string(key))
+    end
+  end
+
+  # The `action` field is closed: only `:command` and `:bash` are
+  # meaningful. After a JSON round-trip the value comes back as the
+  # binary "command" or "bash" instead of the atom; remap those two
+  # to their atom twins so downstream `case` matches keep working.
+  # Any other binary (or atom) is preserved unchanged — including
+  # unexpected or malformed values — so `validate_phase_action/2`'s
+  # fall-through clause handles them by its current default of
+  # `{:ok, :ok}`. Tightening that to reject unknown actions is a
+  # separate concern and out of scope for this snapshot-shape fix.
+  defp phase_action(phase_spec) do
+    case phase_value(phase_spec, :action) do
+      "command" -> :command
+      "bash" -> :bash
+      other -> other
+    end
   end
 
   defp phase_spec_name(phase_spec) do
