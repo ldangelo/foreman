@@ -261,4 +261,139 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert_received {:event, [:foreman_server, :workflow, :manifest, :reload, :ok], "seed.yaml"}
     end
   end
+
+  describe "worktree normalization" do
+    test "legacy manifest without worktree block leaves resolved phase shape unchanged", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      write_manifest(tmp, "legacy")
+      start_catalog(tmp, name)
+
+      assert {:ok, workflow} = Catalog.load("legacy.yaml")
+      phase = hd(workflow.phases)
+      refute Map.has_key?(phase, :worktree)
+      assert workflow.digest == nil
+    end
+
+    test "worktree block normalizes to atom-keyed form with defaults", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      File.write!(
+        Path.join(tmp, "with-wt.yaml"),
+        """
+        name: with-wt
+        phases:
+          - name: p1
+            prompt: p.md
+            worktree:
+              base: main
+        """
+      )
+
+      File.write!(Path.join(tmp, "prompts/p.md"), "p")
+      start_catalog(tmp, name)
+
+      assert {:ok, workflow} = Catalog.load("with-wt.yaml")
+      phase = hd(workflow.phases)
+
+      assert phase.worktree == %{
+               enabled: true,
+               base: "main",
+               branch: "foreman/{run_id}/{phase}",
+               path: nil,
+               cleanup: "always"
+             }
+
+      assert is_binary(workflow.digest) and byte_size(workflow.digest) == 16
+    end
+
+    test "worktree.enabled: false still declares worktree and changes digest", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      File.write!(
+        Path.join(tmp, "disabled-wt.yaml"),
+        """
+        name: disabled-wt
+        phases:
+          - name: p1
+            prompt: p.md
+            worktree:
+              enabled: false
+              branch: custom
+        """
+      )
+
+      File.write!(Path.join(tmp, "prompts/p.md"), "p")
+      start_catalog(tmp, name)
+
+      assert {:ok, workflow} = Catalog.load("disabled-wt.yaml")
+      phase = hd(workflow.phases)
+
+      assert phase.worktree.enabled == false
+      assert phase.worktree.branch == "custom"
+      assert is_binary(workflow.digest) and byte_size(workflow.digest) == 16
+    end
+
+    test "digest changes when worktree config changes", %{tmp: tmp, server_name: name} do
+      base = """
+      name: digest-wt
+      phases:
+        - name: p1
+          prompt: p.md
+          worktree:
+            base: main
+      """
+
+      modified = """
+      name: digest-wt
+      phases:
+        - name: p1
+          prompt: p.md
+          worktree:
+            base: develop
+      """
+
+      File.write!(Path.join(tmp, "prompts/p.md"), "p")
+      File.write!(Path.join(tmp, "digest-wt.yaml"), base)
+      start_catalog(tmp, name)
+
+      assert {:ok, workflow_v1} = Catalog.load("digest-wt.yaml")
+      digest_v1 = workflow_v1.digest
+
+      File.write!(Path.join(tmp, "digest-wt.yaml"), modified)
+      :ok = Catalog.reload()
+
+      assert {:ok, workflow_v2} = Catalog.load("digest-wt.yaml")
+      digest_v2 = workflow_v2.digest
+
+      assert is_binary(digest_v1) and is_binary(digest_v2)
+      assert digest_v1 != digest_v2
+    end
+
+    test "digest stable across re-loads of identical manifest", %{tmp: tmp, server_name: name} do
+      File.write!(
+        Path.join(tmp, "stable-wt.yaml"),
+        """
+        name: stable-wt
+        phases:
+          - name: p1
+            prompt: p.md
+            worktree:
+              base: main
+              branch: feat/x
+        """
+      )
+
+      File.write!(Path.join(tmp, "prompts/p.md"), "p")
+      start_catalog(tmp, name)
+
+      assert {:ok, w1} = Catalog.load("stable-wt.yaml")
+      :ok = Catalog.reload()
+      assert {:ok, w2} = Catalog.load("stable-wt.yaml")
+      assert w1.digest == w2.digest
+    end
+  end
 end

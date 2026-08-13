@@ -169,6 +169,178 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                  end
   end
 
+  describe "worktree validation" do
+    test "accepts a phase without a worktree block (legacy compatible)" do
+      path =
+        write_temp_yaml!("""
+        name: legacy
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      refute Map.has_key?(hd(workflow["phases"]), "worktree")
+    end
+
+    test "accepts an empty worktree block (defaults to enabled)" do
+      path =
+        write_temp_yaml!("""
+        name: wt-default
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              base: main
+        """)
+
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "accepts worktree with all valid fields" do
+      path =
+        write_temp_yaml!("""
+        name: wt-full
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              enabled: true
+              base: main
+              branch: feature/x
+              path: implement
+              cleanup: always
+        """)
+
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "accepts enabled: false (other fields must still validate)" do
+      path =
+        write_temp_yaml!("""
+        name: wt-disabled
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              enabled: false
+        """)
+
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "rejects absolute path even when enabled: false" do
+      path =
+        write_temp_yaml!("""
+        name: wt-disabled-abs
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              enabled: false
+              path: /abs/should/be/rejected
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"worktree\.path\" must be relative/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects non-boolean enabled" do
+      path =
+        write_temp_yaml!("""
+        name: wt-enabled-bad
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              enabled: maybe
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"worktree.enabled\" must be a boolean/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects blank base" do
+      path =
+        write_temp_yaml!("""
+        name: wt-blank-base
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              base: ""
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"worktree.base\" must be a non-empty string/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects absolute path" do
+      path =
+        write_temp_yaml!("""
+        name: wt-abs
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              path: /tmp/abs
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"worktree.path\" must be relative/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects path with .. traversal" do
+      path =
+        write_temp_yaml!("""
+        name: wt-traverse
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              path: ../escape
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"worktree\.path\" must not contain "\.\." traversal/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects invalid cleanup enum value" do
+      path =
+        write_temp_yaml!("""
+        name: wt-cleanup
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              cleanup: on_success
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/\"worktree.cleanup\" must be one of: always, never/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "accepts cleanup: never" do
+      path =
+        write_temp_yaml!("""
+        name: wt-never
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              cleanup: never
+        """)
+
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+  end
+
   defp write_temp_yaml!(contents) do
     directory =
       Path.join(System.tmp_dir!(), "workflow-interpreter-#{System.unique_integer([:positive])}")

@@ -220,7 +220,127 @@ defmodule ForemanServer.Workflow.Interpreter do
               "workflow template #{path} phase #{index} must define a non-empty \"name\" key"
         else
           validate_phase_actions!(phase, index, path)
+          validate_worktree!(phase, index, path)
         end
+    end
+  end
+
+  defp validate_worktree!(phase, index, path) do
+    case Map.get(phase, "worktree") do
+      nil ->
+        :ok
+
+      worktree when is_map(worktree) ->
+        validate_worktree_map!(phase, index, path, worktree)
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree\" must be a mapping"
+    end
+  end
+
+  defp validate_worktree_map!(phase, index, path, worktree) do
+    case Map.get(worktree, "enabled") do
+      nil ->
+        :ok
+
+      true ->
+        :ok
+
+      false ->
+        :ok
+
+      "true" ->
+        :ok
+
+      "false" ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.enabled\" must be a boolean"
+    end
+
+    validate_worktree_string_field!(worktree, "base", phase, index, path)
+    validate_worktree_string_field!(worktree, "branch", phase, index, path)
+    validate_worktree_path!(worktree, phase, index, path)
+    validate_worktree_cleanup!(worktree, phase, index, path)
+    :ok
+  end
+
+  defp validate_worktree_string_field!(worktree, key, phase, index, path) do
+    case Map.get(worktree, key) do
+      nil ->
+        :ok
+
+      "" ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.#{key}\" must be a non-empty string"
+
+      value when is_binary(value) ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.#{key}\" must be a non-empty string"
+    end
+  end
+
+  defp validate_worktree_path!(worktree, phase, index, path) do
+    case Map.get(worktree, "path") do
+      nil ->
+        :ok
+
+      "" ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must be a non-empty relative path (no leading slash, no \"..\" traversal)"
+
+      value when is_binary(value) ->
+        cond do
+          String.starts_with?(value, "/") ->
+            raise Workflow.MissingRequiredPhaseError,
+              message:
+                "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must be relative (absolute paths rejected)"
+
+          path_has_traversal?(value) ->
+            raise Workflow.MissingRequiredPhaseError,
+              message:
+                "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must not contain \"..\" traversal"
+
+          true ->
+            :ok
+        end
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must be a non-empty relative path"
+    end
+  end
+
+  defp path_has_traversal?(value) do
+    value
+    |> Path.split()
+    |> Enum.any?(fn segment -> segment == ".." end)
+  end
+
+  defp validate_worktree_cleanup!(worktree, phase, index, path) do
+    case Map.get(worktree, "cleanup") do
+      nil ->
+        :ok
+
+      value when value in ["always", "never"] ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.cleanup\" must be one of: always, never"
     end
   end
 

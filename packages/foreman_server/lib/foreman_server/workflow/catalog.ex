@@ -368,40 +368,111 @@ defmodule ForemanServer.Workflow.Catalog do
 
   defp resolve_workflow(catalog, workflow, path) do
     try do
-      resolved = %{
+      resolved_phases =
+        Enum.map(workflow["phases"], fn phase ->
+          resolved_phase =
+            phase
+            |> Map.put(:prompt_path, AssetCatalog.resolve_prompt(catalog, phase["prompt"]))
+            |> Map.put(:artifact_template, phase["artifact"])
+            |> Map.put(:command, phase["command"])
+            |> Map.put(:required_file, phase["requiredFile"])
+            |> Map.put(:bash, phase["bash"])
+            |> Map.put(:index, phase["index"])
+            |> Map.put(:models, phase["models"])
+            |> Map.put(:max_turns, phase["maxTurns"])
+            |> Map.put(:mail, phase["mail"])
+            |> maybe_put_worktree(phase)
+
+          action =
+            cond do
+              is_binary(phase["command"]) and phase["command"] != "" -> :command
+              is_binary(phase["bash"]) and phase["bash"] != "" -> :bash
+              true -> :prompt
+            end
+
+          Map.put(resolved_phase, :action, action)
+        end)
+
+      base = %{
         name: workflow["name"],
         description: workflow["description"],
-        phases:
-          Enum.map(workflow["phases"], fn phase ->
-            resolved_phase =
-              phase
-              |> Map.put(:prompt_path, AssetCatalog.resolve_prompt(catalog, phase["prompt"]))
-              |> Map.put(:artifact_template, phase["artifact"])
-              |> Map.put(:command, phase["command"])
-              |> Map.put(:required_file, phase["requiredFile"])
-              |> Map.put(:bash, phase["bash"])
-              |> Map.put(:index, phase["index"])
-              |> Map.put(:models, phase["models"])
-              |> Map.put(:max_turns, phase["maxTurns"])
-              |> Map.put(:mail, phase["mail"])
-
-            action =
-              cond do
-                is_binary(phase["command"]) and phase["command"] != "" -> :command
-                is_binary(phase["bash"]) and phase["bash"] != "" -> :bash
-                true -> :prompt
-              end
-
-            Map.put(resolved_phase, :action, action)
-          end),
-        manifest_path: path,
-        digest: workflow["digest"]
+        phases: resolved_phases,
+        manifest_path: path
       }
+
+      resolved =
+        if any_phase_declares_worktree?(workflow["phases"]) do
+          Map.put(base, :digest, canonical_digest(base))
+        else
+          Map.put(base, :digest, workflow["digest"])
+        end
 
       {:ok, resolved}
     rescue
       e in [KeyError] -> {:error, {:resolution_failed, Exception.message(e)}}
     end
+  end
+
+  # Only add the `:worktree` key when the raw phase declared a worktree
+  # block. Legacy manifests (no worktree key) keep the same resolved
+  # phase shape they have always had.
+  defp maybe_put_worktree(resolved_phase, raw_phase) do
+    if Map.has_key?(raw_phase, "worktree") do
+      Map.put(resolved_phase, :worktree, normalize_worktree(raw_phase))
+    else
+      resolved_phase
+    end
+  end
+
+  # Returns the normalized worktree map for a phase, or nil when the phase
+  # does not declare a worktree block. The Interpreter has already enforced
+  # schema rules; this only re-keys and applies defaults.
+  defp normalize_worktree(phase) do
+    case Map.get(phase, "worktree") do
+      nil ->
+        nil
+
+      raw when is_map(raw) ->
+        %{
+          enabled: normalize_worktree_enabled(Map.get(raw, "enabled")),
+          base: normalize_worktree_optional_string(Map.get(raw, "base")),
+          branch: normalize_worktree_branch(Map.get(raw, "branch")),
+          path: normalize_worktree_optional_string(Map.get(raw, "path")),
+          cleanup: normalize_worktree_cleanup(Map.get(raw, "cleanup"))
+        }
+    end
+  end
+
+  defp normalize_worktree_enabled(nil), do: true
+  defp normalize_worktree_enabled(true), do: true
+  defp normalize_worktree_enabled(false), do: false
+  defp normalize_worktree_enabled("true"), do: true
+  defp normalize_worktree_enabled("false"), do: false
+
+  defp normalize_worktree_optional_string(nil), do: nil
+  defp normalize_worktree_optional_string(value) when is_binary(value) and value != "", do: value
+
+  defp normalize_worktree_branch(nil), do: "foreman/{run_id}/{phase}"
+  defp normalize_worktree_branch(value) when is_binary(value) and value != "", do: value
+
+  defp normalize_worktree_cleanup(nil), do: "always"
+  defp normalize_worktree_cleanup("always"), do: "always"
+  defp normalize_worktree_cleanup("never"), do: "never"
+
+  defp any_phase_declares_worktree?(raw_phases) do
+    Enum.any?(raw_phases, fn phase -> Map.has_key?(phase, "worktree") end)
+  end
+
+  defp canonical_digest(resolved) do
+    serialized = %{
+      name: resolved.name,
+      description: resolved.description,
+      phases: resolved.phases
+    }
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(serialized))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
   end
 
   defp load_one_prompt(path, state) do
