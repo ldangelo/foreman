@@ -4,6 +4,8 @@ defmodule ForemanServer.Aggregates.VcsOperationTest do
   alias ForemanServer.Aggregates.VcsOperation
   alias ForemanServer.Aggregates.VcsOperation.State
 
+  alias EventStore.RecordedEvent
+
   defp default_state, do: VcsOperation.initial_state()
 
   describe "initial_state/0" do
@@ -18,13 +20,32 @@ defmodule ForemanServer.Aggregates.VcsOperationTest do
   end
 
   describe "handle_command/2 — vcs.worktree.create" do
-    test "emits WorktreeCreated event" do
-      cmd = %{type: "vcs.worktree.create", payload: %{operation_id: "op-1"}}
+    test "emits WorktreeCreated event with correlation tuple and worktree_path" do
+      cmd = %{
+        type: "vcs.worktree.create",
+        payload: %{
+          operation_id: "op-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt",
+          branch: "foreman/run-1/phase-1",
+          base_ref: "abc123",
+          cleanup: "always"
+        }
+      }
 
       assert {:ok, spec} = VcsOperation.handle_command(default_state(), cmd)
       assert spec.event_type == "WorktreeCreated"
       assert spec.stream_id == "vcs:op-1"
       assert spec.payload.operation_id == "op-1"
+      assert spec.payload.project_id == "proj-1"
+      assert spec.payload.run_id == "run-1"
+      assert spec.payload.phase_id == "phase-1"
+      assert spec.payload.worktree_path == "/tmp/wt"
+      assert spec.payload.branch == "foreman/run-1/phase-1"
+      assert spec.payload.base_ref == "abc123"
+      assert spec.payload.cleanup == "always"
     end
 
     test "rejects when operation_id is missing" do
@@ -32,6 +53,236 @@ defmodule ForemanServer.Aggregates.VcsOperationTest do
 
       assert {:error, {:missing_or_invalid, :operation_id}} =
                VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when project_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create",
+        payload: %{operation_id: "op-1", run_id: "r", phase_id: "p", worktree_path: "/x"}
+      }
+
+      assert {:error, {:missing_or_invalid, :project_id}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when run_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create",
+        payload: %{operation_id: "op-1", project_id: "p", phase_id: "ph", worktree_path: "/x"}
+      }
+
+      assert {:error, {:missing_or_invalid, :run_id}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when phase_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create",
+        payload: %{operation_id: "op-1", project_id: "p", run_id: "r", worktree_path: "/x"}
+      }
+
+      assert {:error, {:missing_or_invalid, :phase_id}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when worktree_path is missing" do
+      cmd = %{
+        type: "vcs.worktree.create",
+        payload: %{operation_id: "op-1", project_id: "p", run_id: "r", phase_id: "ph"}
+      }
+
+      assert {:error, {:missing_or_invalid, :worktree_path}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+  end
+
+  describe "handle_command/2 — vcs.worktree.clean" do
+    test "emits WorktreeCleaned event with correlation tuple when operation exists" do
+      state = %State{
+        default_state()
+        | exists?: true,
+          operation_id: "op-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          status: "created"
+      }
+
+      cmd = %{
+        type: "vcs.worktree.clean",
+        payload: %{
+          operation_id: "op-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt"
+        }
+      }
+
+      assert {:ok, spec} = VcsOperation.handle_command(state, cmd)
+      assert spec.event_type == "WorktreeCleaned"
+      assert spec.stream_id == "vcs:op-1"
+      assert spec.payload.operation_id == "op-1"
+      assert spec.payload.project_id == "proj-1"
+      assert spec.payload.run_id == "run-1"
+      assert spec.payload.phase_id == "phase-1"
+      assert spec.payload.worktree_path == "/tmp/wt"
+    end
+
+    test "rejects when correlation fields are missing" do
+      cmd = %{type: "vcs.worktree.clean", payload: %{operation_id: "op-1"}}
+
+      assert {:error, {:missing_or_invalid, _}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when correlation IDs do not match the existing operation" do
+      state = %State{
+        default_state()
+        | exists?: true,
+          operation_id: "op-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          status: "created"
+      }
+
+      cmd = %{
+        type: "vcs.worktree.clean",
+        payload: %{
+          operation_id: "op-2",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error, :correlation_mismatch} =
+               VcsOperation.handle_command(state, cmd)
+    end
+  end
+
+  describe "apply_event/2 — WorktreeCreated/WorktreeCleaned (typed codec path)" do
+    test "WorktreeCreated populates correlation tuple and worktree config" do
+      state = default_state()
+
+      event = %{
+        event_type: "WorktreeCreated",
+        payload: %{
+          operation_id: "wt-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt",
+          branch: "foreman/run-1/phase-1",
+          base_ref: "deadbeef",
+          cleanup: "always"
+        }
+      }
+
+      assert %State{} = new_state = VcsOperation.apply_event(state, event)
+      assert new_state.exists? == true
+      assert new_state.operation_id == "wt-1"
+      assert new_state.project_id == "proj-1"
+      assert new_state.run_id == "run-1"
+      assert new_state.phase_id == "phase-1"
+      assert new_state.status == "created"
+      assert new_state.worktree_path == "/tmp/wt"
+      assert new_state.branch == "foreman/run-1/phase-1"
+      assert new_state.base_ref == "deadbeef"
+      assert new_state.cleanup == "always"
+    end
+
+    test "WorktreeCreated recorded event path also decodes correctly" do
+      state = default_state()
+
+      recorded = %RecordedEvent{
+        event_id: "00000000-0000-0000-0000-000000000001",
+        stream_uuid: "vcs:wt-2",
+        stream_version: 1,
+        event_type: "WorktreeCreated",
+        data: %{
+          operation_id: "wt-2",
+          project_id: "proj-2",
+          run_id: "run-2",
+          phase_id: "phase-2",
+          worktree_path: "/tmp/wt2"
+        }
+      }
+
+      assert %State{} = new_state = VcsOperation.apply_event(state, recorded)
+      assert new_state.operation_id == "wt-2"
+      assert new_state.project_id == "proj-2"
+      assert new_state.run_id == "run-2"
+      assert new_state.phase_id == "phase-2"
+      assert new_state.worktree_path == "/tmp/wt2"
+    end
+
+    test "WorktreeCleaned preserves correlation and marks terminal" do
+      state = %State{
+        exists?: true,
+        operation_id: "wt-1",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        status: "created",
+        worktree_path: "/tmp/wt",
+        branch: "foreman/run-1/phase-1",
+        base_ref: "deadbeef",
+        cleanup: "always",
+        terminal?: false
+      }
+
+      event = %{
+        event_type: "WorktreeCleaned",
+        payload: %{
+          operation_id: "wt-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt"
+        }
+      }
+
+      assert %State{} = new_state = VcsOperation.apply_event(state, event)
+      assert new_state.status == "cleaned"
+      assert new_state.terminal? == true
+      assert new_state.operation_id == "wt-1"
+      assert new_state.project_id == "proj-1"
+      assert new_state.run_id == "run-1"
+      assert new_state.phase_id == "phase-1"
+      assert new_state.worktree_path == "/tmp/wt"
+    end
+
+    test "WorktreeCleaned with nil worktree_path preserves the prior path" do
+      state = %State{
+        exists?: true,
+        operation_id: "wt-1",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        status: "created",
+        worktree_path: "/tmp/wt",
+        branch: "foreman/run-1/phase-1",
+        base_ref: "deadbeef",
+        cleanup: "always",
+        terminal?: false
+      }
+
+      event = %{
+        event_type: "WorktreeCleaned",
+        payload: %{
+          operation_id: "wt-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert %State{} = new_state = VcsOperation.apply_event(state, event)
+      assert new_state.status == "cleaned"
+      assert new_state.terminal? == true
+      assert new_state.worktree_path == "/tmp/wt"
     end
   end
 

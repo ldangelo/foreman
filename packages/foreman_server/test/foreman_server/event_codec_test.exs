@@ -15,7 +15,9 @@ defmodule ForemanServer.EventCodecTest do
     WorkerHeartbeat,
     WorkerStarted,
     WorkerUnresponsive,
-    WorkerExited
+    WorkerExited,
+    WorktreeCreated,
+    WorktreeCleaned
   }
 
   describe "decode!/2 pass-through" do
@@ -299,6 +301,81 @@ defmodule ForemanServer.EventCodecTest do
       assert "RunBlocked" in EventCodec.registered()
       assert "RunFlaggedStuck" in EventCodec.registered()
       assert "RunPaused" in EventCodec.registered()
+      assert "WorktreeCreated" in EventCodec.registered()
+      assert "WorktreeCleaned" in EventCodec.registered()
+    end
+  end
+
+  describe "WorktreeCreated/WorktreeCleaned round-trip" do
+    test "decodes WorktreeCreated from an atom-keyed map" do
+      data = %{
+        operation_id: "wt-1",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        worktree_path: "/tmp/wt",
+        branch: "foreman/run-1/phase-1",
+        base_ref: "deadbeef",
+        cleanup: "always"
+      }
+
+      assert %WorktreeCreated{} = decoded = EventCodec.decode!("WorktreeCreated", data)
+      assert decoded.operation_id == "wt-1"
+      assert decoded.project_id == "proj-1"
+      assert decoded.run_id == "run-1"
+      assert decoded.phase_id == "phase-1"
+      assert decoded.worktree_path == "/tmp/wt"
+      assert decoded.branch == "foreman/run-1/phase-1"
+      assert decoded.base_ref == "deadbeef"
+      assert decoded.cleanup == "always"
+    end
+
+    test "decodes WorktreeCleaned from an atom-keyed map" do
+      data = %{
+        operation_id: "wt-1",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        worktree_path: "/tmp/wt",
+        cleanup_observed: "removed"
+      }
+
+      assert %WorktreeCleaned{} = decoded = EventCodec.decode!("WorktreeCleaned", data)
+      assert decoded.operation_id == "wt-1"
+      assert decoded.project_id == "proj-1"
+      assert decoded.run_id == "run-1"
+      assert decoded.phase_id == "phase-1"
+      assert decoded.worktree_path == "/tmp/wt"
+      assert decoded.cleanup_observed == "removed"
+    end
+
+    test "WorktreeCreated enforces correlation tuple on decode" do
+      assert_raise ArgumentError, ~r/missing enforced keys.*:operation_id/, fn ->
+        EventCodec.decode!("WorktreeCreated", %{project_id: "p", run_id: "r", phase_id: "ph"})
+      end
+    end
+
+    test "WorktreeCleaned enforces correlation tuple on decode" do
+      assert_raise ArgumentError, ~r/missing enforced keys.*:operation_id/, fn ->
+        EventCodec.decode!("WorktreeCleaned", %{project_id: "p", run_id: "r", phase_id: "ph"})
+      end
+    end
+
+    test "decode_recorded!/1 rebuilds WorktreeCreated from a RecordedEvent-shaped map" do
+      recorded = %{
+        event_type: "WorktreeCreated",
+        data: %{
+          operation_id: "wt-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt"
+        }
+      }
+
+      assert %WorktreeCreated{} = decoded = EventCodec.decode_recorded!(recorded)
+      assert decoded.operation_id == "wt-1"
+      assert decoded.worktree_path == "/tmp/wt"
     end
   end
 end
