@@ -330,8 +330,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
                ProviderErrorInput.from_br_envelope(%{
                  "code" => "sync_merge_pending_unknown",
                  "level" => "warning",
-                 "message" =>
-                   "Read-only command is proceeding with automatic sync disabled",
+                 "message" => "Read-only command is proceeding with automatic sync disabled",
                  "inspection_error" => "database '/tmp/x.db' is missing",
                  "remediation" => "Run `br doctor --json` and restore access before mutating."
                })

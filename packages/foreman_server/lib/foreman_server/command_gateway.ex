@@ -394,6 +394,7 @@ defmodule ForemanServer.CommandGateway do
       {:ok, prepared.workflow_snapshot || %{}}
     end
   end
+
   # Strict approval rendering per TRD Decision 11.
   #
   # Materialize the snapshot's `phases[*].command` and
