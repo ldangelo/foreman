@@ -420,6 +420,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       task_id: task_id,
       project_id: project_id,
       task_type: "plan",
+      external_id: task_id,
       title: "Plan #{task_id}",
       description: "Plan task description for #{task_id}"
     })
