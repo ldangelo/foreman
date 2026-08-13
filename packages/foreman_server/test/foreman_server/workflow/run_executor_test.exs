@@ -1707,6 +1707,75 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
+  # --------------------------------------------------------------------
+  # Claim-failure lifecycle (kickoff branch fix)
+  # When `maybe_claim_task` returns `{:error, reason}` the executor MUST
+  # dispatch both `task.execution_fail` AND `run.fail` before stopping,
+  # so the projections transition out of `in_progress` instead of
+  # staying stuck forever.
+  # --------------------------------------------------------------------
+
+  test "claim failure dispatches task.execution_fail and run.fail so projections reach failed" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("claim-fail-project")
+    task_id = unique_id("claim-fail-task")
+    run_id = unique_id("claim-fail-run")
+    script_key = unique_id("claim-fail-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("claim-fail-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      send(test_pid, {:claim_failed, request})
+      {:error, %{exit_code: 1, stderr: "br update rejected claim", stdout: ""}}
+    end)
+
+    start_run_executor!(run_id, task_id)
+
+    task =
+      poll_until(
+        fn ->
+          case ProjectionStore.task_projection(task_id) do
+            %{} = t -> if t.status == "failed", do: {:ok, t}, else: nil
+            _ -> nil
+          end
+        end,
+        "task projection to reach failed"
+      )
+
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{} = r -> if r.status == "failed", do: {:ok, r}, else: nil
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed"
+      )
+
+    assert task.status == "failed"
+    assert is_binary(task.failure_reason)
+    assert task.failure_reason =~ ":claim_failure"
+
+    assert run.status == "failed"
+    assert run.terminal? == true
+  end
+
   describe "init/1 with persisted (string-keyed) projection shape" do
     test "populates phase_specs from string-keyed workflow_snapshot.phases" do
       # The persisted projection is what ProjectionStore.task_projection/1

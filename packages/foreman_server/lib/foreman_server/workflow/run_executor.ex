@@ -179,6 +179,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
           {:error, reason} ->
             Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}")
+
+            _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
+            _ = dispatch_run_fail(state, reason)
             {:stop, :normal, %{state | status: :failed}}
         end
     end
@@ -1069,6 +1072,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Identity.run_complete_command_id(state.run_id),
       "run:#{state.run_id}",
       %{run_id: state.run_id}
+    )
+  end
+
+  defp dispatch_run_fail(state, reason) do
+    dispatch_system_command(
+      "run.fail",
+      Identity.run_fail_command_id(state.run_id),
+      "run:#{state.run_id}",
+      %{run_id: state.run_id, reason: inspect(reason)}
     )
   end
 
