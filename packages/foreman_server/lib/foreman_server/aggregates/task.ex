@@ -370,7 +370,7 @@ defmodule ForemanServer.Aggregates.Task do
            ),
          :ok <- require_exists(state, task_id),
          :ok <- require_run_matches_bound(state, ack_id),
-         :ok <- require_in_progress(state) do
+         :ok <- require_retriable(state) do
       {:ok,
        %{
          stream_id: "task:#{task_id}",
@@ -493,11 +493,20 @@ defmodule ForemanServer.Aggregates.Task do
   defp require_executing(%State{status: "in_progress"}), do: :ok
   defp require_executing(%State{status: status}), do: {:error, {:task_not_executing, status}}
 
-  # `task.run_terminated` MUST only fire while the run it names is the run
-  # the task is currently bound to — otherwise a stale subscriber would
-  # rewrite the acknowledgement against a previous run.
   defp require_in_progress(%State{status: "in_progress"}), do: :ok
   defp require_in_progress(%State{status: status}), do: {:error, {:task_not_in_progress, status}}
+
+  # `task.retry` is the remediation for a terminal bound run. The
+  # post-`run.fail` invariant (see RunExecutor.emit_phase_failure/4)
+  # flips the task to `failed` in the same dispatch chain as the run
+  # terminal transition, so the retry path accepts both `in_progress`
+  # (legacy pre-invariant path where only the run went terminal) AND
+  # `failed` (post-invariant path where both flipped). Anything else
+  # (`closed`, `merged`, etc.) is rejected — the operator must
+  # re-approve rather than retry.
+  defp require_retriable(%State{status: "in_progress"}), do: :ok
+  defp require_retriable(%State{status: "failed"}), do: :ok
+  defp require_retriable(%State{status: status}), do: {:error, {:task_not_retriable, status}}
 
   defp require_run_matches_bound(%State{run_id: run_id}, run_id)
        when is_binary(run_id) and run_id != "",

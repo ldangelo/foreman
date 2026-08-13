@@ -489,7 +489,7 @@ defmodule ForemanServer.Aggregates.TaskTest do
           status: "open"
       }
 
-      assert {:error, {:task_not_in_progress, "open"}} =
+      assert {:error, {:task_not_retriable, "open"}} =
                Task.handle_command(state, %{
                  type: "task.retry",
                  payload: %{
@@ -497,6 +497,35 @@ defmodule ForemanServer.Aggregates.TaskTest do
                    acknowledged_run_id: "run-xyz"
                  }
                })
+    end
+
+    test "accepts the post-invariant failed state (task flipped to failed by emit_phase_failure)" do
+      # The `RunExecutor.emit_phase_failure/4` invariant dispatches
+      # `run.fail` BEFORE `task.execution_fail`, so a phase timeout
+      # leaves the task in `failed` with the run terminal. The retry
+      # path is the remediation for that exact state — a stale
+      # `require_in_progress` precondition would block it.
+      state = %State{
+        Task.initial_state()
+        | exists?: true,
+          task_id: "t-1",
+          run_id: "run-xyz",
+          status: "failed"
+      }
+
+      assert {:ok, event_spec} =
+               Task.handle_command(state, %{
+                 type: "task.retry",
+                 payload: %{
+                   task_id: "t-1",
+                   acknowledged_run_id: "run-xyz",
+                   reason: "phase_timeout_recovery"
+                 }
+               })
+
+      assert event_spec.event_type == "TaskRetried"
+      assert event_spec.payload.previous_run_id == "run-xyz"
+      assert event_spec.payload.reason == "phase_timeout_recovery"
     end
   end
 
