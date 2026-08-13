@@ -135,6 +135,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @impl true
   def init({run_id, task_projection}) do
     phase_specs = extract_phase_specs(task_projection)
+
     plan_context =
       case plan_context_for(task_projection) do
         {:ok, ctx} -> ctx
@@ -974,6 +975,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Map.get(state.task, :id) || Map.get(state.task, "id") || ""
   end
 
+  # Provider-facing identifier for the task. When the task projection
+  # carries an `external_id` (the provider's identifier, e.g. the Beads
+  # issue id `foreman-zuk0`), use that — adapters translate it directly
+  # into `br update --claim <id>` and other provider-specific commands.
+  # Falls back to `task_id` for tasks that were never linked to a
+  # provider issue (e.g. tests that bypass the import path).
+  defp provider_task_id(state) do
+    case Map.get(state.task, :external_id) || Map.get(state.task, "external_id") do
+      nil -> task_id(state)
+      "" -> task_id(state)
+      id -> id
+    end
+  end
+
   defp project_id(state) do
     Map.get(state.task, :project_id) || Map.get(state.task, "project_id") || ""
   end
@@ -999,7 +1014,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp maybe_claim_task(state) do
     case provider_enabled?(project_id(state)) do
       true ->
-        claim(project_id(state), task_id(state), task_provider_actor()) |> to_lifecycle_result()
+        claim(project_id(state), provider_task_id(state), task_provider_actor())
+        |> to_lifecycle_result()
 
       false ->
         :ok
@@ -1011,7 +1027,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       true ->
         case complete(
                project_id(state),
-               task_id(state),
+               provider_task_id(state),
                state.run_id,
                completion_artifact_path(state)
              ) do
@@ -1033,7 +1049,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
             artifact_path: ArtifactTemplate.path(state, phase_spec, index)
           })
 
-        case fail(project_id(state), task_id(state), state.run_id, failure_reason) do
+        case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
           {:ok, _issue} -> dispatch_task_execution_fail(state, reason)
           {:error, failure_reason} -> {:error, failure_reason}
         end

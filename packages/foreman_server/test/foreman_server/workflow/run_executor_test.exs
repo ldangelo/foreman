@@ -1609,16 +1609,32 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     })
   end
 
-  defp seed_project_task_and_run!(project_id, task_id, run_id, workflow_snapshot, task_provider) do
+  defp seed_project_task_and_run!(
+         project_id,
+         task_id,
+         run_id,
+         workflow_snapshot,
+         task_provider,
+         external_id \\ nil
+       ) do
     seed_project!(project_id, task_provider)
     approval_id = unique_id("approval")
 
-    dispatch_system!("task.create", "task:#{task_id}", %{
+    create_payload = %{
       task_id: task_id,
       project_id: project_id,
       task_type: "implement",
       title: "RunExecutor #{task_id}"
-    })
+    }
+
+    create_payload =
+      if is_binary(external_id) and external_id != "" do
+        Map.put(create_payload, :external_id, external_id)
+      else
+        create_payload
+      end
+
+    dispatch_system!("task.create", "task:#{task_id}", create_payload)
 
     dispatch_system!("task.approve", "task:#{task_id}", %{
       task_id: task_id,
@@ -1774,6 +1790,123 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     assert run.status == "failed"
     assert run.terminal? == true
+  end
+
+  test "provider-facing lifecycle calls use the task's external_id, not the Foreman task_id" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("extid-project")
+    # Foreman's task_id (e.g. `foreman-mcp-trd`) and the provider's
+    # external_id (e.g. Beads issue id `foreman-zuk0`) MUST differ —
+    # otherwise the provider CLI rejects the claim with
+    # `Error: Issue not found: <foreman-task-id>` because Beads only
+    # knows the issue by its short hash. Both identifiers are routed
+    # through `unique_id/1` to stay isolated across tests that share
+    # the EventStore, while preserving the `task_id != external_id`
+    # relationship that exercises the routing fix.
+    task_id = "foreman-task-#{unique_id("")}"
+    external_id = "foreman-beads-#{unique_id("")}"
+    run_id = unique_id("extid-run")
+    script_key = unique_id("extid-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("extid-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path),
+      external_id
+    )
+
+    register_project!(project_id, database_path)
+
+    # Assert the runner receives the EXTERNAL ID, not the Foreman task_id.
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:update, %{flags: ["--claim", external_id]}}
+      assert runner_project_config["database_path"] == database_path
+      assert opts == [timeout_ms: 30_000]
+
+      send(test_pid, {:claim_cmd, request, runner_project_config})
+
+      {:ok,
+       %{
+         exit_code: 0,
+         stdout:
+           Jason.encode!(
+             issue_payload(external_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: ""
+       }}
+    end)
+
+    # And that close uses the external_id as well.
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: external_id}}
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+      send(test_pid, {:close_cmd, request, runner_project_config})
+
+      {:ok,
+       %{
+         exit_code: 0,
+         stdout:
+           Jason.encode!(
+             issue_payload(external_id, "closed", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+             })
+           ),
+         stderr: ""
+       }}
+    end)
+
+    # The TestAdapter returns whatever tuple is stored under
+    # `:adapter_results` (defaulting to `{:ok, "artifact body", %{}}`).
+    # The downstream consumer (`AgentRuntime.Invocation.run_one/4`) only
+    # pattern-matches the 3-tuple shape — a 2-tuple makes the case
+    # fall through to `CaseClauseError`, which `rescue`s into an error
+    # result. That makes the phase fail, which (under `:transient`
+    # restart) loops the executor through a second `:kickoff` and a
+    # second claim, blowing past our `expect/4` call budget. Match the
+    # shape the contract actually consumes.
+    LifecycleStore.put(script_key, %{test_pid: test_pid, adapter_results: [{:ok, "ok", %{}}]})
+
+    start_run_executor!(run_id, task_id)
+
+    # Confirm the claim was routed with the external_id.
+    assert_receive {:claim_cmd, {:update, %{flags: ["--claim", ^external_id]}}, _}, 1_000
+
+    assert {:adapter_execute, "Run phase implement", context} = receive_message()
+    assert context["run_id"] == run_id
+    # Foreman-internal context still carries the Foreman task_id.
+    assert context["task_id"] == task_id
+
+    assert_receive {:close_cmd, {:close, %{id: ^external_id}}, _}, 1_000
+
+    assert %{status: "closed"} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "closed"} = t -> {:ok, t}
+                   other -> :retry
+                 end
+               end,
+               "task projection to reach closed"
+             )
+
+    assert File.read!(artifact_path) == "ok"
+
+    # Pinning the boundary: the provider never sees the Foreman task_id.
+    refute_receive {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}, _}, 100
+    refute_receive {:close_cmd, {:close, %{id: ^task_id}}, _}, 100
   end
 
   describe "init/1 with persisted (string-keyed) projection shape" do
