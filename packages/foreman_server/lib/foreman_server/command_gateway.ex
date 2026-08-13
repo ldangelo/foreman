@@ -279,6 +279,19 @@ defmodule ForemanServer.CommandGateway do
     end)
   end
 
+  # Project the trusted `workflow_type` / `task_type` from the task
+  # projection into the payload. Projection wins over any operator
+  # value because the operator's authority is task creation, not task
+  # reclassification. Used by `enrich_approval_via_workflow/2` so
+  # `Approval.prepare/2` selects the manifest the task was registered
+  # for rather than whatever the operator happens to send at approval.
+  defp maybe_put_from_projection(payload, projection, key) do
+    case Map.get(projection, key) do
+      nil -> payload
+      value -> Map.put(payload, key, value)
+    end
+  end
+
   # Canonical stream ID for a domain entity. Mirrors the convention used by
   # `Aggregate.Aggregator` and the existing actor tests (`run:abc`,
   # `task:abc`, `project:abc`). Any caller that supplies an `aggregate_id`
@@ -317,14 +330,18 @@ defmodule ForemanServer.CommandGateway do
     approval_id = command_id
     approved_at = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    # task_type is read from the task projection (single source of truth);
-    # an operator-supplied value is ignored so a client cannot route
-    # approval to a workflow the task was never registered for.
+    # workflow_type and task_type are read from the task projection
+    # (single source of truth); an operator-supplied value is ignored
+    # so a client cannot route approval to a workflow the task was
+    # never registered for. workflow_type is copied first so
+    # `Approval.prepare/2`'s `workflow_type || task_type` precedence
+    # selects the implement-trd / implement-trd-beads manifest when
+    # the task was registered with one, even if task_type is something
+    # generic like "implement".
     payload_with_type =
-      case Map.get(task_projection, :task_type) do
-        nil -> payload
-        task_type -> Map.put(payload, :task_type, task_type)
-      end
+      payload
+      |> maybe_put_from_projection(task_projection, :workflow_type)
+      |> maybe_put_from_projection(task_projection, :task_type)
 
     with {:ok, prepared} <-
            Approval.prepare(payload_with_type, approval_id: approval_id),

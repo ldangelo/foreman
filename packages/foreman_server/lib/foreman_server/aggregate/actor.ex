@@ -705,11 +705,20 @@ defmodule ForemanServer.Aggregate.Actor do
   defp to_string_keys(other), do: other
   # Convert a stored %RecordedEvent{} to an event_spec map with string keys.
   # Used for returning existing events on duplicate idempotent hits.
+  #
+  # `recorded.data` is the raw Elixir term that was passed to
+  # `TermOrJsonSerializer.serialize/1` at append time. Because that
+  # serializer uses `:erlang.term_to_binary/1`, atom keys survive the
+  # round-trip into Postgres and come back as atoms. Apply
+  # `to_string_keys/1` so the duplicate-dispatch path returns the same
+  # shape as the fresh-dispatch path (`do_commit/4` returns
+  # `to_string_keys(event_spec)`), keeping the idempotent contract
+  # symmetric with the original.
   defp recorded_event_to_event_spec(recorded) do
     %{
       "stream_id" => recorded.stream_uuid,
       "event_type" => recorded.event_type,
-      "payload" => recorded.data
+      "payload" => to_string_keys(recorded.data)
     }
   end
 

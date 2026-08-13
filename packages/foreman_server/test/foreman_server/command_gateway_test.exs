@@ -15,6 +15,29 @@ defmodule ForemanServer.CommandGatewayTestHelper do
   end
 end
 
+defmodule ForemanServer.CommandGatewayTest.SuccessfulBrRunnerStub do
+  @behaviour ForemanServer.TaskProviders.BrRunner
+
+  @impl true
+  def cmd(_request, _project_config, _opts) do
+    bead_id = "br-stub-#{System.unique_integer([:positive])}"
+
+    {:ok,
+     %{
+       stdout:
+         Jason.encode!(%{
+           "id" => bead_id,
+           "title" => "stubbed",
+           "status" => "open",
+           "priority" => 2,
+           "issue_type" => "task"
+         }),
+       stderr: "",
+       exit_code: 0
+     }}
+  end
+end
+
 defmodule ForemanServer.CommandGatewayTest do
   use ExUnit.Case, async: false
 
@@ -276,6 +299,363 @@ defmodule ForemanServer.CommandGatewayTest do
                  aggregate_id: "task:missing-task",
                  type: "task.approve",
                  payload: %{task_id: "missing-task"}
+               })
+    end
+  end
+
+  describe "task.approve implementation context freezing" do
+    import Mox
+    alias ForemanServer.TaskProviders.BrRunnerMock
+    alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+    alias ForemanServer.Workflow.AssetCatalog
+    alias ForemanServer.Workflow.Catalog
+
+    setup do
+      # Isolate the gateway from background execution: terminate the
+      # Dispatcher child so `TaskApproved` projections don't trigger a
+      # run that races `on_exit` fixture cleanup. Without this, the
+      # supervisor of RunExecutor crashes with
+      # "prompt file … is not tracked by the workflow catalog" between
+      # tests. We restart the child in `on_exit` once fixture cleanup
+      # has settled. ProjectionStore drops the broadcast on the floor
+      # because there is no subscriber while the dispatcher is down.
+      assert :ok =
+               Supervisor.terminate_child(
+                 ForemanServer.Application,
+                 ForemanServer.Workflow.Dispatcher
+               )
+
+      on_exit(fn ->
+        assert {:ok, _pid} =
+                 Supervisor.restart_child(
+                   ForemanServer.Application,
+                   ForemanServer.Workflow.Dispatcher
+                 )
+      end)
+
+      ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+
+      on_exit(fn ->
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      # Set up a real git repo at a tmp path so ImplementationContext can
+      # resolve HEAD, project_root, and a tracked TRD blob.
+      suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+
+      project_root =
+        Path.join(System.tmp_dir!(), "cg-ic-test-#{suffix}-#{System.unique_integer([:positive])}")
+
+      File.rm_rf!(project_root)
+      File.mkdir_p!(Path.join([project_root, "docs", "TRD"]))
+      File.write!(Path.join([project_root, "docs", "TRD", "x.md"]), "# TRD\nbody\n")
+      File.mkdir_p!(Path.join(project_root, ".beads"))
+      File.write!(Path.join([project_root, ".beads", "config.json"]), Jason.encode!(%{}))
+
+      for {args, label} <- [
+            {["init", "-q", "-b", "main"], "init"},
+            {["config", "user.email", "test@example.com"], "email"},
+            {["config", "user.name", "Test"], "name"},
+            {["add", "."], "add"},
+            {["commit", "-q", "-m", "init"], "commit"}
+          ] do
+        {_, 0} = System.cmd("git", ["-C", project_root | args], stderr_to_stdout: true)
+      end
+
+      on_exit(fn -> File.rm_rf!(project_root) end)
+
+      # Set up a test-scoped Workflow.Catalog with the workflow types the
+      # gateway's freeze_implementation_context/2 keys off of.
+      workflow_root =
+        Path.join(System.tmp_dir!(), "cg-ic-wf-#{suffix}-#{System.unique_integer([:positive])}")
+
+      File.rm_rf!(workflow_root)
+      File.mkdir_p!(Path.join(workflow_root, "prompts"))
+
+      write_workflow = fn name, body ->
+        File.write!(Path.join(workflow_root, "#{name}.yaml"), body)
+      end
+
+      write_workflow.("implement-trd", """
+      name: implement-trd
+      description: Implement against a frozen TRD document.
+      phases:
+        - name: only
+          prompt: do.md
+      """)
+
+      write_workflow.("implement-trd-beads", """
+      name: implement-trd-beads
+      description: Implement against a frozen TRD document with a Beads task tree.
+      phases:
+        - name: only
+          prompt: do.md
+      """)
+
+      write_workflow.("task", """
+      name: task
+      description: Generic non-worktree workflow.
+      phases:
+        - name: only
+          prompt: do.md
+      """)
+
+      File.write!(Path.join([workflow_root, "prompts", "do.md"]), "do")
+
+      prev_poll = Application.get_env(:foreman_server, :workflow_catalog_poll_ms)
+      Application.put_env(:foreman_server, :workflow_catalog_poll_ms, 60_000)
+
+      prev_server = Application.get_env(:foreman_server, :workflow_catalog)
+      server_name = :"cg_ic_catalog_#{suffix}"
+      Application.put_env(:foreman_server, :workflow_catalog, server_name)
+
+      catalog = AssetCatalog.new(workflow_root)
+      start_supervised!({Catalog, name: server_name, catalog: catalog})
+      :ok = Catalog.reload()
+
+      on_exit(fn ->
+        if prev_server,
+          do: Application.put_env(:foreman_server, :workflow_catalog, prev_server),
+          else: Application.delete_env(:foreman_server, :workflow_catalog)
+
+        if prev_poll,
+          do: Application.put_env(:foreman_server, :workflow_catalog_poll_ms, prev_poll)
+
+        File.rm_rf!(workflow_root)
+      end)
+
+      # Register the project at the git repo root with a task provider
+      # pointing at the Beads database inside the repo.
+      project_id = unique_id("project")
+      task_id = unique_id("task")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{project_id}",
+                 type: "project.register",
+                 payload: %{
+                   project_id: project_id,
+                   path: project_root,
+                   task_provider: %{
+                     provider: :beads,
+                     config: %{"database_path" => "/tmp/cg-ic-#{suffix}.db"}
+                   }
+                 }
+               })
+
+      :ok =
+        TaskProviderRegistry.register_for_project(
+          project_id,
+          ForemanServer.TaskProviders.BeadsAdapter,
+          %{"database_path" => "/tmp/cg-ic-#{suffix}.db"}
+        )
+
+      on_exit(fn ->
+        _ = TaskProviderRegistry.unregister_for_project(project_id, :test_cleanup)
+      end)
+
+      %{
+        project_id: project_id,
+        task_id: task_id,
+        project_root: project_root,
+        trd_path: "docs/TRD/x.md"
+      }
+    end
+
+    setup :set_mox_global
+    setup :verify_on_exit!
+
+    setup do
+      stub_with(BrRunnerMock, ForemanServer.CommandGatewayTest.SuccessfulBrRunnerStub)
+      :ok
+    end
+
+    test "implement-trd task freezes workflow_snapshot.implementation with the five required fields",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      command_id = unique_id("approval")
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      # The advisory fix: the projected workflow_type wins over the
+      # projected task_type so the right manifest is loaded.
+      # TaskApproved deliberately omits top-level workflow_name; it lives
+      # under workflow_snapshot.workflow_name in the serialized payload.
+
+      assert payload["workflow_snapshot"]["workflow_name"] == "implement-trd"
+
+      implementation = get_in(payload, ["workflow_snapshot", "implementation"])
+
+      assert is_map(implementation)
+
+      assert implementation["trd_path"] == trd_path
+      assert implementation["trd_path_argument"] == Jason.encode!(trd_path)
+      assert implementation["project_root"] != nil
+      assert String.length(implementation["source_revision"]) in [40, 64]
+      assert String.length(implementation["implementation_key"]) == 64
+      # beads_database_path is omitted for the non-beads workflow.
+      refute Map.has_key?(implementation, "beads_database_path")
+    end
+
+    test "implement-trd-beads task includes beads_database_path in the frozen implementation context",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd-beads",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      assert payload["workflow_snapshot"]["workflow_name"] == "implement-trd-beads"
+
+      implementation = get_in(payload, ["workflow_snapshot", "implementation"])
+      assert is_map(implementation)
+      assert implementation["beads_database_path"] =~ "cg-ic-"
+    end
+
+    test "legacy task without workflow_type passes workflow_snapshot through unchanged",
+         %{project_id: project_id, task_id: task_id} do
+      # Use a generic task_type whose manifest does not require a
+      # frozen implementation context.
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   priority: 2,
+                   title: "legacy"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      assert payload["workflow_snapshot"]["workflow_name"] == "task"
+      refute get_in(payload, ["workflow_snapshot", "implementation"])
+    end
+
+    test "idempotent re-approval preserves the previously frozen implementation context",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      command_id = unique_id("approval")
+
+      assert {:ok, %{"payload" => first_payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      first_implementation = get_in(first_payload, ["workflow_snapshot", "implementation"])
+      assert is_map(first_implementation)
+
+      # Re-send with the same command_id. The duplicate-dispatch path
+      # returns the stored `TaskApproved` event verbatim, so the rebuilt
+      # payload MUST equal the original payload — including the frozen
+      # implementation context. This guards the `recorded_event_to_event_spec`
+      # contract against future serializers that skip key normalization.
+      assert {:ok, %{"payload" => second_payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      second_implementation = get_in(second_payload, ["workflow_snapshot", "implementation"])
+      assert second_implementation == first_implementation
+      assert second_payload == first_payload
+    end
+
+    test "ImplementationContext.build failure propagates instead of being swallowed",
+         %{project_id: project_id, task_id: task_id} do
+      # trd_path escapes the project root via ../ so build/1 must fail.
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: "../escape.md",
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:error, {:implementation_context_failed, _}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
                })
     end
   end

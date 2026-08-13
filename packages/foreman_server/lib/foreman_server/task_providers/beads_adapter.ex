@@ -87,7 +87,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       when is_binary(project_id) and project_id != "" and is_map(attrs) do
     with :ok <- validate_create_attrs(attrs),
          {:ok, project_config} <- resolve_project_config(project_id),
-         {:ok, payload} <- build_create_payload(attrs),
+         payload = build_create_payload(attrs),
          :ok <- emit_create_start(project_id, attrs),
          {:ok, issue} <- run_create(project_id, project_config, payload) do
       emit_create_ok(project_id, attrs, issue)
@@ -313,7 +313,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     end
   end
 
-  defp parse_create_response(stdout, attrs) do
+  defp parse_create_response(stdout, attrs) when is_map(attrs) do
     case Jason.decode(stdout) do
       {:ok, %{"id" => id, "title" => title} = response} ->
         status = Map.get(response, "status", "open")
@@ -2829,18 +2829,21 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   defp resolve_project_config(project_id) do
     case ForemanServer.TaskProvider.Registry.project_config(project_id) do
-      {:ok, %{config: %{database_path: db_path}}} when is_binary(db_path) and db_path != "" ->
-        {:ok, %{database_path: db_path}}
+      {:ok, %{config: config}} when is_map(config) ->
+        case fetch_database_path(config) do
+          {:ok, db_path} ->
+            {:ok, %{database_path: db_path}}
 
-      {:ok, _other} ->
-        {:error,
-         %ProviderError{
-           code: :CREATE_FAILED,
-           message: "registry config unresolved",
-           hint: nil,
-           retryable?: false,
-           context: %{project_id: project_id, reason: :missing_database_path}
-         }}
+          :error ->
+            {:error,
+             %ProviderError{
+               code: :CREATE_FAILED,
+               message: "registry config unresolved",
+               hint: nil,
+               retryable?: false,
+               context: %{project_id: project_id, reason: :missing_database_path}
+             }}
+        end
 
       {:error, reason} ->
         {:error,
@@ -2853,6 +2856,19 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
          }}
     end
   end
+
+  # Accept both atom and string key shapes for the registry's `config` map.
+  # The ProjectProviderProjector documents that "both string- and atom-keyed
+  # maps are supported" (`project_provider_projector.ex` lines 91–97), so the
+  # downstream consumer must tolerate either shape rather than rejecting one.
+  defp fetch_database_path(%{database_path: db_path}) when is_binary(db_path) and db_path != "",
+    do: {:ok, db_path}
+
+  defp fetch_database_path(%{"database_path" => db_path})
+       when is_binary(db_path) and db_path != "",
+       do: {:ok, db_path}
+
+  defp fetch_database_path(_config), do: :error
 
   defp build_create_payload(attrs) do
     description = Map.get(attrs, :description) || ""
