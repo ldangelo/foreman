@@ -639,7 +639,100 @@ The bundled `plan.yaml` ships under
 `foreman init --force` to refresh the installed copy at
 `~/.foreman/workflows/plan.yaml` after a Foreman upgrade.
 
-## 15. Cancelling a stuck run
+## 15. The implement-trd and implement-trd-beads workflows
+
+Two bundled manifests drive TRD execution under Foreman-managed
+execution via the `--foreman` flag:
+
+- `implement-trd.yaml` — single-task TRD implementation via the
+  Ensemble `ensemble-full-implement-trd` skill.
+- `implement-trd-beads.yaml` — Beads-backed two-task flow that
+  scaffolds a Beads hierarchy from the TRD and then executes it.
+
+Both manifests are bundled under
+`packages/foreman_server/priv/defaults/workflows/`. Re-run
+`foreman init --force` to refresh the installed copies at
+`~/.foreman/workflows/implement-trd.yaml` and
+`~/.foreman/workflows/implement-trd-beads.yaml` after a Foreman
+upgrade.
+
+### Manifest shape
+
+Both manifests declare a single phase that owns its own worktree:
+
+```yaml
+name: implement-trd
+description: Implement a Technical Requirements Document via the ensemble implement-trd skill under Foreman-managed execution.
+phases:
+  - name: implement-trd
+    command: "/skill:ensemble-full-implement-trd --foreman {trd_path_argument}"
+    requiredFile: planning.trd_path
+    worktree:
+      enabled: true
+      base: "{source_revision}"
+      branch: foreman/{run_id}/{phase}
+      path: implement-trd
+      cleanup: always
+```
+
+- `command:` — non-empty slash command. The `{trd_path_argument}`
+  placeholder is substituted at approval time with the JSON-quoted
+  path to the TRD so the skill receives a shell-safe argument.
+- `requiredFile:` (singular) — dotted scalar in the planning context
+  (`planning.trd_path`). The phase gate fails with
+  `:required_file_missing` if the resolved path does not exist on
+  disk when the phase starts.
+- `worktree:` — declares a per-phase worktree owned by Foreman.
+  - `enabled: true` activates the worktree lifecycle.
+  - `base: "{source_revision}"` is substituted at approval time with
+    the project's frozen source revision. The human review surfaces
+    the exact base ref Foreman will execute from.
+  - `branch: foreman/{run_id}/{phase}` is substituted at runtime
+    with the run and phase ids so each phase gets its own branch.
+  - `path: implement-trd` (or `implement-trd-beads`) is substituted
+    at runtime with a relative path under the project's working
+    directory; the worktree is created at `<project>/<path>`.
+  - `cleanup: always` removes the worktree after the phase completes
+    or fails.
+
+### Approval-time rendering
+
+Foreman renders the strict fields at approval time so the human
+review surfaces the exact command and base ref that the executor
+will run. The renderer substitutes:
+
+- `{trd_path_argument}` in `command:` with the JSON-quoted TRD path.
+- `{source_revision}` in `worktree.base` with the project's frozen
+  source revision.
+
+Other placeholders (`{run_id}`, `{phase}`) remain literal until run
+time so the approval payload is deterministic.
+
+### Environment variables
+
+Foreman auto-injects the following environment variables into the
+phase execution when the worktree is enabled:
+
+- `FOREMAN_WORKTREE=1` — flag the skill is operating inside a
+  Foreman-managed worktree.
+- `FOREMAN_RUN_ID` — the run id.
+- `FOREMAN_WORKTREE_PATH` — absolute path to the worktree.
+- `FOREMAN_EXPECTED_BRANCH` — the rendered branch
+  (`foreman/{run_id}/{phase}`).
+- `FOREMAN_SOURCE_REVISION` — the rendered base revision.
+- `FOREMAN_IMPLEMENTATION_KEY` — opaque key tying the run to its
+  approval.
+- `BEADS_DB` — set only by `implement-trd-beads` when the planning
+  context provides a Beads database path.
+- `TRD_SCOPE` — set only by `implement-trd-beads` when the planning
+  context provides a TRD scope.
+
+`FOREMAN_EXPECTED_BASE` is **not** injected; the base is resolved
+lazily at completion time to honor any pushes that landed during the
+phase.
+
+## 16. Cancelling a stuck run
+
 
 Runs that have lost their worker, are wedged in a phase retry loop, or
 are otherwise uninteresting can be terminated by an operator via the
@@ -704,7 +797,7 @@ The projection is rebuilt from the event stream on the next read.
   next dispatch.
 - A run was started in error and should not have been.
 
-## 16. Retrying a task bound to an orphaned run
+## 17. Retrying a task bound to an orphaned run
 
 Tasks whose bound run has already terminated (orphan remediation) are
 recovered via the `task.retry` operator command. `task.retry` is the

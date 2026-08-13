@@ -13,6 +13,16 @@
 //	project list        GET /api/projects
 //	task create         POST /api/commands with type=task.create
 //	task approve        POST /api/commands with type=task.approve
+//	task get <id>       Fetch a task projection
+//	run get <id>        Fetch a run projection
+//	workflow install    Install workflow assets from --source or --remote
+//	init --force        Refresh the installed runtime copy of bundled prompts/workflows
+//
+// `foreman init --force` is the canonical developer-facing entry point
+// for refreshing the runtime asset cache after editing bundled source
+// workflows or prompts. The server resolves bundled assets from the
+// running `foreman_server` application directory, so the CLI does not
+// need to know the installed path.
 // Environment:
 //
 //	FOREMAN_API_URL    Base URL (default http://127.0.0.1:4000)
@@ -43,6 +53,7 @@ Commands:
   task get <id>       Fetch a task projection
   run get <id>        Fetch a run projection
   workflow install    Install workflow assets
+  init --force        Refresh the installed runtime copy of bundled prompts/workflows
 Env:
   FOREMAN_API_URL    Base URL (default http://127.0.0.1:4000)
   FOREMAN_API_TOKEN  Bearer token (optional; bypassed in dev when unset)
@@ -74,6 +85,8 @@ func main() {
 		err = runRun(c, args)
 	case "workflow":
 		err = runWorkflow(c, args)
+	case "init":
+		err = runInit(c, args)
 	default:
 		err = usageTextError(fmt.Sprintf("foreman: unknown command %q", os.Args[1]), usage)
 	}

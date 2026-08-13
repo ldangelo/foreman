@@ -3,7 +3,7 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   Installs workflow templates into a Foreman workflows directory.
   """
 
-  @template_names ~w(discover assess plan implement verify release)
+  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads verify release)
   @template_files Enum.map(@template_names, &"#{&1}.yaml")
   @default_retry_attempts 3
   @default_retry_delay_ms 250

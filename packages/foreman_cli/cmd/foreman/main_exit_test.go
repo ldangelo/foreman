@@ -10,6 +10,21 @@ import (
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
 
+func TestInitRefusesWithoutForce(t *testing.T) {
+	result := runExitHelper(t, "main-init-missing-force")
+
+	if result.exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%q", result.exitCode, result.stderr)
+	}
+
+	if !bytes.Contains([]byte(result.stderr), []byte("foreman init: --force is required")) {
+		t.Fatalf("stderr = %q, want --force required message", result.stderr)
+	}
+
+	if !bytes.Contains([]byte(result.stderr), []byte("Usage of init:")) {
+		t.Fatalf("stderr = %q, want usage text", result.stderr)
+	}
+}
 func TestUsageErrorsExitOneWithUsageOnStderr(t *testing.T) {
 	result := runExitHelper(t, "main-project-create-missing-flags")
 
@@ -134,6 +149,10 @@ func TestExitHelperProcess(t *testing.T) {
 	scenario := os.Args[len(os.Args)-1]
 
 	switch scenario {
+	case "main-init-missing-force":
+		os.Args = []string{"foreman", "init"}
+		main()
+		return
 	case "main-project-create-missing-flags":
 		os.Args = []string{"foreman", "project", "create"}
 		main()

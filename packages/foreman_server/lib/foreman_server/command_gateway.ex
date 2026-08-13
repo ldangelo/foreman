@@ -346,11 +346,13 @@ defmodule ForemanServer.CommandGateway do
     with {:ok, prepared} <-
            Approval.prepare(payload_with_type, approval_id: approval_id),
          {:ok, snapshot} <- freeze_implementation_context(task_projection, prepared) do
+      rendered_snapshot = render_strict_fields(snapshot)
+
       enriched_payload =
         payload
         |> Map.put(:approval_id, prepared.approval_id)
         |> Map.put(:run_id, prepared.run_id)
-        |> Map.put(:workflow_snapshot, snapshot)
+        |> Map.put(:workflow_snapshot, rendered_snapshot)
         |> Map.put(:approved_at, approved_at)
         |> Map.put(:workflow_name, prepared.workflow_name)
         |> Map.put(:workflow_digest, prepared.workflow_digest)
@@ -390,6 +392,114 @@ defmodule ForemanServer.CommandGateway do
       end
     else
       {:ok, prepared.workflow_snapshot || %{}}
+    end
+  end
+  # Strict approval rendering per TRD Decision 11.
+  #
+  # Materialize the snapshot's `phases[*].command` and
+  # `phases[*].worktree.base` from the frozen implementation context so
+  # the human review surfaces the exact command and base ref that
+  # Foreman will execute. Branch and path retain runtime placeholders
+  # (`{run_id}`, `{phase}`, etc.) until run/phase IDs exist; those
+  # placeholders are resolved at execution time by `RunExecutor`.
+  #
+  # Only the `implement-trd` and `implement-trd-beads` workflows carry
+  # the `implementation` overlay. All other workflows pass through
+  # unchanged because their command strings have no placeholders to
+  # substitute.
+  #
+  # The `TaskApproved` event payload is JSON-encoded for EventStore
+  # persistence, so the canonical persisted form is string-keyed. The
+  # snapshot also carries atom-keyed duplicates for in-process use
+  # (`Catalog.resolve_workflow/3` seeds atom keys on top of the
+  # YAML-parsed string keys; `Map.merge` in
+  # `Approval.resolve_workflow_snapshot/2` preserves both). If we
+  # rendered both key types, the resulting JSON would carry two
+  # entries per field (e.g. `{"command": "...", "command": "..."}`),
+  # which is invalid JSON and silently drops one entry per encoder.
+  # We therefore write the canonical string key and delete the atom
+  # twin. Consumers like `RunExecutor` that read atom keys must be
+  # updated to read string keys (or accept both) — see the regression
+  # test in `command_gateway_test.exs`.
+  defp render_strict_fields(snapshot) when is_map(snapshot) do
+    case get_value(snapshot, "implementation") do
+      nil ->
+        snapshot
+
+      %{} = impl ->
+        phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
+        rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, impl) end)
+        put_canonical(snapshot, "phases", :phases, rendered_phases)
+    end
+  end
+
+  defp render_phase(phase, impl) when is_map(phase) do
+    phase
+    |> render_command(impl)
+    |> render_worktree_base(impl)
+  end
+
+  defp render_command(phase, impl) do
+    template = get_value(phase, "command") || get_value(phase, :command)
+
+    case template do
+      value when is_binary(value) ->
+        rendered =
+          value
+          |> substitute("{trd_path_argument}", get_value(impl, "trd_path_argument"))
+          |> substitute("{source_revision}", get_value(impl, "source_revision"))
+
+        put_canonical(phase, "command", :command, rendered)
+
+      _ ->
+        phase
+    end
+  end
+
+  defp render_worktree_base(phase, impl) do
+    worktree = get_value(phase, "worktree") || get_value(phase, :worktree)
+
+    case worktree do
+      block when is_map(block) ->
+        base = get_value(block, "base") || get_value(block, :base)
+
+        case base do
+          value when is_binary(value) ->
+            rendered = substitute(value, "{source_revision}", get_value(impl, "source_revision"))
+            rendered_worktree = put_canonical(block, "base", :base, rendered)
+            put_canonical(phase, "worktree", :worktree, rendered_worktree)
+
+          _ ->
+            phase
+        end
+
+      _ ->
+        phase
+    end
+  end
+
+  # Write `value` under `string_key` and delete the same-name atom
+  # twin so that JSON encoding cannot produce duplicate fields.
+  # `delete_only_existing` ensures we don't add `nil` keys; if the
+  # atom twin is absent we leave the map alone.
+  defp put_canonical(map, string_key, atom_key, value) do
+    map
+    |> maybe_delete_key(atom_key)
+    |> Map.put(string_key, value)
+  end
+
+  defp maybe_delete_key(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, _} -> Map.delete(map, key)
+      :error -> map
+    end
+  end
+
+  defp substitute(string, placeholder, value) when is_binary(string) and is_binary(placeholder) do
+    case value do
+      nil -> string
+      "" -> string
+      v when is_binary(v) -> String.replace(string, placeholder, v)
     end
   end
 

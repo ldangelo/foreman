@@ -199,12 +199,11 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
 
     Enum.each(expected_counts, fn {event, min_count} ->
       actual = Map.get(event_counts, event, 0)
+
       assert actual >= min_count,
              "expected telemetry event #{inspect(event)} to be emitted at least #{min_count} time(s), got #{actual}"
     end)
   end
-
-
 
   defp attach_handler(event) do
     handler_id = "task-provider-telemetry-test-#{System.unique_integer([:positive, :monotonic])}"

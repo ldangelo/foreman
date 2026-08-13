@@ -272,14 +272,48 @@ Operator-facing CLI: `foreman workflow install --target PATH [--source PATH | --
 HTTP admin endpoint and is **not** an alternate write path to the
 event store; it only materialises assets on disk.
 
+## 12. Foreman-managed worktree contract for implement-trd workflows (Go/Elixir CQRS slice)
 
-## 12. Task-provider boundary reminder (Go/Elixir CQRS slice)
+Foreman bundles two workflow manifests at
+`packages/foreman_server/priv/defaults/workflows/`:
+`implement-trd.yaml` and `implement-trd-beads.yaml`. Both declare
+the worktree schema, register with
+`ForemanServer.WorkflowTemplate.Installer` (`@template_names`), and
+are deployed by `foreman init --force`. The CLI selects them via
+`--workflow-type implement-trd` or `--workflow-type implement-trd-beads`
+(see `docs/cli-reference.md` for the full flag set).
+
+Strict approval rendering materializes the `command` field and the
+`worktree.base` field so the human review surfaces the exact slash
+command and base ref Foreman will execute. Branch and path
+placeholders (`{run_id}`, `{phase}`) remain runtime-resolved.
+
+The phase runner (`ForemanServer.Workflow.RunExecutor`) auto-injects
+the following env vars when the worktree is enabled:
+`FOREMAN_WORKTREE`, `FOREMAN_RUN_ID`, `FOREMAN_WORKTREE_PATH`,
+`FOREMAN_EXPECTED_BRANCH`, `FOREMAN_SOURCE_REVISION`, and
+`FOREMAN_IMPLEMENTATION_KEY`. The Beads-backed flow additionally
+receives `BEADS_DB` and `TRD_SCOPE` when the planning context
+provides them. `FOREMAN_EXPECTED_BASE` is **not** injected; the base
+is resolved lazily at completion time to honor pushes that landed
+during the phase.
+
+`RunExecutor.init/1` parses the persisted `workflow_snapshot` via
+`extract_phase_specs/1`, which uses the dual-key pattern
+`Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the
+persisted (JSON-decoded) projection shape is honored. The
+renderer in `CommandGateway.enrich_approval_via_workflow/2` writes
+back the canonical string-keyed form so the EventStore-bound
+`TaskApproved` payload has exactly one entry per field and the
+JSON round-trip is lossless.
+
+## 13. Task-provider boundary reminder (Go/Elixir CQRS slice)
 
 RunExecutor drives claim/complete/fail. Workflow.BootReconciliation
 drives orphan-reopen. `set_priority` and `add_dependency` stay at the
 adapter boundary until a separate operator surface TRD introduces them.
 
-## 13. Beads sync invariants (Go/Elixir CQRS slice)
+## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
 Atomic `task.create` and bidirectional Beads sync are governed by
 these invariants. Drift without a tracked TRD is a regression.

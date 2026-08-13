@@ -114,14 +114,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
     {:via, Registry, {ForemanServer.RunExecutorRegistry, run_id}}
   end
 
+  # The `task_projection` is the in-memory snapshot Foreman's
+  # `ProjectionStore` builds after deserializing the `TaskApproved`
+  # event payload. The outer map uses atom keys (`:workflow_snapshot`,
+  # `:run_id`, …) but the inner `workflow_snapshot` value carries
+  # JSON-decoded string keys only. Match the dual-key shape so phases
+  # are never silently dropped — the previous atom-only pattern match
+  # fell through to `[]` whenever the projection arrived via the
+  # persisted/JSON-decoded path.
+  defp extract_phase_specs(task) do
+    snapshot =
+      Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+
+    case Map.get(snapshot, :phases) || Map.get(snapshot, "phases") do
+      phases when is_list(phases) -> phases
+      _ -> []
+    end
+  end
+
   @impl true
   def init({run_id, task_projection}) do
-    phase_specs =
-      case task_projection do
-        %{workflow_snapshot: %{phases: phases}} when is_list(phases) -> phases
-        _ -> []
-      end
-
+    phase_specs = extract_phase_specs(task_projection)
     plan_context =
       case plan_context_for(task_projection) do
         {:ok, ctx} -> ctx

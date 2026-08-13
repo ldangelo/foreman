@@ -662,6 +662,324 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
+  describe "task.approve strict rendering of phases[*].command and phases[*].worktree.base" do
+    import Mox
+    alias ForemanServer.TaskProviders.BrRunnerMock
+    alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+    alias ForemanServer.Workflow.AssetCatalog
+    alias ForemanServer.Workflow.Catalog
+
+    setup do
+      assert :ok =
+               Supervisor.terminate_child(
+                 ForemanServer.Application,
+                 ForemanServer.Workflow.Dispatcher
+               )
+
+      on_exit(fn ->
+        assert {:ok, _pid} =
+                 Supervisor.restart_child(
+                   ForemanServer.Application,
+                   ForemanServer.Workflow.Dispatcher
+                 )
+      end)
+
+      ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+
+      on_exit(fn ->
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      suffix = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+
+      project_root =
+        Path.join(System.tmp_dir!(), "cg-sr-test-#{suffix}-#{System.unique_integer([:positive])}")
+
+      File.rm_rf!(project_root)
+      File.mkdir_p!(Path.join([project_root, "docs", "TRD"]))
+      File.write!(Path.join([project_root, "docs", "TRD", "x.md"]), "# TRD\nbody\n")
+      File.mkdir_p!(Path.join(project_root, ".beads"))
+      File.write!(Path.join([project_root, ".beads", "config.json"]), Jason.encode!(%{}))
+
+      for {args, _label} <- [
+            {["init", "-q", "-b", "main"], "init"},
+            {["config", "user.email", "test@example.com"], "email"},
+            {["config", "user.name", "Test"], "name"},
+            {["add", "."], "add"},
+            {["commit", "-q", "-m", "init"], "commit"}
+          ] do
+        {_, 0} = System.cmd("git", ["-C", project_root | args], stderr_to_stdout: true)
+      end
+
+      on_exit(fn -> File.rm_rf!(project_root) end)
+
+      workflow_root =
+        Path.join(System.tmp_dir!(), "cg-sr-wf-#{suffix}-#{System.unique_integer([:positive])}")
+
+      File.rm_rf!(workflow_root)
+      File.mkdir_p!(Path.join(workflow_root, "prompts"))
+
+      write_workflow = fn name, body ->
+        File.write!(Path.join(workflow_root, "#{name}.yaml"), body)
+      end
+
+      write_workflow.("implement-trd", """
+      name: implement-trd
+      description: Implement against a frozen TRD document.
+      phases:
+        - name: implement
+          command: "/skill:ensemble-full-implement-trd --foreman {trd_path_argument}"
+          requiredFile: planning.trd_path
+          worktree:
+            enabled: true
+            base: "{source_revision}"
+            branch: foreman/{run_id}/{phase}
+            path: implement-trd
+            cleanup: always
+      """)
+
+      prev_poll = Application.get_env(:foreman_server, :workflow_catalog_poll_ms)
+      Application.put_env(:foreman_server, :workflow_catalog_poll_ms, 60_000)
+
+      prev_server = Application.get_env(:foreman_server, :workflow_catalog)
+      server_name = :"cg_sr_catalog_#{suffix}"
+      Application.put_env(:foreman_server, :workflow_catalog, server_name)
+
+      catalog = AssetCatalog.new(workflow_root)
+      start_supervised!({Catalog, name: server_name, catalog: catalog})
+      :ok = Catalog.reload()
+
+      on_exit(fn ->
+        if prev_server,
+          do: Application.put_env(:foreman_server, :workflow_catalog, prev_server),
+          else: Application.delete_env(:foreman_server, :workflow_catalog)
+
+        if prev_poll,
+          do: Application.put_env(:foreman_server, :workflow_catalog_poll_ms, prev_poll)
+
+        File.rm_rf!(workflow_root)
+      end)
+
+      project_id = unique_id("project")
+      task_id = unique_id("task")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{project_id}",
+                 type: "project.register",
+                 payload: %{
+                   project_id: project_id,
+                   path: project_root,
+                   task_provider: %{
+                     provider: :beads,
+                     config: %{"database_path" => "/tmp/cg-sr-#{suffix}.db"}
+                   }
+                 }
+               })
+
+      :ok =
+        TaskProviderRegistry.register_for_project(
+          project_id,
+          ForemanServer.TaskProviders.BeadsAdapter,
+          %{"database_path" => "/tmp/cg-sr-#{suffix}.db"}
+        )
+
+      on_exit(fn ->
+        _ = TaskProviderRegistry.unregister_for_project(project_id, :test_cleanup)
+      end)
+
+      %{
+        project_id: project_id,
+        task_id: task_id,
+        project_root: project_root,
+        trd_path: "docs/TRD/x.md"
+      }
+    end
+
+    setup :set_mox_global
+    setup :verify_on_exit!
+
+    setup do
+      stub_with(BrRunnerMock, ForemanServer.CommandGatewayTest.SuccessfulBrRunnerStub)
+      :ok
+    end
+
+    test "phases[*].command is materialized to the concrete skill invocation (no {trd_path_argument} placeholder)",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      snapshot = payload["workflow_snapshot"]
+      assert is_map(snapshot)
+
+      phase = hd(snapshot["phases"])
+      assert is_map(phase)
+
+      expected_argument = Jason.encode!(trd_path)
+      expected_command = "/skill:ensemble-full-implement-trd --foreman #{expected_argument}"
+
+      # The rendered command value lives under the canonical string key
+      # (the persisted/JSON-decoded form). The atom twin is removed so
+      # JSON encoding cannot produce duplicate fields.
+      assert phase["command"] == expected_command
+      refute phase["command"] =~ "{trd_path_argument}"
+      refute Map.has_key?(phase, :command)
+    end
+
+    test "phases[*].worktree.base is materialized to the concrete source revision",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      snapshot = payload["workflow_snapshot"]
+      phase = hd(snapshot["phases"])
+
+      source_revision = get_in(snapshot, ["implementation", "source_revision"])
+      assert is_binary(source_revision) and source_revision != ""
+
+      # Canonical string-keyed worktree (persisted in TaskApproved event payload).
+      worktree = phase["worktree"]
+      assert worktree["base"] == source_revision
+      refute worktree["base"] =~ "{source_revision}"
+      refute Map.has_key?(phase, :worktree)
+      refute Map.has_key?(worktree, :base)
+    end
+
+    test "worktree.branch and worktree.path retain runtime placeholders (rendered at execution time)",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      phase = hd(payload["workflow_snapshot"]["phases"])
+      worktree = phase["worktree"]
+
+      assert worktree["branch"] == "foreman/{run_id}/{phase}"
+      assert worktree["path"] == "implement-trd"
+    end
+
+    test "rendered workflow_snapshot survives a JSON round-trip without regressing to placeholders",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      # Round-trip the rendered snapshot through JSON, mirroring the
+      # TaskApproved event persistence path. The persisted form is the
+      # JSON-decoded projection, so this is the canonical input to
+      # `RunExecutor.init/1`.
+      snapshot = payload["workflow_snapshot"]
+      encoded = Jason.encode!(snapshot)
+      assert {:ok, decoded} = Jason.decode(encoded)
+
+      # Encoding must produce a single entry per field. Duplicate JSON
+      # keys would silently drop one value per encoder and trip a
+      # regression on the renderer.
+      assert Jason.decode!(encoded) == decoded
+
+      [decoded_phase] = decoded["phases"]
+      decoded_worktree = decoded_phase["worktree"]
+
+      expected_argument = Jason.encode!(trd_path)
+      expected_command = "/skill:ensemble-full-implement-trd --foreman #{expected_argument}"
+
+      assert decoded_phase["command"] == expected_command
+      refute decoded_phase["command"] =~ "{trd_path_argument}"
+
+      source_revision = get_in(decoded, ["implementation", "source_revision"])
+      assert decoded_worktree["base"] == source_revision
+      refute decoded_worktree["base"] =~ "{source_revision}"
+
+      # Branch and path placeholders survive the round-trip so the
+      # execution-time renderer can substitute them.
+      assert decoded_worktree["branch"] == "foreman/{run_id}/{phase}"
+      assert decoded_worktree["path"] == "implement-trd"
+    end
+  end
+
   describe "task.retry validation" do
     setup do
       ForemanServer.CommandGatewayTestHelper.reset_projection_store()

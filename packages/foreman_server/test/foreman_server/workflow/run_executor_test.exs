@@ -1707,6 +1707,114 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
+  describe "init/1 with persisted (string-keyed) projection shape" do
+    test "populates phase_specs from string-keyed workflow_snapshot.phases" do
+      # The persisted projection is what ProjectionStore.task_projection/1
+      # returns after reading the JSON-decoded TaskApproved event: the
+      # outer map is atom-keyed but the inner `workflow_snapshot` value
+      # carries string keys only. This test pins the contract so a
+      # future refactor cannot revert to atom-only pattern matching
+      # and silently drop phases.
+      #
+      # We invoke `RunExecutor.init/1` directly (it is a public `def`)
+      # rather than driving a full GenServer — that avoids the
+      # `:kickoff` send_after side effect and keeps the test focused
+      # on the projection-shape contract.
+      projection = %{
+        task_id: "task-persisted",
+        project_id: "project-persisted",
+        workflow_type: "implement-trd",
+        workflow_snapshot: %{
+          "workflow_name" => "implement-trd",
+          "phases" => [
+            %{
+              "name" => "implement",
+              "command" => "/skill:ensemble-full-implement --foreman \"docs/TRD/x.md\"",
+              "index" => 1,
+              "phase_id" => "phase-1",
+              "worktree" => %{
+                "enabled" => true,
+                "base" => "abc123",
+                "branch" => "foreman/{run_id}/{phase}",
+                "path" => "implement-trd",
+                "cleanup" => "always"
+              }
+            }
+          ],
+          "implementation" => %{
+            "trd_path_argument" => "\"docs/TRD/x.md\"",
+            "source_revision" => "abc123"
+          }
+        }
+      }
+
+      assert {:ok, state} = RunExecutor.init({"run-persisted", projection})
+      assert length(state.phase_specs) == 1
+      [%{"name" => "implement", "command" => cmd, "worktree" => worktree}] = state.phase_specs
+      assert cmd == "/skill:ensemble-full-implement --foreman \"docs/TRD/x.md\""
+      assert worktree["base"] == "abc123"
+      assert worktree["branch"] == "foreman/{run_id}/{phase}"
+    end
+
+    test "falls back to phase_specs == [] when workflow_snapshot is missing or malformed" do
+      # Snapshot absent: zero phases is the safe default.
+      assert {:ok, state} =
+               RunExecutor.init({"run-x1", %{task_id: "t", project_id: "p"}})
+
+      assert state.phase_specs == []
+
+      # Snapshot present but phases key is missing.
+      assert {:ok, state} =
+               RunExecutor.init({
+                 "run-x2",
+                 %{task_id: "t", project_id: "p", workflow_snapshot: %{"workflow_name" => "x"}}
+               })
+
+      assert state.phase_specs == []
+
+      # Snapshot present but phases is not a list.
+      assert {:ok, state} =
+               RunExecutor.init({
+                 "run-x3",
+                 %{task_id: "t", project_id: "p", workflow_snapshot: %{"phases" => "not-a-list"}}
+               })
+
+      assert state.phase_specs == []
+    end
+
+    test "accepts the atom-keyed in-process projection shape for symmetry" do
+      # Same shape with atom keys (used by the in-process projection
+      # builder before the JSON round-trip) must also resolve to the
+      # same phase count.
+      projection = %{
+        task_id: "task-atom",
+        project_id: "project-atom",
+        workflow_type: "implement-trd",
+        workflow_snapshot: %{
+          workflow_name: "implement-trd",
+          phases: [
+            %{
+              name: "implement",
+              command: "/skill:ensemble-full-implement --foreman \"x.md\"",
+              index: 1,
+              phase_id: "phase-1",
+              worktree: %{
+                enabled: true,
+                base: "abc123",
+                branch: "foreman/{run_id}/{phase}",
+                path: "implement-trd",
+                cleanup: "always"
+              }
+            }
+          ]
+        }
+      }
+
+      assert {:ok, state} = RunExecutor.init({"run-atom", projection})
+      assert length(state.phase_specs) == 1
+    end
+  end
+
   defp kill_and_restart_dispatcher(_dispatcher) do
     app_sup = Process.whereis(ForemanServer.Application)
 

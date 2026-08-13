@@ -147,7 +147,6 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
       {:error, ProviderError.new("test", "unavailable")}
     end
 
-
     @impl true
     def set_priority(_id, _priority, _project_config), do: :ok
 

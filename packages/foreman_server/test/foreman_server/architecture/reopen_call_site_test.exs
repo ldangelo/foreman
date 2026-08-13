@@ -24,8 +24,10 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
     assert hits != [],
            "Expected at least one reopen/3 call in #{Path.relative_to_cwd(@positive_control_file)}"
 
-    assert signature({Path.relative_to_cwd(@positive_control_file), 0, expected_call_label()})
-             in Enum.map(hits, &signature/1),
+    assert signature({Path.relative_to_cwd(@positive_control_file), 0, expected_call_label()}) in Enum.map(
+             hits,
+             &signature/1
+           ),
            "Expected scanner to find a reopen/3 call in #{Path.relative_to_cwd(@positive_control_file)}"
   end
 
@@ -56,9 +58,7 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
   defp collect_reopen_calls(node, acc), do: {node, acc}
 
   defp positive_control_signature do
-    signature(
-      {Path.relative_to_cwd(@positive_control_file), 0, expected_call_label()}
-    )
+    signature({Path.relative_to_cwd(@positive_control_file), 0, expected_call_label()})
   end
 
   defp signature({file, _line, callsite}), do: {file, callsite}

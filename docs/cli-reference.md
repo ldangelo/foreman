@@ -269,6 +269,57 @@ can inspect the failure via `foreman run get <run_id>` — the phase
 projection records `failure_reason` containing the dotted key and
 resolved path.
 
+### `foreman task create --workflow-type implement-trd`
+
+Create a task that flows through the `implement-trd` workflow. The
+Go CLI posts the standard `task.create` command to `/api/commands`
+with `workflow_type: "implement-trd"`. `--id`, `--project`,
+`--title`, and `--trd-path` are required; `--workflow-type`
+selects the implementation workflow discriminator. The CLI
+pretty-prints the raw command response (HTTP 201 with
+`status: "accepted"`); there is no `--format` flag.
+
+```
+foreman task create \
+  --id task-impl-1 \
+  --project proj-abc \
+  --title "Implement auth TRD" \
+  --workflow-type implement-trd \
+  --trd-path docs/TRD/TRD-2026-auth.md
+```
+
+Once approved, the run executes a single phase that owns its own
+worktree:
+
+1. `implement-trd` — invokes
+   `/skill:ensemble-full-implement-trd --foreman <trd_path_argument>`
+   inside a Foreman-managed worktree pinned to the project's frozen
+   source revision. See `docs/user-guide.md` §15 for the worktree
+   contract and the env vars auto-injected at execution time.
+
+The required-file gate fires `:required_file_missing` if the
+resolved `trd-path` does not exist on disk when the phase starts.
+Operators can inspect the failure via `foreman run get <run_id>`.
+
+### `foreman task create --workflow-type implement-trd-beads`
+
+Create a task that flows through the `implement-trd-beads` workflow
+(Beads-backed two-task flow: scaffold a Beads hierarchy from the TRD
+and then execute it). The CLI accepts the same flags as
+`--workflow-type implement-trd`; the server resolves the Beads
+database path and TRD scope from the project's planning context and
+auto-injects them as `BEADS_DB` and `TRD_SCOPE` env vars at phase
+execution time.
+
+```
+foreman task create \
+  --id task-impl-beads-1 \
+  --project proj-abc \
+  --title "Implement auth TRD via Beads" \
+  --workflow-type implement-trd-beads \
+  --trd-path docs/TRD/TRD-2026-auth.md
+```
+
 ### `foreman task get <task-id>`
 
 Fetch the task projection by hitting `GET /api/tasks/:id`. The CLI
