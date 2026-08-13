@@ -456,6 +456,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       reason: inspect(reason)
     }
 
+    # A failed phase is a failed run: no later phase can satisfy the
+    # workflow contract, and downstream consumers (projection,
+    # task.retry, BootReconciliation) all key off `run.terminal?`.
+    # Dispatch order matters: `run.fail` happens before the task-level
+    # failure so the run flips terminal even if the task dispatch
+    # surfaces a transport error — a nonterminal run blocks retry.
+    # The Run aggregate's `reject_terminal_mutation` returns
+    # `{:error, {:run_terminal, _}}` for an already-terminal run, so
+    # this is idempotent w.r.t. supervisor reentry / duplicates.
     with {:ok, _} <-
            dispatch_system(
              "phase.fail",
@@ -464,6 +473,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
              phase_id,
              "phase:#{state.run_id}:#{phase_id}"
            ),
+         :ok <- emit_run_failure(state, reason),
          :ok <- maybe_fail_task(state, phase_spec, phase_index, reason) do
       :ok
     else
@@ -473,6 +483,31 @@ defmodule ForemanServer.Workflow.RunExecutor do
         )
 
         {:error, reason}
+    end
+  end
+
+  # Strict `run.fail` emission from `emit_phase_failure/4`:
+  #   * `:ok` → aggregate accepted, run flipped terminal.
+  #   * `{:error, {:run_terminal, _status}}` → already terminal from a
+  #     prior supervisor / restart / BootReconciliation path; the
+  #     terminal-fail invariant is satisfied, treat as success.
+  #   * any other `{:error, reason}` (`:timeout`, dispatcher down,
+  #     EventStore transport error, …) is propagated so the caller
+  #     can surface a diagnostic. NOTE: `RunSupervisor` uses
+  #     `restart: :transient`, so the executor's `:normal` exit
+  #     after phase failure will NOT trigger an automatic restart;
+  #     a propagated run-fail error keeps the diagnosis visible
+  #     rather than silently logging it.
+  defp emit_run_failure(state, reason) do
+    case dispatch_run_fail(state, reason) do
+      :ok ->
+        :ok
+
+      {:error, {:run_terminal, _status}} ->
+        :ok
+
+      {:error, dispatch_reason} ->
+        {:error, {:run_fail_dispatch_deferred, dispatch_reason}}
     end
   end
 
@@ -1140,6 +1175,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "run:#{state.run_id}",
       %{run_id: state.run_id, reason: inspect(reason)}
     )
+    |> to_dispatch_result()
   end
 
   defp resolve_provider(project_id, transition) do

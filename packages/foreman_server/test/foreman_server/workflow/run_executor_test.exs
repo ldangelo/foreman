@@ -1909,6 +1909,133 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute_receive {:close_cmd, {:close, %{id: ^task_id}}, _}, 100
   end
 
+  test "phase timeout flips the run terminal (run.fail dispatched before task.fail)" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("phase-timeout-project")
+    task_id = unique_id("phase-timeout-task")
+    run_id = unique_id("phase-timeout-run")
+    script_key = unique_id("phase-timeout-script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("phase-timeout-artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    LifecycleStore.put(script_key, %{
+      test_pid: test_pid,
+      adapter_results: [{:error, :timeout}]
+    })
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+      send(test_pid, {:claim_cmd, request})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, _opts ->
+      assert_database_path(runner_project_config, database_path)
+      assert {:update, %{flags: flags}} = request
+      assert Enum.any?(flags, &(&1 == task_id))
+      send(test_pid, {:runner_cmd, :fail, request, runner_project_config})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "open", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    start_run_executor!(run_id, task_id)
+
+    # Claim lands first.
+    assert_receive {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}}, 1_000
+
+    # Adapter receives the phase invocation.
+    assert {:adapter_execute, "Run phase implement", _} = receive_message(2_000)
+
+    # Provider reopen/fail callback fires next.
+    assert_receive {:runner_cmd, :fail, _, _}, 1_000
+
+    # The invariant: run reaches `failed` and `terminal? == true`. This is
+    # the assertion that catches the projection-drift bug where phase.fail
+    # was emitted but run.fail was NOT — leaving the run stuck `in_progress`
+    # and blocking task.retry.
+    run =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{status: "failed", terminal?: true} = r -> {:ok, r}
+            _ -> nil
+          end
+        end,
+        "run projection to reach failed + terminal"
+      )
+
+    assert run.status == "failed"
+    assert run.terminal? == true
+
+    # Task projection also flips failed (via maybe_fail_task after run.fail).
+    assert %{status: "failed"} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "failed"} = t -> {:ok, t}
+                   _ -> nil
+                 end
+               end,
+               "task projection to reach failed"
+             )
+
+    # Pin the events: RunFailed emitted exactly once to the run stream,
+    # RunTerminalRecorded by the projection handler, and PhaseFailed on
+    # the phase stream.
+    run_events =
+      case EventStore.read_stream_forward("run:#{run_id}", 0, 99_999_999) do
+        {:ok, events} -> events
+        {:error, :stream_not_found} -> []
+      end
+
+    assert Enum.count(run_events, &(&1.event_type == "RunFailed")) == 1
+
+    phase_events =
+      case EventStore.read_stream_forward("phase:#{run_id}:#{run_id}-p001", 0, 99) do
+        {:ok, events} -> events
+        {:error, :stream_not_found} -> []
+      end
+
+    assert Enum.count(phase_events, &(&1.event_type == "PhaseFailed")) == 1
+    assert Enum.count(task_events(task_id), &(&1.event_type == "TaskExecutionFailed")) == 1
+  end
+
   describe "init/1 with persisted (string-keyed) projection shape" do
     test "populates phase_specs from string-keyed workflow_snapshot.phases" do
       # The persisted projection is what ProjectionStore.task_projection/1
