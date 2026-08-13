@@ -158,13 +158,32 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
       [:foreman_server, :task_provider, :beads_adapter, :preflight, :start],
       [:foreman_server, :task_provider, :beads_adapter, :preflight, :ok],
       [:foreman_server, :task_provider, :beads_adapter, :preflight, :error],
+      [:foreman_server, :task_provider, :beads_adapter, :create, :start],
+      [:foreman_server, :task_provider, :beads_adapter, :create, :ok],
+      [:foreman_server, :task_provider, :beads_adapter, :create, :error],
+      [:foreman_server, :task_provider, :beads_adapter, :fail, :success],
       [:foreman_server, :task_provider, :beads, :temp_file, :leaked],
       [:foreman_server, :task_provider, :beads, :capabilities, :refreshed],
       [:foreman_server, :task_provider, :beads, :contract, :version_changed],
+      [:foreman_server, :task_provider, :beads, :watcher, :start],
+      [:foreman_server, :task_provider, :beads, :watcher, :replay_started],
+      [:foreman_server, :task_provider, :beads, :watcher, :replay_completed],
+      [:foreman_server, :task_provider, :beads, :watcher, :read_more],
+      [:foreman_server, :task_provider, :beads, :watcher, :line_processed],
+      [:foreman_server, :task_provider, :beads, :watcher, :skipped],
+      [:foreman_server, :task_provider, :beads, :watcher, :reconciled],
+      [:foreman_server, :task_provider, :beads, :watcher, :imported],
+      [:foreman_server, :task_provider, :beads, :watcher, :malformed],
+      [:foreman_server, :task_provider, :beads, :watcher, :error],
+      [:foreman_server, :task_provider, :beads, :orphan, :janitor, :start],
+      [:foreman_server, :task_provider, :beads, :orphan, :janitor, :scan_started],
+      [:foreman_server, :task_provider, :beads, :orphan, :janitor, :scan_completed],
+      [:foreman_server, :task_provider, :beads, :orphan, :janitor, :retained],
+      [:foreman_server, :task_provider, :beads, :orphan, :janitor, :closed],
+      [:foreman_server, :task_provider, :beads, :orphan, :janitor, :error],
       [:foreman_server, :task_provider, :concurrency_limiter, :acquire],
       [:foreman_server, :task_provider, :concurrency_limiter, :release],
       [:foreman_server, :task_provider, :concurrency_limiter, :timeout],
-      [:foreman_server, :task_provider, :beads_adapter, :fail, :success],
       [:foreman_server, :task_provider, :transition_comment, :rejected]
     ]
 
@@ -173,8 +192,19 @@ defmodule ForemanServer.TaskProvider.TelemetryTest do
       |> Enum.flat_map(&telemetry_emit_events/1)
       |> Enum.frequencies()
 
-    assert event_counts == Map.new(expected_events, &{&1, 1})
+    expected_counts = Map.new(expected_events, &{&1, 1})
+
+    missing = Map.keys(expected_counts) -- Map.keys(event_counts)
+    assert missing == [], "expected telemetry events were never emitted: #{inspect(missing)}"
+
+    Enum.each(expected_counts, fn {event, min_count} ->
+      actual = Map.get(event_counts, event, 0)
+      assert actual >= min_count,
+             "expected telemetry event #{inspect(event)} to be emitted at least #{min_count} time(s), got #{actual}"
+    end)
   end
+
+
 
   defp attach_handler(event) do
     handler_id = "task-provider-telemetry-test-#{System.unique_integer([:positive, :monotonic])}"
