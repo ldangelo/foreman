@@ -62,18 +62,30 @@ defmodule ForemanServer.TaskProviders.SystemBrRunnerTest do
   end
 
   test "absolute path with spaces passes through unchanged", %{temp_dir: temp_dir} do
+    # br refuses to operate on databases whose parent path contains a symlink,
+    # which macOS temp dirs do. Canonicalize so the test exercises a real path.
+    {temp_dir, 0} = System.cmd("pwd", ["-P"], cd: temp_dir)
+    temp_dir = String.trim(temp_dir)
     db_dir = Path.join(temp_dir, "abs space")
     db_path = Path.join(db_dir, "test db.sqlite3")
 
     File.mkdir_p!(db_dir)
 
-    assert {_, 0} =
-             System.cmd("br", ["init", "--db", db_path, "--force", "--json"], cd: temp_dir)
+    with_fake_br(
+      temp_dir,
+      """
+      for arg in "$@"; do
+        printf '%s\\n' "$arg"
+      done
+      """,
+      fn ->
+        assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
+                 SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
 
-    assert {:ok, %{stdout: stdout, stderr: "", exit_code: 0}} =
-             SystemBrRunner.cmd({:where, %{}}, %{database_path: db_path})
-
-    assert %{"database_path" => ^db_path} = Jason.decode!(stdout)
+        assert String.split(stdout, "\n", trim: true) ==
+                 ["where", "--db", db_path, "--json"]
+      end
+    )
   end
 
   test "set_priority request translates to br update --priority using cached payload database_path",
