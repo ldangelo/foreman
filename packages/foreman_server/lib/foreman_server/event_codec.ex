@@ -61,7 +61,6 @@ defmodule ForemanServer.EventCodec do
     WorktreeCreateOrphanResolved
   }
 
-
   @registry %{
     "WorkerStarted" => WorkerStarted,
     "WorkerHeartbeat" => WorkerHeartbeat,
@@ -152,7 +151,13 @@ defmodule ForemanServer.EventCodec do
     TaskRetried => [:task_id, :previous_run_id],
     WorktreeCreated => [:operation_id, :project_id, :run_id, :phase_id],
     WorktreeCleaned => [:operation_id, :project_id, :run_id, :phase_id],
-    WorktreeCreateOrphanRecorded => [:operation_id, :project_id, :run_id, :phase_id, :worktree_path],
+    WorktreeCreateOrphanRecorded => [
+      :operation_id,
+      :project_id,
+      :run_id,
+      :phase_id,
+      :worktree_path
+    ],
     WorktreeCreateOrphanResolved => [:operation_id, :project_id, :run_id, :phase_id]
   }
 

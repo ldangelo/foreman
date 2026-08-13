@@ -536,8 +536,7 @@ defmodule ForemanServer.Aggregates.VcsOperationTest do
         }
       }
 
-      assert {:error,
-              {:invalid_status_for, "vcs.worktree.create.orphan_resolve", "created"}} =
+      assert {:error, {:invalid_status_for, "vcs.worktree.create.orphan_resolve", "created"}} =
                VcsOperation.handle_command(created_state, cmd)
     end
 

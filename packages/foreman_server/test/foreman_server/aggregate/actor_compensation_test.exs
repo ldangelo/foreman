@@ -387,7 +387,8 @@ defmodule ForemanServer.ActorCompensationTest do
       # before compensation ran).
       assert :sys.get_state(pid).in_flight_beads == %{}
 
-      assert drain_telemetry([:foreman_server, :task_provider, :beads, :create, :compensated]) == []
+      assert drain_telemetry([:foreman_server, :task_provider, :beads, :create, :compensated]) ==
+               []
     end
   end
 
