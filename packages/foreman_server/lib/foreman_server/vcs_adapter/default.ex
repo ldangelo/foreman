@@ -151,12 +151,6 @@ defmodule ForemanServer.VcsAdapter.Default do
             reason = {:git_worktree_clean_failed, code, output}
             emit_failed(operation_id, "worktree_clean", target, reason, 0, metadata)
 
-            :telemetry.execute(
-              [:foreman_server, :vcs, :worktree, :clean_failed],
-              %{operation_id: operation_id},
-              Map.put(metadata, :reason, reason)
-            )
-
             {:error, reason}
         end
     end

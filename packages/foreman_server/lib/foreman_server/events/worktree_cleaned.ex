@@ -12,6 +12,7 @@ defmodule ForemanServer.Events.WorktreeCleaned do
           project_id: String.t(),
           run_id: String.t(),
           phase_id: String.t(),
+          repo_path: String.t() | nil,
           worktree_path: String.t() | nil,
           cleanup_observed: String.t() | nil
         }
@@ -21,6 +22,7 @@ defmodule ForemanServer.Events.WorktreeCleaned do
     :project_id,
     :run_id,
     :phase_id,
+    :repo_path,
     :worktree_path,
     :cleanup_observed
   ]

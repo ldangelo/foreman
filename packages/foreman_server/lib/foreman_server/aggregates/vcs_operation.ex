@@ -4,7 +4,13 @@ defmodule ForemanServer.Aggregates.VcsOperation do
 
   alias ForemanServer.Aggregate
   alias ForemanServer.EventCodec
-  alias ForemanServer.Events.{WorktreeCreated, WorktreeCleaned}
+
+  alias ForemanServer.Events.{
+    WorktreeCreated,
+    WorktreeCleaned,
+    WorktreeCreateOrphanRecorded,
+    WorktreeCreateOrphanResolved
+  }
 
   defmodule State do
     @enforce_keys [:exists?, :operation_id, :status, :terminal?]
@@ -41,7 +47,11 @@ defmodule ForemanServer.Aggregates.VcsOperation do
       cleanup: nil
     }
 
-  @impl true
+  def apply_event(state, %WorktreeCreated{} = e), do: apply_typed_event(state, e)
+  def apply_event(state, %WorktreeCleaned{} = e), do: apply_typed_event(state, e)
+  def apply_event(state, %WorktreeCreateOrphanRecorded{} = e), do: apply_typed_event(state, e)
+  def apply_event(state, %WorktreeCreateOrphanResolved{} = e), do: apply_typed_event(state, e)
+
   def apply_event(state, event) do
     case Aggregate.event_type(event) do
       "WorktreeCreated" ->
@@ -61,6 +71,24 @@ defmodule ForemanServer.Aggregates.VcsOperation do
           |> Map.delete("event_type")
 
         apply_typed_event(state, EventCodec.decode!("WorktreeCleaned", payload))
+
+      "WorktreeCreateOrphanRecorded" ->
+        payload =
+          event
+          |> Aggregate.event_payload()
+          |> Map.delete(:event_type)
+          |> Map.delete("event_type")
+
+        apply_typed_event(state, EventCodec.decode!("WorktreeCreateOrphanRecorded", payload))
+
+      "WorktreeCreateOrphanResolved" ->
+        payload =
+          event
+          |> Aggregate.event_payload()
+          |> Map.delete(:event_type)
+          |> Map.delete("event_type")
+
+        apply_typed_event(state, EventCodec.decode!("WorktreeCreateOrphanResolved", payload))
 
       _ ->
         apply_untyped_event(state, event)
@@ -93,6 +121,32 @@ defmodule ForemanServer.Aggregates.VcsOperation do
         status: "cleaned",
         terminal?: true,
         worktree_path: e.worktree_path || state.worktree_path
+    }
+  end
+
+  defp apply_typed_event(state, %WorktreeCreateOrphanRecorded{} = e) do
+    %State{
+      state
+      | exists?: true,
+        operation_id: e.operation_id,
+        project_id: e.project_id,
+        run_id: e.run_id,
+        phase_id: e.phase_id,
+        status: "create_orphan_recorded",
+        terminal?: false,
+        worktree_path: e.worktree_path || state.worktree_path
+    }
+  end
+
+  defp apply_typed_event(state, %WorktreeCreateOrphanResolved{} = e) do
+    %State{
+      state
+      | operation_id: e.operation_id,
+        project_id: e.project_id,
+        run_id: e.run_id,
+        phase_id: e.phase_id,
+        status: "create_orphan_resolved",
+        terminal?: true
     }
   end
 
@@ -225,6 +279,69 @@ defmodule ForemanServer.Aggregates.VcsOperation do
     end
   end
 
+  def handle_command(
+        state,
+        %{type: "vcs.worktree.create.orphan_record", payload: payload}
+      ) do
+    with {:ok, operation_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :operation_id), :operation_id),
+         {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, phase_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
+         {:ok, worktree_path} <-
+           Aggregate.required_binary(Aggregate.get(payload, :worktree_path), :worktree_path),
+         :ok <-
+           require_existing_operation_for_terminal(state, "vcs.worktree.create.orphan_record"),
+         :ok <- reject_terminal(state, "vcs.worktree.create.orphan_record") do
+      {:ok,
+       %{
+         stream_id: "vcs:#{operation_id}",
+         event_type: "WorktreeCreateOrphanRecorded",
+         payload:
+           Map.merge(payload, %{
+             operation_id: operation_id,
+             project_id: project_id,
+             run_id: run_id,
+             phase_id: phase_id,
+             worktree_path: worktree_path
+           })
+       }}
+    end
+  end
+
+  def handle_command(
+        state,
+        %{type: "vcs.worktree.create.orphan_resolve", payload: payload}
+      ) do
+    with {:ok, operation_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :operation_id), :operation_id),
+         {:ok, project_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
+         {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, phase_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
+         :ok <-
+           require_existing_operation_for_terminal(state, "vcs.worktree.create.orphan_resolve"),
+         :ok <- reject_terminal(state, "vcs.worktree.create.orphan_resolve"),
+         :ok <- validate_correlation(state, operation_id, project_id, run_id, phase_id),
+         :ok <- reject_unless_orphan_recorded(state, "vcs.worktree.create.orphan_resolve") do
+      {:ok,
+       %{
+         stream_id: "vcs:#{operation_id}",
+         event_type: "WorktreeCreateOrphanResolved",
+         payload:
+           Map.merge(payload, %{
+             operation_id: operation_id,
+             project_id: project_id,
+             run_id: run_id,
+             phase_id: phase_id
+           })
+       }}
+    end
+  end
+
   defp validate_correlation(
          %State{operation_id: op, project_id: p, run_id: r, phase_id: ph},
          op,
@@ -306,7 +423,12 @@ defmodule ForemanServer.Aggregates.VcsOperation do
   def handle_command(_state, _command), do: :unhandled
 
   defp require_existing_operation_for_terminal(_state, type)
-       when type in ["vcs.worktree.create", "vcs.merge.request", "vcs.pr.observe"],
+       when type in [
+              "vcs.worktree.create",
+              "vcs.merge.request",
+              "vcs.pr.observe",
+              "vcs.worktree.create.orphan_record"
+            ],
        do: :ok
 
   defp require_existing_operation_for_terminal(%State{exists?: true}, _type), do: :ok
@@ -319,4 +441,9 @@ defmodule ForemanServer.Aggregates.VcsOperation do
       do: {:error, {:vcs_operation_terminal, status}},
       else: :ok
   end
+
+  defp reject_unless_orphan_recorded(%State{status: "create_orphan_recorded"}, _type), do: :ok
+
+  defp reject_unless_orphan_recorded(%State{status: status}, type),
+    do: {:error, {:invalid_status_for, type, status}}
 end

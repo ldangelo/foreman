@@ -58,6 +58,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   @doc """
+  Scan unresolved worktrees on demand (no GenServer mailbox hop). Used by
+  the boot scan pipeline and by the targeted test suite.
+  """
+  @spec scan_unresolved_worktrees() :: :ok
+  def scan_unresolved_worktrees do
+    do_scan_unresolved_worktrees()
+  end
+
+  @doc """
+  Scan worktree-create orphans on demand (no GenServer mailbox hop). Used by
+  the boot scan pipeline and by the targeted test suite.
+  """
+  @spec scan_worktree_create_orphans() :: :ok
+  def scan_worktree_create_orphans do
+    do_scan_worktree_create_orphans()
+  end
+
+  @doc """
   Request a scan of every projected task for an orphan binding — a task
   whose `run_id` points at a terminal run whose id has not yet been
   copied into `acknowledged_run_id`. Each orphan is dispatched as
@@ -335,6 +353,14 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
+  defp do_scan_task_run_orphans do
+    tasks = ProjectionStore.list_tasks()
+    orphans = Enum.filter(tasks, &orphan_task?/1)
+
+    Enum.each(orphans, &ack_orphan_task/1)
+    :ok
+  end
+
   defp ack_orphan_task(task) do
     task_id = fetch_map_value(task, :task_id)
     run_id = fetch_map_value(task, :run_id)
@@ -387,22 +413,194 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @scan_retry_ms 50
 
   defp run_scan_or_defer do
-    if command_router_ready?() do
-      do_scan_task_run_orphans()
-    else
-      schedule_scan(:not_ready)
+    cond do
+      not command_router_ready?() ->
+        schedule_scan(:not_ready)
+
+      not worker_registry_ready?() ->
+        schedule_scan(:worker_registry_not_ready)
+
+      true ->
+        do_scan_task_run_orphans()
+        do_scan_unresolved_worktrees()
+        do_scan_worktree_create_orphans()
     end
   end
 
-  defp do_scan_task_run_orphans do
-    tasks = ProjectionStore.list_tasks()
-    orphans = Enum.filter(tasks, &orphan_task?/1)
+  defp do_scan_worktree_create_orphans do
+    ProjectionStore.list_worktree_create_orphans()
+    |> Enum.each(&reconcile_worktree_create_orphan/1)
 
-    Enum.each(orphans, &ack_orphan_task/1)
     :ok
   end
 
-  defp schedule_scan(:not_ready) do
+  defp reconcile_worktree_create_orphan(%{
+         operation_id: op_id,
+         project_id: project_id,
+         run_id: run_id,
+         phase_id: phase_id,
+         worktree_path: worktree_path,
+         repo_path: repo_path
+       })
+       when is_binary(worktree_path) and worktree_path != "" do
+    cond do
+      run_terminal?(run_id) == false ->
+        :ok
+
+      dirty_worktree?(worktree_path) ->
+        emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :dirty)
+
+      active_workers_for_run?(run_id) ->
+        emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :active_workers)
+
+      true ->
+        case retry_clean_orphan(op_id, project_id, run_id, phase_id, repo_path, worktree_path) do
+          :ok ->
+            dispatch_orphan_resolve(op_id, run_id, phase_id, project_id, worktree_path)
+
+          {:error, _} ->
+            emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :clean_failed)
+        end
+    end
+  end
+
+  defp reconcile_worktree_create_orphan(_), do: :ok
+
+  defp retry_clean_orphan(op_id, project_id, run_id, phase_id, repo_path, worktree_path) do
+    ForemanServer.Workflow.Worktree.clean_orphan(%{
+      operation_id: op_id,
+      project_id: project_id || "",
+      run_id: run_id,
+      phase_id: phase_id,
+      repo_path: repo_path || "",
+      worktree_path: worktree_path
+    })
+  end
+
+  defp dispatch_orphan_resolve(op_id, run_id, phase_id, project_id, worktree_path) do
+    case orphan_resolve_dispatch_fn().(%{
+           aggregate_id: "vcs:" <> op_id,
+           command_id: "vcs.worktree.create.orphan_resolve:" <> op_id,
+           type: "vcs.worktree.create.orphan_resolve",
+           payload: %{
+             operation_id: op_id,
+             project_id: project_id || "",
+             run_id: run_id,
+             phase_id: phase_id,
+             resolution: "recovered_via_clean_retry"
+           }
+         }) do
+      {:ok, _event_spec} ->
+        :ok
+
+      {:error, reason} = err ->
+        Logger.warning(
+          "BootReconciliation failed to dispatch orphan_resolve for #{op_id}: #{inspect(reason)}"
+        )
+
+        emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :resolve_dispatch_failed)
+
+        err
+    end
+  end
+
+  defp orphan_resolve_dispatch_fn do
+    case Process.get(:boot_reconciliation_orphan_resolve_dispatch) do
+      nil -> &ForemanServer.CommandGateway.dispatch_system/1
+      fun when is_function(fun, 1) -> fun
+    end
+  end
+
+  defp do_scan_unresolved_worktrees do
+    ProjectionStore.list_unresolved_worktrees()
+    |> Enum.each(&reconcile_unresolved_worktree/1)
+
+    :ok
+  end
+
+  defp reconcile_unresolved_worktree(%{
+         operation_id: op_id,
+         run_id: run_id,
+         phase_id: phase_id,
+         worktree_path: worktree_path,
+         repo_path: repo_path
+       })
+       when is_binary(worktree_path) and worktree_path != "" do
+    cond do
+      run_terminal?(run_id) == false ->
+        :ok
+
+      dirty_worktree?(worktree_path) ->
+        emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :dirty)
+
+      active_workers_for_run?(run_id) ->
+        emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :active_workers)
+
+      true ->
+        case retry_clean(op_id, run_id, phase_id, repo_path, worktree_path) do
+          :ok ->
+            :ok
+
+          {:error, _} ->
+            emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, :clean_failed)
+        end
+    end
+  end
+
+  defp reconcile_unresolved_worktree(_), do: :ok
+
+  defp dirty_worktree?(path) do
+    case System.cmd("git", ["-C", path, "status", "--porcelain"]) do
+      {output, 0} -> String.trim(output) != ""
+      _ -> false
+    end
+  end
+
+  defp active_workers_for_run?(run_id) do
+    ForemanServer.Overwatch.WorkerSupervisor.list_pids_for_run(run_id) != []
+  end
+
+  defp worker_registry_ready? do
+    case Application.get_env(:foreman_server, ForemanServer.Overwatch, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        is_pid(Process.whereis(ForemanServer.Overwatch.WorkerRegistry))
+
+      _ ->
+        true
+    end
+  end
+
+  defp retry_clean(op_id, run_id, phase_id, repo_path, _worktree_path) do
+    ForemanServer.Workflow.Worktree.clean(%{
+      operation_id: op_id,
+      project_id: project_id_for(op_id),
+      run_id: run_id,
+      phase_id: phase_id,
+      repo_path: repo_path || ""
+    })
+  end
+
+  defp project_id_for(op_id) do
+    case ProjectionStore.worktree(op_id) do
+      %{project_id: pid} when is_binary(pid) -> pid
+      _ -> ""
+    end
+  end
+
+  defp emit_orphan_preserved(op_id, run_id, phase_id, worktree_path, reason) do
+    :telemetry.execute(
+      [:foreman_server, :vcs, :worktree, :orphan_preserved],
+      %{operation_id: op_id},
+      %{
+        run_id: run_id,
+        phase_id: phase_id,
+        worktree_path: worktree_path,
+        reason: reason
+      }
+    )
+  end
+
+  defp schedule_scan(_reason) do
     Process.send_after(self(), :scan_orphans, @scan_retry_ms)
   end
 

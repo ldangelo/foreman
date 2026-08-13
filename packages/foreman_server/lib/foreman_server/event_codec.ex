@@ -56,8 +56,11 @@ defmodule ForemanServer.EventCodec do
     WorkerStdout,
     WorkerUnresponsive,
     WorktreeCreated,
-    WorktreeCleaned
+    WorktreeCleaned,
+    WorktreeCreateOrphanRecorded,
+    WorktreeCreateOrphanResolved
   }
+
 
   @registry %{
     "WorkerStarted" => WorkerStarted,
@@ -92,7 +95,9 @@ defmodule ForemanServer.EventCodec do
     "TaskRunTerminated" => TaskRunTerminated,
     "TaskRetried" => TaskRetried,
     "WorktreeCreated" => WorktreeCreated,
-    "WorktreeCleaned" => WorktreeCleaned
+    "WorktreeCleaned" => WorktreeCleaned,
+    "WorktreeCreateOrphanRecorded" => WorktreeCreateOrphanRecorded,
+    "WorktreeCreateOrphanResolved" => WorktreeCreateOrphanResolved
   }
 
   # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
@@ -146,7 +151,9 @@ defmodule ForemanServer.EventCodec do
     TaskRunTerminated => [:task_id, :run_id],
     TaskRetried => [:task_id, :previous_run_id],
     WorktreeCreated => [:operation_id, :project_id, :run_id, :phase_id],
-    WorktreeCleaned => [:operation_id, :project_id, :run_id, :phase_id]
+    WorktreeCleaned => [:operation_id, :project_id, :run_id, :phase_id],
+    WorktreeCreateOrphanRecorded => [:operation_id, :project_id, :run_id, :phase_id, :worktree_path],
+    WorktreeCreateOrphanResolved => [:operation_id, :project_id, :run_id, :phase_id]
   }
 
   @type event_type :: String.t()

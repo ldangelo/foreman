@@ -8,6 +8,8 @@ defmodule ProjectionStoreRunsTestHelper do
         phases: %{},
         pr_associations: %{},
         scheduler_intents: %{},
+        worktrees: %{},
+        worktree_create_orphans: %{},
         subscribers: Map.get(state, :subscribers, %{}),
         project_active_runs: %{}
       }

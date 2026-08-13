@@ -119,4 +119,30 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
         end
     end
   end
+
+  @doc """
+  Return every live LaunchWorker pid for a given `run_id`. The WorkerRegistry
+  key format is `"run_id:worker_id"`, so we filter by key prefix.
+
+  Returns `[]` when the WorkerRegistry has not started (e.g. Overwatch is
+  disabled in this deployment). BootReconciliation runs before Overwatch
+  in the application supervision tree, so the guard is required.
+  """
+  @spec list_pids_for_run(String.t()) :: [pid()]
+  def list_pids_for_run(run_id) when is_binary(run_id) and run_id != "" do
+    case Process.whereis(ForemanServer.Overwatch.WorkerRegistry) do
+      nil ->
+        []
+
+      _registry ->
+        Registry.select(
+          ForemanServer.Overwatch.WorkerRegistry,
+          [{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}]
+        )
+        |> Enum.filter(fn {key, _pid} -> String.starts_with?(key, run_id <> ":") end)
+        |> Enum.map(fn {_key, pid} -> pid end)
+    end
+  end
+
+  def list_pids_for_run(_), do: []
 end

@@ -548,6 +548,136 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     end
   end
 
+  describe "worktree-create orphan scan" do
+    @orphan_preserved_event [:foreman_server, :vcs, :worktree, :orphan_preserved]
+
+    setup %{temp_dir: temp_dir} do
+      # Worktree.clean_orphan calls the real git worktree remove.
+      repo_dir = Path.join(temp_dir, "wt-repo-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(repo_dir)
+
+      System.cmd("git", ["init", "--quiet", "--initial-branch=main", repo_dir])
+      System.cmd("git", ["-C", repo_dir, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", repo_dir, "config", "user.name", "Test"])
+      File.write!(Path.join(repo_dir, "README.md"), "hello")
+      System.cmd("git", ["-C", repo_dir, "add", "README.md"])
+      System.cmd("git", ["-C", repo_dir, "commit", "--quiet", "-m", "init"])
+
+      worktree_path = Path.join(temp_dir, "wt-#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf!(repo_dir) end)
+
+      {:ok, repo_dir: repo_dir, worktree_path: worktree_path}
+    end
+
+    test "removes orphan entry and on-disk worktree when cleanup succeeds",
+         %{repo_dir: repo_dir, worktree_path: worktree_path} do
+      _ref = attach_boot_events([@orphan_preserved_event])
+      run_id = unique_id("wt-run")
+      phase_id = "phase"
+      op_id = "wt-" <> run_id <> "-create-" <> phase_id
+
+      {output, 0} = System.cmd("git", ["-C", repo_dir, "worktree", "add", worktree_path])
+      assert output != ""
+
+      seed_worktree_create_orphan!(op_id, run_id, phase_id, repo_dir, worktree_path)
+      seed_terminal_run!(run_id)
+
+      assert :ok = BootReconciliation.scan_worktree_create_orphans()
+
+      assert {:ok, nil} =
+               wait_until(
+                 fn ->
+                   case ProjectionStore.worktree_create_orphan(op_id) do
+                     nil -> {:ok, nil}
+                     _ -> :retry
+                   end
+                 end,
+                 "worktree-create orphan entry removed for #{op_id}",
+                 2_000
+               )
+
+      refute File.dir?(worktree_path),
+             "expected cleanup to remove on-disk worktree #{worktree_path}"
+    end
+
+    test "emits :dirty orphan_preserved with worktree_path when worktree is dirty",
+         %{repo_dir: repo_dir, worktree_path: worktree_path} do
+      ref = attach_boot_events([@orphan_preserved_event])
+      run_id = unique_id("wt-dirty")
+      phase_id = "phase"
+      op_id = "wt-" <> run_id <> "-create-" <> phase_id
+
+      {output, 0} = System.cmd("git", ["-C", repo_dir, "worktree", "add", worktree_path])
+      assert output != ""
+      File.write!(Path.join(worktree_path, "staged.md"), "dirty")
+
+      seed_worktree_create_orphan!(op_id, run_id, phase_id, repo_dir, worktree_path)
+      seed_terminal_run!(run_id)
+
+      assert :ok = BootReconciliation.scan_worktree_create_orphans()
+
+      assert_receive {@orphan_preserved_event, ^ref, %{operation_id: ^op_id},
+                      %{run_id: ^run_id, worktree_path: ^worktree_path, reason: :dirty}},
+                     2_000
+
+      assert %{operation_id: ^op_id} = ProjectionStore.worktree_create_orphan(op_id)
+    end
+
+    test "emits :resolve_dispatch_failed with worktree_path when resolve dispatch fails",
+         %{repo_dir: repo_dir, worktree_path: worktree_path} do
+      ref = attach_boot_events([@orphan_preserved_event])
+      run_id = unique_id("wt-resolve-fail")
+      phase_id = "phase"
+      op_id = "wt-" <> run_id <> "-create-" <> phase_id
+
+      {output, 0} = System.cmd("git", ["-C", repo_dir, "worktree", "add", worktree_path])
+      assert output != ""
+
+      seed_worktree_create_orphan!(op_id, run_id, phase_id, repo_dir, worktree_path)
+      seed_terminal_run!(run_id)
+
+      # Stub only the orphan_resolve dispatch (cleanup still flows through the
+      # real VcsAdapter). The injected function returns `{:error, :test}`
+      # so BootReconciliation takes the `:resolve_dispatch_failed` branch
+      # while the on-disk worktree is still cleaned up. Process-local: no
+      # global side-effects across async tests. Cleanup is in the test
+      # process (not on_exit) because each test runs in its own process
+      # and the key only lives in this test's dictionary.
+      Process.put(:boot_reconciliation_orphan_resolve_dispatch, fn _ -> {:error, :test} end)
+
+      try do
+        assert :ok = BootReconciliation.scan_worktree_create_orphans()
+
+        assert_receive {@orphan_preserved_event, ^ref, %{operation_id: ^op_id},
+                        %{
+                          run_id: ^run_id,
+                          worktree_path: ^worktree_path,
+                          reason: :resolve_dispatch_failed
+                        }},
+                       2_000
+
+        assert %{operation_id: ^op_id} = ProjectionStore.worktree_create_orphan(op_id)
+      after
+        Process.delete(:boot_reconciliation_orphan_resolve_dispatch)
+      end
+    end
+  end
+
+  defp seed_worktree_create_orphan!(op_id, run_id, phase_id, repo_dir, worktree_path) do
+    project_id = unique_id("wt-project")
+
+    append_and_apply("vcs:" <> op_id, 0, "WorktreeCreateOrphanRecorded", %{
+      operation_id: op_id,
+      project_id: project_id,
+      run_id: run_id,
+      phase_id: phase_id,
+      worktree_path: worktree_path,
+      repo_path: repo_dir,
+      reason: "create_dispatch_failed"
+    })
+  end
+
   defp seed_orphan_task!(task_id, run_id) do
     seed_in_progress_task!(task_id, run_id)
     seed_terminal_run!(run_id)

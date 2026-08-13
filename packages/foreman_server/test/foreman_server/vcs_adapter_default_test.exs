@@ -342,7 +342,7 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       assert File.dir?(ctx.worktree_path)
     end
 
-    test "clean failure emits [:foreman_server, :vcs, :worktree, :clean_failed] telemetry", ctx do
+    test "clean failure dispatches a vcs_operation.fail command", ctx do
       {:ok, _} =
         Default.create_worktree(
           ctx.repo,
@@ -375,15 +375,13 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       assert {:error, {:git_worktree_clean_failed, _code, _output}} =
                Default.clean_worktree(ctx.worktree_path, ctx.opts)
 
-      assert_receive {:telemetry, [:foreman_server, :vcs, :worktree, :clean_failed],
-                      %{operation_id: op_id}, metadata},
-                     1000
-
-      assert op_id == ctx.opts[:operation_id]
-      assert metadata.project_id == "p"
-      assert metadata.run_id == "r"
-      assert metadata.phase_id == "ph"
-      assert match?({:git_worktree_clean_failed, _, _}, metadata.reason)
+      # Adapter no longer emits the canonical clean_failed telemetry — the
+      # orchestrator (ForemanServer.Workflow.Worktree) is the sole canonical
+      # source. The adapter's contract is to dispatch a vcs_operation.fail
+      # command via CommandGateway.
+      refute_receive {:telemetry, [:foreman_server, :vcs, :worktree, :clean_failed],
+                      _measurements, _metadata},
+                     200
     end
 
     test "successful clean does NOT emit clean_failed telemetry", ctx do

@@ -357,6 +357,250 @@ defmodule ForemanServer.Aggregates.VcsOperationTest do
     end
   end
 
+  describe "handle_command/2 — vcs.worktree.create.orphan_record" do
+    test "emits WorktreeCreateOrphanRecorded from the initial state" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_record",
+        payload: %{
+          operation_id: "op-orphan-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt-orphan",
+          reason: "compensation_failed"
+        }
+      }
+
+      assert {:ok, spec} = VcsOperation.handle_command(default_state(), cmd)
+      assert spec.event_type == "WorktreeCreateOrphanRecorded"
+      assert spec.stream_id == "vcs:op-orphan-1"
+      assert spec.payload.operation_id == "op-orphan-1"
+      assert spec.payload.project_id == "proj-1"
+      assert spec.payload.run_id == "run-1"
+      assert spec.payload.phase_id == "phase-1"
+      assert spec.payload.worktree_path == "/tmp/wt-orphan"
+      assert spec.payload.reason == "compensation_failed"
+    end
+
+    test "rejects when worktree_path is missing on empty stream" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_record",
+        payload: %{
+          operation_id: "op-orphan-2",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error, {:missing_or_invalid, :worktree_path}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when operation_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_record",
+        payload: %{
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt"
+        }
+      }
+
+      assert {:error, {:missing_or_invalid, :operation_id}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when run_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_record",
+        payload: %{
+          operation_id: "op-orphan-3",
+          project_id: "proj-1",
+          phase_id: "phase-1",
+          worktree_path: "/tmp/wt"
+        }
+      }
+
+      assert {:error, {:missing_or_invalid, :run_id}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when phase_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_record",
+        payload: %{
+          operation_id: "op-orphan-4",
+          project_id: "proj-1",
+          run_id: "run-1",
+          worktree_path: "/tmp/wt"
+        }
+      }
+
+      assert {:error, {:missing_or_invalid, :phase_id}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "apply_event accepts a bare WorktreeCreateOrphanRecorded typed struct" do
+      event = %ForemanServer.Events.WorktreeCreateOrphanRecorded{
+        operation_id: "op-orphan-5",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        worktree_path: "/tmp/wt-orphan",
+        reason: "compensation_failed"
+      }
+
+      state = VcsOperation.apply_event(default_state(), event)
+      assert state.exists? == true
+      assert state.operation_id == "op-orphan-5"
+      assert state.project_id == "proj-1"
+      assert state.run_id == "run-1"
+      assert state.phase_id == "phase-1"
+      assert state.status == "create_orphan_recorded"
+      assert state.terminal? == false
+      assert state.worktree_path == "/tmp/wt-orphan"
+    end
+  end
+
+  describe "handle_command/2 — vcs.worktree.create.orphan_resolve" do
+    defp orphan_recorded_state do
+      %ForemanServer.Aggregates.VcsOperation.State{
+        exists?: true,
+        operation_id: "op-resolve-1",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        status: "create_orphan_recorded",
+        terminal?: false,
+        worktree_path: "/tmp/wt-resolve"
+      }
+    end
+
+    test "emits WorktreeCreateOrphanResolved from an orphan-recorded state" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_resolve",
+        payload: %{
+          operation_id: "op-resolve-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1",
+          resolution: "recovered_via_clean_retry"
+        }
+      }
+
+      assert {:ok, spec} = VcsOperation.handle_command(orphan_recorded_state(), cmd)
+      assert spec.event_type == "WorktreeCreateOrphanResolved"
+      assert spec.stream_id == "vcs:op-resolve-1"
+      assert spec.payload.operation_id == "op-resolve-1"
+      assert spec.payload.project_id == "proj-1"
+      assert spec.payload.run_id == "run-1"
+      assert spec.payload.phase_id == "phase-1"
+      assert spec.payload.resolution == "recovered_via_clean_retry"
+    end
+
+    test "rejects when stream is empty (no orphan recorded yet)" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_resolve",
+        payload: %{
+          operation_id: "op-resolve-fresh",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error, {:vcs_operation_not_started, "vcs.worktree.create.orphan_resolve"}} =
+               VcsOperation.handle_command(default_state(), cmd)
+    end
+
+    test "rejects when status is not create_orphan_recorded" do
+      created_state = %ForemanServer.Aggregates.VcsOperation.State{
+        exists?: true,
+        operation_id: "op-resolve-1",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        status: "created",
+        terminal?: false
+      }
+
+      cmd = %{
+        type: "vcs.worktree.create.orphan_resolve",
+        payload: %{
+          operation_id: "op-resolve-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error,
+              {:invalid_status_for, "vcs.worktree.create.orphan_resolve", "created"}} =
+               VcsOperation.handle_command(created_state, cmd)
+    end
+
+    test "rejects on correlation mismatch" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_resolve",
+        payload: %{
+          operation_id: "op-resolve-1",
+          project_id: "proj-OTHER",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error, :correlation_mismatch} =
+               VcsOperation.handle_command(orphan_recorded_state(), cmd)
+    end
+
+    test "rejects when operation_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_resolve",
+        payload: %{
+          project_id: "proj-1",
+          run_id: "run-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error, {:missing_or_invalid, :operation_id}} =
+               VcsOperation.handle_command(orphan_recorded_state(), cmd)
+    end
+
+    test "rejects when run_id is missing" do
+      cmd = %{
+        type: "vcs.worktree.create.orphan_resolve",
+        payload: %{
+          operation_id: "op-resolve-2",
+          project_id: "proj-1",
+          phase_id: "phase-1"
+        }
+      }
+
+      assert {:error, {:missing_or_invalid, :run_id}} =
+               VcsOperation.handle_command(orphan_recorded_state(), cmd)
+    end
+
+    test "apply_event accepts a bare WorktreeCreateOrphanResolved typed struct" do
+      event = %ForemanServer.Events.WorktreeCreateOrphanResolved{
+        operation_id: "op-resolve-3",
+        project_id: "proj-1",
+        run_id: "run-1",
+        phase_id: "phase-1",
+        worktree_path: "/tmp/wt-resolve",
+        resolution: "recovered_via_clean_retry"
+      }
+
+      state = VcsOperation.apply_event(orphan_recorded_state(), event)
+      assert state.status == "create_orphan_resolved"
+      assert state.terminal? == true
+      assert state.worktree_path == "/tmp/wt-resolve"
+    end
+  end
+
   describe "handle_command/2 — unhandled" do
     test "returns :unhandled for unknown command types" do
       assert :unhandled =

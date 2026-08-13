@@ -384,6 +384,40 @@ Runtime ownership is split deliberately:
   boundary, but this slice does not introduce an operator CLI surface
   for them.
 
+### Worktree-create orphan recovery on boot
+
+`Workflow.BootReconciliation` reconciles worktree-create orphans —
+operations whose Git side effect succeeded but whose
+`vcs.worktree.create` command dispatch failed before the
+`WorktreeCreated` event could be persisted. The on-disk worktree
+exists but no `WorktreeCreated` projection records normal
+provisioning. On every boot scan, for each entry:
+
+1. **Skips silently** if the bound run is still in progress — the
+   worktree may still be in use.
+2. **Preserves** the entry and emits
+   `[:foreman_server, :vcs, :worktree, :orphan_preserved]` with
+   measurements `%{operation_id: op_id}` and metadata
+   `%{run_id: …, phase_id: …, worktree_path: …, reason: :dirty}`
+   if the worktree directory has local modifications (operator files
+   at risk — never auto-deleted).
+3. **Preserves** the entry with the same event and
+   `reason: :active_workers` if live workers still reference the run.
+4. **Retries the cleanup** via `Worktree.clean_orphan/1` (removes the
+   on-disk worktree) and dispatches the
+   `vcs.worktree.create.orphan_resolve` command. Successful recovery
+   removes the orphan entry and emits no telemetry. Cleanup failure
+   preserves the entry with `reason: :clean_failed`; resolve
+   dispatch failure preserves the entry with
+   `reason: :resolve_dispatch_failed`.
+Operators can subscribe to
+`[:foreman_server, :vcs, :worktree, :orphan_preserved]` to monitor
+recovery outcomes. The `worktree_path` field identifies the on-disk
+target; the `reason` atom is one of `:dirty`, `:active_workers`,
+`:clean_failed`, or `:resolve_dispatch_failed`, and explains why a
+particular orphan was preserved. There is no CLI surface for these
+events — recovery is driven entirely by `BootReconciliation` on boot.
+
 ### Flag-gated supervisor children (opt-in Bi-directional sync)
 
 The bi-directional sync with Beads (`BeadsWatcher` + `BeadsOrphanJanitor`)
