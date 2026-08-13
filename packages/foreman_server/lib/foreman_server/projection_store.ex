@@ -202,6 +202,45 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_scheduler_intents)
   end
 
+  @doc """
+  Return the projected worktree for an `operation_id` (the deterministic
+  correlation id `"wt-<run_id>-<phase_id>"`), or nil if not found.
+  """
+  @spec worktree(String.t()) :: map() | nil
+  def worktree(operation_id) when is_binary(operation_id) do
+    GenServer.call(__MODULE__, {:worktree, operation_id})
+  end
+
+  @doc """
+  Return every projected worktree for a given run, sorted by operation_id.
+  """
+  @spec worktrees_for_run(String.t()) :: [map()]
+  def worktrees_for_run(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:worktrees_for_run, run_id})
+  end
+
+  @doc """
+  Return the projected worktree for a given `(project_id, run_id, phase_id)`
+  tuple, or nil if not found. Mirrors the deterministic `operation_id`
+  derivation used by the worktree aggregate.
+  """
+  @spec worktree_for_phase(String.t(), String.t(), String.t()) :: map() | nil
+  def worktree_for_phase(project_id, run_id, phase_id)
+      when is_binary(project_id) and is_binary(run_id) and is_binary(phase_id) do
+    operation_id = "wt-" <> run_id <> "-" <> phase_id
+    GenServer.call(__MODULE__, {:worktree, operation_id})
+  end
+  @doc """
+  Return every projected worktree whose final status is `"created"` —
+  i.e. a `WorktreeCreated` event was replayed but no matching
+  `WorktreeCleaned` event followed. BootReconciliation uses this
+  list to drive cleanup of orphans after a restart.
+  """
+  @spec list_unresolved_worktrees() :: [map()]
+  def list_unresolved_worktrees do
+    GenServer.call(__MODULE__, :list_unresolved_worktrees)
+  end
+
   # -------------------------------------------------------------------------
 
   @impl true
@@ -436,6 +475,32 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, Map.values(state.scheduler_intents), state}
   end
 
+  @impl true
+  def handle_call({:worktree, operation_id}, _from, state) do
+    {:reply, Map.get(state.worktrees, operation_id), state}
+  end
+
+  @impl true
+  def handle_call({:worktrees_for_run, run_id}, _from, state) do
+    worktrees =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> get(wt, :run_id) == run_id end)
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    {:reply, worktrees, state}
+  end
+
+  @impl true
+  def handle_call(:list_unresolved_worktrees, _from, state) do
+    unresolved =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> get(wt, :status) == "created" end)
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    {:reply, unresolved, state}
+  end
   # -------------------------------------------------------------------------
   # Projection logic
   # -------------------------------------------------------------------------
@@ -490,7 +555,8 @@ defmodule ForemanServer.ProjectionStore do
       pr_associations: %{},
       scheduler_intents: %{},
       subscribers: %{},
-      project_active_runs: %{}
+      project_active_runs: %{},
+      worktrees: %{}
     }
   end
 
@@ -1029,6 +1095,59 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, "ToolCallFinished", payload) do
     touch_run_for_payload(state, payload)
+  end
+
+  defp apply_event_by_type(state, "WorktreeCreated", payload) do
+    case decode_for_projection("WorktreeCreated", payload) do
+      %ForemanServer.Events.WorktreeCreated{} = event
+      when not is_nil(event.operation_id) and event.operation_id != "" ->
+        entry = %{
+          operation_id: event.operation_id,
+          project_id: event.project_id,
+          run_id: event.run_id,
+          phase_id: event.phase_id,
+          status: "created",
+          worktree_path: event.worktree_path,
+          branch: event.branch,
+          base_ref: event.base_ref,
+          cleanup: event.cleanup,
+          last_event_at_ms: payload_event_at_ms(payload)
+        }
+
+        state
+        |> Map.update!(:worktrees, &Map.put(&1, event.operation_id, entry))
+        |> touch_run_for_payload(payload)
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
+  end
+
+  defp apply_event_by_type(state, "WorktreeCleaned", payload) do
+    case decode_for_projection("WorktreeCleaned", payload) do
+      %ForemanServer.Events.WorktreeCleaned{} = event
+      when not is_nil(event.operation_id) and event.operation_id != "" ->
+        existing = Map.get(state.worktrees, event.operation_id, %{})
+
+        merged =
+          Map.merge(existing, %{
+            operation_id: event.operation_id,
+            project_id: event.project_id || existing[:project_id],
+            run_id: event.run_id || existing[:run_id],
+            phase_id: event.phase_id || existing[:phase_id],
+            status: "cleaned",
+            worktree_path: event.worktree_path || existing[:worktree_path],
+            cleanup_observed: event.cleanup_observed,
+            last_event_at_ms: payload_event_at_ms(payload)
+          })
+
+        state
+        |> Map.update!(:worktrees, &Map.put(&1, event.operation_id, merged))
+        |> touch_run_for_payload(payload)
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
   end
 
   defp apply_event_by_type(state, _type, _payload), do: state

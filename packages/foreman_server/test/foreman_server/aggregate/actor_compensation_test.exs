@@ -213,6 +213,7 @@ defmodule ForemanServer.ActorCompensationTest do
         title: "racing-writer",
         description: "desc",
         priority: 2,
+        status: "open",
         task_type: "feature",
         dedupe_key: "dedupe-#{ids.task_id}"
       }
@@ -272,6 +273,7 @@ defmodule ForemanServer.ActorCompensationTest do
         title: "racing-writer",
         description: "desc",
         priority: 2,
+        status: "open",
         task_type: "feature",
         dedupe_key: "dedupe-#{ids.task_id}"
       }
@@ -318,27 +320,43 @@ defmodule ForemanServer.ActorCompensationTest do
       # ensures the initial dispatch reaches append (started +
       # nonterminal) and the reloaded state is terminal
       # (reject_terminal fires on re-decide).
-      payload = %{
-        run_id: run_id,
+      #
+      # Use typed event structs with all required keys so global
+      # replay via ProjectionStore.rebuild/1 stays valid (the codec
+      # rejects unknown/omitted fields by design — see AGENTS.md).
+      alias ForemanServer.Events.PhaseStarted
+      alias ForemanServer.Events.PhaseCompleted
+
+      started_event = %PhaseStarted{
         phase_id: phase_id,
-        status: "in_progress",
-        attempt: 0
+        run_id: run_id,
+        index: 1,
+        name: "test-phase",
+        attempt: 1,
+        artifact_template: "{run.id}.md"
       }
 
       :ok =
         FServerStore.append_to_stream(stream_id, 0, [
-          %EventData{event_type: "PhaseStarted", data: payload, metadata: %{}}
+          %EventData{event_type: "PhaseStarted", data: started_event, metadata: %{}}
         ])
 
       pid = start_actor(PhaseAggregate, stream_id)
 
       # Append PhaseCompleted externally — the actor's stale state
       # does not know about it yet.
-      completion_payload = Map.put(payload, :status, "completed")
+      completed_event = %PhaseCompleted{
+        phase_id: phase_id,
+        run_id: run_id,
+        index: 1,
+        artifact_path: "/tmp/#{phase_id}.md",
+        artifact_sha256: "deadbeef",
+        artifact_bytes: 0
+      }
 
       :ok =
         FServerStore.append_to_stream(stream_id, 1, [
-          %EventData{event_type: "PhaseCompleted", data: completion_payload, metadata: %{}}
+          %EventData{event_type: "PhaseCompleted", data: completed_event, metadata: %{}}
         ])
 
       # Force actor's local version to 1 so the next append conflicts.
@@ -348,7 +366,11 @@ defmodule ForemanServer.ActorCompensationTest do
 
       cmd = %{
         type: "phase.complete",
-        payload: payload,
+        payload: %{
+          run_id: run_id,
+          phase_id: phase_id,
+          attempt: 1
+        },
         aggregate_id: stream_id
       }
 
@@ -360,12 +382,12 @@ defmodule ForemanServer.ActorCompensationTest do
 
       # Compensation helper short-circuited — no close was issued.
       # The cache is still empty (never populated: phase.complete
-      # doesn't go through Stage 2 — task_create_event? is false).
+      # doesn't go through Stage 2 — task_create_event? is false),
+      # and no compensation telemetry fires (re-decision rejected
+      # before compensation ran).
       assert :sys.get_state(pid).in_flight_beads == %{}
 
-      # No compensation telemetry fired (helper returned state unchanged).
-      assert drain_telemetry([:foreman_server, :task_provider, :beads, :create, :compensated]) ==
-               []
+      assert drain_telemetry([:foreman_server, :task_provider, :beads, :create, :compensated]) == []
     end
   end
 
