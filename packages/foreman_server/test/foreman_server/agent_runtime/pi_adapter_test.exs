@@ -349,15 +349,26 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
         context: Map.put(%{}, :working_directory, System.tmp_dir!())
       }
 
-      PiAdapter.execute(request, [])
-
-      # Check that no temp directories remain from this adapter
-      remaining_dirs =
+      before_dirs =
         tmp_dir
         |> File.ls!()
         |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+        |> MapSet.new()
 
-      assert remaining_dirs == []
+      PiAdapter.execute(request, [])
+
+      # Only dirs created during this test count as leaks. Pre-existing
+      # orphans from previous runs (e.g. killed during another test
+      # process) are out of scope for this assertion.
+      after_dirs =
+        tmp_dir
+        |> File.ls!()
+        |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+        |> MapSet.new()
+
+      leaked = MapSet.difference(after_dirs, before_dirs)
+      assert MapSet.size(leaked) == 0,
+             "PiAdapter leaked temp dirs during failure path: #{inspect(leaked)}"
     end
   end
 
@@ -404,14 +415,23 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
         context: Map.put(%{}, :working_directory, System.tmp_dir!())
       }
 
-      PiAdapter.execute(request, [])
-
-      remaining_dirs =
+      before_dirs =
         tmp_dir
         |> File.ls!()
         |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+        |> MapSet.new()
 
-      assert remaining_dirs == []
+      PiAdapter.execute(request, [])
+
+      after_dirs =
+        tmp_dir
+        |> File.ls!()
+        |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+        |> MapSet.new()
+
+      leaked = MapSet.difference(after_dirs, before_dirs)
+      assert MapSet.size(leaked) == 0,
+             "PiAdapter leaked temp dirs after success: #{inspect(leaked)}"
     end
   end
 
@@ -782,6 +802,12 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
 
       timeout_ms = 200
 
+      before_dirs =
+        tmp_dir
+        |> File.ls!()
+        |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+        |> MapSet.new()
+
       try do
         Application.put_env(:foreman_server, PiAdapter,
           executable: concurrent,
@@ -824,15 +850,18 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
                "Fixture PID #{pid_str} must be dead — cooperative exit did not happen " <>
                  "during cleanup window"
 
-        # Outer try/after completed: no leftover pi_adapter_* tmp dirs.
-        remaining =
+        # Outer try/after completed: no leftover pi_adapter_* tmp dirs from
+        # THIS test. Pre-existing orphans from prior runs are out of scope.
+        after_dirs =
           tmp_dir
           |> File.ls!()
           |> Enum.filter(&String.starts_with?(&1, "pi_adapter_"))
+          |> MapSet.new()
 
-        assert remaining == [],
+        leaked = MapSet.difference(after_dirs, before_dirs)
+        assert MapSet.size(leaked) == 0,
                "Temp dir cleanup must complete even on concurrent exit. " <>
-                 "Leftover dirs: #{inspect(remaining)}"
+                 "Leftover dirs: #{inspect(MapSet.to_list(leaked))}"
       after
         # Defensive cleanup of any leftover fixture process.
         if File.exists?(pid_file) do
