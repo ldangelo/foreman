@@ -315,6 +315,40 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMapTest do
     end
   end
 
+  describe "from_br_envelope/1 tolerates missing optional fields" do
+    # Regression: real `br doctor --json` envelopes for sync-merge / preflight
+    # codes (`sync_merge_pending_unknown`, etc.) omit `hint` and `retryable?`.
+    # `from_br_envelope/1` previously raised `KeyError` on `Map.fetch!`.
+    test "missing :hint and :retryable? yields nil defaults without raising" do
+      assert %ProviderErrorInput{
+               code: "sync_merge_pending_unknown",
+               message: "Read-only command is proceeding with automatic sync disabled",
+               hint: nil,
+               retryable?: nil,
+               source: :br_envelope
+             } =
+               ProviderErrorInput.from_br_envelope(%{
+                 "code" => "sync_merge_pending_unknown",
+                 "level" => "warning",
+                 "message" =>
+                   "Read-only command is proceeding with automatic sync disabled",
+                 "inspection_error" => "database '/tmp/x.db' is missing",
+                 "remediation" => "Run `br doctor --json` and restore access before mutating."
+               })
+    end
+
+    test "build_provider_error/3 accepts an unknown-code envelope missing hint and retryable?" do
+      input =
+        ProviderErrorInput.from_br_envelope(%{
+          "code" => "sync_merge_pending_unknown",
+          "message" => "Read-only command is proceeding with automatic sync disabled"
+        })
+
+      assert %ProviderError{code: "BR_ERROR_ENVELOPE"} =
+               CodeMap.build_provider_error(input, "br doctor --json", 0)
+    end
+  end
+
   defp code_map_source, do: File.read!(@source_file)
 
   defp mapping_rows do

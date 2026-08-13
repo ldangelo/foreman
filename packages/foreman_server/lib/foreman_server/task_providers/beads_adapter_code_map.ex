@@ -87,7 +87,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter.CodeMap do
     defp fetch_value(map, key) do
       case map do
         %{^key => value} -> value
-        _ -> Map.fetch!(map, Atom.to_string(key))
+        _ -> Map.get(map, Atom.to_string(key))
       end
     end
 
