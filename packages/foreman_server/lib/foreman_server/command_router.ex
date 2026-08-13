@@ -180,6 +180,7 @@ defmodule ForemanServer.CommandRouter do
   defp do_dispatch_run_start(command_id, %{payload: payload, timeout: timeout}) do
     project_id = Aggregate.get(payload, :project_id)
     run_id = Aggregate.get(payload, :run_id)
+    implementation_key = extract_implementation_key(payload)
 
     reservation_result =
       do_dispatch(
@@ -192,7 +193,8 @@ defmodule ForemanServer.CommandRouter do
             run_id: run_id,
             command_id: command_id,
             sequence: @run_reservation_sequence,
-            run_start_payload: payload
+            run_start_payload: payload,
+            implementation_key: implementation_key
           }
         },
         timeout
@@ -286,7 +288,22 @@ defmodule ForemanServer.CommandRouter do
   defp normalize_run_start_reason({:missing_or_invalid, :workflow_snapshot, _value}),
     do: :unknown_workflow
 
+  defp normalize_run_start_reason(
+         {:implementation_already_active, implementation_key, existing_run_id}
+       ),
+       do: {:implementation_already_active, implementation_key, existing_run_id}
+
   defp normalize_run_start_reason(reason), do: reason
+
+  defp extract_implementation_key(%{workflow_snapshot: workflow_snapshot})
+       when is_map(workflow_snapshot) do
+    case Aggregate.get(workflow_snapshot, "implementation") do
+      %{} = impl -> Aggregate.get(impl, "implementation_key")
+      _ -> nil
+    end
+  end
+
+  defp extract_implementation_key(_payload), do: nil
 
   defp workflow_snapshot_hash(snapshot) when is_map(snapshot) do
     snapshot

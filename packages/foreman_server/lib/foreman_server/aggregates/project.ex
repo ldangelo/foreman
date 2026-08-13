@@ -169,8 +169,11 @@ defmodule ForemanServer.Aggregates.Project do
          {:ok, sequence} <- validate_sequence(Aggregate.get(payload, :sequence)),
          {:ok, run_start_payload} <-
            validate_run_start_payload(Aggregate.get(payload, :run_start_payload)),
+         {:ok, implementation_key} <-
+           validate_implementation_key(Aggregate.get(payload, :implementation_key)),
          :ok <- require_exists(state, project_id),
-         :ok <- reject_archived(state, project_id) do
+         :ok <- reject_archived(state, project_id),
+         :ok <- reject_same_implementation_key(state, project_id, run_id, implementation_key) do
       if reserved_run(state, run_id) do
         {:ok, nil}
       else
@@ -183,7 +186,8 @@ defmodule ForemanServer.Aggregates.Project do
              run_id: run_id,
              command_id: command_id,
              sequence: sequence,
-             run_start_payload: run_start_payload
+             run_start_payload: run_start_payload,
+             implementation_key: implementation_key
            }
          }}
       end
@@ -367,6 +371,46 @@ defmodule ForemanServer.Aggregates.Project do
   defp validate_sequence(sequence) when is_integer(sequence), do: {:ok, sequence}
   defp validate_sequence(_sequence), do: {:error, {:missing_or_invalid, :sequence}}
 
+  defp validate_implementation_key(nil), do: {:ok, nil}
+
+  defp validate_implementation_key(key) when is_binary(key) do
+    if key != "",
+      do: {:ok, key},
+      else: {:error, {:missing_or_invalid, :implementation_key}}
+  end
+
+  defp validate_implementation_key(_key),
+    do: {:error, {:missing_or_invalid, :implementation_key}}
+
+  defp reject_same_implementation_key(_state, _project_id, _run_id, nil), do: :ok
+
+  defp reject_same_implementation_key(
+         %State{active_run_reservations: reservations},
+         _project_id,
+         run_id,
+         key
+       )
+       when is_map(reservations) do
+    case Enum.find_value(reservations, fn {existing_run_id, reservation} ->
+           cond do
+             existing_run_id == run_id ->
+               nil
+
+             Aggregate.get(reservation, :implementation_key) == key ->
+               existing_run_id
+
+             true ->
+               nil
+           end
+         end) do
+      nil ->
+        :ok
+
+      existing_run_id ->
+        {:error, {:implementation_already_active, key, existing_run_id}}
+    end
+  end
+
   defp validate_run_start_payload(run_start_payload) when is_map(run_start_payload),
     do: {:ok, run_start_payload}
 
@@ -383,7 +427,8 @@ defmodule ForemanServer.Aggregates.Project do
       project_id: Aggregate.get(payload, :project_id),
       sequence: Aggregate.get(payload, :sequence),
       command_id: Aggregate.get(payload, :command_id),
-      run_start_payload: Aggregate.get(payload, :run_start_payload)
+      run_start_payload: Aggregate.get(payload, :run_start_payload),
+      implementation_key: Aggregate.get(payload, :implementation_key)
     }
 
     %State{

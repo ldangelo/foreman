@@ -327,6 +327,74 @@ defmodule ForemanServer.Aggregates.ProjectTest do
                    })
                })
     end
+
+    test "rejects a second reservation with the same implementation_key and a different run_id" do
+      key = "trd-key-abc"
+      state = reserved_project_state("run-1", %{implementation_key: key})
+
+      assert {:error, {:implementation_already_active, ^key, "run-1"}} =
+               Project.handle_command(state, %{
+                 type: "project.reserve_run",
+                 payload:
+                   reservation_payload("run-2", %{
+                     command_id: "reservation-command-run-2",
+                     sequence: 8,
+                     implementation_key: key
+                   })
+               })
+    end
+
+    test "treats the same run_id as idempotent even when the implementation_key matches" do
+      key = "trd-key-abc"
+      state = reserved_project_state("run-1", %{implementation_key: key})
+
+      assert {:ok, nil} =
+               Project.handle_command(state, %{
+                 type: "project.reserve_run",
+                 payload:
+                   reservation_payload("run-1", %{
+                     command_id: "reservation-command-run-1-duplicate",
+                     sequence: 8,
+                     implementation_key: key
+                   })
+               })
+    end
+
+    test "accepts a second reservation with a different implementation_key" do
+      state = reserved_project_state("run-1", %{implementation_key: "trd-key-existing"})
+      new_key = "trd-key-different"
+
+      assert {:ok, event_spec} =
+               Project.handle_command(state, %{
+                 type: "project.reserve_run",
+                 payload:
+                   reservation_payload("run-2", %{
+                     command_id: "reservation-command-run-2",
+                     sequence: 8,
+                     implementation_key: new_key
+                   })
+               })
+
+      assert event_spec.event_type == "ProjectRunReserved"
+      assert event_spec.payload.implementation_key == new_key
+    end
+
+    test "accepts a reservation without an implementation_key (backwards compat)" do
+      state = reserved_project_state()
+
+      assert {:ok, event_spec} =
+               Project.handle_command(state, %{
+                 type: "project.reserve_run",
+                 payload:
+                   reservation_payload("run-2", %{
+                     command_id: "reservation-command-run-2",
+                     sequence: 8
+                   })
+               })
+
+      assert event_spec.event_type == "ProjectRunReserved"
+      assert event_spec.payload.implementation_key == nil
+    end
   end
 
   describe "handle_command/2 — project.release_run_reservation" do
@@ -511,7 +579,8 @@ defmodule ForemanServer.Aggregates.ProjectTest do
                  project_id: "project-1",
                  sequence: 7,
                  command_id: "reservation-command-run-1",
-                 run_start_payload: reservation_payload().run_start_payload
+                 run_start_payload: reservation_payload().run_start_payload,
+                 implementation_key: nil
                }
              }
     end
@@ -593,10 +662,10 @@ defmodule ForemanServer.Aggregates.ProjectTest do
     })
   end
 
-  defp reserved_project_state(run_id \\ "run-1") do
+  defp reserved_project_state(run_id \\ "run-1", overrides \\ %{}) do
     Project.apply_event(registered_project_state(), %{
       event_type: "ProjectRunReserved",
-      payload: reservation_payload(run_id)
+      payload: reservation_payload(run_id, overrides)
     })
   end
 

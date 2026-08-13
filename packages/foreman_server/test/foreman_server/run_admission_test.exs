@@ -150,6 +150,75 @@ defmodule ForemanServer.RunAdmissionTest do
     end
   end
 
+  describe "dispatch_run_start/3 — implementation_key collision" do
+    test "rejects a second dispatch with the same implementation_key" do
+      project_id = unique_id("project")
+      run_id_1 = unique_id("run")
+      run_id_2 = unique_id("run")
+      task_id = unique_id("task")
+      implementation_key = "trd-key-#{unique_id("k")}"
+
+      register_project!(project_id)
+
+      assert {:ok, _} =
+               CommandRouter.dispatch_run_start(
+                 project_id,
+                 build_run_start_payload(run_id_1, task_id, implementation_key)
+               )
+
+      state = project_state(project_id)
+      reservation = Map.get(state.active_run_reservations, run_id_1)
+      assert reservation != nil
+      assert Map.get(reservation, :implementation_key) == implementation_key
+
+      assert {:error, {:implementation_already_active, ^implementation_key, ^run_id_1}} =
+               CommandRouter.dispatch_run_start(
+                 project_id,
+                 build_run_start_payload(run_id_2, task_id, implementation_key)
+               )
+
+      assert Map.get(project_state(project_id).active_run_reservations, run_id_2) == nil
+    end
+
+    test "admits a second dispatch with a different implementation_key" do
+      project_id = unique_id("project")
+      run_id_1 = unique_id("run")
+      run_id_2 = unique_id("run")
+      task_id = unique_id("task")
+
+      register_project!(project_id)
+
+      assert {:ok, _} =
+               CommandRouter.dispatch_run_start(
+                 project_id,
+                 build_run_start_payload(run_id_1, task_id, "trd-key-#{unique_id("a")}")
+               )
+
+      assert {:ok, _} =
+               CommandRouter.dispatch_run_start(
+                 project_id,
+                 build_run_start_payload(run_id_2, task_id, "trd-key-#{unique_id("b")}")
+               )
+
+      assert Map.get(project_state(project_id).active_run_reservations, run_id_2) != nil
+    end
+  end
+
+  defp build_run_start_payload(run_id, task_id, implementation_key) do
+    workflow_snapshot = %{
+      "phases" => [%{id: "phase-1", kind: "command"}],
+      "implementation" => %{"implementation_key" => implementation_key}
+    }
+
+    %{
+      run_id: run_id,
+      task_id: task_id,
+      workflow_snapshot: workflow_snapshot,
+      phase_specs: [%{phase_id: "phase-1", kind: "command"}],
+      approval_id: unique_id("approval")
+    }
+  end
+
   defp register_project!(project_id) do
     assert {:ok, _} =
              CommandRouter.dispatch(%{
@@ -215,7 +284,7 @@ defmodule ForemanServer.RunAdmissionTest do
   end
 
   defp unique_id(prefix) do
-    suffix = System.unique_integer([:positive])
+    suffix = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
     "#{prefix}-run-admission-#{suffix}"
   end
 
