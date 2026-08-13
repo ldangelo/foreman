@@ -8,9 +8,9 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
     files = elixir_files(@lib_root)
     assert files != [], "No lib files found under #{@lib_root}"
 
-    expected_hit = positive_control_hit()
+    expected_hit = positive_control_signature()
 
-    assert reopen_call_sites(files) == [expected_hit],
+    assert Enum.map(reopen_call_sites(files), &signature/1) == [expected_hit],
            "Unexpected reopen/3 call sites outside BootReconciliation:\n" <>
              format_hits(reopen_call_sites(files))
   end
@@ -20,13 +20,13 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
            "Expected positive control file #{@positive_control_file} to exist"
 
     hits = find_reopen_calls(@positive_control_file)
-    expected_hit = positive_control_hit()
 
     assert hits != [],
            "Expected at least one reopen/3 call in #{Path.relative_to_cwd(@positive_control_file)}"
 
-    assert expected_hit in hits,
-           "Expected scanner to find #{elem(expected_hit, 2)} at #{elem(expected_hit, 0)}:#{elem(expected_hit, 1)}"
+    assert signature({Path.relative_to_cwd(@positive_control_file), 0, expected_call_label()})
+             in Enum.map(hits, &signature/1),
+           "Expected scanner to find a reopen/3 call in #{Path.relative_to_cwd(@positive_control_file)}"
   end
 
   defp reopen_call_sites(files) do
@@ -55,9 +55,14 @@ defmodule ForemanServer.Architecture.ReopenCallSiteTest do
 
   defp collect_reopen_calls(node, acc), do: {node, acc}
 
-  defp positive_control_hit do
-    {Path.relative_to_cwd(@positive_control_file), 193, "provider_module.reopen/3"}
+  defp positive_control_signature do
+    signature(
+      {Path.relative_to_cwd(@positive_control_file), 0, expected_call_label()}
+    )
   end
+
+  defp signature({file, _line, callsite}), do: {file, callsite}
+  defp expected_call_label, do: "provider_module.reopen/3"
 
   defp elixir_files(root) do
     root

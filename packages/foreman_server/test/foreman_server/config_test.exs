@@ -64,8 +64,12 @@ defmodule ForemanServer.ConfigTest do
       url = Keyword.fetch!(es_cfg, :url)
       assert url =~ "localhost"
 
-      assert Keyword.get(es_cfg, :log) == :debug,
-             "Dev EventStore should have verbose logging per TRD-022"
+      # DBConnection's :log accepts only an MFA `{mod, fun, args}` or a
+      # callable function. A bare atom such as :debug is invoked as
+      # log.(entry) and raises BadArgumentError on every query, so the
+      # dev config MUST omit the key.
+      refute Keyword.has_key?(es_cfg, :log),
+             "Dev EventStore must omit :log (a bare atom like :debug crashes DBConnection)"
     end
 
     test "Repo reads DATABASE_URL with localhost default" do
