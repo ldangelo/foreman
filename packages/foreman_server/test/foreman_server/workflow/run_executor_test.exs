@@ -914,6 +914,284 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
            "cleanup: never must preserve worktree at #{worktree_path}"
   end
 
+  # --------------------------------------------------------------------
+  # Beads-managed TRD_SCOPE contract (TRD-2026-3d41f677 Decision 10)
+  # When `beads_database_path` is frozen in plan_context, the executor MUST
+  # export BEADS_DB + TRD_SCOPE alongside the FOREMAN_* keys; if the trd
+  # path or the implementation key is malformed, provisioning MUST fail
+  # closed at the worktree boundary.
+  # --------------------------------------------------------------------
+
+  test "beads-managed phase exports TRD_SCOPE = <trd-slug>-<first-12-of-impl-key>" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-beads")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-beads-scope")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+
+    implementation_key =
+      Base.encode16(:crypto.hash(:sha256, project_id <> run_id), case: :lower)
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+
+    seed_project_task_and_run_with_implementation!(
+      project_id,
+      task_id,
+      run_id,
+      %{phases: [phase]},
+      project_task_provider(database_path),
+      %{
+        "trd_path" => "docs/TRD/TRD-2026-beads-managed.md",
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        "implementation_key" => implementation_key,
+        "beads_database_path" => database_path
+      }
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(task_id)
+
+    start_run_executor!(run_id, task_id)
+
+    assert {:adapter_execute, _prompt, _ctx} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
+
+    assert env["FOREMAN_WORKTREE"] == "1"
+    assert env["BEADS_DB"] == database_path
+
+    expected_scope =
+      "trd-2026-beads-managed-" <> binary_part(implementation_key, 0, 12)
+
+    assert env["TRD_SCOPE"] == expected_scope
+
+    poll_run_completion!(run_id)
+  end
+
+  test "beads-managed phase with malformed implementation_key fails closed at provisioning" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-beads-bad-key")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-beads-bad-key")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
+    expected_comment = "foreman-run:#{run_id}:#{artifact_path}"
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request ==
+               {:update,
+                %{
+                  flags: [
+                    task_id,
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    expected_comment
+                  ],
+                  database_path: database_path
+                }}
+
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      send(test_pid, {:runner_cmd, :fail, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "open", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    seed_project_task_and_run_with_implementation!(
+      project_id,
+      task_id,
+      run_id,
+      %{phases: [phase]},
+      project_task_provider(database_path),
+      %{
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        # Not 64-char hex; this MUST fail closed.
+        "implementation_key" => "not-a-hex-key",
+        "beads_database_path" => database_path
+      }
+    )
+
+    register_project!(project_id, database_path)
+
+    start_run_executor!(run_id, task_id)
+
+    assert %{status: "failed"} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "failed"} = task -> {:ok, task}
+                   other -> :retry
+                 end
+               end,
+               "task failed after provisioning refused (bad implementation_key)"
+             )
+
+    refute_received {:adapter_env, _}
+    refute_received {:adapter_execute, _, _}
+  end
+
+  test "beads-managed phase with missing trd_path fails closed at provisioning" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-beads-no-trd")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-beads-no-trd")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
+    expected_comment = "foreman-run:#{run_id}:#{artifact_path}"
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+
+    implementation_key =
+      Base.encode16(:crypto.hash(:sha256, project_id <> run_id), case: :lower)
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request ==
+               {:update,
+                %{
+                  flags: [
+                    task_id,
+                    "--status",
+                    "open",
+                    "--transition-comment",
+                    expected_comment
+                  ],
+                  database_path: database_path
+                }}
+
+      assert_database_path(runner_project_config, database_path)
+      assert opts == [timeout_ms: 30_000]
+
+      send(test_pid, {:runner_cmd, :fail, request, runner_project_config, opts})
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "open", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    snapshot =
+      Map.put(%{phases: [phase]}, "implementation", %{
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        "implementation_key" => implementation_key,
+        "beads_database_path" => database_path
+      })
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      snapshot,
+      project_task_provider(database_path)
+    )
+
+    register_project!(project_id, database_path)
+
+    start_run_executor!(run_id, task_id)
+
+    assert %{status: "failed"} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "failed"} = task -> {:ok, task}
+                   other -> :retry
+                 end
+               end,
+               "task failed after provisioning refused (missing trd_path)"
+             )
+
+    refute_received {:adapter_env, _}
+    refute_received {:adapter_execute, _, _}
+  end
+
   defp put_worktree(phase, worktree_block) do
     Map.put(phase, :worktree, worktree_block)
   end

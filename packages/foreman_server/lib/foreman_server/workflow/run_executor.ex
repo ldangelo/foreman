@@ -615,13 +615,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_base_matches(worktree, source_revision, project_root),
          {:ok, implementation_key} <- fetch_string(plan_context, "implementation_key"),
          {:ok, project_id} <- fetch_project_id(state),
+         :ok <- assert_trd_scope_prereqs(plan_context, implementation_key),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = "wt-" <> state.run_id <> "-" <> phase_id,
          slug = phase_slug(phase_spec),
          worktree_path = worktree_path_for(project_id, state.run_id, slug, worktree),
          :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
          branch = render_worktree_template(branch_template(worktree), state, slug),
-         :ok <- ensure_worktree_parent_dir(worktree_path) do
+         :ok <- ensure_worktree_parent_dir(worktree_path),
+         trd_scope = compute_trd_scope(plan_context, implementation_key) do
       WorktreeLifecycle.create(%{
         operation_id: operation_id,
         project_id: project_id,
@@ -643,6 +645,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
              project_root: project_root,
              project_id: project_id,
              implementation_key: implementation_key,
+             trd_scope: trd_scope,
              cleanup: worktree_cleanup(worktree)
            }}
 
@@ -656,10 +659,74 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, _} = err ->
           err
       end
-    else
-      {:error, _} = err -> err
     end
   end
+
+  # Per TRD Decision 10, the Beads workflow requires `trd_path` to be frozen
+  # in plan_context so `TRD_SCOPE` can be derived deterministically. If
+  # `BEADS_DB` is set but `trd_path` is missing or `implementation_key` is
+  # not a full hex SHA, fail closed at provisioning rather than exporting
+  # an empty scope that the skill cannot defend against.
+  defp assert_trd_scope_prereqs(plan_context, implementation_key) do
+    cond do
+      beads_db_path(plan_context) in [nil, ""] ->
+        :ok
+
+      trd_path(plan_context) in [nil, ""] ->
+        {:error, {:plan_context_missing, "trd_path"}}
+
+      not valid_hex?(implementation_key) ->
+        {:error, {:plan_context_missing, "implementation_key"}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp compute_trd_scope(plan_context, implementation_key) do
+    case beads_db_path(plan_context) do
+      path when is_binary(path) and path != "" ->
+        slug = trd_slug(plan_context)
+        key_prefix = String.slice(implementation_key, 0, 12)
+        slug <> "-" <> key_prefix
+
+      _ ->
+        nil
+    end
+  end
+
+  defp trd_slug(plan_context) do
+    plan_context
+    |> trd_path()
+    |> Path.basename()
+    |> Path.rootname()
+    |> String.downcase()
+    |> sanitize_slug()
+  end
+
+  # Canonical Ensemble slug alphabet (matches the slugification rule in
+  # `trd-cli.js` and bead title generation): `[a-z0-9-]` only. Operators
+  # who name TRDs with uppercase letters, spaces, dots, or underscores
+  # get those folded to `-` so the scope tag remains shell-safe and bead
+  # title-safe. The slug is a human-readable scope tag, not an identity
+  # claim; the upstream `implementation_key` is the binding identity.
+  defp sanitize_slug(value) when is_binary(value) do
+    value
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+  end
+
+  defp sanitize_slug(_), do: ""
+
+  defp trd_path(plan_context) do
+    Map.get(plan_context, "trd_path") || Map.get(plan_context, :trd_path) || ""
+  end
+
+  defp valid_hex?(value) when is_binary(value) do
+    String.match?(value, ~r/\A[0-9a-fA-F]{64}\z/)
+  end
+
+  defp valid_hex?(_), do: false
 
   defp assert_base_matches(worktree, source_revision, project_root) do
     case Map.get(worktree, :base) || Map.get(worktree, "base") do
@@ -839,6 +906,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp foreman_env(state, worktree_record) do
     plan_context = state.plan_context || %{}
+    implementation_key = worktree_record.implementation_key || ""
 
     base_env = %{
       "FOREMAN_WORKTREE" => "1",
@@ -846,16 +914,44 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "FOREMAN_WORKTREE_PATH" => worktree_record.worktree_path,
       "FOREMAN_EXPECTED_BRANCH" => worktree_record.branch,
       "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
-      "FOREMAN_IMPLEMENTATION_KEY" => worktree_record.implementation_key
+      "FOREMAN_IMPLEMENTATION_KEY" => implementation_key
     }
 
-    case Map.get(plan_context, "beads_database_path") do
-      path when is_binary(path) and path != "" ->
-        Map.put(base_env, "BEADS_DB", path)
-
-      _ ->
+    case beads_db_path(plan_context) do
+      nil ->
         base_env
+
+      "" ->
+        base_env
+
+      path ->
+        # Per TRD Decision 10, every Beads phase MUST export `TRD_SCOPE`
+        # alongside `BEADS_DB`. The scope is computed at provisioning by
+        # `create_phase_worktree/4` and stamped on the worktree record;
+        # if it is absent here, frozen-context validation must have
+        # been bypassed — refuse to launch the adapter.
+        case worktree_record.trd_scope do
+          scope when is_binary(scope) and scope != "" ->
+            base_env
+            |> Map.put("BEADS_DB", path)
+            |> Map.put("TRD_SCOPE", scope)
+
+          other ->
+            raise ArgumentError,
+                  "missing TRD_SCOPE on worktree record " <>
+                    "(beads_db_path=#{inspect(path)}, trd_scope=#{inspect(other)})"
+        end
     end
+  end
+
+  # Per TRD Decision 10, `TRD_SCOPE` is exported alongside `BEADS_DB`. The
+  # value is computed at provisioning by `create_phase_worktree/4` and
+  # stamped on the worktree record; see `compute_trd_scope/2` for the
+  # derivation.
+
+  defp beads_db_path(plan_context) do
+    Map.get(plan_context, "beads_database_path") ||
+      Map.get(plan_context, :beads_database_path)
   end
 
   defp task_id(state) do
