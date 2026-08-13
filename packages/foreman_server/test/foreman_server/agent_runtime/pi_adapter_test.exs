@@ -325,6 +325,42 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
       refute String.starts_with?(content, "# Prompt\n\n"),
              "slash command prompt must not be prefixed by the # Prompt header"
     end
+
+    test "forwards :env keyword to the child via Port.open env and runs in context cwd",
+         %{tmp_dir: tmp_dir} do
+      # Self-contained probe: builds its own fixture inside `tmp_dir` so
+      # it does not extend the shared contract fixture or its cleanup.
+      # TRD-2026-3d41f677 §6: PiAdapter.execute/2 must forward the
+      # `:env` keyword as a Port.open :env option, and the child must
+      # see exactly the values the caller passed. Cwd must come from
+      # `context["working_directory"]` (TRD Decision 9).
+      probe = Path.join(tmp_dir, "env_probe.sh")
+
+      File.write!(probe, """
+      #!/bin/bash
+      printf '%s|%s|%s\\n' "$FOREMAN_RUN_ID" "$BEADS_DB" "$PWD"
+      exit 0
+      """)
+
+      File.chmod!(probe, 0o755)
+      Application.put_env(:foreman_server, PiAdapter, executable: probe)
+
+      on_exit(fn -> File.rm(probe) end)
+
+      env = %{
+        "FOREMAN_RUN_ID" => "run-abc",
+        "BEADS_DB" => "/db/path"
+      }
+
+      request = %{
+        prompt: "managed",
+        context: %{"working_directory" => tmp_dir}
+      }
+
+      # Pwd normalizes trailing slashes away; compare without trailing slash.
+      assert {:ok, payload, %{}} = PiAdapter.execute(request, env: env)
+      assert payload == "run-abc|/db/path|#{String.trim_trailing(tmp_dir, "/")}\n"
+    end
   end
 
   describe "execute/2 — failure" do
@@ -367,6 +403,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
         |> MapSet.new()
 
       leaked = MapSet.difference(after_dirs, before_dirs)
+
       assert MapSet.size(leaked) == 0,
              "PiAdapter leaked temp dirs during failure path: #{inspect(leaked)}"
     end
@@ -430,6 +467,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
         |> MapSet.new()
 
       leaked = MapSet.difference(after_dirs, before_dirs)
+
       assert MapSet.size(leaked) == 0,
              "PiAdapter leaked temp dirs after success: #{inspect(leaked)}"
     end
@@ -859,6 +897,7 @@ defmodule ForemanServer.AgentRuntime.PiAdapterTest do
           |> MapSet.new()
 
         leaked = MapSet.difference(after_dirs, before_dirs)
+
         assert MapSet.size(leaked) == 0,
                "Temp dir cleanup must complete even on concurrent exit. " <>
                  "Leftover dirs: #{inspect(MapSet.to_list(leaked))}"

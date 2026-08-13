@@ -45,6 +45,19 @@ defmodule ForemanServer.AgentRuntime.BackendAdapter do
   @type execute_result :: {:ok, String.t(), map()} | {:error, term()}
 
   @typedoc """
+  Trusted, adapter-private environment map.
+
+  Distinct from `request.context` (which is operator-visible prompt
+  context) and from the adapter's own OS environment. The map is
+  forwarded to the spawned child via `Port.open`'s `:env` option
+  (TRD-2026-3d41f677 §6). Keys MUST be POSIX-safe shell identifiers
+  (POSIX 3.231: `[A-Za-z_][A-Za-z0-9_]*`); values MUST NOT contain
+  a literal newline. Empty or absent map means "no env override" —
+  the child inherits the adapter's full environment unchanged.
+  """
+  @type env_map :: %{optional(String.t()) => String.t()}
+
+  @typedoc """
   Raw capability map returned by an adapter's `capabilities/0` callback.
   The shape declares the four required fields and the two optional
   ranking fields. Inner types are intentionally permissive so the
@@ -52,7 +65,10 @@ defmodule ForemanServer.AgentRuntime.BackendAdapter do
   can surface field-specific errors instead of a dialyzer warning.
   """
   @type capabilities :: Capabilities.input()
-
+  @typedoc "Optional adapter-private env keys accepted by `execute/2`."
+  @type exec_opt :: {:env, env_map()} | {:timeout_ms, pos_integer() | :infinity}
+  @typedoc "Options accepted by `execute/2` in addition to the required request."
+  @type exec_opts :: [exec_opt()]
   @doc """
   Stable, module-unique backend identifier used for routing, telemetry
   metadata, and the failure policy machinery. MUST return an atom.
@@ -82,6 +98,13 @@ defmodule ForemanServer.AgentRuntime.BackendAdapter do
   `{:ok, output, metadata}` for a successful execution or
   `{:error, reason}` otherwise. Adapter-private metadata MUST NOT include
   the backend name — the public facade strips it before returning.
+
+  The optional `:env` key in the keyword list forwards a trusted,
+  adapter-private environment map to the spawned child. Adapters MUST
+  NOT echo this map back into the request, the prompt, or the
+  returned metadata. Adapters MUST scrub the map's values out of any
+  telemetry or log payload, consistent with how the task-provider
+  path-scrubbing works (`VcsAdapter.Default.scrubbed_target/3`).
   """
   @callback execute(request(), keyword()) :: execute_result()
 

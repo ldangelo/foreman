@@ -57,6 +57,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
   def execute(request, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, timeout())
     raw_executable = Keyword.get(opts, :executable, executable())
+    env = Keyword.get(opts, :env, %{})
 
     start_time = System.monotonic_time(:microsecond)
     emit_start(start_time)
@@ -67,7 +68,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
           {:error, {:enoent, raw_executable}}
 
         resolved ->
-          do_execute(request, resolved, timeout_ms)
+          do_execute(request, resolved, timeout_ms, env)
       end
 
     stop_time = System.monotonic_time(:microsecond)
@@ -85,7 +86,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
     result
   end
 
-  defp do_execute(request, executable, timeout_ms) when is_binary(executable) do
+  defp do_execute(request, executable, timeout_ms, env) when is_binary(executable) do
     case require_working_directory(request) do
       :ok ->
         # The shell wrapper (see comment near Port.open below) means a missing
@@ -96,7 +97,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
         unless executable_file?(executable) do
           {:error, {:enoent, executable}}
         else
-          do_execute_port(request, executable, timeout_ms)
+          do_execute_port(request, executable, timeout_ms, env)
         end
 
       {:error, reason} ->
@@ -104,7 +105,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
     end
   end
 
-  defp do_execute_port(request, executable, timeout_ms) do
+  defp do_execute_port(request, executable, timeout_ms, env) do
     # Create temp directory first - cleanup happens in outer try/after
     tmp_dir = mk_tmp_dir!()
 
@@ -172,7 +173,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
         try do
           Port.open(
             {:spawn_executable, "/bin/sh"},
-            [:binary, :exit_status, args: ["-c", sh_cmd]]
+            port_opts(sh_cmd, env)
           )
         catch
           :error, :enoent ->
@@ -420,6 +421,34 @@ defmodule ForemanServer.AgentRuntime.Adapters.PiAdapter do
     case Map.get(context, "working_directory") || Map.get(context, :working_directory) do
       dir when is_binary(dir) and dir != "" -> dir
       _ -> nil
+    end
+  end
+
+  # Build Port.open options. Forwards the trusted env map to the child
+  # via `Port.open`'s `:env` option (TRD Decision 9). When the env map
+  # is empty the adapter inherits the BEAM's environment unchanged —
+  # `{:env, …}` is omitted entirely. Keys and values are NOT filtered
+  # here: callers (and the typedoc on `BackendAdapter.env_map`) are
+  # responsible for POSIX-safe keys and newline-free values.
+  defp port_opts(sh_cmd, env) do
+    base = [:binary, :exit_status, args: ["-c", sh_cmd]]
+
+    if map_size(env) == 0 do
+      base
+    else
+      # Port.open's `:env` option requires charlists (OTP erts/preloaded
+      # src/erts/etc/io.xml §spawn_executable). Convert both key and
+      # value to charlist so the BEAM doesn't reject the option with
+      # "invalid option" at port-open time. Keys and values are NOT
+      # filtered here: callers (and the typedoc on
+      # `BackendAdapter.env_map`) are responsible for POSIX-safe keys
+      # and newline-free values.
+      env_list =
+        Enum.map(env, fn {k, v} ->
+          {String.to_charlist(k), String.to_charlist(v)}
+        end)
+
+      base ++ [{:env, env_list}]
     end
   end
 
