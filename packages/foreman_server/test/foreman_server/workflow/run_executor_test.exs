@@ -79,11 +79,16 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     def available?, do: true
 
     @impl true
-    def execute(%{prompt: prompt, context: context}, _opts) do
+    def execute(%{prompt: prompt, context: context}, opts) do
       script_key = Map.fetch!(context, "script_key")
+      env = Keyword.get(opts, :env, %{})
 
       if pid = LifecycleStore.test_pid(script_key) do
         send(pid, {:adapter_execute, prompt, context})
+
+        if map_size(env) > 0 do
+          send(pid, {:adapter_env, env})
+        end
       end
 
       LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
@@ -742,6 +747,299 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert {:ok, %Issue{status: "in_progress", id: ^task_id}} = result
 
     assert_received {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}, _project_config}
+  end
+
+  # --------------------------------------------------------------------
+  # Worktree lifecycle integration (TRD-2026-3d41f677 Decisions 3/5/6/9)
+  # Real git repo on disk, real git worktree add invoked through the
+  # supervisor/code path; no mocks for filesystem or git.
+  # --------------------------------------------------------------------
+
+  test "worktree-enabled phase provisions a real git worktree and injects FOREMAN_* env" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-script")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+    implementation_key = "deadbeef" <> Base.encode16(:crypto.hash(:md5, project_id), case: :lower)
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+
+    seed_project_task_and_run_with_implementation!(
+      project_id,
+      task_id,
+      run_id,
+      %{phases: [phase]},
+      project_task_provider(database_path),
+      %{
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        "implementation_key" => implementation_key
+      }
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(task_id)
+
+    start_run_executor!(run_id, task_id)
+
+    assert {:adapter_execute, "Run phase implement", _context} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
+
+    assert env["FOREMAN_WORKTREE"] == "1"
+    assert env["FOREMAN_RUN_ID"] == run_id
+    assert env["FOREMAN_SOURCE_REVISION"] == source_revision
+    assert env["FOREMAN_IMPLEMENTATION_KEY"] == implementation_key
+
+    worktree_path = env["FOREMAN_WORKTREE_PATH"]
+    assert String.starts_with?(worktree_path, worktree_root_prefix())
+    assert File.dir?(worktree_path)
+
+    refute_received {:adapter_env, %{}}
+    poll_run_completion!(run_id)
+  end
+
+  test "default cleanup: always removes the worktree after the phase succeeds" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-cleanup-success")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+
+    seed_project_task_and_run_with_implementation!(
+      project_id,
+      task_id,
+      run_id,
+      %{phases: [phase]},
+      project_task_provider(database_path),
+      %{
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        "implementation_key" => "k1"
+      }
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(task_id)
+
+    start_run_executor!(run_id, task_id)
+
+    assert {:adapter_execute, _prompt, _ctx} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
+
+    worktree_path = env["FOREMAN_WORKTREE_PATH"]
+    assert File.dir?(worktree_path), "worktree exists during phase"
+
+    poll_run_completion!(run_id)
+
+    # Default `cleanup: always` removes the worktree after completion.
+    # The exact cleanup implementation may not block the test process;
+    # a short bounded wait observes the disk teardown.
+    assert wait_until_cleaned(worktree_path, 500), "worktree #{worktree_path} was not cleaned"
+  end
+
+  test "cleanup: never preserves the worktree across the phase" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-never")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase =
+      phase_spec(script_key, artifact_dir)
+      |> put_worktree(%{
+        enabled: true,
+        branch: "foreman/#{run_id}/implement",
+        cleanup: "never"
+      })
+
+    seed_project_task_and_run_with_implementation!(
+      project_id,
+      task_id,
+      run_id,
+      %{phases: [phase]},
+      project_task_provider(database_path),
+      %{
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        "implementation_key" => "k2"
+      }
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(task_id)
+
+    start_run_executor!(run_id, task_id)
+
+    assert {:adapter_execute, _prompt, _ctx} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
+    worktree_path = env["FOREMAN_WORKTREE_PATH"]
+
+    poll_run_completion!(run_id)
+
+    # Give the test a short window in which cleanup could have run.
+    Process.sleep(200)
+
+    assert File.dir?(worktree_path),
+           "cleanup: never must preserve worktree at #{worktree_path}"
+  end
+
+  defp put_worktree(phase, worktree_block) do
+    Map.put(phase, :worktree, worktree_block)
+  end
+
+  defp make_bare_minimum_git_repo!(_test_pid) do
+    repo_path = Path.join(System.tmp_dir!(), "run-exec-wt-#{System.unique_integer([:positive])}")
+    File.rm_rf!(repo_path)
+    File.mkdir_p!(repo_path)
+    run_git!(["-C", repo_path, "init", "--initial-branch=main", "--quiet"])
+    run_git!(["-C", repo_path, "config", "user.email", "t@x"])
+    run_git!(["-C", repo_path, "config", "user.name", "T"])
+    File.write!(Path.join(repo_path, "README.md"), "x")
+    run_git!(["-C", repo_path, "add", "."])
+    run_git!(["-C", repo_path, "commit", "--no-gpg-sign", "-m", "init", "--quiet"])
+    repo_path
+  end
+
+  defp current_head_sha!(repo_path) do
+    run_git!(["-C", repo_path, "rev-parse", "HEAD"]) |> String.trim()
+  end
+
+  defp worktree_root_prefix do
+    Path.join(System.user_home!(), ".foreman/worktrees") <> "/"
+  end
+
+  defp on_exit_worktree_cleanup(repo_path, project_id, run_id) do
+    project_root = Path.join([System.user_home!(), ".foreman/worktrees", project_id])
+    wt_root = Path.join(project_root, run_id)
+
+    on_exit(fn ->
+      File.rm_rf(wt_root)
+      File.rm_rf(project_root)
+      File.rm_rf(repo_path)
+    end)
+  end
+
+  defp seed_project_task_and_run_with_implementation!(
+         project_id,
+         task_id,
+         run_id,
+         workflow_snapshot,
+         task_provider,
+         impl_keys
+       ) do
+    implementation =
+      Map.merge(
+        %{
+          "trd_path" => "docs/TRD/x.md",
+          "trd_path_argument" => "docs/TRD/x.md"
+        },
+        impl_keys
+      )
+
+    snapshot = Map.put(workflow_snapshot, "implementation", implementation)
+    seed_project_task_and_run!(project_id, task_id, run_id, snapshot, task_provider)
+  end
+
+  defp claim_and_complete_expectations!(task_id) do
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:update, %{flags: ["--claim", task_id]}}
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "in_progress", %{
+               "assignee" => "foreman-runner",
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+      assert request == {:close, %{id: task_id}}
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!(
+             issue_payload(task_id, "closed", %{
+               "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+             })
+           ),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+  end
+
+  defp poll_run_completion!(run_id) do
+    poll_until(
+      fn ->
+        case ProjectionStore.run(run_id) do
+          %{status: status} when status in ["completed", "failed"] -> {:ok, status}
+          other -> {:error, other}
+        end
+      end,
+      "run terminal status"
+    )
+  end
+
+  defp wait_until_cleaned(path, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until_cleaned(path, deadline)
+  end
+
+  defp do_wait_until_cleaned(path, deadline) do
+    cond do
+      not File.dir?(path) ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        false
+
+      true ->
+        Process.sleep(25)
+        do_wait_until_cleaned(path, deadline)
+    end
+  end
+
+  defp run_git!(args) do
+    {out, 0} = System.cmd("git", args, stderr_to_stdout: true)
+    out
   end
 
   defp ensure_started(child_spec, name) do

@@ -34,6 +34,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.Worktree, as: WorktreeLifecycle
 
   require Logger
 
@@ -228,7 +229,36 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     with {:ok, _} <- validate_phase_action(phase_spec, phase_index),
          {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
-         {:ok, output} <- execute_agent(state, phase_spec, index),
+         {:ok, worktree_record} <- maybe_create_worktree(state, phase_spec, phase_index) do
+      try do
+        run_phase_body(state, phase_spec, index, phase_index, worktree_record)
+      after
+        cleanup_phase_worktree(state, phase_spec, phase_index, worktree_record)
+      end
+    else
+      {:error, reason} = err ->
+        case emit_phase_failure(state, phase_spec, phase_index, reason) do
+          :ok -> err
+          {:error, lifecycle_reason} -> {:error, lifecycle_reason}
+        end
+    end
+  end
+
+  defp run_phase_body(state, phase_spec, index, phase_index, worktree_record) do
+    case execute_with_worktree(state, phase_spec, index, phase_index, worktree_record) do
+      {:ok, _next_state} = ok ->
+        ok
+
+      {:error, reason} = err ->
+        case emit_phase_failure(state, phase_spec, phase_index, reason) do
+          :ok -> err
+          {:error, lifecycle_reason} -> {:error, lifecycle_reason}
+        end
+    end
+  end
+
+  defp execute_with_worktree(state, phase_spec, index, phase_index, worktree_record) do
+    with {:ok, output} <- execute_agent(state, phase_spec, index, worktree_record),
          {:ok, artifact_path} <-
            __MODULE__.ArtifactTemplate.write(state, phase_spec, phase_index, output),
          {:ok, _required_file} <- enforce_required_file(state, phase_spec, phase_index),
@@ -237,12 +267,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       next_state = %{state | current_phase: index, status: :in_progress}
       GenServer.cast(self(), {:advance_to, index})
       {:ok, next_state}
-    else
-      {:error, reason} ->
-        case emit_phase_failure(state, phase_spec, phase_index, reason) do
-          :ok -> {:error, reason}
-          {:error, lifecycle_reason} -> {:error, lifecycle_reason}
-        end
     end
   end
 
@@ -286,9 +310,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
   end
 
-  defp execute_agent(state, phase_spec, index) do
+  defp execute_agent(state, phase_spec, index, worktree_record) do
     phase_index = phase_number(phase_spec, index)
-    request = build_request(state, phase_spec, phase_index)
+    request = build_request(state, phase_spec, phase_index, worktree_record)
 
     prompt =
       case Map.get(phase_spec, :action) do
@@ -301,7 +325,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       request.context,
       backend: :pi,
       strategy: :manual,
-      task_type: phase_spec_name(phase_spec)
+      task_type: phase_spec_name(phase_spec),
+      env: foreman_env(state, worktree_record)
     )
   end
 
@@ -461,9 +486,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp build_request(state, phase_spec, index) do
+  defp build_request(state, phase_spec, index, worktree_record) do
     %{
-      context: base_context(state, phase_spec, index),
+      context: base_context(state, phase_spec, index, worktree_record),
       prompt: read_phase_prompt(state, phase_spec)
     }
   end
@@ -512,22 +537,324 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp base_context(state, phase_spec, index) do
+  defp base_context(state, phase_spec, index, worktree_record) do
     base = %{
       "phase_id" => Identity.phase_id(state.run_id, index),
       "run_id" => state.run_id,
       "task_id" => task_id(state),
-      "working_directory" => working_directory(state.task)
+      "working_directory" => working_directory_for(state, worktree_record)
     }
 
-    base = Map.merge(base, state.plan_context || %{})
-    Map.merge(base, Map.get(phase_spec, :context) || Map.get(phase_spec, "context") || %{})
+    base
+    |> Map.merge(state.plan_context || %{})
+    |> Map.merge(Map.get(phase_spec, :context) || Map.get(phase_spec, "context") || %{})
+    |> override_working_directory(worktree_record)
   end
+
+  # Per TRD Decision 9: when a worktree is active, its path is the
+  # authoritative cwd; phase-level context must NOT override it. The
+  # overlay merge above preserves all other phase context (script_key,
+  # etc.); this final step only pins the worktree's path on top.
+  defp override_working_directory(context, nil), do: context
+
+  defp override_working_directory(context, %{worktree_path: path})
+       when is_binary(path) and path != "" do
+    Map.put(context, "working_directory", path)
+  end
+
+  defp working_directory_for(state, nil), do: working_directory(state.task)
+
+  defp working_directory_for(_state, %{worktree_path: path}) when is_binary(path) and path != "",
+    do: path
 
   defp working_directory(task) do
     case Map.get(task, :working_directory) do
       dir when is_binary(dir) and dir != "" -> dir
       _ -> System.fetch_env!("HOME")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Worktree provisioning (TRD Decision 9 + Decisions 3 & 5)
+  # ---------------------------------------------------------------------------
+  #
+  # When a phase declares a `worktree` block, RunExecutor provisions the
+  # worktree before invoking the agent and cleans it up after the phase
+  # is terminal. The worktree path is the authoritative cwd for the
+  # agent; the frozen `source_revision` from the ImplementationContext is
+  # the only acceptable `base` ref.
+  # A `worktree` block is recognized when the phase spec carries a
+  # `:worktree` (or "worktree") map. The block is honored when the
+  # `enabled` field is not the literal `false`. Absence or `enabled: false`
+  # both return `nil` so the phase runs unchanged.
+  defp maybe_create_worktree(state, phase_spec, phase_index) do
+    case worktree_block(phase_spec) do
+      nil ->
+        {:ok, nil}
+
+      %{enabled: false} ->
+        {:ok, nil}
+
+      worktree when is_map(worktree) ->
+        create_phase_worktree(state, phase_spec, phase_index, worktree)
+    end
+  end
+
+  defp worktree_block(phase_spec) do
+    case Map.get(phase_spec, :worktree) || Map.get(phase_spec, "worktree") do
+      block when is_map(block) -> block
+      _ -> nil
+    end
+  end
+
+  defp create_phase_worktree(state, phase_spec, phase_index, worktree) do
+    plan_context = state.plan_context || %{}
+
+    with {:ok, project_root} <- fetch_string(plan_context, "project_root"),
+         {:ok, source_revision} <- fetch_string(plan_context, "source_revision"),
+         :ok <- assert_base_matches(worktree, source_revision, project_root),
+         {:ok, implementation_key} <- fetch_string(plan_context, "implementation_key"),
+         {:ok, project_id} <- fetch_project_id(state),
+         phase_id = Identity.phase_id(state.run_id, phase_index),
+         operation_id = "wt-" <> state.run_id <> "-" <> phase_id,
+         slug = phase_slug(phase_spec),
+         worktree_path = worktree_path_for(project_id, state.run_id, slug, worktree),
+         :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
+         branch = render_worktree_template(branch_template(worktree), state, slug),
+         :ok <- ensure_worktree_parent_dir(worktree_path) do
+      WorktreeLifecycle.create(%{
+        operation_id: operation_id,
+        project_id: project_id,
+        run_id: state.run_id,
+        phase_id: phase_id,
+        repo_path: project_root,
+        worktree_path: worktree_path,
+        base_ref: source_revision,
+        branch: branch
+      })
+      |> case do
+        {:ok, ^worktree_path} ->
+          {:ok,
+           %{
+             operation_id: operation_id,
+             worktree_path: worktree_path,
+             branch: branch,
+             base_ref: source_revision,
+             project_root: project_root,
+             project_id: project_id,
+             implementation_key: implementation_key,
+             cleanup: worktree_cleanup(worktree)
+           }}
+
+        {:ok, other_path} ->
+          # Worktree.create guarantees the returned path matches the
+          # requested path; treat drift as a hard failure rather than
+          # passing a mismatched path downstream.
+          _ = other_path
+          {:error, {:worktree_path_drift, worktree_path, other_path}}
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      {:error, _} = err -> err
+    end
+  end
+
+  defp assert_base_matches(worktree, source_revision, project_root) do
+    case Map.get(worktree, :base) || Map.get(worktree, "base") do
+      nil ->
+        :ok
+
+      declared when is_binary(declared) and declared != "" ->
+        case resolve_revision(project_root, declared) do
+          {:ok, ^source_revision} ->
+            :ok
+
+          {:ok, other_sha} ->
+            {:error, {:worktree_base_mismatch, declared, other_sha, source_revision}}
+
+          {:error, reason} ->
+            {:error, {:worktree_base_unresolvable, declared, reason}}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Resolve a branch name, tag, or SHA to the commit SHA it points at.
+  # `git rev-parse --verify <ref>^{commit}` exits non-zero for refs that
+  # do not exist in the repository, returning the resolved commit for
+  # branches, tags, and SHAs alike.
+  defp resolve_revision(repo_path, ref) do
+    args = ["-C", repo_path, "rev-parse", "--verify", "#{ref}^{commit}"]
+
+    case System.cmd("git", args, stderr_to_stdout: true) do
+      {sha, 0} when is_binary(sha) ->
+        normalized = sha |> String.trim() |> String.downcase()
+        if normalized == "", do: {:error, :empty_revision}, else: {:ok, normalized}
+
+      {_output, _code} ->
+        # Fall back to accepting the literal as a SHA when git can't
+        # dereference it (e.g. shallow clone). Equality with the frozen
+        # revision still enforces the TRD invariant.
+        trimmed = String.trim(ref)
+
+        if String.match?(trimmed, ~r/^[0-9a-f]{7,64}$/),
+          do: {:ok, String.downcase(trimmed)},
+          else: {:error, :unresolvable_revision}
+    end
+  end
+
+  defp fetch_string(map, key) do
+    case Map.get(map, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, {:plan_context_missing, key}}
+    end
+  end
+
+  defp fetch_project_id(state) do
+    pid = project_id(state)
+
+    if pid == "" do
+      {:error, :project_id_missing}
+    else
+      {:ok, pid}
+    end
+  end
+
+  defp phase_slug(phase_spec) do
+    case phase_spec_name(phase_spec) do
+      nil ->
+        "phase"
+
+      "" ->
+        "phase"
+
+      name when is_atom(name) ->
+        name |> Atom.to_string() |> String.replace(~r/[^A-Za-z0-9_.-]/, "-")
+
+      name when is_binary(name) ->
+        if name == "", do: "phase", else: String.replace(name, ~r/[^A-Za-z0-9_.-]/, "-")
+    end
+  end
+
+  defp worktree_path_for(project_id, run_id, slug, worktree) do
+    template = Map.get(worktree, :path) || Map.get(worktree, "path") || slug
+    rendered = render_worktree_template(template, %{run_id: run_id}, slug)
+    Path.join([worktree_base_root(), project_id, run_id, rendered])
+  end
+
+  defp worktree_base_root do
+    Path.join([System.user_home!(), ".foreman", "worktrees"])
+  end
+
+  defp branch_template(worktree) do
+    Map.get(worktree, :branch) || Map.get(worktree, "branch") || "foreman/{run_id}/{phase}"
+  end
+
+  defp worktree_cleanup(worktree) do
+    case Map.get(worktree, :cleanup) || Map.get(worktree, "cleanup") do
+      "never" -> :never
+      _ -> :always
+    end
+  end
+
+  defp render_worktree_template(template, state, slug) do
+    run_id = Map.get(state, :run_id) || Map.get(state, "run_id") || ""
+
+    template
+    |> String.replace("{run_id}", run_id)
+    |> String.replace("{phase}", slug)
+  end
+
+  # Containment check: the rendered worktree path MUST resolve to a
+  # location under `~/.foreman/worktrees/<project_id>/<run_id>/`. This
+  # guards against template payloads that smuggle `..` segments through
+  # placeholders or that render to absolute paths.
+  defp assert_worktree_path_contained(project_id, run_id, worktree_path) do
+    expected_root =
+      Path.join([worktree_base_root(), project_id, run_id])
+      |> Path.expand()
+
+    actual_root = Path.expand(worktree_path)
+
+    if String.starts_with?(actual_root, expected_root <> "/") or actual_root == expected_root do
+      :ok
+    else
+      {:error, {:worktree_path_escape, expected_root, actual_root}}
+    end
+  end
+
+  defp ensure_worktree_parent_dir(worktree_path) do
+    parent = Path.dirname(worktree_path)
+
+    case File.mkdir_p(parent) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:worktree_parent_mkdir_failed, parent, reason}}
+    end
+  end
+
+  # Cleanup runs in the `after` clause of `run_single_phase/3` so any
+  # terminal path (success, agent error, artifact error, enforcement
+  # error) still cleans. `cleanup: never` is honored by short-circuiting.
+  defp cleanup_phase_worktree(_state, _phase_spec, _phase_index, :no_worktree), do: :ok
+
+  defp cleanup_phase_worktree(_state, _phase_spec, _phase_index, nil), do: :ok
+
+  defp cleanup_phase_worktree(_state, _phase_spec, _phase_index, %{cleanup: :never}), do: :ok
+
+  defp cleanup_phase_worktree(state, phase_spec, phase_index, worktree_record) do
+    phase_id = Identity.phase_id(state.run_id, phase_index)
+
+    WorktreeLifecycle.clean(%{
+      operation_id: worktree_record.operation_id,
+      project_id: worktree_record.project_id,
+      run_id: state.run_id,
+      phase_id: phase_id,
+      repo_path: worktree_record.project_root
+    })
+    |> case do
+      :ok ->
+        :ok
+
+      {:ok, :already_cleaned} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "RunExecutor #{state.run_id}/#{phase_id} worktree cleanup reported: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  # Env injection (TRD Decision 9). Empty map for non-managed phases or
+  # when the plan context lacks the frozen markers; `AgentRuntime`
+  # threads the map through `Port.open :env` and never copies any of
+  # these keys into telemetry metadata.
+  defp foreman_env(_state, nil), do: %{}
+
+  defp foreman_env(state, worktree_record) do
+    plan_context = state.plan_context || %{}
+
+    base_env = %{
+      "FOREMAN_WORKTREE" => "1",
+      "FOREMAN_RUN_ID" => state.run_id,
+      "FOREMAN_WORKTREE_PATH" => worktree_record.worktree_path,
+      "FOREMAN_EXPECTED_BRANCH" => worktree_record.branch,
+      "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
+      "FOREMAN_IMPLEMENTATION_KEY" => worktree_record.implementation_key
+    }
+
+    case Map.get(plan_context, "beads_database_path") do
+      path when is_binary(path) and path != "" ->
+        Map.put(base_env, "BEADS_DB", path)
+
+      _ ->
+        base_env
     end
   end
 
@@ -789,12 +1116,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp to_lifecycle_result({:ok, _result}), do: :ok
   defp to_lifecycle_result({:error, reason}), do: {:error, reason}
-
   defp to_dispatch_result({:ok, _result}), do: :ok
   defp to_dispatch_result({:error, reason}), do: {:error, reason}
 
   defp plan_context_for(task_projection) do
-    ForemanServer.Workflow.PlanContext.build(task_projection)
+    with {:ok, base} <- fetch_plan_base(task_projection),
+         {:ok, enriched} <- merge_implementation_context(base, task_projection) do
+      {:ok, enriched}
+    else
+      {:not_applicable, _} = na -> na
+      {:error, _} = err -> err
+    end
+  end
+
+  defp fetch_plan_base(task_projection) do
+    case ForemanServer.Workflow.PlanContext.build(task_projection) do
+      {:ok, ctx} -> {:ok, ctx}
+      {:not_applicable, _} = na -> {:ok, %{}}
+      {:error, _} = err -> err
+    end
+  end
+
+  # The frozen ImplementationContext is computed at task approval by
+  # `CommandGateway.freeze_implementation_context/2` and persisted under
+  # `workflow_snapshot["implementation"]`. Re-running
+  # `ImplementationContext.build/1` at execution time would re-resolve
+  # the source revision and could observe a different commit than the
+  # one that was approved. We therefore copy the payload verbatim from
+  # the snapshot.
+  defp merge_implementation_context(base, task_projection) do
+    case implementation_payload_from_snapshot(task_projection) do
+      nil -> {:ok, base}
+      payload when is_map(payload) -> {:ok, Map.merge(base, payload)}
+      _ -> {:ok, base}
+    end
+  end
+
+  defp implementation_payload_from_snapshot(task_projection) do
+    snapshot =
+      Map.get(task_projection, :workflow_snapshot) ||
+        Map.get(task_projection, "workflow_snapshot") || %{}
+
+    cond do
+      is_map(snapshot) and is_map(Map.get(snapshot, "implementation")) ->
+        Map.get(snapshot, "implementation")
+
+      is_map(snapshot) and is_map(Map.get(snapshot, :implementation)) ->
+        Map.get(snapshot, :implementation)
+
+      true ->
+        nil
+    end
   end
 
   defp plan_context_error(state) do
