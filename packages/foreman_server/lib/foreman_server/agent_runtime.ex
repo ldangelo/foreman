@@ -135,9 +135,11 @@ defmodule ForemanServer.AgentRuntime do
     - `:backend` - backend name (required for manual strategy)
     - `:task_type` - task type for automatic or policy routing
     - `:invocation_supervisor` - supervisor to use (optional)
-    - `:timeout` - timeout in ms (default: 30000) - passed to FailurePolicy
-    - `:fallback` - whether to try fallback backends on failure
-    - `:max_attempts` - maximum number of attempts
+    - `:env` - adapter-private trusted env map (`BackendAdapter.env_map()`)
+      forwarded to `adapter.execute/2` via the `:env` option. The env map is
+      NEVER included in telemetry metadata, never logged, and never copied
+      into completion fields. It is consumed only by the adapter at
+      `Port.open` time.
     - `:fail_on_unavailable` - return immediately if no backends available (default: true)
 
   Returns `{:ok, content}` on success or an error tuple.
@@ -153,9 +155,9 @@ defmodule ForemanServer.AgentRuntime do
     # Get common options
     catalog = Keyword.get(opts, :catalog, AdapterCatalog)
     inv_supervisor = Keyword.get(opts, :invocation_supervisor, InvocationSupervisor)
+    env = Keyword.get(opts, :env, %{})
     task_type = Keyword.get(opts, :task_type)
     fail_on_unavailable = Keyword.get(opts, :fail_on_unavailable, true)
-
     # Resolve failure policy
     policy_opts = Keyword.take(opts, [:timeout_ms, :fallback, :max_attempts])
     policy = FailurePolicy.resolve(task_type, policy_opts)
@@ -169,7 +171,8 @@ defmodule ForemanServer.AgentRuntime do
           catalog,
           inv_supervisor,
           policy,
-          fail_on_unavailable
+          fail_on_unavailable,
+          env
         )
 
       :automatic ->
@@ -179,7 +182,8 @@ defmodule ForemanServer.AgentRuntime do
           catalog,
           inv_supervisor,
           policy,
-          fail_on_unavailable
+          fail_on_unavailable,
+          env
         )
 
       :policy ->
@@ -192,7 +196,8 @@ defmodule ForemanServer.AgentRuntime do
           catalog,
           inv_supervisor,
           policy,
-          fail_on_unavailable
+          fail_on_unavailable,
+          env
         )
 
       other ->
@@ -214,7 +219,8 @@ defmodule ForemanServer.AgentRuntime do
          catalog,
          inv_supervisor,
          policy,
-         fail_on_unavailable
+         fail_on_unavailable,
+         env
        ) do
     start_time = System.system_time()
     monotonic_start = System.monotonic_time(:microsecond)
@@ -241,7 +247,8 @@ defmodule ForemanServer.AgentRuntime do
                request,
                self(),
                task_type,
-               inv_supervisor
+               inv_supervisor,
+               env
              ) do
           {:ok, _pid, ref} ->
             receive_result(ref, start_time, :manual, backend_name)
@@ -324,7 +331,15 @@ defmodule ForemanServer.AgentRuntime do
   end
 
   # Automatic strategy: use Router.automatic_candidates
-  defp execute_automatic(task_type, request, catalog, inv_supervisor, policy, fail_on_unavailable) do
+  defp execute_automatic(
+         task_type,
+         request,
+         catalog,
+         inv_supervisor,
+         policy,
+         fail_on_unavailable,
+         env
+       ) do
     start_time = System.system_time()
     monotonic_start = System.monotonic_time(:microsecond)
 
@@ -350,7 +365,8 @@ defmodule ForemanServer.AgentRuntime do
                request,
                self(),
                task_type,
-               inv_supervisor
+               inv_supervisor,
+               env
              ) do
           {:ok, _pid, ref} ->
             receive_result(ref, start_time, :automatic, backend)
@@ -427,7 +443,8 @@ defmodule ForemanServer.AgentRuntime do
                request,
                self(),
                task_type,
-               inv_supervisor
+               inv_supervisor,
+               env
              ) do
           {:ok, _pid, ref} ->
             receive_result(ref, start_time, :automatic, nil)
@@ -465,7 +482,8 @@ defmodule ForemanServer.AgentRuntime do
                request,
                self(),
                task_type,
-               inv_supervisor
+               inv_supervisor,
+               env
              ) do
           {:ok, _pid, ref} ->
             receive_result(ref, start_time, :automatic, nil)
@@ -506,7 +524,8 @@ defmodule ForemanServer.AgentRuntime do
          catalog,
          inv_supervisor,
          policy,
-         fail_on_unavailable
+         fail_on_unavailable,
+         env
        ) do
     start_time = System.system_time()
     monotonic_start = System.monotonic_time(:microsecond)
@@ -532,10 +551,10 @@ defmodule ForemanServer.AgentRuntime do
           inv_supervisor,
           start_time,
           backend,
-          task_type
+          task_type,
+          env
         )
 
-      {:error, :no_available_backend} when fail_on_unavailable ->
         Telemetry.execute(
           [:foreman, :agent_runtime, :execute, :start],
           %{system_time: start_time, status: :started},
@@ -559,7 +578,16 @@ defmodule ForemanServer.AgentRuntime do
           %{strategy: :policy, backend: nil}
         )
 
-        run_policy_invocation([], policy, request, inv_supervisor, start_time, nil, task_type)
+        run_policy_invocation(
+          [],
+          policy,
+          request,
+          inv_supervisor,
+          start_time,
+          nil,
+          task_type,
+          env
+        )
 
       {:error, :backend_not_found} ->
         Telemetry.execute(
@@ -607,7 +635,8 @@ defmodule ForemanServer.AgentRuntime do
          inv_supervisor,
          start_time,
          backend,
-         task_type
+         task_type,
+         env
        ) do
     monotonic_start = System.monotonic_time(:microsecond)
 
@@ -617,7 +646,8 @@ defmodule ForemanServer.AgentRuntime do
            request,
            self(),
            task_type,
-           inv_supervisor
+           inv_supervisor,
+           env
          ) do
       {:ok, _pid, ref} ->
         receive_result(ref, start_time, :policy, backend)

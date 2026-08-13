@@ -33,23 +33,29 @@ defmodule ForemanServer.AgentRuntime.Invocation do
           caller: pid(),
           ref: reference(),
           start_time: integer(),
-          task_type: atom() | nil
+          task_type: atom() | nil,
+          env: map()
         }
 
   # ------------------------------------------------------------------
   # Client API
   # ------------------------------------------------------------------
 
-  @spec start_link({[candidate()], map(), map(), pid(), reference(), atom() | nil}) ::
+  @spec start_link({[candidate()], map(), map(), pid(), reference(), atom() | nil, map()}) ::
           GenServer.on_start()
-  def start_link({candidates, policy, request, caller, ref, task_type}) do
-    GenServer.start_link(__MODULE__, {candidates, policy, request, caller, ref, task_type})
+  def start_link({candidates, policy, request, caller, ref, task_type, env}) do
+    GenServer.start_link(__MODULE__, {candidates, policy, request, caller, ref, task_type, env})
   end
 
   def child_spec({candidates, policy, request, caller, ref, task_type}) do
+    child_spec({candidates, policy, request, caller, ref, task_type, %{}})
+  end
+
+  def child_spec({candidates, policy, request, caller, ref, task_type, env}) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, [{candidates, policy, request, caller, ref, task_type}]},
+      start:
+        {__MODULE__, :start_link, [{candidates, policy, request, caller, ref, task_type, env}]},
       restart: :temporary
     }
   end
@@ -59,7 +65,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
   # ------------------------------------------------------------------
 
   @impl true
-  def init({candidates, policy, request, caller, ref, task_type}) do
+  def init({candidates, policy, request, caller, ref, task_type, env}) do
     start_time = System.monotonic_time(:microsecond)
 
     state = %{
@@ -69,26 +75,27 @@ defmodule ForemanServer.AgentRuntime.Invocation do
       caller: caller,
       ref: ref,
       start_time: start_time,
-      task_type: task_type
+      task_type: task_type,
+      env: env
     }
 
     {:ok, state, {:continue, :orchestrate}}
   end
 
-  @impl true
   def handle_continue(
         :orchestrate,
         state = %{
           candidates: candidates,
           policy: policy,
-          request: _request,
+          request: request,
           caller: caller,
           ref: ref,
           start_time: start_time,
-          task_type: task_type
+          task_type: task_type,
+          env: env
         }
       ) do
-    {final, attempts} = run_attempts(candidates, _request, policy)
+    {final, attempts} = run_attempts(candidates, request, policy, env)
 
     stop_time = System.monotonic_time(:microsecond)
     duration_us = stop_time - start_time
@@ -96,6 +103,10 @@ defmodule ForemanServer.AgentRuntime.Invocation do
     {status, final_backend, attempted_backends, successful_backend} =
       completion_fields(final, attempts)
 
+    # `env` is intentionally NOT included in the completion telemetry map.
+    # The env map is adapter-private (see BackendAdapter.env_map/0) and may
+    # contain paths or other moderately sensitive values; the orchestration
+    # layer must never copy it into telemetry, logs, or the caller's result.
     Telemetry.agent_runtime_execute(
       %{duration_us: duration_us, attempt_count: length(attempts)},
       %{
@@ -128,11 +139,11 @@ defmodule ForemanServer.AgentRuntime.Invocation do
   #      silently lose earlier failures.
   # ------------------------------------------------------------------
 
-  defp run_attempts(candidates, request, policy) do
-    run_attempts(candidates, request, policy, [], 0)
+  defp run_attempts(candidates, request, policy, env) do
+    run_attempts(candidates, request, policy, env, [], 0)
   end
 
-  defp run_attempts([], _request, _policy, attempts, _attempted) do
+  defp run_attempts([], _request, _policy, _env, attempts, _attempted) do
     case attempts do
       [] ->
         {{:error, :no_available_backend}, []}
@@ -144,11 +155,11 @@ defmodule ForemanServer.AgentRuntime.Invocation do
   end
 
   # Skip unavailable candidate without recording it (AC-004-2).
-  defp run_attempts([{_adapter, false} | rest], request, policy, attempts, attempted) do
-    run_attempts(rest, request, policy, attempts, attempted)
+  defp run_attempts([{_adapter, false} | rest], request, policy, env, attempts, attempted) do
+    run_attempts(rest, request, policy, env, attempts, attempted)
   end
 
-  defp run_attempts([{adapter, true} | rest], request, policy, attempts, attempted) do
+  defp run_attempts([{adapter, true} | rest], request, policy, env, attempts, attempted) do
     next_num = attempted + 1
 
     if next_num > policy.max_attempts do
@@ -163,7 +174,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
     else
       backend_name = adapter.name()
 
-      case run_one(adapter, request, policy.timeout_ms) do
+      case run_one(adapter, request, policy.timeout_ms, env) do
         {:ok, content, meta} ->
           attempt = {:ok, backend_name, content, meta}
           # Internal accumulator is newest-prepended; reverse to restore
@@ -180,7 +191,7 @@ defmodule ForemanServer.AgentRuntime.Invocation do
           cond do
             policy.fallback and more_available? ->
               # Fallback enabled with more available candidates: continue.
-              run_attempts(rest, request, policy, new_attempts, next_num)
+              run_attempts(rest, request, policy, env, new_attempts, next_num)
 
             policy.fallback ->
               # Fallback enabled, no more available candidates: every attempted
@@ -209,9 +220,15 @@ defmodule ForemanServer.AgentRuntime.Invocation do
   # Adapter call with crash isolation
   # ------------------------------------------------------------------
 
-  defp run_one(adapter, request, timeout_ms) do
+  defp run_one(adapter, request, timeout_ms, env) do
     try do
-      case adapter.execute(request, timeout_ms: timeout_ms) do
+      # The env map is forwarded verbatim to the adapter via the
+      # `BackendAdapter.execute/2` `:env` option. The adapter decides
+      # how to inject it (Port.open :env for the Pi adapter, etc).
+      # The orchestration layer NEVER inspects, logs, or copies env
+      # values — they are adapter-private and may contain paths or
+      # other moderately sensitive values.
+      case adapter.execute(request, timeout_ms: timeout_ms, env: env) do
         {:ok, content, metadata} ->
           {:ok, content, metadata}
 
