@@ -190,7 +190,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
       assert {:ok, _iso8601, 0} = DateTime.from_iso8601(decoded["foreman"]["linked_at"])
     end
 
-    test "runner-payload has exactly the five canonical keys (no extras, no omissions)" do
+    test "runner-payload has exactly six canonical keys (no extras, no omissions)" do
       register_project!("proj-keys", "/abs/keys.db")
 
       attrs = base_attrs()
@@ -215,11 +215,14 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
 
       assert payload |> Map.keys() |> Enum.sort() == [
                :agent_context,
+               :dedupe_key,
                :description,
                :priority,
                :title,
                :type
              ]
+
+      assert payload.dedupe_key == "dk-1"
     end
   end
 
