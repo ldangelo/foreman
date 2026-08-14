@@ -35,6 +35,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Worktree, as: WorktreeLifecycle
+  alias ForemanServer.RunExecutorLiveness
 
   require Logger
 
@@ -339,14 +340,37 @@ defmodule ForemanServer.Workflow.RunExecutor do
         _ -> request.prompt
       end
 
-    AgentRuntime.execute(
-      prompt,
-      request.context,
-      backend: :pi,
-      strategy: :manual,
-      task_type: phase_spec_name(phase_spec),
-      env: foreman_env(state, worktree_record)
-    )
+    task_type = phase_spec_name(phase_spec)
+    policy = AgentRuntime.FailurePolicy.resolve(task_type, [])
+    deadline_ms = System.system_time(:millisecond) + Map.fetch!(policy, :timeout_ms)
+
+    # Publish the active-phase deadline BEFORE blocking into AgentRuntime so
+    # StuckDetector can read it without calling this GenServer (which would
+    # deadlock on the same mailbox). The deadline is the wall-clock instant
+    # at which the resolved FailurePolicy.timeout_ms expires. The PID is
+    # stored alongside so StuckDetector can reject a stale entry left
+    # behind by a brutally-killed predecessor whose replacement has
+    # already registered under RunExecutorRegistry.
+    RunExecutorLiveness.record(state.run_id, self(), deadline_ms)
+
+    try do
+      AgentRuntime.execute(
+        prompt,
+        request.context,
+        backend: :pi,
+        strategy: :manual,
+        task_type: task_type,
+        env: foreman_env(state, worktree_record)
+      )
+    after
+      # Always clear under the owner guard so a late after-block from a
+      # brutally-killed predecessor cannot delete a freshly-recorded
+      # entry from the supervisor's replacement executor. The owner
+      # mismatch makes this a no-op when the entry no longer belongs
+      # to us; the registered-PID check in StuckDetector would catch
+      # any remaining stale entry the after-block missed.
+      RunExecutorLiveness.clear(state.run_id, self())
+    end
   end
 
   defmodule ArtifactTemplate do

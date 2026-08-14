@@ -316,6 +316,203 @@ defmodule ForemanServer.StuckDetectorTest do
       assert is_list(results)
       assert [%{run_id: ^run_id}] = results
     end
+
+    # ---- Liveness exemption (S5) ----
+    # When an executor is registered under RunExecutorRegistry AND has
+    # published a deadline that is still in the future, the stuck run must
+    # NOT be flagged. The exemption expires as soon as the deadline passes,
+    # even if the registered PID is still alive (wedged agent case).
+    test "does not flag a run with a live executor whose deadline is in the future" do
+      run_id = "run-live-within-deadline"
+      last_event = 1_700_000_000_000
+      StuckDetectorTestHelper.seed_run_started(run_id, last_event)
+
+      # Registry.register/2 binds the key to the calling process. The
+      # test process is registered here; when the test exits, the key
+      # is auto-removed. We deliberately do NOT call unregister from
+      # `on_exit` because that handler runs in a different process and
+      # cannot unregister this test's own keys.
+      Registry.register(ForemanServer.RunExecutorRegistry, run_id, %{})
+
+      now_ms = last_event + 20 * 60 * 1000
+      deadline_ms = now_ms + 30 * 60 * 1000
+      ForemanServer.RunExecutorLiveness.record(run_id, self(), deadline_ms)
+      on_exit(fn -> ForemanServer.RunExecutorLiveness.clear(run_id) end)
+
+      test_pid = self()
+      handler_id = "test-liveness-skip-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        @event,
+        fn _, _, _, _ -> send(test_pid, :should_not_fire) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      results =
+        StuckDetector.scan(
+          now_ms_fun: fn -> now_ms end,
+          dispatch_fun: fn _, _ -> flunk("dispatch should not be called") end
+        )
+
+      assert results == []
+      refute_receive :should_not_fire, 100
+    end
+
+    test "flags a run with a live executor whose deadline has expired (wedged agent)" do
+      run_id = "run-live-past-deadline"
+      last_event = 1_700_000_000_000
+      StuckDetectorTestHelper.seed_run_started(run_id, last_event)
+
+      Registry.register(ForemanServer.RunExecutorRegistry, run_id, %{})
+
+      # Recorded 30 minutes ago; deadline is 1 minute in the past.
+      recorded_at_ms = last_event + 20 * 60 * 1000
+      deadline_ms = recorded_at_ms + 1 * 60 * 1000
+      now_ms = recorded_at_ms + 30 * 60 * 1000
+      ForemanServer.RunExecutorLiveness.record(run_id, self(), deadline_ms)
+      on_exit(fn -> ForemanServer.RunExecutorLiveness.clear(run_id) end)
+
+      test_pid = self()
+      handler_id = "test-liveness-wedged-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        @event,
+        fn name, m, mdata, _cfg -> send(test_pid, {:telemetry, name, m, mdata}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      results =
+        StuckDetector.scan(
+          threshold_ms: 1_000,
+          now_ms_fun: fn -> now_ms end,
+          dispatch_fun: fn _cmd, _timeout -> {:ok, :stub} end
+        )
+
+      assert_receive {:telemetry, [:foreman, :run, :stuck], _, %{run_id: ^run_id}}
+      assert [%{run_id: ^run_id}] = results
+    end
+
+    test "ignores a stale liveness entry when no executor is registered" do
+      # Simulates the brutal-kill scenario: the executor died without
+      # clearing the ETS entry. The stuck run must still be flagged,
+      # proving the PID guard in `live_within_deadline?/2` is load-bearing
+      # and not just a stylistic extra.
+      run_id = "run-stale-liveness"
+      last_event = 1_700_000_000_000
+      StuckDetectorTestHelper.seed_run_started(run_id, last_event)
+
+      now_ms = last_event + 20 * 60 * 1000
+      deadline_ms = now_ms + 30 * 60 * 1000
+      ForemanServer.RunExecutorLiveness.record(run_id, self(), deadline_ms)
+      on_exit(fn -> ForemanServer.RunExecutorLiveness.clear(run_id) end)
+
+      # Deliberately do NOT register any executor under RunExecutorRegistry.
+
+      results =
+        StuckDetector.scan(
+          threshold_ms: 1_000,
+          now_ms_fun: fn -> now_ms end,
+          dispatch_fun: fn _cmd, _timeout -> {:ok, :stub} end
+        )
+
+      assert [%{run_id: ^run_id}] = results
+    end
+
+    test "rejects a stale liveness entry recorded by a brutally-killed predecessor" do
+      # Simulates the crash/restart race: P1 records a future deadline,
+      # is brutally killed, the supervisor respawns P2 and P2 registers
+      # under RunExecutorRegistry. The stale deadline must NOT exempt
+      # the run — the stored owner PID won't match the registered one.
+      # Without this guard a stale entry from a brutally-killed
+      # predecessor would falsely mark a wedged-but-restarted run as
+      # healthy.
+      run_id = "run-restart-mismatch"
+      last_event = 1_700_000_000_000
+      StuckDetectorTestHelper.seed_run_started(run_id, last_event)
+
+      on_exit(fn -> ForemanServer.RunExecutorLiveness.clear(run_id) end)
+
+      # The respawned executor P2 must register BEFORE we record the
+      # stale entry and run scan/1 — otherwise the test would
+      # silently fall through the "no executor registered" path
+      # (which the previous test already covers) and the regression
+      # being guarded here would be unexercised. We handshake on a
+      # dedicated message so scan/1 only runs once Registry.register/3
+      # has returned `{:ok, _}`.
+      test_pid = self()
+
+      respawned =
+        spawn(fn ->
+          case Registry.register(ForemanServer.RunExecutorRegistry, run_id, %{}) do
+            {:ok, _owner} -> send(test_pid, :registered)
+            {:error, _} = err -> send(test_pid, err)
+          end
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      on_exit(fn -> Process.exit(respawned, :kill) end)
+
+      assert_receive :registered, 1_000
+      # Sanity-check that pid_for/1 actually resolves to the
+      # respawned executor — if it does not, the test would still
+      # pass via the "no executor" path, defeating its purpose.
+      assert ForemanServer.Workflow.RunExecutor.pid_for(run_id) == respawned
+
+      now_ms = last_event + 20 * 60 * 1000
+
+      # Simulate the brutally-killed predecessor P1: spawn a
+      # process, let it die, then record under its now-dead PID.
+      # The respawned P2 is the registered executor; the dead PID
+      # is what left the stale entry behind.
+      dead_owner = spawn(fn -> :ok end)
+
+      # Wait until the spawned process has been scheduled and
+      # exited. The Erlang VM does not guarantee a freshly-spawned
+      # process has run its first instruction by the time `spawn/1`
+      # returns, so we must yield and retry.
+      drain_dead = fn pid ->
+        Enum.reduce_while(1..200, nil, fn _, _ ->
+          cond do
+            not Process.alive?(pid) ->
+              {:halt, :ok}
+
+            true ->
+              Process.sleep(5)
+              {:cont, nil}
+          end
+        end)
+      end
+
+      assert drain_dead.(dead_owner) == :ok
+
+      deadline_ms = now_ms + 30 * 60 * 1000
+      :ok = ForemanServer.RunExecutorLiveness.record(run_id, dead_owner, deadline_ms)
+
+      # The respawned P2 has NOT yet recorded its own entry, so
+      # the only entry is the dead P1's stale future deadline.
+      # The owner-PID mismatch must prevent this entry from
+      # exempting the run.
+      results =
+        StuckDetector.scan(
+          threshold_ms: 1_000,
+          now_ms_fun: fn -> now_ms end,
+          dispatch_fun: fn _cmd, _timeout -> {:ok, :stub} end
+        )
+
+      assert [%{run_id: ^run_id}] = results
+
+      # Cleanup the respawned executor.
+      send(respawned, :stop)
+    end
   end
 
   describe "GenServer start_link" do

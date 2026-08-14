@@ -16,7 +16,8 @@ defmodule ForemanServer.StuckDetector do
 
   use GenServer
 
-  alias ForemanServer.{CommandGateway, ProjectionStore, Telemetry}
+  alias ForemanServer.{CommandGateway, ProjectionStore, RunExecutorLiveness, Telemetry}
+  alias ForemanServer.Workflow.RunExecutor
 
   @default_threshold_ms 900_000
   @default_interval_seconds 60
@@ -41,6 +42,12 @@ defmodule ForemanServer.StuckDetector do
     now_ms = now_ms_fun.()
 
     ProjectionStore.stuck_runs(threshold_ms, now_ms)
+    # Skip runs whose executor is actively blocking on AgentRuntime with a
+    # deadline still in the future — they are making progress, just slowly.
+    # Runs whose deadline has expired (or who never recorded one) flow
+    # through; a live PID alone is not proof of progress, but a live PID
+    # with a valid deadline is.
+    |> Enum.reject(&live_within_deadline?(&1, now_ms))
     |> Enum.map(fn run_id ->
       idle_ms = idle_for(run_id, now_ms)
       Telemetry.run_stuck(idle_ms, threshold_ms, run_id)
@@ -96,6 +103,34 @@ defmodule ForemanServer.StuckDetector do
     case ProjectionStore.run(run_id) do
       %{last_event_at_ms: last} when is_integer(last) -> max(now_ms - last, 0)
       _ -> 0
+    end
+  end
+
+  # True when the RunExecutor for this run is registered, alive, AND has
+  # published a deadline that is still in the future. Callers MUST treat
+  # this as "excluded from stuck detection".
+  #
+  # Four reasons every clause is required:
+  #   * The PID check rejects a stale ETS entry left behind when an
+  #     executor was brutally killed before its `try/after` could clear
+  #     the liveness table.
+  #   * The owner-PID equality check rejects a stale future deadline
+  #     recorded by a predecessor: if the supervisor has respawned the
+  #     executor, the registered PID is the new one and will not match
+  #     the stored owner, so the stale entry cannot exempt the run.
+  #   * The deadline check rejects a wedged-but-alive agent that has
+  #     already exceeded its own timeout.
+  #   * The deadline lookup rejects runs that never recorded one (no
+  #     active invocation in flight); a live PID with no deadline is
+  #     still a candidate.
+
+  defp live_within_deadline?(run_id, now_ms) do
+    with pid when is_pid(pid) <- RunExecutor.pid_for(run_id),
+         true <- Process.alive?(pid),
+         {:active, ^pid, _deadline} <- RunExecutorLiveness.lookup(run_id, now_ms) do
+      true
+    else
+      _ -> false
     end
   end
 
