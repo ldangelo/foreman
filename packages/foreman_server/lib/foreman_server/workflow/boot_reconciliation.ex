@@ -26,7 +26,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   require Logger
 
-  alias ForemanServer.{CommandGateway, CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
 
@@ -95,6 +96,31 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   @doc """
+  Request a scan of every per-DB Beads lease stream for orphaned entries
+  — a holder or waiter whose `run_id` does not correspond to a non-terminal
+  run projection. Each orphan is dispatched as `lease.release` (for the
+  holder) or `lease.remove_waiter` (for queued waiters) so the lease is
+  cleanly transferred or freed after a restart that found stranded state.
+
+  The scan walks every task projection that has a Beads DB path, groups
+  by `db_path`, loads the lease aggregate via `Aggregate.load/2`, and
+  inspects the lease holder and waiter list. A lease entry is considered
+  live only when the run projection exists AND `terminal?` is false;
+  everything else (no run projection, terminal run, or run whose binding
+  has been cleared) is released or removed. Both `lease.release` and
+  `lease.remove_waiter` are idempotent no-ops against foreign entries, so
+  the scan is safe to re-run.
+
+  Dispatches as a cast so the actual scan runs inside the
+  `BootReconciliation` process. Returns `:ok` once the cast is enqueued.
+  """
+  @spec scan_lease_orphans() :: :ok
+  def scan_lease_orphans do
+    GenServer.cast(__MODULE__, :scan_lease_orphans)
+    :ok
+  end
+
+  @doc """
   Cast a live terminal-run notification. The Dispatcher calls this on
   every `RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, and `RunFailed`
   projection event so the fan-out path is identical to the boot scan.
@@ -126,6 +152,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   def handle_continue(:reconcile, state) do
     reconcile()
     state = run_scan_or_defer(state)
+    state = run_lease_scan_or_defer(state)
     {:noreply, %{state | reconciled?: true}}
   end
 
@@ -147,8 +174,20 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   @impl true
+  def handle_cast(:scan_lease_orphans, state) do
+    state = run_lease_scan_or_defer(state)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(:scan_orphans, state) do
     state = run_scan_or_defer(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:scan_lease_orphans, state) do
+    state = run_lease_scan_or_defer(state)
     {:noreply, state}
   end
 
@@ -398,6 +437,143 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     Enum.each(orphans, &ack_orphan_task/1)
     :ok
   end
+
+  # ---------------------------------------------------------------------------
+  # Per-DB Beads lease orphan scan
+  # ---------------------------------------------------------------------------
+
+  defp run_lease_scan_or_defer(state) do
+    case scan_branch() do
+      :schedule_not_ready ->
+        schedule_lease_scan(:not_ready)
+        state
+
+      :schedule_worker_registry ->
+        schedule_lease_scan(:worker_registry_not_ready)
+        state
+
+      :scan ->
+        do_scan_lease_orphans()
+        state
+    end
+  end
+
+  defp schedule_lease_scan(_reason) do
+    Process.send_after(self(), :scan_lease_orphans, @scan_retry_ms)
+  end
+
+  defp do_scan_lease_orphans do
+    tasks_with_db_path()
+    |> Enum.group_by(& &1.db_path, & &1.run_id)
+    |> Enum.each(&reconcile_lease_stream/1)
+
+    :ok
+  end
+
+  defp reconcile_lease_stream({db_path, run_ids}) when is_binary(db_path) and db_path != "" do
+    active_run_ids = MapSet.new(run_ids)
+    {state, _version} = Aggregate.load(BeadsDbLease, BeadsDbLease.stream_id(db_path))
+
+    cond do
+      not state.exists? ->
+        :ok
+
+      holder_orphan?(state, active_run_ids) ->
+        release_lease(db_path, state.holder.run_id, :boot_orphan_holder)
+
+      true ->
+        :ok
+    end
+
+    state.waiters
+    |> Enum.reject(fn waiter -> lease_entry_live?(waiter.run_id, active_run_ids) end)
+    |> Enum.each(&remove_lease_waiter(db_path, &1, :boot_orphan_waiter))
+  end
+
+  defp reconcile_lease_stream(_), do: :ok
+
+  defp holder_orphan?(%BeadsDbLease.State{holder: nil}, _active_run_ids), do: false
+
+  defp holder_orphan?(
+         %BeadsDbLease.State{holder: %BeadsDbLease.Holder{run_id: run_id}},
+         active_run_ids
+       )
+       when is_binary(run_id) do
+    not lease_entry_live?(run_id, active_run_ids)
+  end
+
+  defp lease_entry_live?(run_id, active_run_ids) when is_binary(run_id) do
+    MapSet.member?(active_run_ids, run_id) and not run_terminal?(run_id)
+  end
+
+  defp tasks_with_db_path do
+    ProjectionStore.list_tasks()
+    |> Enum.flat_map(&task_db_path_entry/1)
+  end
+
+  defp task_db_path_entry(task) when is_map(task) do
+    run_id = fetch_map_value(task, :run_id)
+    db_path = beads_db_path_from_task(task)
+
+    if is_binary(run_id) and run_id != "" and is_binary(db_path) and db_path != "" do
+      [%{run_id: run_id, db_path: db_path}]
+    else
+      []
+    end
+  end
+
+  defp task_db_path_entry(_), do: []
+
+  defp beads_db_path_from_task(task) do
+    snapshot =
+      fetch_map_value(task, :workflow_snapshot) || %{}
+
+    impl = fetch_map_value(snapshot, :implementation) || %{}
+
+    fetch_map_value(impl, :beads_database_path)
+  end
+
+  defp release_lease(db_path, run_id, reason)
+       when is_binary(db_path) and db_path != "" and is_binary(run_id) and run_id != "" do
+    ms = System.system_time(:millisecond)
+
+    _ =
+      CommandGateway.dispatch_system(%{
+        type: "lease.release",
+        command_id: "foreman:boot-lease-release:#{run_id}:#{ms}",
+        aggregate_id: BeadsDbLease.stream_id(db_path),
+        payload: %{
+          db_path: db_path,
+          run_id: run_id,
+          released_at_ms: ms,
+          reason: reason
+        }
+      })
+
+    :ok
+  end
+
+  defp remove_lease_waiter(db_path, %BeadsDbLease.Waiter{run_id: run_id}, reason)
+       when is_binary(db_path) and db_path != "" and is_binary(run_id) and run_id != "" do
+    ms = System.system_time(:millisecond)
+
+    _ =
+      CommandGateway.dispatch_system(%{
+        type: "lease.remove_waiter",
+        command_id: "foreman:boot-lease-remove-waiter:#{run_id}:#{ms}",
+        aggregate_id: BeadsDbLease.stream_id(db_path),
+        payload: %{
+          db_path: db_path,
+          run_id: run_id,
+          removed_at_ms: ms,
+          reason: reason
+        }
+      })
+
+    :ok
+  end
+
+  defp remove_lease_waiter(_db_path, _waiter, _reason), do: :ok
 
   defp ack_orphan_task(task) do
     task_id = fetch_map_value(task, :task_id)

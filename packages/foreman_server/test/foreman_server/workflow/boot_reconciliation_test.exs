@@ -2,6 +2,9 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
   use ExUnit.Case, async: false
 
   import Mox
+  alias EventStore.RecordedEvent
+  alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
@@ -545,6 +548,166 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
                  "deferred scan to acknowledge terminal run",
                  2_000
                )
+    end
+  end
+
+  describe "lease orphan scan" do
+    test "scan_lease_orphans/0 releases lease holder whose run is not in any live task", %{
+      temp_dir: _temp_dir
+    } do
+      db_path = unique_database_path("lease-orphan-holder")
+      stream = BeadsDbLease.stream_id(db_path)
+      orphan_run = unique_id("orphan-run")
+      orphan_task = unique_id("orphan-task")
+      live_task = unique_id("live-task")
+      live_run = unique_id("live-run")
+
+      on_exit(fn -> _ = Store.delete_stream(stream, :any_version, :hard) end)
+
+      ms = System.system_time(:millisecond)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "lease.acquire",
+                 command_id: "test:lease-acquire-orphan:#{orphan_run}:#{ms}",
+                 aggregate_id: stream,
+                 payload: %{
+                   db_path: db_path,
+                   run_id: orphan_run,
+                   task_id: orphan_task,
+                   acquired_at_ms: ms
+                 }
+               })
+
+      assert_eventually(fn ->
+        case Store.read_stream_forward(stream, 0, 1) do
+          {:ok, [%RecordedEvent{event_type: "BeadsDbLeaseAcquired"}]} -> :ok
+          _ -> :retry
+        end
+      end)
+
+      seed_task_with_db_path!(live_task, live_run, db_path)
+
+      assert :ok = BootReconciliation.scan_lease_orphans()
+
+      assert_eventually(fn ->
+        case Store.read_stream_forward(stream, 0, 10) do
+          {:ok, events} ->
+            case List.last(events) do
+              %RecordedEvent{
+                event_type: "BeadsDbLeaseReleased",
+                data: %{run_id: ^orphan_run, reason: :boot_orphan_holder}
+              } ->
+                :ok
+
+              other ->
+                {:still_waiting, other}
+            end
+
+          other ->
+            {:still_waiting, other}
+        end
+      end)
+    end
+
+    test "scan_lease_orphans/0 keeps live holder untouched and removes orphan waiters", %{
+      temp_dir: _temp_dir
+    } do
+      db_path = unique_database_path("lease-mixed")
+      stream = BeadsDbLease.stream_id(db_path)
+      holder_run = unique_id("holder-run")
+      holder_task = unique_id("holder-task")
+      live_task = unique_id("live-task")
+      live_run = unique_id("live-run")
+      orphan_waiter_run = unique_id("orphan-waiter-run")
+      orphan_waiter_task = unique_id("orphan-waiter-task")
+
+      on_exit(fn -> _ = Store.delete_stream(stream, :any_version, :hard) end)
+
+      ms = System.system_time(:millisecond)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "lease.acquire",
+                 command_id: "test:lease-acquire-holder:#{holder_run}:#{ms}",
+                 aggregate_id: stream,
+                 payload: %{
+                   db_path: db_path,
+                   run_id: holder_run,
+                   task_id: holder_task,
+                   acquired_at_ms: ms
+                 }
+               })
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "lease.acquire",
+                 command_id: "test:lease-acquire-waiter:#{orphan_waiter_run}:#{ms + 1}",
+                 aggregate_id: stream,
+                 payload: %{
+                   db_path: db_path,
+                   run_id: orphan_waiter_run,
+                   task_id: orphan_waiter_task,
+                   acquired_at_ms: ms + 1
+                 }
+               })
+
+      assert_eventually(fn ->
+        case Store.read_stream_forward(stream, 0, 10) do
+          {:ok, events} ->
+            acquired_count =
+              events
+              |> Enum.count(fn
+                %RecordedEvent{event_type: "BeadsDbLeaseAcquired"} -> true
+                _ -> false
+              end)
+
+            registered_count =
+              events
+              |> Enum.count(fn
+                %RecordedEvent{event_type: "BeadsDbLeaseWaiterRegistered"} -> true
+                _ -> false
+              end)
+
+            if acquired_count == 1 and registered_count == 1, do: :ok, else: :retry
+        end
+      end)
+
+      seed_task_with_db_path!(holder_task, holder_run, db_path)
+
+      assert :ok = BootReconciliation.scan_lease_orphans()
+
+      assert_eventually(fn ->
+        case Store.read_stream_forward(stream, 0, 20) do
+          {:ok, events} ->
+            removed? =
+              Enum.any?(events, fn
+                %RecordedEvent{
+                  event_type: "BeadsDbLeaseWaiterRemoved",
+                  data: %{run_id: ^orphan_waiter_run, reason: :boot_orphan_waiter}
+                } ->
+                  true
+
+                _ ->
+                  false
+              end)
+
+            holder_released? =
+              Enum.any?(events, fn
+                %RecordedEvent{event_type: "BeadsDbLeaseReleased", data: %{run_id: ^holder_run}} ->
+                  true
+
+                _ ->
+                  false
+              end)
+
+            if removed? and not holder_released?, do: :ok, else: {:still_waiting, removed?}
+        end
+      end)
+    end
+
+    test "scan_lease_orphans/0 returns :ok and dispatches asynchronously", %{temp_dir: _temp_dir} do
+      assert :ok = BootReconciliation.scan_lease_orphans()
     end
   end
 
@@ -1155,6 +1318,52 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       fun.()
     after
       System.put_env("PATH", original_path)
+    end
+  end
+
+  defp seed_task_with_db_path!(task_id, run_id, db_path) do
+    append_and_apply("task:" <> task_id, 0, "TaskCreated", %{
+      task_id: task_id,
+      project_id: unique_id("project-lease"),
+      title: "lease orphan #{task_id}",
+      status: "in_progress",
+      task_type: "implement-trd-beads"
+    })
+
+    append_and_apply(
+      "task:" <> task_id,
+      1,
+      "TaskApproved",
+      %{
+        task_id: task_id,
+        approval_id: unique_id("approval"),
+        approved_by: "alice",
+        approved_at: "2026-08-10T00:00:00Z",
+        run_id: run_id,
+        workflow_snapshot: %{
+          implementation: %{beads_database_path: db_path}
+        }
+      }
+    )
+  end
+
+  defp assert_eventually(fun, timeout_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    poll_until(fun, deadline)
+  end
+
+  defp poll_until(fun, deadline) do
+    case fun.() do
+      :ok ->
+        :ok
+
+      other ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          flunk("assert_eventually timed out; last value: #{inspect(other)}")
+        else
+          Process.sleep(20)
+          poll_until(fun, deadline)
+        end
     end
   end
 

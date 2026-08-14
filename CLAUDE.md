@@ -427,10 +427,13 @@ these invariants. Drift without a tracked TRD is a regression.
 SQLite's single-writer protocol cannot tolerate concurrent `br`/`bv`
 writers or writers running alongside `bv --robot-plan`. The
 `ForemanServer.Aggregates.BeadsDbLease` aggregate is an event-sourced
-lock keyed by the canonical Beads DB path, giving process-local
-serialization through the Actor mailbox while surviving Foreman
-restarts via persisted events. Different DBs and direct (`foreman run`)
-workflows remain parallel.
+lock keyed by the configured absolute Beads DB path passed at acquire
+time, giving process-local serialization through the Actor mailbox
+while surviving Foreman restarts via persisted events. Different DBs
+and direct (`foreman run`) workflows remain parallel. Callers must
+pass the same absolute path on every dispatch — symlink aliasing
+(e.g. `/tmp/...` vs `/private/tmp/...`) is NOT collapsed and will
+register separate lease streams.
 
 - **Acquire-or-enqueue.** `lease.acquire` is atomic: if the DB is
   free, the run becomes the holder; if held, the run is enqueued as a

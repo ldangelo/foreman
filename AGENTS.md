@@ -339,12 +339,15 @@ exactly-once.
 **Per-DB Beads lease (write serialization across processes and restarts)**: SQLite's
 single-writer protocol cannot tolerate concurrent br/bv writers or writers running
 alongside `bv --robot-plan`. The `BeadsDbLease` aggregate is an event-sourced lock
-keyed by the canonical Beads DB path, giving process-local serialization through the
-Actor mailbox while surviving Foreman restarts via persisted events. Required
-because multi-`run_id` parallelism on the same DB otherwise deterministically raises
-`cannot connect to database: locking protocol (15)`.
+keyed by the configured absolute Beads DB path passed at acquire time, giving
+process-local serialization through the Actor mailbox while surviving Foreman
+restarts via persisted events. Required because multi-`run_id` parallelism on the
+same DB otherwise deterministically raises
+`cannot connect to database: locking protocol (15)`. Callers must pass the same
+absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
+`/private/tmp/...`) is NOT collapsed and will register separate lease streams.
 
-- **Stream id**: `beads_db_lease:<canonical_db_path>`.
+- **Stream id**: `beads_db_lease:<db_path>` (literal path; see warning above).
 - **Acquire**: `lease.acquire` is atomic — if the DB is free, the run becomes holder;
   if held, the run is enqueued as a waiter and admission returns `:queued`.
 - **Release**: `lease.release` and `lease.remove_waiter` are dispatched at run

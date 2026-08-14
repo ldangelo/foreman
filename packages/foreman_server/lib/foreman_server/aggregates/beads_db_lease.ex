@@ -7,12 +7,16 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   the projection store is NEVER consulted for acquire/release
   decisions. Atomicity is preserved by routing every command
   through the per-stream Actor (mailbox serialization). Two
-  concurrent acquirers against the same canonical `db_path`
-  cannot both succeed; the second becomes a durable waiter.
+  concurrent acquirers against the same configured absolute
+  `db_path` cannot both succeed; the second becomes a durable
+  waiter. Callers must pass the same absolute path on every
+  dispatch — symlink aliasing (e.g. `/tmp/...` vs
+  `/private/tmp/...`) is NOT collapsed and will register separate
+  lease streams.
 
   ## Stream id
 
-      beads_db_lease:<canonical_db_path>
+      beads_db_lease:<db_path>
 
   ## Commands
 
@@ -51,6 +55,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
   structs (`%BeadsDbLeaseAcquired{}`, etc.). Both shapes are
   normalised to a plain map via `event_data_to_map/1`.
   """
+
   alias ForemanServer.Aggregate
 
   alias ForemanServer.Events.{
@@ -184,6 +189,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
   def apply_event(state, %BeadsDbLeaseWaiterRegistered{} = event) do
     payload = event_data_to_map(event)
+
     new_waiter = %Waiter{
       run_id: Aggregate.get(payload, :run_id),
       task_id: Aggregate.get(payload, :task_id),
@@ -293,7 +299,15 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
     end
   end
 
-  @doc "Build the canonical stream id for a Beads database path."
+  @doc """
+  Build the lease stream id for a Beads database path.
+
+  The key is the configured absolute DB path verbatim. Two callers
+  pointing at the same DB through different symlink aliases (e.g.
+  `/tmp/...` vs `/private/tmp/...`) currently register separate lease
+  streams and will not serialize against each other; pass the same
+  absolute path on every dispatch until canonicalization is added.
+  """
   @spec stream_id(String.t()) :: String.t()
   def stream_id(db_path) when is_binary(db_path) and db_path != "",
     do: "beads_db_lease:#{db_path}"
