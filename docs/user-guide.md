@@ -669,13 +669,11 @@ name: implement-trd-beads
 description: Implement a Technical Requirements Document via the Beads-backed ensemble implement-trd-beads skill under Foreman-managed execution.
 phases:
   - name: implement-trd-beads
-    command: "/skill:ensemble-full-implement-trd-beads --foreman {trd_path_argument}"
-    requiredFile: trd_path
+    command: "/skill:ensemble-full-implement-trd-beads {{implementation.trd_path_argument}} --foreman"
     worktree:
       enabled: true
-      base: "{source_revision}"
+      base: "{{implementation.source_revision}}"
       branch: foreman/{run_id}/{phase}
-      path: implement-trd-beads
       cleanup: always
 ---
 # Planning-context: planning.trd_path written by the plan phase.
@@ -683,38 +681,35 @@ name: implement-trd
 description: Implement a Technical Requirements Document via the ensemble implement-trd skill under Foreman-managed execution.
 phases:
   - name: implement-trd
-    command: "/skill:ensemble-full-implement-trd --foreman {trd_path_argument}"
-    requiredFile: planning.trd_path
+    command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
     worktree:
       enabled: true
-      base: "{source_revision}"
+      base: "{{implementation.source_revision}}"
       branch: foreman/{run_id}/{phase}
-      path: implement-trd
       cleanup: always
 ```
 
-- `command:` — non-empty slash command. The `{trd_path_argument}`
-  placeholder is substituted at approval time with the JSON-quoted
-  path to the TRD so the skill receives a shell-safe argument.
-- `requiredFile:` (singular) — dotted scalar resolved against the
-  phase context. The phase gate fails with
-  `:required_file_missing` if the resolved path does not exist on
-  disk when the phase starts.
+- `command:` — non-empty slash command. The
+  `{{implementation.trd_path_argument}}` placeholder is substituted at
+  approval time with the JSON-quoted project-relative path to the TRD
+  so the skill receives a shell-safe argument. The bundled manifests
+  intentionally omit `requiredFile`: the TRD is verified as a tracked
+  Git blob at approval time via `ImplementationContext`, not as a
+  post-command file gate.
 
 - `worktree:` — declares a per-phase worktree owned by Foreman.
   - `enabled: true` activates the worktree lifecycle.
-  - `base: "{source_revision}"` is substituted at approval time with
-    the project's frozen source revision. The human review surfaces
-    the exact base ref Foreman will execute from.
+  - `base: "{{implementation.source_revision}}"` is substituted at
+    approval time with the project's frozen source revision. The human
+    review surfaces the exact base ref Foreman will execute from.
   - `branch: foreman/{run_id}/{phase}` is substituted at runtime
     with the run and phase ids so each phase gets its own branch.
-  - `path: implement-trd` (or `implement-trd-beads`) is the leaf
-    directory name; Foreman joins it under
-    `~/.foreman/worktrees/<project_id>/<run_id>/`, so the final
-    worktree path is `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
-    The path is containment-checked against that root at runtime —
-    template payloads that smuggle `..` or render to absolute paths
-    are rejected before `git worktree add` runs.
+  - The leaf directory name is derived from `phase.name`; the final
+    worktree path is
+    `~/.foreman/worktrees/<project_id>/<run_id>/<phase.name>`. The path
+    is containment-checked against that root at runtime — template
+    payloads that smuggle `..` or render to absolute paths are rejected
+    before `git worktree add` runs.
   - `cleanup: always` removes the worktree after the phase completes
     or fails.
 
@@ -724,9 +719,10 @@ Foreman renders the strict fields at approval time so the human
 review surfaces the exact command and base ref that the executor
 will run. The renderer substitutes:
 
-- `{trd_path_argument}` in `command:` with the JSON-quoted TRD path.
-- `{source_revision}` in `worktree.base` with the project's frozen
-  source revision.
+- `{{implementation.trd_path_argument}}` in `command:` with the
+  JSON-quoted project-relative TRD path.
+- `{{implementation.source_revision}}` in `worktree.base` with the
+  project's frozen source revision.
 
 Other placeholders (`{run_id}`, `{phase}`) remain literal until run
 time so the approval payload is deterministic.

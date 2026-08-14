@@ -727,14 +727,12 @@ defmodule ForemanServer.CommandGatewayTest do
       name: implement-trd
       description: Implement against a frozen TRD document.
       phases:
-        - name: implement
-          command: "/skill:ensemble-full-implement-trd --foreman {trd_path_argument}"
-          requiredFile: planning.trd_path
+        - name: implement-trd
+          command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
           worktree:
             enabled: true
-            base: "{source_revision}"
+            base: "{{implementation.source_revision}}"
             branch: foreman/{run_id}/{phase}
-            path: implement-trd
             cleanup: always
       """)
 
@@ -838,7 +836,7 @@ defmodule ForemanServer.CommandGatewayTest do
       assert is_map(phase)
 
       expected_argument = Jason.encode!(trd_path)
-      expected_command = "/skill:ensemble-full-implement-trd --foreman #{expected_argument}"
+      expected_command = "/skill:ensemble-full-implement-trd #{expected_argument} --foreman"
 
       # The rendered command value lives under the canonical string key
       # (the persisted/JSON-decoded form). The atom twin is removed so
@@ -888,7 +886,7 @@ defmodule ForemanServer.CommandGatewayTest do
       refute Map.has_key?(worktree, :base)
     end
 
-    test "worktree.branch and worktree.path retain runtime placeholders (rendered at execution time)",
+    test "worktree.branch retains runtime placeholders (rendered at execution time)",
          %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{
@@ -918,7 +916,12 @@ defmodule ForemanServer.CommandGatewayTest do
       worktree = phase["worktree"]
 
       assert worktree["branch"] == "foreman/{run_id}/{phase}"
-      assert worktree["path"] == "implement-trd"
+      # worktree.path is not declared in the bundled manifest; the
+      # runtime derives it from `phase.name` via
+      # RunExecutor.worktree_path_for/4, so it must not appear in the
+      # approval-time snapshot.
+      refute Map.has_key?(worktree, "path")
+      refute Map.has_key?(worktree, :path)
     end
 
     test "rendered workflow_snapshot survives a JSON round-trip without regressing to placeholders",
@@ -964,7 +967,7 @@ defmodule ForemanServer.CommandGatewayTest do
       decoded_worktree = decoded_phase["worktree"]
 
       expected_argument = Jason.encode!(trd_path)
-      expected_command = "/skill:ensemble-full-implement-trd --foreman #{expected_argument}"
+      expected_command = "/skill:ensemble-full-implement-trd #{expected_argument} --foreman"
 
       assert decoded_phase["command"] == expected_command
       refute decoded_phase["command"] =~ "{trd_path_argument}"
@@ -973,10 +976,78 @@ defmodule ForemanServer.CommandGatewayTest do
       assert decoded_worktree["base"] == source_revision
       refute decoded_worktree["base"] =~ "{source_revision}"
 
-      # Branch and path placeholders survive the round-trip so the
-      # execution-time renderer can substitute them.
+      # Branch placeholders survive the round-trip so the execution-time
+      # renderer can substitute them. `worktree.path` is not declared
+      # in the bundled manifest; the runtime derives it from
+      # `phase.name`.
       assert decoded_worktree["branch"] == "foreman/{run_id}/{phase}"
-      assert decoded_worktree["path"] == "implement-trd"
+      refute Map.has_key?(decoded_worktree, "path")
+    end
+
+    test "task.approve persists a rendered workflow_snapshot in the projection (not raw placeholders)",
+         %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      # Persisted projection must mirror the rendered snapshot — not the
+      # raw dotted templates. The TaskApproved event payload is the
+      # authoritative input to ProjectionStore.apply_event_by_type/3
+      # for "TaskApproved"; this test asserts the end-to-end contract
+      # rather than just the dispatch return value.
+      persisted = ProjectionStore.task_projection(task_id)
+      assert is_map(persisted)
+
+      # ProjectionStore stores atom-keyed maps. `workflow_snapshot` lives
+      # under the atom key because the projection uses `Map.put/3` with
+      # atom keys throughout `apply_event_by_type/3`.
+      persisted_snapshot = persisted[:workflow_snapshot]
+      assert is_map(persisted_snapshot)
+
+      source_revision = get_in(persisted_snapshot, ["implementation", "source_revision"])
+      assert is_binary(source_revision) and source_revision != ""
+
+      [persisted_phase] = persisted_snapshot["phases"]
+      persisted_worktree = persisted_phase["worktree"]
+
+      # command must be concrete — no {{implementation.*}} tokens, no
+      # {trd_path_argument} tokens. The bundle uses dotted
+      # double-brace form; this assertion covers both.
+      refute persisted_phase["command"] =~ "{trd_path_argument}"
+      refute persisted_phase["command"] =~ "{{implementation.trd_path_argument}}"
+
+      assert persisted_phase["command"] ==
+               "/skill:ensemble-full-implement-trd #{Jason.encode!(trd_path)} --foreman"
+
+      # worktree.base must be the concrete source revision, not the
+      # {{implementation.source_revision}} placeholder.
+      refute persisted_worktree["base"] =~ "{source_revision}"
+      refute persisted_worktree["base"] =~ "{{implementation.source_revision}}"
+      assert persisted_worktree["base"] == source_revision
+
+      # Branch keeps the runtime placeholder; path stays absent.
+      assert persisted_worktree["branch"] == "foreman/{run_id}/{phase}"
+      refute Map.has_key?(persisted_worktree, "path")
     end
 
     test "rendered phase command and worktree.base retain approval-time SHA after HEAD movement",
@@ -1018,7 +1089,7 @@ defmodule ForemanServer.CommandGatewayTest do
 
       [first_phase] = first_payload["workflow_snapshot"]["phases"]
       expected_argument = Jason.encode!(trd_path)
-      expected_command = "/skill:ensemble-full-implement-trd --foreman #{expected_argument}"
+      expected_command = "/skill:ensemble-full-implement-trd #{expected_argument} --foreman"
 
       assert first_phase["command"] == expected_command
       refute first_phase["command"] =~ "{trd_path_argument}"

@@ -2,11 +2,9 @@ name: implement-trd
 description: Implement a Technical Requirements Document via the ensemble implement-trd skill under Foreman-managed execution.
 phases:
   - name: implement-trd
-    command: "/skill:ensemble-full-implement-trd --foreman {trd_path_argument}"
-    requiredFile: planning.trd_path
+    command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
     worktree:
       enabled: true
-      base: "{source_revision}"
+      base: "{{implementation.source_revision}}"
       branch: foreman/{run_id}/{phase}
-      path: implement-trd
       cleanup: always

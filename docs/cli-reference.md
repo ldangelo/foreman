@@ -292,14 +292,18 @@ Once approved, the run executes a single phase that owns its own
 worktree:
 
 1. `implement-trd` — invokes
-   `/skill:ensemble-full-implement-trd --foreman <trd_path_argument>`
+   `/skill:ensemble-full-implement-trd --foreman "<trd-path>"`
    inside a Foreman-managed worktree pinned to the project's frozen
-   source revision. See `docs/user-guide.md` §15 for the worktree
-   contract and the env vars auto-injected at execution time.
-
-The required-file gate fires `:required_file_missing` if the
-resolved `trd-path` does not exist on disk when the phase starts.
-Operators can inspect the failure via `foreman run get <run_id>`.
+   source revision. The command's `<trd-path>` argument is rendered
+   from the `{{implementation.trd_path_argument}}` placeholder at
+   approval time (a JSON-quoted, project-relative path) and the base
+   ref is rendered from `{{implementation.source_revision}}` so the
+   human review surfaces the exact command and base ref Foreman will
+   execute. See `docs/user-guide.md` for the worktree contract and
+   the env vars auto-injected at execution time. The TRD must be a
+   tracked Git blob at approval time — `ImplementationContext` rejects
+   untracked or only-working-copy paths — so there is no separate
+   post-command file gate.
 
 ### `foreman task create --workflow-type implement-trd-beads`
 

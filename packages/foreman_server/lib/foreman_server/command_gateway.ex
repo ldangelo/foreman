@@ -447,8 +447,14 @@ defmodule ForemanServer.CommandGateway do
       value when is_binary(value) ->
         rendered =
           value
-          |> substitute("{trd_path_argument}", get_value(impl, "trd_path_argument"))
-          |> substitute("{source_revision}", get_value(impl, "source_revision"))
+          |> substitute(
+            "{{implementation.trd_path_argument}}",
+            get_value(impl, "trd_path_argument")
+          )
+          |> substitute(
+            "{{implementation.source_revision}}",
+            get_value(impl, "source_revision")
+          )
 
         put_canonical(phase, "command", :command, rendered)
 
@@ -466,7 +472,13 @@ defmodule ForemanServer.CommandGateway do
 
         case base do
           value when is_binary(value) ->
-            rendered = substitute(value, "{source_revision}", get_value(impl, "source_revision"))
+            rendered =
+              substitute(
+                value,
+                "{{implementation.source_revision}}",
+                get_value(impl, "source_revision")
+              )
+
             rendered_worktree = put_canonical(block, "base", :base, rendered)
             put_canonical(phase, "worktree", :worktree, rendered_worktree)
 
