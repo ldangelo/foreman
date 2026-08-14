@@ -731,6 +731,33 @@ will run. The renderer substitutes:
 Other placeholders (`{run_id}`, `{phase}`) remain literal until run
 time so the approval payload is deterministic.
 
+### Runtime artifact-template rendering
+
+Prompt-phase `artifact_template` paths are rendered at runtime (not at
+approval time) so each phase knows its own run id and reports
+directory. The renderer substitutes, in this order:
+
+- `{run.id}` → the active run id.
+- `{task.id}` → the Foreman internal task id
+  (`state.task.task_id`, e.g. `foreman-mcp-trd`). Foreman's operator
+  API exposes `task_id` as the primary identifier and forbids
+  `external_id` on `task.create`; provider-facing lifecycle calls
+  separately route through the `external_id` registered against the
+  task (see `run_executor_test.exs` "provider-facing lifecycle calls
+  use the task's external_id, not the Foreman task_id"). `task_id_of/1`
+  in `RunExecutor` returns whichever of these the run-time state
+  carries as `state.task.task_id`.
+- `{task.projectReportsDir}` and `{reportDir}` → the canonical
+  `<working_directory>/docs/reports/foreman-<task.id>` path Foreman
+  writes per-phase reports to (suffixed with the same
+  `state.task.task_id`).
+
+When `artifact_template` resolves to `nil` or an empty string the
+phase falls back to `default_path/2`; when it is a binary the path is
+expanded against the running state. No other substitutions are
+performed in `artifact_template` — required-file gates and slash
+commands remain literal at this layer.
+
 ### Environment variables
 
 Foreman auto-injects the following environment variables into the
