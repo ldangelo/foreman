@@ -60,6 +60,24 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     @impl true
     def execute(%{prompt: prompt, context: context}, _opts) do
+      # Tests that gate on a relative `required_file` need the file to
+      # exist inside the worktree BEFORE the executor runs the post-agent
+      # gate. The `write_paths` entry is a list of bare filenames (joined
+      # against `working_directory`) the adapter materializes on disk.
+      # Materialize BEFORE forwarding `:adapter_execute` so the test
+      # process can assert the file's existence on receive without racing
+      # the adapter's remaining work.
+      working_directory = Map.get(context, "working_directory")
+      write_paths = Map.get(context, "write_paths") || []
+
+      if is_binary(working_directory) and working_directory != "" do
+        Enum.each(write_paths, fn relative ->
+          target = Path.join(working_directory, relative)
+          File.mkdir_p!(Path.dirname(target))
+          File.write!(target, "gate file materialized by TestAdapter")
+        end)
+      end
+
       script_key = Map.fetch!(context, "script_key")
 
       if pid = LifecycleStore.test_pid(script_key) do
@@ -462,7 +480,166 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert completed_phase.status == "completed"
   end
 
+  test "requiredFile gate resolves the relative file from the active worktree, not the daemon cwd" do
+    # The dispatch-daemon trap this guards: a relative `requiredFile: trd_path`
+    # resolves `File.regular?("docs/TRD/...")` against the daemon cwd
+    # (`packages/foreman_server`), where it never exists, so the gate fails
+    # even though the file is material inside the worktree the agent just
+    # provisioned. The executor MUST thread the active `worktree_record`
+    # through to `enforce_required_file` so the path resolution joins
+    # against the worktree root. This test creates a real git repo + real
+    # worktree, writes the required file only inside the worktree, and
+    # asserts the gate passes.
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    # Sanity-check the trap control: the relative path must NOT exist
+    # in the daemon cwd before the worktree exists, otherwise the test
+    # would pass even without the fix.
+    assert File.regular?("TRD-GATE.md") == false
+
+    # Real git repo with one commit — `git worktree add` requires a
+    # non-empty history at HEAD to create a fresh branch.
+    repo_dir = Path.join(System.tmp_dir!(), "foreman-gate-#{System.unique_integer([:positive])}")
+    File.rm_rf!(repo_dir)
+    File.mkdir_p!(repo_dir)
+    run_git!(["-C", repo_dir, "init", "--initial-branch=main"])
+    run_git!(["-C", repo_dir, "config", "user.email", "gate@test"])
+    run_git!(["-C", repo_dir, "config", "user.name", "Gate Test"])
+    File.write!(Path.join(repo_dir, "README.md"), "seed")
+    run_git!(["-C", repo_dir, "add", "."])
+    run_git!(["-C", repo_dir, "commit", "--no-gpg-sign", "-m", "seed"])
+    head_sha = run_git!(["-C", repo_dir, "rev-parse", "HEAD"]) |> String.trim()
+
+    on_exit(fn ->
+      File.rm_rf(repo_dir)
+      # The executor's `after` block cleans up its own worktree under
+      # `~/.foreman/worktrees/<project_id>/<run_id>/`; the `on_exit`
+      # here wipes the working dir on the daemon cwd side only.
+    end)
+
+    relative_trd = "TRD-GATE.md"
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      implementation: %{
+        project_root: repo_dir,
+        source_revision: head_sha,
+        implementation_key: String.duplicate("a", 64),
+        trd_path: relative_trd,
+        beads_database_path: database_path
+      },
+      phases: [
+        %{
+          name: :implement_trd_beads,
+          action: :command,
+          command: "/skill:ensemble-full-implement-trd-beads --foreman",
+          required_file: "trd_path",
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-implement.md"])
+          },
+          context: %{"script_key" => script_key, "write_paths" => [relative_trd]},
+          worktree: %{
+            enabled: true,
+            path: "implement-trd-beads",
+            cleanup: "always"
+          }
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, opts ->
+      send(test_pid, {:runner_cmd, :claim})
+      assert opts == [timeout_ms: 30_000]
+      claim_payload_json(task_id)
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: ^task_id}}, _cfg, opts ->
+      send(test_pid, {:runner_cmd, :close})
+      assert opts == [timeout_ms: 30_000]
+      close_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+
+    # Adapter received the context. `working_directory` is the worktree path.
+    assert_receive {:adapter_execute, _prompt, context}, @poll_timeout_ms
+    working_directory = context["working_directory"]
+    assert is_binary(working_directory) and working_directory != ""
+
+    assert String.contains?(working_directory, run_id),
+           "expected working_directory to be inside the worktree tree, got: #{working_directory}"
+
+    # The TestAdapter materializes the relative path on disk inside the
+    # worktree BEFORE returning, which is what a real agent would do.
+    assert File.regular?(Path.join(working_directory, relative_trd))
+
+    phase_id = Identity.phase_id(run_id, 1)
+
+    {:ok, completed_phase} =
+      poll_until(
+        fn ->
+          case ProjectionStore.phase_projection(phase_id) do
+            %{status: "completed"} = phase -> {:ok, phase}
+            other -> {:error, other}
+          end
+        end,
+        "phase completed"
+      )
+
+    assert completed_phase.status == "completed"
+
+    failure_reason =
+      (Map.get(completed_phase, :failure_reason) || Map.get(completed_phase, "failure_reason"))
+      |> to_string()
+
+    # Belt-and-suspenders: the regression's distinctive failure shape
+    # must NOT appear in the projection.
+    refute failure_reason =~ "required_file_missing"
+    refute failure_reason =~ "required_file_unknown_key"
+
+    # Wait for the close dispatch before exit so Mox sees the close expect fire.
+    assert_receive {:runner_cmd, :close}, @poll_timeout_ms
+  end
+
   ### Setup helpers
+
   defp start_schema_cache! do
     case Process.whereis(@cache_name) do
       nil -> start_supervised!({JsonSchemaCache, name: @cache_name})
@@ -770,5 +947,61 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       {:ok, _new_dispatcher} =
         Supervisor.restart_child(app_sup, ForemanServer.Workflow.Dispatcher)
     end
+  end
+
+  # Run a git command and return combined stdout/stderr. Raises on
+  # non-zero exit so test failures surface immediately with the git
+  # output that caused them.
+  defp run_git!(args) do
+    {output, 0} = System.cmd("git", args, stderr_to_stdout: true)
+    output
+  end
+
+  defp claim_payload_json(task_id) do
+    {:ok,
+     %{
+       stdout:
+         Jason.encode!([
+           %{
+             "id" => task_id,
+             "title" => "Feature #{task_id}",
+             "status" => "in_progress",
+             "priority" => 2,
+             "dependencies" => [],
+             "assignee" => "foreman-runner",
+             "description" => "Feature task description",
+             "notes" => nil,
+             "design" => nil,
+             "labels" => ["workflow", "in_progress"],
+             "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+           }
+         ]),
+       stderr: "",
+       exit_code: 0
+     }}
+  end
+
+  defp close_payload_json(task_id) do
+    {:ok,
+     %{
+       stdout:
+         Jason.encode!([
+           %{
+             "id" => task_id,
+             "title" => "Feature #{task_id}",
+             "status" => "closed",
+             "priority" => 1,
+             "dependencies" => [],
+             "assignee" => nil,
+             "description" => nil,
+             "notes" => nil,
+             "design" => nil,
+             "labels" => [],
+             "metadata" => %{}
+           }
+         ]),
+       stderr: "",
+       exit_code: 0
+     }}
   end
 end

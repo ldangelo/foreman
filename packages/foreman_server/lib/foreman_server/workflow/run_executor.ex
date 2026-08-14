@@ -279,7 +279,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, output} <- execute_agent(state, phase_spec, index, worktree_record),
          {:ok, artifact_path} <-
            __MODULE__.ArtifactTemplate.write(state, phase_spec, phase_index, output),
-         {:ok, _required_file} <- enforce_required_file(state, phase_spec, phase_index),
+         {:ok, _required_file} <-
+           enforce_required_file(state, phase_spec, phase_index, worktree_record),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, _} <- emit_phase_complete(state, phase_index, artifact) do
       next_state = %{state | current_phase: index, status: :in_progress}
@@ -1430,7 +1431,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp enforce_required_file(state, phase_spec, phase_index) do
+  defp enforce_required_file(state, phase_spec, phase_index, worktree_record) do
     case Map.get(phase_spec, :required_file) do
       nil ->
         {:ok, :no_gate}
@@ -1441,10 +1442,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       key when is_binary(key) ->
         case resolve_context_key(state, key, phase_index) do
           {:ok, path} ->
-            if is_binary(path) and File.regular?(path) do
-              {:ok, path}
+            absolute_path = resolve_gate_path(path, state, worktree_record)
+
+            if is_binary(absolute_path) and File.regular?(absolute_path) do
+              {:ok, absolute_path}
             else
-              {:error, {:required_file_missing, key, path}}
+              {:error, {:required_file_missing, key, absolute_path}}
             end
 
           {:error, reason} ->
@@ -1453,6 +1456,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       _ ->
         {:error, {:required_file_invalid, phase_index}}
+    end
+  end
+
+  # `requiredFile` paths live in the same working directory the agent
+  # executed in: the phase worktree when one is active, otherwise the
+  # project's working directory. Relative paths resolve against that
+  # root so `File.regular?/1` checks the file the agent actually had
+  # access to, not the daemon's cwd. Absolute paths pass through.
+  defp resolve_gate_path(path, state, worktree_record) when is_binary(path) do
+    if Path.type(path) == :absolute do
+      path
+    else
+      Path.join(working_directory_for(state, worktree_record), path)
     end
   end
 
