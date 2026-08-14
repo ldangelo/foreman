@@ -57,6 +57,15 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       assert {:ok, k2} = ImplementationContext.implementation_key("p-1", "docs/TRD/b.md")
       refute k1 == k2
     end
+
+    test "differs when only paths differ but basenames collide" do
+      # Same basename under different directory scopes must yield
+      # distinct implementation_keys: admission control single-flights
+      # by full normalized path, so basenames alone are not sufficient.
+      assert {:ok, k1} = ImplementationContext.implementation_key("p-1", "docs/TRD/x.md")
+      assert {:ok, k2} = ImplementationContext.implementation_key("p-1", "other/TRD/x.md")
+      refute k1 == k2
+    end
   end
 
   describe "build/1 project_id validation" do
