@@ -14,7 +14,11 @@ defmodule ForemanServer.Workflow.DispatcherTest do
   """
 
   use ExUnit.Case, async: false
-
+  alias EventStore.RecordedEvent
+  alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.CommandGateway
+  alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.BootReconciliation
   alias ForemanServer.Workflow.Dispatcher
 
@@ -111,6 +115,20 @@ defmodule ForemanServer.Workflow.DispatcherTest do
 
       assert_receive {:"$gen_cast", {:run_terminated, "run-x", "run_failed"}}, 500
     end
+
+    test "RunBlocked uses default reason 'run_blocked' (lease cleanup fan-out)" do
+      # RunLifecycleReconciler treats RunBlocked as terminal; the
+      # Dispatcher must fan out to BootReconciliation so the
+      # orphan-task scan runs and the Beads-DB lease is released.
+      # Without this clause the lease would leak forever after a
+      # blocked run.
+      send_envelope(%{
+        event_type: "RunBlocked",
+        data: %{run_id: "run-x"}
+      })
+
+      assert_receive {:"$gen_cast", {:run_terminated, "run-x", "run_blocked"}}, 500
+    end
   end
 
   describe "reason override and missing run_id" do
@@ -147,6 +165,64 @@ defmodule ForemanServer.Workflow.DispatcherTest do
     end
   end
 
+  describe "RunBlocked releases the per-DB Beads lease" do
+    test "RunBlocked dispatches lease.release for the run bound to a Beads workflow" do
+      run_id = "run-lease-#{System.unique_integer([:positive])}"
+      task_id = "task-lease-#{System.unique_integer([:positive])}"
+      db_path = "/private/tmp/cg-dispatcher-lease-#{System.unique_integer([:positive])}.db"
+      stream = BeadsDbLease.stream_id(db_path)
+      on_exit(fn ->
+        _ = Store.delete_stream(stream, :any_version, :hard)
+      end)
+
+      ms = System.system_time(:millisecond)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "lease.acquire",
+                 command_id: "test:lease-acquire:#{run_id}:#{ms}",
+                 aggregate_id: stream,
+                 payload: %{
+                   db_path: db_path,
+                   run_id: run_id,
+                   task_id: task_id,
+                   acquired_at_ms: ms
+                 }
+               })
+
+      assert_eventually(fn ->
+        {:ok, [%RecordedEvent{event_type: "BeadsDbLeaseAcquired"}]} =
+          Store.read_stream_forward(stream, 0, 1)
+
+        :ok
+      end)
+
+      seed_task_with_beads_db_path(task_id, run_id, db_path)
+
+      send_envelope(%{
+        event_type: "RunBlocked",
+        data: %{run_id: run_id, reason: "gate_timeout"}
+      })
+
+      assert_receive {:"$gen_cast", {:run_terminated, ^run_id, "gate_timeout"}}, 500
+
+      assert_eventually(fn ->
+        {:ok, events} = Store.read_stream_forward(stream, 0, 10)
+
+        case List.last(events) do
+          %RecordedEvent{
+            event_type: "BeadsDbLeaseReleased",
+            data: %{run_id: ^run_id, reason: "gate_timeout"}
+          } ->
+            :ok
+
+          other ->
+            {:still_waiting, other}
+        end
+      end)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
@@ -176,4 +252,69 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       _pid -> :ok
     end
   end
-end
+
+  # Drive TaskCreated + TaskApproved through ProjectionStore so the
+  # dispatcher's `db_path_for_run/1` (which calls `tasks_by_run_id/1`)
+  # finds a task whose `workflow_snapshot.implementation.beads_database_path`
+  defp seed_task_with_beads_db_path(task_id, run_id, db_path) do
+    task_created = %{
+      event_type: "TaskCreated",
+      payload: %{
+        task_id: task_id,
+        project_id: "project-lease-test",
+        title: "lease test task",
+        status: "open",
+        task_type: "implement-trd-beads"
+      }
+    }
+
+    task_approved = %{
+      event_type: "TaskApproved",
+      payload: %{
+        task_id: task_id,
+        approval_id: "approval-#{task_id}",
+        approved_by: "operator-test",
+        approved_at: DateTime.to_iso8601(DateTime.utc_now()),
+        run_id: run_id,
+        workflow_snapshot: %{
+          implementation: %{
+            beads_database_path: db_path
+          }
+        }
+      }
+    }
+
+    ProjectionStore.apply_events([task_created, task_approved])
+
+    seeded = ProjectionStore.task_projection(task_id)
+    assert seeded != nil
+    assert seeded.workflow_snapshot.implementation.beads_database_path == db_path
+    assert seeded.run_id == run_id
+  end
+
+  # Poll an assertion until it returns `:ok` or a 1s budget elapses.
+  # Returns the final value so a failure message can name the last seen state.
+  defp assert_eventually(fun, timeout_ms \\ 1_000) do
+    poll_until(fun, timeout_ms)
+  end
+
+  defp poll_until(fun, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_poll(fun, deadline)
+  end
+
+  defp do_poll(fun, deadline) do
+    case fun.() do
+      :ok ->
+        :ok
+
+      _other ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          flunk("assert_eventually timed out; last value: #{inspect(fun.())}")
+        else
+          Process.sleep(20)
+          do_poll(fun, deadline)
+        end
+    end
+  end
+ end

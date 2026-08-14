@@ -576,6 +576,7 @@ defmodule ForemanServer.CommandRouter do
   defp aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
   defp aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
   defp aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
+  defp aggregate_module_for("beads_db_lease:" <> _), do: ForemanServer.Aggregates.BeadsDbLease
   defp aggregate_module_for("vcs_operation:" <> _), do: ForemanServer.Aggregates.VcsOperation
   defp aggregate_module_for("vcs:" <> _), do: ForemanServer.Aggregates.VcsOperation
 

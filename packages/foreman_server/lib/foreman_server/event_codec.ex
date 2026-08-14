@@ -25,6 +25,11 @@ defmodule ForemanServer.EventCodec do
 
   alias ForemanServer.Events.{
     AssistantMessage,
+    BeadsDbLeaseAcquired,
+    BeadsDbLeaseReleased,
+    BeadsDbLeaseTransferred,
+    BeadsDbLeaseWaiterRegistered,
+    BeadsDbLeaseWaiterRemoved,
     PhaseCompleted,
     PhaseFailed,
     PhaseStarted,
@@ -62,6 +67,11 @@ defmodule ForemanServer.EventCodec do
   }
 
   @registry %{
+    "BeadsDbLeaseAcquired" => BeadsDbLeaseAcquired,
+    "BeadsDbLeaseReleased" => BeadsDbLeaseReleased,
+    "BeadsDbLeaseWaiterRegistered" => BeadsDbLeaseWaiterRegistered,
+    "BeadsDbLeaseWaiterRemoved" => BeadsDbLeaseWaiterRemoved,
+    "BeadsDbLeaseTransferred" => BeadsDbLeaseTransferred,
     "WorkerStarted" => WorkerStarted,
     "WorkerHeartbeat" => WorkerHeartbeat,
     "WorkerUnresponsive" => WorkerUnresponsive,
@@ -102,8 +112,21 @@ defmodule ForemanServer.EventCodec do
   # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
   # is compile-time only, so the enforced fields are registered here for
   # runtime validation. Update both `@registry` and `@enforce_keys_registry`
-  # when adding a new typed event.
   @enforce_keys_registry %{
+    BeadsDbLeaseAcquired => [:db_path, :run_id, :task_id, :acquired_at_ms],
+    BeadsDbLeaseReleased => [:db_path, :run_id, :released_at_ms, :reason],
+    BeadsDbLeaseTransferred => [
+      :db_path,
+      :released_run_id,
+      :released_at_ms,
+      :reason,
+      :acquired_run_id,
+      :acquired_task_id,
+      :acquired_at_ms,
+      :enqueued_at_ms
+    ],
+    BeadsDbLeaseWaiterRegistered => [:db_path, :run_id, :task_id, :enqueued_at_ms],
+    BeadsDbLeaseWaiterRemoved => [:db_path, :run_id, :removed_at_ms, :reason],
     WorkerStarted => [:worker_id, :run_id, :session_id, :adapter, :prompt_path],
     WorkerHeartbeat => [:worker_id, :run_id],
     WorkerUnresponsive => [:worker_id, :run_id],
