@@ -338,7 +338,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
 
       assert {:error, %ProviderError{} = err} = BeadsAdapter.create("proj-missing", attrs)
 
-      assert err.code == :CREATE_FAILED
+      assert err.code == "CREATE_FAILED"
       assert err.retryable? == false
       assert err.context.project_id == "proj-missing"
       assert err.context.reason == :task_provider_not_configured
@@ -352,7 +352,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
 
       assert {:error, %ProviderError{} = err} = BeadsAdapter.create("proj-down", attrs)
 
-      assert err.code == :CREATE_FAILED
+      assert err.code == "CREATE_FAILED"
       assert err.retryable? == false
       assert err.context.reason == :provider_unavailable_for_project
     end
@@ -369,7 +369,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
 
       assert {:error, %ProviderError{} = err} = BeadsAdapter.create("proj-no-dbpath", attrs)
 
-      assert err.code == :CREATE_FAILED
+      assert err.code == "CREATE_FAILED"
       assert err.retryable? == false
       assert err.context.reason == :missing_database_path
     end

@@ -93,7 +93,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       emit_create_ok(project_id, attrs, issue)
       {:ok, issue}
     else
-      {:error, %ProviderError{} = provider_error} = error ->
+      {:error, provider_error} = error ->
         emit_create_error(project_id, attrs, provider_error)
         error
     end
@@ -125,265 +125,6 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
        nil,
        0
      )}
-  end
-
-  @doc """
-  Creates a new task in the upstream provider.
-
-  The `attrs` map must contain seven required keys:
-  - `task_id :: String.t()` — correlation handle from `cmd.payload.task_id`
-  - `command_id :: String.t()` — correlation handle from the dispatching `cmd.command_id`
-  - `title :: String.t()` — issue title
-  - `description :: String.t() | nil` — issue description
-  - `priority :: non_neg_integer()` — priority level (0..P4)
-  - `task_type :: String.t()` — closed enum of issue types (task, bug, feature, epic, chore, docs, question)
-  - `dedupe_key :: String.t() | nil` — optional deduplication key
-
-  Returns `{:ok, %TaskProvider.Issue{}}` on success or `{:error, %ProviderError{}}` on failure.
-  """
-  @spec create(String.t(), map()) :: {:ok, Issue.t()} | {:error, ProviderError.t()}
-  def create(project_id, attrs) when is_binary(project_id) and is_map(attrs) do
-    case ForemanServer.TaskProvider.Registry.project_config(project_id) do
-      {:ok, %{config: %{database_path: db_path}}} ->
-        project_config = %{database_path: db_path}
-        create_with_config(attrs, project_config)
-
-      {:error, reason} ->
-        {:error,
-         %ProviderError{
-           code: "CREATE_FAILED",
-           message: "registry config unresolved",
-           hint: "Failed to resolve project config for #{project_id}",
-           retryable?: false,
-           context: %{project_id: project_id, reason: reason}
-         }}
-    end
-  end
-
-  defp create_with_config(attrs, project_config) do
-    with {:ok, attrs} <- validate_attrs(attrs) do
-      payload = build_create_payload(attrs)
-      opts = [timeout_ms: 30_000]
-
-      case @runner.cmd({:create, payload}, project_config, opts) do
-        {:ok, %{stdout: stdout}} ->
-          parse_create_response(stdout, attrs)
-
-        {:error, %{stdout: stdout, stderr: stderr} = _result} ->
-          {:error, build_create_error(stdout, stderr)}
-      end
-    end
-  end
-
-  defp validate_attrs(attrs) do
-    with {:ok, _} <- validate_title(attrs),
-         {:ok, _} <- validate_priority(attrs),
-         {:ok, _} <- validate_task_type(attrs),
-         {:ok, _} <- validate_correlation_handles(attrs) do
-      {:ok, attrs}
-    end
-  end
-
-  defp validate_title(attrs) do
-    title = Map.get(attrs, :title) || Map.get(attrs, "title")
-
-    if is_binary(title) and title != "" and String.trim(title) != "" do
-      {:ok, attrs}
-    else
-      {:error, error_invalid_title()}
-    end
-  end
-
-  defp validate_priority(attrs) do
-    priority = Map.get(attrs, :priority) || Map.get(attrs, "priority")
-
-    if is_integer(priority) and priority in 0..4 do
-      {:ok, attrs}
-    else
-      {:error, error_invalid_priority()}
-    end
-  end
-
-  defp validate_task_type(attrs) do
-    task_type = Map.get(attrs, :task_type) || Map.get(attrs, "task_type")
-
-    normalized_type =
-      if is_binary(task_type), do: String.to_existing_atom(task_type), else: task_type
-
-    if normalized_type in @valid_task_types do
-      {:ok, attrs}
-    else
-      {:error, error_invalid_issue_type()}
-    end
-  rescue
-    ArgumentError -> {:error, error_invalid_issue_type()}
-  end
-
-  defp validate_correlation_handles(attrs) do
-    task_id = Map.get(attrs, :task_id) || Map.get(attrs, "task_id")
-    command_id = Map.get(attrs, :command_id) || Map.get(attrs, "command_id")
-
-    if is_binary(task_id) and task_id != "" and is_binary(command_id) and command_id != "" do
-      {:ok, attrs}
-    else
-      missing = []
-      missing = if !is_binary(task_id) or task_id == "", do: [:task_id | missing], else: missing
-
-      missing =
-        if !is_binary(command_id) or command_id == "", do: [:command_id | missing], else: missing
-
-      {:error, error_missing_correlation(missing)}
-    end
-  end
-
-  defp error_invalid_title do
-    %ProviderError{
-      code: "INVALID_TITLE",
-      message: "title is required and cannot be empty",
-      hint: "Provide a non-empty title",
-      retryable?: false,
-      context: %{}
-    }
-  end
-
-  defp error_invalid_priority do
-    %ProviderError{
-      code: "INVALID_PRIORITY",
-      message: "priority must be an integer between 0 and 4",
-      hint: "Priority must be 0 (P0), 1 (P1), 2 (P2), 3 (P3), or 4 (P4)",
-      retryable?: false,
-      context: %{}
-    }
-  end
-
-  defp error_invalid_issue_type do
-    %ProviderError{
-      code: "INVALID_ISSUE_TYPE",
-      message: "task_type must be one of: task, bug, feature, epic, chore, docs, question",
-      hint: "Invalid issue type",
-      retryable?: false,
-      context: %{}
-    }
-  end
-
-  defp error_missing_correlation(missing) do
-    %ProviderError{
-      code: "INVALID_TITLE",
-      message:
-        "task_id and command_id are required for bead linkage, missing: #{inspect(missing)}",
-      hint: "Correlation handles are required",
-      retryable?: false,
-      context: %{missing_correlation_handles: missing}
-    }
-  end
-
-  defp build_create_payload(attrs) do
-    title = Map.get(attrs, :title) || Map.get(attrs, "title")
-    description = Map.get(attrs, :description) || Map.get(attrs, "description") || ""
-    priority = Map.get(attrs, :priority) || Map.get(attrs, "priority")
-    task_type = Map.get(attrs, :task_type) || Map.get(attrs, "task_type")
-    task_id = Map.get(attrs, :task_id) || Map.get(attrs, "task_id")
-    command_id = Map.get(attrs, :command_id) || Map.get(attrs, "command_id")
-    dedupe_key = Map.get(attrs, :dedupe_key) || Map.get(attrs, "dedupe_key")
-
-    agent_context = %{
-      foreman: %{
-        task_id: task_id,
-        command_id: command_id,
-        origin: "foreman",
-        linked_at: DateTime.utc_now() |> DateTime.to_iso8601()
-      }
-    }
-
-    agent_context_json = Jason.encode!(agent_context)
-
-    payload = %{
-      title: title,
-      type: task_type,
-      priority: priority,
-      description: description,
-      agent_context: agent_context_json
-    }
-
-    # Add dedupe_key if present
-    if is_binary(dedupe_key) and dedupe_key != "" do
-      Map.put(payload, :dedupe_key, dedupe_key)
-    else
-      payload
-    end
-  end
-
-  defp parse_create_response(stdout, attrs) when is_map(attrs) do
-    case Jason.decode(stdout) do
-      {:ok, %{"id" => id, "title" => title} = response} ->
-        status = Map.get(response, "status", "open")
-
-        priority =
-          Map.get(
-            response,
-            "priority",
-            Map.get(attrs, :priority) || Map.get(attrs, "priority", 2)
-          )
-
-        description = Map.get(response, "description")
-        issue_type = Map.get(response, "issue_type")
-        source_repo = Map.get(response, "source_repo")
-
-        {:ok,
-         %Issue{
-           id: id,
-           title: title,
-           status: status,
-           priority: priority,
-           description: description,
-           dependencies: [],
-           dependents: [],
-           assignee: nil,
-           notes: nil,
-           design: nil,
-           labels: [],
-           metadata: %{issue_type: issue_type, source_repo: source_repo}
-         }}
-
-      {:ok, %{"error" => error_map}} ->
-        {:error, build_create_error_from_br(error_map)}
-
-      {:error, _} ->
-        input = %ProviderErrorInput{
-          code: "CREATE_FAILED",
-          message: "failed to parse br create response",
-          hint: "Invalid JSON response from br create",
-          retryable?: false,
-          source: :local,
-          missing_fields: []
-        }
-
-        CodeMap.build_provider_error(input, "br create", 0)
-    end
-  end
-
-  defp build_create_error(stdout, stderr) do
-    case Jason.decode(stdout) do
-      {:ok, %{"error" => error_map}} ->
-        build_create_error_from_br(error_map)
-
-      _ ->
-        input = %ProviderErrorInput{
-          code: "ERROR",
-          message: "br create failed",
-          hint: stderr,
-          retryable?: true,
-          source: :br_envelope,
-          missing_fields: []
-        }
-
-        CodeMap.build_provider_error(input, "br create", byte_size(stderr))
-    end
-  end
-
-  defp build_create_error_from_br(error_map) when is_map(error_map) do
-    input = ProviderErrorInput.from_br_envelope(error_map)
-    CodeMap.build_provider_error(input, "br create", 0)
   end
 
   @doc """
@@ -2887,26 +2628,26 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
             {:ok, %{database_path: db_path}}
 
           :error ->
-            {:error,
-             %ProviderError{
-               code: :CREATE_FAILED,
-               message: "registry config unresolved",
-               hint: nil,
-               retryable?: false,
-               context: %{project_id: project_id, reason: :missing_database_path}
-             }}
+            {:error, registry_config_error(project_id, :missing_database_path)}
         end
 
       {:error, reason} ->
-        {:error,
-         %ProviderError{
-           code: :CREATE_FAILED,
-           message: "registry config unresolved",
-           hint: nil,
-           retryable?: false,
-           context: %{project_id: project_id, reason: reason}
-         }}
+        {:error, registry_config_error(project_id, reason)}
     end
+  end
+
+  defp registry_config_error(project_id, reason) do
+    input =
+      ProviderErrorInput.from_local(
+        "CREATE_FAILED",
+        "registry config unresolved",
+        "Failed to resolve project config for #{project_id}",
+        false
+      )
+
+    base = CodeMap.build_create_provider_error(input, nil, 0)
+    enriched = base.context |> Map.put(:project_id, project_id) |> Map.put(:reason, reason)
+    %{base | context: enriched}
   end
 
   # Accept both atom and string key shapes for the registry's `config` map.
@@ -2925,6 +2666,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   defp build_create_payload(attrs) do
     description = Map.get(attrs, :description) || ""
     task_type = Map.get(attrs, :task_type)
+    dedupe_key = Map.get(attrs, :dedupe_key)
 
     agent_context =
       Jason.encode!(%{
@@ -2936,7 +2678,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         }
       })
 
-    payload =
+    base_payload =
       Map.merge(
         %{description: description, agent_context: agent_context},
         %{
@@ -2946,7 +2688,11 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         }
       )
 
-    {:ok, payload}
+    if is_binary(dedupe_key) and dedupe_key != "" do
+      Map.put(base_payload, :dedupe_key, dedupe_key)
+    else
+      base_payload
+    end
   end
 
   defp run_create(project_id, project_config, payload) do
