@@ -442,22 +442,48 @@ defmodule ForemanServer.Workflow.RunExecutor do
     defp render(output), do: inspect(output)
 
     defp resolve_path(state, phase_spec, index) do
-      template = phase_template(phase_spec)
+      case phase_template(phase_spec) do
+        nil ->
+          default_path(state, index)
 
-      case template[:path] || template["path"] do
-        nil -> default_path(state, index)
-        "" -> default_path(state, index)
-        path when is_binary(path) -> expand(path, state)
+        "" ->
+          default_path(state, index)
+
+        path when is_binary(path) ->
+          expand(path, state)
+
+        template when is_map(template) ->
+          case template[:path] || template["path"] do
+            nil -> default_path(state, index)
+            "" -> default_path(state, index)
+            path when is_binary(path) -> expand(path, state)
+          end
       end
     end
 
     defp phase_template(phase_spec) do
-      Map.get(phase_spec, :artifact_template) || Map.get(phase_spec, "artifact_template") || %{}
+      Map.get(phase_spec, :artifact_template) || Map.get(phase_spec, "artifact_template")
     end
 
     defp expand(path, state) do
       String.replace(path, "{run_id}", state.run_id)
       |> String.replace("{task_id}", task_id_of(state))
+      |> String.replace("{run.id}", state.run_id)
+      |> String.replace("{task.id}", task_id_of(state))
+      |> String.replace("{task.projectReportsDir}", project_reports_dir(state))
+      |> String.replace("{reportDir}", project_reports_dir(state))
+    end
+
+    defp project_reports_dir(state) do
+      Path.join([working_directory_of(state), "docs", "reports", "foreman-#{task_id_of(state)}"])
+    end
+
+    defp working_directory_of(state) do
+      case Map.get(state.task, :working_directory) || Map.get(state.task, "working_directory") ||
+             Map.get(state.task, :source_repo_path) || Map.get(state.task, "source_repo_path") do
+        dir when is_binary(dir) and dir != "" -> dir
+        _ -> File.cwd!()
+      end
     end
 
     defp default_path(state, index) do
@@ -589,28 +615,98 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp build_request(state, phase_spec, index, worktree_record) do
+    context = base_context(state, phase_spec, index, worktree_record)
+
     %{
-      context: base_context(state, phase_spec, index, worktree_record),
-      prompt: read_phase_prompt(state, phase_spec)
+      context: context,
+      prompt: read_phase_prompt(state, phase_spec, index, context)
     }
   end
 
-  defp read_phase_prompt(_state, phase_spec) do
-    case Map.get(phase_spec, :prompt_path) || Map.get(phase_spec, "prompt_path") do
-      nil ->
-        "Run phase #{phase_spec_name(phase_spec)}"
+  defp read_phase_prompt(state, phase_spec, index, context) do
+    content =
+      case Map.get(phase_spec, :prompt_path) || Map.get(phase_spec, "prompt_path") do
+        nil ->
+          "Run phase #{phase_spec_name(phase_spec)}"
 
-      "" ->
-        "Run phase #{phase_spec_name(phase_spec)}"
+        "" ->
+          "Run phase #{phase_spec_name(phase_spec)}"
 
-      path when is_binary(path) ->
-        case Catalog.read_prompt(path) do
-          {:ok, content} ->
-            content
+        path when is_binary(path) ->
+          case Catalog.read_prompt(path) do
+            {:ok, content} ->
+              content
 
-          {:error, :prompt_not_tracked} ->
-            raise "RunExecutor: prompt file #{path} is not tracked by the workflow catalog"
-        end
+            {:error, :prompt_not_tracked} ->
+              raise "RunExecutor: prompt file #{path} is not tracked by the workflow catalog"
+          end
+      end
+
+    render_prompt_template(content, state, phase_spec, index, context)
+  end
+
+  defp render_prompt_template(content, state, phase_spec, index, context) do
+    assigns = prompt_template_assigns(state, phase_spec, index, context)
+
+    Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, content, fn _match, key ->
+      Map.get(assigns, key, "{{#{key}}}")
+    end)
+  end
+
+  defp prompt_template_assigns(state, phase_spec, index, context) do
+    phase_index = prompt_phase_index(phase_spec, index)
+    artifact_path = __MODULE__.ArtifactTemplate.path(state, phase_spec, phase_index)
+
+    workflow_snapshot =
+      Map.get(state.task, :workflow_snapshot) || Map.get(state.task, "workflow_snapshot") || %{}
+
+    base =
+      context
+      |> Enum.map(fn {key, value} -> {to_string(key), render_template_value(value)} end)
+      |> Map.new()
+
+    Map.merge(base, %{
+      "artifact_path" => artifact_path,
+      "phase_index" => Integer.to_string(phase_index),
+      "phase_name" => phase_spec_name(phase_spec),
+      "project_id" => project_id(state),
+      "run_id" => state.run_id,
+      "task_id" => task_id(state),
+      "workflow_digest" =>
+        render_template_value(
+          Map.get(workflow_snapshot, :workflow_digest) ||
+            Map.get(workflow_snapshot, "workflow_digest") ||
+            Map.get(state.task, :workflow_digest) || Map.get(state.task, "workflow_digest")
+        ),
+      "workflow_name" =>
+        render_template_value(
+          Map.get(workflow_snapshot, :workflow_name) ||
+            Map.get(workflow_snapshot, "workflow_name") ||
+            Map.get(state.task, :workflow_name) || Map.get(state.task, "workflow_name") ||
+            Map.get(state.task, :workflow_type) || Map.get(state.task, "workflow_type")
+        )
+    })
+  end
+
+  defp prompt_phase_index(phase_spec, index) when is_integer(index) and index >= 1 do
+    case phase_value(phase_spec, :index) do
+      value when is_integer(value) and value >= 1 -> value
+      _ -> index
+    end
+  end
+
+  defp prompt_phase_index(phase_spec, index), do: phase_number(phase_spec, index)
+
+  defp render_template_value(nil), do: ""
+  defp render_template_value(value) when is_binary(value), do: value
+  defp render_template_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp render_template_value(value) when is_float(value), do: Float.to_string(value)
+  defp render_template_value(value) when is_boolean(value), do: to_string(value)
+
+  defp render_template_value(value) do
+    case Jason.encode(value) do
+      {:ok, encoded} -> encoded
+      {:error, _} -> inspect(value)
     end
   end
 

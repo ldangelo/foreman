@@ -2143,6 +2143,52 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert length(state.phase_specs) == 1
     end
 
+    test "prompt phases render workflow placeholders before adapter execution", %{
+      temp_dir: temp_dir
+    } do
+      script_key = unique_id("template-script")
+
+      LifecycleStore.put(script_key, %{
+        test_pid: self(),
+        adapter_results: [{:ok, "ok", %{}}]
+      })
+
+      projection = %{
+        task_id: "task-template",
+        project_id: "project-template",
+        working_directory: temp_dir,
+        workflow_type: "implement",
+        workflow_snapshot: %{
+          "workflow_name" => "implement",
+          "workflow_digest" => "digest-template",
+          "phases" => [
+            %{
+              "name" => "code-generation",
+              "prompt_path" => "/ignored/implement.md",
+              "artifact_template" => "{task.projectReportsDir}/IMPLEMENT_REPORT.md",
+              "context" => %{"script_key" => script_key}
+            }
+          ]
+        }
+      }
+
+      {:ok, state} = RunExecutor.init({"run-template", projection})
+      {:noreply, _next_state} = RunExecutor.handle_info(:kickoff, state)
+
+      expected_artifact =
+        Path.join([temp_dir, "docs", "reports", "foreman-task-template", "IMPLEMENT_REPORT.md"])
+
+      assert_receive {:adapter_execute, prompt, _context}, 1_000
+      assert prompt =~ "# implement :: code-generation"
+      assert prompt =~ "Phase index: 1"
+      assert prompt =~ "Task ID: task-template"
+      assert prompt =~ "Run ID: run-template"
+      assert prompt =~ "Project: `project-template`"
+      assert prompt =~ "Workflow: `implement` (`digest-template`)"
+      assert prompt =~ expected_artifact
+      refute prompt =~ "{{"
+    end
+
     test "string-keyed :command phase advances past validate_phase_action and runs the configured command" do
       # Mirror the persisted shape after a JSON round-trip through
       # EventStore: the `TaskApproved` event payload is JSON-encoded,
