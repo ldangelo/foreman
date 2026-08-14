@@ -309,8 +309,160 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert failure_reason =~ "planning.prd_path"
   end
 
-  ### Setup helpers
+  test "command: phase forwarded for feature task when requiredFile resolves through flat implementation context" do
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
 
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    trd_path = Path.join(System.tmp_dir!(), unique_id("trd") <> ".md")
+    File.write!(trd_path, "# stub TRD for gate test")
+
+    on_exit(fn -> File.rm_rf(trd_path) end)
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      implementation: %{
+        project_root: System.tmp_dir!(),
+        source_revision: "test-#{task_id}",
+        implementation_key: "test-key-#{task_id}",
+        trd_path: trd_path,
+        beads_database_path: database_path
+      },
+      phases: [
+        %{
+          name: :implement_trd_beads,
+          action: :command,
+          command: "/skill:ensemble-full-implement-trd-beads --foreman \"#{trd_path}\"",
+          required_file: "trd_path",
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-implement.md"])
+          },
+          context: %{"script_key" => script_key}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}},
+                                     runner_project_config,
+                                     [timeout_ms: 30_000] ->
+      send(test_pid, {:runner_cmd, :claim})
+
+      assert (Map.get(runner_project_config, :database_path) ||
+                Map.get(runner_project_config, "database_path")) == database_path
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!([
+             %{
+               "id" => task_id,
+               "title" => "Feature #{task_id}",
+               "status" => "in_progress",
+               "priority" => 2,
+               "dependencies" => [],
+               "assignee" => "foreman-runner",
+               "description" => "Feature task description",
+               "notes" => nil,
+               "design" => nil,
+               "labels" => ["workflow", "in_progress"],
+               "metadata" => %{"provider_id" => "beads", "source" => "br update"}
+             }
+           ]),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: ^task_id}},
+                                     runner_project_config,
+                                     [timeout_ms: 30_000] ->
+      send(test_pid, {:runner_cmd, :close})
+
+      assert (Map.get(runner_project_config, :database_path) ||
+                Map.get(runner_project_config, "database_path")) == database_path
+
+      {:ok,
+       %{
+         stdout:
+           Jason.encode!([
+             %{
+               "id" => task_id,
+               "title" => "Feature #{task_id}",
+               "status" => "closed",
+               "priority" => 1,
+               "dependencies" => [],
+               "assignee" => nil,
+               "description" => nil,
+               "notes" => nil,
+               "design" => nil,
+               "labels" => [],
+               "metadata" => %{}
+             }
+           ]),
+         stderr: "",
+         exit_code: 0
+       }}
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :transient,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+
+    assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
+    assert is_binary(prompt)
+    assert String.starts_with?(prompt, "/skill:ensemble-full-implement-trd-beads")
+
+    assert context["trd_path"] == trd_path
+
+    phase_id = Identity.phase_id(run_id, 1)
+
+    {:ok, completed_phase} =
+      poll_until(
+        fn ->
+          case ProjectionStore.phase_projection(phase_id) do
+            %{status: "completed"} = phase -> {:ok, phase}
+            other -> {:error, other}
+          end
+        end,
+        "phase completed"
+      )
+
+    assert completed_phase.status == "completed"
+  end
+
+  ### Setup helpers
   defp start_schema_cache! do
     case Process.whereis(@cache_name) do
       nil -> start_supervised!({JsonSchemaCache, name: @cache_name})
@@ -423,6 +575,66 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       external_id: task_id,
       title: "Plan #{task_id}",
       description: "Plan task description for #{task_id}"
+    })
+
+    dispatch_system!("task.approve", "task:#{task_id}", %{
+      task_id: task_id,
+      approval_id: approval_id,
+      approved_by: "run-executor-command-test",
+      approved_at: "2026-08-08T00:00:00Z",
+      run_id: run_id,
+      workflow_snapshot: workflow_snapshot
+    })
+
+    dispatch_system!("task.dispatch", "task:#{task_id}", %{task_id: task_id})
+
+    assert {:ok, _} =
+             RunAdmission.start(project_id, %{
+               run_id: run_id,
+               task_id: task_id,
+               project_id: project_id,
+               approval_id: approval_id,
+               workflow_snapshot: workflow_snapshot,
+               phase_specs: Map.get(workflow_snapshot, :phases, [])
+             })
+  end
+
+  defp seed_feature_project_task_and_run!(
+         project_id,
+         task_id,
+         run_id,
+         workflow_snapshot,
+         database_path
+       ) do
+    dispatch_system!("project.register", "project:#{project_id}", %{
+      project_id: project_id,
+      name: "Feature #{project_id}",
+      path: System.tmp_dir!(),
+      task_provider: %{
+        "provider" => "beads",
+        "config" => %{"database_path" => database_path}
+      }
+    })
+
+    :ok =
+      TaskProviderRegistry.register_for_project(project_id, BeadsAdapter, %{
+        "database_path" => database_path
+      })
+
+    approval_id = unique_id("approval")
+
+    impl_key =
+      Map.get(workflow_snapshot, :implementation, %{})
+      |> Map.get(:implementation_key, "feature-key-#{task_id}")
+
+    dispatch_system!("task.create", "task:#{task_id}", %{
+      task_id: task_id,
+      project_id: project_id,
+      task_type: "feature",
+      external_id: task_id,
+      title: "Feature #{task_id}",
+      description: "Feature task description for #{task_id}",
+      implementation_key: impl_key
     })
 
     dispatch_system!("task.approve", "task:#{task_id}", %{

@@ -3,7 +3,7 @@ description: Implement a Technical Requirements Document via the Beads-backed en
 phases:
   - name: implement-trd-beads
     command: "/skill:ensemble-full-implement-trd-beads --foreman {trd_path_argument}"
-    requiredFile: planning.trd_path
+    requiredFile: trd_path
     worktree:
       enabled: true
       base: "{source_revision}"

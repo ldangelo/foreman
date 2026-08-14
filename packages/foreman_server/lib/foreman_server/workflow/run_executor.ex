@@ -1384,10 +1384,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # the snapshot.
   defp merge_implementation_context(base, task_projection) do
     case implementation_payload_from_snapshot(task_projection) do
-      nil -> {:ok, base}
-      payload when is_map(payload) -> {:ok, Map.merge(base, payload)}
-      _ -> {:ok, base}
+      nil ->
+        {:ok, base}
+
+      payload when is_map(payload) ->
+        {:ok, Map.merge(base, stringify_keys(payload))}
+
+      _ ->
+        {:ok, base}
     end
+  end
+
+  # `enforce_required_file` and downstream phase adapters look up flat
+  # `requiredFile: trd_path`-style keys as strings. The frozen
+  # implementation payload carried in `workflow_snapshot["implementation"]`
+  # arrives with atom keys; normalize to strings at the merge boundary so
+  # flat-context gates resolve atomically without forcing every caller
+  # to dual-key Map.get. Existing plan-task keys (`planning.prd_path` etc.)
+  # already arrive as strings from `PlanContext.build`, so this only
+  defp stringify_keys(payload) when is_map(payload) do
+    Map.new(payload, fn {k, v} -> {to_string(k), v} end)
   end
 
   defp implementation_payload_from_snapshot(task_projection) do

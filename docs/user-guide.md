@@ -657,10 +657,28 @@ Both manifests are bundled under
 upgrade.
 
 ### Manifest shape
-
-Both manifests declare a single phase that owns its own worktree:
+Both manifests declare a single phase that owns its own worktree.
+The Beads-backed variant reads the flat `trd_path` key resolved
+from the task's `implementation` block; the planning-context
+variant reads the nested `planning.trd_path` key written by the
+upstream plan phase:
 
 ```yaml
+# Beads-backed: implementation context exposes trd_path flat.
+name: implement-trd-beads
+description: Implement a Technical Requirements Document via the Beads-backed ensemble implement-trd-beads skill under Foreman-managed execution.
+phases:
+  - name: implement-trd-beads
+    command: "/skill:ensemble-full-implement-trd-beads --foreman {trd_path_argument}"
+    requiredFile: trd_path
+    worktree:
+      enabled: true
+      base: "{source_revision}"
+      branch: foreman/{run_id}/{phase}
+      path: implement-trd-beads
+      cleanup: always
+---
+# Planning-context: planning.trd_path written by the plan phase.
 name: implement-trd
 description: Implement a Technical Requirements Document via the ensemble implement-trd skill under Foreman-managed execution.
 phases:
@@ -678,10 +696,11 @@ phases:
 - `command:` — non-empty slash command. The `{trd_path_argument}`
   placeholder is substituted at approval time with the JSON-quoted
   path to the TRD so the skill receives a shell-safe argument.
-- `requiredFile:` (singular) — dotted scalar in the planning context
-  (`planning.trd_path`). The phase gate fails with
+- `requiredFile:` (singular) — dotted scalar resolved against the
+  phase context. The phase gate fails with
   `:required_file_missing` if the resolved path does not exist on
   disk when the phase starts.
+
 - `worktree:` — declares a per-phase worktree owned by Foreman.
   - `enabled: true` activates the worktree lifecycle.
   - `base: "{source_revision}"` is substituted at approval time with
@@ -733,12 +752,36 @@ phase.
 
 ## 16. Cancelling a stuck run
 
-
 Runs that have lost their worker, are wedged in a phase retry loop, or
 are otherwise uninteresting can be terminated by an operator via the
 `run.cancel` command. This is the only sanctioned way to mark a run
 `terminal: true` with status `cancelled` — the worker protocol has no
 equivalent on the operator surface.
+
+### When the system leaves a run alone despite an old projection
+
+Stuck detection reads each active run's `last_event_at_ms` against
+an idle threshold (default 15 minutes). A run whose projection has
+been quiet longer than that threshold is *not* automatically flagged
+when there is live evidence that a phase is still in flight under a
+known upper bound. The bound comes from the failure policy resolved
+at dispatch: per-call opts, then the per-task-type override under
+`:foreman_server, :agent_runtime, :failure_policies`, then
+`default_timeout_ms` (default 60 s, raised in `config/dev.exs` to
+30 min and to 60 min for `"implement-trd-beads"`). When that
+resolved timeout has not yet elapsed, an execution that has not
+reported a run-level event recently is treated as in-flight rather
+than stuck. A wedged phase whose original executor was respawned —
+so the supervisor's replacement has a different process identity
+than the one that originally recorded the in-flight bound — is *not*
+exempted by the stale entry: stuck detection takes over regardless,
+so a dead predecessor cannot hide a wedged successor.
+
+To distinguish a slow phase from a stuck one, read the run's
+`last_event_at_ms` and the phase's resolved timeout: while the gap
+is smaller than the policy's `timeout_ms`, the run sits in the
+in-flight exemption window and will not be flagged; once the gap
+exceeds the timeout, the run will be flagged on the next scan.
 
 ### CLI
 
