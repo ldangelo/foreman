@@ -369,7 +369,14 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
   transient errors would break retry semantics.
 - **Scope**: different DBs and direct (`foreman run`) workflows remain parallel.
   The lease keys only on the DB path, never on the run_id.
-
+- **Scope limitation (important)**: the lease governs only admission through
+  Foreman. External `br` writers and `bv --robot-plan` invocations launched
+  outside Foreman are NOT protected — they must observe single-writer
+  discipline themselves. `br_bv_lease_concurrency_test.exs` verifies the
+  admission contract; upstream concurrency (e.g. an operator running `br`
+  directly while Foreman holds) is the operator's responsibility. The lease
+  exists to prevent two Foreman-dispatched runs from racing on the same DB,
+  not to mediate file-system access against unrelated processes.
 ### Go CLI Boundaries (Slice)
 
 The Go CLI never writes to:
