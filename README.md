@@ -94,6 +94,16 @@ register separate lease streams.
   decision returns `{:error, ...}` and skips dispatch; a `:queued`
   decision returns without starting the supervisor and the dispatcher
   picks the run up again on `BeadsDbLeaseTransferred`.
+- **Scope limitation — operator responsibility outside Foreman.** The
+  lease serializes only admission through Foreman. External `br`
+  writers and `bv --robot-plan` invocations launched outside Foreman
+  (e.g. from a human shell or an unrelated automation) are NOT gated
+  by this lease — if you bypass Foreman and write to the same Beads DB
+  concurrently with a held lease, SQLite's single-writer model will
+  still see concurrent writers. Operators must observe single-writer
+  discipline themselves; this lease exists to prevent two
+  Foreman-dispatched runs from racing on the same DB, not to mediate
+  file-system access against unrelated processes.
 
 See [`CLAUDE.md`](./CLAUDE.md) §15 for the architectural invariants.
 

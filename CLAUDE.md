@@ -458,3 +458,16 @@ register separate lease streams.
   for definitively non-retryable rejections (`{:missing_or_invalid, …}`,
   `{:implementation_already_active, …}`, `{:command_rejected, …}`).
   Compensating transient errors would break retry semantics.
+- **Scope limitation (operator responsibility).** The lease serializes
+  only admission through Foreman. External `br` writers and
+  `bv --robot-plan` invocations launched outside Foreman (e.g. from a
+  human shell or unrelated automation) are NOT gated by this lease.
+  If you bypass Foreman and write to the same Beads DB concurrently
+  with a held lease, SQLite's single-writer model will still observe
+  concurrent writers. Operators must observe single-writer discipline
+  themselves. The lease exists to prevent two Foreman-dispatched runs
+  from racing on the same DB, not to mediate file-system access against
+  unrelated processes. The contract test
+  `test/foreman_server/workflow/br_bv_lease_concurrency_test.exs`
+  verifies the admission contract; cross-process discipline against
+  external writers is a separate, operator-owned concern.

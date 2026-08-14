@@ -846,6 +846,20 @@ additional reserved fields at approval:
   scope before extracting `TRD-NNN` IDs, so two paths with the same
   filename or repeated task IDs cannot claim each other's beads.
 
+**Scope limitation — what the lease does NOT cover.** The
+`BeadsDbLease` aggregate (`lib/foreman_server/aggregates/beads_db_lease.ex`)
+serializes admission through Foreman only: a second `foreman run` for
+the same DB returns `:queued` instead of dispatching. It does **not**
+gate raw `br` or `bv --robot-plan` invocations launched from a shell
+or unrelated automation while a lease is held. If you bypass Foreman
+and write to the same Beads DB concurrently with a held lease, SQLite's
+single-writer model still sees concurrent writers. Operators must
+observe single-writer discipline themselves — the lease exists to
+prevent two Foreman-dispatched runs from racing on the same DB, not
+to mediate file-system access against unrelated processes. See
+`test/foreman_server/workflow/br_bv_lease_concurrency_test.exs` for
+the admission contract that *is* covered.
+
 ### Clean-vs-dirty cleanup
 
 `cleanup: always` runs on every terminal phase. A clean worktree is
