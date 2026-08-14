@@ -118,7 +118,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
 
       assert create_trd["name"] == "create-trd"
       assert create_trd.action == :command
-      assert create_trd.command == "/skill:ensemble-full-create-trd --foreman"
+      assert create_trd.command == "/skill:ensemble-full-create-trd-foreman --foreman"
       assert create_trd.required_file == "planning.trd_path"
       assert create_trd.prompt_path in [nil, ""]
     end
