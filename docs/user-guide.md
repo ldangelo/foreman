@@ -797,12 +797,13 @@ normalized_trd_path)` at approval and reserves it through
 second `run.start` for the same normalized project/TRD is rejected
 with `{:implementation_already_active, implementation_key,
 existing_run_id}` before any worktree side effect. Distinct keys
-remain eligible up to the configured project run limit. The
-reservation is released through the same terminal/rejection paths
-that release the existing `run_id` reservation, so a retry can
-re-implement the same TRD after the prior run reaches a truthful
-terminal state. The implementation key is server-derived and cannot
-be overridden by operator payload or phase YAML context.
+remain eligible up to the configured project run limit (100 active
+reservations per project — see REQ-022). The reservation is released
+through the same terminal/rejection paths that release the existing
+`run_id` reservation, so a retry can re-implement the same TRD after
+the prior run reaches a truthful terminal state. The implementation
+key is server-derived and cannot be overridden by operator payload or
+phase YAML context.
 
 ### Beads scope and database rules
 

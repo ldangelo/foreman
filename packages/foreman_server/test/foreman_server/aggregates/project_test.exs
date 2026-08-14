@@ -395,6 +395,52 @@ defmodule ForemanServer.Aggregates.ProjectTest do
       assert event_spec.event_type == "ProjectRunReserved"
       assert event_spec.payload.implementation_key == nil
     end
+
+    test "rejects with :run_limit_exceeded when reservations reach the project ceiling" do
+      state = run_limit_saturated_state()
+
+      assert {:error, :run_limit_exceeded} =
+               Project.handle_command(state, %{
+                 type: "project.reserve_run",
+                 payload: reservation_payload("run-overflow")
+               })
+    end
+
+    test "treats a same-run retry as idempotent at the ceiling — does not reject" do
+      state = run_limit_saturated_state()
+      surviving_run_id = "run-1"
+
+      assert {:ok, nil} =
+               Project.handle_command(state, %{
+                 type: "project.reserve_run",
+                 payload:
+                   reservation_payload(surviving_run_id, %{
+                     command_id: "reservation-command-#{surviving_run_id}-retry",
+                     sequence: 8
+                   })
+               })
+    end
+
+    test "release then reserve works again after the ceiling is reached" do
+      state = run_limit_saturated_state()
+
+      {:ok, release_spec} =
+        Project.handle_command(state, %{
+          type: "project.release_run_reservation",
+          payload: %{project_id: "project-1", run_id: "run-1"}
+        })
+
+      assert release_spec.event_type == "ProjectRunReservationReleased"
+      released_state = Project.apply_event(state, release_spec)
+
+      assert {:ok, event_spec} =
+               Project.handle_command(released_state, %{
+                 type: "project.reserve_run",
+                 payload: reservation_payload("run-after-release")
+               })
+
+      assert event_spec.event_type == "ProjectRunReserved"
+    end
   end
 
   describe "handle_command/2 — project.release_run_reservation" do
@@ -685,5 +731,21 @@ defmodule ForemanServer.Aggregates.ProjectTest do
       },
       overrides
     )
+  end
+
+  defp run_limit_saturated_state do
+    seed = registered_project_state()
+
+    Enum.reduce(1..100, seed, fn i, acc ->
+      Project.apply_event(acc, %{
+        event_type: "ProjectRunReserved",
+        payload:
+          reservation_payload("run-#{i}", %{
+            command_id: "reservation-command-run-#{i}",
+            sequence: 7 + i,
+            implementation_key: "trd-key-#{i}"
+          })
+      })
+    end)
   end
 end

@@ -3,7 +3,10 @@ defmodule ForemanServer.Aggregates.Project do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
+
   alias ForemanServer.Events.{ProjectRunReservationReleased, ProjectRunReserved}
+
+  @max_concurrent_runs 100
 
   defmodule State do
     @enforce_keys [:exists?, :project_id, :path, :status, :default_branch, :archived?]
@@ -177,19 +180,25 @@ defmodule ForemanServer.Aggregates.Project do
       if reserved_run(state, run_id) do
         {:ok, nil}
       else
-        {:ok,
-         %{
-           stream_id: "project:#{project_id}",
-           event_type: "ProjectRunReserved",
-           payload: %ProjectRunReserved{
-             project_id: project_id,
-             run_id: run_id,
-             command_id: command_id,
-             sequence: sequence,
-             run_start_payload: run_start_payload,
-             implementation_key: implementation_key
-           }
-         }}
+        case reject_at_run_limit(state) do
+          :ok ->
+            {:ok,
+             %{
+               stream_id: "project:#{project_id}",
+               event_type: "ProjectRunReserved",
+               payload: %ProjectRunReserved{
+                 project_id: project_id,
+                 run_id: run_id,
+                 command_id: command_id,
+                 sequence: sequence,
+                 run_start_payload: run_start_payload,
+                 implementation_key: implementation_key
+               }
+             }}
+
+          {:error, _} = error ->
+            error
+        end
       end
     end
   end
@@ -254,6 +263,14 @@ defmodule ForemanServer.Aggregates.Project do
     do: {:error, {:project_archived, project_id}}
 
   defp reject_archived(_state, _project_id), do: :ok
+
+  defp reject_at_run_limit(%State{active_run_reservations: reservations}) do
+    if map_size(reservations) >= @max_concurrent_runs do
+      {:error, :run_limit_exceeded}
+    else
+      :ok
+    end
+  end
 
   defp update_status(state, payload) do
     if status = Aggregate.get(payload, :status),

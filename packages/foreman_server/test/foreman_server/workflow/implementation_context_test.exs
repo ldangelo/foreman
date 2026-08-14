@@ -126,6 +126,34 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
       assert ctx.beads_database_path == nil
     end
 
+    test "succeeds on a tracked regular blob whose path contains spaces", %{repo: repo} do
+      File.mkdir_p!(Path.join([repo, "docs", "My TRD Set"]))
+      File.write!(Path.join([repo, "docs", "My TRD Set", "alpha bravo.md"]), "# TRD\n")
+      {_, 0} = System.cmd("git", ["add", "."], cd: repo)
+      {_, 0} = System.cmd("git", ["commit", "-q", "-m", "spaces"], cd: repo)
+
+      :sys.replace_state(ProjectionStore, fn state ->
+        put_in(state.projects["proj-spaces"], %{
+          project_id: "proj-spaces",
+          path: repo,
+          status: "active"
+        })
+      end)
+
+      assert {:ok, ctx} =
+               ImplementationContext.build(%{
+                 project_id: "proj-spaces",
+                 workflow_type: "implement-trd",
+                 trd_path: "docs/My TRD Set/alpha bravo.md"
+               })
+
+      assert ctx.trd_path == "docs/My TRD Set/alpha bravo.md"
+      assert ctx.project_root == canonical(repo)
+      assert String.length(ctx.source_revision) in [40, 64]
+      assert ctx.trd_path_argument == ~s("docs/My TRD Set/alpha bravo.md")
+      assert ctx.beads_database_path == nil
+    end
+
     test "rejects a tracked symlink (mode 120000)", %{repo: repo} do
       {_, 0} = System.cmd("git", ["rm", "-q", "docs/TRD/x.md"], cd: repo)
       File.write!(Path.join(repo, "target.md"), "# t\n")

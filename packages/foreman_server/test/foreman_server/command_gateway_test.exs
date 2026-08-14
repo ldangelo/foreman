@@ -978,6 +978,86 @@ defmodule ForemanServer.CommandGatewayTest do
       assert decoded_worktree["branch"] == "foreman/{run_id}/{phase}"
       assert decoded_worktree["path"] == "implement-trd"
     end
+
+    test "rendered phase command and worktree.base retain approval-time SHA after HEAD movement",
+         %{
+           project_id: project_id,
+           task_id: task_id,
+           project_root: project_root,
+           trd_path: trd_path
+         } do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd",
+                   trd_path: trd_path,
+                   priority: 2,
+                   title: "implement"
+                 }
+               })
+
+      command_id = unique_id("approval")
+
+      assert {:ok, %{"payload" => first_payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      first_implementation = get_in(first_payload, ["workflow_snapshot", "implementation"])
+      sha1 = first_implementation["source_revision"]
+      assert is_binary(sha1) and String.length(sha1) in [40, 64]
+
+      [first_phase] = first_payload["workflow_snapshot"]["phases"]
+      expected_argument = Jason.encode!(trd_path)
+      expected_command = "/skill:ensemble-full-implement-trd --foreman #{expected_argument}"
+
+      assert first_phase["command"] == expected_command
+      refute first_phase["command"] =~ "{trd_path_argument}"
+      assert first_phase["worktree"]["base"] == sha1
+      refute first_phase["worktree"]["base"] =~ "{source_revision}"
+
+      # Advance HEAD with a fresh commit so a naive re-render would
+      # pick up a new SHA. The freeze semantic only holds if downstream
+      # rendering reads from the persisted snapshot, not from HEAD.
+      File.write!(Path.join([project_root, "docs", "TRD", "extra.md"]), "# extra\n")
+
+      {_, 0} =
+        System.cmd("git", ["-C", project_root, "add", "."], stderr_to_stdout: true)
+
+      {_, 0} =
+        System.cmd(
+          "git",
+          ["-C", project_root, "commit", "-q", "-m", "advance"],
+          stderr_to_stdout: true
+        )
+
+      # Replay the original approval command_id. The duplicate-dispatch
+      # path returns the stored TaskApproved verbatim, so the rebuilt
+      # rendered phase MUST retain the approval-time SHA and trd_path.
+      assert {:ok, %{"payload" => second_payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+
+      [second_phase] = second_payload["workflow_snapshot"]["phases"]
+      assert second_phase["command"] == expected_command
+      refute second_phase["command"] =~ "{trd_path_argument}"
+      assert second_phase["worktree"]["base"] == sha1
+      refute second_phase["worktree"]["base"] =~ "{source_revision}"
+      assert second_payload == first_payload
+    end
   end
 
   describe "task.retry validation" do

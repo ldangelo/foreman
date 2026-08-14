@@ -202,6 +202,75 @@ defmodule ForemanServer.RunAdmissionTest do
 
       assert Map.get(project_state(project_id).active_run_reservations, run_id_2) != nil
     end
+
+    test "concurrent dispatch_run_start on the same implementation_key: exactly one wins, loser has no RunStarted" do
+      project_id = unique_id("project")
+      task_id = unique_id("task")
+      implementation_key = "trd-key-#{unique_id("k")}"
+
+      register_project!(project_id)
+
+      run_id_a = unique_id("run-a")
+      run_id_b = unique_id("run-b")
+
+      task_a =
+        Task.async(fn ->
+          CommandRouter.dispatch_run_start(
+            project_id,
+            build_run_start_payload(run_id_a, task_id, implementation_key)
+          )
+        end)
+
+      task_b =
+        Task.async(fn ->
+          CommandRouter.dispatch_run_start(
+            project_id,
+            build_run_start_payload(run_id_b, task_id, implementation_key)
+          )
+        end)
+
+      result_a = Task.await(task_a, 5_000)
+      result_b = Task.await(task_b, 5_000)
+      results = Enum.sort([result_a, result_b])
+
+      # Exactly one {:ok, _} and exactly one {:error, {:implementation_already_active, _, _}}.
+      ok_count = Enum.count(results, &match?({:ok, _}, &1))
+
+      collision_count =
+        Enum.count(results, &match?({:error, {:implementation_already_active, _, _}}, &1))
+
+      assert ok_count == 1
+      assert collision_count == 1
+
+      winner_run_id =
+        case result_a do
+          {:ok, _} -> run_id_a
+          {:error, {:implementation_already_active, _, winner}} -> winner
+          other -> flunk("unexpected first result: #{inspect(other)}")
+        end
+
+      loser_run_id = if winner_run_id == run_id_a, do: run_id_b, else: run_id_a
+
+      # Reservation map holds exactly the winner.
+      reservations = project_state(project_id).active_run_reservations
+      assert Map.keys(reservations) |> Enum.sort() == [winner_run_id]
+      assert Map.get(reservations, winner_run_id).implementation_key == implementation_key
+
+      # Winner stream carries exactly one RunStarted; loser stream carries zero.
+      assert {:ok, winner_events} =
+               EventStore.read_stream_forward("run:#{winner_run_id}", 0, 10)
+
+      assert Enum.map(winner_events, & &1.event_type) == ["RunStarted"]
+
+      loser_event_count =
+        case EventStore.read_stream_forward("run:#{loser_run_id}", 0, 10) do
+          {:ok, events} -> length(events)
+          {:error, _} -> 0
+        end
+
+      assert loser_event_count == 0,
+             "loser run stream must not have advanced past admission (found #{loser_event_count} events)"
+    end
   end
 
   defp build_run_start_payload(run_id, task_id, implementation_key) do
