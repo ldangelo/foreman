@@ -342,6 +342,116 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCompleteTest do
              BeadsAdapter.complete("bead-804", :ignored, project_config)
   end
 
+  test "double-complete handles br's multi-document already-closed stdout (exit 3)", %{
+    temp_dir: temp_dir
+  } do
+    # Reproduces the real br behaviour for `br close <id> --json` on an
+    # already-closed issue: br writes two JSON objects to stdout
+    # (a single-line `{"closed":[],"skipped":[{...}]}` result followed by a
+    # multi-line `{"error":{...}}` envelope) and exits 3. The envelope
+    # decoder cannot parse the concatenated buffer, so the completion path
+    # must fall back to inspecting the leading single-line document.
+    start_schema_cache!()
+
+    cached_database_path = "/abs/complete/multi-doc.db"
+    project_config = register_project!("proj-complete-multi-doc", cached_database_path)
+
+    payload = %{
+      "id" => "bead-810",
+      "title" => "Pre-existing close",
+      "status" => "closed",
+      "priority" => 1,
+      "dependencies" => [],
+      "assignee" => nil,
+      "description" => "first completion closes the issue",
+      "notes" => nil,
+      "design" => nil,
+      "labels" => ["complete"],
+      "metadata" => %{"provider_id" => "beads", "source" => "br close"}
+    }
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: "bead-810"}}
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      assert_translated_argv(
+        temp_dir,
+        request,
+        runner_project_config,
+        ["close", "--db", cached_database_path, "bead-810", "--json"]
+      )
+
+      {:ok, %{stdout: Jason.encode!(payload), stderr: "", exit_code: 0}}
+    end)
+
+    second_stdout =
+      Jason.encode!(%{
+        "closed" => [],
+        "skipped" => [%{"id" => "bead-810", "reason" => "already closed"}]
+      }) <>
+        "\n" <>
+        Jason.encode!(%{
+          "error" => %{
+            "code" => "NOTHING_TO_DO",
+            "message" => "Nothing to do: all 1 issue(s) skipped — bead-810: already closed",
+            "hint" => "Skipped issue(s) were already closed or not found.",
+            "retryable" => false,
+            "context" => %{"reason" => "all 1 issue(s) skipped — bead-810: already closed"}
+          }
+        })
+
+    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
+      assert request == {:close, %{id: "bead-810"}}
+      assert runner_project_config == %{database_path: cached_database_path}
+      assert opts == [timeout_ms: 30_000]
+
+      {:error, %{stdout: second_stdout, stderr: "", exit_code: 3}}
+    end)
+
+    assert {:ok, %Issue{id: "bead-810", status: "closed", dependents: []}} =
+             BeadsAdapter.complete("bead-810", :ignored, project_config)
+
+    assert {:ok, :already_terminal} =
+             BeadsAdapter.complete("bead-810", :ignored, project_config)
+  end
+
+  test "multi-document stdout with a different task_id does not collapse to :already_terminal",
+       %{temp_dir: temp_dir} do
+    start_schema_cache!()
+
+    cached_database_path = "/abs/complete/multi-doc-other.db"
+    project_config = register_project!("proj-complete-multi-doc-other", cached_database_path)
+
+    other_stdout =
+      Jason.encode!(%{
+        "closed" => [],
+        "skipped" => [%{"id" => "bead-999", "reason" => "already closed"}]
+      }) <>
+        "\n" <>
+        Jason.encode!(%{
+          "error" => %{
+            "code" => "NOTHING_TO_DO",
+            "message" => "all skipped",
+            "hint" => "skipped",
+            "retryable" => false,
+            "context" => %{}
+          }
+        })
+
+    expect(BrRunnerMock, :cmd, 1, fn {:close, %{id: "bead-810"}},
+                                     %{database_path: ^cached_database_path},
+                                     [timeout_ms: 30_000] ->
+      {:error, %{stdout: other_stdout, stderr: "", exit_code: 3}}
+    end)
+
+    assert {:error, %ProviderError{code: "BR_PARSE_ERROR"} = provider_error} =
+             BeadsAdapter.complete("bead-810", :ignored, project_config)
+
+    assert provider_error.context.command == "br close"
+    assert provider_error.context.exit_code == 3
+  end
+
   test "consumes the cached absolute database_path established at registration verbatim",
        %{temp_dir: temp_dir} do
     start_schema_cache!()

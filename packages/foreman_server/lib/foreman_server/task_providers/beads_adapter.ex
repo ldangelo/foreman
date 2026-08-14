@@ -1112,7 +1112,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
     {:error, build_complete_contract_error("Beads close ack did not return status: closed.")}
   end
 
-  defp build_complete_error(stdout, stderr, result) do
+  defp build_complete_error(stdout, stderr, result, task_id) do
     stderr_byte_count = byte_size(stderr)
     command = "br close"
 
@@ -1131,18 +1131,70 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
         end
 
       :error ->
-        {:error,
-         CodeMap.build_provider_error(
-           ProviderErrorInput.from_local(
-             "BR_PARSE_ERROR",
-             "Beads CLI returned an unreadable error envelope.",
-             "Verify the installed br version and retry.",
-             false
-           ),
-           command,
-           stderr_byte_count
-         )
-         |> maybe_put_exit_code(result)}
+        case detect_already_closed_close_result(stdout, task_id) do
+          {:ok, :already_terminal} ->
+            {:ok, :already_terminal}
+
+          :error ->
+            {:error,
+             CodeMap.build_provider_error(
+               ProviderErrorInput.from_local(
+                 "BR_PARSE_ERROR",
+                 "Beads CLI returned an unreadable error envelope.",
+                 "Verify the installed br version and retry.",
+                 false
+               ),
+               command,
+               stderr_byte_count
+             )
+             |> maybe_put_exit_code(result)}
+        end
+    end
+  end
+
+  # `br close` on an already-closed issue writes two JSON objects to stdout:
+  # a single-line `{"closed":[],"skipped":[{"id":<task_id>,"reason":"already closed"}]}`
+  # followed by a multi-line `{"error":{...}}` envelope. `Jason.decode/1` cannot
+  # parse the concatenated buffer (the envelope decoder returns :error), so
+  # the only recoverable signal is the leading single-line JSON object. We
+  # isolate it by taking the first non-empty line — this avoids any
+  # string-unsafe brace/bracket counting inside the JSON payload.
+  defp detect_already_closed_close_result(stdout, task_id)
+       when is_binary(stdout) and is_binary(task_id) do
+    case first_non_empty_line(stdout) do
+      {:ok, line} ->
+        case Jason.decode(line) do
+          {:ok,
+           %{
+             "closed" => [],
+             "skipped" => [%{"id" => ^task_id, "reason" => "already closed"}]
+           }} ->
+            {:ok, :already_terminal}
+
+          _ ->
+            :error
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  defp detect_already_closed_close_result(_stdout, _task_id), do: :error
+
+  defp first_non_empty_line(stdout) do
+    case String.split(stdout, "\n", parts: 2) do
+      [line, _rest] ->
+        trimmed = String.trim(line)
+
+        if trimmed == "" do
+          :error
+        else
+          {:ok, line}
+        end
+
+      _ ->
+        :error
     end
   end
 
@@ -1936,7 +1988,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
           parse_closed_issue_response(stdout, task_id)
 
         {:error, %{stdout: stdout, stderr: stderr} = result} ->
-          build_complete_error(stdout, stderr, result)
+          build_complete_error(stdout, stderr, result, task_id)
       end
     else
       {:error,
