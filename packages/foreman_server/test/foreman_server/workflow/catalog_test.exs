@@ -1,8 +1,13 @@
 defmodule ForemanServer.Workflow.CatalogTest do
   use ExUnit.Case, async: false
 
+  use Phoenix.ConnTest
+
+  @endpoint ForemanServerWeb.Endpoint
+
   alias ForemanServer.Workflow.AssetCatalog
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.WorkflowTemplate.Installer
 
   setup do
     {:ok, _} = Application.ensure_all_started(:telemetry)
@@ -394,6 +399,49 @@ defmodule ForemanServer.Workflow.CatalogTest do
       :ok = Catalog.reload()
       assert {:ok, w2} = Catalog.load("stable-wt.yaml")
       assert w1.digest == w2.digest
+    end
+  end
+
+  describe "AC-018-1 controller integration installs and Catalog reloads both implement-trd manifests" do
+    test "POST /api/admin/workflows/install with isolated target installs both implement-trd manifests and Catalog reloads them",
+         %{server_name: name} do
+      home = Path.join(System.tmp_dir!(), "foreman_ac0181_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(home) end)
+
+      # Isolated target — never the developer's ~/.foreman/workflows. The CLI's
+      # empty-body contract (which resolves the real home) is covered separately
+      # by `init_test.go`; this server-side test verifies the controller →
+      # Installer → Catalog reload pipeline end-to-end without clobbering state.
+      workflows_dir = Path.join(home, "workflows")
+      File.mkdir_p!(workflows_dir)
+
+      conn = build_conn() |> post("/api/admin/workflows/install", %{target_dir: workflows_dir})
+
+      assert json_response(conn, 201)["status"] == "installed"
+
+      installed_paths = json_response(conn, 201)["paths"]
+      installed_names = Enum.map(installed_paths, &Path.basename/1)
+      assert "implement-trd.yaml" in installed_names
+      assert "implement-trd-beads.yaml" in installed_names
+
+      assert File.regular?(Path.join(workflows_dir, "implement-trd.yaml"))
+      assert File.regular?(Path.join(workflows_dir, "implement-trd-beads.yaml"))
+
+      catalog = AssetCatalog.new(workflows_dir)
+      start_supervised!({Catalog, name: name, catalog: catalog}, id: name)
+
+      assert "implement-trd.yaml" in Catalog.manifests()
+      assert "implement-trd-beads.yaml" in Catalog.manifests()
+
+      assert {:ok, wf_trd} = Catalog.load("implement-trd.yaml")
+      assert wf_trd.name == "implement-trd"
+      assert is_list(wf_trd.phases)
+      assert wf_trd.phases != []
+
+      assert {:ok, wf_beads} = Catalog.load("implement-trd-beads.yaml")
+      assert wf_beads.name == "implement-trd-beads"
+      assert is_list(wf_beads.phases)
+      assert wf_beads.phases != []
     end
   end
 end
