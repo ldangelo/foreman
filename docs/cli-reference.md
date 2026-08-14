@@ -320,6 +320,14 @@ foreman task create \
   --trd-path docs/TRD/TRD-2026-auth.md
 ```
 
+> **Worktree lifecycle has no direct CLI.** The CLI does not expose
+> `foreman worktree …`. Foreman creates, pins, and cleans the
+> worktree on its own; there is no operator subcommand to invoke,
+> inspect, or override that lifecycle. See `docs/user-guide.md` §15
+> for the worktree contract and the server-side
+> `ForemanServer.ProjectionStore.worktree_for_phase/3` /
+> `worktrees_for_run/1` accessors for read-side consumption.
+
 ### `foreman task get <task-id>`
 
 Fetch the task projection by hitting `GET /api/tasks/:id`. The CLI

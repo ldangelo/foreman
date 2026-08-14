@@ -307,6 +307,41 @@ back the canonical string-keyed form so the EventStore-bound
 `TaskApproved` payload has exactly one entry per field and the
 JSON round-trip is lossless.
 
+### Contract checklist for contributors (worktree/TRD slice)
+
+- **Task vs. workflow.** Provider task type is independent of
+  implementation workflow. `--workflow-type` selects which bundled
+  manifest Foreman resolves at approval. Approval precedence is
+  `workflow_type || task_type || default_task_type`; absent fields
+  preserve existing behavior.
+- **Tracked TRD.** `--trd-path` must be a tracked regular blob in
+  the registered project at the frozen source revision.
+  `ImplementationContext.build/1` rejects untracked, working-copy,
+  directory, symlink, and traversal cases; the frozen relative path
+  and SHA persist for idempotent re-approval.
+- **Worktree ownership.** Foreman exclusively creates, pins, and
+  cleans the worktree at `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
+  Skills under `--foreman` must verify the trusted
+  cwd/branch/revision markers and must not create, switch, append,
+  or stack branches. There is no skill-owned worktree fallback.
+- **Same-TRD single-flight.** `implementation_key = SHA256(project_id
+  <> "\0" <> normalized_trd_path)` is reserved through
+  `ProjectRunReserved`. Concurrent `run.start` for the same key is
+  rejected with `{:implementation_already_active, key, run_id}`
+  before any worktree side effect. The key is server-derived and
+  cannot be overridden by operator payload or phase YAML context.
+- **Beads scope.** For `implement-trd-beads`, freeze
+  `task_provider.config.database_path` (from the TaskProvider
+  Registry, not cwd discovery) and `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
+  at approval. Every `br`/`bv` invocation passes `BEADS_DB` and
+  `TRD_SCOPE` explicitly. Scaffolds are prefixed `[trd:<TRD_SCOPE>]`.
+- **Clean-vs-dirty cleanup.** Clean worktrees are removed on
+  terminal phases; dirty worktrees are preserved with reason
+  `:dirty` / `:active_workers` / `:clean_failed` /
+  `:resolve_dispatch_failed` on
+  `[:foreman_server, :vcs, :worktree, :orphan_preserved]`. Recovery
+  never force-deletes.
+
 ## 13. Task-provider boundary reminder (Go/Elixir CQRS slice)
 
 RunExecutor drives claim/complete/fail. Workflow.BootReconciliation

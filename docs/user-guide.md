@@ -708,9 +708,13 @@ phases:
     the exact base ref Foreman will execute from.
   - `branch: foreman/{run_id}/{phase}` is substituted at runtime
     with the run and phase ids so each phase gets its own branch.
-  - `path: implement-trd` (or `implement-trd-beads`) is substituted
-    at runtime with a relative path under the project's working
-    directory; the worktree is created at `<project>/<path>`.
+  - `path: implement-trd` (or `implement-trd-beads`) is the leaf
+    directory name; Foreman joins it under
+    `~/.foreman/worktrees/<project_id>/<run_id>/`, so the final
+    worktree path is `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
+    The path is containment-checked against that root at runtime —
+    template payloads that smuggle `..` or render to absolute paths
+    are rejected before `git worktree add` runs.
   - `cleanup: always` removes the worktree after the phase completes
     or fails.
 
@@ -749,6 +753,100 @@ phase execution when the worktree is enabled:
 `FOREMAN_EXPECTED_BASE` is **not** injected; the base is resolved
 lazily at completion time to honor any pushes that landed during the
 phase.
+
+### Task vs. workflow separation
+
+The provider-facing task type (for example `--task-type feature`,
+`--task-type bug`, `--task-type chore`) is independent of the
+implementation workflow the run will execute. `--workflow-type`
+(`implement-trd` or `implement-trd-beads`) selects which bundled
+manifest Foreman resolves at approval. Approval precedence is
+`workflow_type || task_type || default_task_type`; existing tasks and
+manifests without `workflow_type` keep their prior behavior.
+
+### Tracked-TRD requirement
+
+`--trd-path` must point to a **tracked regular blob** in the
+registered project repository at the frozen source revision.
+`ForemanServer.Workflow.ImplementationContext.build/1` resolves
+`git rev-parse HEAD` and rejects TRDs that are untracked, in the
+working copy only, directories, symlinks, or reachable only via
+traversal. The frozen context persists the exact relative path and
+SHA; later movement of `HEAD` does not change the implementation
+key or the path the phase reads. Idempotent re-approval reuses the
+persisted snapshot.
+
+### Foreman vs. skill ownership
+
+Worktrees are exclusively Foreman's responsibility: it picks the
+pinned base revision, creates the unique branch and worktree before
+the phase, sets the phase cwd, records durable lifecycle events,
+removes clean worktrees on terminal phases, and reconciles orphans
+after restart. `--foreman` tells the Ensemble skill that Foreman has
+already provisioned the branch and worktree; the skill verifies the
+trusted cwd/branch/revision markers (see "Environment variables"
+above) and must not create, switch, append, or stack branches. There
+is no skill-owned worktree fallback — failed Foreman provisioning is
+a hard error, not a fallback to the controller checkout.
+
+### Same-TRD exclusion
+
+Foreman derives `implementation_key = SHA256(project_id <> "\0" <>
+normalized_trd_path)` at approval and reserves it through
+`ProjectRunReserved`. While a run holding that key is active, any
+second `run.start` for the same normalized project/TRD is rejected
+with `{:implementation_already_active, implementation_key,
+existing_run_id}` before any worktree side effect. Distinct keys
+remain eligible up to the configured project run limit. The
+reservation is released through the same terminal/rejection paths
+that release the existing `run_id` reservation, so a retry can
+re-implement the same TRD after the prior run reaches a truthful
+terminal state. The implementation key is server-derived and cannot
+be overridden by operator payload or phase YAML context.
+
+### Beads scope and database rules
+
+For `--workflow-type implement-trd-beads`, Foreman freezes two
+additional reserved fields at approval:
+
+- `task_provider.config.database_path` — the absolute path to the
+  canonical project Beads database, obtained from
+  `ForemanServer.TaskProviders.TaskProvider.Registry` rather than
+  rediscovered from the worktree. The worktree must not bring its own
+  `.beads/` into the phase.
+- `TRD_SCOPE` — `<trd-slug>-<first-12-of-implementation_key>`.
+  Every `br`/`bv` invocation the Beads skill issues must pass
+  `BEADS_DB` and `TRD_SCOPE` explicitly; cwd discovery is forbidden.
+  Scaffold title prefixes are `[trd:<TRD_SCOPE>]` and every
+  resume/status/ready/robot-plan candidate is filtered by the exact
+  scope before extracting `TRD-NNN` IDs, so two paths with the same
+  filename or repeated task IDs cannot claim each other's beads.
+
+### Clean-vs-dirty cleanup
+
+`cleanup: always` runs on every terminal phase. A clean worktree is
+removed via `git worktree remove <path>` and `WorktreeCleaned` is
+appended. A dirty worktree — local modifications, uncommitted
+changes, or live workers still referencing it — is preserved on disk
+and the projection stays unresolved. Operators see `reason: :dirty`,
+`:active_workers`, `:clean_failed`, or `:resolve_dispatch_failed`
+on `[:foreman_server, :vcs, :worktree, :orphan_preserved]`.
+`Workflow.BootReconciliation` retries safe clean removal at every
+startup; dirty worktrees are never auto-deleted. Operator
+recovery is: `cd` into the worktree, inspect with
+`git status` / `git diff`, preserve or discard local changes
+(`git stash`, commit on the worktree branch, or
+`git checkout -- <path>` / `git restore`), then remove with
+plain `git worktree remove <path>` once the tree is clean.
+Foreman never force-deletes; `Workflow.BootReconciliation`
+retries unresolved safe cleanup at every startup.
+
+### Concurrent PR caveat
+
+Worktrees isolate files and indexes, and unique branches prevent
+ref-name collisions, but two runs against overlapping code can still
+produce semantically conflicting PRs. Each run produces a separate
+PR; normal rebase/review policy resolves the conflict.
 
 ## 16. Cancelling a stuck run
 
