@@ -113,13 +113,19 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def init(_init_arg) do
-    {:ok, %{reconciled?: false, scanned?: false}, {:continue, :reconcile}}
+    {:ok,
+     %{
+       reconciled?: false,
+       scanned?: false,
+       vcs_scan_pid: nil,
+       vcs_scan_ref: nil
+     }, {:continue, :reconcile}}
   end
 
   @impl true
   def handle_continue(:reconcile, state) do
     reconcile()
-    run_scan_or_defer()
+    state = run_scan_or_defer(state)
     {:noreply, %{state | reconciled?: true}}
   end
 
@@ -136,18 +142,50 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def handle_cast(:scan_orphans, state) do
-    run_scan_or_defer()
+    state = run_scan_or_defer(state)
     {:noreply, state}
   end
 
   @impl true
   def handle_info(:scan_orphans, state) do
-    run_scan_or_defer()
+    state = run_scan_or_defer(state)
     {:noreply, state}
   end
 
   @impl true
+  def handle_info(:vcs_scan_done, state) do
+    {:noreply, %{state | vcs_scan_pid: nil}}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, %{vcs_scan_pid: pid} = state) do
+    {:noreply, %{state | vcs_scan_pid: nil, vcs_scan_ref: nil}}
+  end
+
+  @impl true
   def handle_info(_message, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    # Best-effort: surface any in-flight scan Task to the test caller so it
+    # does not mutate ProjectionStore or the filesystem after teardown.
+    case state.vcs_scan_pid do
+      nil ->
+        :ok
+
+      pid when is_pid(pid) ->
+        ref = Process.monitor(pid)
+        Process.exit(pid, :shutdown)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+        after
+          200 -> :ok
+        end
+    end
+
+    :ok
+  end
 
   defp active_runs_by_project do
     ProjectionStore.list_runs()
@@ -412,19 +450,62 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @scan_retry_ms 50
 
-  defp run_scan_or_defer do
-    cond do
-      not command_router_ready?() ->
+  defp run_scan_or_defer(state) do
+    case scan_branch() do
+      :schedule_not_ready ->
         schedule_scan(:not_ready)
+        state
 
-      not worker_registry_ready?() ->
+      :schedule_worker_registry ->
         schedule_scan(:worker_registry_not_ready)
+        state
 
-      true ->
+      :scan ->
         do_scan_task_run_orphans()
+        # Worktree-create and unresolved-worktree reconciliation runs an
+        # O(orhpans) `git status --porcelain` via System.cmd per orphan and
+        # must NEVER block the BootReconciliation mailbox: a slow scan
+        # would starve run_terminated/2 casts dispatched from the live
+        # Dispatcher. Off-load both passes to a tracked, monitor'd Task so
+        # subsequent :scan_orphans / {:run_terminated, _, _} casts are
+        # processed immediately, overlap is prevented, and the task can be
+        # signalled to shut down during GenServer.terminate/2.
+        spawn_async_vcs_scan(state)
+    end
+  end
+
+  defp scan_branch do
+    cond do
+      not command_router_ready?() -> :schedule_not_ready
+      not worker_registry_ready?() -> :schedule_worker_registry
+      true -> :scan
+    end
+  end
+
+  defp spawn_async_vcs_scan(%{vcs_scan_pid: pid} = state) when is_pid(pid) do
+    if Process.alive?(pid) do
+      # An earlier scan is still in progress; do not start another. The
+      # :vcs_scan_done handler will clear vcs_scan_pid when the in-flight
+      # task ends and a subsequent :scan_orphans cast will then schedule a
+      # fresh pass.
+      state
+    else
+      spawn_async_vcs_scan(%{state | vcs_scan_pid: nil})
+    end
+  end
+
+  defp spawn_async_vcs_scan(state) do
+    parent = self()
+
+    {:ok, pid} =
+      Task.start(fn ->
         do_scan_unresolved_worktrees()
         do_scan_worktree_create_orphans()
-    end
+        send(parent, :vcs_scan_done)
+      end)
+
+    ref = Process.monitor(pid)
+    %{state | vcs_scan_pid: pid, vcs_scan_ref: ref}
   end
 
   defp do_scan_worktree_create_orphans do

@@ -360,12 +360,15 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
 
       handler_id = "test-clean-failed-#{System.unique_integer([:positive])}"
       parent = self()
+      expected_operation_id = ctx.opts[:operation_id]
 
       :telemetry.attach(
         handler_id,
         [:foreman_server, :vcs, :worktree, :clean_failed],
         fn name, measurements, metadata, _config ->
-          send(parent, {:telemetry, name, measurements, metadata})
+          if metadata[:operation_id] == expected_operation_id do
+            send(parent, {:telemetry, name, measurements, metadata})
+          end
         end,
         nil
       )
@@ -379,8 +382,11 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       # orchestrator (ForemanServer.Workflow.Worktree) is the sole canonical
       # source. The adapter's contract is to dispatch a vcs_operation.fail
       # command via CommandGateway.
+      # Scope the assertion to this test's operation_id so concurrent
+      # orchestrator clean_attempts on unrelated worktrees (from
+      # boot_reconciliation etc.) do not leak into the test mailbox.
       refute_receive {:telemetry, [:foreman_server, :vcs, :worktree, :clean_failed],
-                      _measurements, _metadata},
+                      _measurements, %{operation_id: ^expected_operation_id}},
                      200
     end
 
@@ -399,12 +405,15 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
 
       handler_id = "test-no-telemetry-#{System.unique_integer([:positive])}"
       parent = self()
+      expected_operation_id = ctx.opts[:operation_id]
 
       :telemetry.attach(
         handler_id,
         [:foreman_server, :vcs, :worktree, :clean_failed],
-        fn name, _measurements, _metadata, _config ->
-          send(parent, {:telemetry, name})
+        fn name, _measurements, metadata, _config ->
+          if metadata[:operation_id] == expected_operation_id do
+            send(parent, {:telemetry, name})
+          end
         end,
         nil
       )
@@ -414,6 +423,9 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       assert {:ok, %{cleaned?: true, noop?: false}} =
                Default.clean_worktree(ctx.worktree_path, ctx.opts)
 
+      # Scope the assertion to this test's operation_id so concurrent
+      # orchestrator clean_attempts on unrelated worktrees (from
+      # boot_reconciliation etc.) do not leak into the test mailbox.
       refute_receive {:telemetry, [:foreman_server, :vcs, :worktree, :clean_failed]}, 200
     end
   end
