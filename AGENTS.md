@@ -284,6 +284,11 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 | `WorkerHeartbeat` | `worker.event` command | Updates worker projection |
 | `ToolCallApproved` | `ToolCall.handle_command/2` | Records tool call decision |
 | `ToolCallDenied` | `ToolCall.handle_command/2` | Records tool call decision |
+| `BeadsDbLeaseAcquired` | `BeadsDbLease.handle_command/2` | Holder takes the per-DB Beads lease |
+| `BeadsDbLeaseReleased` | `BeadsDbLease.handle_command/2` | Holder releases the lease (no waiters) |
+| `BeadsDbLeaseWaiterRegistered` | `BeadsDbLease.handle_command/2` | Runner enqueued behind current holder |
+| `BeadsDbLeaseWaiterRemoved` | `BeadsDbLease.handle_command/2` | Cancel-before-promotion of a waiter |
+| `BeadsDbLeaseTransferred` | `BeadsDbLease.handle_command/2` | Release + head-waiter promotion in one event |
 
 #### Typed Event Structs
 
@@ -330,6 +335,37 @@ The Actor's bounded retry path intercepts the conflict, reloads the aggregate st
 `{:error, :wrong_expected_version}` and state is unchanged; on a re-decision that
 rejects (e.g. `:phase_terminal`) the retry terminates without appending — preserving
 exactly-once.
+
+**Per-DB Beads lease (write serialization across processes and restarts)**: SQLite's
+single-writer protocol cannot tolerate concurrent br/bv writers or writers running
+alongside `bv --robot-plan`. The `BeadsDbLease` aggregate is an event-sourced lock
+keyed by the canonical Beads DB path, giving process-local serialization through the
+Actor mailbox while surviving Foreman restarts via persisted events. Required
+because multi-`run_id` parallelism on the same DB otherwise deterministically raises
+`cannot connect to database: locking protocol (15)`.
+
+- **Stream id**: `beads_db_lease:<canonical_db_path>`.
+- **Acquire**: `lease.acquire` is atomic — if the DB is free, the run becomes holder;
+  if held, the run is enqueued as a waiter and admission returns `:queued`.
+- **Release**: `lease.release` and `lease.remove_waiter` are dispatched at run
+  terminal time (`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+  `RunBlocked`) by the Dispatcher. Both are idempotent no-ops when the run_id is not
+  bound to the lease.
+- **Promotion**: when the holder releases with waiters, the aggregate emits a single
+  `BeadsDbLeaseTransferred` event that releases the old holder and promotes the
+  head waiter, so cancellation cannot race with promotion. The Dispatcher subscribes
+  to this event and re-enters `RunAdmission.start/2` for the promoted run.
+- **Fail-closed gating**: `RunAdmission.start/3` reads the lease decision before
+  starting the run supervisor. Any uncertainty (acquire error, atom state of
+  `:unknown` or `:unexpected`) returns `{:error, ...}` and skips dispatch. A
+  `:queued` decision returns without starting the supervisor; the dispatcher picks
+  the run up again on `BeadsDbLeaseTransferred`.
+- **Compensation**: `lease.release` on admission failure is only emitted for
+  definitively non-retryable rejections (`{:missing_or_invalid, …}`,
+  `{:implementation_already_active, …}`, `{:command_rejected, …}`). Compensating
+  transient errors would break retry semantics.
+- **Scope**: different DBs and direct (`foreman run`) workflows remain parallel.
+  The lease keys only on the DB path, never on the run_id.
 
 ### Go CLI Boundaries (Slice)
 

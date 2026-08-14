@@ -68,6 +68,32 @@ opt-in semantics are documented in
 and [`CLAUDE.md`](./CLAUDE.md) §11–§13 for the architectural
 invariants.
 
+## Per-DB Beads lease (Beads write serialization)
+
+SQLite's single-writer protocol cannot tolerate concurrent `br`/`bv`
+writers or writers running alongside `bv --robot-plan`. The
+`ForemanServer.Aggregates.BeadsDbLease` aggregate is an event-sourced
+lock keyed by the canonical Beads DB path, giving process-local
+serialization through the Actor mailbox while surviving Foreman
+restarts via persisted events. Different DBs and direct
+(`foreman run`) workflows remain parallel.
+
+- `lease.acquire` is atomic — if the DB is free, the run becomes the
+  holder; if held, the run is enqueued as a waiter and admission
+  returns `:queued`.
+- `lease.release` and `lease.remove_waiter` are dispatched at every
+  terminal run event (`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`,
+  `RunFailed`, `RunBlocked`).
+- When the holder releases with waiters, the aggregate emits a single
+  `BeadsDbLeaseTransferred` event that releases the old holder and
+  promotes the head waiter atomically.
+- `RunAdmission.start/3` fail-closed: any uncertainty around the lease
+  decision returns `{:error, ...}` and skips dispatch; a `:queued`
+  decision returns without starting the supervisor and the dispatcher
+  picks the run up again on `BeadsDbLeaseTransferred`.
+
+See [`CLAUDE.md`](./CLAUDE.md) §15 for the architectural invariants.
+
 ## Task-provider boundary overview
 
 The Go/Elixir CQRS task-provider slice keeps task-tracker ownership on

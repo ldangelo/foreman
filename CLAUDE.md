@@ -421,3 +421,37 @@ these invariants. Drift without a tracked TRD is a regression.
   finer-grained runtime visibility (per-scan event streams,
   supervisor lifecycle transitions) should rely on the
   `[:foreman_server, :task_provider, :beads, ...]` telemetry events.
+
+## 15. Per-DB Beads lease (Go/Elixir CQRS slice)
+
+SQLite's single-writer protocol cannot tolerate concurrent `br`/`bv`
+writers or writers running alongside `bv --robot-plan`. The
+`ForemanServer.Aggregates.BeadsDbLease` aggregate is an event-sourced
+lock keyed by the canonical Beads DB path, giving process-local
+serialization through the Actor mailbox while surviving Foreman
+restarts via persisted events. Different DBs and direct (`foreman run`)
+workflows remain parallel.
+
+- **Acquire-or-enqueue.** `lease.acquire` is atomic: if the DB is
+  free, the run becomes the holder; if held, the run is enqueued as a
+  waiter and admission returns `:queued`.
+- **Release-with-promotion.** When the holder releases with waiters,
+  the aggregate emits a single `BeadsDbLeaseTransferred` event that
+  releases the old holder and promotes the head waiter, so cancellation
+  cannot race with promotion. The `Dispatcher` subscribes to this
+  event and re-enters `RunAdmission.start/2` for the promoted run.
+- **Terminal fan-out.** The `Dispatcher` dispatches `lease.release`
+  and `lease.remove_waiter` on every terminal run event
+  (`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+  `RunBlocked`). `RunBlocked` is terminal for lease cleanup: a blocked
+  run must release its Beads-DB lease so queued peers can be promoted.
+- **Fail-closed gating.** `RunAdmission.start/3` reads the lease
+  decision before starting the run supervisor. Any uncertainty
+  (acquire error, atom state of `:unknown` or `:unexpected`) returns
+  `{:error, ...}` and skips dispatch. A `:queued` decision returns
+  without starting the supervisor; the dispatcher picks the run up
+  again on `BeadsDbLeaseTransferred`.
+- **Compensation.** `lease.release` on admission failure is only emitted
+  for definitively non-retryable rejections (`{:missing_or_invalid, …}`,
+  `{:implementation_already_active, …}`, `{:command_rejected, …}`).
+  Compensating transient errors would break retry semantics.
