@@ -638,6 +638,160 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert_receive {:runner_cmd, :close}, @poll_timeout_ms
   end
 
+  test "initialization failure retries run.fail dispatch instead of silently stopping" do
+    # The dispatch-daemon trap this guards: if the very first `run.fail`
+    # dispatch inside `emit_phase_failure` returns an error, the original
+    # kickoff handler used to return `{:stop, :normal, state}` from the
+    # `:kickoff` path with the reason dropped on the floor. The run
+    # stayed non-terminal until StuckDetector's 15-min idle threshold
+    # fired, leaving the task wedged and unblocking `task.retry` only
+    # much later. The fix routes every silent-stop path through a
+    # bounded-retry helper that persists the executor across transient
+    # dispatcher blips and exits `:normal` once the run reaches
+    # terminal state.
+    #
+    # We exercise the path via a `:bash` phase action — `validate_phase_action/2`
+    # rejects it with `{:error, {:unsupported_phase_action, :bash}}` —
+    # and inject a one-shot failure on the FIRST `run.fail` dispatch
+    # via the test seam, so the second attempt inside the retry helper
+    # succeeds.
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    # Inject a one-shot failure: the first `run.fail` dispatch returns
+    # `{:error, :test_injected_dispatch_failure}` (drives the retry
+    # path); every subsequent call passes through to the real
+    # `dispatch_system_command`.
+    Application.put_env(
+      :foreman_server,
+      :run_executor_test_dispatch_attempt_count,
+      0
+    )
+
+    Application.put_env(
+      :foreman_server,
+      :run_executor_test_dispatch_failure,
+      fn attempt_count ->
+        send(test_pid, {:dispatch_injection_attempt, attempt_count})
+
+        case attempt_count do
+          1 -> {:error, :test_injected_dispatch_failure}
+          _ -> :passthrough
+        end
+      end
+    )
+
+    on_exit(fn ->
+      Application.delete_env(:foreman_server, :run_executor_test_dispatch_failure)
+      Application.delete_env(:foreman_server, :run_executor_test_dispatch_attempt_count)
+    end)
+
+    # `:bash` is an unsupported phase action — `validate_phase_action`
+    # rejects it deterministically without needing a real worktree or
+    # adapter invocation.
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      phases: [
+        %{
+          name: :will_never_run,
+          action: :bash,
+          command: "echo hello",
+          required_file: nil,
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-never.md"])
+          },
+          context: %{"script_key" => script_key}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    # Only the claim Mox expect is needed: `maybe_fail_task` is NEVER
+    # reached because the injected first failure short-circuits
+    # `emit_phase_failure`'s `with` chain before the task-level
+    # dispatch.
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, opts ->
+      send(test_pid, {:runner_cmd, :claim})
+      assert opts == [timeout_ms: 30_000]
+      claim_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    # `restart: :temporary` so a `:normal` exit (the desired outcome)
+    # does not loop, and any other abnormal exit is observable.
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+
+    # The injection fires at least twice: once inside `emit_phase_failure`
+    # (call 1, returns error) and once inside `finalize_terminal_dispatch`
+    # (call 2, returns `:passthrough`). Subsequent dispatches would be
+    # `:run_terminal` errors from the aggregate and not invoke the
+    # injection because they short-circuit at `dispatch_run_fail`
+    # returning `:ok` (or `:run_terminal`).
+    assert_receive {:dispatch_injection_attempt, 1}, @poll_timeout_ms
+    assert_receive {:dispatch_injection_attempt, 2}, @poll_timeout_ms
+
+    # Run reached terminal `failed` via the second successful `run.fail`.
+    {:ok, failed_run} =
+      poll_until(
+        fn ->
+          case ProjectionStore.run(run_id) do
+            %{status: "failed"} = run -> {:ok, run}
+            other -> {:error, other}
+          end
+        end,
+        "run failed"
+      )
+
+    # Once the run is terminal, the executor must have exited normally.
+    # With `restart: :temporary`, a `:normal` exit removes the child
+    # from the supervisor cleanly. Poll for `Process.alive?/1` to
+    # return false rather than `Process.monitor/1` — the latter races
+    # with the supervisor's registry cleanup when the exit happens
+    # during the test's `assert_receive`/`poll_until` windows.
+    poll_until(
+      fn ->
+        if Process.alive?(run_pid), do: {:error, :still_alive}, else: {:ok, :exited}
+      end,
+      "executor exit"
+    )
+
+    assert failed_run.status == "failed"
+  end
+
   ### Setup helpers
 
   defp start_schema_cache! do

@@ -168,23 +168,38 @@ defmodule ForemanServer.Workflow.RunExecutor do
         )
 
         _ = dispatch_task_execution_fail(state, {:plan_context_error, reason})
-        {:stop, :normal, %{state | status: :failed}}
+        finalize_terminal_and_stop(state, {:plan_context_error, reason})
 
       :ok ->
         case maybe_claim_task(state) do
           :ok ->
             case start_phase_at_index(state, 0) do
-              {:ok, next_state} -> {:noreply, next_state}
-              {:noop, next_state} -> {:noreply, next_state}
-              {:error, _reason} -> {:stop, :normal, state}
+              {:ok, next_state} ->
+                {:noreply, next_state}
+
+              {:noop, next_state} ->
+                {:noreply, next_state}
+
+              {:error, reason} ->
+                # `start_phase_at_index/2` already attempted
+                # → `emit_phase_failure/4` → `emit_run_failure/2` → `run.fail`
+                # before returning this error. If the run is still
+                # non-terminal here it means the very first terminal
+                # dispatch was rejected (transport, aggregate reject,
+                # …) — re-route through the bounded retry helper so
+                # the reason is not dropped on the floor.
+                Logger.error(
+                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}"
+                )
+
+                finalize_terminal_and_stop(state, {:initialization_failed, reason})
             end
 
           {:error, reason} ->
             Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}")
 
             _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
-            _ = dispatch_run_fail(state, reason)
-            {:stop, :normal, %{state | status: :failed}}
+            finalize_terminal_and_stop(state, {:claim_failure, reason})
         end
     end
   end
@@ -194,7 +209,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case start_phase_at_index(state, index) do
       {:ok, next_state} -> {:noreply, next_state}
       {:noop, next_state} -> {:noreply, next_state}
-      {:error, _reason} -> {:stop, :normal, %{state | status: :failed}}
+      {:error, reason} -> finalize_terminal_and_stop(state, {:phase_start_failed, index, reason})
+    end
+  end
+
+  @impl true
+  def handle_info({:retry_terminal_dispatch, reason, attempt_kind, attempt}, state) do
+    case finalize_terminal_dispatch(state, reason, attempt_kind, attempt) do
+      :ok -> {:stop, :normal, %{state | status: :failed}}
+      :retry -> {:noreply, %{state | status: :failed}}
     end
   end
 
@@ -217,7 +240,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           {:error, reason} ->
             Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}")
 
-            {:stop, :normal, %{next_state | status: :failed}}
+            finalize_terminal_and_stop(next_state, {:finalize_run_failed, reason})
         end
 
       _phase_spec ->
@@ -1194,13 +1217,154 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp dispatch_run_fail(state, reason) do
-    dispatch_system_command(
-      "run.fail",
-      Identity.run_fail_command_id(state.run_id),
-      "run:#{state.run_id}",
-      %{run_id: state.run_id, reason: inspect(reason)}
-    )
-    |> to_dispatch_result()
+    case consume_dispatch_injection(:run_fail) do
+      {:error, _} = err ->
+        err
+
+      :passthrough ->
+        dispatch_system_command(
+          "run.fail",
+          Identity.run_fail_command_id(state.run_id),
+          "run:#{state.run_id}",
+          %{run_id: state.run_id, reason: inspect(reason)}
+        )
+        |> to_dispatch_result()
+    end
+  end
+
+  # -- run.fail retry helper ----------------------------------------------
+  #
+  # The `run.fail` dispatch is the load-bearing terminal invariant: a
+  # non-terminal run blocks `task.retry`, holds `worker_status` in a
+  # blocked state, and prevents downstream consumers (projection,
+  # BootReconciliation) from reconciling the task. When `run.fail`
+  # itself fails (transport, dispatcher down, aggregate reject) the
+  # executor MUST NOT silently `:stop, :normal` — that path drops the
+  # reason on the floor and leaves the run non-terminal until the
+  # StuckDetector's 15-min idle threshold fires.
+  #
+  # This helper implements a fast bounded retry followed by an indefinite
+  # slow retry:
+  #
+  #   * Fast budget: up to `@max_terminal_dispatch_attempts` attempts with
+  #     exponential backoff capped at `@terminal_dispatch_backoff_cap_ms`
+  #     (a few seconds total). This covers transient dispatcher blips
+  #     without holding the run open longer than the original timeout.
+  #   * Slow loop: on fast-budget exhaustion, schedule another attempt
+  #     every `@terminal_dispatch_slow_interval_ms`. The executor STAYS
+  #     ALIVE — no abnormal exit, no supervisor restart, no impact on
+  #     other runs. The slow loop terminates when either `run.fail`
+  #     finally succeeds, or the run is already terminal via a parallel
+  #     safety net (StuckDetector's `run.flag_stuck` at 15-min idle
+  #     makes our next `run.fail` return `{:error, :run_terminal}`,
+  #     which we treat as success and stop normally).
+  #
+  # This design deliberately avoids exiting `:abnormal` because the
+  # supervisor's `max_restarts/max_seconds` budget is shared across every
+  # active run; a single dispatch loop in one run could exhaust the
+  # budget and drop every other executor. Keeping the executor alive
+  # during the slow loop isolates the impact to the affected run only.
+  @max_terminal_dispatch_attempts 5
+  @terminal_dispatch_backoff_base_ms 250
+  @terminal_dispatch_backoff_cap_ms 2_000
+  @terminal_dispatch_slow_interval_ms 60_000
+
+  # Returns `:ok` when the executor may stop normally, or `:retry` when
+  # the helper has scheduled another attempt and the executor must stay
+  # alive (`{:noreply, ...}`).
+  defp finalize_terminal_dispatch(state, reason) do
+    finalize_terminal_dispatch(state, reason, :fast, 1)
+  end
+
+  defp finalize_terminal_dispatch(state, reason, attempt_kind, attempt) do
+    case dispatch_run_fail(state, reason) do
+      :ok ->
+        Logger.info(
+          "RunExecutor #{state.run_id} terminal dispatch succeeded (#{attempt_kind} attempt #{attempt})"
+        )
+
+        :ok
+
+      {:error, {:run_terminal, _status}} ->
+        Logger.info(
+          "RunExecutor #{state.run_id} terminal dispatch: run already terminal " <>
+            "(#{attempt_kind} attempt #{attempt})"
+        )
+
+        :ok
+
+      {:error, dispatch_reason} ->
+        {backoff_ms, next_kind} = next_terminal_dispatch_step(attempt_kind, attempt)
+
+        Logger.warning(
+          "RunExecutor #{state.run_id} terminal dispatch #{attempt_kind} attempt #{attempt} " <>
+            "failed: #{inspect(dispatch_reason)}; retrying in #{backoff_ms}ms as #{next_kind}"
+        )
+
+        Process.send_after(
+          self(),
+          {:retry_terminal_dispatch, reason, next_kind, attempt + 1},
+          backoff_ms
+        )
+
+        :retry
+    end
+  end
+
+  defp next_terminal_dispatch_step(:fast, attempt)
+       when attempt >= @max_terminal_dispatch_attempts do
+    {@terminal_dispatch_slow_interval_ms, :slow}
+  end
+
+  defp next_terminal_dispatch_step(:fast, attempt) do
+    backoff_ms =
+      @terminal_dispatch_backoff_base_ms
+      |> Kernel.*(:math.pow(2, attempt - 1))
+      |> min(@terminal_dispatch_backoff_cap_ms)
+      |> trunc()
+
+    {backoff_ms, :fast}
+  end
+
+  defp next_terminal_dispatch_step(:slow, _attempt) do
+    {@terminal_dispatch_slow_interval_ms, :slow}
+  end
+
+  # Centralizes the `:stop, :normal` after a `run.fail` dispatch so the
+  # five silent-stop paths in this module cannot drop a reason on the floor.
+  defp finalize_terminal_and_stop(state, reason) do
+    case finalize_terminal_dispatch(state, reason) do
+      :ok -> {:stop, :normal, %{state | status: :failed}}
+      :retry -> {:noreply, %{state | status: :failed}}
+    end
+  end
+
+  # Test seam: a counter-driven function that decides whether to inject
+  # a `{:error, reason}` into the next `run.fail` dispatch. Production
+  # code reads the env at every call so a test can set the hook
+  # immediately before the run starts and clear it (or let it fall
+  # through to `:passthrough`) on the second attempt.
+  #
+  # Function shape: `(attempt_count) -> :passthrough | {:error, reason}`.
+  defp consume_dispatch_injection(:run_fail) do
+    case Application.get_env(:foreman_server, :run_executor_test_dispatch_failure) do
+      nil ->
+        :passthrough
+
+      fun when is_function(fun, 1) ->
+        count = bump_dispatch_injection_count()
+        fun.(count)
+
+      _ ->
+        :passthrough
+    end
+  end
+
+  defp bump_dispatch_injection_count do
+    current = Application.get_env(:foreman_server, :run_executor_test_dispatch_attempt_count, 0)
+    next = current + 1
+    Application.put_env(:foreman_server, :run_executor_test_dispatch_attempt_count, next)
+    next
   end
 
   defp resolve_provider(project_id, transition) do
