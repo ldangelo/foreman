@@ -1041,7 +1041,13 @@ The retry is rejected when:
 - A worker session was lost and `RunLifecycleReconciler` has already
   marked the run terminal.
 
-The Dispatcher subscriber path (`run.cancel` →
-`task.run_terminated`) remains in place for newly observed terminal
-events; both paths converge on the same payload shape. Operators use
+The Dispatcher subscriber path covers every terminal run event
+(`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+`RunBlocked`) — not just `run.cancel`. Each terminal event fans out
+to the same `BootReconciliation.run_terminated/2` scan path that
+the boot reconciliation runs at startup, so newly observed terminal
+runs surface orphan tasks the same way boot scan does. The Dispatcher
+also dispatches the matching per-DB Beads lease commands at terminal
+time (`lease.release` for the holder, `lease.remove_waiter` for queued
+waiters) so blocked runs cannot strand their DB lease. Operators use
 `task.retry` directly for already-terminal orphans.
