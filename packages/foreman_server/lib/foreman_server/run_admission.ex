@@ -102,18 +102,16 @@ defmodule ForemanServer.RunAdmission do
   # ---------------------------------------------------------------------------
   # Beads lease — synchronous acquire-or-enqueue with admission gating.
   # ---------------------------------------------------------------------------
-
   defp acquire_beads_lease(payload, timeout) do
-    impl =
+    snapshot =
       Map.get(payload, :workflow_snapshot) || Map.get(payload, "workflow_snapshot") || %{}
-      |> then(fn snap ->
-        Map.get(snap, :implementation) || Map.get(snap, "implementation") || %{}
-      end)
 
-    db_path =
-      Map.get(impl, :beads_database_path) || Map.get(impl, "beads_database_path")
+    impl = Map.get(snapshot, :implementation) || Map.get(snapshot, "implementation") || %{}
+
+    db_path = Map.get(impl, :beads_database_path) || Map.get(impl, "beads_database_path")
 
     run_id = Map.get(payload, :run_id)
+
     task_id = Map.get(payload, :task_id)
 
     cond do
@@ -211,11 +209,10 @@ defmodule ForemanServer.RunAdmission do
   defp compensable_admission_error?(_other), do: false
 
   defp release_after_failed_start(payload, timeout) do
-    impl =
+    snapshot =
       Map.get(payload, :workflow_snapshot) || Map.get(payload, "workflow_snapshot") || %{}
-      |> then(fn snap ->
-        Map.get(snap, :implementation) || Map.get(snap, "implementation") || %{}
-      end)
+
+    impl = Map.get(snapshot, :implementation) || Map.get(snapshot, "implementation") || %{}
 
     db_path =
       Map.get(impl, :beads_database_path) || Map.get(impl, "beads_database_path")
