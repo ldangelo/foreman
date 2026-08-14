@@ -100,14 +100,70 @@ defmodule ForemanServer.VcsAdapter.Default do
 
     case System.cmd("git", args, stderr_to_stdout: true) do
       {output, 0} ->
-        result = %{path: worktree_path, base: base, branch: branch, output: output}
-        emit_completed(operation_id, "worktree_create", target, result, metadata)
-        {:ok, result}
+        case exclude_dotbeads(worktree_path) do
+          :ok ->
+            result = %{path: worktree_path, base: base, branch: branch, output: output}
+            emit_completed(operation_id, "worktree_create", target, result, metadata)
+            {:ok, result}
+
+          {:error, exclude_reason} ->
+            # Best-effort cleanup: the worktree exists but the exclusion failed.
+            # Roll back so we don't leave the caller with a worktree that
+            # violates the no-`.beads/` contract.
+            _ =
+              System.cmd("git", ["-C", repo_path, "worktree", "remove", "--force", worktree_path],
+                stderr_to_stdout: true
+              )
+
+            _ = System.cmd("git", ["-C", repo_path, "worktree", "prune"], stderr_to_stdout: true)
+            reason = {:worktree_beads_exclusion_failed, exclude_reason}
+            emit_failed(operation_id, "worktree_create", target, reason, 0, metadata)
+            {:error, reason}
+        end
 
       {output, code} ->
         reason = {:git_worktree_create_failed, code, output}
         emit_failed(operation_id, "worktree_create", target, reason, 0, metadata)
         {:error, reason}
+    end
+  end
+
+  # Apply a per-worktree sparse-checkout exclusion so a tracked `.beads/`
+  # in the source repository is NOT materialized into the fresh worktree.
+  # The user-guide contract requires "The worktree must not bring its own
+  # `.beads/` into the phase" — naive `rm -rf` would leave the worktree
+  # dirty with staged-visible deletions, so we use non-cone sparse-checkout
+  # instead: `.beads/` is excluded from BOTH the working tree and the
+  # index, leaving `git status --porcelain` clean while still satisfying
+  # the no-local-`.beads/` invariant that the Beads skill depends on.
+  #
+  # Linked worktrees have `<worktree>/.git` as a FILE pointing back at
+  # the parent repo's gitdir, so we MUST route the patterns through git
+  # itself (`sparse-checkout set --no-cone`) rather than writing to
+  # `<worktree>/.git/info/sparse-checkout` directly.
+  defp exclude_dotbeads(worktree_path) do
+    with :ok <- run_git(worktree_path, ["sparse-checkout", "init", "--no-cone"]),
+         :ok <-
+           run_git(worktree_path, [
+             "sparse-checkout",
+             "set",
+             "--no-cone",
+             "/*",
+             "!/.beads/",
+             "!/.beads/**"
+           ]) do
+      if File.exists?(Path.join(worktree_path, ".beads")) do
+        {:error, {:dotbeads_still_present, worktree_path}}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp run_git(cwd, args) do
+    case System.cmd("git", ["-C", cwd] ++ args, stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, code} -> {:error, {:git_cmd_failed, args, code, output}}
     end
   end
 

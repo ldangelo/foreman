@@ -218,6 +218,59 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       head = run_git!(["-C", worktree_path, "rev-parse", "HEAD"]) |> String.trim()
       assert head == sha1
     end
+
+    test "excludes tracked .beads/ from the fresh worktree (no-`.beads/` contract)",
+         %{repo: repo} do
+      run_git!(["-C", repo, "init", "--initial-branch=main"])
+      run_git!(["-C", repo, "config", "user.email", "t@x"])
+      run_git!(["-C", repo, "config", "user.name", "T"])
+      File.write!(Path.join(repo, "README.md"), "x")
+
+      # Stage a tracked .beads/ directory in the source repo so the
+      # exclusion actually has something to exclude.
+      File.mkdir_p!(Path.join(repo, ".beads"))
+      File.write!(Path.join(repo, ".beads/issues.jsonl"), "{\"id\":\"x\"}\n")
+
+      run_git!(["-C", repo, "add", "."])
+      run_git!(["-C", repo, "commit", "--no-gpg-sign", "-m", "init with .beads"])
+      base_sha = run_git!(["-C", repo, "rev-parse", "HEAD"]) |> String.trim()
+
+      # Sanity: source repo still has the tracked .beads/.
+      assert File.dir?(Path.join(repo, ".beads"))
+
+      worktree_path = Path.join(repo, ".worktrees/wt-no-beads")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-no-beads-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/no-beads",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, result} = Default.create_worktree(repo, worktree_path, opts)
+      assert result.path == worktree_path
+
+      # Contract 1: .beads/ MUST NOT be materialized into the fresh
+      # worktree, regardless of whether it is tracked upstream.
+      refute File.exists?(Path.join(worktree_path, ".beads")),
+             ".beads/ must not be present in fresh worktree per user-guide contract"
+
+      # Contract 2: `git status --porcelain` MUST be empty. If we had
+      # used `rm -rf` to strip .beads/, the worktree would show as
+      # dirty with ` D .beads/...` lines. Sparse-checkout exclusion
+      # keeps it clean.
+      {porcelain, 0} = System.cmd("git", ["-C", worktree_path, "status", "--porcelain"])
+
+      assert porcelain == "",
+             "fresh worktree must have clean status; got: #{inspect(porcelain)}"
+
+      # Contract 3: real source directories MUST still be present.
+      assert File.dir?(worktree_path)
+      assert File.read!(Path.join(worktree_path, "README.md")) == "x"
+    end
   end
 
   describe "clean_worktree/2" do
