@@ -107,7 +107,11 @@ defmodule ForemanServer.EventCodec do
     "RunBlocked" => RunBlocked,
     "RunFlaggedStuck" => RunFlaggedStuck,
     "RunCancelled" => RunCancelled,
-    "RunPaused" => RunPaused,
+    "RunSlotAcquired" => RunSlotAcquired,
+    "RunSlotQueued" => RunSlotQueued,
+    "RunSlotReleased" => RunSlotReleased,
+    "RunSlotTransferred" => RunSlotTransferred,
+    "RunSlotWaiterRemoved" => RunSlotWaiterRemoved,
     "PhaseStarted" => PhaseStarted,
     "PhaseCompleted" => PhaseCompleted,
     "PhaseFailed" => PhaseFailed,
@@ -207,7 +211,12 @@ defmodule ForemanServer.EventCodec do
     WorkSubmitted => [:work_id, :project_id, :run_id, :submission_id, :workflow_snapshot],
     WorkCancelled => [:work_id],
     WorkExecutionCompleted => [:work_id, :run_id],
-    WorkExecutionFailed => [:work_id, :run_id]
+    WorkExecutionFailed => [:work_id, :run_id],
+    RunSlotAcquired => [:run_id, :capacity, :acquired_at_ms],
+    RunSlotQueued => [:run_id, :position, :enqueued_at_ms],
+    RunSlotReleased => [:run_id],
+    RunSlotTransferred => [:released_run_id, :acquired_run_id, :acquired_at_ms],
+    RunSlotWaiterRemoved => [:run_id]
   }
 
   @type event_type :: String.t()
