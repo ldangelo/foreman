@@ -653,7 +653,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end)
   end
 
-  defp prompt_template_assigns(state, phase_spec, index, context) do
+  def prompt_template_assigns(state, phase_spec, index, context) do
     phase_index = prompt_phase_index(phase_spec, index)
     artifact_path = __MODULE__.ArtifactTemplate.path(state, phase_spec, phase_index)
 
@@ -684,8 +684,30 @@ defmodule ForemanServer.Workflow.RunExecutor do
             Map.get(workflow_snapshot, "workflow_name") ||
             Map.get(state.task, :workflow_name) || Map.get(state.task, "workflow_name") ||
             Map.get(state.task, :workflow_type) || Map.get(state.task, "workflow_type")
-        )
+        ),
+      "input.prompt" => input_prompt(workflow_snapshot),
+      "input.prompt_argument" => input_prompt_argument(workflow_snapshot)
     })
+  end
+
+  defp input_prompt(workflow_snapshot) do
+    with {:ok, input} <- Map.fetch(workflow_snapshot, "input"),
+         {:ok, prompt} <- Map.fetch(input, "prompt"),
+         true <- is_binary(prompt) do
+      prompt
+    else
+      _ -> ""
+    end
+  end
+
+  defp input_prompt_argument(workflow_snapshot) do
+    with {:ok, input} <- Map.fetch(workflow_snapshot, "input"),
+         {:ok, prompt} <- Map.fetch(input, "prompt"),
+         true <- is_binary(prompt) do
+      Jason.encode!(prompt)
+    else
+      _ -> ""
+    end
   end
 
   defp prompt_phase_index(phase_spec, index) when is_integer(index) and index >= 1 do

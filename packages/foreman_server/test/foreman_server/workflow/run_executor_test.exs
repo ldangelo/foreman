@@ -2256,6 +2256,51 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
+  describe "prompt_template_assigns/4 — input.prompt keys" do
+    defp make_state(workflow_snapshot) do
+      %{
+        run_id: "run-test",
+        task: %{"workflow_snapshot" => workflow_snapshot},
+        artifact_base: "/tmp"
+      }
+    end
+
+    defp phase_spec do
+      %{
+        "name" => "test-phase",
+        "action" => "prompt",
+        "context" => %{}
+      }
+    end
+
+    test "no input block — both keys return empty string" do
+      snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc"}
+      state = make_state(snapshot)
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+
+      assert assigns["input.prompt"] == ""
+      assert assigns["input.prompt_argument"] == ""
+    end
+
+    test "input.prompt present — prompt is verbatim, prompt_argument is JSON-encoded" do
+      snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc", "input" => %{"prompt" => "hello"}}
+      state = make_state(snapshot)
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+
+      assert assigns["input.prompt"] == "hello"
+      assert assigns["input.prompt_argument"] == "\"hello\""
+    end
+
+    test "input.prompt with newlines — prompt is verbatim, newlines preserved in prompt_argument" do
+      snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc", "input" => %{"prompt" => "multi\nline"}}
+      state = make_state(snapshot)
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+
+      assert assigns["input.prompt"] == "multi\nline"
+      assert assigns["input.prompt_argument"] == "\"multi\\nline\""
+    end
+  end
+
   defp kill_and_restart_dispatcher(_dispatcher) do
     app_sup = Process.whereis(ForemanServer.Application)
 
