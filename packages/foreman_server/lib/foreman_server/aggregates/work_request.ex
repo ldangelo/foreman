@@ -15,6 +15,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
 
   alias __MODULE__.State
 
+  alias ForemanServer.Aggregate
   alias ForemanServer.Aggregates.WorkRequest.State
   alias ForemanServer.Commands.WorkSubmit
   alias ForemanServer.Identity
@@ -43,6 +44,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   @spec stream_id(String.t()) :: String.t()
   def stream_id(work_id), do: "work:#{work_id}"
 
+  # Typed struct command: WorkSubmit
   @impl true
   def handle_command(state, %{__struct__: WorkSubmit} = cmd)
       when is_nil(state) or is_struct(state, State) do
@@ -60,15 +62,86 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     end
   end
 
-  @impl true
+  # Map-type commands — only for State structs (not plain maps)
+  def handle_command(state, %{type: type, payload: payload})
+      when is_struct(state, State) do
+    case type do
+      "work.execution_complete" ->
+        handle_execution_complete(state, payload)
+
+      "work.execution_fail" ->
+        handle_execution_fail(state, payload)
+
+      "work.cancel" ->
+        handle_cancel(state, payload)
+
+      _ ->
+        :unhandled
+    end
+  end
+
+  # Unknown / unhandled commands (plain maps or nil state)
   def handle_command(_state, _command), do: :unhandled
 
   # ---------------------------------------------------------------------------
-  # Private
+  # Private: command handlers
+  # ---------------------------------------------------------------------------
+
+  defp handle_execution_complete(state, payload) do
+    with {:ok, run_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :run_id, nil), :run_id),
+         :ok <- require_run_matches_bound(state, run_id),
+         :ok <- require_not_terminal(state) do
+      work_id = Aggregate.get(payload, :work_id, nil)
+      {:ok, %WorkExecutionCompleted{work_id: work_id, run_id: run_id}}
+    end
+  end
+
+  defp handle_execution_fail(state, payload) do
+    with {:ok, run_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :run_id, nil), :run_id),
+         :ok <- require_run_matches_bound(state, run_id),
+         :ok <- require_not_terminal(state) do
+      work_id = Aggregate.get(payload, :work_id, nil)
+      {:ok, %WorkExecutionFailed{work_id: work_id, run_id: run_id}}
+    end
+  end
+
+  defp handle_cancel(%State{status: status}, _payload)
+      when status in [:succeeded, :failed, :cancelled],
+      do: {:ok, nil}
+
+  defp handle_cancel(state, payload) do
+    with :ok <- require_not_terminal(state) do
+      work_id = Aggregate.get(payload, :work_id, nil)
+      {:ok, %WorkCancelled{work_id: work_id}}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Private: validation helpers
   # ---------------------------------------------------------------------------
 
   defp validate_prompt(prompt) when is_binary(prompt) and byte_size(prompt) > 0, do: {:ok, prompt}
   defp validate_prompt(_), do: {:error, {:invalid_envelope, :missing_prompt}}
+
+  defp require_not_terminal(%State{status: status})
+      when status in [:succeeded, :failed, :cancelled],
+      do: {:error, {:work_terminal, status}}
+
+  defp require_not_terminal(%State{}), do: :ok
+
+  # Compares payload run_id against bound_run_id in state.
+  # Models Task.require_run_matches_bound/2.
+  # Allows nil bound_run_id (work not yet bound to a run).
+  defp require_run_matches_bound(%State{bound_run_id: nil}, _run_id), do: :ok
+
+  defp require_run_matches_bound(%State{bound_run_id: bound}, run_id)
+      when bound == run_id,
+      do: :ok
+
+  defp require_run_matches_bound(%State{bound_run_id: bound}, run_id),
+    do: {:error, {:run_id_mismatch, bound, run_id}}
 
   @impl true
   def apply_event(%State{} = state, %WorkSubmitted{} = event) do

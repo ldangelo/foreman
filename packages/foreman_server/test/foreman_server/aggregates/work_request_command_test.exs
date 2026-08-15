@@ -4,7 +4,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
   alias ForemanServer.Aggregates.WorkRequest
   alias ForemanServer.Aggregates.WorkRequest.State
   alias ForemanServer.Commands.WorkSubmit
-  alias ForemanServer.Events.WorkSubmitted
+  alias ForemanServer.Events.{WorkCancelled, WorkExecutionCompleted, WorkExecutionFailed, WorkSubmitted}
   alias ForemanServer.Identity
 
   defp uuid, do: EventStore.UUID.uuid4()
@@ -128,6 +128,219 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
 
       assert {:ok, %WorkSubmitted{} = event} = WorkRequest.handle_command(state, cmd)
       assert event.work_id == "work-9"
+    end
+  end
+
+  describe "handle_command/2 — work.execution_complete" do
+    test "transitions to terminal with matching run_id" do
+      state = %State{
+        work_id: "work-1",
+        status: :running,
+        bound_run_id: "run-1"
+      }
+
+      cmd = %{
+        type: "work.execution_complete",
+        payload: %{work_id: "work-1", run_id: "run-1"}
+      }
+
+      assert {:ok, %WorkExecutionCompleted{work_id: "work-1", run_id: "run-1"} = event} =
+               WorkRequest.handle_command(state, cmd)
+
+      assert event.work_id == "work-1"
+      assert event.run_id == "run-1"
+    end
+
+    test "returns error with mismatched run_id" do
+      state = %State{
+        work_id: "work-1",
+        status: :running,
+        bound_run_id: "run-bound"
+      }
+
+      cmd = %{
+        type: "work.execution_complete",
+        payload: %{work_id: "work-1", run_id: "run-wrong"}
+      }
+
+      assert {:error, {:run_id_mismatch, "run-bound", "run-wrong"}} =
+               WorkRequest.handle_command(state, cmd)
+    end
+
+    test "allows nil bound_run_id (forward-compat, work not yet bound)" do
+      state = %State{
+        work_id: "work-1",
+        status: :running,
+        bound_run_id: nil
+      }
+
+      cmd = %{
+        type: "work.execution_complete",
+        payload: %{work_id: "work-1", run_id: "run-1"}
+      }
+
+      assert {:ok, %WorkExecutionCompleted{}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects on already-succeeded status" do
+      state = %State{work_id: "work-1", status: :succeeded, bound_run_id: "run-1"}
+
+      cmd = %{
+        type: "work.execution_complete",
+        payload: %{work_id: "work-1", run_id: "run-1"}
+      }
+
+      assert {:error, {:work_terminal, :succeeded}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects on already-failed status" do
+      state = %State{work_id: "work-1", status: :failed, bound_run_id: "run-1"}
+
+      cmd = %{
+        type: "work.execution_complete",
+        payload: %{work_id: "work-1", run_id: "run-1"}
+      }
+
+      assert {:error, {:work_terminal, :failed}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects when run_id is missing from payload" do
+      state = %State{work_id: "work-1", status: :running, bound_run_id: "run-1"}
+
+      cmd = %{type: "work.execution_complete", payload: %{work_id: "work-1"}}
+
+      assert {:error, {:missing_or_invalid, :run_id}} =
+               WorkRequest.handle_command(state, cmd)
+    end
+  end
+
+  describe "handle_command/2 — work.execution_fail" do
+    test "transitions to terminal with matching run_id" do
+      state = %State{
+        work_id: "work-1",
+        status: :running,
+        bound_run_id: "run-1"
+      }
+
+      cmd = %{
+        type: "work.execution_fail",
+        payload: %{work_id: "work-1", run_id: "run-1"}
+      }
+
+      assert {:ok, %WorkExecutionFailed{work_id: "work-1", run_id: "run-1"} = event} =
+               WorkRequest.handle_command(state, cmd)
+
+      assert event.work_id == "work-1"
+      assert event.run_id == "run-1"
+    end
+
+    test "returns error with mismatched run_id" do
+      state = %State{
+        work_id: "work-1",
+        status: :running,
+        bound_run_id: "run-bound"
+      }
+
+      cmd = %{
+        type: "work.execution_fail",
+        payload: %{work_id: "work-1", run_id: "run-wrong"}
+      }
+
+      assert {:error, {:run_id_mismatch, "run-bound", "run-wrong"}} =
+               WorkRequest.handle_command(state, cmd)
+    end
+
+    test "allows nil bound_run_id (forward-compat, work not yet bound)" do
+      state = %State{
+        work_id: "work-1",
+        status: :running,
+        bound_run_id: nil
+      }
+
+      cmd = %{
+        type: "work.execution_fail",
+        payload: %{work_id: "work-1", run_id: "run-1"}
+      }
+
+      assert {:ok, %WorkExecutionFailed{}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects on already-succeeded status" do
+      state = %State{work_id: "work-1", status: :succeeded, bound_run_id: "run-1"}
+
+      cmd = %{type: "work.execution_fail", payload: %{work_id: "work-1", run_id: "run-1"}}
+
+      assert {:error, {:work_terminal, :succeeded}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects on already-failed status" do
+      state = %State{work_id: "work-1", status: :failed, bound_run_id: "run-1"}
+
+      cmd = %{type: "work.execution_fail", payload: %{work_id: "work-1", run_id: "run-1"}}
+
+      assert {:error, {:work_terminal, :failed}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects when run_id is missing from payload" do
+      state = %State{work_id: "work-1", status: :running, bound_run_id: "run-1"}
+
+      cmd = %{type: "work.execution_fail", payload: %{work_id: "work-1"}}
+
+      assert {:error, {:missing_or_invalid, :run_id}} =
+               WorkRequest.handle_command(state, cmd)
+    end
+  end
+
+  describe "handle_command/2 — work.cancel" do
+    test "transitions non-terminal work to cancelled" do
+      state = %State{work_id: "work-1", status: :running}
+
+      cmd = %{type: "work.cancel", payload: %{work_id: "work-1"}}
+
+      assert {:ok, %WorkCancelled{work_id: "work-1"} = event} =
+               WorkRequest.handle_command(state, cmd)
+
+      assert event.work_id == "work-1"
+    end
+
+    test "transitions queued work to cancelled" do
+      state = %State{work_id: "work-1", status: :queued}
+
+      cmd = %{type: "work.cancel", payload: %{work_id: "work-1"}}
+
+      assert {:ok, %WorkCancelled{}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "transitions submitted work to cancelled" do
+      state = %State{work_id: "work-1", status: :submitted}
+
+      cmd = %{type: "work.cancel", payload: %{work_id: "work-1"}}
+
+      assert {:ok, %WorkCancelled{}} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "idempotent no-op on already-succeeded work" do
+      state = %State{work_id: "work-1", status: :succeeded}
+
+      cmd = %{type: "work.cancel", payload: %{work_id: "work-1"}}
+
+      assert {:ok, nil} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "idempotent no-op on already-failed work" do
+      state = %State{work_id: "work-1", status: :failed}
+
+      cmd = %{type: "work.cancel", payload: %{work_id: "work-1"}}
+
+      assert {:ok, nil} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "idempotent no-op on already-cancelled work" do
+      state = %State{work_id: "work-1", status: :cancelled}
+
+      cmd = %{type: "work.cancel", payload: %{work_id: "work-1"}}
+
+      assert {:ok, nil} = WorkRequest.handle_command(state, cmd)
     end
   end
 
