@@ -27,10 +27,17 @@ defmodule ForemanServer.Aggregates.RunSlots do
   (used by `Aggregate.load/2`) and codec-decoded typed structs
   (`%RunSlotAcquired{}`, etc.). Both shapes are normalised to a plain map
   via `event_data_to_map/1`.
+
+  ## Command dispatch
+
+  Commands may be sent either as typed structs (`%RunSlotsAcquire{}`,
+  `%RunSlotsRelease{}`) or as map envelopes with `type` field
+  (`%{type: "run_slots.acquire", ...}`). Map envelopes are used by
+  `CommandGateway.dispatch_system/1`.
   """
 
   alias ForemanServer.Aggregate
-  alias ForemanServer.Commands.RunSlotsAcquire
+  alias ForemanServer.Commands.{RunSlotsAcquire, RunSlotsRelease, RunSlotsRemoveWaiter}
 
   alias ForemanServer.Events.{
     RunSlotAcquired,
@@ -54,6 +61,11 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   defmodule State do
     @moduledoc "Global run-slot state."
+    @type t :: %__MODULE__{
+            capacity: non_neg_integer() | nil,
+            holders: %{optional(String.t()) => %{acquired_at_ms: integer()}},
+            waiters: [RunSlots.Waiter.t()]
+          }
     @enforce_keys []
     defstruct [
       :capacity,
@@ -69,6 +81,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   # Typed-struct apply_event clauses
   # -------------------------------------------------------------------------
 
+  @spec apply_event(State.t(), any()) :: State.t()
   @impl true
   def apply_event(state, %RunSlotAcquired{} = event) do
     payload = event_data_to_map(event)
@@ -126,7 +139,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
           |> Map.put(new_holder_run_id, %{
             acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
           }),
-        waiters: drop_head_waiter(state.waiters)
+        waiters: drop_waiter(state.waiters, new_holder_run_id)
     }
   end
 
@@ -191,7 +204,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
               |> Map.put(new_holder_run_id, %{
                 acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
               }),
-            waiters: drop_head_waiter(state.waiters)
+            waiters: drop_waiter(state.waiters, new_holder_run_id)
         }
 
       "RunSlotWaiterRemoved" ->
@@ -215,31 +228,124 @@ defmodule ForemanServer.Aggregates.RunSlots do
     Enum.reject(waiters, &(&1.run_id == run_id))
   end
 
-  defp drop_head_waiter([]), do: []
-  defp drop_head_waiter([_ | tail]), do: tail
-
   # Converts a RecordedEvent or typed struct to a plain map for field access.
   defp event_data_to_map(%EventStore.RecordedEvent{data: data}) when is_map(data), do: data
   defp event_data_to_map(%EventStore.RecordedEvent{data: nil}), do: %{}
   defp event_data_to_map(%_{} = struct) when is_struct(struct), do: struct
 
   # -------------------------------------------------------------------------
-  # Command handlers
+  # Command handlers — typed structs (for direct testing)
   # -------------------------------------------------------------------------
 
   @impl true
   def handle_command(%State{} = state, %RunSlotsAcquire{} = cmd) do
+    do_acquire(state, cmd.run_id, cmd.capacity)
+  end
+
+  @impl true
+  def handle_command(%State{} = state, %RunSlotsRelease{} = cmd) do
+    do_release(state, cmd.run_id, cmd.capacity)
+  end
+
+  @impl true
+  def handle_command(%State{} = state, %RunSlotsRemoveWaiter{} = cmd) do
+    if Enum.any?(state.waiters, &(&1.run_id == cmd.run_id)) do
+      {:ok, %RunSlotWaiterRemoved{run_id: cmd.run_id}}
+    else
+      {:ok, nil}
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # Command handlers — map envelopes (for CommandGateway.dispatch_system/1)
+  # -------------------------------------------------------------------------
+
+  @impl true
+  def handle_command(%State{} = state, %{type: "run_slots.acquire"} = command) do
+    payload = Map.get(command, :payload) || %{}
+    run_id = Aggregate.get(payload, :run_id)
+    capacity = Aggregate.get(payload, :capacity)
+
+    with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id),
+         {:ok, capacity} <- required_non_neg_integer(capacity, :capacity) do
+      do_acquire(state, run_id, capacity)
+    else
+      {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  def handle_command(%State{} = state, %{type: "run_slots.release"} = command) do
+    payload = Map.get(command, :payload) || %{}
+    run_id = Aggregate.get(payload, :run_id)
+    capacity = Aggregate.get(payload, :capacity)
+
+    with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
+      capacity = if is_integer(capacity) and capacity >= 0, do: capacity, else: nil
+      do_release(state, run_id, capacity)
+    else
+      {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  def handle_command(%State{} = state, %{type: "run_slots.remove_waiter"} = command) do
+    payload = Map.get(command, :payload) || %{}
+    run_id = Aggregate.get(payload, :run_id)
+
+    with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
+      if Enum.any?(state.waiters, &(&1.run_id == run_id)) do
+        {:ok, %RunSlotWaiterRemoved{run_id: run_id}}
+      else
+        {:ok, nil}
+      end
+    else
+      {:error, _} = err -> err
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # Internal command helpers
+  # -------------------------------------------------------------------------
+
+  defp do_acquire(state, run_id, capacity) do
     now_ms = System.monotonic_time(:millisecond)
 
     cond do
-      Map.has_key?(state.holders, cmd.run_id) ->
-        {:ok, nil}  # idempotent no-op: already a holder
+      Map.has_key?(state.holders, run_id) ->
+        {:ok, nil}
 
-      map_size(state.holders) < cmd.capacity ->
-        {:ok, %RunSlotAcquired{run_id: cmd.run_id, capacity: cmd.capacity, acquired_at_ms: now_ms}}
+      map_size(state.holders) < capacity ->
+        {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: now_ms}}
+
       true ->
         position = length(state.waiters) + 1
-        {:ok, %RunSlotQueued{run_id: cmd.run_id, position: position, enqueued_at_ms: now_ms}}
+        {:ok, %RunSlotQueued{run_id: run_id, position: position, enqueued_at_ms: now_ms}}
     end
   end
+
+  defp do_release(state, run_id, capacity) do
+    if Map.has_key?(state.holders, run_id) do
+      now_ms = System.monotonic_time(:millisecond)
+      effective_capacity = if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
+
+      if Enum.empty?(state.waiters) do
+        {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity}}
+      else
+        {promoted, _remaining} = List.pop_at(state.waiters, 0)
+
+        {:ok, %RunSlotTransferred{
+          released_run_id: run_id,
+          acquired_run_id: promoted.run_id,
+          capacity: effective_capacity,
+          acquired_at_ms: now_ms
+        }}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp required_non_neg_integer(value, field) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp required_non_neg_integer(_value, field), do: {:error, {:missing_or_invalid, field}}
 end
