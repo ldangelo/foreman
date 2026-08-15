@@ -73,8 +73,8 @@ func taskCreate(c *client.Client, args []string) error {
 	description := fs.String("description", "", "Task description")
 	status := fs.String("status", "open", "Initial status (default: open)")
 	taskType := fs.String("task-type", "", "Task type discriminator (legacy field; preserves existing task classification)")
-	workflowType := fs.String("workflow-type", "", "Implementation workflow selector; one of "+strings.Join(supportedWorkflowTypes(), ", "))
-	trdPath := fs.String("trd-path", "", "Project-relative TRD path; required when --workflow-type is set")
+	workflowType := fs.String("workflow-type", "", "Workflow selector; maps to a server workflow manifest name")
+	trdPath := fs.String("trd-path", "", "Project-relative TRD path; required for implement-trd workflows")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -86,13 +86,8 @@ func taskCreate(c *client.Client, args []string) error {
 	workflowTypeValue := strings.TrimSpace(*workflowType)
 	trdPathValue := strings.TrimSpace(*trdPath)
 
-	if workflowTypeValue != "" {
-		if !validWorkflowType(workflowTypeValue) {
-			return usageError(fs, "foreman task create: --workflow-type must be one of %s (got %q)", strings.Join(supportedWorkflowTypes(), ", "), workflowTypeValue)
-		}
-		if trdPathValue == "" {
-			return usageError(fs, "foreman task create: --trd-path is required when --workflow-type is set")
-		}
+	if requiresTrdPath(workflowTypeValue) && trdPathValue == "" {
+		return usageError(fs, "foreman task create: --trd-path is required for --workflow-type %s", workflowTypeValue)
 	}
 	if trdPathValue != "" {
 		if err := validateProjectRelativePath("trd-path", trdPathValue); err != nil {
@@ -131,23 +126,12 @@ func taskCreate(c *client.Client, args []string) error {
 	return postCommand(c, body)
 }
 
-// supportedWorkflowTypes lists the implementation workflow selectors
-// the server recognizes. Server-side approval precedence
-// (workflow_type || task_type || default) only resolves to a known
-// implementation manifest when the value matches; unknown values are
-// rejected at the CLI so the failure is visible rather than silently
-// falling back to the default task workflow.
-func supportedWorkflowTypes() []string {
-	return []string{"implement-trd", "implement-trd-beads"}
-}
-
-func validWorkflowType(s string) bool {
-	for _, v := range supportedWorkflowTypes() {
-		if s == v {
-			return true
-		}
-	}
-	return false
+// requiresTrdPath identifies workflow selectors whose approval-time
+// implementation context needs a committed TRD path. Other workflow
+// names are server manifest selectors and do not imply TRD inputs at
+// creation time.
+func requiresTrdPath(s string) bool {
+	return s == "implement-trd" || s == "implement-trd-beads"
 }
 
 // validateProjectRelativePath rejects absolute paths and traversals

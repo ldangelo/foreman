@@ -781,11 +781,13 @@ phase.
 
 The provider-facing task type (for example `--task-type feature`,
 `--task-type bug`, `--task-type chore`) is independent of the
-implementation workflow the run will execute. `--workflow-type`
-(`implement-trd` or `implement-trd-beads`) selects which bundled
-manifest Foreman resolves at approval. Approval precedence is
+workflow the run will execute. `--workflow-type` selects the server
+workflow manifest Foreman resolves at approval (for example `bug`,
+`implement-trd`, or `implement-trd-beads`). Approval precedence is
 `workflow_type || task_type || default_task_type`; existing tasks and
-manifests without `workflow_type` keep their prior behavior.
+manifests without `workflow_type` keep their prior behavior. Only the
+`implement-trd` and `implement-trd-beads` selectors require
+`--trd-path` at task creation.
 
 ### Tracked-TRD requirement
 
