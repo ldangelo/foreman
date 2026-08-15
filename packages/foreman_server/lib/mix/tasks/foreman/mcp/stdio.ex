@@ -19,9 +19,8 @@ defmodule Mix.Tasks.Foreman.Mcp.Stdio do
 
     # Start the ForemanServer application
     {:ok, _} = Application.ensure_all_started(:foreman_server)
-
     # Build the child spec with stdio transport
-    mcp_spec = ForemanServer.MCP.child_spec(transport: :stdio)
+    mcp_spec = ForemanServer.MCP.Stdio.child_spec()
 
     # Start the MCP supervisor
     {:ok, _pid} = Supervisor.start_link([mcp_spec], strategy: :one_for_one, name: __MODULE__)

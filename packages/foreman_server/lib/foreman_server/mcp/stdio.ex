@@ -1,20 +1,143 @@
 defmodule ForemanServer.MCP.Stdio do
   @moduledoc """
-  Starts the ForemanServer MCP server with stdio transport.
+  Anubis MCP server for Foreman — stdio transport variant.
 
-  This module provides a convenience function for starting the MCP server
-  over stdin/stdout (JSON-RPC 2.0 framing).
-
-  Auth is verified at `initialize` and again before each tool call.
+  Used by `Mix.Tasks.Foreman.Mcp.Stdio` to run the MCP server over
+  stdin/stdout instead of HTTP.  Auth (bearer token) is extracted from the
+  `authorization` field of the JSON-RPC `initialize` request params and
+  verified in `init/2`, then re-verified before each tool call.
   """
-  alias ForemanServer.MCP
+
+  use Anubis.Server,
+    name: "foreman-mcp-stdio",
+    version: "1.0.0",
+    capabilities: [:tools],
+    authorization: [
+      validator: {ForemanServer.MCP.Auth, []}
+    ]
+
+  alias ForemanServer.MCP.Auth
+  alias ForemanServer.MCP.Tools
+  alias Anubis.MCP.Error
+  alias Anubis.MCP.Response
+  alias Anubis.Server.Component.Tool
+
+  # Reuse the same tool definitions as ForemanServer.MCP
+  @tool_schemas Tools.list_tools()
+
+  @tools Enum.map(@tool_schemas, fn schema ->
+           %Tool{
+             name: schema.name,
+             title: schema[:title],
+             description: schema.description,
+             input_schema: schema.inputSchema,
+             handler: Tools
+           }
+         end)
+
+  @impl true
+  def __components__(:tool), do: @tools
+
+  # -------------------------------------------------------------------
+  # Supervision / child spec — stdio transport
+  # -------------------------------------------------------------------
+
+  @doc "Child spec for stdio transport (transport: :stdio)."
+  def child_spec(opts \\ []) do
+    opts =
+      opts
+      |> Keyword.put_new(:transport, :stdio)
+      |> Keyword.put_new(:authorization, authorization_config())
+
+    %{
+      id: __MODULE__,
+      start: {Anubis.Server.Supervisor, :start_link, [__MODULE__, opts]},
+      type: :supervisor,
+      restart: :permanent
+    }
+  end
+
+  # -------------------------------------------------------------------
+  # Anubis.Server callbacks
+  # -------------------------------------------------------------------
 
   @doc """
-  Starts the MCP server with stdio transport, linked to the current process.
+  Verifies the bearer token from the `initialize` request params.
+
+  For stdio there is no HTTP Authorization header, so the token must be
+  present in `frame.init_meta["authorization"]` as a "Bearer <token>" string.
   """
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts \\ []) do
-    MCP.child_spec([transport: :stdio] ++ opts)
-    |> Supervisor.start_link(strategy: :one_for_one, name: __MODULE__)
+  @impl Anubis.Server
+  def init(client_info, frame) do
+    # For stdio, auth comes from the JSON-RPC initialize request params.
+    # The MCP client embeds the bearer token as init_meta["authorization"].
+    token =
+      case frame do
+        %{init_meta: %{"authorization" => auth}} when is_binary(auth) ->
+          # "Bearer <token>" string from the MCP client
+          String.replace_prefix(auth, "Bearer ", "")
+
+        %{transport_context: %{auth: claims}} when is_map(claims) ->
+          # Fallback: claims already set by an upstream transport layer
+          claims["token"]
+
+        _ ->
+          nil
+      end
+
+    case Auth.verify_token(token) do
+      :ok ->
+        # Store the token in frame assigns so handle_tool_call can re-verify
+        verified_frame = Anubis.Server.Frame.assign(frame, :auth_token, token)
+        {:ok, verified_frame}
+
+      {:error, reason} ->
+        {:error, %Error{code: "UNAUTHORIZED", message: inspect(reason)}}
+    end
+  end
+
+  @doc """
+  Handles a tool call.  Re-verifies the stored auth token from the frame
+  assigns before delegating to ForemanServer.MCP.Tools.call_tool/2.
+  """
+  @impl Anubis.Server
+  def handle_tool_call(name, arguments, frame) do
+    # Re-verify auth from the stored token
+    token = Anubis.Server.Frame.get_assign(frame, :auth_token)
+
+    case Auth.verify_request(token, name, arguments) do
+      :ok ->
+        Tools.call_tool(name, arguments)
+        |> wrap_tool_result(name, frame)
+
+      {:error, reason} ->
+        {:error, reason, frame}
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Private
+  # -------------------------------------------------------------------
+
+  defp authorization_config do
+    [validator: {Auth, []}]
+  end
+
+  defp wrap_tool_result({:ok, data}, _name, frame) do
+    content = [%{"type" => "text", "text" => Jason.encode!(data)}]
+
+    {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},
+     frame}
+  end
+
+  defp wrap_tool_result({:error, %{code: code, message: message}}, _name, frame) do
+    {:error, %Error{code: code, message: message}, frame}
+  end
+
+  defp wrap_tool_result(other, name, frame) do
+    content = [%{"type" => "text", "text" => inspect(other)}]
+
+    {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},
+     frame}
   end
 end
