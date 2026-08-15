@@ -202,6 +202,12 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_scheduler_intents)
   end
 
+  @doc "Return the current run-slot queue status: capacity, running run ids, and waiting run ids in FIFO order."
+  @spec queue_status() :: %{capacity: non_neg_integer(), running: [String.t()], waiting: [String.t()]}
+  def queue_status do
+    GenServer.call(__MODULE__, :queue_status)
+  end
+
   @doc """
   Return the projected worktree for an `operation_id` (the deterministic
   correlation id `"wt-<run_id>-<phase_id>"`), or nil if not found.
@@ -369,6 +375,19 @@ defmodule ForemanServer.ProjectionStore do
     Process.put(:projection_subscribers, Map.put(state.subscribers, pid, true))
     Process.monitor(pid)
     {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, true)}}
+  end
+
+  @impl true
+  def handle_call(:queue_status, _from, state) do
+    %{capacity: capacity, holders: holders, waiters: waiters} = state.run_slots
+
+    reply = %{
+      capacity: capacity,
+      running: Map.keys(holders),
+      waiting: Enum.map(waiters, & &1.run_id)
+    }
+
+    {:reply, reply, state}
   end
 
   @impl true
@@ -594,7 +613,8 @@ defmodule ForemanServer.ProjectionStore do
       subscribers: %{},
       project_active_runs: %{},
       worktrees: %{},
-      worktree_create_orphans: %{}
+      worktree_create_orphans: %{},
+      run_slots: %{capacity: 0, holders: %{}, waiters: []}
     }
   end
 
@@ -1225,6 +1245,83 @@ defmodule ForemanServer.ProjectionStore do
 
       _ ->
         touch_run_for_payload(state, payload)
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # RunSlot events — folded into state.run_slots
+  # -------------------------------------------------------------------------
+
+  defp apply_event_by_type(state, "RunSlotAcquired", payload) do
+    run_id = get(payload, :run_id)
+    capacity = get(payload, :capacity)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        %{slots | capacity: capacity, holders: Map.put(slots.holders, run_id, :held)}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunSlotQueued", payload) do
+    run_id = get(payload, :run_id)
+    position = get(payload, :position)
+    enqueued_at_ms = get(payload, :enqueued_at_ms)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        waiter = %{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms}
+        %{slots | waiters: slots.waiters ++ [waiter]}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunSlotReleased", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        %{slots | holders: Map.delete(slots.holders, run_id)}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunSlotTransferred", payload) do
+    released_run_id = get(payload, :released_run_id)
+    acquired_run_id = get(payload, :acquired_run_id)
+
+    if valid_id?(released_run_id) and valid_id?(acquired_run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        new_holders =
+          slots.holders
+          |> Map.delete(released_run_id)
+          |> Map.put(acquired_run_id, :held)
+
+        # Remove the promoted waiter
+        new_waiters = Enum.reject(slots.waiters, &(&1.run_id == acquired_run_id))
+
+        %{slots | holders: new_holders, waiters: new_waiters}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunSlotWaiterRemoved", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
+      end)
+    else
+      state
     end
   end
 
