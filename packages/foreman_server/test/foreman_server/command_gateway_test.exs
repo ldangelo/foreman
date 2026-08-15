@@ -1406,6 +1406,80 @@ defmodule ForemanServer.CommandGatewayTest do
 
       assert result["command"] == "{{input.prompt}}"
     end
+
+    # TRD-020: input.prompt_argument is built as Jason.encode!(input.prompt)
+    test "render_strict_fields derives input.prompt_argument via Jason.encode! (simple string)" do
+      snapshot = %{
+        "input" => %{"prompt" => "hello"},
+        "phases" => [
+          %{"command" => "run {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      assert result["phases"] == [
+        %{"command" => "run \"hello\""}
+      ]
+    end
+
+    test "render_strict_fields derives input.prompt_argument via Jason.encode! (special chars)" do
+      snapshot = %{
+        "input" => %{"prompt" => "multi\nline"},
+        "phases" => [
+          %{"command" => "run {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      # Jason.encode!("multi\nline") => "\"multi\\nline\""
+      assert result["phases"] == [
+        %{"command" => "run \"multi\\nline\""}
+      ]
+    end
+
+    test "render_strict_fields derives input.prompt_argument via Jason.encode! (empty string)" do
+      snapshot = %{
+        "input" => %{"prompt" => ""},
+        "phases" => [
+          %{"command" => "run {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      # Jason.encode!("") => "\"\""  (a JSON string containing empty string)
+      assert result["phases"] == [
+        %{"command" => "run \"\""}
+      ]
+    end
+
+    test "render_strict_fields preserves explicit input.prompt_argument (TRD-019 override)" do
+      # When prompt_argument is already present it must NOT be overwritten
+      snapshot = %{
+        "input" => %{"prompt" => "hello", "prompt_argument" => "--spec test"},
+        "phases" => [
+          %{"command" => "run {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      assert result["phases"] == [
+        %{"command" => "run --spec test"}
+      ]
+    end
+
+    test "render_command substitutes pre-built input.prompt_argument in command template" do
+      # When prompt_argument is pre-built (as Jason.encode!(prompt)) it substitutes directly
+      input = %{"prompt" => "hello", "prompt_argument" => Jason.encode!("hello")}
+      phase = %{"command" => "arg={{input.prompt_argument}}"}
+
+      result = render_command(phase, nil, input)
+
+      assert result["command"] == "arg=\"hello\""
+    end
   end
 
   describe "task.retry validation" do
