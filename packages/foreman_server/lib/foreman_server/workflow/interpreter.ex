@@ -334,13 +334,13 @@ defmodule ForemanServer.Workflow.Interpreter do
       nil ->
         :ok
 
-      value when value in ["always", "never"] ->
+      value when value in ["always", "never", "on_success"] ->
         :ok
 
       _other ->
         raise Workflow.MissingRequiredPhaseError,
           message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.cleanup\" must be one of: always, never"
+            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.cleanup\" must be one of: always, never, on_success"
     end
   end
 

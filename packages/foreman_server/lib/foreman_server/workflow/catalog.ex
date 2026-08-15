@@ -458,6 +458,7 @@ defmodule ForemanServer.Workflow.Catalog do
   defp normalize_worktree_cleanup(nil), do: "always"
   defp normalize_worktree_cleanup("always"), do: "always"
   defp normalize_worktree_cleanup("never"), do: "never"
+  defp normalize_worktree_cleanup("on_success"), do: "on_success"
 
   defp any_phase_declares_worktree?(raw_phases) do
     Enum.any?(raw_phases, fn phase -> Map.has_key?(phase, "worktree") end)

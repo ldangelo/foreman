@@ -1034,6 +1034,7 @@ defmodule ForemanServer.ProjectionStore do
           |> Map.put(:run_id, nil)
           |> Map.put(:workflow_snapshot, nil)
           |> Map.put(:acknowledged_run_id, nil)
+          |> Map.put(:failure_reason, nil)
           |> Map.put(:run_terminal_reason, nil)
           |> Map.put(:run_terminal_at, nil)
           |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))

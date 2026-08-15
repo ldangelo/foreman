@@ -318,11 +318,11 @@ defmodule ForemanServer.Workflow.InterpreterTest do
           - name: only
             command: "/skill:x"
             worktree:
-              cleanup: on_success
+              cleanup: sometimes
         """)
 
       assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/\"worktree.cleanup\" must be one of: always, never/,
+                   ~r/\"worktree.cleanup\" must be one of: always, never, on_success/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
 

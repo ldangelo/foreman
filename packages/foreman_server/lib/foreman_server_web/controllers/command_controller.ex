@@ -109,8 +109,28 @@ defmodule ForemanServerWeb.CommandController do
         end
     end
   end
-
   defp build_envelope(_), do: {:error, :invalid_envelope}
+  # No-id task.create: returns nil so the gateway resolves the backend ID.
+  defp resolve_aggregate_id("task.create", payload, params) do
+    task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
+    supplied = get_value(params, :aggregate_id) || get_value(params, "aggregate_id")
+    cond do
+      is_binary(task_id) and task_id != "" ->
+        expected_id = "task:#{task_id}"
+
+        cond do
+          is_nil(supplied) or supplied == "" -> {:ok, expected_id}
+          supplied == expected_id -> {:ok, supplied}
+          true -> {:error, :aggregate_id_mismatch}
+        end
+
+      is_nil(task_id) and (is_nil(supplied) or supplied == "") ->
+        {:ok, nil}
+
+      true ->
+        {:error, :aggregate_id_mismatch}
+    end
+  end
 
   defp resolve_aggregate_id(type, payload, params) do
     expected_prefix = aggregate_prefix(type)

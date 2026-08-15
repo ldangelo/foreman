@@ -7,4 +7,4 @@ phases:
       enabled: true
       base: "{{implementation.source_revision}}"
       branch: foreman/{run_id}/{phase}
-      cleanup: always
+      cleanup: on_success

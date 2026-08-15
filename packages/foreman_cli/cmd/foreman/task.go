@@ -67,7 +67,7 @@ type commandEnvelope struct {
 
 func taskCreate(c *client.Client, args []string) error {
 	fs := newFlagSet("task create")
-	taskID := fs.String("id", "", "Task ID (required)")
+	taskID := fs.String("id", "", "Task ID (optional; omit to auto-generate via backend provider)")
 	projectID := fs.String("project", "", "Project ID (required)")
 	title := fs.String("title", "", "Task title (required)")
 	description := fs.String("description", "", "Task description")
@@ -79,8 +79,8 @@ func taskCreate(c *client.Client, args []string) error {
 		return err
 	}
 
-	if *taskID == "" || *projectID == "" || *title == "" {
-		return usageError(fs, "foreman task create: --id, --project, --title are required")
+	if *projectID == "" || *title == "" {
+		return usageError(fs, "foreman task create: --project and --title are required; --id is optional")
 	}
 
 	workflowTypeValue := strings.TrimSpace(*workflowType)
@@ -96,10 +96,13 @@ func taskCreate(c *client.Client, args []string) error {
 	}
 
 	payload := map[string]any{
-		"task_id":    *taskID,
 		"project_id": *projectID,
 		"title":      *title,
 		"status":     *status,
+	}
+
+	if *taskID != "" {
+		payload["task_id"] = *taskID
 	}
 
 	if *description != "" {

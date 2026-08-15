@@ -3,7 +3,7 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
 
   @template_names ~w(discover assess plan implement implement-trd implement-trd-beads verify release)
   @template_files Enum.map(@template_names, &"#{&1}.yaml")
-  @prompt_names ~w(discover assess implement verify release)
+  @prompt_names ~w(create-pr discover assess implement verify release)
   @prompt_files Enum.map(@prompt_names, &"#{&1}.md")
 
   test "install/1 copies bundled templates into the workflows directory" do

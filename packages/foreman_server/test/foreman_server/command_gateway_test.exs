@@ -305,6 +305,157 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
+  describe "task.create no-id flow (AC-020-NO-ID)" do
+    import Mox
+    alias ForemanServer.TaskProviders.BrRunnerMock
+    alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+
+    # Stub module: cmd/3 returns a synthetic bead for no-id tests.
+    # Individual tests override cmd/3 via Mox.expect to capture bead_id.
+    defmodule NoIdBrRunnerStub do
+      @behaviour ForemanServer.TaskProviders.BrRunner
+      @impl true
+      def cmd(_request, _project_config, _opts) do
+        {:ok, %{stdout: Jason.encode!(%{"id" => "stub-beader-#{:rand.uniform(99999)}", "title" => "stub", "status" => "open", "priority" => 2, "issue_type" => "task"}), stderr: "", exit_code: 0}}
+      end
+    end
+
+    setup do
+      # Isolate from background execution (same pattern as implementation context freezing tests)
+      assert :ok =
+               Supervisor.terminate_child(
+                 ForemanServer.Application,
+                 ForemanServer.Workflow.Dispatcher
+               )
+
+      on_exit(fn ->
+        assert {:ok, _pid} =
+                 Supervisor.restart_child(
+                   ForemanServer.Application,
+                   ForemanServer.Workflow.Dispatcher
+                 )
+      end)
+
+      ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+
+      on_exit(fn ->
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      # Register a project with a beads task provider
+      project_id = unique_id("project")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{project_id}",
+                 type: "project.register",
+                 payload: %{
+                   project_id: project_id,
+                   path: System.tmp_dir!(),
+                   task_provider: %{
+                     provider: :beads,
+                     config: %{"database_path" => "/tmp/cg-noid-#{project_id}.db"}
+                   }
+                 }
+               })
+
+      :ok =
+        TaskProviderRegistry.register_for_project(
+          project_id,
+          ForemanServer.TaskProviders.BeadsAdapter,
+          %{"database_path" => "/tmp/cg-noid-#{project_id}.db"}
+        )
+
+      on_exit(fn ->
+        _ = TaskProviderRegistry.unregister_for_project(project_id, :test_cleanup)
+      end)
+
+      # Install the no-id stub as default; individual tests override with expect
+      stub_with(BrRunnerMock, __MODULE__.NoIdBrRunnerStub)
+
+      %{project_id: project_id}
+    end
+
+    setup :verify_on_exit!
+
+    test "no aggregate_id / no task_id resolves issue id via provider and enriches aggregate_id + payload",
+         %{project_id: project_id} do
+      bead_id = "bead-#{:rand.uniform(99999)}"
+
+      expect(BrRunnerMock, :cmd, 1, fn
+        {:create, %{title: title, priority: 2, type: "task"}}, _cfg, _opts
+        when is_binary(title) ->
+          send(self(), {:bead_id, bead_id})
+          {:ok, %{stdout: Jason.encode!(%{"id" => bead_id, "title" => title, "status" => "open", "priority" => 2, "issue_type" => "task"}), stderr: "", exit_code: 0}}
+      end)
+
+      assert {:ok, event_spec} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 # No aggregate_id → no-id branch in prepare_operator_command
+                 type: "task.create",
+                 payload: %{
+                   project_id: project_id,
+                   title: "no-id task",
+                   # validate_create_attrs requires priority (0..4 int) and task_type
+                   priority: 2,
+                   task_type: "task"
+                 }
+               })
+
+      # The aggregate_id is set to "task:<bead_id>" by prepare_operator_command
+      assert event_spec["stream_id"] == "task:#{bead_id}"
+      assert event_spec["payload"]["task_id"] == bead_id
+      assert event_spec["payload"]["external_id"] == bead_id
+
+      # Verify the mock was actually called (bead_id sent)
+      assert_receive {:bead_id, ^bead_id}
+    end
+
+    test "client-supplied external_id is rejected in no-id branch",
+         %{project_id: project_id} do
+      assert {:error, :external_id_not_allowed_via_operator} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 type: "task.create",
+                 payload: %{
+                   project_id: project_id,
+                   title: "no-id task",
+                   external_id: "user-provided-id"
+                 }
+               })
+    end
+
+    test "client-supplied task_id is rejected in no-id branch",
+         %{project_id: project_id} do
+      assert {:error, {:invalid_envelope, :missing_aggregate_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 type: "task.create",
+                 payload: %{
+                   project_id: project_id,
+                   title: "no-id task",
+                   task_id: "client-task-id"
+                 }
+               })
+    end
+
+    test "client-supplied task_id (string key) is rejected in no-id branch",
+         %{project_id: project_id} do
+      assert {:error, {:invalid_envelope, :missing_aggregate_id}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 type: "task.create",
+                 payload: %{
+                   :project_id => project_id,
+                   :title => "no-id task",
+                   "task_id" => "client-task-id"
+                 }
+               })
+    end
+  end
+
   describe "task.approve implementation context freezing" do
     import Mox
     alias ForemanServer.TaskProviders.BrRunnerMock

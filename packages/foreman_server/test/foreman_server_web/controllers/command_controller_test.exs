@@ -75,6 +75,19 @@ defmodule ForemanServerWeb.CommandControllerTest do
     assert json_response(conn, 400)["error"] == "invalid_envelope"
   end
 
+  test "POST /api/commands task.create rejects non-string task_id without aggregate_id" do
+    body = %{
+      type: "task.create",
+      payload: %{
+        task_id: 123,
+        project_id: "proj-real",
+        title: "demo"
+      }
+    }
+
+    conn = build_conn() |> post("/api/commands", body)
+    assert json_response(conn, 400)["error"] == "invalid_envelope"
+  end
   test "POST /api/commands rejects system command type" do
     body = %{type: "run.start", payload: %{run_id: "r1"}}
     conn = build_conn() |> post("/api/commands", body)

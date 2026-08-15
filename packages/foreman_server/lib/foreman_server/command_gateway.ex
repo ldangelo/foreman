@@ -6,8 +6,11 @@ defmodule ForemanServer.CommandGateway do
 
     * `dispatch_operator/2` — public operator commands. Currently allows
       only `project.register`, `task.create`, and `task.approve`. The
-      command must carry `command_id`, `aggregate_id`, `type`, and a
-      `payload` map. Returns `{:error, {:command_not_allowed, type}}`
+      command must carry `command_id`, `type`, and a `payload` map.
+      `aggregate_id` is required except for `task.create` in no-id mode
+      (where both `aggregate_id` and `payload.task_id` are absent); in that
+      case the gateway resolves the backend issue ID automatically.
+      Returns `{:error, {:command_not_allowed, type}}`
       for any other type.
     * `dispatch_system/2` — trusted OTP automation (overwatch, recovery,
       supervisor, dispatcher, etc.). The `type` is unrestricted.
@@ -36,6 +39,7 @@ defmodule ForemanServer.CommandGateway do
   """
 
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
@@ -46,7 +50,10 @@ defmodule ForemanServer.CommandGateway do
   @doc """
   Dispatch a command originating from a public operator path.
 
-  Required keys: `command_id`, `aggregate_id`, `type`, `payload`.
+  Required keys: `command_id`, `type`, `payload`.  `aggregate_id` is
+  required except for `task.create` in no-id mode (both `aggregate_id`
+  and `payload.task_id` absent), where the gateway resolves the backend
+  issue ID and enriches the command automatically.
   Returns `{:error, {:command_not_allowed, type}}` when the type is
   not in `@allowed_operator_types`. Other invalid envelopes return
   `{:error, {:invalid_envelope, _}}` so callers can distinguish a
@@ -55,9 +62,10 @@ defmodule ForemanServer.CommandGateway do
   @spec dispatch_operator(map(), integer()) :: dispatch_result()
   def dispatch_operator(command, timeout \\ 5_000) when is_map(command) do
     with {:ok, normalized} <- normalize_operator_envelope(command),
-         :ok <- validate_aggregate_id(normalized),
-         {:ok, prepared} <- enrich_operator_command(normalized) do
-      dispatch_and_emit_project_telemetry(prepared, timeout)
+         {:ok, prepared} <- prepare_operator_command(normalized),
+         :ok <- validate_aggregate_id(prepared),
+         {:ok, enriched} <- enrich_operator_command(prepared) do
+      dispatch_and_emit_project_telemetry(enriched, timeout)
     end
   end
 
@@ -83,12 +91,16 @@ defmodule ForemanServer.CommandGateway do
     type = get_value(command, :type) || get_value(command, "type")
     payload = get_value(command, :payload) || get_value(command, "payload") || %{}
 
+    payload_task_id =
+      if is_map(payload) do
+        get_value(payload, :task_id) || get_value(payload, "task_id")
+      else
+        nil
+      end
+
     cond do
       not is_binary(command_id) or command_id == "" ->
         {:error, {:invalid_envelope, :missing_command_id}}
-
-      not is_binary(aggregate_id) or aggregate_id == "" ->
-        {:error, {:invalid_envelope, :missing_aggregate_id}}
 
       not is_binary(type) or type == "" ->
         {:error, {:invalid_envelope, :missing_type}}
@@ -98,6 +110,19 @@ defmodule ForemanServer.CommandGateway do
 
       type not in @allowed_operator_types ->
         {:error, {:command_not_allowed, type}}
+
+      type == "task.create" and is_map(payload) and
+          (aggregate_id == nil or aggregate_id == "") and
+          (is_nil(payload_task_id) or payload_task_id == "") ->
+        {:ok,
+         %{
+           command_id: command_id,
+           aggregate_id: nil,
+           type: type,
+           payload: normalize_payload_keys(payload)
+         }}
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :missing_aggregate_id}}
 
       true ->
         normalized_payload = normalize_payload_keys(payload)
@@ -182,12 +207,17 @@ defmodule ForemanServer.CommandGateway do
     external_id = Map.get(payload, :external_id)
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+    gateway_resolved? = Map.get(payload, :gateway_resolved_external_id?) == true
 
     cond do
-      external_id != nil ->
+      external_id != nil and not gateway_resolved? ->
         {:error, :external_id_not_allowed_via_operator}
 
-      not is_binary(task_id) or task_id == "" ->
+      gateway_resolved? and
+          (not is_binary(task_id) or task_id == "" or external_id != task_id) ->
+        {:error, {:invalid_envelope, :gateway_resolved_external_id_mismatch}}
+
+      not gateway_resolved? and (not is_binary(task_id) or task_id == "") ->
         {:error, {:invalid_envelope, :missing_task_id}}
 
       not is_binary(aggregate_id) or aggregate_id == "" ->
@@ -515,6 +545,71 @@ defmodule ForemanServer.CommandGateway do
       v when is_binary(v) -> String.replace(string, placeholder, v)
     end
   end
+  # Pre-validation step for operator commands.
+  #
+  # For `task.create` with no `aggregate_id` (no-id flow): calls the configured
+  # task provider to create the backend issue, then sets `payload.task_id`,
+  # `payload.external_id`, and `aggregate_id` to the returned `Issue.id`.
+  # The `gateway_resolved?` marker allows `validate_aggregate_id` to permit
+  # this gateway-set `external_id` while still rejecting client-supplied values.
+  #
+  # All other commands pass through unchanged.
+  defp prepare_operator_command(%{type: "task.create", aggregate_id: nil} = command) do
+    payload = command.payload
+    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      Map.get(payload, :external_id) != nil ->
+        {:error, :external_id_not_allowed_via_operator}
+
+      true ->
+        project = ProjectionStore.project_projection(project_id)
+
+        cond do
+          project == nil ->
+            {:error, {:project_not_found, project_id}}
+
+          Map.get(project, :archived?) == true ->
+            {:error, {:project_archived, project_id}}
+
+          true ->
+            with {:ok, provider} <- Registry.route(:create, %{project_id: project_id}) do
+              attrs = %{
+                task_id: command.command_id,
+                command_id: command.command_id,
+                title: get_value(payload, :title),
+                description: get_value(payload, :description),
+                priority: get_value(payload, :priority),
+                task_type: get_value(payload, :task_type) || get_value(payload, :type),
+                dedupe_key:
+                  case get_value(payload, :dedupe_key) do
+                    k when is_binary(k) and k != "" -> k
+                    _ -> command.command_id
+                  end
+              }
+
+              case provider.create(project_id, attrs) do
+                {:ok, %{id: issue_id}} when is_binary(issue_id) ->
+                  enriched_payload =
+                    payload
+                    |> Map.put(:task_id, issue_id)
+                    |> Map.put(:external_id, issue_id)
+                    |> Map.put(:gateway_resolved_external_id?, true)
+
+                  {:ok,
+                   %{command | aggregate_id: "task:#{issue_id}", payload: enriched_payload}}
+
+                {:error, reason} ->
+                  {:error, reason}
+              end
+            end
+        end
+    end
+  end
+  defp prepare_operator_command(command), do: {:ok, command}
 
   defp enrich_operator_command(%{type: "task.create"} = command) do
     enriched =
@@ -522,7 +617,6 @@ defmodule ForemanServer.CommandGateway do
       |> Map.put_new(:status, "open")
       |> Map.put_new(:dependencies, [])
       |> Map.put_new(:source, nil)
-      |> Map.put_new(:external_id, nil)
       |> Map.put_new(:external_link, nil)
       |> Map.put_new(:dedupe_key, nil)
       |> Map.put_new(:integration_event_type, nil)

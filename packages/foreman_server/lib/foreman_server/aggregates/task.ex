@@ -447,6 +447,7 @@ defmodule ForemanServer.Aggregates.Task do
         run_id: nil,
         workflow_snapshot: nil,
         acknowledged_run_id: nil,
+        failure_reason: nil,
         run_terminal_reason: nil,
         run_terminal_at: nil,
         retry_history: state.retry_history ++ [history_entry]
