@@ -40,6 +40,7 @@ defmodule ForemanServer.CommandGateway do
 
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.TaskProvider.Registry
+  alias ForemanServer.Work
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
@@ -787,7 +788,55 @@ defmodule ForemanServer.CommandGateway do
     {:ok, %{command | payload: enriched_payload}}
   end
 
+  # Idempotency short-circuit: if the projection already carries this
+  # command_id as its submission_id, the submission was already enriched
+  # with the same deterministic identity and we can return the command
+  # as-is without re-preparing.
+  defp enrich_operator_command(%{type: "work.submit", command_id: command_id} = command) do
+    work_id = get_value(command.payload, :work_id) || get_value(command.payload, "work_id")
+
+    case ProjectionStore.work_projection(work_id) do
+      %{submission_id: ^command_id} ->
+        {:ok, command}
+
+      _ ->
+        with :ok <- validate_not_reserved(command.payload, [:submission_id, :run_id, :workflow_snapshot]),
+             {:ok, prepared} <-
+               Work.Submission.prepare(%{
+                 work_id: work_id,
+                 project_id:
+                   get_value(command.payload, :project_id) ||
+                     get_value(command.payload, "project_id"),
+                 workflow:
+                   get_value(command.payload, :workflow) ||
+                     get_value(command.payload, "workflow"),
+                 prompt:
+                   get_value(command.payload, :prompt) || get_value(command.payload, "prompt")
+               }) do
+          enriched_payload =
+            command.payload
+            |> Map.put(:submission_id, prepared.submission_id)
+            |> Map.put(:run_id, prepared.run_id)
+            |> Map.put(:workflow_snapshot, prepared.workflow_snapshot)
+
+          {:ok, %{command | payload: enriched_payload}}
+        end
+    end
+  end
+
   defp enrich_operator_command(command), do: {:ok, command}
+
+  # Reject client-supplied reserved fields in a payload.
+  # Returns :ok if none are present, or {:error, {:reserved_fields, [field, ...]}}
+  # listing every reserved field the payload already carries.
+  defp validate_not_reserved(payload, reserved_fields) do
+    violations = Enum.filter(reserved_fields, &Map.has_key?(payload, &1))
+
+    case violations do
+      [] -> :ok
+      _ -> {:error, {:reserved_fields, violations}}
+    end
+  end
 
   defp dispatch_and_emit_project_telemetry(command, timeout) do
     started_at = System.monotonic_time()
