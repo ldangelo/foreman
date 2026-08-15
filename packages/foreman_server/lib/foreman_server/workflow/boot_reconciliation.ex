@@ -27,7 +27,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   require Logger
 
   alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, ProjectionStore, Telemetry}
-  alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
 
@@ -41,8 +41,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @already_closed_event [:foreman_server, :workflow, :boot_reconciliation, :already_closed]
   @healthy_event [:foreman_server, :workflow, :boot_reconciliation, :healthy]
   @transition_comment "foreman-run-reconciled"
+  @scan_retry_ms 50
   @json_schema_cache_name :foreman_server_json_schema_cache
-
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
     GenServer.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -119,6 +119,21 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     GenServer.cast(__MODULE__, :scan_lease_orphans)
     :ok
   end
+  @doc """
+  Scan the `run_slots:global` stream for orphaned holders and waiters — a
+  holder or waiter whose `run_id` does not correspond to a non-terminal run
+  projection. Orphaned holders are dispatched as `run_slots.release` and
+  orphaned waiters as `run_slots.remove_waiter`, mirroring the
+  `scan_lease_orphans/0` pattern.
+
+  Dispatches as a cast so the actual scan runs inside the
+  `BootReconciliation` process. Returns `:ok` once the cast is enqueued.
+  """
+  @spec scan_run_slot_orphans() :: :ok
+  def scan_run_slot_orphans do
+    GenServer.cast(__MODULE__, :scan_run_slot_orphans)
+    :ok
+  end
 
   @doc """
   Cast a live terminal-run notification. The Dispatcher calls this on
@@ -153,6 +168,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     reconcile()
     state = run_scan_or_defer(state)
     state = run_lease_scan_or_defer(state)
+    state = run_slot_scan_or_defer(state)
     {:noreply, %{state | reconciled?: true}}
   end
 
@@ -164,6 +180,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       schedule_scan(:not_ready)
     end
 
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:scan_run_slot_orphans, state) do
+    state = run_slot_scan_or_defer(state)
     {:noreply, state}
   end
 
@@ -188,6 +210,11 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @impl true
   def handle_info(:scan_lease_orphans, state) do
     state = run_lease_scan_or_defer(state)
+    {:noreply, state}
+  end
+  @impl true
+  def handle_info(:scan_run_slot_orphans, state) do
+    state = run_slot_scan_or_defer(state)
     {:noreply, state}
   end
 
@@ -492,6 +519,102 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp reconcile_lease_stream(_), do: :ok
 
+  # ---------------------------------------------------------------------------
+  # Run slots orphan scan
+  # ---------------------------------------------------------------------------
+
+  defp run_slot_scan_or_defer(state) do
+    case scan_branch() do
+      :schedule_not_ready ->
+        schedule_slot_scan(:not_ready)
+        state
+
+      :schedule_worker_registry ->
+        schedule_slot_scan(:worker_registry_not_ready)
+        state
+
+      :scan ->
+        do_scan_run_slot_orphans()
+        state
+    end
+  end
+
+  defp schedule_slot_scan(_reason) do
+    Process.send_after(self(), :scan_run_slot_orphans, @scan_retry_ms)
+  end
+
+  defp do_scan_run_slot_orphans do
+    reconcile_run_slots_stream()
+    :ok
+  end
+
+  defp reconcile_run_slots_stream do
+    {state, _version} = Aggregate.load(RunSlots, "run_slots:global")
+
+    if state.capacity == nil and state.holders == %{} and state.waiters == [] do
+      :ok
+    else
+      Enum.each(state.holders, fn {run_id, _holder} ->
+        if run_absent_or_terminal?(run_id) do
+          Logger.warning("BootReconciliation: dropping orphan slot holder #{run_id}")
+          release_run_slot(run_id, :boot_orphan_holder)
+        end
+      end)
+
+      Enum.each(state.waiters, fn waiter ->
+        if waiter_run_absent_or_terminal?(waiter.run_id) do
+          Logger.warning("BootReconciliation: removing orphan waiter #{waiter.run_id}")
+          remove_run_slot_waiter(waiter.run_id, :boot_orphan_waiter)
+        end
+      end)
+    end
+  end
+
+  defp run_absent_or_terminal?(run_id) do
+    case ProjectionStore.run(run_id) do
+      nil -> true
+      _run -> run_terminal?(run_id)
+    end
+  end
+
+  defp waiter_run_absent_or_terminal?(run_id), do: run_absent_or_terminal?(run_id)
+
+  defp release_run_slot(run_id, reason) when is_binary(run_id) and run_id != "" do
+    ms = System.system_time(:millisecond)
+
+    _ =
+      CommandGateway.dispatch_system(%{
+        type: "run_slots.release",
+        command_id: "foreman:boot-slot-release:#{run_id}:#{ms}",
+        aggregate_id: "run_slots:global",
+        payload: %{
+          run_id: run_id,
+          released_at_ms: ms,
+          reason: reason
+        }
+      })
+
+    :ok
+  end
+
+  defp remove_run_slot_waiter(run_id, reason) when is_binary(run_id) and run_id != "" do
+    ms = System.system_time(:millisecond)
+
+    _ =
+      CommandGateway.dispatch_system(%{
+        type: "run_slots.remove_waiter",
+        command_id: "foreman:boot-slot-remove-waiter:#{run_id}:#{ms}",
+        aggregate_id: "run_slots:global",
+        payload: %{
+          run_id: run_id,
+          removed_at_ms: ms,
+          reason: reason
+        }
+      })
+
+    :ok
+  end
+
   defp holder_orphan?(%BeadsDbLease.State{holder: nil}, _active_run_ids), do: false
 
   defp holder_orphan?(
@@ -623,8 +746,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     )
     |> List.to_string()
   end
-
-  @scan_retry_ms 50
 
   defp run_scan_or_defer(state) do
     case scan_branch() do
