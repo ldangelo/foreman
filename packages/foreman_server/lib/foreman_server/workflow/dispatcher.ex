@@ -10,7 +10,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
       emits `TaskDispatched`.
     * `TaskDispatched` — enters the run admission flow through
       `RunAdmission.start/2`, which reserves the project slot and appends
-      `RunStarted` before handing the run off to `RunSupervisor`.
+      `RunStarted` before handing the run handoff to `RunSupervisor`.
+    * `WorkSubmitted` — enters the run admission flow through
+      `RunAdmission.start/2` using the work projection, starting the
+      run supervisor if admitted.
     * `RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
       `RunBlocked` — fans out to `BootReconciliation.run_terminated/2`
       so the orphan-task dispatch path is identical to the boot scan.
@@ -79,6 +82,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
   @slot_promotion_event_types ~w(RunSlotTransferred)
+  @work_submitted_event_types ~w(WorkSubmitted)
 
 
   for event_type <- @task_dispatch_event_types do
@@ -122,6 +126,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
     def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
       handle_slot_promoted(envelope, state)
+    end
+  end
+
+  for event_type <- @work_submitted_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_work_submitted(envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_work_submitted(envelope, state)
     end
   end
 
@@ -413,6 +428,47 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
           {:error, reason} ->
             {:noreply, put_in(state, [:pending, task_id], reason)}
+        end
+    end
+  end
+
+  # Handle WorkSubmitted:
+
+  # When a work request is submitted, enter the admission flow so it can
+  # acquire a run slot and (if admitted) start the run supervisor.
+  defp handle_work_submitted(envelope, state) do
+    payload = unwrap_data(envelope)
+    work_id = payload["work_id"] || payload[:work_id]
+
+    if is_binary(work_id) and work_id != "" do
+      reenter_work_admission(work_id, state)
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp reenter_work_admission(work_id, state) do
+    case ProjectionStore.work_projection(work_id) do
+      nil ->
+        {:noreply, state}
+
+      proj ->
+        run_payload = RunPayload.from_work_projection(proj)
+
+        case RunAdmission.start(proj.project_id, Map.from_struct(run_payload), []) do
+          {:ok, :slot_queued} ->
+            {:noreply, state}
+
+          {:ok, :queued} ->
+            {:noreply, state}
+
+          {:ok, _} ->
+            ForemanServer.Workflow.RunSupervisor.start_run(run_payload.run_id, proj)
+            {:noreply, state}
+
+          {:error, reason} ->
+            Logger.warning("handle_work_submitted: admission failed for #{work_id}: #{inspect(reason)}")
+            {:noreply, state}
         end
     end
   end
