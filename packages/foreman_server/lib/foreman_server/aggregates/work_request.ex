@@ -162,41 +162,68 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     do: {:error, {:run_id_mismatch, bound, run_id}}
 
   @impl true
-  def apply_event(%State{} = state, %WorkSubmitted{} = event) do
+  def apply_event(%State{} = state, event) do
+    payload = Aggregate.event_payload(event)
+    type = Aggregate.event_type(event)
+
+    case type do
+      "work.submitted" ->
+        apply_work_submitted(state, payload)
+
+      "work.cancelled" ->
+        apply_work_cancelled(state, payload)
+
+      "work.execution_complete" ->
+        apply_work_execution_complete(state, payload)
+
+      "work.execution_fail" ->
+        apply_work_execution_failed(state, payload)
+
+      _ ->
+        state
+    end
+  end
+
+  # Called by apply_event/2 — kept private for use in tests (struct pattern matching).
+  defp apply_work_submitted(state, payload) do
     %State{
       state
-      | work_id: event.work_id,
+      | work_id: Aggregate.get(payload, :work_id),
         status: :submitted,
-        project_id: event.project_id,
-        run_id: event.run_id,
-        submission_id: event.submission_id,
-        workflow_snapshot: event.workflow_snapshot,
+        project_id: Aggregate.get(payload, :project_id),
+        run_id: Aggregate.get(payload, :run_id),
+        submission_id: Aggregate.get(payload, :submission_id),
+        workflow_snapshot: Aggregate.get(payload, :workflow_snapshot),
         submitted_at: System.monotonic_time(:microsecond)
     }
   end
 
-  def apply_event(%State{} = state, %WorkCancelled{} = event) do
+  defp apply_work_cancelled(state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
     run_id = state.run_id || ""
-    Telemetry.work_terminal(event.work_id, run_id, :cancelled, duration_us)
+    Telemetry.work_terminal(state.work_id, run_id, :cancelled, duration_us)
     %State{state | status: :cancelled}
   end
 
-  def apply_event(%State{} = state, %WorkExecutionCompleted{} = event) do
+  defp apply_work_execution_complete(state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
-    Telemetry.work_terminal(event.work_id, event.run_id, :succeeded, duration_us)
+    work_id = Aggregate.get(payload, :work_id)
+    run_id = Aggregate.get(payload, :run_id)
+    Telemetry.work_terminal(work_id, run_id, :succeeded, duration_us)
     %State{state | status: :succeeded}
   end
 
-  def apply_event(%State{} = state, %WorkExecutionFailed{} = event) do
+  defp apply_work_execution_failed(state, payload) do
     duration_us =
       if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
 
-    Telemetry.work_terminal(event.work_id, event.run_id, :failed, duration_us)
+    work_id = Aggregate.get(payload, :work_id)
+    run_id = Aggregate.get(payload, :run_id)
+    Telemetry.work_terminal(work_id, run_id, :failed, duration_us)
     %State{state | status: :failed}
   end
 end
