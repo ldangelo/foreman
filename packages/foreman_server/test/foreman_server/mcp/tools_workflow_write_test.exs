@@ -3,31 +3,10 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
 
   alias ForemanServer.MCP.Tools
 
-  # Meck helper that gracefully handles already-unloaded modules
-  defp safe_unload(module) do
-    try do
-      :meck.unload(module)
-    rescue
-      _ -> :meck.reset(module)
-    end
-  end
+  # NOTE: Tests in this file are designed for --no-start runs.
+  # Tests requiring the Catalog GenServer are in tools_workflow_write_integration_test.exs
 
   describe "foreman_workflow_put" do
-    test "returns NAME_STEM_MISMATCH when manifest name does not match filename" do
-      manifest = %{"name" => "wrong-name", "phases" => []}
-
-      assert Tools.call_tool("foreman_workflow_put", %{
-               name: "test-workflow",
-               manifest: manifest
-             }) ==
-               {:error,
-                %{
-                  code: "NAME_STEM_MISMATCH",
-                  message:
-                    "Manifest name 'wrong-name' does not match filename stem 'test-workflow'"
-                }}
-    end
-
     test "returns INVALID_FILENAME for path traversal attempt" do
       manifest = %{"name" => "test", "phases" => []}
 

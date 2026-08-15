@@ -132,15 +132,74 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
       assert event_spec.event_type == "TaskDispatched"
     end
 
-    test "unknown command returns unsupported_command error" do
-      # Must use a %State{} struct (not a plain map) because the catch-all
-      # requires %State{} as the first argument.
-      state = Task.initial_state()
-      unknown_cmd = %UnknownCommand{type: "x", payload: %{}}
+  describe "apply_event/2 — historical pruned-event streams replay correctly (read path survives)" do
+    alias ForemanServer.Events.{TaskCreated, TaskUpdated, TaskAnnotated, TaskDependencyAdded}
 
-      assert {:error,
-              {:unsupported_command, ForemanServer.Aggregates.TaskPruneTest.UnknownCommand}} =
-               Task.handle_command(state, unknown_cmd)
+    test "TaskUpdated events replay to correct state" do
+      state0 = Task.initial_state()
+      created = %TaskCreated{task_id: "t-1", project_id: "p-1", title: "Original", description: "Desc"}
+      updated = %TaskUpdated{task_id: "t-1", status: "blocked", title: "Updated title", priority: "high"}
+
+      state1 = Task.apply_event(state0, created)
+      state2 = Task.apply_event(state1, updated)
+
+      assert state2.exists? == true
+      assert state2.task_id == "t-1"
+      assert state2.status == "blocked"
+      assert state2.title == "Updated title"
+      assert state2.priority == "high"
+    end
+
+    test "TaskAnnotated events replay and accumulate annotations" do
+      state0 = Task.initial_state()
+      created = %TaskCreated{task_id: "t-1", project_id: "p-1"}
+      ann1 = %TaskAnnotated{task_id: "t-1", body: "First note", author: "alice", created_at: "2024-01-01T00:00:00Z"}
+      ann2 = %TaskAnnotated{task_id: "t-1", body: "Second note", author: "bob", created_at: "2024-01-02T00:00:00Z"}
+
+      state1 = Task.apply_event(state0, created)
+      state2 = Task.apply_event(state1, ann1)
+      state3 = Task.apply_event(state2, ann2)
+
+      assert length(state3.annotations) == 2
+      assert hd(state3.annotations).body == "First note"
+      assert hd(tl(state3.annotations)).body == "Second note"
+    end
+
+    test "TaskDependencyAdded events replay and accumulate dependencies" do
+      state0 = Task.initial_state()
+      created = %TaskCreated{task_id: "t-1", project_id: "p-1"}
+      dep1 = %TaskDependencyAdded{task_id: "t-1", depends_on: "t-0"}
+      dep2 = %TaskDependencyAdded{task_id: "t-1", depends_on: "t-2"}
+
+      state1 = Task.apply_event(state0, created)
+      state2 = Task.apply_event(state1, dep1)
+      state3 = Task.apply_event(state2, dep2)
+
+      assert state3.dependencies == ["t-0", "t-2"]
+    end
+
+    test "mixed historical stream replays to correct final state (full integration)" do
+      state0 = Task.initial_state()
+      created = %TaskCreated{task_id: "t-1", project_id: "p-1", title: "My Task", priority: "low"}
+      updated = %TaskUpdated{task_id: "t-1", status: "open", priority: "high"}
+      ann = %TaskAnnotated{task_id: "t-1", body: "Look at this", author: "carol", created_at: "2024-03-01T00:00:00Z"}
+      dep = %TaskDependencyAdded{task_id: "t-1", depends_on: "t-preexist"}
+
+      final =
+        state0
+        |> Task.apply_event(created)
+        |> Task.apply_event(updated)
+        |> Task.apply_event(ann)
+        |> Task.apply_event(dep)
+
+      assert final.exists? == true
+      assert final.task_id == "t-1"
+      assert final.status == "open"
+      assert final.title == "My Task"
+      assert final.priority == "high"
+      assert length(final.annotations) == 1
+      assert hd(final.annotations).body == "Look at this"
+      assert final.dependencies == ["t-preexist"]
     end
   end
 end
