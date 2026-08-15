@@ -181,7 +181,10 @@ defmodule ForemanServer.Recovery do
   defp get_last_event_at(%{last_event_at: %DateTime{} = ts}), do: ts
   defp get_last_event_at(%{last_event_at: ts}) when is_binary(ts), do: parse_iso8601(ts)
   defp get_last_event_at(%{updated_at: %DateTime{} = ts}), do: ts
-  defp get_last_event_at(%{last_event_at_ms: ms}) when is_integer(ms), do: DateTime.from_unix!(ms, :millisecond)
+
+  defp get_last_event_at(%{last_event_at_ms: ms}) when is_integer(ms),
+    do: DateTime.from_unix!(ms, :millisecond)
+
   defp get_last_event_at(_), do: DateTime.utc_now()
 
   defp parse_iso8601(s) when is_binary(s) do

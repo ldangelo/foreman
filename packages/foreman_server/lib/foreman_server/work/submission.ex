@@ -30,12 +30,14 @@ defmodule ForemanServer.Work.Submission do
     - `{:error, {:workflow_load_failed, name, reason}}` if the manifest cannot be loaded
     - `{:error, {:invalid_submission, :missing_required_fields}}` if required fields are absent
   """
-  def prepare(%{
-        work_id: work_id,
-        project_id: project_id,
-        workflow: workflow_name,
-        prompt: prompt
-      } = input)
+  def prepare(
+        %{
+          work_id: work_id,
+          project_id: project_id,
+          workflow: workflow_name,
+          prompt: prompt
+        } = input
+      )
       when is_map(input) and
              is_binary(work_id) and work_id != "" and
              is_binary(project_id) and is_binary(workflow_name) and is_binary(prompt) do
@@ -43,14 +45,15 @@ defmodule ForemanServer.Work.Submission do
          {:ok, submission_id} <- derive_submission_id(),
          run_id = Identity.run_id(work_id, submission_id),
          {:ok, workflow_snapshot} <- build_snapshot(manifest, prompt, run_id, workflow_name) do
-      {:ok, %{
-        submission_id: submission_id,
-        run_id: run_id,
-        workflow_snapshot: workflow_snapshot,
-        work_id: work_id,
-        project_id: project_id,
-        workflow: workflow_name
-      }}
+      {:ok,
+       %{
+         submission_id: submission_id,
+         run_id: run_id,
+         workflow_snapshot: workflow_snapshot,
+         work_id: work_id,
+         project_id: project_id,
+         workflow: workflow_name
+       }}
     end
   end
 

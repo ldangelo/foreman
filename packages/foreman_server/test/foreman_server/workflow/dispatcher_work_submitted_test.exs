@@ -41,7 +41,11 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
     on_exit(fn ->
       for mod <-
-            [ForemanServer.ProjectionStore, ForemanServer.RunAdmission, ForemanServer.Workflow.RunSupervisor] do
+            [
+              ForemanServer.ProjectionStore,
+              ForemanServer.RunAdmission,
+              ForemanServer.Workflow.RunSupervisor
+            ] do
         if :meck.validate(mod), do: :meck.unload(mod)
       end
     end)
@@ -240,7 +244,10 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] -> {:ok, :queued} end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+        {:ok, :queued}
+      end)
 
       envelope = %{
         event_type: "WorkSubmitted",
@@ -279,7 +286,10 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] -> {:ok, :slot_queued} end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+        {:ok, :slot_queued}
+      end)
 
       envelope = %{
         event_type: "WorkSubmitted",
@@ -318,6 +328,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
+
       :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
         {:error, {:slot_acquire_failed, :unknown}}
       end)

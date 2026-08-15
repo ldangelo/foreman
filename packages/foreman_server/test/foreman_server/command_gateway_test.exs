@@ -316,7 +316,19 @@ defmodule ForemanServer.CommandGatewayTest do
       @behaviour ForemanServer.TaskProviders.BrRunner
       @impl true
       def cmd(_request, _project_config, _opts) do
-        {:ok, %{stdout: Jason.encode!(%{"id" => "stub-beader-#{:rand.uniform(99999)}", "title" => "stub", "status" => "open", "priority" => 2, "issue_type" => "task"}), stderr: "", exit_code: 0}}
+        {:ok,
+         %{
+           stdout:
+             Jason.encode!(%{
+               "id" => "stub-beader-#{:rand.uniform(99999)}",
+               "title" => "stub",
+               "status" => "open",
+               "priority" => 2,
+               "issue_type" => "task"
+             }),
+           stderr: "",
+           exit_code: 0
+         }}
       end
     end
 
@@ -387,7 +399,20 @@ defmodule ForemanServer.CommandGatewayTest do
         {:create, %{title: title, priority: 2, type: "task"}}, _cfg, _opts
         when is_binary(title) ->
           send(self(), {:bead_id, bead_id})
-          {:ok, %{stdout: Jason.encode!(%{"id" => bead_id, "title" => title, "status" => "open", "priority" => 2, "issue_type" => "task"}), stderr: "", exit_code: 0}}
+
+          {:ok,
+           %{
+             stdout:
+               Jason.encode!(%{
+                 "id" => bead_id,
+                 "title" => title,
+                 "status" => "open",
+                 "priority" => 2,
+                 "issue_type" => "task"
+               }),
+             stderr: "",
+             exit_code: 0
+           }}
       end)
 
       assert {:ok, event_spec} =
@@ -1329,8 +1354,8 @@ defmodule ForemanServer.CommandGatewayTest do
       result = render_strict_fields(snapshot)
 
       assert result["phases"] == [
-        %{"command" => "run Write tests --spec test"}
-      ]
+               %{"command" => "run Write tests --spec test"}
+             ]
     end
 
     test "fires and renders phases when implementation block is present" do
@@ -1347,8 +1372,8 @@ defmodule ForemanServer.CommandGatewayTest do
       result = render_strict_fields(snapshot)
 
       assert result["phases"] == [
-        %{"command" => "/skill:ensemble docs/TRD/x.md"}
-      ]
+               %{"command" => "/skill:ensemble docs/TRD/x.md"}
+             ]
     end
 
     test "render_command substitutes {{input.prompt}}" do
@@ -1394,7 +1419,8 @@ defmodule ForemanServer.CommandGatewayTest do
     test "render_command substitutes both implementation and input tokens independently" do
       phase = %{"command" => "{{implementation.trd_path_argument}} --prompt '{{input.prompt}}'"}
 
-      result = render_command(phase, %{"trd_path_argument" => "docs/TRD/y.md"}, %{"prompt" => "do it"})
+      result =
+        render_command(phase, %{"trd_path_argument" => "docs/TRD/y.md"}, %{"prompt" => "do it"})
 
       assert result["command"] == "docs/TRD/y.md --prompt 'do it'"
     end
@@ -1419,8 +1445,8 @@ defmodule ForemanServer.CommandGatewayTest do
       result = render_strict_fields(snapshot)
 
       assert result["phases"] == [
-        %{"command" => "run \"hello\""}
-      ]
+               %{"command" => "run \"hello\""}
+             ]
     end
 
     test "render_strict_fields derives input.prompt_argument via Jason.encode! (special chars)" do
@@ -1435,8 +1461,8 @@ defmodule ForemanServer.CommandGatewayTest do
 
       # Jason.encode!("multi\nline") => "\"multi\\nline\""
       assert result["phases"] == [
-        %{"command" => "run \"multi\\nline\""}
-      ]
+               %{"command" => "run \"multi\\nline\""}
+             ]
     end
 
     test "render_strict_fields derives input.prompt_argument via Jason.encode! (empty string)" do
@@ -1451,8 +1477,8 @@ defmodule ForemanServer.CommandGatewayTest do
 
       # Jason.encode!("") => "\"\""  (a JSON string containing empty string)
       assert result["phases"] == [
-        %{"command" => "run \"\""}
-      ]
+               %{"command" => "run \"\""}
+             ]
     end
 
     test "render_strict_fields preserves explicit input.prompt_argument (TRD-019 override)" do
@@ -1467,8 +1493,8 @@ defmodule ForemanServer.CommandGatewayTest do
       result = render_strict_fields(snapshot)
 
       assert result["phases"] == [
-        %{"command" => "run --spec test"}
-      ]
+               %{"command" => "run --spec test"}
+             ]
     end
 
     test "render_command substitutes pre-built input.prompt_argument in command template" do
@@ -1483,9 +1509,13 @@ defmodule ForemanServer.CommandGatewayTest do
 
     # AC-008-2: a token in neither allow-list survives intact
     test "render_command leaves unknown tokens intact (allow-list enforcement)" do
-      phase = %{"command" => "/skill:foo --prompt '{{input.prompt}}' --unknown '{{unknown.token}}' --impl '{{implementation.trd_path_argument}}'"}
+      phase = %{
+        "command" =>
+          "/skill:foo --prompt '{{input.prompt}}' --unknown '{{unknown.token}}' --impl '{{implementation.trd_path_argument}}'"
+      }
 
-      result = render_command(phase, %{"trd_path_argument" => "docs/x.md"}, %{"prompt" => "hello"})
+      result =
+        render_command(phase, %{"trd_path_argument" => "docs/x.md"}, %{"prompt" => "hello"})
 
       # Known tokens substituted
       assert result["command"] =~ "hello"
@@ -1507,8 +1537,8 @@ defmodule ForemanServer.CommandGatewayTest do
 
       # prompt_argument is Jason.encode!("hello world") => "\"hello world\""
       assert result["phases"] == [
-        %{"command" => "/skill:foo \"hello world\""}
-      ]
+               %{"command" => "/skill:foo \"hello world\""}
+             ]
     end
 
     # AC-008-4: a prompt containing shell metacharacters yields exactly one additional argv word
@@ -1526,8 +1556,8 @@ defmodule ForemanServer.CommandGatewayTest do
 
       # The rendered command has the JSON-encoded prompt as a single unit
       assert result["phases"] == [
-        %{"command" => "run \"echo $HOME\""}
-      ]
+               %{"command" => "run \"echo $HOME\""}
+             ]
 
       # Verify the entire prompt-with-metacharacters is preserved as one unit
       rendered = result["phases"] |> hd() |> Map.get("command")
@@ -1556,9 +1586,9 @@ defmodule ForemanServer.CommandGatewayTest do
              "snapshot with input block should be rendered, not passed through"
 
       assert result["phases"] == [
-        %{"command" => "/skill:ensemble \"Write the spec\""},
-        %{"command" => "/skill:verify Write the spec"}
-      ]
+               %{"command" => "/skill:ensemble \"Write the spec\""},
+               %{"command" => "/skill:verify Write the spec"}
+             ]
     end
   end
 

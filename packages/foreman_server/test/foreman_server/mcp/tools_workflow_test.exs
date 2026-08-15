@@ -24,7 +24,11 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
   describe "foreman_workflow_list" do
     test "returns list of workflows" do
       :meck.new(ForemanServer.Workflow.Catalog, [:non_strict])
-      :meck.expect(ForemanServer.Workflow.Catalog, :manifests, 0, ["workflow-a.yaml", "workflow-b.yaml"])
+
+      :meck.expect(ForemanServer.Workflow.Catalog, :manifests, 0, [
+        "workflow-a.yaml",
+        "workflow-b.yaml"
+      ])
 
       try do
         assert Tools.call_tool("foreman_workflow_list", %{}) ==
@@ -45,7 +49,10 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
       }
 
       :meck.new(ForemanServer.Workflow.Catalog, [:non_strict])
-      :meck.expect(ForemanServer.Workflow.Catalog, :load, fn "workflow-a.yaml" -> {:ok, manifest} end)
+
+      :meck.expect(ForemanServer.Workflow.Catalog, :load, fn "workflow-a.yaml" ->
+        {:ok, manifest}
+      end)
 
       try do
         assert Tools.call_tool("foreman_workflow_get", %{name: "workflow-a"}) ==
@@ -69,7 +76,8 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
 
       try do
         assert Tools.call_tool("foreman_workflow_get", %{name: "nonexistent-workflow"}) ==
-                 {:error, %{code: "NOT_FOUND", message: "Workflow not found: nonexistent-workflow"}}
+                 {:error,
+                  %{code: "NOT_FOUND", message: "Workflow not found: nonexistent-workflow"}}
       after
         :meck.unload(ForemanServer.Workflow.Catalog)
       end

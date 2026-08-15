@@ -223,12 +223,16 @@ defmodule ForemanServer.ConfigProviders.Secrets do
     key = Keyword.fetch!(mapping, :key)
     config_key = Keyword.fetch!(mapping, :config_key)
 
-    case Keyword.get(mapping, :nested) do
-      nil ->
-        [{app, [{key, [{config_key, value}]}]}]
+    cond do
+      Keyword.get(mapping, :nested) ->
+        [{app, [{key, [{Keyword.fetch!(mapping, :nested), [{config_key, value}]}]}]}]
 
-      nested_key when is_atom(nested_key) ->
-        [{app, [{key, [{nested_key, [{config_key, value}]}]}]}]
+      config_key == nil ->
+        # Plain value: config :app, :key, "value"
+        [{app, [{key, value}]}]
+
+      true ->
+        [{app, [{key, [{config_key, value}]}]}]
     end
   end
 

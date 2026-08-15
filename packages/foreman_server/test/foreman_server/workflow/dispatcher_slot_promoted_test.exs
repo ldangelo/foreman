@@ -42,7 +42,11 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
     on_exit(fn ->
       for mod <-
-            [ForemanServer.ProjectionStore, ForemanServer.RunAdmission, ForemanServer.Workflow.RunSupervisor] do
+            [
+              ForemanServer.ProjectionStore,
+              ForemanServer.RunAdmission,
+              ForemanServer.Workflow.RunSupervisor
+            ] do
         if :meck.validate(mod), do: :meck.unload(mod)
       end
     end)
@@ -203,7 +207,10 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       }
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] -> {:ok, :slot_queued} end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+        {:ok, :slot_queued}
+      end)
 
       envelope = %{
         event_type: "RunSlotTransferred",
@@ -233,7 +240,10 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       }
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] -> {:ok, :queued} end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+        {:ok, :queued}
+      end)
 
       envelope = %{
         event_type: "RunSlotTransferred",
@@ -292,6 +302,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       }
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
+
       :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
         {:error, {:slot_acquire_failed, :unknown}}
       end)

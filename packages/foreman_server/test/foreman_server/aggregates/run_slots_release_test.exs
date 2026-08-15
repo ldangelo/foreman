@@ -18,13 +18,15 @@ defmodule ForemanServer.Aggregates.RunSlotsReleaseTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  @spec apply_acquired(RunSlots.State.t(), String.t(), non_neg_integer(), integer()) :: RunSlots.State.t()
+  @spec apply_acquired(RunSlots.State.t(), String.t(), non_neg_integer(), integer()) ::
+          RunSlots.State.t()
   defp apply_acquired(state, run_id, capacity, acquired_at_ms) do
     event = %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: acquired_at_ms}
     RunSlots.apply_event(state, event)
   end
 
-  @spec apply_queued(RunSlots.State.t(), String.t(), pos_integer(), integer()) :: RunSlots.State.t()
+  @spec apply_queued(RunSlots.State.t(), String.t(), pos_integer(), integer()) ::
+          RunSlots.State.t()
   defp apply_queued(state, run_id, position, enqueued_at_ms) do
     event = %RunSlotQueued{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms}
     RunSlots.apply_event(state, event)
@@ -57,7 +59,6 @@ defmodule ForemanServer.Aggregates.RunSlotsReleaseTest do
                RunSlots.handle_command(state, cmd)
     end
 
-
     test "emits RunSlotTransferred and promotes FIFO head when waiters present" do
       state =
         RunSlots.initial_state()
@@ -68,12 +69,13 @@ defmodule ForemanServer.Aggregates.RunSlotsReleaseTest do
 
       cmd = %RunSlotsRelease{run_id: "run-1"}
 
-      assert {:ok, %RunSlotTransferred{
-        released_run_id: "run-1",
-        acquired_run_id: "run-3",
-        capacity: 2,
-        acquired_at_ms: _
-      }} = RunSlots.handle_command(state, cmd)
+      assert {:ok,
+              %RunSlotTransferred{
+                released_run_id: "run-1",
+                acquired_run_id: "run-3",
+                capacity: 2,
+                acquired_at_ms: _
+              }} = RunSlots.handle_command(state, cmd)
     end
 
     test "emits RunSlotTransferred with capacity override when waiters present" do
@@ -84,12 +86,13 @@ defmodule ForemanServer.Aggregates.RunSlotsReleaseTest do
 
       cmd = %RunSlotsRelease{run_id: "run-1", capacity: 10}
 
-      assert {:ok, %RunSlotTransferred{
-        released_run_id: "run-1",
-        acquired_run_id: "run-2",
-        capacity: 10,
-        acquired_at_ms: _
-      }} = RunSlots.handle_command(state, cmd)
+      assert {:ok,
+              %RunSlotTransferred{
+                released_run_id: "run-1",
+                acquired_run_id: "run-2",
+                capacity: 10,
+                acquired_at_ms: _
+              }} = RunSlots.handle_command(state, cmd)
     end
 
     test "returns {:ok, nil} when run_id is not a holder (idempotent)" do

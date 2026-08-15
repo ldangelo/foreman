@@ -20,7 +20,13 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   alias ForemanServer.Commands.WorkSubmit
   alias ForemanServer.Identity
   alias ForemanServer.Telemetry
-  alias ForemanServer.Events.{WorkCancelled, WorkExecutionCompleted, WorkExecutionFailed, WorkSubmitted}
+
+  alias ForemanServer.Events.{
+    WorkCancelled,
+    WorkExecutionCompleted,
+    WorkExecutionFailed,
+    WorkSubmitted
+  }
 
   @behaviour ForemanServer.Aggregate
 
@@ -56,17 +62,21 @@ defmodule ForemanServer.Aggregates.WorkRequest do
 
       # Emit work.submitted telemetry (TRD-042) — metadata whitelist: work_id, run_id,
       # workflow, project_id, prompt_bytes. Never include prompt body.
-      workflow = Map.get(cmd.workflow_snapshot, "workflow") || Map.get(cmd.workflow_snapshot, :workflow, "")
+      workflow =
+        Map.get(cmd.workflow_snapshot, "workflow") ||
+          Map.get(cmd.workflow_snapshot, :workflow, "")
+
       prompt_bytes = byte_size(cmd.prompt)
       Telemetry.work_submitted(cmd.work_id, run_id, workflow, cmd.project_id, prompt_bytes)
 
-      {:ok, %WorkSubmitted{
-        work_id: cmd.work_id,
-        project_id: cmd.project_id,
-        workflow_snapshot: cmd.workflow_snapshot,
-        submission_id: submission_id,
-        run_id: run_id
-      }}
+      {:ok,
+       %WorkSubmitted{
+         work_id: cmd.work_id,
+         project_id: cmd.project_id,
+         workflow_snapshot: cmd.workflow_snapshot,
+         submission_id: submission_id,
+         run_id: run_id
+       }}
     end
   end
 
@@ -116,8 +126,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   end
 
   defp handle_cancel(%State{status: status}, _payload)
-      when status in [:succeeded, :failed, :cancelled],
-      do: {:ok, nil}
+       when status in [:succeeded, :failed, :cancelled],
+       do: {:ok, nil}
 
   defp handle_cancel(state, payload) do
     with :ok <- require_not_terminal(state) do
@@ -134,8 +144,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   defp validate_prompt(_), do: {:error, {:invalid_envelope, :missing_prompt}}
 
   defp require_not_terminal(%State{status: status})
-      when status in [:succeeded, :failed, :cancelled],
-      do: {:error, {:work_terminal, status}}
+       when status in [:succeeded, :failed, :cancelled],
+       do: {:error, {:work_terminal, status}}
 
   defp require_not_terminal(%State{}), do: :ok
 
@@ -145,8 +155,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   defp require_run_matches_bound(%State{bound_run_id: nil}, _run_id), do: :ok
 
   defp require_run_matches_bound(%State{bound_run_id: bound}, run_id)
-      when bound == run_id,
-      do: :ok
+       when bound == run_id,
+       do: :ok
 
   defp require_run_matches_bound(%State{bound_run_id: bound}, run_id),
     do: {:error, {:run_id_mismatch, bound, run_id}}
@@ -166,20 +176,26 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   end
 
   def apply_event(%State{} = state, %WorkCancelled{} = event) do
-    duration_us = if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+    duration_us =
+      if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+
     run_id = state.run_id || ""
     Telemetry.work_terminal(event.work_id, run_id, :cancelled, duration_us)
     %State{state | status: :cancelled}
   end
 
   def apply_event(%State{} = state, %WorkExecutionCompleted{} = event) do
-    duration_us = if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+    duration_us =
+      if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+
     Telemetry.work_terminal(event.work_id, event.run_id, :succeeded, duration_us)
     %State{state | status: :succeeded}
   end
 
   def apply_event(%State{} = state, %WorkExecutionFailed{} = event) do
-    duration_us = if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+    duration_us =
+      if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+
     Telemetry.work_terminal(event.work_id, event.run_id, :failed, duration_us)
     %State{state | status: :failed}
   end

@@ -6,9 +6,9 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
   alias ForemanServer.Workflow.{Catalog, AssetCatalog}
 
   @fixture_path Path.join([
-    __DIR__,
-    "../../fixtures/foreman_server/command_rendering_fixtures.json"
-  ])
+                  __DIR__,
+                  "../../fixtures/foreman_server/command_rendering_fixtures.json"
+                ])
 
   setup do
     # Start an isolated Catalog with the bundled manifests.
@@ -61,12 +61,14 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
 
       # Rendered command should have the JSON-encoded trd_path
       trd_path_arg = entry["snapshot"]["implementation"]["trd_path_argument"]
+
       assert cp["rendered_command"] =~ trd_path_arg,
              "rendered command should contain trd_path_argument: #{trd_path_arg}"
 
       # No un-substituted placeholders remain
       refute cp["rendered_command"] =~ "{{implementation",
              "rendered command should not contain double-brace placeholders"
+
       refute cp["rendered_command"] =~ "{trd_path_argument}",
              "rendered command should not contain legacy placeholder"
     end
@@ -88,6 +90,7 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
 
       refute cp["rendered_command"] =~ "{{implementation",
              "no double-brace placeholders in rendered command"
+
       refute cp["rendered_command"] =~ "{trd_path_argument}",
              "no legacy placeholder in rendered command"
     end
@@ -102,6 +105,7 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
 
         assert phase["worktree"]["base"] == impl["source_revision"],
                "#{manifest_name}: worktree.base should equal source_revision"
+
         refute phase["worktree"]["base"] =~ "{{implementation",
                "#{manifest_name}: no unsubstituted placeholders in worktree.base"
       end
@@ -119,6 +123,7 @@ defmodule ForemanServer.Workflow.CommandGatewayRenderFixtureTest do
         for phase <- decoded["phases"] do
           refute Map.has_key?(phase, :command),
                  "#{manifest_name}: phase should not have atom :command key after JSON round-trip"
+
           assert is_binary(phase["command"]),
                  "#{manifest_name}: phase.command should be a binary string"
         end

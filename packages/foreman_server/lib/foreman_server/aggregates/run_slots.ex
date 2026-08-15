@@ -327,25 +327,30 @@ defmodule ForemanServer.Aggregates.RunSlots do
   defp do_release(state, run_id, capacity) do
     if Map.has_key?(state.holders, run_id) do
       now_ms = System.monotonic_time(:millisecond)
-      effective_capacity = if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
+
+      effective_capacity =
+        if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
 
       if Enum.empty?(state.waiters) do
         {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity}}
       else
         {promoted, _remaining} = List.pop_at(state.waiters, 0)
 
-        {:ok, %RunSlotTransferred{
-          released_run_id: run_id,
-          acquired_run_id: promoted.run_id,
-          capacity: effective_capacity,
-          acquired_at_ms: now_ms
-        }}
+        {:ok,
+         %RunSlotTransferred{
+           released_run_id: run_id,
+           acquired_run_id: promoted.run_id,
+           capacity: effective_capacity,
+           acquired_at_ms: now_ms
+         }}
       end
     else
       {:ok, nil}
     end
   end
 
-  defp required_non_neg_integer(value, field) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp required_non_neg_integer(value, field) when is_integer(value) and value >= 0,
+    do: {:ok, value}
+
   defp required_non_neg_integer(_value, field), do: {:error, {:missing_or_invalid, field}}
 end

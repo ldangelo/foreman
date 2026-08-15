@@ -21,12 +21,13 @@ defmodule ForemanServer.RunAdmissionTest do
     init_run_id = "test-slot-init-#{System.unique_integer([:positive])}"
     capacity = 100
 
-    {:ok, _} = ForemanServer.CommandGateway.dispatch_system(%{
-      type: "run_slots.acquire",
-      command_id: "test:run-slots-init:#{init_run_id}",
-      aggregate_id: "run_slots:global",
-      payload: %{run_id: init_run_id, capacity: capacity}
-    })
+    {:ok, _} =
+      ForemanServer.CommandGateway.dispatch_system(%{
+        type: "run_slots.acquire",
+        command_id: "test:run-slots-init:#{init_run_id}",
+        aggregate_id: "run_slots:global",
+        payload: %{run_id: init_run_id, capacity: capacity}
+      })
 
     # Wait for state to settle — dispatch is synchronous but presence update is async.
     Process.sleep(10)
@@ -236,6 +237,7 @@ defmodule ForemanServer.RunAdmissionTest do
       # The test verifies slot gate is evaluated and returns a valid result.
       assert is_tuple(result)
     end
+
     @tag :trd_006
     test "returns {:ok, :slot_queued} when capacity is exhausted" do
       project_id = unique_id("project-capacity-exhausted")

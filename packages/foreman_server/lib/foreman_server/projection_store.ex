@@ -203,7 +203,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc "Return the current run-slot queue status: capacity, running run ids, and waiting run ids in FIFO order."
-  @spec queue_status() :: %{capacity: non_neg_integer(), running: [String.t()], waiting: [String.t()]}
+  @spec queue_status() :: %{
+          capacity: non_neg_integer(),
+          running: [String.t()],
+          waiting: [String.t()]
+        }
   def queue_status do
     GenServer.call(__MODULE__, :queue_status)
   end
@@ -404,6 +408,7 @@ defmodule ForemanServer.ProjectionStore do
       running: Map.keys(holders),
       waiting: Enum.map(waiters, & &1.run_id)
     }
+
     {:reply, reply, state}
   end
 

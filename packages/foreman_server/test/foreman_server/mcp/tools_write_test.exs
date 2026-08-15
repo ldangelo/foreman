@@ -27,12 +27,14 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
         assert envelope.type == "work.submit"
         assert envelope.aggregate_id == "work:work-123"
+
         assert envelope.payload == %{
                  work_id: "work-123",
                  project_id: "proj-456",
                  workflow: "default",
                  prompt: "Do the thing"
                }
+
         {:ok, %{work_id: "work-123", status: "submitted"}}
       end)
 
@@ -56,7 +58,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       result = Tools.call_tool("foreman_work_submit", params)
 
-      assert result == {:error, %{code: "DOMAIN_ERROR", message: "{:work_not_found, \"work-123\"}"}}
+      assert result ==
+               {:error, %{code: "DOMAIN_ERROR", message: "{:work_not_found, \"work-123\"}"}}
     end
 
     test "maps invalid_envelope errors to MCP tool errors" do
@@ -118,7 +121,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       result = Tools.call_tool("foreman_work_cancel", params)
 
       assert result ==
-               {:error, %{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"work.cancel\"}"}}
+               {:error,
+                %{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"work.cancel\"}"}}
     end
   end
 end

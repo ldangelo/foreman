@@ -138,7 +138,8 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
       state = Task.initial_state()
       unknown_cmd = %UnknownCommand{type: "x", payload: %{}}
 
-      assert {:error, {:unsupported_command, ForemanServer.Aggregates.TaskPruneTest.UnknownCommand}} =
+      assert {:error,
+              {:unsupported_command, ForemanServer.Aggregates.TaskPruneTest.UnknownCommand}} =
                Task.handle_command(state, unknown_cmd)
     end
   end

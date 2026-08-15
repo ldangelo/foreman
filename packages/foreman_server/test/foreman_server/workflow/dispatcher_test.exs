@@ -171,6 +171,7 @@ defmodule ForemanServer.Workflow.DispatcherTest do
       task_id = "task-lease-#{System.unique_integer([:positive])}"
       db_path = "/private/tmp/cg-dispatcher-lease-#{System.unique_integer([:positive])}.db"
       stream = BeadsDbLease.stream_id(db_path)
+
       on_exit(fn ->
         _ = Store.delete_stream(stream, :any_version, :hard)
       end)
@@ -317,4 +318,4 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         end
     end
   end
- end
+end

@@ -113,7 +113,7 @@ defmodule ForemanServer.CommandGateway do
         {:error, {:command_not_allowed, type}}
 
       type == "task.create" and is_map(payload) and
-          (aggregate_id == nil or aggregate_id == "") and
+        (aggregate_id == nil or aggregate_id == "") and
           (is_nil(payload_task_id) or payload_task_id == "") ->
         {:ok,
          %{
@@ -122,6 +122,7 @@ defmodule ForemanServer.CommandGateway do
            type: type,
            payload: normalize_payload_keys(payload)
          }}
+
       not is_binary(aggregate_id) or aggregate_id == "" ->
         {:error, {:invalid_envelope, :missing_aggregate_id}}
 
@@ -302,6 +303,7 @@ defmodule ForemanServer.CommandGateway do
         :ok
     end
   end
+
   defp validate_aggregate_id(%{type: "work.submit", aggregate_id: aggregate_id, payload: payload}) do
     work_id = get_value(payload, :work_id) || get_value(payload, "work_id")
     project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
@@ -345,7 +347,6 @@ defmodule ForemanServer.CommandGateway do
         :ok
     end
   end
-
 
   @reserved_approval_fields ~w(approval_id approved_at run_id workflow_snapshot)a
   defp reserved_approval_field?(payload) do
@@ -568,6 +569,7 @@ defmodule ForemanServer.CommandGateway do
         phase
     end
   end
+
   defp render_worktree_base(phase, impl) do
     worktree = get_value(phase, "worktree") || get_value(phase, :worktree)
 
@@ -620,6 +622,7 @@ defmodule ForemanServer.CommandGateway do
       v when is_binary(v) -> String.replace(string, placeholder, v)
     end
   end
+
   # Pre-validation step for operator commands.
   #
   # For `task.create` with no `aggregate_id` (no-id flow): calls the configured
@@ -674,8 +677,7 @@ defmodule ForemanServer.CommandGateway do
                     |> Map.put(:external_id, issue_id)
                     |> Map.put(:gateway_resolved_external_id?, true)
 
-                  {:ok,
-                   %{command | aggregate_id: "task:#{issue_id}", payload: enriched_payload}}
+                  {:ok, %{command | aggregate_id: "task:#{issue_id}", payload: enriched_payload}}
 
                 {:error, reason} ->
                   {:error, reason}
@@ -684,6 +686,7 @@ defmodule ForemanServer.CommandGateway do
         end
     end
   end
+
   defp prepare_operator_command(command), do: {:ok, command}
 
   defp enrich_operator_command(%{type: "task.create"} = command) do
@@ -800,7 +803,12 @@ defmodule ForemanServer.CommandGateway do
         {:ok, command}
 
       _ ->
-        with :ok <- validate_not_reserved(command.payload, [:submission_id, :run_id, :workflow_snapshot]),
+        with :ok <-
+               validate_not_reserved(command.payload, [
+                 :submission_id,
+                 :run_id,
+                 :workflow_snapshot
+               ]),
              {:ok, prepared} <-
                Work.Submission.prepare(%{
                  work_id: work_id,

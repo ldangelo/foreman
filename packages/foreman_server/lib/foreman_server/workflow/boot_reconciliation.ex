@@ -119,6 +119,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     GenServer.cast(__MODULE__, :scan_lease_orphans)
     :ok
   end
+
   @doc """
   Scan the `run_slots:global` stream for orphaned holders and waiters — a
   holder or waiter whose `run_id` does not correspond to a non-terminal run
@@ -212,6 +213,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     state = run_lease_scan_or_defer(state)
     {:noreply, state}
   end
+
   @impl true
   def handle_info(:scan_run_slot_orphans, state) do
     state = run_slot_scan_or_defer(state)

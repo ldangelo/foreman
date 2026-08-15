@@ -97,9 +97,18 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
 
     test "multiple holders accumulated" do
       events = [
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-1", capacity: 3, acquired_at_ms: 100}},
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-2", capacity: 3, acquired_at_ms: 101}},
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-3", capacity: 3, acquired_at_ms: 102}}
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-1", capacity: 3, acquired_at_ms: 100}
+        },
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-2", capacity: 3, acquired_at_ms: 101}
+        },
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-3", capacity: 3, acquired_at_ms: 102}
+        }
       ]
 
       :ok = ProjectionStore.apply_events(events)
@@ -120,9 +129,18 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
   describe "apply_event — RunSlotQueued" do
     test "run_id appears in waiting list in FIFO order" do
       events = [
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-4", position: 1, enqueued_at_ms: 200}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-5", position: 2, enqueued_at_ms: 201}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-6", position: 3, enqueued_at_ms: 202}}
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-4", position: 1, enqueued_at_ms: 200}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-5", position: 2, enqueued_at_ms: 201}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-6", position: 3, enqueued_at_ms: 202}
+        }
       ]
 
       :ok = ProjectionStore.apply_events(events)
@@ -139,7 +157,10 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
   describe "apply_event — RunSlotReleased" do
     test "holder removed from running" do
       events = [
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-1", capacity: 3, acquired_at_ms: 100}},
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-1", capacity: 3, acquired_at_ms: 100}
+        },
         %{event_type: "RunSlotReleased", payload: %{run_id: "run-1"}}
       ]
 
@@ -158,11 +179,26 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
   describe "apply_event — RunSlotTransferred" do
     test "old holder removed, new holder added, promoted waiter removed" do
       events = [
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-1", capacity: 3, acquired_at_ms: 100}},
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-2", capacity: 3, acquired_at_ms: 101}},
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-3", capacity: 3, acquired_at_ms: 102}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-4", position: 1, enqueued_at_ms: 200}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-5", position: 2, enqueued_at_ms: 201}},
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-1", capacity: 3, acquired_at_ms: 100}
+        },
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-2", capacity: 3, acquired_at_ms: 101}
+        },
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-3", capacity: 3, acquired_at_ms: 102}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-4", position: 1, enqueued_at_ms: 200}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-5", position: 2, enqueued_at_ms: 201}
+        },
         # run-1 releases and run-4 (FIFO head) is promoted
         %{
           event_type: "RunSlotTransferred",
@@ -186,8 +222,14 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
   describe "apply_event — RunSlotWaiterRemoved" do
     test "waiter removed from waiting list" do
       events = [
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-4", position: 1, enqueued_at_ms: 200}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-5", position: 2, enqueued_at_ms: 201}},
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-4", position: 1, enqueued_at_ms: 200}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-5", position: 2, enqueued_at_ms: 201}
+        },
         %{event_type: "RunSlotWaiterRemoved", payload: %{run_id: "run-4"}}
       ]
 
@@ -205,10 +247,22 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
   describe "queue_status/0" do
     test "returns correct structure" do
       events = [
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-1", capacity: 5, acquired_at_ms: 100}},
-        %{event_type: "RunSlotAcquired", payload: %{run_id: "run-2", capacity: 5, acquired_at_ms: 101}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-3", position: 1, enqueued_at_ms: 200}},
-        %{event_type: "RunSlotQueued", payload: %{run_id: "run-4", position: 2, enqueued_at_ms: 201}}
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-1", capacity: 5, acquired_at_ms: 100}
+        },
+        %{
+          event_type: "RunSlotAcquired",
+          payload: %{run_id: "run-2", capacity: 5, acquired_at_ms: 101}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-3", position: 1, enqueued_at_ms: 200}
+        },
+        %{
+          event_type: "RunSlotQueued",
+          payload: %{run_id: "run-4", position: 2, enqueued_at_ms: 201}
+        }
       ]
 
       :ok = ProjectionStore.apply_events(events)

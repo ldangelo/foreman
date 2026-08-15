@@ -694,6 +694,7 @@ defmodule ForemanServer.Aggregate.Actor do
     payload = to_string_keys(struct)
     %EventData{event_id: event_id, event_type: event_type, data: payload}
   end
+
   # -------------------------------------------------------------------------
   # Helpers: event_spec format conversion for caller-facing returns
   # -------------------------------------------------------------------------
@@ -750,8 +751,7 @@ defmodule ForemanServer.Aggregate.Actor do
       :crypto.hash(:sha256, aggregate_id <> "\0" <> command_id)
 
     <<b0::8, b1::8, b2::8, b3::8, b4::8, b5::8, b6::8, b7::8, b8::8, b9::8, b10::8, b11::8,
-      b12::8, b13::8, b14::8,
-      b15::8>> =
+      b12::8, b13::8, b14::8, b15::8>> =
       first16
 
     b6 = bor(band(b6, 0x0F), 0x40)

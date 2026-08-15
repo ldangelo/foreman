@@ -57,7 +57,11 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
 
   describe "apply_event/2 — WorkCancelled" do
     test "transitions status to :cancelled" do
-      state = %State{work_id: "work-1", status: :submitted, submitted_at: System.monotonic_time(:microsecond)}
+      state = %State{
+        work_id: "work-1",
+        status: :submitted,
+        submitted_at: System.monotonic_time(:microsecond)
+      }
 
       result = WorkRequest.apply_event(state, %WorkCancelled{work_id: "work-1"})
     end
@@ -65,23 +69,33 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
 
   describe "apply_event/2 — WorkExecutionCompleted" do
     test "transitions status to :succeeded" do
-      state = %State{work_id: "work-1", status: :running, submitted_at: System.monotonic_time(:microsecond)}
-
-      result = WorkRequest.apply_event(state, %WorkExecutionCompleted{
+      state = %State{
         work_id: "work-1",
-        run_id: "run-1"
-      })
+        status: :running,
+        submitted_at: System.monotonic_time(:microsecond)
+      }
+
+      result =
+        WorkRequest.apply_event(state, %WorkExecutionCompleted{
+          work_id: "work-1",
+          run_id: "run-1"
+        })
     end
   end
 
   describe "apply_event/2 — WorkExecutionFailed" do
     test "transitions status to :failed" do
-      state = %State{work_id: "work-1", status: :running, submitted_at: System.monotonic_time(:microsecond)}
-
-      result = WorkRequest.apply_event(state, %WorkExecutionFailed{
+      state = %State{
         work_id: "work-1",
-        run_id: "run-1"
-      })
+        status: :running,
+        submitted_at: System.monotonic_time(:microsecond)
+      }
+
+      result =
+        WorkRequest.apply_event(state, %WorkExecutionFailed{
+          work_id: "work-1",
+          run_id: "run-1"
+        })
     end
   end
 
@@ -90,13 +104,15 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
       state0 = WorkRequest.initial_state()
 
       # submitted
-      state1 = WorkRequest.apply_event(state0, %WorkSubmitted{
-        work_id: "work-1",
-        project_id: "proj-1",
-        run_id: "run-1",
-        submission_id: "sub-1",
-        workflow_snapshot: %{}
-      })
+      state1 =
+        WorkRequest.apply_event(state0, %WorkSubmitted{
+          work_id: "work-1",
+          project_id: "proj-1",
+          run_id: "run-1",
+          submission_id: "sub-1",
+          workflow_snapshot: %{}
+        })
+
       assert state1.status == :submitted
 
       # queued (Dispatcher sets this — simulate by direct struct update)
@@ -108,45 +124,53 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
       assert state3.status == :running
 
       # succeeded
-      state4 = WorkRequest.apply_event(state3, %WorkExecutionCompleted{
-        work_id: "work-1",
-        run_id: "run-1"
-      })
+      state4 =
+        WorkRequest.apply_event(state3, %WorkExecutionCompleted{
+          work_id: "work-1",
+          run_id: "run-1"
+        })
+
       assert state4.status == :succeeded
     end
 
     test "submitted → queued → running → failed" do
       state0 = WorkRequest.initial_state()
 
-      state1 = WorkRequest.apply_event(state0, %WorkSubmitted{
-        work_id: "work-2",
-        project_id: "proj-1",
-        run_id: "run-2",
-        submission_id: "sub-2",
-        workflow_snapshot: %{}
-      })
+      state1 =
+        WorkRequest.apply_event(state0, %WorkSubmitted{
+          work_id: "work-2",
+          project_id: "proj-1",
+          run_id: "run-2",
+          submission_id: "sub-2",
+          workflow_snapshot: %{}
+        })
+
       assert state1.status == :submitted
 
       state2 = %State{state1 | status: :queued}
       state3 = %State{state2 | status: :running, bound_run_id: state2.run_id}
 
-      state4 = WorkRequest.apply_event(state3, %WorkExecutionFailed{
-        work_id: "work-2",
-        run_id: "run-2"
-      })
+      state4 =
+        WorkRequest.apply_event(state3, %WorkExecutionFailed{
+          work_id: "work-2",
+          run_id: "run-2"
+        })
+
       assert state4.status == :failed
     end
 
     test "submitted → cancelled" do
       state0 = WorkRequest.initial_state()
 
-      state1 = WorkRequest.apply_event(state0, %WorkSubmitted{
-        work_id: "work-3",
-        project_id: "proj-1",
-        run_id: "run-3",
-        submission_id: "sub-3",
-        workflow_snapshot: %{}
-      })
+      state1 =
+        WorkRequest.apply_event(state0, %WorkSubmitted{
+          work_id: "work-3",
+          project_id: "proj-1",
+          run_id: "run-3",
+          submission_id: "sub-3",
+          workflow_snapshot: %{}
+        })
+
       assert state1.status == :submitted
 
       state2 = WorkRequest.apply_event(state1, %WorkCancelled{work_id: "work-3"})

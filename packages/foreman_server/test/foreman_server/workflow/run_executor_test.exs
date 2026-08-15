@@ -2283,7 +2283,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
 
     test "input.prompt present — prompt is verbatim, prompt_argument is JSON-encoded" do
-      snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc", "input" => %{"prompt" => "hello"}}
+      snapshot = %{
+        "workflow_name" => "test",
+        "workflow_digest" => "abc",
+        "input" => %{"prompt" => "hello"}
+      }
+
       state = make_state(snapshot)
       assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
 
@@ -2292,7 +2297,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
 
     test "input.prompt with newlines — prompt is verbatim, newlines preserved in prompt_argument" do
-      snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc", "input" => %{"prompt" => "multi\nline"}}
+      snapshot = %{
+        "workflow_name" => "test",
+        "workflow_digest" => "abc",
+        "input" => %{"prompt" => "multi\nline"}
+      }
+
       state = make_state(snapshot)
       assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
 

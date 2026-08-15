@@ -194,7 +194,11 @@ defmodule ForemanServer.CommandGatewayWorkSubmitTest do
   defp seed_work_projection(work_id, overrides) do
     :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
       works = state.works
-      updated = Map.put(works, work_id, %{work_id: work_id}) |> update_in([work_id], &Map.merge(&1, overrides))
+
+      updated =
+        Map.put(works, work_id, %{work_id: work_id})
+        |> update_in([work_id], &Map.merge(&1, overrides))
+
       %{state | works: updated}
     end)
   end

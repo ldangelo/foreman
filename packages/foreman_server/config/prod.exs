@@ -58,5 +58,13 @@ config :foreman_server, :prod_secret_provider,
       env: "SIGNING_SALT",
       secret_key: :signing_salt,
       nested: :live_view
+    ],
+    [
+      app: :foreman_server,
+      key: :api_bearer_token,
+      config_key: nil,
+      env: "FOREMAN_API_TOKEN",
+      secret_key: :api_bearer_token,
+      required: false
     ]
   ]

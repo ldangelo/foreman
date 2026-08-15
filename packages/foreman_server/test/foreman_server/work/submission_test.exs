@@ -139,7 +139,8 @@ defmodule ForemanServer.Work.SubmissionTest do
     end
 
     test "workflow not found returns {:error, {:workflow_load_failed, name, reason}}" do
-      assert {:error, {:workflow_load_failed, "nonexistent", {:workflow_not_loaded, "nonexistent.yaml"}}} =
+      assert {:error,
+              {:workflow_load_failed, "nonexistent", {:workflow_not_loaded, "nonexistent.yaml"}}} =
                Submission.prepare(%{
                  work_id: "work-1",
                  project_id: "proj-1",

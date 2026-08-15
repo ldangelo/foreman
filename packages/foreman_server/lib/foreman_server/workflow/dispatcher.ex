@@ -84,7 +84,6 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @slot_promotion_event_types ~w(RunSlotTransferred)
   @work_submitted_event_types ~w(WorkSubmitted)
 
-
   for event_type <- @task_dispatch_event_types do
     @impl true
     def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
@@ -139,7 +138,6 @@ defmodule ForemanServer.Workflow.Dispatcher do
       handle_work_submitted(envelope, state)
     end
   end
-
 
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
@@ -383,7 +381,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:error, reason} ->
-            Logger.warning("handle_slot_promoted: admission failed for #{run_id}: #{inspect(reason)}")
+            Logger.warning(
+              "handle_slot_promoted: admission failed for #{run_id}: #{inspect(reason)}"
+            )
+
             {:noreply, state}
         end
     end
@@ -467,7 +468,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:error, reason} ->
-            Logger.warning("handle_work_submitted: admission failed for #{work_id}: #{inspect(reason)}")
+            Logger.warning(
+              "handle_work_submitted: admission failed for #{work_id}: #{inspect(reason)}"
+            )
+
             {:noreply, state}
         end
     end

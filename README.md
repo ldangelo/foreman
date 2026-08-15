@@ -157,6 +157,21 @@ config :foreman_server, :agent_runtime,
 ForemanServer.AgentRuntime.execute("Summarize this PR", %{pr: 123},
   strategy: :automatic, task_type: :code_review)
 ```
+## API authentication
+
+The Foreman JSON API (`/api/*`) is **unauthenticated by default** in development and test environments.
+
+In production, set the `FOREMAN_API_TOKEN` environment variable to enable bearer-token authentication:
+
+```
+FOREMAN_API_TOKEN=your-secret-token
+```
+
+When set, all `/api/*` requests require an `Authorization: Bearer <token>` header. Requests without a valid bearer token receive a `401 Unauthorized` response.
+
+To run in production without authentication (not recommended), set `allow_insecure_local: true` in the MCP policy config.
+
+## Build & test
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full convention catalogue and
 [`docs/user-guide.md`](./docs/user-guide.md) for operator

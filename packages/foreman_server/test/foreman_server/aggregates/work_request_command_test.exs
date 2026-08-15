@@ -4,7 +4,14 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
   alias ForemanServer.Aggregates.WorkRequest
   alias ForemanServer.Aggregates.WorkRequest.State
   alias ForemanServer.Commands.WorkSubmit
-  alias ForemanServer.Events.{WorkCancelled, WorkExecutionCompleted, WorkExecutionFailed, WorkSubmitted}
+
+  alias ForemanServer.Events.{
+    WorkCancelled,
+    WorkExecutionCompleted,
+    WorkExecutionFailed,
+    WorkSubmitted
+  }
+
   alias ForemanServer.Identity
 
   defp uuid, do: EventStore.UUID.uuid4()
@@ -12,6 +19,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
   describe "handle_command/2 — work.submit" do
     test "emits WorkSubmitted with all required fields from empty state" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-1",
         project_id: "proj-1",
@@ -29,6 +37,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
 
     test "uses provided submission_id and run_id when given" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-2",
         project_id: "proj-1",
@@ -45,6 +54,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
 
     test "generates deterministic run_id from work_id and submission_id when run_id not provided" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-3",
         project_id: "proj-1",
@@ -59,6 +69,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
 
     test "rejects nil prompt with {:error, {:invalid_envelope, :missing_prompt}}" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-4",
         project_id: "proj-1",
@@ -66,11 +77,13 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
         workflow_snapshot: %{}
       }
 
-      assert {:error, {:invalid_envelope, :missing_prompt}} = WorkRequest.handle_command(state, cmd)
+      assert {:error, {:invalid_envelope, :missing_prompt}} =
+               WorkRequest.handle_command(state, cmd)
     end
 
     test "rejects empty binary prompt with {:error, {:invalid_envelope, :missing_prompt}}" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-5",
         project_id: "proj-1",
@@ -78,11 +91,13 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
         workflow_snapshot: %{}
       }
 
-      assert {:error, {:invalid_envelope, :missing_prompt}} = WorkRequest.handle_command(state, cmd)
+      assert {:error, {:invalid_envelope, :missing_prompt}} =
+               WorkRequest.handle_command(state, cmd)
     end
 
     test "rejects non-binary prompt with {:error, {:invalid_envelope, :missing_prompt}}" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-6",
         project_id: "proj-1",
@@ -90,11 +105,13 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
         workflow_snapshot: %{}
       }
 
-      assert {:error, {:invalid_envelope, :missing_prompt}} = WorkRequest.handle_command(state, cmd)
+      assert {:error, {:invalid_envelope, :missing_prompt}} =
+               WorkRequest.handle_command(state, cmd)
     end
 
     test "rejects non-binary prompt (list) with {:error, {:invalid_envelope, :missing_prompt}}" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-7",
         project_id: "proj-1",
@@ -102,11 +119,13 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
         workflow_snapshot: %{}
       }
 
-      assert {:error, {:invalid_envelope, :missing_prompt}} = WorkRequest.handle_command(state, cmd)
+      assert {:error, {:invalid_envelope, :missing_prompt}} =
+               WorkRequest.handle_command(state, cmd)
     end
 
     test "accepts valid non-empty binary prompt" do
       state = %State{}
+
       cmd = %WorkSubmit{
         work_id: "work-8",
         project_id: "proj-1",
@@ -119,6 +138,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
 
     test "emits WorkSubmitted from nil state" do
       state = nil
+
       cmd = %WorkSubmit{
         work_id: "work-9",
         project_id: "proj-1",

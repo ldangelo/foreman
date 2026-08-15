@@ -88,6 +88,7 @@ defmodule ForemanServerWeb.CommandControllerTest do
     conn = build_conn() |> post("/api/commands", body)
     assert json_response(conn, 400)["error"] == "invalid_envelope"
   end
+
   test "POST /api/commands rejects system command type" do
     body = %{type: "run.start", payload: %{run_id: "r1"}}
     conn = build_conn() |> post("/api/commands", body)

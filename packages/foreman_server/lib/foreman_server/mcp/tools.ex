@@ -160,7 +160,10 @@ defmodule ForemanServer.MCP.Tools do
     duration_us = System.monotonic_time(:microsecond) - start_us
     outcome = if result, do: :ok, else: :not_found
     Telemetry.mcp_tool_call(duration_us, "foreman_project_get", outcome)
-    if result, do: {:ok, result}, else: {:error, %{code: "NOT_FOUND", message: "Project not found"}}
+
+    if result,
+      do: {:ok, result},
+      else: {:error, %{code: "NOT_FOUND", message: "Project not found"}}
   end
 
   def call_tool("foreman_workflow_list", %{}) do
