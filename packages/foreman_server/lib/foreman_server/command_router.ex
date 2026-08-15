@@ -569,20 +569,21 @@ defmodule ForemanServer.CommandRouter do
     max(System.monotonic_time(:millisecond) - started_at_ms, 0)
   end
 
-  defp aggregate_module_for("project:" <> _), do: ForemanServer.Aggregates.Project
-  defp aggregate_module_for("task:" <> _), do: ForemanServer.Aggregates.Task
-  defp aggregate_module_for("run:" <> _), do: ForemanServer.Aggregates.Run
-  defp aggregate_module_for("worker:" <> _), do: ForemanServer.Aggregates.Worker
-  defp aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
-  defp aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
-  defp aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
-  defp aggregate_module_for("beads_db_lease:" <> _), do: ForemanServer.Aggregates.BeadsDbLease
-  defp aggregate_module_for("vcs_operation:" <> _), do: ForemanServer.Aggregates.VcsOperation
-  defp aggregate_module_for("vcs:" <> _), do: ForemanServer.Aggregates.VcsOperation
+  def aggregate_module_for("project:" <> _), do: ForemanServer.Aggregates.Project
+  def aggregate_module_for("task:" <> _), do: ForemanServer.Aggregates.Task
+  def aggregate_module_for("run:" <> _), do: ForemanServer.Aggregates.Run
+  def aggregate_module_for("worker:" <> _), do: ForemanServer.Aggregates.Worker
+  def aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
+  def aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
+  def aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
+  def aggregate_module_for("beads_db_lease:" <> _), do: ForemanServer.Aggregates.BeadsDbLease
+  def aggregate_module_for("run_slots:" <> _), do: ForemanServer.Aggregates.RunSlots
+  def aggregate_module_for("vcs_operation:" <> _), do: ForemanServer.Aggregates.VcsOperation
+  def aggregate_module_for("vcs:" <> _), do: ForemanServer.Aggregates.VcsOperation
 
-  defp aggregate_module_for("scheduler_intent:" <> _),
+  def aggregate_module_for("scheduler_intent:" <> _),
     do: ForemanServer.Aggregates.SchedulerIntent
 
-  defp aggregate_module_for("migration:" <> _), do: ForemanServer.Aggregates.ImportMigration
-  defp aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
+  def aggregate_module_for("migration:" <> _), do: ForemanServer.Aggregates.ImportMigration
+  def aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
 end
