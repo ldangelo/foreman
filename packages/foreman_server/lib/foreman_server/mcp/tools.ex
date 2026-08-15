@@ -253,6 +253,7 @@ defmodule ForemanServer.MCP.Tools do
         {:error, %{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
     end
   end
+
   def call_tool("foreman_workflow_validate", params) do
     start_us = System.monotonic_time(:microsecond)
 
@@ -267,6 +268,7 @@ defmodule ForemanServer.MCP.Tools do
         _ ->
           {:error, :invalid_params}
       end
+
     case manifest_body do
       {:ok, body} ->
         # Write to a temp file outside the catalog root
@@ -508,8 +510,7 @@ defmodule ForemanServer.MCP.Tools do
             duration_us = System.monotonic_time(:microsecond) - start_us
             Telemetry.mcp_tool_call(duration_us, "foreman_prompt_get", :not_found)
 
-            {:error,
-             %{code: "NOT_FOUND", message: "Prompt not found: #{name}"}}
+            {:error, %{code: "NOT_FOUND", message: "Prompt not found: #{name}"}}
         end
 
       {:error, :invalid_filename} ->
@@ -560,6 +561,7 @@ defmodule ForemanServer.MCP.Tools do
     Telemetry.mcp_tool_call(duration_us, name, :not_found)
     {:error, %{code: "METHOD_NOT_FOUND", message: "Unknown tool: #{name}"}}
   end
+
   # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------

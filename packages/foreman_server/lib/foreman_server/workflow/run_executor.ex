@@ -648,8 +648,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp render_prompt_template(content, state, phase_spec, index, context) do
     assigns = prompt_template_assigns(state, phase_spec, index, context)
 
-    Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, content, fn _match, key ->
+    content
+    |> render_sections(assigns)
+    |> Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, fn _match, key ->
       Map.get(assigns, key, "{{#{key}}}")
+    end)
+  end
+
+  # Strips {{#section KEY}}...{{/section}} blocks when KEY is empty.
+  defp render_sections(content, assigns) do
+    pattern = ~r"{{#section\s+([A-Za-z0-9_.-]+)}}(.*?){{/section}}"s
+
+    Regex.replace(pattern, content, fn _match, key, inner ->
+      case Map.get(assigns, key, "") do
+        "" -> ""
+        _ -> inner
+      end
     end)
   end
 

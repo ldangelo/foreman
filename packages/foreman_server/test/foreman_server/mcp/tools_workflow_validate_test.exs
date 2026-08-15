@@ -59,4 +59,49 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
                 }}
     end
   end
+
+  describe "foreman_workflow_validate (rejection conditions)" do
+    test "returns INVALID_PARAMS for non-string non-map manifest" do
+      # Lists are not accepted as manifests
+      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => ["not", "valid"]})
+
+      assert match?({:error, %{code: "INVALID_PARAMS"}}, result)
+    end
+
+    test "rejects phase that is not a map" do
+      yaml = """
+      name: test
+      phases:
+        - just a string
+      """
+
+      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+
+      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+    end
+
+    test "rejects phase with empty name" do
+      yaml = """
+      name: test
+      phases:
+        - name: ""
+          prompt: step
+      """
+
+      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+
+      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+    end
+
+    test "rejects phases that is not a list" do
+      yaml = """
+      name: test
+      phases: not-a-list
+      """
+
+      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+
+      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+    end
+  end
 end
