@@ -28,6 +28,7 @@ defmodule ForemanServer.MixProject do
       {:plug_cowboy, "~> 2.6"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:mox, "~> 1.0", only: :test},
+      {:meck, "~> 1.2", only: :test},
       {:stream_data, "~> 1.1", only: :test},
       # JSON serialization for EventStore
       {:jason, "~> 1.4"}

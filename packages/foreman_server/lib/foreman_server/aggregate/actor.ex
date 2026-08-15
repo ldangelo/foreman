@@ -679,8 +679,21 @@ defmodule ForemanServer.Aggregate.Actor do
     %EventData{event_id: event_id, event_type: event_type, data: payload}
   end
 
-  # Already an %EventData{} — pass through (defensive for test fixtures).
-  defp normalize_to_event_data(%EventData{} = ed, _event_id), do: ed
+  # Typed event struct — convert to EventData for storage (used by aggregates
+  # like RunSlots that return typed event structs from handle_command).
+  defp normalize_to_event_data(%_{} = struct, event_id) do
+    module = struct.__struct__
+
+    # Derive event_type from module name:
+    #   ForemanServer.Events.RunSlotAcquired → "RunSlotAcquired"
+    event_type =
+      module
+      |> Module.split()
+      |> List.last()
+
+    payload = to_string_keys(struct)
+    %EventData{event_id: event_id, event_type: event_type, data: payload}
+  end
   # -------------------------------------------------------------------------
   # Helpers: event_spec format conversion for caller-facing returns
   # -------------------------------------------------------------------------

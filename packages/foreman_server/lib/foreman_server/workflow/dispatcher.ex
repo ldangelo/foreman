@@ -37,6 +37,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   """
 
   use GenServer
+  require Logger
 
   alias ForemanServer.{ProjectionStore, RunAdmission}
   alias ForemanServer.Aggregates.BeadsDbLease
@@ -76,6 +77,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
   @task_dispatch_event_types ~w(TaskApproved TaskDispatched)
   @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
+  @slot_promotion_event_types ~w(RunSlotTransferred)
+
 
   for event_type <- @task_dispatch_event_types do
     @impl true
@@ -109,6 +112,18 @@ defmodule ForemanServer.Workflow.Dispatcher do
       handle_lease_promoted(envelope, state)
     end
   end
+
+  for event_type <- @slot_promotion_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_slot_promoted(envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_slot_promoted(envelope, state)
+    end
+  end
+
 
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
@@ -303,6 +318,64 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
       true ->
         re_dispatch_promoted(acquired_task_id, promoted_run_id, state)
+    end
+  end
+
+  # Handle slot promotion:
+
+  # Handle slot promotion: when a waiter is promoted to holder via RunSlotTransferred,
+  # re-enter admission for the promoted run so it can acquire the slot and proceed.
+  defp handle_slot_promoted(envelope, state) do
+    payload = unwrap_data(envelope)
+    acquired_run_id = payload["acquired_run_id"] || payload[:acquired_run_id]
+
+    if is_binary(acquired_run_id) and acquired_run_id != "" do
+      reenter_slot_admission(acquired_run_id, state)
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp reenter_slot_admission(run_id, state) do
+    # Find the task associated with this run to build the admission payload.
+    # A run is associated with exactly one task during dispatch.
+    case ProjectionStore.tasks_by_run_id(run_id) do
+      [] ->
+        Logger.warning("handle_slot_promoted: no task found for run #{run_id}")
+        {:noreply, state}
+
+      [task | _] ->
+        phase_specs = extract_phase_specs(task)
+        project_id = Map.get(task, :project_id) || Map.get(task, "project_id")
+        approval_id = Map.get(task, :approval_id) || Map.get(task, "approval_id")
+
+        workflow_snapshot =
+          Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+
+        payload = %{
+          run_id: run_id,
+          task_id: Map.get(task, :task_id) || Map.get(task, "task_id"),
+          project_id: project_id,
+          approval_id: approval_id,
+          workflow_snapshot: workflow_snapshot,
+          phase_specs: phase_specs
+        }
+
+        case RunAdmission.start(project_id, payload, []) do
+          {:ok, :slot_queued} ->
+            {:noreply, state}
+
+          {:ok, :queued} ->
+            {:noreply, state}
+
+          {:ok, _} ->
+            ForemanServer.Workflow.RunSupervisor.start_run(run_id, task)
+            {:noreply, state}
+
+          {:error, reason} ->
+            Logger.warning("handle_slot_promoted: admission failed for #{run_id}: #{inspect(reason)}")
+            {:noreply, state}
+        end
     end
   end
 
