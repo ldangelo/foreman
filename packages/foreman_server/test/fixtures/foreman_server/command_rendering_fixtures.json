@@ -1,0 +1,143 @@
+{
+  "manifests": {
+    "implement-trd-beads.yaml": {
+      "command_phases": [
+        {
+          "original_command": "/skill:ensemble-full-implement-trd-beads {{implementation.trd_path_argument}} --foreman",
+          "phase_name": "implement-trd-beads",
+          "rendered_command": "/skill:ensemble-full-implement-trd-beads \"docs/TRD-018.md\" --foreman"
+        }
+      ],
+      "snapshot": {
+        "description": "Implement a Technical Requirements Document via the Beads-backed ensemble implement-trd-beads skill under Foreman-managed execution.",
+        "digest": "419c1b8cab884ed1",
+        "implementation": {
+          "implementation_key": "bfd501828b1e67b7a6bfb06c11d9d3cc5ae56c5d16807760d8b8ff2551e59cc0",
+          "project_root": "/Users/ldangelo/Development/Fortium/foreman",
+          "source_revision": "798c812d493e908855689a29e0627da368190eed",
+          "trd_path": "docs/TRD-018.md",
+          "trd_path_argument": "\"docs/TRD-018.md\""
+        },
+        "name": "implement-trd-beads",
+        "phases": [
+          {
+            "action": "command",
+            "artifact_template": null,
+            "bash": null,
+            "command": "/skill:ensemble-full-implement-trd-beads \"docs/TRD-018.md\" --foreman",
+            "index": null,
+            "mail": null,
+            "max_turns": null,
+            "models": null,
+            "name": "implement-trd-beads",
+            "prompt_path": null,
+            "required_file": null,
+            "worktree": {
+              "base": "798c812d493e908855689a29e0627da368190eed",
+              "branch": "foreman/{run_id}/{phase}",
+              "cleanup": "on_success",
+              "enabled": true
+            }
+          }
+        ]
+      }
+    },
+    "implement-trd.yaml": {
+      "command_phases": [
+        {
+          "original_command": "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman",
+          "phase_name": "implement-trd",
+          "rendered_command": "/skill:ensemble-full-implement-trd \"docs/TRD-018.md\" --foreman"
+        }
+      ],
+      "snapshot": {
+        "description": "Implement a Technical Requirements Document via the ensemble implement-trd skill under Foreman-managed execution.",
+        "digest": "a6e6da5f7a910072",
+        "implementation": {
+          "implementation_key": "bfd501828b1e67b7a6bfb06c11d9d3cc5ae56c5d16807760d8b8ff2551e59cc0",
+          "project_root": "/Users/ldangelo/Development/Fortium/foreman",
+          "source_revision": "798c812d493e908855689a29e0627da368190eed",
+          "trd_path": "docs/TRD-018.md",
+          "trd_path_argument": "\"docs/TRD-018.md\""
+        },
+        "name": "implement-trd",
+        "phases": [
+          {
+            "action": "command",
+            "artifact_template": null,
+            "bash": null,
+            "command": "/skill:ensemble-full-implement-trd \"docs/TRD-018.md\" --foreman",
+            "index": null,
+            "mail": null,
+            "max_turns": null,
+            "models": null,
+            "name": "implement-trd",
+            "prompt_path": null,
+            "required_file": null,
+            "worktree": {
+              "base": "798c812d493e908855689a29e0627da368190eed",
+              "branch": "foreman/{run_id}/{phase}",
+              "cleanup": "on_success",
+              "enabled": true
+            }
+          }
+        ]
+      }
+    },
+    "plan.yaml": {
+      "command_phases": [
+        {
+          "original_command": "/skill:ensemble-full-create-prd --foreman",
+          "phase_name": "create-prd",
+          "rendered_command": "/skill:ensemble-full-create-prd --foreman"
+        },
+        {
+          "original_command": "/skill:ensemble-full-create-trd-foreman --foreman",
+          "phase_name": "create-trd",
+          "rendered_command": "/skill:ensemble-full-create-trd-foreman --foreman"
+        }
+      ],
+      "snapshot": {
+        "description": "Create draft product and technical requirements for later refinement.",
+        "digest": null,
+        "name": "plan",
+        "phases": [
+          {
+            "action": "command",
+            "artifact_template": null,
+            "bash": null,
+            "command": "/skill:ensemble-full-create-prd --foreman",
+            "index": null,
+            "mail": null,
+            "max_turns": null,
+            "models": null,
+            "name": "create-prd",
+            "prompt_path": null,
+            "requiredFile": "planning.prd_path",
+            "required_file": "planning.prd_path"
+          },
+          {
+            "action": "command",
+            "artifact_template": null,
+            "bash": null,
+            "command": "/skill:ensemble-full-create-trd-foreman --foreman",
+            "index": null,
+            "mail": null,
+            "max_turns": null,
+            "models": null,
+            "name": "create-trd",
+            "prompt_path": null,
+            "requiredFile": "planning.trd_path",
+            "required_file": "planning.trd_path"
+          }
+        ]
+      }
+    }
+  },
+  "metadata": {
+    "captured_at": "2026-08-15T16:22:52.707468Z",
+    "description": "Freeze-time rendering regression fixtures for bundled manifests with command phases. See TRD-018.",
+    "git_sha": "798c812d493e908855689a29e0627da368190eed",
+    "project_root": "/Users/ldangelo/Development/Fortium/foreman"
+  }
+}
