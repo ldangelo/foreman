@@ -172,7 +172,7 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
         ]
       }
 
-      assert {:error, {:unsupported_construct, {:deep_nesting, "nested_map"}}} =
+      assert {:error, {:unsupported_construct, {:deep_nesting, "deep"}}} =
                ManifestWriter.write(manifest)
     end
 

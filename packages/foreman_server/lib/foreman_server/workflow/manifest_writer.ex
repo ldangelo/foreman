@@ -126,18 +126,22 @@ defmodule ForemanServer.Workflow.ManifestWriter do
         false
 
       {_key, %{} = v} ->
-        validate_nested_map(v)
+        case validate_nested_map(v) do
+          :ok -> false
+          :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, _key}}}
+        end
 
       {key, value} when is_list(value) ->
         {:error, {:unsupported_construct, {:list_at_phase_property, key}}}
     end)
   end
 
+  # Returns :ok if the map has no nested maps, :deep_nesting if any value is a map
   defp validate_nested_map(map) do
     map
     |> Map.values()
-    |> Enum.find_value(false, fn
-      %{} -> {:error, {:unsupported_construct, {:deep_nesting, "nested_map"}}}
+    |> Enum.find_value(:ok, fn
+      %{} -> :deep_nesting
       _ -> false
     end)
   end
