@@ -16,6 +16,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   alias __MODULE__.State
 
   alias ForemanServer.Aggregates.WorkRequest.State
+  alias ForemanServer.Commands.WorkSubmit
+  alias ForemanServer.Identity
   alias ForemanServer.Events.{WorkCancelled, WorkExecutionCompleted, WorkExecutionFailed, WorkSubmitted}
 
   @behaviour ForemanServer.Aggregate
@@ -42,7 +44,31 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   def stream_id(work_id), do: "work:#{work_id}"
 
   @impl true
+  def handle_command(state, %{__struct__: WorkSubmit} = cmd)
+      when is_nil(state) or is_struct(state, State) do
+    with {:ok, _} <- validate_prompt(cmd.prompt) do
+      submission_id = cmd.submission_id || EventStore.UUID.uuid4()
+      run_id = cmd.run_id || Identity.run_id(cmd.work_id, submission_id)
+
+      {:ok, %WorkSubmitted{
+        work_id: cmd.work_id,
+        project_id: cmd.project_id,
+        workflow_snapshot: cmd.workflow_snapshot,
+        submission_id: submission_id,
+        run_id: run_id
+      }}
+    end
+  end
+
+  @impl true
   def handle_command(_state, _command), do: :unhandled
+
+  # ---------------------------------------------------------------------------
+  # Private
+  # ---------------------------------------------------------------------------
+
+  defp validate_prompt(prompt) when is_binary(prompt) and byte_size(prompt) > 0, do: {:ok, prompt}
+  defp validate_prompt(_), do: {:error, {:invalid_envelope, :missing_prompt}}
 
   @impl true
   def apply_event(%State{} = state, %WorkSubmitted{} = event) do
