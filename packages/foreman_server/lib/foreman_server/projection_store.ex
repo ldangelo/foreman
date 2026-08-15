@@ -160,12 +160,6 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:phases_for_run, run_id})
   end
 
-  @doc "Return workflow-eligible tasks (`ready` and `in_progress`) for dispatcher reconciliation."
-  @spec list_workflow_tasks() :: [map()]
-  def list_workflow_tasks do
-    GenServer.call(__MODULE__, :list_workflow_tasks)
-  end
-
   @doc "Return the PR association for a run_id, or :not_found."
   @spec pr_association(String.t()) :: {:ok, map()} | {:error, :not_found}
   def pr_association(run_id) when is_binary(run_id) do
@@ -550,22 +544,6 @@ defmodule ForemanServer.ProjectionStore do
       |> Enum.sort_by(fn phase -> get(phase, :index, 0) end)
 
     {:reply, phases, state}
-  end
-
-  @impl true
-  def handle_call(:list_workflow_tasks, _from, state) do
-    tasks =
-      state.tasks
-      |> Map.values()
-      |> Enum.filter(fn task -> get(task, :status) in ["ready", "in_progress"] end)
-      |> Enum.sort_by(fn task -> get(task, :task_id, "") end)
-
-    {:reply, tasks, state}
-  end
-
-  @impl true
-  def handle_call(:list_scheduler_intents, _from, state) do
-    {:reply, Map.values(state.scheduler_intents), state}
   end
 
   @impl true
