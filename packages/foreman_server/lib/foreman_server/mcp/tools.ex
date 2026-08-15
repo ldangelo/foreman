@@ -430,10 +430,7 @@ defmodule ForemanServer.MCP.Tools do
 
       case CatalogWriter.write_manifest(filename, manifest) do
       {:ok, path} ->
-        # Force a catalog reload so the in-memory state picks up the change
-        Catalog.reload()
-
-        # Check if the catalog now includes the workflow
+        # Check if the catalog poll has observed the change
         observed = match?({:ok, _}, Catalog.load(filename))
 
         duration_us = System.monotonic_time(:microsecond) - start_us
@@ -501,10 +498,7 @@ defmodule ForemanServer.MCP.Tools do
 
       case CatalogWriter.delete_manifest(filename) do
       :ok ->
-        # Force a catalog reload so the in-memory state drops the entry
-        Catalog.reload()
-
-        # Check if the catalog still includes the workflow (it should not)
+        # Check if the catalog poll has observed the deletion
         observed = match?({:error, _}, Catalog.load(filename))
 
         duration_us = System.monotonic_time(:microsecond) - start_us
@@ -576,11 +570,8 @@ defmodule ForemanServer.MCP.Tools do
 
     if Policy.authorized?("foreman_prompt_put") do
       case PromptWriter.write_prompt(name, content) do
-        {:ok, path} ->
-          # Force a catalog reload so the in-memory state picks up the change
-          Catalog.reload()
-
-          # Check if the catalog now includes the prompt
+        {:ok, _path} ->
+          # Check if the catalog poll has observed the change
           observed = match?({:ok, _}, Catalog.read_prompt(name <> ".md"))
 
           duration_us = System.monotonic_time(:microsecond) - start_us

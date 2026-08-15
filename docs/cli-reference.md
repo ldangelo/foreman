@@ -411,3 +411,65 @@ foreman task retry \
   --id foreman-vcs-worktree-support \
   --reason orphan_remediation_smoke
 ```
+
+- - -
+
+## MCP Protocol Interface
+
+Foreman exposes an MCP server via two transports:
+
+- **HTTP**: `GET/POST /mcp` (Streamable HTTP, authenticated via Bearer token)
+- **Stdio**: launched as a subprocess; JSON-RPC 2.0 over stdin/stdout
+
+Both transports expose the same tool set. Tool advertisement is
+filtered at runtime based on the `allow_workflow_writes` gate.
+
+### Read-only tools (always advertised)
+
+| Tool | Description |
+|---|---|
+| `foreman_work_get` | Fetch a work request by `work_id` |
+| `foreman_run_get` | Fetch a run by `run_id` |
+| `foreman_queue_status` | Fetch global slot queue: capacity, holders, waiters |
+| `foreman_project_list` | List all projects |
+| `foreman_project_get` | Fetch a project by `project_id` |
+| `foreman_workflow_list` | List all catalogued workflow manifests |
+| `foreman_workflow_get` | Fetch a manifest by name |
+| `foreman_workflow_validate` | Validate a manifest without writing it |
+| `foreman_work_submit` | Submit a new work request (prompt + workflow) |
+| `foreman_work_cancel` | Cancel a pending or queued work request |
+| `foreman_prompt_get` | Read a prompt body from the catalog |
+
+### Write tools (advertised only when `allow_workflow_writes: true`)
+
+| Tool | Description |
+|---|---|
+| `foreman_workflow_put` | Write/replace a workflow manifest |
+| `foreman_workflow_delete` | Delete a workflow manifest |
+| `foreman_prompt_put` | Write/replace a prompt body under `prompts/` |
+
+### Catalog observation timing
+
+Write tools (`workflow_put`, `workflow_delete`, `prompt_put`) report an
+`observed` field in their response:
+
+- `observed: true` — the catalog's 2-second poll has already picked up
+  the change
+- `observed: false` — the write just completed; the change will be
+  visible on the next poll tick
+
+The catalog is **not** restarted or reloaded by write tools. Workflow
+manifests and prompts written through the MCP interface are subject to
+the same hot-reload cycle as any other catalog entry.
+
+### Enabling write tools
+
+```elixir
+# config/config.exs (or runtime)
+config :foreman_server, :mcp,
+  enabled: true,
+  allow_workflow_writes: true   # gates workflow/prompt put/delete tools
+```
+
+Without this flag, write tools are refused at the policy layer and are
+not advertised in `tools/list`.
