@@ -35,5 +35,9 @@ config :foreman_server, :task_provider,
 # Application.put_env/3 at boot (or a release config that uses
 # REPLACE_OS_VARS / runtime env var substitution). Leave `false` for tests.
 config :foreman_server, :start_beads_watcher?, false
-config :foreman_server, :start_beads_orphan_janitor?, false
+# RunSlots: global and per-project concurrent run caps (TRD-005).
+# max_concurrent_runs: total runs across all projects (default: 3)
+# max_concurrent_runs_per_project: per-project cap (default: 100)
+config :foreman_server, :max_concurrent_runs, 3
+config :foreman_server, :max_concurrent_runs_per_project, 100
 import_config "#{config_env()}.exs"
