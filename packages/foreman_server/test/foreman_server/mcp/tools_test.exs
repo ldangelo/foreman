@@ -34,9 +34,9 @@ defmodule ForemanServer.MCP.ToolsTest do
     :sys.replace_state(ProjectionStore, fn _ -> Map.merge(base, overrides) end)
   end
   describe "list_tools/0" do
-    test "returns 5 tools" do
+    test "returns 9 tools" do
       tools = Tools.list_tools()
-      assert length(tools) == 5
+      assert length(tools) == 9
     end
   end
 

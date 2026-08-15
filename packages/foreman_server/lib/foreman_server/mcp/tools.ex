@@ -1,5 +1,7 @@
 defmodule ForemanServer.MCP.Tools do
+  alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Workflow.Catalog
 
   @schema_foreman_work_get %{
     name: "foreman_work_get",
@@ -55,7 +57,65 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
-  @tools [@schema_foreman_work_get, @schema_foreman_run_get, @schema_foreman_queue_status, @schema_foreman_project_list, @schema_foreman_project_get]
+  @schema_foreman_workflow_list %{
+    name: "foreman_workflow_list",
+    description: "List all available workflows",
+    inputSchema: %{
+      type: "object",
+      properties: %{}
+    }
+  }
+
+  @schema_foreman_workflow_get %{
+    name: "foreman_workflow_get",
+    description: "Get workflow details by name",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        name: %{type: "string", description: "The workflow name"}
+      },
+      required: ["name"]
+    }
+  }
+
+  @schema_foreman_work_submit %{
+    name: "foreman_work_submit",
+    description: "Submit a new work request",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        work_id: %{type: "string", description: "The work ID"},
+        project_id: %{type: "string", description: "The project ID"},
+        workflow: %{type: "string", description: "The workflow name"},
+        prompt: %{type: "string", description: "The input prompt"}
+      },
+      required: ["work_id", "project_id", "workflow", "prompt"]
+    }
+  }
+
+  @schema_foreman_work_cancel %{
+    name: "foreman_work_cancel",
+    description: "Cancel a work request",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        work_id: %{type: "string", description: "The work ID"}
+      },
+      required: ["work_id"]
+    }
+  }
+
+  @tools [
+    @schema_foreman_work_get,
+    @schema_foreman_run_get,
+    @schema_foreman_queue_status,
+    @schema_foreman_project_list,
+    @schema_foreman_project_get,
+    @schema_foreman_workflow_list,
+    @schema_foreman_workflow_get,
+    @schema_foreman_work_submit,
+    @schema_foreman_work_cancel
+  ]
 
   def list_tools, do: @tools
 
@@ -85,6 +145,79 @@ defmodule ForemanServer.MCP.Tools do
     case ProjectionStore.project_projection(project_id) do
       nil -> {:error, %{code: "NOT_FOUND", message: "Project not found"}}
       project -> {:ok, project}
+    end
+  end
+
+  def call_tool("foreman_workflow_list", %{}) do
+    {:ok, Catalog.manifests()}
+  end
+
+  def call_tool("foreman_workflow_get", %{name: name}) do
+    case Catalog.load(name <> ".yaml") do
+      {:ok, manifest} ->
+        result = %{
+          name: name,
+          description: Map.get(manifest, "description", ""),
+          digest: Map.get(manifest, "digest", ""),
+          phase_count: length(Map.get(manifest, "phases", [])),
+          manifest_path: "workflows/#{name}.yaml",
+          phases: Map.get(manifest, "phases", [])
+        }
+
+        {:ok, result}
+
+      {:error, _reason} ->
+        {:error, %{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
+    end
+  end
+
+  def call_tool("foreman_work_submit", %{
+        work_id: work_id,
+        project_id: project_id,
+        workflow: workflow,
+        prompt: prompt
+      }) do
+    command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
+
+    envelope = %{
+      type: "work.submit",
+      command_id: command_id,
+      aggregate_id: "work:#{work_id}",
+      payload: %{
+        work_id: work_id,
+        project_id: project_id,
+        workflow: workflow,
+        prompt: prompt
+      }
+    }
+
+    case CommandGateway.dispatch_operator(envelope) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error, %{code: "DOMAIN_ERROR", message: inspect(reason)}}
+    end
+  end
+
+  def call_tool("foreman_work_cancel", %{work_id: work_id}) do
+    command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
+
+    envelope = %{
+      type: "work.cancel",
+      command_id: command_id,
+      aggregate_id: "work:#{work_id}",
+      payload: %{
+        work_id: work_id
+      }
+    }
+
+    case CommandGateway.dispatch_operator(envelope) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error, %{code: "DOMAIN_ERROR", message: inspect(reason)}}
     end
   end
 
