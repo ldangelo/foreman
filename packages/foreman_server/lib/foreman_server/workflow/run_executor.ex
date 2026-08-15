@@ -144,6 +144,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, reason} -> %{__plan_context_error__: reason}
       end
 
+    # Determine whether this run is sourced from a task or a work-request.
+    # Used by maybe_claim_task / maybe_complete_task / maybe_fail_task to
+    # route to the correct aggregate (Task vs WorkRequest) per TRD-032.
+    source =
+      cond do
+        Map.get(task_projection, :task_id) || Map.get(task_projection, "task_id") ->
+          :task
+
+        Map.get(task_projection, :work_id) || Map.get(task_projection, "work_id") ->
+          :work_request
+
+        true ->
+          :unknown
+      end
+
     state = %{
       run_id: run_id,
       task: task_projection,
@@ -152,7 +167,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       completed: [],
       status: :ready,
       artifact_base: default_artifact_base(),
-      plan_context: plan_context
+      plan_context: plan_context,
+      source: source
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -1268,51 +1284,65 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # For work-sourced runs there is no task to claim — skip the callback entirely.
   defp maybe_claim_task(state) do
-    case provider_enabled?(project_id(state)) do
-      true ->
-        claim(project_id(state), provider_task_id(state), task_provider_actor())
-        |> to_lifecycle_result()
+    if state.source == :work_request do
+      :ok
+    else
+      case provider_enabled?(project_id(state)) do
+        true ->
+          claim(project_id(state), provider_task_id(state), task_provider_actor())
+          |> to_lifecycle_result()
 
-      false ->
-        :ok
+        false ->
+          :ok
+      end
     end
   end
-
+  # For work-sourced runs: no TaskProvider callback, dispatch directly to WorkRequest.
   defp maybe_complete_task(state) do
-    case provider_enabled?(project_id(state)) do
-      true ->
-        case complete(
-               project_id(state),
-               provider_task_id(state),
-               state.run_id,
-               completion_artifact_path(state)
-             ) do
-          {:ok, :already_terminal} -> :ok
-          {:ok, _issue} -> dispatch_task_execution_complete(state)
-          {:error, reason} -> {:error, reason}
-        end
+    if state.source == :work_request do
+      dispatch_work_execution_complete(state)
+    else
+      case provider_enabled?(project_id(state)) do
+        true ->
+          case complete(
+                 project_id(state),
+                 provider_task_id(state),
+                 state.run_id,
+                 completion_artifact_path(state)
+               ) do
+            {:ok, :already_terminal} -> :ok
+            {:ok, _issue} -> dispatch_task_execution_complete(state)
+            {:error, reason} -> {:error, reason}
+          end
 
-      false ->
-        dispatch_task_execution_complete(state)
+        false ->
+          dispatch_task_execution_complete(state)
+      end
     end
   end
 
+  # For work-sourced runs: no TaskProvider callback, dispatch directly to WorkRequest.
   defp maybe_fail_task(state, phase_spec, index, reason) do
-    case provider_enabled?(project_id(state)) do
-      true ->
-        failure_reason =
-          merge_failure_reason(reason, %{
-            artifact_path: ArtifactTemplate.path(state, phase_spec, index)
-          })
+    if state.source == :work_request do
+      dispatch_work_execution_fail(state, reason)
+    else
+      case provider_enabled?(project_id(state)) do
+        true ->
+          failure_reason =
+            merge_failure_reason(reason, %{
+              artifact_path: ArtifactTemplate.path(state, phase_spec, index)
+            })
 
-        case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
-          {:ok, _issue} -> dispatch_task_execution_fail(state, reason)
-          {:error, failure_reason} -> {:error, failure_reason}
-        end
+          case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
+            {:ok, _issue} -> dispatch_task_execution_fail(state, reason)
+            {:error, failure_reason} -> {:error, failure_reason}
+          end
 
-      false ->
-        dispatch_task_execution_fail(state, reason)
+        false ->
+          dispatch_task_execution_fail(state, reason)
+      end
     end
   end
 
@@ -1334,6 +1364,36 @@ defmodule ForemanServer.Workflow.RunExecutor do
       %{task_id: task_id(state), run_id: state.run_id, reason: inspect(reason)}
     )
     |> to_dispatch_result()
+  end
+
+  # WorkRequest aggregate dispatchers — used when state.source == :work_request.
+  defp dispatch_work_execution_complete(state) do
+    work_id = work_id(state)
+
+    dispatch_system_command(
+      "work.execution_complete",
+      Identity.task_complete_command_id(state.run_id),
+      "work:#{work_id}",
+      %{work_id: work_id, run_id: state.run_id}
+    )
+    |> to_dispatch_result()
+  end
+
+  defp dispatch_work_execution_fail(state, reason) do
+    work_id = work_id(state)
+
+    dispatch_system_command(
+      "work.execution_fail",
+      Identity.task_fail_command_id(state.run_id),
+      "work:#{work_id}",
+      %{work_id: work_id, run_id: state.run_id, reason: inspect(reason)}
+    )
+    |> to_dispatch_result()
+  end
+
+  defp work_id(state) do
+    Map.get(state.task, :work_id) || Map.get(state.task, "work_id") ||
+      raise("work_id unavailable in RunExecutor state — expected source=:work_request")
   end
 
   defp dispatch_run_complete(state) do
