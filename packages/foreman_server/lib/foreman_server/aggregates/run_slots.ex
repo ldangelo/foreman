@@ -30,6 +30,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   """
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.Commands.RunSlotsAcquire
 
   alias ForemanServer.Events.{
     RunSlotAcquired,
@@ -221,4 +222,24 @@ defmodule ForemanServer.Aggregates.RunSlots do
   defp event_data_to_map(%EventStore.RecordedEvent{data: data}) when is_map(data), do: data
   defp event_data_to_map(%EventStore.RecordedEvent{data: nil}), do: %{}
   defp event_data_to_map(%_{} = struct) when is_struct(struct), do: struct
+
+  # -------------------------------------------------------------------------
+  # Command handlers
+  # -------------------------------------------------------------------------
+
+  @impl true
+  def handle_command(%State{} = state, %RunSlotsAcquire{} = cmd) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    cond do
+      Map.has_key?(state.holders, cmd.run_id) ->
+        {:ok, nil}  # idempotent no-op: already a holder
+
+      map_size(state.holders) < cmd.capacity ->
+        {:ok, %RunSlotAcquired{run_id: cmd.run_id, capacity: cmd.capacity, acquired_at_ms: now_ms}}
+      true ->
+        position = length(state.waiters) + 1
+        {:ok, %RunSlotQueued{run_id: cmd.run_id, position: position, enqueued_at_ms: now_ms}}
+    end
+  end
 end
