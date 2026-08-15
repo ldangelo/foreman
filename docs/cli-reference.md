@@ -424,7 +424,7 @@ Foreman exposes an MCP server via two transports:
 Both transports expose the same tool set. Tool advertisement is
 filtered at runtime based on the `allow_workflow_writes` gate.
 
-### Read-only tools (always advertised)
+### Always advertised tools
 
 | Tool | Description |
 |---|---|
