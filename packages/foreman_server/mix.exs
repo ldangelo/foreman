@@ -31,7 +31,10 @@ defmodule ForemanServer.MixProject do
       {:meck, "~> 1.2", only: :test},
       {:stream_data, "~> 1.1", only: :test},
       # JSON serialization for EventStore
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+
+      # Anubis MCP server (TRD-036)
+      {:anubis_mcp, "~> 1.10"}
     ]
   end
 

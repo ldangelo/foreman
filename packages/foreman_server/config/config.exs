@@ -40,4 +40,10 @@ config :foreman_server, :start_beads_watcher?, false
 # max_concurrent_runs_per_project: per-project cap (default: 100)
 config :foreman_server, :max_concurrent_runs, 3
 config :foreman_server, :max_concurrent_runs_per_project, 100
+# Anubis MCP server (TRD-036)
+config :foreman_server, :mcp,
+  enabled: false,
+  mount: "/mcp",
+  allow_workflow_writes: false,
+  allow_insecure_local: false
 import_config "#{config_env()}.exs"

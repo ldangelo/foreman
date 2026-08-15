@@ -77,6 +77,7 @@ defmodule ForemanServer.Application do
           ForemanServer.RunLifecycleReconciler
         ] ++
         maybe_agent_runtime_child() ++
+        maybe_mcp_child() ++
         maybe_overwatch_child() ++
         maybe_stuck_detector_child() ++
         [
@@ -92,6 +93,16 @@ defmodule ForemanServer.Application do
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
         [{ForemanServer.AgentRuntime.Supervisor, []}]
+
+      _ ->
+        []
+    end
+  end
+
+  defp maybe_mcp_child do
+    case Application.get_env(:foreman_server, :mcp, [])[:enabled] do
+      true ->
+        [{ForemanServer.MCP, []}]
 
       _ ->
         []
