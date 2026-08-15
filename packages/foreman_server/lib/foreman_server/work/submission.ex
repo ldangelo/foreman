@@ -35,8 +35,9 @@ defmodule ForemanServer.Work.Submission do
         project_id: project_id,
         workflow: workflow_name,
         prompt: prompt
-      })
-      when is_binary(work_id) and work_id != "" and
+      } = input)
+      when is_map(input) and
+             is_binary(work_id) and work_id != "" and
              is_binary(project_id) and is_binary(workflow_name) and is_binary(prompt) do
     with {:ok, manifest} <- load_manifest(workflow_name),
          {:ok, submission_id} <- derive_submission_id(),

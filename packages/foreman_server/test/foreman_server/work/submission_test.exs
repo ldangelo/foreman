@@ -57,6 +57,8 @@ defmodule ForemanServer.Work.SubmissionTest do
           prompt: demo.md
       """)
 
+      :ok = Catalog.reload()
+
       input = %{
         work_id: "work-abc",
         project_id: "proj-123",
@@ -74,40 +76,44 @@ defmodule ForemanServer.Work.SubmissionTest do
       assert result.project_id == "proj-123"
       assert result.workflow == "demo"
 
-      # workflow_snapshot is present
       workflow_snapshot = result.workflow_snapshot
       assert is_map(workflow_snapshot)
       assert is_list(workflow_snapshot.phases)
       assert length(workflow_snapshot.phases) == 2
 
-      # input block is present in snapshot
       assert workflow_snapshot.input["prompt"] == "build a demo"
       assert workflow_snapshot.input["prompt_argument"] == Jason.encode!("build a demo")
     end
 
     test "workflow_snapshot has index and phase_id stamped on each phase", %{tmp: tmp} do
-      manifest_path = Path.join(tmp, "demo.yaml")
+      manifest_path = Path.join(tmp, "demo2.yaml")
+
       File.write!(manifest_path, """
-      name: demo
+      name: demo2
       phases:
         - name: first
-          prompt: demo.md
+          prompt: demo2.md
         - name: second
-          prompt: demo.md
+          prompt: demo2.md
       """)
+
+      :ok = Catalog.reload()
 
       {:ok, result} =
         Submission.prepare(%{
           work_id: "work-abc",
           project_id: "proj-123",
-          workflow: "demo",
+          workflow: "demo2",
           prompt: "hello"
         })
 
       phases = result.workflow_snapshot.phases
 
       assert Enum.map(phases, & &1.index) == [1, 2]
-      assert Enum.map(phases, & &1.phase_id) == ["run-abc-p001", "run-abc-p002"]
+
+      # phase_id format: "run-<hex_digest>-pNNN"
+      assert Enum.at(phases, 0).phase_id =~ ~r"^run-[a-f0-9]{32}-p001$"
+      assert Enum.at(phases, 1).phase_id =~ ~r"^run-[a-f0-9]{32}-p002$"
     end
 
     test "invalid submission (missing required fields) returns {:error, {:invalid_submission, :missing_required_fields}}" do
@@ -132,8 +138,7 @@ defmodule ForemanServer.Work.SubmissionTest do
                {:error, {:invalid_submission, :missing_required_fields}}
     end
 
-    test "workflow not found returns {:error, {:workflow_load_failed, name, reason}}",
-         %{tmp: _tmp} do
+    test "workflow not found returns {:error, {:workflow_load_failed, name, reason}}" do
       assert {:error, {:workflow_load_failed, "nonexistent", {:workflow_not_loaded, "nonexistent.yaml"}}} =
                Submission.prepare(%{
                  work_id: "work-1",
