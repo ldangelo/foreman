@@ -586,4 +586,5 @@ defmodule ForemanServer.CommandRouter do
 
   def aggregate_module_for("migration:" <> _), do: ForemanServer.Aggregates.ImportMigration
   def aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
+  def aggregate_module_for("work:" <> _), do: ForemanServer.Aggregates.WorkRequest
 end

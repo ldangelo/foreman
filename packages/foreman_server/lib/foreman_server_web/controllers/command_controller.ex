@@ -18,7 +18,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel)
+  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel work.submit work.cancel)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -164,6 +164,8 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("task.approve"), do: "task"
   defp aggregate_prefix("task.retry"), do: "task"
   defp aggregate_prefix("run.cancel"), do: "run"
+  defp aggregate_prefix("work.submit"), do: "work"
+  defp aggregate_prefix("work.cancel"), do: "work"
   defp aggregate_prefix(_), do: ""
 
   defp id_field_for("project.register"), do: :project_id
@@ -173,6 +175,8 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("task.approve"), do: :task_id
   defp id_field_for("task.retry"), do: :task_id
   defp id_field_for("run.cancel"), do: :run_id
+  defp id_field_for("work.submit"), do: :work_id
+  defp id_field_for("work.cancel"), do: :work_id
   defp id_field_for(_), do: nil
 
   defp default_command_id do
