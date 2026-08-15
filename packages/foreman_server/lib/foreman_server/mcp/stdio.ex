@@ -17,6 +17,7 @@ defmodule ForemanServer.MCP.Stdio do
     ]
 
   alias ForemanServer.MCP.Auth
+  alias ForemanServer.MCP.Policy
   alias ForemanServer.MCP.Tools
   alias Anubis.MCP.Error
   alias Anubis.MCP.Response
@@ -64,31 +65,27 @@ defmodule ForemanServer.MCP.Stdio do
   @doc """
   Verifies the bearer token from the `initialize` request params.
 
-  For stdio there is no HTTP Authorization header, so the token must be
-  present in `frame.init_meta["authorization"]` as a "Bearer <token>" string.
+  For stdio there is no HTTP Authorization header, so the MCP client
+  embeds the token as `init_meta["authorization"]` ("Bearer <token>" string).
   """
   @impl Anubis.Server
-  def init(client_info, frame) do
+  def init(_client_info, frame) do
     # For stdio, auth comes from the JSON-RPC initialize request params.
     # The MCP client embeds the bearer token as init_meta["authorization"].
-    token =
+    raw_token =
       case frame do
         %{init_meta: %{"authorization" => auth}} when is_binary(auth) ->
           # "Bearer <token>" string from the MCP client
           String.replace_prefix(auth, "Bearer ", "")
 
-        %{transport_context: %{auth: claims}} when is_map(claims) ->
-          # Fallback: claims already set by an upstream transport layer
-          claims["token"]
-
         _ ->
           nil
       end
 
-    case Auth.verify_token(token) do
+    case Auth.verify_token(raw_token) do
       :ok ->
         # Store the token in frame assigns so handle_tool_call can re-verify
-        verified_frame = Anubis.Server.Frame.assign(frame, :auth_token, token)
+        verified_frame = Anubis.Server.Frame.assign(frame, :auth_token, raw_token)
         {:ok, verified_frame}
 
       {:error, reason} ->
@@ -107,8 +104,14 @@ defmodule ForemanServer.MCP.Stdio do
 
     case Auth.verify_request(token, name, arguments) do
       :ok ->
-        Tools.call_tool(name, arguments)
-        |> wrap_tool_result(name, frame)
+        # Policy gate: refuse writes when allow_workflow_writes is disabled
+        if Policy.authorized?(name) do
+          Tools.call_tool(name, arguments)
+          |> wrap_tool_result(name, frame)
+        else
+          {:error, %Error{code: "POLICY_REFUSED", message: "Tool #{name} is not permitted"},
+           frame}
+        end
 
       {:error, reason} ->
         {:error, reason, frame}
@@ -134,7 +137,7 @@ defmodule ForemanServer.MCP.Stdio do
     {:error, %Error{code: code, message: message}, frame}
   end
 
-  defp wrap_tool_result(other, name, frame) do
+  defp wrap_tool_result(other, _name, frame) do
     content = [%{"type" => "text", "text" => inspect(other)}]
 
     {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},

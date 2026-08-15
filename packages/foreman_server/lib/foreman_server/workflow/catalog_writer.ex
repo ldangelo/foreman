@@ -58,6 +58,8 @@ defmodule ForemanServer.Workflow.CatalogWriter do
          :ok <- validate_containment(filename),
          :ok <- validate_name_stem(filename, manifest) do
       write_manifest_unchecked(filename, manifest)
+    else
+      {:error, _} = e -> e
     end
   end
 

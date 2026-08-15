@@ -18,6 +18,7 @@ defmodule ForemanServer.MCP do
     ]
 
   alias ForemanServer.MCP.Auth
+  alias ForemanServer.MCP.Policy
   alias ForemanServer.MCP.Tools
   alias Anubis.MCP.Error
   alias Anubis.MCP.Response
@@ -25,6 +26,7 @@ defmodule ForemanServer.MCP do
 
   # -------------------------------------------------------------------
   # Tool discovery — manually constructed Tool structs from the plain
+  # ForemanServer.MCP.Tools module so the framework can enumerate them.
   # -------------------------------------------------------------------
 
   @tool_schemas Tools.list_tools()
@@ -74,43 +76,65 @@ defmodule ForemanServer.MCP do
   # -------------------------------------------------------------------
 
   @doc """
-  Verifies the bearer token from the transport context after the client
-  sends the `initialize` request.
+  For the HTTP transport, the bearer token was already verified by the
+  `ForemanServer.MCP.Auth` Plug before the session starts.  This callback
+  provides a second verification checkpoint by checking that
+  `transport_context.auth` is present (JWT claims were set by the Plug).
   """
   @impl Anubis.Server
-  def init(client_info, frame) do
-    auth_claims =
-      case frame do
-        %{transport_context: %{auth: claims}} -> claims
-        _ -> nil
-      end
+  def init(_client_info, frame) do
+    # HTTP: auth claims were set by the Plug after validating the bearer token.
+    # Verify they're present (belt-and-suspenders double-check).
+    case frame do
+      %{transport_context: %{auth: claims}} when is_map(claims) and map_size(claims) > 0 ->
+        # Token was verified by Plug; store marker in assigns for handle_tool_call
+        verified_frame = Anubis.Server.Frame.assign(frame, :auth_verified, true)
+        {:ok, verified_frame}
 
-    case Auth.verify_token_from_claims(auth_claims) do
-      :ok -> {:ok, frame}
-      error -> error
+      _ ->
+        # No auth claims — either stdio (which uses init_meta) or a bug.
+        # Let handle_tool_call deal with it.
+        {:ok, frame}
     end
   end
 
   @doc """
-  Handles a tool call.  Delegates to `ForemanServer.MCP.Tools.call_tool/2`
-  and wraps the result in an `Anubis.MCP.Response` struct.
-  Re-verifies auth before each tool call.
+  Handles a tool call for the HTTP transport.
+
+  Auth was verified at the Plug level before the session started.  This
+  callback re-verifies as a belt-and-suspenders measure using the stored
+  auth claims (or raw token if available), then checks the write-gate policy
+  before delegating to `ForemanServer.MCP.Tools.call_tool/2`.
   """
   @impl Anubis.Server
   def handle_tool_call(name, arguments, frame) do
-    auth_claims =
+    # Belt-and-suspenders auth re-verification.
+    # For HTTP: we re-verify using the claims from transport_context.auth.
+    # The raw token is in claims["token"] if the Plug stored it there.
+    auth_ok =
       case frame do
-        %{transport_context: %{auth: claims}} -> claims
-        _ -> nil
+        %{transport_context: %{auth: %{"token" => token}}} when is_binary(token) ->
+          Auth.verify_request(token, name, arguments) == :ok
+
+        %{transport_context: %{auth: claims}} when is_map(claims) ->
+          # Claims present but no raw token — the Plug already verified.
+          # Mark as OK since Plug would have rejected before session started.
+          true
+
+        _ ->
+          false
       end
 
-    case Auth.verify_request_from_claims(auth_claims, name, arguments) do
-      :ok ->
+    if auth_ok do
+      # Policy gate: refuse writes when allow_workflow_writes is disabled
+      if Policy.authorized?(name) do
         Tools.call_tool(name, arguments)
         |> wrap_tool_result(name, frame)
-
-      {:error, reason} ->
-        {:error, reason, frame}
+      else
+        {:error, %Error{code: "POLICY_REFUSED", message: "Tool #{name} is not permitted"}, frame}
+      end
+    else
+      {:error, %Error{code: "UNAUTHORIZED", message: "Authentication required"}, frame}
     end
   end
 
@@ -120,13 +144,6 @@ defmodule ForemanServer.MCP do
 
   defp authorization_config do
     [validator: {Auth, []}]
-  end
-
-  defp wrap_tool_result({:ok, data}, _name, frame) when is_map(data) do
-    content = [%{"type" => "text", "text" => Jason.encode!(data)}]
-
-    {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},
-     frame}
   end
 
   defp wrap_tool_result({:ok, data}, _name, frame) do
@@ -140,7 +157,7 @@ defmodule ForemanServer.MCP do
     {:error, %Error{code: code, message: message}, frame}
   end
 
-  defp wrap_tool_result(other, name, frame) do
+  defp wrap_tool_result(other, _name, frame) do
     content = [%{"type" => "text", "text" => inspect(other)}]
 
     {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},

@@ -6,6 +6,7 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.PromptWriter
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Interpreter
+  alias ForemanServer.MCP.Policy
   alias ForemanServer.Workflow.ManifestWriter
 
   @schema_foreman_work_get %{
@@ -398,9 +399,10 @@ defmodule ForemanServer.MCP.Tools do
   def call_tool("foreman_workflow_put", %{name: name, manifest: manifest}) do
     start_us = System.monotonic_time(:microsecond)
 
-    filename = name <> ".yaml"
+    if Policy.authorized?("foreman_workflow_put") do
+      filename = name <> ".yaml"
 
-    case CatalogWriter.write_manifest(filename, manifest) do
+      case CatalogWriter.write_manifest(filename, manifest) do
       {:ok, path} ->
         # Force a catalog reload so the in-memory state picks up the change
         Catalog.reload()
@@ -447,14 +449,31 @@ defmodule ForemanServer.MCP.Tools do
            code: "INVALID_MANIFEST",
            message: "Manifest validation failed: #{inspect(detail)}"
          }}
+
+      {:error, {:unsupported_construct, _} = detail} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+
+        {:error,
+         %{
+           code: "INVALID_MANIFEST",
+           message: "Manifest validation failed: #{inspect(detail)}"
+         }}
+      end
+    else
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+      {:error, %{code: "POLICY_REFUSED", message: "Workflow writes are disabled"}}
     end
   end
 
   def call_tool("foreman_workflow_delete", %{name: name}) do
     start_us = System.monotonic_time(:microsecond)
-    filename = name <> ".yaml"
 
-    case CatalogWriter.delete_manifest(filename) do
+    if Policy.authorized?("foreman_workflow_delete") do
+      filename = name <> ".yaml"
+
+      case CatalogWriter.delete_manifest(filename) do
       :ok ->
         # Force a catalog reload so the in-memory state drops the entry
         Catalog.reload()
@@ -485,6 +504,11 @@ defmodule ForemanServer.MCP.Tools do
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :not_found)
         {:error, %{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
+      end
+    else
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
+      {:error, %{code: "POLICY_REFUSED", message: "Workflow writes are disabled"}}
     end
   end
 
