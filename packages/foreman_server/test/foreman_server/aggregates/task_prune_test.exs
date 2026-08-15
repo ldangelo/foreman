@@ -131,14 +131,36 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
 
       assert event_spec.event_type == "TaskDispatched"
     end
+  end
 
   describe "apply_event/2 — historical pruned-event streams replay correctly (read path survives)" do
-    alias ForemanServer.Events.{TaskCreated, TaskUpdated, TaskAnnotated, TaskDependencyAdded}
+    # Task.apply_event uses Aggregate.event_payload/1 and Aggregate.event_type/1 to
+    # extract from events. It receives either:
+    #   - %RecordedEvent{data: payload}  (from stream replay)
+    #   - %{type: "EventName", payload: %{...}}  (from handle_command output after append)
+    # Both give event_payload = the data map and event_type = "EventName".
+    # Raw structs do NOT work here — Task's apply_event has no direct struct-pattern
+    # clauses (unlike RunSlots which has both patterns).
 
     test "TaskUpdated events replay to correct state" do
       state0 = Task.initial_state()
-      created = %TaskCreated{task_id: "t-1", project_id: "p-1", title: "Original", description: "Desc"}
-      updated = %TaskUpdated{task_id: "t-1", status: "blocked", title: "Updated title", priority: "high"}
+
+      created = %{
+        type: "TaskCreated",
+        payload: %{
+          task_id: "t-1",
+          project_id: "p-1",
+          title: "Original",
+          description: "Desc",
+          status: "open",
+          task_type: "default"
+        }
+      }
+
+      updated = %{
+        type: "TaskUpdated",
+        payload: %{task_id: "t-1", status: "blocked", title: "Updated title", priority: "high"}
+      }
 
       state1 = Task.apply_event(state0, created)
       state2 = Task.apply_event(state1, updated)
@@ -152,9 +174,27 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
 
     test "TaskAnnotated events replay and accumulate annotations" do
       state0 = Task.initial_state()
-      created = %TaskCreated{task_id: "t-1", project_id: "p-1"}
-      ann1 = %TaskAnnotated{task_id: "t-1", body: "First note", author: "alice", created_at: "2024-01-01T00:00:00Z"}
-      ann2 = %TaskAnnotated{task_id: "t-1", body: "Second note", author: "bob", created_at: "2024-01-02T00:00:00Z"}
+
+      created = %{
+        type: "TaskCreated",
+        payload: %{
+          task_id: "t-1",
+          project_id: "p-1",
+          status: "open",
+          task_type: "default",
+          title: "T"
+        }
+      }
+
+      ann1 = %{
+        type: "TaskAnnotated",
+        payload: %{task_id: "t-1", body: "First note", author: "alice"}
+      }
+
+      ann2 = %{
+        type: "TaskAnnotated",
+        payload: %{task_id: "t-1", body: "Second note", author: "bob"}
+      }
 
       state1 = Task.apply_event(state0, created)
       state2 = Task.apply_event(state1, ann1)
@@ -167,9 +207,20 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
 
     test "TaskDependencyAdded events replay and accumulate dependencies" do
       state0 = Task.initial_state()
-      created = %TaskCreated{task_id: "t-1", project_id: "p-1"}
-      dep1 = %TaskDependencyAdded{task_id: "t-1", depends_on: "t-0"}
-      dep2 = %TaskDependencyAdded{task_id: "t-1", depends_on: "t-2"}
+
+      created = %{
+        type: "TaskCreated",
+        payload: %{
+          task_id: "t-1",
+          project_id: "p-1",
+          status: "open",
+          task_type: "default",
+          title: "T"
+        }
+      }
+
+      dep1 = %{type: "TaskDependencyAdded", payload: %{task_id: "t-1", depends_on: "t-0"}}
+      dep2 = %{type: "TaskDependencyAdded", payload: %{task_id: "t-1", depends_on: "t-2"}}
 
       state1 = Task.apply_event(state0, created)
       state2 = Task.apply_event(state1, dep1)
@@ -180,10 +231,30 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
 
     test "mixed historical stream replays to correct final state (full integration)" do
       state0 = Task.initial_state()
-      created = %TaskCreated{task_id: "t-1", project_id: "p-1", title: "My Task", priority: "low"}
-      updated = %TaskUpdated{task_id: "t-1", status: "open", priority: "high"}
-      ann = %TaskAnnotated{task_id: "t-1", body: "Look at this", author: "carol", created_at: "2024-03-01T00:00:00Z"}
-      dep = %TaskDependencyAdded{task_id: "t-1", depends_on: "t-preexist"}
+
+      created = %{
+        type: "TaskCreated",
+        payload: %{
+          task_id: "t-1",
+          project_id: "p-1",
+          title: "My Task",
+          priority: "low",
+          status: "open",
+          task_type: "default"
+        }
+      }
+
+      updated = %{
+        type: "TaskUpdated",
+        payload: %{task_id: "t-1", status: "open", priority: "high"}
+      }
+
+      ann = %{
+        type: "TaskAnnotated",
+        payload: %{task_id: "t-1", body: "Look at this", author: "carol"}
+      }
+
+      dep = %{type: "TaskDependencyAdded", payload: %{task_id: "t-1", depends_on: "t-preexist"}}
 
       final =
         state0

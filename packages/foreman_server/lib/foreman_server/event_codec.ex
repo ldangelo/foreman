@@ -163,7 +163,9 @@ defmodule ForemanServer.EventCodec do
     WorkerStderr => [:worker_id, :run_id],
     ToolCallFinished => [:worker_id, :run_id],
     AssistantMessage => [:worker_id, :run_id],
-    RunStarted => [:run_id, :task_id, :project_id, :workflow_snapshot],
+    # workflow_snapshot and started_at_ms were added in a later version;
+    # older events predate both, so only the original 3 fields are enforced.
+    RunStarted => [:run_id, :task_id, :project_id],
     ProjectRunReserved => [:project_id, :run_id, :sequence, :command_id, :run_start_payload],
     ProjectRunReservationReleased => [:project_id, :run_id, :sequence],
     RunCompleted => [:run_id, :project_id, :sequence],
