@@ -269,15 +269,28 @@ can inspect the failure via `foreman run get <run_id>` — the phase
 projection records `failure_reason` containing the dotted key and
 resolved path.
 
+### `foreman task create --workflow-type <workflow>`
+
+Create a task with an explicit server workflow manifest selector. The
+Go CLI posts the standard `task.create` command to `/api/commands`
+with `workflow_type: "<workflow>"`. `--id`, `--project`, and
+`--title` are required for all tasks. `--trd-path` is required only
+for `--workflow-type implement-trd` and `--workflow-type
+implement-trd-beads`; other workflows such as `bug` do not require a
+TRD path. The CLI pretty-prints the raw command response (HTTP 201
+with `status: "accepted"`); there is no `--format` flag.
+
+```
+foreman task create \
+  --id bug-1 \
+  --project proj-abc \
+  --title "Fix login redirect" \
+  --workflow-type bug
+```
+
 ### `foreman task create --workflow-type implement-trd`
 
-Create a task that flows through the `implement-trd` workflow. The
-Go CLI posts the standard `task.create` command to `/api/commands`
-with `workflow_type: "implement-trd"`. `--id`, `--project`,
-`--title`, and `--trd-path` are required; `--workflow-type`
-selects the implementation workflow discriminator. The CLI
-pretty-prints the raw command response (HTTP 201 with
-`status: "accepted"`); there is no `--format` flag.
+Create a task that flows through the `implement-trd` workflow.
 
 ```
 foreman task create \

@@ -168,34 +168,42 @@ func TestTaskApproveSendsOnlyRequiredFields(t *testing.T) {
 	}
 }
 
-// TestTaskCreateRejectsUnknownWorkflowType ensures the CLI rejects
-// any --workflow-type value outside the supported pair before the
-// server sees it, instead of silently falling back to the default.
-func TestTaskCreateRejectsUnknownWorkflowType(t *testing.T) {
+// TestTaskCreateAcceptsNonImplementationWorkflowType ensures the CLI
+// passes server workflow manifest selectors through without forcing a
+// TRD path. Only implement-trd workflows need TRD inputs.
+func TestTaskCreateAcceptsNonImplementationWorkflowType(t *testing.T) {
+	var captured []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("server should not be called for invalid input; body=%s", r.Body)
+		captured, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
 	}))
 	defer srv.Close()
 
 	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
 
-	err := taskCreate(c, []string{
+	if err := taskCreate(c, []string{
 		"-id", "task-x",
 		"-project", "proj-1",
-		"-title", "Implement X",
-		"-workflow-type", "implement-bogus",
-		"-trd-path", "docs/trd.md",
-	})
-	if err == nil {
-		t.Fatalf("expected error for unsupported --workflow-type, got nil")
+		"-title", "Fix X",
+		"-workflow-type", "bug",
+	}); err != nil {
+		t.Fatalf("taskCreate: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--workflow-type must be one of") {
-		t.Fatalf("error lacks selector guidance: %v", err)
+
+	var env commandEnvelope
+	if err := json.Unmarshal(captured, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := env.Payload["workflow_type"]; got != "bug" {
+		t.Fatalf("workflow_type = %v, want bug", got)
+	}
+	if _, ok := env.Payload["trd_path"]; ok {
+		t.Fatalf("unexpected trd_path for bug workflow: %v", env.Payload)
 	}
 }
 
-// TestTaskCreateRequiresTrdPathForWorkflowType ensures that any
-// --workflow-type selector must be paired with a nonblank --trd-path.
+// TestTaskCreateRequiresTrdPathForImplementationWorkflowType ensures
+// implement-trd selectors must be paired with a nonblank --trd-path.
 func TestTaskCreateRequiresTrdPathForWorkflowType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("server should not be called when --trd-path missing; body=%s", r.Body)
@@ -213,7 +221,7 @@ func TestTaskCreateRequiresTrdPathForWorkflowType(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when --workflow-type is set without --trd-path")
 	}
-	if !strings.Contains(err.Error(), "--trd-path is required") {
+	if !strings.Contains(err.Error(), "--trd-path is required for --workflow-type implement-trd") {
 		t.Fatalf("error lacks trd-path guidance: %v", err)
 	}
 }
