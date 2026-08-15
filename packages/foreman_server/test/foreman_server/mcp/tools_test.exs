@@ -46,8 +46,11 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_project_get",
                "foreman_workflow_list",
                "foreman_workflow_get",
+               "foreman_workflow_validate",
                "foreman_work_submit",
-               "foreman_work_cancel"
+               "foreman_work_cancel",
+               "foreman_workflow_put",
+               "foreman_workflow_delete"
              ]
 
       Enum.each(tools, fn tool ->
