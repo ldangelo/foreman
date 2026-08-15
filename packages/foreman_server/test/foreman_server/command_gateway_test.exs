@@ -1282,6 +1282,132 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
+  describe "render_strict_fields / input block (TRD-019)" do
+    # Convenience to call the private render_strict_fields/1
+    defp render_strict_fields(snapshot) do
+      apply(ForemanServer.CommandGateway, :render_strict_fields, [snapshot])
+    end
+
+    # Convenience to call the private render_command/3
+    defp render_command(phase, impl, input) do
+      apply(ForemanServer.CommandGateway, :render_command, [phase, impl, input])
+    end
+
+    test "returns snapshot unchanged when neither implementation nor input block exists" do
+      snapshot = %{"phases" => [%{"command" => "echo hello"}]}
+
+      result = render_strict_fields(snapshot)
+
+      assert result == snapshot
+      assert result["phases"] == [%{"command" => "echo hello"}]
+    end
+
+    test "returns snapshot unchanged when implementation block is empty map" do
+      snapshot = %{"implementation" => %{}, "phases" => [%{"command" => "echo hello"}]}
+
+      result = render_strict_fields(snapshot)
+
+      assert result == snapshot
+    end
+
+    test "returns snapshot unchanged when input block is empty map" do
+      snapshot = %{"input" => %{}, "phases" => [%{"command" => "echo hello"}]}
+
+      result = render_strict_fields(snapshot)
+
+      assert result == snapshot
+    end
+
+    test "fires and renders phases when input block is present (no implementation)" do
+      snapshot = %{
+        "input" => %{"prompt" => "Write tests", "prompt_argument" => "--spec test"},
+        "phases" => [
+          %{"command" => "run {{input.prompt}} {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      assert result["phases"] == [
+        %{"command" => "run Write tests --spec test"}
+      ]
+    end
+
+    test "fires and renders phases when implementation block is present" do
+      snapshot = %{
+        "implementation" => %{
+          "trd_path_argument" => "docs/TRD/x.md",
+          "source_revision" => "abc123"
+        },
+        "phases" => [
+          %{"command" => "/skill:ensemble {{implementation.trd_path_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      assert result["phases"] == [
+        %{"command" => "/skill:ensemble docs/TRD/x.md"}
+      ]
+    end
+
+    test "render_command substitutes {{input.prompt}}" do
+      phase = %{"command" => "prompt: '{{input.prompt}}'"}
+
+      result = render_command(phase, nil, %{"prompt" => "Hello World"})
+
+      assert result["command"] == "prompt: 'Hello World'"
+    end
+
+    test "render_command substitutes {{input.prompt_argument}}" do
+      phase = %{"command" => "arg={{input.prompt_argument}}"}
+
+      result = render_command(phase, nil, %{"prompt_argument" => "--verbose"})
+
+      assert result["command"] == "arg=--verbose"
+    end
+
+    test "render_command preserves newlines in substituted {{input.prompt}}" do
+      phase = %{"command" => "code:\n{{input.prompt}}\nend"}
+
+      result = render_command(phase, nil, %{"prompt" => "line1\nline2\nline3"})
+
+      assert result["command"] == "code:\nline1\nline2\nline3\nend"
+    end
+
+    test "render_command leaves command unchanged when input block is nil" do
+      phase = %{"command" => "prompt: '{{input.prompt}}'"}
+
+      result = render_command(phase, nil, nil)
+
+      assert result["command"] == "prompt: '{{input.prompt}}'"
+    end
+
+    test "render_command leaves command unchanged when implementation block is nil" do
+      phase = %{"command" => "skill: {{implementation.trd_path_argument}}"}
+
+      result = render_command(phase, nil, nil)
+
+      assert result["command"] == "skill: {{implementation.trd_path_argument}}"
+    end
+
+    test "render_command substitutes both implementation and input tokens independently" do
+      phase = %{"command" => "{{implementation.trd_path_argument}} --prompt '{{input.prompt}}'"}
+
+      result = render_command(phase, %{"trd_path_argument" => "docs/TRD/y.md"}, %{"prompt" => "do it"})
+
+      assert result["command"] == "docs/TRD/y.md --prompt 'do it'"
+    end
+
+    test "render_command does not substitute missing input tokens (leaves placeholder)" do
+      phase = %{"command" => "{{input.prompt}}"}
+
+      result = render_command(phase, nil, %{})
+
+      assert result["command"] == "{{input.prompt}}"
+    end
+  end
+
   describe "task.retry validation" do
     setup do
       ForemanServer.CommandGatewayTestHelper.reset_projection_store()

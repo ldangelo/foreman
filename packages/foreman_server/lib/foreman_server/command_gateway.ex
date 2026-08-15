@@ -452,25 +452,32 @@ defmodule ForemanServer.CommandGateway do
   # twin. Consumers like `RunExecutor` that read atom keys must be
   # updated to read string keys (or accept both) — see the regression
   # test in `command_gateway_test.exs`.
-  defp render_strict_fields(snapshot) when is_map(snapshot) do
-    case get_value(snapshot, "implementation") do
-      nil ->
-        snapshot
+  def render_strict_fields(snapshot) when is_map(snapshot) do
+    impl = get_value(snapshot, "implementation")
+    input = get_value(snapshot, "input")
 
-      %{} = impl ->
+    if is_map(impl) and impl != %{} do
+      phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
+      rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, impl, nil) end)
+      put_canonical(snapshot, "phases", :phases, rendered_phases)
+    else
+      if is_map(input) and input != %{} do
         phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
-        rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, impl) end)
+        rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, nil, input) end)
         put_canonical(snapshot, "phases", :phases, rendered_phases)
+      else
+        snapshot
+      end
     end
   end
 
-  defp render_phase(phase, impl) when is_map(phase) do
+  defp render_phase(phase, impl, input) when is_map(phase) do
     phase
-    |> render_command(impl)
+    |> render_command(impl, input)
     |> render_worktree_base(impl)
   end
 
-  defp render_command(phase, impl) do
+  def render_command(phase, impl, input) do
     template = get_value(phase, "command") || get_value(phase, :command)
 
     case template do
@@ -478,12 +485,20 @@ defmodule ForemanServer.CommandGateway do
         rendered =
           value
           |> substitute(
+            "{{input.prompt}}",
+            input && get_value(input, "prompt")
+          )
+          |> substitute(
+            "{{input.prompt_argument}}",
+            input && get_value(input, "prompt_argument")
+          )
+          |> substitute(
             "{{implementation.trd_path_argument}}",
-            get_value(impl, "trd_path_argument")
+            impl && get_value(impl, "trd_path_argument")
           )
           |> substitute(
             "{{implementation.source_revision}}",
-            get_value(impl, "source_revision")
+            impl && get_value(impl, "source_revision")
           )
 
         put_canonical(phase, "command", :command, rendered)
@@ -492,7 +507,6 @@ defmodule ForemanServer.CommandGateway do
         phase
     end
   end
-
   defp render_worktree_base(phase, impl) do
     worktree = get_value(phase, "worktree") || get_value(phase, :worktree)
 
