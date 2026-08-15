@@ -43,7 +43,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
-  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel)
+  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel work.submit work.cancel)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -301,6 +301,50 @@ defmodule ForemanServer.CommandGateway do
         :ok
     end
   end
+  defp validate_aggregate_id(%{type: "work.submit", aggregate_id: aggregate_id, payload: payload}) do
+    work_id = get_value(payload, :work_id) || get_value(payload, "work_id")
+    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+
+    cond do
+      not is_binary(work_id) or work_id == "" ->
+        {:error, {:invalid_envelope, :missing_work_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("work", work_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      is_binary(project_id) and project_id != "" ->
+        case ProjectionStore.project_projection(project_id) do
+          nil -> {:error, {:project_not_found, project_id}}
+          %{archived?: true} -> {:error, {:project_archived, project_id}}
+          _ -> :ok
+        end
+
+      true ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+    end
+  end
+
+  defp validate_aggregate_id(%{type: "work.cancel", aggregate_id: aggregate_id, payload: payload}) do
+    work_id = get_value(payload, :work_id) || get_value(payload, "work_id")
+
+    cond do
+      not is_binary(work_id) or work_id == "" ->
+        {:error, {:invalid_envelope, :missing_work_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("work", work_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+
 
   @reserved_approval_fields ~w(approval_id approved_at run_id workflow_snapshot)a
   defp reserved_approval_field?(payload) do
@@ -454,11 +498,11 @@ defmodule ForemanServer.CommandGateway do
   # test in `command_gateway_test.exs`.
   def render_strict_fields(snapshot) when is_map(snapshot) do
     impl = get_value(snapshot, "implementation")
-    input = get_value(snapshot, "input")
+    input = normalize_input_for_render(get_value(snapshot, "input"))
 
     if is_map(impl) and impl != %{} do
       phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
-      rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, impl, nil) end)
+      rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, impl, input) end)
       put_canonical(snapshot, "phases", :phases, rendered_phases)
     else
       if is_map(input) and input != %{} do
@@ -470,6 +514,22 @@ defmodule ForemanServer.CommandGateway do
       end
     end
   end
+
+  # Derive `input.prompt_argument` as JSON-encoded `input.prompt` so the
+  # command template can safely embed the prompt as a single quoted
+  # argument (TRD-020).  When `prompt_argument` is already present it is
+  # preserved verbatim.
+  defp normalize_input_for_render(input) when is_map(input) do
+    prompt = get_value(input, "prompt")
+
+    if is_binary(prompt) and get_value(input, "prompt_argument") == nil do
+      Map.put(input, "prompt_argument", Jason.encode!(prompt))
+    else
+      input
+    end
+  end
+
+  defp normalize_input_for_render(input), do: input
 
   defp render_phase(phase, impl, input) when is_map(phase) do
     phase
