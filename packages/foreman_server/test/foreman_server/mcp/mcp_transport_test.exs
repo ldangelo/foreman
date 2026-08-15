@@ -7,6 +7,12 @@ defmodule ForemanServer.MCP.TransportTest do
   alias ForemanServer.MCP
   alias ForemanServer.MCP.Stdio
 
+  setup do
+    prev = Application.get_env(:foreman_server, :mcp, [])
+    Application.put_env(:foreman_server, :mcp, Keyword.put(prev, :allow_workflow_writes, true))
+    on_exit(fn -> Application.put_env(:foreman_server, :mcp, prev) end)
+    :ok
+  end
   describe "tool set identity — both transports expose identical tools" do
     test "ForemanServer.MCP and ForemanServer.MCP.Stdio expose the same tool schemas" do
       http_tools = MCP.__components__(:tool)

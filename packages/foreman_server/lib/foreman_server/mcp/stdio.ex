@@ -22,23 +22,26 @@ defmodule ForemanServer.MCP.Stdio do
   alias Anubis.MCP.Error
   alias Anubis.MCP.Response
   alias Anubis.Server.Component.Tool
-
-  # Reuse the same tool definitions as ForemanServer.MCP
-  @tool_schemas Tools.list_tools()
-
-  @tools Enum.map(@tool_schemas, fn schema ->
-           %Tool{
-             name: schema.name,
-             title: schema[:title],
-             description: schema.description,
-             input_schema: schema.inputSchema,
-             handler: Tools
-           }
-         end)
+  # -------------------------------------------------------------------
+  # Tool discovery — runtime filter via Policy.list_tools/1 so write
+  # tools are unadvertised when the gate is off (TRD-037 / REQ-020).
+  # -------------------------------------------------------------------
 
   @impl true
-  def __components__(:tool), do: @tools
+  def __components__(:tool) do
+    all_schemas = Tools.list_tools()
+    authorized_schemas = Policy.list_tools(all_schemas)
 
+    Enum.map(authorized_schemas, fn schema ->
+      %Tool{
+        name: schema.name,
+        title: schema[:title],
+        description: schema.description,
+        input_schema: schema.inputSchema,
+        handler: Tools
+      }
+    end)
+  end
   # -------------------------------------------------------------------
   # Supervision / child spec — stdio transport
   # -------------------------------------------------------------------

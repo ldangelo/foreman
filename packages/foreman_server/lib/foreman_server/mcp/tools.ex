@@ -157,6 +157,7 @@ defmodule ForemanServer.MCP.Tools do
       },
       required: ["manifest"]
     }
+  }
   @schema_foreman_prompt_put %{
     name: "foreman_prompt_put",
     description:
@@ -573,34 +574,40 @@ defmodule ForemanServer.MCP.Tools do
   def call_tool("foreman_prompt_put", %{"name" => name, "content" => content}) do
     start_us = System.monotonic_time(:microsecond)
 
-    case PromptWriter.write_prompt(name, content) do
-      {:ok, path} ->
-        # Force a catalog reload so the in-memory state picks up the change
-        Catalog.reload()
+    if Policy.authorized?("foreman_prompt_put") do
+      case PromptWriter.write_prompt(name, content) do
+        {:ok, path} ->
+          # Force a catalog reload so the in-memory state picks up the change
+          Catalog.reload()
 
-        # Check if the catalog now includes the prompt
-        observed = match?({:ok, _}, Catalog.read_prompt(name <> ".md"))
+          # Check if the catalog now includes the prompt
+          observed = match?({:ok, _}, Catalog.read_prompt(name <> ".md"))
 
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :ok)
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :ok)
 
-        {:ok,
-         %{
-           prompt_path: "prompts/#{name}.md",
-           observed: observed
-         }}
+          {:ok,
+           %{
+             prompt_path: "prompts/#{name}.md",
+             observed: observed
+           }}
 
-      {:error, :invalid_filename} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
+        {:error, :invalid_filename} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
 
-        {:error, %{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+          {:error, %{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
 
-      {:error, :outside_catalog} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
+        {:error, :outside_catalog} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
 
-        {:error, %{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+          {:error, %{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+      end
+    else
+      duration_us = System.monotonic_time(:microsecond) - start_us
+      Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
+      {:error, %{code: "POLICY_REFUSED", message: "Workflow writes are disabled"}}
     end
   end
 

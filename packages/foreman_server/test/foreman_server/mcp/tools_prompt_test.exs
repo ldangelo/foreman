@@ -3,6 +3,13 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
 
   alias ForemanServer.MCP.Tools
 
+  setup do
+    prev = Application.get_env(:foreman_server, :mcp, [])
+    Application.put_env(:foreman_server, :mcp, Keyword.put(prev, :allow_workflow_writes, true))
+    on_exit(fn -> Application.put_env(:foreman_server, :mcp, prev) end)
+    :ok
+  end
+
   # Tests for filename/path validation that run without needing the Catalog GenServer.
   # App-dependent tests (prompt get with real read, prompt put with real write) require
   # the application to be running.
