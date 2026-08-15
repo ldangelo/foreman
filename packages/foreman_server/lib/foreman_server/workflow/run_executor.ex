@@ -1299,6 +1299,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       end
     end
   end
+
   # For work-sourced runs: no TaskProvider callback, dispatch directly to WorkRequest.
   defp maybe_complete_task(state) do
     if state.source == :work_request do
