@@ -5,6 +5,8 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.CatalogWriter
   alias ForemanServer.Workflow.PromptWriter
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.Interpreter
+  alias ForemanServer.Workflow.ManifestWriter
 
   @schema_foreman_work_get %{
     name: "foreman_work_get",
@@ -140,6 +142,21 @@ defmodule ForemanServer.MCP.Tools do
       required: ["name"]
     }
   }
+  @schema_foreman_workflow_validate %{
+    name: "foreman_workflow_validate",
+    description:
+      "Validate a workflow manifest by running it through the Interpreter. Accepts a YAML string or manifest object. Returns valid: true if the manifest is parseable, or the verbatim Interpreter error message.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        manifest: %{
+          description:
+            "The workflow manifest as a YAML string or a manifest object with at least 'name' and 'phases' fields"
+        }
+      },
+      required: ["manifest"]
+    }
+  }
 
   @tools [
     @schema_foreman_work_get,
@@ -149,6 +166,7 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_project_get,
     @schema_foreman_workflow_list,
     @schema_foreman_workflow_get,
+    @schema_foreman_workflow_validate,
     @schema_foreman_work_submit,
     @schema_foreman_work_cancel,
     @schema_foreman_workflow_put,
@@ -233,6 +251,85 @@ defmodule ForemanServer.MCP.Tools do
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_get", :not_found)
         {:error, %{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
+    end
+  end
+  def call_tool("foreman_workflow_validate", params) do
+    start_us = System.monotonic_time(:microsecond)
+
+    manifest_body =
+      case params do
+        %{"manifest" => body} when is_binary(body) ->
+          {:ok, body}
+
+        %{"manifest" => body} when is_map(body) ->
+          ManifestWriter.write(body)
+
+        _ ->
+          {:error, :invalid_params}
+      end
+    case manifest_body do
+      {:ok, body} ->
+        # Write to a temp file outside the catalog root
+        tmp_path = Path.join(System.tmp_dir!(), "validate_#{:rand.uniform(999_999)}.yaml")
+
+        parse_result =
+          case File.write(tmp_path, body) do
+            :ok ->
+              result = Interpreter.load(tmp_path)
+              File.rm(tmp_path)
+              result
+
+            {:error, reason} ->
+              {:error, {:file_write_failed, reason}}
+          end
+
+        case parse_result do
+          {:ok, _workflow} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :ok)
+
+            {:ok, %{valid: true}}
+
+          {:error, {:manifest_load_failed, _path, message}} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
+            {:error,
+             %{
+               code: "INVALID_MANIFEST",
+               message: message
+             }}
+
+          {:error, {:unsupported_construct, _} = detail} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
+            {:error,
+             %{
+               code: "INVALID_MANIFEST",
+               message: "Manifest validation failed: #{inspect(detail)}"
+             }}
+
+          {:error, reason} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
+            {:error,
+             %{
+               code: "INVALID_MANIFEST",
+               message: inspect(reason)
+             }}
+        end
+
+      {:error, :invalid_params} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+
+        {:error,
+         %{
+           code: "INVALID_PARAMS",
+           message: "Expected manifest as a YAML string or map"
+         }}
     end
   end
 
