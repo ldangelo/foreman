@@ -11,7 +11,9 @@ defmodule ProjectionStoreRunsTestHelper do
         worktrees: %{},
         worktree_create_orphans: %{},
         subscribers: Map.get(state, :subscribers, %{}),
-        project_active_runs: %{}
+        project_active_runs: %{},
+        run_slots: %{capacity: 0, holders: %{}, waiters: []},
+        works: %{}
       }
     end)
   end

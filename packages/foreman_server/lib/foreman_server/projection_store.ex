@@ -208,6 +208,24 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :queue_status)
   end
 
+  @doc "Return the projected state for a work, or nil if not found."
+  @spec work_projection(String.t()) :: map() | nil
+  def work_projection(work_id) when is_binary(work_id) and work_id != "" do
+    GenServer.call(__MODULE__, {:work_projection, work_id})
+  end
+
+  @doc "Return every projected work."
+  @spec list_work() :: [map()]
+  def list_work do
+    GenServer.call(__MODULE__, :list_work)
+  end
+
+  @doc "Return the queue position for a submitted work, or {:error, :not_in_queue}."
+  @spec queue_position(String.t()) :: {:ok, pos_integer()} | {:error, :not_in_queue}
+  def queue_position(work_id) when is_binary(work_id) and work_id != "" do
+    GenServer.call(__MODULE__, {:queue_position, work_id})
+  end
+
   @doc """
   Return the projected worktree for an `operation_id` (the deterministic
   correlation id `"wt-<run_id>-<phase_id>"`), or nil if not found.
@@ -386,6 +404,36 @@ defmodule ForemanServer.ProjectionStore do
       running: Map.keys(holders),
       waiting: Enum.map(waiters, & &1.run_id)
     }
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:work_projection, work_id}, _from, state) do
+    {:reply, Map.get(state.works, work_id), state}
+  end
+
+  @impl true
+  def handle_call(:list_work, _from, state) do
+    {:reply, Map.values(state.works), state}
+  end
+
+  def handle_call({:queue_position, work_id}, _from, state) do
+    reply =
+      case Map.get(state.works, work_id) do
+        %{run_id: run_id} when is_binary(run_id) ->
+          %{waiters: waiters} = state.run_slots
+          waiting = Enum.map(waiters, & &1.run_id)
+
+          if run_id in waiting do
+            position = Enum.find_index(waiting, &(&1 == run_id)) + 1
+            {:ok, position}
+          else
+            {:error, :not_in_queue}
+          end
+
+        _ ->
+          {:error, :not_in_queue}
+      end
 
     {:reply, reply, state}
   end
@@ -614,7 +662,8 @@ defmodule ForemanServer.ProjectionStore do
       project_active_runs: %{},
       worktrees: %{},
       worktree_create_orphans: %{},
-      run_slots: %{capacity: 0, holders: %{}, waiters: []}
+      run_slots: %{capacity: 0, holders: %{}, waiters: []},
+      works: %{}
     }
   end
 
@@ -1322,6 +1371,79 @@ defmodule ForemanServer.ProjectionStore do
       end)
     else
       state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkSubmitted", payload) do
+    case decode_for_projection("WorkSubmitted", payload) do
+      %ForemanServer.Events.WorkSubmitted{
+        work_id: work_id,
+        project_id: project_id,
+        run_id: run_id,
+        submission_id: submission_id
+      } = event
+      when not is_nil(work_id) and work_id != "" ->
+        work = %{
+          work_id: work_id,
+          status: :submitted,
+          project_id: project_id,
+          run_id: run_id,
+          submission_id: submission_id,
+          queue_position: nil
+        }
+
+        Map.update!(state, :works, &Map.put(&1, work_id, work))
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkCancelled", payload) do
+    case decode_for_projection("WorkCancelled", payload) do
+      %ForemanServer.Events.WorkCancelled{work_id: work_id}
+      when not is_nil(work_id) and work_id != "" ->
+        Map.update!(state, :works, fn works ->
+          case Map.get(works, work_id) do
+            nil -> works
+            existing -> Map.put(works, work_id, %{existing | status: :cancelled})
+          end
+        end)
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkExecutionCompleted", payload) do
+    case decode_for_projection("WorkExecutionCompleted", payload) do
+      %ForemanServer.Events.WorkExecutionCompleted{work_id: work_id}
+      when not is_nil(work_id) and work_id != "" ->
+        Map.update!(state, :works, fn works ->
+          case Map.get(works, work_id) do
+            nil -> works
+            existing -> Map.put(works, work_id, %{existing | status: :succeeded})
+          end
+        end)
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkExecutionFailed", payload) do
+    case decode_for_projection("WorkExecutionFailed", payload) do
+      %ForemanServer.Events.WorkExecutionFailed{work_id: work_id}
+      when not is_nil(work_id) and work_id != "" ->
+        Map.update!(state, :works, fn works ->
+          case Map.get(works, work_id) do
+            nil -> works
+            existing -> Map.put(works, work_id, %{existing | status: :failed})
+          end
+        end)
+
+      _ ->
+        state
     end
   end
 
