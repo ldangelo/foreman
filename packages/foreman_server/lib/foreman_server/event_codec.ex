@@ -106,6 +106,7 @@ defmodule ForemanServer.EventCodec do
     "RunFailed" => RunFailed,
     "RunBlocked" => RunBlocked,
     "RunFlaggedStuck" => RunFlaggedStuck,
+    "RunPaused" => RunPaused,
     "RunCancelled" => RunCancelled,
     "RunSlotAcquired" => RunSlotAcquired,
     "RunSlotQueued" => RunSlotQueued,

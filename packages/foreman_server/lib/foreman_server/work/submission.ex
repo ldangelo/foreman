@@ -42,7 +42,7 @@ defmodule ForemanServer.Work.Submission do
     with {:ok, manifest} <- load_manifest(workflow_name),
          {:ok, submission_id} <- derive_submission_id(),
          run_id = Identity.run_id(work_id, submission_id),
-         {:ok, workflow_snapshot} <- build_snapshot(manifest, prompt, run_id) do
+         {:ok, workflow_snapshot} <- build_snapshot(manifest, prompt, run_id, workflow_name) do
       {:ok, %{
         submission_id: submission_id,
         run_id: run_id,
@@ -76,7 +76,7 @@ defmodule ForemanServer.Work.Submission do
     {:ok, EventStore.UUID.uuid4()}
   end
 
-  defp build_snapshot(manifest, prompt, run_id) do
+  defp build_snapshot(manifest, prompt, run_id, workflow_name) do
     phases =
       manifest.phases
       |> Enum.with_index(1)
@@ -89,6 +89,7 @@ defmodule ForemanServer.Work.Submission do
 
     workflow_snapshot = %{
       phases: phases,
+      workflow: workflow_name,
       input: %{
         "prompt" => prompt,
         "prompt_argument" => Jason.encode!(prompt)

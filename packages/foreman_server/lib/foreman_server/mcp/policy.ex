@@ -1,4 +1,6 @@
 defmodule ForemanServer.MCP.Policy do
+  alias ForemanServer.Telemetry
+
   @write_tools ["foreman_work_submit", "foreman_work_cancel"]
 
   @spec authorized?(String.t()) :: boolean()
@@ -6,7 +8,12 @@ defmodule ForemanServer.MCP.Policy do
     if allow_workflow_writes?() do
       true
     else
-      tool_name not in @write_tools
+      if tool_name in @write_tools do
+        Telemetry.mcp_policy_refused(tool_name, :write_not_allowed)
+        false
+      else
+        true
+      end
     end
   end
 

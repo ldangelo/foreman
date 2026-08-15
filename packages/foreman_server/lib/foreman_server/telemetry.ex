@@ -29,6 +29,10 @@ defmodule ForemanServer.Telemetry do
     :create,
     :failure
   ]
+  @mcp_tool_call [:foreman_server, :mcp, :tool, :call]
+  @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
+  @work_submitted [:foreman_server, :work, :submitted]
+  @work_terminal [:foreman_server, :work, :terminal]
 
   @all_events [
     @command_dispatch,
@@ -46,7 +50,11 @@ defmodule ForemanServer.Telemetry do
     @reconciler_terminal_release,
     @reconciler_orphan_retry,
     @task_provider_beads_create_skipped_watcher_import,
-    @task_provider_beads_create_failure
+    @task_provider_beads_create_failure,
+    @mcp_tool_call,
+    @mcp_policy_refused,
+    @work_submitted,
+    @work_terminal
   ]
 
   def all_events, do: @all_events
@@ -210,6 +218,82 @@ defmodule ForemanServer.Telemetry do
         attempted_backends: attempted_backends,
         successful_backend: successful_backend,
         final_backend: final_backend
+      }
+    )
+  end
+  # ---------------------------------------------------------------------------
+  # MCP telemetry (TRD-042)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Emits `[:foreman_server, :mcp, :tool, :call]`.
+  Metadata whitelist: `tool`, `outcome` only — never arguments or tokens.
+  """
+  @spec mcp_tool_call(non_neg_integer(), String.t(), atom() | String.t()) :: :ok
+  def mcp_tool_call(duration_us, tool, outcome)
+      when is_integer(duration_us) and duration_us >= 0 and is_binary(tool) do
+    execute(
+      @mcp_tool_call,
+      %{duration_us: duration_us},
+      %{
+        tool: tool,
+        outcome: outcome
+      }
+    )
+  end
+
+  @doc """
+  Emits `[:foreman_server, :mcp, :policy, :refused]`.
+  Metadata whitelist: `tool`, `reason` only.
+  """
+  @spec mcp_policy_refused(String.t(), atom() | String.t()) :: :ok
+  def mcp_policy_refused(tool, reason) when is_binary(tool) do
+    execute(
+      @mcp_policy_refused,
+      %{},
+      %{
+        tool: tool,
+        reason: reason
+      }
+    )
+  end
+
+  @doc """
+  Emits `[:foreman_server, :work, :submitted]`.
+  Metadata whitelist: `work_id`, `run_id`, `workflow`, `project_id`, `prompt_bytes` —
+  never the prompt body.
+  """
+  @spec work_submitted(String.t(), String.t(), String.t(), String.t(), non_neg_integer()) :: :ok
+  def work_submitted(work_id, run_id, workflow, project_id, prompt_bytes)
+      when is_binary(work_id) and is_binary(run_id) and is_binary(workflow) and
+             is_binary(project_id) and is_integer(prompt_bytes) and prompt_bytes >= 0 do
+    execute(
+      @work_submitted,
+      %{prompt_bytes: prompt_bytes},
+      %{
+        work_id: work_id,
+        run_id: run_id,
+        workflow: workflow,
+        project_id: project_id
+      }
+    )
+  end
+
+  @doc """
+  Emits `[:foreman_server, :work, :terminal]`.
+  Metadata: `work_id`, `run_id`, `status`.
+  """
+  @spec work_terminal(String.t(), String.t(), atom(), non_neg_integer()) :: :ok
+  def work_terminal(work_id, run_id, status, duration_us)
+      when is_binary(work_id) and is_binary(run_id) and is_atom(status) and
+             is_integer(duration_us) and duration_us >= 0 do
+    execute(
+      @work_terminal,
+      %{duration_us: duration_us},
+      %{
+        work_id: work_id,
+        run_id: run_id,
+        status: status
       }
     )
   end

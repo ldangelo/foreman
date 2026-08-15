@@ -19,6 +19,7 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   alias ForemanServer.Aggregates.WorkRequest.State
   alias ForemanServer.Commands.WorkSubmit
   alias ForemanServer.Identity
+  alias ForemanServer.Telemetry
   alias ForemanServer.Events.{WorkCancelled, WorkExecutionCompleted, WorkExecutionFailed, WorkSubmitted}
 
   @behaviour ForemanServer.Aggregate
@@ -33,7 +34,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
       :run_id,
       :bound_run_id,
       :submission_id,
-      :workflow_snapshot
+      :workflow_snapshot,
+      :submitted_at
     ]
   end
 
@@ -51,6 +53,12 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     with {:ok, _} <- validate_prompt(cmd.prompt) do
       submission_id = cmd.submission_id || EventStore.UUID.uuid4()
       run_id = cmd.run_id || Identity.run_id(cmd.work_id, submission_id)
+
+      # Emit work.submitted telemetry (TRD-042) — metadata whitelist: work_id, run_id,
+      # workflow, project_id, prompt_bytes. Never include prompt body.
+      workflow = Map.get(cmd.workflow_snapshot, "workflow") || Map.get(cmd.workflow_snapshot, :workflow, "")
+      prompt_bytes = byte_size(cmd.prompt)
+      Telemetry.work_submitted(cmd.work_id, run_id, workflow, cmd.project_id, prompt_bytes)
 
       {:ok, %WorkSubmitted{
         work_id: cmd.work_id,
@@ -152,19 +160,27 @@ defmodule ForemanServer.Aggregates.WorkRequest do
         project_id: event.project_id,
         run_id: event.run_id,
         submission_id: event.submission_id,
-        workflow_snapshot: event.workflow_snapshot
+        workflow_snapshot: event.workflow_snapshot,
+        submitted_at: System.monotonic_time(:microsecond)
     }
   end
 
-  def apply_event(%State{} = state, %WorkCancelled{} = _event) do
+  def apply_event(%State{} = state, %WorkCancelled{} = event) do
+    duration_us = if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+    run_id = state.run_id || ""
+    Telemetry.work_terminal(event.work_id, run_id, :cancelled, duration_us)
     %State{state | status: :cancelled}
   end
 
-  def apply_event(%State{} = state, %WorkExecutionCompleted{} = _event) do
+  def apply_event(%State{} = state, %WorkExecutionCompleted{} = event) do
+    duration_us = if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+    Telemetry.work_terminal(event.work_id, event.run_id, :succeeded, duration_us)
     %State{state | status: :succeeded}
   end
 
-  def apply_event(%State{} = state, %WorkExecutionFailed{} = _event) do
+  def apply_event(%State{} = state, %WorkExecutionFailed{} = event) do
+    duration_us = if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+    Telemetry.work_terminal(event.work_id, event.run_id, :failed, duration_us)
     %State{state | status: :failed}
   end
 end

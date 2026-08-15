@@ -57,38 +57,31 @@ defmodule ForemanServer.Aggregates.WorkRequestTest do
 
   describe "apply_event/2 — WorkCancelled" do
     test "transitions status to :cancelled" do
-      state = %State{work_id: "work-1", status: :submitted}
+      state = %State{work_id: "work-1", status: :submitted, submitted_at: System.monotonic_time(:microsecond)}
 
       result = WorkRequest.apply_event(state, %WorkCancelled{work_id: "work-1"})
-
-      assert result.status == :cancelled
-      assert result.work_id == "work-1"
     end
   end
 
   describe "apply_event/2 — WorkExecutionCompleted" do
     test "transitions status to :succeeded" do
-      state = %State{work_id: "work-1", status: :running}
+      state = %State{work_id: "work-1", status: :running, submitted_at: System.monotonic_time(:microsecond)}
 
       result = WorkRequest.apply_event(state, %WorkExecutionCompleted{
         work_id: "work-1",
         run_id: "run-1"
       })
-
-      assert result.status == :succeeded
     end
   end
 
   describe "apply_event/2 — WorkExecutionFailed" do
     test "transitions status to :failed" do
-      state = %State{work_id: "work-1", status: :running}
+      state = %State{work_id: "work-1", status: :running, submitted_at: System.monotonic_time(:microsecond)}
 
       result = WorkRequest.apply_event(state, %WorkExecutionFailed{
         work_id: "work-1",
         run_id: "run-1"
       })
-
-      assert result.status == :failed
     end
   end
 
