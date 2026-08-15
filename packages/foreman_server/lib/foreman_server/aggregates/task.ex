@@ -229,52 +229,11 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-  def handle_command(state, %{type: command_type, payload: payload})
-      when command_type in ["task.block", "task.close"] do
-    status = %{"task.block" => "blocked", "task.close" => "closed"}[command_type]
+  # REMOVED: task.block and task.close — pruned per TRD-049
 
-    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
-         :ok <- require_exists(state, task_id),
-         :ok <- allow_transition(state, status) do
-      {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskUpdated",
-         payload: %{task_id: task_id, status: status}
-       }}
-    end
-  end
+  # REMOVED: task.update — pruned per TRD-049
 
-  def handle_command(state, %{type: "task.update", payload: payload}) do
-    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
-         :ok <- require_exists(state, task_id),
-         :ok <- validate_status(Aggregate.get(payload, :status)),
-         :ok <- allow_transition(state, Aggregate.get(payload, :status)) do
-      {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskUpdated",
-         payload: Map.put(payload, :task_id, task_id)
-       }}
-    end
-  end
-
-  def handle_command(state, %{type: "task.annotate", payload: payload}) do
-    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
-         :ok <- require_exists(state, task_id),
-         {:ok, body} <- Aggregate.required_binary(Aggregate.get(payload, :body), :body) do
-      {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskAnnotated",
-         payload: %{
-           task_id: task_id,
-           body: body,
-           author: Aggregate.get(payload, :author)
-         }
-       }}
-    end
-  end
+  # REMOVED: task.annotate — pruned per TRD-049
 
   def handle_command(state, %{type: "task.dispatch", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
@@ -326,20 +285,7 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-  def handle_command(state, %{type: "task.add_dependency", payload: payload}) do
-    with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
-         {:ok, depends_on} <-
-           Aggregate.required_binary(Aggregate.get(payload, :depends_on), :depends_on),
-         :ok <- require_exists(state, task_id),
-         :ok <- reject_self_dependency(task_id, depends_on) do
-      {:ok,
-       %{
-         stream_id: "task:#{task_id}",
-         event_type: "TaskDependencyAdded",
-         payload: %{task_id: task_id, depends_on: depends_on}
-       }}
-    end
-  end
+  # REMOVED: task.add_dependency — pruned per TRD-049
 
   def handle_command(state, %{type: "task.run_terminated", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
@@ -385,7 +331,9 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-  def handle_command(_state, _command), do: :unhandled
+  def handle_command(%State{} = _state, cmd) do
+    {:error, {:unsupported_command, cmd.__struct__}}
+  end
 
   defp maybe_apply_terminal_run(state, payload, status) do
     if Aggregate.get(payload, :task_id) == Map.get(state, :task_id),

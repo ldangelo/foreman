@@ -530,9 +530,13 @@ defmodule ForemanServer.Aggregates.TaskTest do
   end
 
   describe "handle_command/2 — unknown" do
-    test "returns :unhandled" do
-      assert :unhandled ==
-               Task.handle_command(Task.initial_state(), %{type: "x", payload: %{}})
+    defmodule UnknownCommand do
+      defstruct [:type, :payload]
+    end
+
+    test "returns unsupported_command error" do
+      assert {:error, {:unsupported_command, ForemanServer.Aggregates.TaskTest.UnknownCommand}} ==
+               Task.handle_command(Task.initial_state(), %UnknownCommand{type: "x", payload: %{}})
     end
   end
 end
