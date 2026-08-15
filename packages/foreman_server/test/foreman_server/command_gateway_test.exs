@@ -1480,6 +1480,86 @@ defmodule ForemanServer.CommandGatewayTest do
 
       assert result["command"] == "arg=\"hello\""
     end
+
+    # AC-008-2: a token in neither allow-list survives intact
+    test "render_command leaves unknown tokens intact (allow-list enforcement)" do
+      phase = %{"command" => "/skill:foo --prompt '{{input.prompt}}' --unknown '{{unknown.token}}' --impl '{{implementation.trd_path_argument}}'"}
+
+      result = render_command(phase, %{"trd_path_argument" => "docs/x.md"}, %{"prompt" => "hello"})
+
+      # Known tokens substituted
+      assert result["command"] =~ "hello"
+      assert result["command"] =~ "docs/x.md"
+      # Unknown token survives verbatim
+      assert result["command"] =~ "{{unknown.token}}"
+    end
+
+    test "render_strict_fields renders input-only snapshot with input.prompt_argument substitution" do
+      # TRD-019-TEST: phase with {{input.prompt_argument}} is frozen already-expanded
+      snapshot = %{
+        "input" => %{"prompt" => "hello world"},
+        "phases" => [
+          %{"command" => "/skill:foo {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      # prompt_argument is Jason.encode!("hello world") => "\"hello world\""
+      assert result["phases"] == [
+        %{"command" => "/skill:foo \"hello world\""}
+      ]
+    end
+
+    # AC-008-4: a prompt containing shell metacharacters yields exactly one additional argv word
+    test "render_strict_fields prompt_argument treats shell metacharacters as data (exactly one argv word)" do
+      # The prompt_argument is JSON-encoded, so the shell sees it as a single quoted string.
+      # "echo $HOME" -> "\"echo $HOME\"" which is ONE additional argv word when split.
+      snapshot = %{
+        "input" => %{"prompt" => "echo $HOME"},
+        "phases" => [
+          %{"command" => "run {{input.prompt_argument}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      # The rendered command has the JSON-encoded prompt as a single unit
+      assert result["phases"] == [
+        %{"command" => "run \"echo $HOME\""}
+      ]
+
+      # Verify the entire prompt-with-metacharacters is preserved as one unit
+      rendered = result["phases"] |> hd() |> Map.get("command")
+      assert rendered =~ ~s("echo $HOME)
+    end
+
+    # AC-008-3: plan.yaml-shaped snapshot with input block and no implementation is now rendered
+    test "plan.yaml with input block (no implementation) is rendered, not passed through (TRD-019-TEST)" do
+      # This is the core TRD-019 fix: before TRD-019, this would pass through unchanged
+      # because render_strict_fields early-returned when impl was nil/empty.
+      # After TRD-019, it renders when input is present.
+      snapshot = %{
+        "name" => "plan",
+        "input" => %{"prompt" => "Write the spec", "prompt_argument" => "\"Write the spec\""},
+        "phases" => [
+          %{"command" => "/skill:ensemble {{input.prompt_argument}}"},
+          %{"command" => "/skill:verify {{input.prompt}}"}
+        ]
+      }
+
+      result = render_strict_fields(snapshot)
+
+      # Before TRD-019: phases would be unchanged (pass-through)
+      # After TRD-019: phases are rendered
+      refute result["phases"] == snapshot["phases"],
+             "snapshot with input block should be rendered, not passed through"
+
+      assert result["phases"] == [
+        %{"command" => "/skill:ensemble \"Write the spec\""},
+        %{"command" => "/skill:verify Write the spec"}
+      ]
+    end
   end
 
   describe "task.retry validation" do
