@@ -39,8 +39,9 @@ defmodule ForemanServer.Workflow.Dispatcher do
   use GenServer
   require Logger
 
-  alias ForemanServer.{ProjectionStore, RunAdmission}
+  alias ForemanServer.Work.RunPayload
   alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.{ProjectionStore, RunAdmission}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.BootReconciliation
 
@@ -247,28 +248,22 @@ defmodule ForemanServer.Workflow.Dispatcher do
   defp handle_task_dispatched(envelope, state) do
     payload = unwrap_data(envelope)
     task_id = payload["task_id"] || payload[:task_id]
-    run_id = payload["run_id"] || payload[:run_id]
-    approval_id = payload["approval_id"] || payload[:approval_id]
 
     case ProjectionStore.task_projection(task_id) do
       nil ->
         {:noreply, state}
 
-      task ->
-        phase_specs = extract_phase_specs(task)
-        project_id = Map.get(task, :project_id) || Map.get(task, "project_id")
-
-        workflow_snapshot =
-          Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+      task_proj ->
+        run_payload = RunPayload.from_task_projection(task_proj)
 
         result =
-          RunAdmission.start(project_id, %{
-            run_id: run_id,
-            task_id: task_id,
-            project_id: project_id,
-            approval_id: approval_id,
-            workflow_snapshot: workflow_snapshot,
-            phase_specs: phase_specs
+          RunAdmission.start(run_payload.project_id, %{
+            run_id: run_payload.run_id,
+            task_id: run_payload.task_id,
+            project_id: run_payload.project_id,
+            approval_id: run_payload.approval_id,
+            workflow_snapshot: run_payload.workflow_snapshot,
+            phase_specs: run_payload.phase_specs
           })
 
         case result do
@@ -281,7 +276,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:ok, _} ->
-            ForemanServer.Workflow.RunSupervisor.start_run(run_id, task)
+            ForemanServer.Workflow.RunSupervisor.start_run(run_payload.run_id, task_proj)
             {:noreply, state}
 
           {:error, reason} ->
