@@ -82,7 +82,8 @@ defmodule ForemanServer.Workflow.ManifestWriter do
     {:ok, result}
   end
 
-  defp validate_phases(nil), do: {:ok, :ok}
+  defp validate_phases(nil),
+    do: {:error, {:unsupported_construct, {:missing_required, "phases"}}}
 
   defp validate_phases(phases) when is_list(phases) do
     result =

@@ -99,6 +99,7 @@ defmodule ForemanServer.RunAdmission do
             end
 
           :queued ->
+            release_after_failed_slot(payload)
             {:ok, :queued}
 
           {:error, _reason} = err ->
