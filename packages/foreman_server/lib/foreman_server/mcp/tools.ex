@@ -157,6 +157,29 @@ defmodule ForemanServer.MCP.Tools do
       },
       required: ["manifest"]
     }
+  @schema_foreman_prompt_put %{
+    name: "foreman_prompt_put",
+    description:
+      "Write or update a prompt body in the catalog. Requires allow_workflow_writes to be enabled.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        name: %{type: "string", description: "The prompt name (without .md extension)"},
+        content: %{type: "string", description: "The prompt body content"}
+      },
+      required: ["name", "content"]
+    }
+  }
+  @schema_foreman_prompt_get %{
+    name: "foreman_prompt_get",
+    description: "Get a prompt body by name",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        name: %{type: "string", description: "The prompt name (without .md extension)"}
+      },
+      required: ["name"]
+    }
   }
 
   @tools [
@@ -171,7 +194,9 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_work_submit,
     @schema_foreman_work_cancel,
     @schema_foreman_workflow_put,
-    @schema_foreman_workflow_delete
+    @schema_foreman_workflow_delete,
+    @schema_foreman_prompt_put,
+    @schema_foreman_prompt_get
   ]
 
   def list_tools, do: @tools
