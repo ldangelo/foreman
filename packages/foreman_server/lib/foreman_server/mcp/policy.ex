@@ -5,7 +5,9 @@ defmodule ForemanServer.MCP.Policy do
     "foreman_work_submit",
     "foreman_work_cancel",
     "foreman_workflow_put",
-    "foreman_workflow_delete"
+    "foreman_workflow_delete",
+    "foreman_prompt_put",
+    "foreman_prompt_get"
   ]
 
   @spec authorized?(String.t()) :: boolean()

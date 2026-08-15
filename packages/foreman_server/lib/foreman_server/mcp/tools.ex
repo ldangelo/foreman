@@ -3,6 +3,8 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Telemetry
   alias ForemanServer.Workflow.CatalogWriter
+  alias ForemanServer.Workflow.PromptWriter
+  alias ForemanServer.Workflow.Catalog
 
   @schema_foreman_work_get %{
     name: "foreman_work_get",
@@ -387,10 +389,91 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
+  def call_tool("foreman_prompt_get", %{"name" => name}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    filename = name <> ".md"
+
+    case validate_filename_or_error(filename) do
+      :ok ->
+        case Catalog.read_prompt(filename) do
+          {:ok, content} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_prompt_get", :ok)
+
+            {:ok,
+             %{
+               name: name,
+               content: content
+             }}
+
+          {:error, _} ->
+            duration_us = System.monotonic_time(:microsecond) - start_us
+            Telemetry.mcp_tool_call(duration_us, "foreman_prompt_get", :not_found)
+
+            {:error,
+             %{code: "NOT_FOUND", message: "Prompt not found: #{name}"}}
+        end
+
+      {:error, :invalid_filename} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_get", :error)
+
+        {:error, %{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+    end
+  end
+
+  def call_tool("foreman_prompt_put", %{"name" => name, "content" => content}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    case PromptWriter.write_prompt(name, content) do
+      {:ok, path} ->
+        # Force a catalog reload so the in-memory state picks up the change
+        Catalog.reload()
+
+        # Check if the catalog now includes the prompt
+        observed = match?({:ok, _}, Catalog.read_prompt(name <> ".md"))
+
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :ok)
+
+        {:ok,
+         %{
+           prompt_path: "prompts/#{name}.md",
+           observed: observed
+         }}
+
+      {:error, :invalid_filename} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
+
+        {:error, %{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+
+      {:error, :outside_catalog} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_prompt_put", :error)
+
+        {:error, %{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+    end
+  end
+
   def call_tool(name, _) do
     start_us = System.monotonic_time(:microsecond)
     duration_us = System.monotonic_time(:microsecond) - start_us
     Telemetry.mcp_tool_call(duration_us, name, :not_found)
     {:error, %{code: "METHOD_NOT_FOUND", message: "Unknown tool: #{name}"}}
+  end
+  # -------------------------------------------------------------------
+  # Private helpers
+  # -------------------------------------------------------------------
+
+  defp validate_filename_or_error(filename) do
+    if String.contains?(filename, "/") or
+         String.contains?(filename, "\\") or
+         String.contains?(filename, "..") do
+      {:error, :invalid_filename}
+    else
+      :ok
+    end
   end
 end
