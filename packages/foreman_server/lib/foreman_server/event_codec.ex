@@ -41,6 +41,20 @@ defmodule ForemanServer.EventCodec do
     RunFailed,
     RunFlaggedStuck,
     RunPaused,
+    RunSlotAcquired,
+    RunSlotQueued,
+    RunSlotReleased,
+    RunSlotTransferred,
+    RunSlotWaiterRemoved,
+    RunStarted,
+    ProjectRunReservationReleased,
+    ProjectRunReserved,
+    RunBlocked,
+    RunCancelled,
+    RunCompleted,
+    RunFailed,
+    RunFlaggedStuck,
+    RunPaused,
     RunStarted,
     TaskAnnotated,
     TaskApproved,
@@ -63,7 +77,11 @@ defmodule ForemanServer.EventCodec do
     WorktreeCreated,
     WorktreeCleaned,
     WorktreeCreateOrphanRecorded,
-    WorktreeCreateOrphanResolved
+    WorktreeCreateOrphanResolved,
+    WorkSubmitted,
+    WorkCancelled,
+    WorkExecutionCompleted,
+    WorkExecutionFailed
   }
 
   @registry %{
@@ -103,6 +121,10 @@ defmodule ForemanServer.EventCodec do
     "TaskExecutionFailed" => TaskExecutionFailed,
     "TaskRunTerminated" => TaskRunTerminated,
     "TaskRetried" => TaskRetried,
+    "WorkSubmitted" => WorkSubmitted,
+    "WorkCancelled" => WorkCancelled,
+    "WorkExecutionCompleted" => WorkExecutionCompleted,
+    "WorkExecutionFailed" => WorkExecutionFailed,
     "WorktreeCreated" => WorktreeCreated,
     "WorktreeCleaned" => WorktreeCleaned,
     "WorktreeCreateOrphanRecorded" => WorktreeCreateOrphanRecorded,
@@ -181,7 +203,11 @@ defmodule ForemanServer.EventCodec do
       :phase_id,
       :worktree_path
     ],
-    WorktreeCreateOrphanResolved => [:operation_id, :project_id, :run_id, :phase_id]
+    WorktreeCreateOrphanResolved => [:operation_id, :project_id, :run_id, :phase_id],
+    WorkSubmitted => [:work_id, :project_id, :run_id, :submission_id, :workflow_snapshot],
+    WorkCancelled => [:work_id],
+    WorkExecutionCompleted => [:work_id, :run_id],
+    WorkExecutionFailed => [:work_id, :run_id]
   }
 
   @type event_type :: String.t()
