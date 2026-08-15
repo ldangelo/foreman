@@ -52,11 +52,40 @@ defmodule ForemanServer.Workflow.CatalogWriter do
              | :invalid_filename
              | {:name_stem_mismatch, String.t(), String.t()}
              | {:invalid_manifest, term()}}
-  def write_manifest(filename, manifest) when is_binary(filename) and is_map(manifest) do
+  def write_manifest(filename, manifest)
+      when is_binary(filename) and is_map(manifest) do
     with :ok <- validate_filename(filename),
          :ok <- validate_containment(filename),
          :ok <- validate_name_stem(filename, manifest) do
       write_manifest_unchecked(filename, manifest)
+    end
+  end
+
+  @doc """
+  Delete a workflow manifest from the catalog root.
+
+  ## Arguments
+
+    * `filename` — the target filename (e.g. `"my-workflow.yaml"`);
+      must contain no path separators or `..` segments.
+
+  ## Returns
+
+    * `:ok` — the file was deleted.
+    * `{:error, :not_found}` — no file at that path.
+    * `{:error, :invalid_filename}` — the filename contains a path
+      separator or `..` segment.
+    * `{:error, :outside_catalog}` — the resolved path is not inside
+      `Catalog.root/0`.
+
+  """
+  @spec delete_manifest(String.t()) ::
+          :ok
+          | {:error, :not_found | :invalid_filename | :outside_catalog}
+  def delete_manifest(filename) when is_binary(filename) do
+    with :ok <- validate_filename(filename),
+         :ok <- validate_containment(filename) do
+      delete_manifest_unchecked(filename)
     end
   end
 
@@ -123,6 +152,22 @@ defmodule ForemanServer.Workflow.CatalogWriter do
         {:error, reason} ->
           {:error, {:invalid_manifest, reason}}
       end
+    end
+  end
+
+  defp delete_manifest_unchecked(filename) do
+    root = Catalog.root()
+    path = Path.join(root, filename)
+
+    case File.rm(path) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end

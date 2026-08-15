@@ -7,6 +7,19 @@ defmodule ForemanServer.TelemetryTest do
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
+  defmodule Handler do
+    def attach_event_handlers(pid, events) do
+      ref = make_ref()
+      handler_id = {:telemetry_test, ref}
+      :ok = :telemetry.attach_many(handler_id, events, &__MODULE__.handle_event/4, {pid, ref})
+      {handler_id, ref}
+    end
+
+    def handle_event(event, measurements, metadata, {pid, ref}) do
+      send(pid, {event, ref, measurements, metadata})
+    end
+  end
+
   defp aggregate_pid(aggregate_id) do
     [{pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id)
     pid
@@ -31,8 +44,8 @@ defmodule ForemanServer.TelemetryTest do
   end
 
   test "fires command and aggregate telemetry events" do
-    ref = :telemetry_test.attach_event_handlers(self(), Telemetry.all_events())
-    on_exit(fn -> :telemetry.detach(ref) end)
+    {handler_id, ref} = Handler.attach_event_handlers(self(), Telemetry.all_events())
+    on_exit(fn -> :telemetry.detach(handler_id) end)
 
     aggregate_id = "blocking:#{uuid()}"
     release_ref = make_ref()
@@ -88,5 +101,39 @@ defmodule ForemanServer.TelemetryTest do
 
     Process.exit(worker_pid, :kill)
     _ = Tracker.unregister(worker_id, worker_run_id)
+  end
+
+  test "fires dispatcher and run_slots telemetry helpers" do
+    {handler_id, ref} = Handler.attach_event_handlers(self(), Telemetry.all_events())
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    Telemetry.run_dispatcher_admission_failed(task_id: "task-1", reason: ":boom")
+    Telemetry.run_slots_acquired("run-1", 2, 3)
+    Telemetry.run_slots_queued("run-2", 4, 4)
+    Telemetry.run_slots_released("run-1", 1, :aggregate)
+    Telemetry.run_slots_transferred("run-1", "run-2", 3)
+    Telemetry.run_slots_waiter_removed("run-3", 2, :aggregate)
+    Telemetry.run_slots_reconciled(1, 2, :boot)
+
+    assert_receive {[:foreman_server, :dispatcher, :admission_failed], ^ref, %{},
+                    %{task_id: "task-1", reason: ":boom"}}
+
+    assert_receive {[:foreman_server, :run_slots, :acquired], ^ref, %{holders: 2, capacity: 3},
+                    %{run_id: "run-1", source: :aggregate}}
+
+    assert_receive {[:foreman_server, :run_slots, :queued], ^ref, %{depth: 4},
+                    %{run_id: "run-2", position: 4}}
+
+    assert_receive {[:foreman_server, :run_slots, :released], ^ref, %{holders: 1},
+                    %{run_id: "run-1", reason: :aggregate}}
+
+    assert_receive {[:foreman_server, :run_slots, :transferred], ^ref, %{depth: 3},
+                    %{released_run_id: "run-1", acquired_run_id: "run-2"}}
+
+    assert_receive {[:foreman_server, :run_slots, :waiter_removed], ^ref, %{depth: 2},
+                    %{run_id: "run-3", reason: :aggregate}}
+
+    assert_receive {[:foreman_server, :run_slots, :reconciled], ^ref,
+                    %{holders_dropped: 1, waiters_dropped: 2}, %{phase: :boot}}
   end
 end

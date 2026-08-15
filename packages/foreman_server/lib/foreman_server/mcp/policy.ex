@@ -1,7 +1,12 @@
 defmodule ForemanServer.MCP.Policy do
   alias ForemanServer.Telemetry
 
-  @write_tools ["foreman_work_submit", "foreman_work_cancel"]
+  @write_tools [
+    "foreman_work_submit",
+    "foreman_work_cancel",
+    "foreman_workflow_put",
+    "foreman_workflow_delete"
+  ]
 
   @spec authorized?(String.t()) :: boolean()
   def authorized?(tool_name) do

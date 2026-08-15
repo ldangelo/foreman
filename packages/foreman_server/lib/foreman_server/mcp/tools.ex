@@ -2,7 +2,7 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.CommandGateway
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Telemetry
-  alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.CatalogWriter
 
   @schema_foreman_work_get %{
     name: "foreman_work_get",
@@ -106,6 +106,39 @@ defmodule ForemanServer.MCP.Tools do
     }
   }
 
+  @schema_foreman_workflow_put %{
+    name: "foreman_workflow_put",
+    description:
+      "Write or update a workflow manifest in the catalog. Requires allow_workflow_writes to be enabled.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        name: %{
+          type: "string",
+          description: "The workflow name (must match the manifest's name field)"
+        },
+        manifest: %{
+          type: "object",
+          description: "The workflow manifest object with at least 'name' and 'phases' fields"
+        }
+      },
+      required: ["name", "manifest"]
+    }
+  }
+
+  @schema_foreman_workflow_delete %{
+    name: "foreman_workflow_delete",
+    description:
+      "Delete a workflow manifest from the catalog. Requires allow_workflow_writes to be enabled.",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        name: %{type: "string", description: "The workflow name"}
+      },
+      required: ["name"]
+    }
+  }
+
   @tools [
     @schema_foreman_work_get,
     @schema_foreman_run_get,
@@ -115,7 +148,9 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_workflow_list,
     @schema_foreman_workflow_get,
     @schema_foreman_work_submit,
-    @schema_foreman_work_cancel
+    @schema_foreman_work_cancel,
+    @schema_foreman_workflow_put,
+    @schema_foreman_workflow_delete
   ]
 
   def list_tools, do: @tools
@@ -256,6 +291,99 @@ defmodule ForemanServer.MCP.Tools do
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_work_cancel", :error)
         {:error, %{code: "DOMAIN_ERROR", message: inspect(reason)}}
+    end
+  end
+
+  def call_tool("foreman_workflow_put", %{name: name, manifest: manifest}) do
+    start_us = System.monotonic_time(:microsecond)
+
+    filename = name <> ".yaml"
+
+    case CatalogWriter.write_manifest(filename, manifest) do
+      {:ok, path} ->
+        # Force a catalog reload so the in-memory state picks up the change
+        Catalog.reload()
+
+        # Check if the catalog now includes the workflow
+        observed = match?({:ok, _}, Catalog.load(filename))
+
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :ok)
+
+        {:ok,
+         %{
+           manifest_path: "workflows/#{name}.yaml",
+           catalog_path: path,
+           observed: observed
+         }}
+
+      {:error, :invalid_filename} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+        {:error, %{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+
+      {:error, :outside_catalog} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+        {:error, %{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+
+      {:error, {:name_stem_mismatch, expected, actual}} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+
+        {:error,
+         %{
+           code: "NAME_STEM_MISMATCH",
+           message: "Manifest name '#{actual}' does not match filename stem '#{expected}'"
+         }}
+
+      {:error, {:invalid_manifest, detail}} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_put", :error)
+
+        {:error,
+         %{
+           code: "INVALID_MANIFEST",
+           message: "Manifest validation failed: #{inspect(detail)}"
+         }}
+    end
+  end
+
+  def call_tool("foreman_workflow_delete", %{name: name}) do
+    start_us = System.monotonic_time(:microsecond)
+    filename = name <> ".yaml"
+
+    case CatalogWriter.delete_manifest(filename) do
+      :ok ->
+        # Force a catalog reload so the in-memory state drops the entry
+        Catalog.reload()
+
+        # Check if the catalog still includes the workflow (it should not)
+        observed = match?({:error, _}, Catalog.load(filename))
+
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :ok)
+
+        {:ok,
+         %{
+           manifest_path: "workflows/#{name}.yaml",
+           observed: observed
+         }}
+
+      {:error, :invalid_filename} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
+        {:error, %{code: "INVALID_FILENAME", message: "Path separators and '..' are not allowed"}}
+
+      {:error, :outside_catalog} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :error)
+        {:error, %{code: "OUTSIDE_CATALOG", message: "Path resolves outside catalog root"}}
+
+      {:error, :not_found} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_workflow_delete", :not_found)
+        {:error, %{code: "NOT_FOUND", message: "Workflow not found: #{name}"}}
     end
   end
 

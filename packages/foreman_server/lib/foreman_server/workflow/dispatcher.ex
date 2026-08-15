@@ -44,7 +44,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   alias ForemanServer.Work.RunPayload
   alias ForemanServer.Aggregates.BeadsDbLease
-  alias ForemanServer.{ProjectionStore, RunAdmission}
+  alias ForemanServer.{ProjectionStore, RunAdmission, Telemetry}
   alias ForemanServer.CommandGateway
   alias ForemanServer.Workflow.BootReconciliation
 
@@ -57,12 +57,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
   def init(_init_arg) do
     case ProjectionStore.subscribe() do
       :ok ->
-        {:ok, %{pending: %{}}}
+        {:ok, %{}}
 
       _other ->
         # ProjectionStore may not be up yet. Retry until it answers.
         Process.send_after(self(), :retry_subscribe, 50)
-        {:ok, %{pending: %{}, subscriber: :retrying}}
+        {:ok, %{subscriber: :retrying}}
     end
   end
 
@@ -161,9 +161,28 @@ defmodule ForemanServer.Workflow.Dispatcher do
     if is_binary(run_id) and run_id != "" do
       BootReconciliation.run_terminated(run_id, reason)
       terminate_lease(run_id, reason)
+      terminate_slot(run_id, reason)
     end
 
     {:noreply, state}
+  end
+
+  # TRD-009: Release the global slot on terminal run events.
+  defp terminate_slot(run_id, reason) do
+    ms = System.monotonic_time(:millisecond)
+
+    _ =
+      CommandGateway.dispatch_system(%{
+        type: "run_slots.release",
+        command_id: "workflow:dispatcher:slot-release:#{run_id}:#{ms}",
+        aggregate_id: "run_slots:global",
+        payload: %{
+          run_id: run_id,
+          reason: reason
+        }
+      })
+
+    :ok
   end
 
   defp terminate_lease(run_id, reason) do
@@ -293,7 +312,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:error, reason} ->
-            {:noreply, put_in(state, [:pending, task_id], reason)}
+            Logger.warning(
+              "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
+            )
+
+            Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
+            {:noreply, state}
         end
     end
   end
@@ -428,7 +452,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:error, reason} ->
-            {:noreply, put_in(state, [:pending, task_id], reason)}
+            Logger.warning(
+              "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
+            )
+
+            Telemetry.run_dispatcher_admission_failed(task_id: task_id, reason: inspect(reason))
+            {:noreply, state}
         end
     end
   end

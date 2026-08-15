@@ -556,19 +556,29 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     if state.capacity == nil and state.holders == %{} and state.waiters == [] do
       :ok
     else
-      Enum.each(state.holders, fn {run_id, _holder} ->
-        if run_absent_or_terminal?(run_id) do
-          Logger.warning("BootReconciliation: dropping orphan slot holder #{run_id}")
-          release_run_slot(run_id, :boot_orphan_holder)
-        end
-      end)
+      holders_dropped =
+        Enum.count(state.holders, fn {run_id, _holder} ->
+          if run_absent_or_terminal?(run_id) do
+            Logger.warning("BootReconciliation: dropping orphan slot holder #{run_id}")
+            release_run_slot(run_id, :boot_orphan_holder)
+            true
+          else
+            false
+          end
+        end)
 
-      Enum.each(state.waiters, fn waiter ->
-        if waiter_run_absent_or_terminal?(waiter.run_id) do
-          Logger.warning("BootReconciliation: removing orphan waiter #{waiter.run_id}")
-          remove_run_slot_waiter(waiter.run_id, :boot_orphan_waiter)
-        end
-      end)
+      waiters_dropped =
+        Enum.count(state.waiters, fn waiter ->
+          if waiter_run_absent_or_terminal?(waiter.run_id) do
+            Logger.warning("BootReconciliation: removing orphan waiter #{waiter.run_id}")
+            remove_run_slot_waiter(waiter.run_id, :boot_orphan_waiter)
+            true
+          else
+            false
+          end
+        end)
+
+      Telemetry.run_slots_reconciled(holders_dropped, waiters_dropped, :boot)
     end
   end
 

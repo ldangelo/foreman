@@ -3,10 +3,9 @@ defmodule ForemanServer.Aggregates.Project do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.RunSlots.Config
 
   alias ForemanServer.Events.{ProjectRunReservationReleased, ProjectRunReserved}
-
-  @max_concurrent_runs 100
 
   defmodule State do
     @enforce_keys [:exists?, :project_id, :path, :status, :default_branch, :archived?]
@@ -177,10 +176,14 @@ defmodule ForemanServer.Aggregates.Project do
          :ok <- require_exists(state, project_id),
          :ok <- reject_archived(state, project_id),
          :ok <- reject_same_implementation_key(state, project_id, run_id, implementation_key) do
+      max_concurrent_runs_per_project =
+        Aggregate.get(payload, :max_concurrent_runs_per_project) ||
+          Config.max_concurrent_runs_per_project()
+
       if reserved_run(state, run_id) do
         {:ok, nil}
       else
-        case reject_at_run_limit(state) do
+        case reject_at_run_limit(state, max_concurrent_runs_per_project) do
           :ok ->
             {:ok,
              %{
@@ -264,8 +267,9 @@ defmodule ForemanServer.Aggregates.Project do
 
   defp reject_archived(_state, _project_id), do: :ok
 
-  defp reject_at_run_limit(%State{active_run_reservations: reservations}) do
-    if map_size(reservations) >= @max_concurrent_runs do
+  defp reject_at_run_limit(%State{active_run_reservations: reservations}, limit)
+       when is_integer(limit) and limit >= 0 do
+    if map_size(reservations) >= limit do
       {:error, :run_limit_exceeded}
     else
       :ok

@@ -33,6 +33,13 @@ defmodule ForemanServer.Telemetry do
   @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
   @work_submitted [:foreman_server, :work, :submitted]
   @work_terminal [:foreman_server, :work, :terminal]
+  @dispatcher_admission_failed [:foreman_server, :dispatcher, :admission_failed]
+  @run_slots_acquired [:foreman_server, :run_slots, :acquired]
+  @run_slots_queued [:foreman_server, :run_slots, :queued]
+  @run_slots_released [:foreman_server, :run_slots, :released]
+  @run_slots_transferred [:foreman_server, :run_slots, :transferred]
+  @run_slots_waiter_removed [:foreman_server, :run_slots, :waiter_removed]
+  @run_slots_reconciled [:foreman_server, :run_slots, :reconciled]
 
   @all_events [
     @command_dispatch,
@@ -54,7 +61,14 @@ defmodule ForemanServer.Telemetry do
     @mcp_tool_call,
     @mcp_policy_refused,
     @work_submitted,
-    @work_terminal
+    @work_terminal,
+    @dispatcher_admission_failed,
+    @run_slots_acquired,
+    @run_slots_queued,
+    @run_slots_released,
+    @run_slots_transferred,
+    @run_slots_waiter_removed,
+    @run_slots_reconciled
   ]
 
   def all_events, do: @all_events
@@ -277,6 +291,95 @@ defmodule ForemanServer.Telemetry do
         workflow: workflow,
         project_id: project_id
       }
+    )
+  end
+
+  @doc """
+  Emits `[:foreman_server, :dispatcher, :admission_failed]`.
+  Metadata: `task_id`, `reason`.
+  """
+  @spec run_dispatcher_admission_failed(keyword()) :: :ok
+  def run_dispatcher_admission_failed(metadata) when is_list(metadata) do
+    execute(@dispatcher_admission_failed, %{}, Map.new(metadata))
+  end
+
+  @doc """
+  Emits `[:foreman_server, :run_slots, :acquired]`.
+  Measurements: `holders`, `capacity`.
+  Metadata: `run_id`, `source`.
+  """
+  @spec run_slots_acquired(String.t(), non_neg_integer(), non_neg_integer()) :: :ok
+  def run_slots_acquired(run_id, holders, capacity)
+      when is_binary(run_id) and is_integer(holders) and holders >= 0 and
+             is_integer(capacity) and capacity >= 0 do
+    execute(@run_slots_acquired, %{holders: holders, capacity: capacity}, %{
+      run_id: run_id,
+      source: :aggregate
+    })
+  end
+
+  @doc """
+  Emits `[:foreman_server, :run_slots, :queued]`.
+  Measurements: `depth`.
+  Metadata: `run_id`, `position`.
+  """
+  @spec run_slots_queued(String.t(), non_neg_integer(), pos_integer()) :: :ok
+  def run_slots_queued(run_id, depth, position)
+      when is_binary(run_id) and is_integer(depth) and depth >= 0 and
+             is_integer(position) and position > 0 do
+    execute(@run_slots_queued, %{depth: depth}, %{run_id: run_id, position: position})
+  end
+
+  @doc """
+  Emits `[:foreman_server, :run_slots, :released]`.
+  Measurements: `holders`.
+  Metadata: `run_id`, `reason`.
+  """
+  @spec run_slots_released(String.t(), non_neg_integer(), atom() | String.t() | nil) :: :ok
+  def run_slots_released(run_id, holders, reason)
+      when is_binary(run_id) and is_integer(holders) and holders >= 0 do
+    execute(@run_slots_released, %{holders: holders}, %{run_id: run_id, reason: reason})
+  end
+
+  @doc """
+  Emits `[:foreman_server, :run_slots, :transferred]`.
+  Measurements: `depth`.
+  Metadata: `released_run_id`, `acquired_run_id`.
+  """
+  @spec run_slots_transferred(String.t(), String.t(), non_neg_integer()) :: :ok
+  def run_slots_transferred(released_run_id, acquired_run_id, depth)
+      when is_binary(released_run_id) and is_binary(acquired_run_id) and
+             is_integer(depth) and depth >= 0 do
+    execute(@run_slots_transferred, %{depth: depth}, %{
+      released_run_id: released_run_id,
+      acquired_run_id: acquired_run_id
+    })
+  end
+
+  @doc """
+  Emits `[:foreman_server, :run_slots, :waiter_removed]`.
+  Measurements: `depth`.
+  Metadata: `run_id`, `reason`.
+  """
+  @spec run_slots_waiter_removed(String.t(), non_neg_integer(), atom() | String.t() | nil) :: :ok
+  def run_slots_waiter_removed(run_id, depth, reason)
+      when is_binary(run_id) and is_integer(depth) and depth >= 0 do
+    execute(@run_slots_waiter_removed, %{depth: depth}, %{run_id: run_id, reason: reason})
+  end
+
+  @doc """
+  Emits `[:foreman_server, :run_slots, :reconciled]`.
+  Measurements: `holders_dropped`, `waiters_dropped`.
+  Metadata: `phase`.
+  """
+  @spec run_slots_reconciled(non_neg_integer(), non_neg_integer(), atom() | String.t()) :: :ok
+  def run_slots_reconciled(holders_dropped, waiters_dropped, phase)
+      when is_integer(holders_dropped) and holders_dropped >= 0 and
+             is_integer(waiters_dropped) and waiters_dropped >= 0 do
+    execute(
+      @run_slots_reconciled,
+      %{holders_dropped: holders_dropped, waiters_dropped: waiters_dropped},
+      %{phase: phase}
     )
   end
 

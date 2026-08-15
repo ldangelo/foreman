@@ -194,7 +194,9 @@ defmodule ForemanServer.CommandRouter do
             command_id: command_id,
             sequence: @run_reservation_sequence,
             run_start_payload: payload,
-            implementation_key: implementation_key
+            implementation_key: implementation_key,
+            max_concurrent_runs_per_project:
+              ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
           }
         },
         timeout

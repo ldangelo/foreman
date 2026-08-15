@@ -37,6 +37,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   """
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.Telemetry
   alias ForemanServer.Commands.{RunSlotsAcquire, RunSlotsRelease, RunSlotsRemoveWaiter}
 
   alias ForemanServer.Events.{
@@ -250,6 +251,12 @@ defmodule ForemanServer.Aggregates.RunSlots do
   @impl true
   def handle_command(%State{} = state, %RunSlotsRemoveWaiter{} = cmd) do
     if Enum.any?(state.waiters, &(&1.run_id == cmd.run_id)) do
+      Telemetry.run_slots_waiter_removed(
+        cmd.run_id,
+        max(length(state.waiters) - 1, 0),
+        :aggregate
+      )
+
       {:ok, %RunSlotWaiterRemoved{run_id: cmd.run_id}}
     else
       {:ok, nil}
@@ -295,6 +302,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
       if Enum.any?(state.waiters, &(&1.run_id == run_id)) do
+        Telemetry.run_slots_waiter_removed(run_id, max(length(state.waiters) - 1, 0), :aggregate)
         {:ok, %RunSlotWaiterRemoved{run_id: run_id}}
       else
         {:ok, nil}
@@ -316,10 +324,12 @@ defmodule ForemanServer.Aggregates.RunSlots do
         {:ok, nil}
 
       map_size(state.holders) < capacity ->
+        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
         {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: now_ms}}
 
       true ->
         position = length(state.waiters) + 1
+        Telemetry.run_slots_queued(run_id, position, position)
         {:ok, %RunSlotQueued{run_id: run_id, position: position, enqueued_at_ms: now_ms}}
     end
   end
@@ -332,9 +342,11 @@ defmodule ForemanServer.Aggregates.RunSlots do
         if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
 
       if Enum.empty?(state.waiters) do
+        Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate)
         {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity}}
       else
-        {promoted, _remaining} = List.pop_at(state.waiters, 0)
+        {promoted, remaining} = List.pop_at(state.waiters, 0)
+        Telemetry.run_slots_transferred(run_id, promoted.run_id, length(remaining))
 
         {:ok,
          %RunSlotTransferred{

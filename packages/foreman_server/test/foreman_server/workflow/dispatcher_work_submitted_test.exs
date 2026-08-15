@@ -93,7 +93,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       assert :meck.called(ForemanServer.RunAdmission, :start, :_)
     end
@@ -108,7 +108,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       refute :meck.called(ForemanServer.RunAdmission, :start, :_)
     end
@@ -130,7 +130,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       # No call to RunAdmission when projection is nil
       refute :meck.called(ForemanServer.RunAdmission, :start, :_)
@@ -179,7 +179,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       assert :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end
@@ -219,7 +219,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       assert :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end
@@ -261,7 +261,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end
@@ -303,7 +303,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
       refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end
@@ -345,9 +345,8 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
       }
 
       {:noreply, _state} =
-        Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
+        Dispatcher.handle_info({:projection_event, envelope}, %{})
 
-      # Admission was called and failed
       assert :meck.called(ForemanServer.RunAdmission, :start, :_)
       refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end

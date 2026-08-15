@@ -15,6 +15,8 @@ defmodule ForemanServerWeb.Router do
     plug(ForemanServerWeb.Plugs.BearerAuth)
   end
 
+  forward("/mcp", ForemanServerWeb.MCPRouter, [])
+
   scope "/api", ForemanServerWeb do
     pipe_through(:api)
 
@@ -23,6 +25,9 @@ defmodule ForemanServerWeb.Router do
     get("/projects/:id", ProjectController, :show)
     get("/tasks/:id", TaskController, :show)
     get("/runs/:id", RunController, :show)
+    get("/queue", QueueController, :index)
+
+    get("/work/:id", WorkController, :show)
 
     scope "/admin" do
       post("/workflows/install", WorkflowInstallController, :install)

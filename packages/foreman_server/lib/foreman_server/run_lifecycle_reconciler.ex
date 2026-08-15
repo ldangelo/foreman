@@ -18,7 +18,7 @@ defmodule ForemanServer.RunLifecycleReconciler do
     Telemetry
   }
 
-  alias ForemanServer.Aggregates.{Project, Run}
+  alias ForemanServer.Aggregates.{Project, Run, RunSlots}
 
   @default_interval_ms 30_000
   @default_timeout_ms 5_000
@@ -141,6 +141,7 @@ defmodule ForemanServer.RunLifecycleReconciler do
 
   def handle_info(:scheduled, state) do
     reconcile_scheduled(state)
+    run_slots_backstop_sweep(state)
     schedule_next_pass(state.interval_ms)
     {:noreply, state}
   end
@@ -318,10 +319,48 @@ defmodule ForemanServer.RunLifecycleReconciler do
 
   defp run_exists?(%Run.State{exists?: true}), do: true
   defp run_exists?(_state), do: false
+  defp elapsed_ms(started_at_ms), do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
 
   defp valid_id?(value), do: is_binary(value) and value != ""
 
-  defp elapsed_ms(started_at_ms), do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
+  # TRD-011: Backstop sweep — periodically release stale slot holders whose
+  # runs are terminal or absent. This is a safety net for cases where the
+  # terminal-event path in the Dispatcher did not fire (e.g. process crash
+  # before handle_run_terminated completed).
+  defp run_slots_backstop_sweep(state) do
+    {run_slots_state, _version} = Aggregate.load(RunSlots, "run_slots:global")
+
+    holders = Map.get(run_slots_state, :holders, %{}) || %{}
+
+    Enum.each(holders, fn {run_id, _holder_data} ->
+      if valid_id?(run_id) do
+        run_state = state.run_loader_fun.(run_id)
+
+        if run_terminal?(run_state) or run_absent?(run_state) do
+          dispatch_slot_release(run_id, "backstop_sweep", state)
+        end
+      end
+    end)
+
+    :ok
+  end
+
+  defp dispatch_slot_release(run_id, reason, state) do
+    ms = System.monotonic_time(:millisecond)
+
+    _ =
+      state.dispatch_fun.(
+        %{
+          aggregate_id: "run_slots:global",
+          command_id: "reconciler:slot-release:#{run_id}:#{ms}",
+          type: "run_slots.release",
+          payload: %{run_id: run_id, reason: reason}
+        },
+        state.timeout_ms
+      )
+
+    :ok
+  end
 
   defp outcome_for({:ok, _}), do: :ok
   defp outcome_for({:error, reason}), do: reason

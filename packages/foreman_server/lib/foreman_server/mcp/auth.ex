@@ -81,6 +81,25 @@ defmodule ForemanServer.MCP.Auth do
     end
   end
 
+  @doc false
+  def init(opts), do: opts
+
+  @doc false
+  def call(conn, _opts) do
+    token = bearer_token(conn)
+
+    case verify_token(token) do
+      :ok ->
+        conn
+
+      {:error, _reason} ->
+        conn
+        |> Plug.Conn.put_status(:unauthorized)
+        |> Phoenix.Controller.json(%{error: "unauthorized"})
+        |> Plug.Conn.halt()
+    end
+  end
+
   # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
@@ -91,5 +110,13 @@ defmodule ForemanServer.MCP.Auth do
       :allow_insecure_local,
       false
     )
+  end
+
+  defp bearer_token(conn) do
+    case Plug.Conn.get_req_header(conn, "authorization") do
+      ["Bearer " <> token] -> String.trim(token)
+      ["bearer " <> token] -> String.trim(token)
+      _ -> nil
+    end
   end
 end

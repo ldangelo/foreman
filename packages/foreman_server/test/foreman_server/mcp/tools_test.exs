@@ -34,10 +34,32 @@ defmodule ForemanServer.MCP.ToolsTest do
     :sys.replace_state(ProjectionStore, fn _ -> Map.merge(base, overrides) end)
   end
 
-  describe "list_tools/0" do
-    test "returns 9 tools" do
+  describe "tools/list" do
+    test "advertises required tools with valid JSON Schemas" do
       tools = Tools.list_tools()
-      assert length(tools) == 9
+
+      assert Enum.map(tools, & &1.name) == [
+               "foreman_work_get",
+               "foreman_run_get",
+               "foreman_queue_status",
+               "foreman_project_list",
+               "foreman_project_get",
+               "foreman_workflow_list",
+               "foreman_workflow_get",
+               "foreman_work_submit",
+               "foreman_work_cancel"
+             ]
+
+      Enum.each(tools, fn tool ->
+        assert is_binary(tool.name)
+        assert is_binary(tool.description)
+        assert tool.inputSchema.type == "object"
+        assert is_map(tool.inputSchema.properties)
+
+        if Map.has_key?(tool.inputSchema, :required) do
+          assert is_list(tool.inputSchema.required)
+        end
+      end)
     end
   end
 

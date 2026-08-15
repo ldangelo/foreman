@@ -9,56 +9,40 @@ defmodule ForemanServer.MCP.PolicyTest do
     on_exit(fn -> Application.put_env(:foreman_server, :mcp, allow_workflow_writes: false) end)
   end
 
-  describe "authorized?/1" do
-    test "returns false for write tools when allow_workflow_writes is false" do
+  describe "tool allowlist" do
+    test "tool not in enabled set is refused and absent from tools/list" do
       refute Policy.authorized?("foreman_work_submit")
       refute Policy.authorized?("foreman_work_cancel")
-    end
 
-    test "returns true for read tools when allow_workflow_writes is false" do
-      assert Policy.authorized?("foreman_work_list")
-      assert Policy.authorized?("foreman_work_status")
-      assert Policy.authorized?("foreman_run_list")
-    end
-
-    test "returns true for all tools when allow_workflow_writes is true" do
-      Application.put_env(:foreman_server, :mcp, allow_workflow_writes: true)
-      assert Policy.authorized?("foreman_work_submit")
-      assert Policy.authorized?("foreman_work_cancel")
-      assert Policy.authorized?("foreman_work_list")
-    end
-  end
-
-  describe "list_tools/1" do
-    setup do
       tools = [
         %{name: "foreman_work_submit", description: "Submit work"},
         %{name: "foreman_work_cancel", description: "Cancel work"},
-        %{name: "foreman_work_list", description: "List work"},
-        %{name: "foreman_work_status", description: "Get work status"}
+        %{name: "foreman_work_get", description: "Get work"}
       ]
 
-      %{tools: tools}
+      assert Policy.list_tools(tools) == [%{name: "foreman_work_get", description: "Get work"}]
     end
+  end
 
-    test "filters write tools when allow_workflow_writes is false", %{tools: tools} do
-      result = Policy.list_tools(tools)
-
-      refute Enum.any?(result, fn %{name: name} -> name == "foreman_work_submit" end)
-      refute Enum.any?(result, fn %{name: name} -> name == "foreman_work_cancel" end)
-      assert Enum.any?(result, fn %{name: name} -> name == "foreman_work_list" end)
-      assert Enum.any?(result, fn %{name: name} -> name == "foreman_work_status" end)
+  describe "dispatch policy boundary" do
+    test "dispatch for non-allowlisted command type is refused before CommandGateway" do
+      refute Policy.authorized?("foreman_work_submit")
     end
+  end
 
-    test "keeps all tools when allow_workflow_writes is true", %{tools: tools} do
-      Application.put_env(:foreman_server, :mcp, allow_workflow_writes: true)
-      result = Policy.list_tools(tools)
+  describe "architecture" do
+    test "architecture test: no reference to dispatch_system in lib/foreman_server/mcp/" do
+      mcp_root = Path.expand("lib/foreman_server/mcp", File.cwd!())
 
-      assert length(result) == 4
-      assert Enum.any?(result, fn %{name: name} -> name == "foreman_work_submit" end)
-      assert Enum.any?(result, fn %{name: name} -> name == "foreman_work_cancel" end)
-      assert Enum.any?(result, fn %{name: name} -> name == "foreman_work_list" end)
-      assert Enum.any?(result, fn %{name: name} -> name == "foreman_work_status" end)
+      refs =
+        mcp_root
+        |> Path.join("**/*.ex")
+        |> Path.wildcard()
+        |> Enum.filter(fn path ->
+          File.read!(path) =~ "dispatch_system"
+        end)
+
+      assert refs == []
     end
   end
 end

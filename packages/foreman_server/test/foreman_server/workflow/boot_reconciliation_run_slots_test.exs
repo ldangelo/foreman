@@ -1,10 +1,10 @@
 defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   use ExUnit.Case, async: false
 
+  alias EventStore.EventData
   alias EventStore.RecordedEvent
   alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.ProjectionStore
-  alias ForemanServer.Workflow.BootReconciliation
+  alias ForemanServer.{ProjectionStore, Telemetry}
 
   @run_slots_stream "run_slots:global"
 
@@ -19,12 +19,20 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
     :ok
   end
 
+  setup do
+    {handler_id, ref} =
+      ForemanServer.TelemetryTest.Handler.attach_event_handlers(self(), Telemetry.all_events())
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    {:ok, telemetry_ref: ref}
+  end
+
   describe "scan_run_slot_orphans/0" do
     test "no holders or waiters → no dispatches" do
       assert :ok = BootReconciliation.scan_run_slot_orphans()
     end
 
-    test "holder with terminal run → run_slots.release dispatched" do
+    test "holder with terminal run → run_slots.release dispatched", %{telemetry_ref: ref} do
       terminal_run_id = unique_id("orphan-holder-run")
 
       seed_terminal_run!(terminal_run_id)
@@ -51,6 +59,9 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
             {:still_waiting, other}
         end
       end)
+
+      assert_receive {[:foreman_server, :run_slots, :reconciled], ^ref,
+                      %{holders_dropped: 1, waiters_dropped: 0}, %{phase: :boot}}
     end
 
     test "holder with live run → no release dispatched" do
@@ -68,7 +79,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       assert released_events == []
     end
 
-    test "waiter with terminal run → run_slots.remove_waiter dispatched" do
+    test "waiter with terminal run → run_slots.remove_waiter dispatched", %{telemetry_ref: ref} do
       holder_run_id = unique_id("holder-run-waiter-test")
       orphan_waiter_run_id = unique_id("orphan-waiter-run")
 
@@ -101,6 +112,9 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
             {:still_waiting, other}
         end
       end)
+
+      assert_receive {[:foreman_server, :run_slots, :reconciled], ^ref,
+                      %{holders_dropped: 0, waiters_dropped: 1}, %{phase: :boot}}
     end
 
     test "waiter with live run → no remove_waiter dispatched" do
@@ -150,7 +164,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   defp append_run_slot_holder!(run_id, version) do
     :ok =
       Store.append_to_stream(@run_slots_stream, version, [
-        %EventStore.EventData{
+        %EventData{
           event_type: "RunSlotAcquired",
           data: %{
             run_id: run_id,
@@ -165,7 +179,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   defp append_run_slot_waiter!(run_id, version) do
     :ok =
       Store.append_to_stream(@run_slots_stream, version, [
-        %EventStore.EventData{
+        %EventData{
           event_type: "RunSlotQueued",
           data: %{
             run_id: run_id,
@@ -205,7 +219,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   defp append_and_apply(stream_uuid, expected_version, event_type, payload) do
     :ok =
       Store.append_to_stream(stream_uuid, expected_version, [
-        %EventStore.EventData{event_type: event_type, data: payload, metadata: %{}}
+        %EventData{event_type: event_type, data: payload, metadata: %{}}
       ])
 
     :ok = ProjectionStore.apply_events([%{event_type: event_type, payload: payload}])
