@@ -30,6 +30,7 @@ defmodule ForemanServer.Telemetry do
     :failure
   ]
   @provider_check [:foreman, :dispatch, :provider, :check]
+  @run_stop [:foreman, :dispatch, :run, :stop]
   @mcp_tool_call [:foreman_server, :mcp, :tool, :call]
   @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
   @work_submitted [:foreman_server, :work, :submitted]
@@ -59,6 +60,7 @@ defmodule ForemanServer.Telemetry do
     @task_provider_beads_create_skipped_watcher_import,
     @task_provider_beads_create_failure,
     @provider_check,
+    @run_stop,
     @mcp_tool_call,
     @mcp_policy_refused,
     @work_submitted,
@@ -249,6 +251,26 @@ defmodule ForemanServer.Telemetry do
       installed: installed,
       install_hint: install_hint
     })
+  end
+
+  @doc """
+  Emits `[:foreman, :dispatch, :run, :stop]`.
+
+  Measurements: `duration_ms`.
+
+  Metadata: `provider`, `status`, `run_id`, `adapter`.
+  """
+  @spec dispatch_run_stop(map(), keyword()) :: :ok
+  def dispatch_run_stop(measurements, metadata) do
+    execute(@run_stop, measurements, metadata)
+  end
+
+  @doc """
+  Emits `[:foreman, :dispatch, :provider, :check]`.
+  """
+  @spec dispatch_provider_check(map(), keyword()) :: :ok
+  def dispatch_provider_check(measurements, metadata) do
+    execute(@provider_check, measurements, metadata)
   end
 
   # ---------------------------------------------------------------------------

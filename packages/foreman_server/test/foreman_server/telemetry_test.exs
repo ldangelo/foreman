@@ -135,5 +135,73 @@ defmodule ForemanServer.TelemetryTest do
 
     assert_receive {[:foreman_server, :run_slots, :reconciled], ^ref,
                     %{holders_dropped: 1, waiters_dropped: 2}, %{phase: :boot}}
+
+  end
+
+  test "dispatch_run_stop/2 emits [:foreman, :dispatch, :run, :stop] with the expected measurements and metadata" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:foreman, :dispatch, :run, :stop]])
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    measurements = %{duration_ms: 42}
+    metadata = %{provider: :pi, status: :ok, run_id: "run-1", adapter: :jido_harness}
+
+    assert :ok = Telemetry.dispatch_run_stop(measurements, metadata)
+
+    assert_receive {[:foreman, :dispatch, :run, :stop], ^ref,
+                    %{duration_ms: 42},
+                    %{provider: :pi, status: :ok, run_id: "run-1", adapter: :jido_harness}}
+  end
+
+  test "dispatch_run_stop/2 with status: :ok emits metadata containing provider, status, run_id, adapter" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:foreman, :dispatch, :run, :stop]])
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    Telemetry.dispatch_run_stop(
+      %{duration_ms: 17},
+      %{provider: :claude, status: :ok, run_id: "run-2", adapter: :jido_harness}
+    )
+
+    assert_receive {[:foreman, :dispatch, :run, :stop], ^ref, _measurements, received_metadata}
+
+    assert received_metadata.provider == :claude
+    assert received_metadata.status == :ok
+    assert received_metadata.run_id == "run-2"
+    assert received_metadata.adapter == :jido_harness
+  end
+
+  test "dispatch_provider_check/2 emits [:foreman, :dispatch, :provider, :check] with installed: true and the install_hint" do
+    ref =
+      :telemetry_test.attach_event_handlers(self(), [[:foreman, :dispatch, :provider, :check]])
+
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    metadata = %{
+      provider: :pi,
+      installed: true,
+      install_hint: "npm install -g @earendil-works/pi-coding-agent"
+    }
+
+    assert :ok = Telemetry.dispatch_provider_check(%{}, metadata)
+
+    assert_receive {[:foreman, :dispatch, :provider, :check], ^ref, %{},
+                    %{provider: :pi, installed: true,
+                      install_hint: "npm install -g @earendil-works/pi-coding-agent"}}
+  end
+
+  test "dispatch_provider_check/2 with installed: false emits metadata containing installed: false" do
+    ref =
+      :telemetry_test.attach_event_handlers(self(), [[:foreman, :dispatch, :provider, :check]])
+
+    on_exit(fn -> :telemetry.detach(ref) end)
+
+    Telemetry.dispatch_provider_check(
+      %{},
+      %{provider: :pi, installed: false, install_hint: "npm install -g @earendil-works/pi-coding-agent"}
+    )
+
+    assert_receive {[:foreman, :dispatch, :provider, :check], ^ref, _measurements, received_metadata}
+
+    assert received_metadata.installed == false
+    assert received_metadata.provider == :pi
   end
 end
