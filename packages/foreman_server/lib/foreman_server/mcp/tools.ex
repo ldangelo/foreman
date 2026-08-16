@@ -8,6 +8,8 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.Interpreter
   alias ForemanServer.MCP.Policy
   alias ForemanServer.Workflow.ManifestWriter
+  alias ForemanServerWeb.MCP.Tools.Doctor, as: MCPDoctor
+
 
   @schema_foreman_work_get %{
     name: "foreman_work_get",
@@ -182,6 +184,20 @@ defmodule ForemanServer.MCP.Tools do
       required: ["name"]
     }
   }
+  @schema_foreman_doctor %{
+    name: "foreman_doctor",
+    description: "Report jido_harness provider readiness for pi and claude",
+    inputSchema: %{
+      type: "object",
+      properties: %{
+        strict: %{
+          type: "boolean",
+          description: "Return provider_missing when any required provider is unavailable"
+        }
+      }
+    }
+  }
+
 
   @tools [
     @schema_foreman_work_get,
@@ -197,7 +213,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_workflow_put,
     @schema_foreman_workflow_delete,
     @schema_foreman_prompt_put,
-    @schema_foreman_prompt_get
+    @schema_foreman_prompt_get,
+    @schema_foreman_doctor
   ]
 
   def list_tools, do: @tools
@@ -602,6 +619,25 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
+  def call_tool("foreman_doctor", params) when is_map(params) do
+    start_us = System.monotonic_time(:microsecond)
+    strict = Map.get(params, :strict) || Map.get(params, "strict") || false
+    providers = provider_rows()
+
+    case MCPDoctor.run(strict: strict) do
+      {:ok, output} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_doctor", :ok)
+        {:ok, %{output: output, strict: strict, providers: providers}}
+
+      {:error, :provider_missing, _output} ->
+        duration_us = System.monotonic_time(:microsecond) - start_us
+        Telemetry.mcp_tool_call(duration_us, "foreman_doctor", :error)
+        {:error, %{code: "PROVIDER_MISSING", message: "One or more required providers are unavailable"}}
+    end
+  end
+
+
   def call_tool(name, _) do
     start_us = System.monotonic_time(:microsecond)
     duration_us = System.monotonic_time(:microsecond) - start_us
@@ -612,6 +648,14 @@ defmodule ForemanServer.MCP.Tools do
   # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
+
+  defp provider_rows do
+    MCPDoctor.rows()
+    |> Enum.map(fn {:provider, provider, status, hint} ->
+      %{provider: provider, installed: status == :installed, install_hint: hint}
+    end)
+  end
+
 
   defp validate_filename_or_error(filename) do
     if String.contains?(filename, "/") or

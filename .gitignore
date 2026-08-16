@@ -56,3 +56,27 @@
 # Repo-root foreman binary
 /foreman
 /tmp/
+
+# Local env (secrets, must never be tracked)
+.env
+.env.*
+
+# OMP plugin state (local agent config)
+.omp/
+
+# Vendored jido_harness (TRD-001) build artifacts
+/packages/jido_harness/_build/
+/packages/jido_harness/cover/
+/packages/jido_harness/erl_crash.dump
+/packages/jido_harness/deps/**/_build
+/packages/jido_harness/deps/**/priv/native
+/packages/jido_harness/deps/**/c_src/_build
+
+# Vendored C source build outputs (erlexec native compile)
+/packages/jido_harness/deps/erlexec/c_src/*.o
+/packages/jido_harness/deps/erlexec/c_src/*.d
+/packages/jido_harness/deps/erlexec/priv/*/exec-port
+/packages/jido_harness/deps/erlexec/priv/*/exec-port.sock
+/packages/jido_harness/_build/**
+/packages/jido_harness/cover/**
+/packages/jido_harness/deps/**/_build/**

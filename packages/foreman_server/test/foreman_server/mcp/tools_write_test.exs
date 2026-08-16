@@ -1,15 +1,15 @@
 defmodule ForemanServer.MCP.ToolsWriteTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
   alias ForemanServer.CommandGateway
 
   setup do
     {:ok, _} = Application.ensure_all_started(:meck)
-    :meck.new(CommandGateway, [:no_link])
+    :meck.new(CommandGateway, [:passthrough, :no_link])
 
     on_exit(fn ->
-      if :meck.validate(CommandGateway), do: :meck.unload(CommandGateway)
+      :meck.unload(CommandGateway)
     end)
 
     :ok

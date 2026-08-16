@@ -86,7 +86,54 @@ defmodule ForemanServer.Application do
         ]
 
     opts = [strategy: :one_for_one, name: __MODULE__]
-    Supervisor.start_link(children, opts)
+    {:ok, pid} = Supervisor.start_link(children, opts)
+
+    # TRD-004: register the Jido.Harness backend adapter when the rollout
+    # switch is on (PRD-2026-016 §3.4). PiAdapter continues to be seeded
+    # via the `:agent_runtime, :adapters` config; this block is the
+    # in-code counterpart to FOREMAN_USE_JIDO_HARNESS and must run AFTER
+    # Supervisor.start_link so the AgentRuntime.AdapterCatalog GenServer
+    # is already alive.
+    _ = register_jido_harness_adapter()
+
+    {:ok, pid}
+  end
+
+  @doc """
+  TRD-004 — Registers `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
+  with the supervised `ForemanServer.AgentRuntime.AdapterCatalog` when
+  `:jido_harness, :enabled` is true.
+
+  This is the runtime counterpart to the static `:adapters` keyword list
+  that `ForemanServer.AgentRuntime.Supervisor.init/1` reads at boot to
+  pre-seed the catalog (currently carrying `PiAdapter`). Operators flip
+  the JidoHarnessAdapter on independently of the static list by setting
+  `config :foreman_server, :jido_harness, enabled: true` (or
+  `FOREMAN_USE_JIDO_HARNESS=true` once Phase-2 rollout wiring lands).
+
+  Returns `{:ok, capability_map}` if registered, or `nil` if the gate
+  is closed (the flag is false or unset). The AgentRuntime catalog must
+  be running for registration to succeed; callers from `start/2` are
+  guaranteed that because the supervisor tree has already started.
+  """
+  @spec register_jido_harness_adapter() ::
+          {:ok, ForemanServer.AgentRuntime.capability_map()} | nil
+  def register_jido_harness_adapter do
+    if jido_harness_enabled?() do
+      case ForemanServer.AgentRuntime.register(
+             ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+           ) do
+        {:ok, _} = ok -> ok
+        {:error, _} -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp jido_harness_enabled? do
+    Application.get_env(:foreman_server, :jido_harness, [])
+    |> Keyword.get(:enabled, false) == true
   end
 
   defp maybe_agent_runtime_child do

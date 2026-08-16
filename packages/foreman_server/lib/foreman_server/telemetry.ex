@@ -29,6 +29,7 @@ defmodule ForemanServer.Telemetry do
     :create,
     :failure
   ]
+  @provider_check [:foreman, :dispatch, :provider, :check]
   @mcp_tool_call [:foreman_server, :mcp, :tool, :call]
   @mcp_policy_refused [:foreman_server, :mcp, :policy, :refused]
   @work_submitted [:foreman_server, :work, :submitted]
@@ -40,7 +41,6 @@ defmodule ForemanServer.Telemetry do
   @run_slots_transferred [:foreman_server, :run_slots, :transferred]
   @run_slots_waiter_removed [:foreman_server, :run_slots, :waiter_removed]
   @run_slots_reconciled [:foreman_server, :run_slots, :reconciled]
-
   @all_events [
     @command_dispatch,
     @aggregate_rehydrated,
@@ -58,6 +58,7 @@ defmodule ForemanServer.Telemetry do
     @reconciler_orphan_retry,
     @task_provider_beads_create_skipped_watcher_import,
     @task_provider_beads_create_failure,
+    @provider_check,
     @mcp_tool_call,
     @mcp_policy_refused,
     @work_submitted,
@@ -234,6 +235,20 @@ defmodule ForemanServer.Telemetry do
         final_backend: final_backend
       }
     )
+  end
+
+  @doc """
+  Emits `[:foreman, :dispatch, :provider, :check]`.
+  Metadata whitelist: `provider`, `installed`, `install_hint`.
+  """
+  @spec dispatch_provider_check(atom(), boolean(), String.t()) :: :ok
+  def dispatch_provider_check(provider, installed, install_hint)
+      when is_atom(provider) and is_boolean(installed) and is_binary(install_hint) do
+    execute(@provider_check, %{}, %{
+      provider: provider,
+      installed: installed,
+      install_hint: install_hint
+    })
   end
 
   # ---------------------------------------------------------------------------

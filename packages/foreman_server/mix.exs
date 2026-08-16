@@ -34,7 +34,10 @@ defmodule ForemanServer.MixProject do
       {:jason, "~> 1.4"},
 
       # Anubis MCP server (TRD-036)
-      {:anubis_mcp, "~> 1.10"}
+      {:anubis_mcp, "~> 1.10"},
+
+      # Vendored harness fork (TRD-001)
+      {:jido_harness, path: "../jido_harness"}
     ]
   end
 

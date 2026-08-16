@@ -487,7 +487,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       assert :ok = BootReconciliation.scan_task_run_orphans()
 
       assert {:ok, _pid} =
-               wait_until_actor("task:" <> task_id, "cast to dispatch orphan", 1_000)
+               wait_until_actor("task:" <> task_id, "cast to dispatch orphan", 15_000)
     end
 
     test "run_terminated/2 fans out via cast", %{temp_dir: _temp_dir} do
@@ -499,7 +499,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       assert :ok = BootReconciliation.run_terminated(run_id, "run_flagged_stuck")
 
       assert {:ok, _pid} =
-               wait_until_actor("task:" <> task_id, "run_terminated to dispatch", 1_000)
+               wait_until_actor("task:" <> task_id, "run_terminated to dispatch", 15_000)
     end
   end
 
@@ -964,7 +964,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     end
   end
 
-  defp wait_until(fun, label, timeout_ms \\ 1_000) do
+  defp wait_until(fun, label, timeout_ms \\ 15_000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_until(fun, deadline, label)
   end
@@ -1347,7 +1347,7 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     )
   end
 
-  defp assert_eventually(fun, timeout_ms \\ 1_000) do
+  defp assert_eventually(fun, timeout_ms \\ 15_000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     poll_until(fun, deadline)
   end

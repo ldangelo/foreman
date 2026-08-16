@@ -1,13 +1,20 @@
 ---
 document_id: PRD-2026-016
-version: 1.0.0
+version: 1.1.0
 status: Draft
 date: 2026-08-16
 scale_depth: STANDARD
 author: Lead Agent
 total_requirements: 12
-readiness_score: 0.0
-readiness_gate: PENDING
+readiness_score: 4.0
+readiness_gate: PASS
+readiness_dimensions:
+  completeness: 4
+  testability: 4
+  clarity: 4
+  feasibility: 4
+last_refined: 2026-08-16
+last_refined_by: ensemble:refine-prd
 ---
 
 # PRD-2026-016: jido_harness Integration — Phase 1
@@ -17,16 +24,29 @@ readiness_gate: PENDING
 | Metric | Value |
 |--------|-------|
 | **Total Requirements** | 12 (REQ-016-001 through REQ-016-012) |
-| **Must** | 9 |
-| **Should** | 3 |
+| **Must** | 8 |
+| **Should** | 4 |
 | **Could** | 0 |
 | **Won't (this release)** | 0 |
-| **AC Coverage** | 0/12 (0%) |
-| **Risk Flags** | 0 |
-| **Cross-Requirement Dependencies** | 0 |
-| **Readiness Score** | 0.0 / 5.0 |
-| **Ambiguity Markers** | 0 |
+| **AC Coverage** | 33 ACs defined across 12 reqs (100% structural); 0/33 have passing tests |
+| **Risk Flags** | 3 (fork maintenance, two code paths, upstream activity) |
+| **Cross-Requirement Dependencies** | 4 (REQ-005→002, REQ-009→002, REQ-010→005, REQ-010→008) |
+| **Readiness Score** | 4.0 / 5.0 (PASS) |
+| **Ambiguity Markers** | 0 (all originally-implicit ambiguities resolved inline in v1.1.0) |
 
+
+## Implementation Readiness Gate
+
+Score: **4.0 / 5.0 → PASS** (was 0.0 / PENDING at v1.0.0)
+
+| Dimension | Score | Rationale |
+|-----------|-------|-----------|
+| **Completeness** | 4 | 12 REQs cover vendoring, dispatch facade, doctor, detached runs, parity, Claude Code, sessions, error normalization, backward compat, integration tests, telemetry, and docs. One Should req (REQ-007) leaves session-resume CLI process startup as a TODO. |
+| **Testability** | 4 | 33 ACs span concrete Given/When/Then conditions; all 8 Must reqs have ≥2 ACs. AC-016-008-3 ("error branches exercised by existing suite") is observable only after error handling migration is complete; possible circular verification. |
+| **Clarity** | 4 | Architecture (Section 4) names components, providers, and the data-flow path. Ambiguities originally implicit (vendor/fork, identical-results semantics, Phase 1 boundary, feature-flag lifecycle) are resolved inline in v1.1.0. |
+| **Feasibility** | 4 | Risks are documented with mitigations (Sections 6 and v1.1.0 additions). Active blockers: jido_harness upstream is 14-star OSS (RISK-016-03); two code paths for the foreseeable future (RISK-016-02). |
+
+**Gate result:** Pass. The PRD is sufficiently complete to begin TRD generation.
 ---
 
 ## 1. Executive Summary
@@ -105,6 +125,20 @@ dispatcher.ts
 - Removing or deprecating `pi-sdk-runner.ts` in Phase 1.
 - Reimplementing session management in Node — jido_harness handles this in Elixir.
 - Adding new providers beyond Pi and Claude Code in Phase 1.
+
+### 3.3 Phase 1 Release Boundary
+
+Phase 1 is complete when all 8 Must requirements (REQ-016-001, 002, 003, 004, 005, 008, 009, 010) ship with their ACs exercised by passing tests. The 4 Should requirements (REQ-016-006, 007, 011, 012) MAY ship in Phase 1 if capacity allows; otherwise they are deferred to a Phase 1.x patch release without re-opening the PRD's release boundary.
+
+### 3.4 `FOREMAN_USE_JIDO_HARNESS` Feature Flag Lifecycle
+
+| Phase | Flag default | Behavior |
+|-------|--------------|----------|
+| Pre-Phase 1 (today) | `false` | `foreman run` uses `pi-sdk-runner.ts` exclusively. |
+| Phase 1 (this PRD) | `false` (operator opt-in) | `foreman run` defaults to `pi-sdk-runner.ts`; setting `FOREMAN_USE_JIDO_HARNESS=true` routes through `ForemanDispatch.run/3`. |
+| Phase 2 (jido_signal) | `true` (default) | `foreman run` uses `ForemanDispatch.run/3` by default; `FOREMAN_USE_JIDO_HARNESS=false` is a temporary escape hatch. |
+| Phase 4 (behavior tree) | `true` | Flag retained for one additional phase. |
+| Phase 5 (full cutover) | removed | `pi-sdk-runner.ts` deleted; flag and its code path removed. |
 
 ---
 
@@ -202,7 +236,7 @@ export async function dispatchAgent(
 **Type:** Infrastructure  
 **Risk:** [RISK: fork maintenance burden]
 
-Foreman shall vendor jido_harness as `packages/jido_harness` under the existing monorepo.
+Foreman shall **fork and vendor** jido_harness as `packages/jido_harness` under the existing monorepo. "Fork and vendor" means: copy the upstream source tree into the monorepo, retain the original git history as a pinned reference, track changes via `git diff --stat` against the pinned SHA, and own the copy wholly (Foreman is the upstream-of-record for the fork).
 
 - AC-016-001-1: Given `packages/jido_harness/mix.exs` exists, when `mix deps.get` runs, then all jido_harness dependencies resolve without network access to hex.pm (vendored deps).
 - AC-016-001-2: Given the vendored jido_harness, when `mix test` runs in the package, then the full jido_harness test suite passes.
@@ -255,7 +289,7 @@ Foreman shall support detached agent runs via `Jido.Harness.Run` for long-runnin
 **Type:** Functional  
 **Risk:** [RISK: behavioral regression in existing workflows]
 
-Existing Foreman Pi workflows shall produce identical results when run through jido_harness.
+Existing Foreman Pi workflows shall produce **semantically equivalent** results when run through jido_harness. "Semantically equivalent" means: same repository files (matching path-and-content), same branch and commit graph, same artifact locations, same tool-event ordering at the boundary, and same final run status. Byte-identical process logs, prompt bytes, or stdout capture are **not** required; runners may differ in transport framing as long as the persisted outcome is identical.
 
 - AC-016-005-1: Given the `implement` workflow runs against a real TRD, when executed through `ForemanDispatch.run/3`, then the worktree contains the same files as the existing `pi-sdk-runner.ts` execution.
 - AC-016-005-2: Given a phase emits tool calls, when streamed through `Jido.Harness.Run.stream(run_id)`, then the tool events are parsed and stored identically to the existing `agent-worker.ts` tool event handling.
@@ -351,6 +385,20 @@ Phase 1 shall document the new integration pattern.
 
 ---
 
+### 5.1 Cross-Requirement Dependencies
+
+The following edges declare which requirements block which others. A dependent REQ cannot be implemented until its prerequisite REQ is complete and its tests pass.
+
+| Dependent | Prerequisite | Reason |
+|-----------|--------------|--------|
+| REQ-016-005 (Pi Workflow Parity) | REQ-016-002 (ForemanDispatch Module) | Parity test asserts equivalence to running through `ForemanDispatch.run/3`; facade must exist. |
+| REQ-016-008 (Error Normalization) | REQ-016-002 (ForemanDispatch Module) | `RunResult.error` is emitted by the facade; downstream error-handling migration reads from it. |
+| REQ-016-009 (Backward Compatibility) | REQ-016-002 (ForemanDispatch Module) | The `FOREMAN_USE_JIDO_HARNESS` flag switches between legacy `pi-sdk-runner.ts` and the new facade; the facade must exist before the flag can route. |
+| REQ-016-010 (Integration Test Coverage) | REQ-016-005 (Pi Workflow Parity) | Integration tests assert end-to-end equivalence; the parity implementation must exist before its tests can verify it. |
+| REQ-016-010 (Integration Test Coverage) | REQ-016-008 (Error Normalization) | Branch coverage (AC-016-008-3) requires error normalization to be in place. |
+
+**No circular dependencies.** All edges are forward-pointing. Implementation order: 001 → 002 → {005, 008, 009} → 010 → {003, 004, 006, 007, 011, 012}.
+
 ## 6. Dependencies and Risks
 
 | ID | Dependency / Risk | Mitigation |
@@ -360,6 +408,7 @@ Phase 1 shall document the new integration pattern.
 | RISK-016-01 | Fork maintenance burden | Automate sync via GitHub Actions; propose core changes upstream first |
 | RISK-016-02 | Two code paths (pi-sdk-runner + ForemanDispatch) until Phase 5 | Feature flag `FOREMAN_USE_JIDO_HARNESS`; deprecate pi-sdk-runner in Phase 4 |
 | RISK-016-03 | jido_harness is 14-star, 8-fork open source | Monitor upstream activity; maintain own adapter if upstream stalls |
+| RISK-016-04 | REQ-016-005 (Pi Workflow Parity, High complexity) — behavioral regression in existing workflows | Phase 1 ships with `FOREMAN_USE_JIDO_HARNESS=false` as the default; operators opt in. Parity test (AC-016-005-1 / 005-2 / 005-3) runs both code paths and diffs the persisted outcome. If regression detected, flag flips back to `false` until fixed. |
 
 ---
 
@@ -398,3 +447,25 @@ Phase 1 shall document the new integration pattern.
 - [ ] REQ-016-011-2: `[:foreman, :dispatch, :provider, :check]` telemetry emitted
 - [ ] REQ-016-012-1: PRD-2026-016 is current and accurate
 - [ ] REQ-016-012-2: New provider addition documented
+
+## Changelog
+
+### 1.1.0 — 2026-08-16 — `ensemble:refine-prd`
+
+Refined for TRD-readiness (readiness score 0.0 → 4.0, gate PENDING → PASS).
+
+**Corrected:**
+- PRD Health Summary: Must count 9 → 8 (actual REQs marked Must); Should count 3 → 4; Risk Flags 0 → 3; Cross-Requirement Dependencies 0 → 4.
+- AC Coverage metric redefined: 33 ACs defined across 12 reqs (100% structural); 0/33 have passing tests.
+- REQ-016-001: clarified "vendor" as "fork and vendor" (Foreman is upstream-of-record).
+- REQ-016-005: clarified "identical results" as "semantically equivalent" (same files/branch/artifacts/tool-event ordering; byte-identical logs not required).
+- REQ-016-005 risk: added RISK-016-04 with mitigation (operator opt-in default + parity diff test).
+
+**Added:**
+- Implementation Readiness Gate scorecard (Section after PRD Health Summary) with per-dimension rationale (Completeness 4, Testability 4, Clarity 4, Feasibility 4; average 4.0 → PASS).
+- Section 3.3 "Phase 1 Release Boundary" — Phase 1 = 8 Must REQs; Should REQs may defer to Phase 1.x.
+- Section 3.4 `FOREMAN_USE_JIDO_HARNESS` Feature Flag Lifecycle — explicit per-phase default and removal timeline.
+- Section 5.1 Cross-Requirement Dependencies — 4 forward edges (REQ-005→002, REQ-008→002, REQ-009→002, REQ-010→005, REQ-010→008); implementation order 001 → 002 → {005, 008, 009} → 010 → {003, 004, 006, 007, 011, 012}.
+- Frontmatter: `readiness_dimensions`, `last_refined`, `last_refined_by`, `version` bumped to 1.1.0.
+
+**No requirement IDs changed.** No acceptance criteria removed or added (33 ACs preserved).
