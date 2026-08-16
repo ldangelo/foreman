@@ -110,9 +110,14 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
           %{}
         )
 
+      # Monitor before terminating: DynamicSupervisor.terminate_child/2 is
+      # synchronous, so the child is already dead by the time it returns.
+      # Monitoring afterward would race and observe :noproc instead of the
+      # :shutdown exit reason.
+      monitor = Process.monitor(pid)
+
       assert InvocationSupervisor.terminate_invocation(ref) == :ok
 
-      monitor = Process.monitor(pid)
       assert_receive {:DOWN, ^monitor, :process, ^pid, :shutdown}, 1_000
     end
   end

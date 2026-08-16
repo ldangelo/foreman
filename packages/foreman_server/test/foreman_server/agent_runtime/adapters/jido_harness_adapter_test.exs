@@ -21,13 +21,15 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
 
     @impl true
     def status(_config) do
+      installed = :persistent_term.get({__MODULE__, :installed}, true)
+
       {:ok,
        %ProviderStatus{
          provider: :pi,
-         installed: true,
-         compatible: true,
+         installed: installed,
+         compatible: installed,
          authenticated: true,
-         smoke_ready: true,
+         smoke_ready: installed,
          capabilities: %Capabilities{streaming?: true, resume?: true},
          executable: "stub"
        }}
@@ -68,12 +70,22 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     Application.put_env(:jido_harness, :providers, %{pi: Stub})
     Application.put_env(:jido_harness, :adapter_test_pid, self())
     System.put_env("PATH", tmp_dir <> ":" <> (original_path || ""))
+    # Stub reports the provider installed by default; individual tests
+    # flip this marker to simulate a missing provider (ReadinessCheck now
+    # probes Jido.Harness.status/1, not $PATH).
+    :persistent_term.put({Stub, :installed}, true)
 
     on_exit(fn ->
       restore_env(:foreman_server, :jido_harness, original_foreman)
       restore_env(:jido_harness, :providers, original_providers)
       restore_env(:jido_harness, :adapter_test_pid, original_test_pid)
       restore_path(original_path)
+
+      try do
+        :persistent_term.erase({Stub, :installed})
+      catch
+        :error, _ -> :ok
+      end
       prune_new_runs(baseline_runs)
       File.rm_rf!(tmp_dir)
     end)
@@ -107,9 +119,15 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     refute JidoHarnessAdapter.available?()
   end
 
-  test "available?/0 returns false when enabled but no provider binary is installed", %{original_path: original_path} do
+  test "available?/0 returns false when enabled but no provider reports installed",
+       %{original_path: original_path} do
+    # ReadinessCheck probes Jido.Harness.status/1. Flip the :pi stub
+    # marker to not-installed; empty PATH so the built-in :claude adapter
+    # (Registry merges @builtins with the test override) also reports
+    # not-installed.
     empty_dir = Path.join(System.tmp_dir!(), "jido-harness-adapter-empty-#{System.unique_integer([:positive])}")
     File.mkdir_p!(empty_dir)
+    :persistent_term.put({Stub, :installed}, false)
 
     try do
       System.put_env("PATH", empty_dir)
@@ -167,23 +185,13 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     end
   end
 
-  test "execute/2 returns {:error, :backend_unavailable} when the requested provider is not installed",
-       %{original_path: original_path} do
-    # Replace PATH with an empty dir so no provider binaries are found.
-    # The Stub above is still registered via Application.put_env but the
-    # per-provider check uses ReadinessCheck.installed?/1 which probes
-    # $PATH — so :pi and :claude both fail the installed? check.
-    empty_dir = Path.join(System.tmp_dir!(), "jido-harness-empty-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(empty_dir)
+  test "execute/2 returns {:error, :backend_unavailable} when the requested provider is not installed" do
+    # ReadinessCheck.installed?/1 probes Jido.Harness.status/1; flip the
+    # stub marker so :pi reports not-installed.
+    :persistent_term.put({Stub, :installed}, false)
 
-    try do
-      System.put_env("PATH", empty_dir)
-      assert JidoHarnessAdapter.execute(%{prompt: "ping", context: %{provider: :pi}}, []) ==
-               {:error, :backend_unavailable}
-    after
-      restore_path(original_path)
-      File.rm_rf!(empty_dir)
-    end
+    assert JidoHarnessAdapter.execute(%{prompt: "ping", context: %{provider: :pi}}, []) ==
+             {:error, :backend_unavailable}
   end
 
   test "execute/2 with provider :claude fails per-provider when :claude is not installed (even if :pi is)",

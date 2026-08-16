@@ -4,6 +4,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DriverTest do
   alias ForemanServer.AgentRuntime.JidoHarness.Driver
   alias Jido.Harness.{Adapter, AdapterSpec, Capabilities, Event, ProviderStatus}
 
+  # `Driver` is a thin wrapper over `Jido.Harness.run/3` and
+  # `Jido.Harness.Run.await/2`. It does not emit telemetry (the adapter's
+  # `emit_stop/4` owns that), does not inject a runner/awaiter, and does
+  # not catch upstream exceptions — those responsibilities live in
+  # `JidoHarnessAdapter`. These tests pin the actual delegation contract.
   defmodule Stub do
     @behaviour Adapter
 
@@ -11,7 +16,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DriverTest do
     def spec do
       %AdapterSpec{
         provider: :pi,
-        name: "TRD-003 driver stub",
+        name: "driver-test stub",
         executable: "stub",
         capabilities: %Capabilities{streaming?: true, resume?: true},
         normalized_options: [],
@@ -34,7 +39,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DriverTest do
     end
 
     @impl true
-    def run(_request, _context) do
+    def run(request, _context) do
+      if pid = Application.get_env(:jido_harness, :driver_test_pid) do
+        send(pid, {:stub_run, request})
+      end
+
       {:ok,
        [
          Event.new!(provider: :pi, type: :output_text_delta, payload: %{"text" => "pong"}),
@@ -46,8 +55,21 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DriverTest do
 
   setup do
     original = Application.get_env(:jido_harness, :providers, %{})
+    original_pid = Application.get_env(:jido_harness, :driver_test_pid)
+
     Application.put_env(:jido_harness, :providers, %{pi: Stub})
-    on_exit(fn -> Application.put_env(:jido_harness, :providers, original) end)
+    Application.put_env(:jido_harness, :driver_test_pid, self())
+
+    on_exit(fn ->
+      Application.put_env(:jido_harness, :providers, original)
+
+      if original_pid do
+        Application.put_env(:jido_harness, :driver_test_pid, original_pid)
+      else
+        Application.delete_env(:jido_harness, :driver_test_pid)
+      end
+    end)
+
     :ok
   end
 
@@ -59,80 +81,39 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.DriverTest do
 
   describe "run/3" do
     test "returns a terminal RunResult for a successful upstream run" do
-      assert {:ok, run_id, %Jido.Harness.RunResult{} = result} = Driver.run(:pi, "ping", [])
-      assert run_id == result.run_id
+      assert {:ok, %Jido.Harness.RunResult{} = result} = Driver.run(:pi, "ping", [])
       assert result.provider == :pi
       assert result.status == :completed
       assert result.text == "pong"
+      assert is_binary(result.run_id)
     end
 
-    test "awaits detached run ids into a terminal RunResult" do
-      run_result =
-        Jido.Harness.RunResult.new!(%{
-          run_id: "detached-1",
-          provider: :pi,
-          status: :completed,
-          text: "pong"
-        })
+    test "maps the :timeout option into the upstream :runtime_timeout_ms" do
+      assert {:ok, %Jido.Harness.RunResult{}} =
+               Driver.run(:pi, "ping", timeout: 4_321)
 
-      runner = fn :pi, "ping", opts when is_list(opts) -> {:ok, "detached-1"} end
-      awaiter = fn "detached-1", 123 -> {:ok, run_result} end
-
-      assert {:ok, "detached-1", ^run_result} =
-               Driver.run(:pi, "ping", driver_runner: runner, driver_awaiter: awaiter, await_timeout: 123)
+      assert_receive {:stub_run, request}
+      assert request.runtime_timeout_ms == 4_321
     end
 
-    test "catches upstream exceptions and returns an error tuple" do
-      runner = fn :pi, "ping", opts when is_list(opts) -> raise "boom" end
+    test "keeps an explicit :runtime_timeout_ms over the :timeout option" do
+      assert {:ok, %Jido.Harness.RunResult{}} =
+               Driver.run(:pi, "ping", timeout: 4_321, runtime_timeout_ms: 1_000)
 
-      assert {:error, {:driver_exception, :error, %RuntimeError{message: "boom"}}} =
-               Driver.run(:pi, "ping", driver_runner: runner)
-    end
-
-    test "emits stop telemetry with duration, provider, status, run_id, and adapter" do
-      events =
-        capture_telemetry([:foreman, :dispatch, :run, :stop], fn ->
-          assert {:ok, _run_id, %Jido.Harness.RunResult{}} = Driver.run(:pi, "ping", [])
-        end)
-
-      assert [{[:foreman, :dispatch, :run, :stop], measurements, metadata}] = events
-      assert is_integer(measurements.duration_ms)
-      assert measurements.duration_ms >= 0
-      assert metadata.provider == :pi
-      assert metadata.status == :ok
-      assert metadata.adapter == :jido_harness
-      assert is_binary(metadata.run_id)
+      assert_receive {:stub_run, request}
+      assert request.runtime_timeout_ms == 1_000
     end
   end
 
-  defp capture_telemetry(events, fun) do
-    test_pid = self()
-    handler_id = "driver-test-#{System.unique_integer([:positive])}"
+  describe "await/2" do
+    test "delegates to Jido.Harness.Run.await/2 and returns the terminal RunResult" do
+      assert {:ok, run_id} = Jido.Harness.Run.start(:pi, %{prompt: "ping"}, [])
 
-    :telemetry.attach_many(
-      handler_id,
-      [events],
-      fn event, measurements, metadata, _config ->
-        send(test_pid, {:telemetry_event, event, measurements, metadata})
-      end,
-      nil
-    )
-
-    try do
-      fun.()
-    after
-      :telemetry.detach(handler_id)
-    end
-
-    receive_all_telemetry([])
-  end
-
-  defp receive_all_telemetry(acc) do
-    receive do
-      {:telemetry_event, event, measurements, metadata} ->
-        receive_all_telemetry([{event, measurements, metadata} | acc])
-    after
-      100 -> Enum.reverse(acc)
+      assert {:ok, %Jido.Harness.RunResult{} = result} = Driver.await(run_id, 5_000)
+      assert result.run_id == run_id
+      assert result.provider == :pi
+      assert result.status == :completed
+      assert result.text == "pong"
     end
   end
 end
