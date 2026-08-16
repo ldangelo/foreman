@@ -14,15 +14,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck do
   telemetry with `%{provider, installed, install_hint}` metadata so the
   supervisor and the doctor MCP tool can observe provider availability
   without re-querying.
-
-  ## Example
-
-      iex> ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck.install_hint(:pi)
-      "npm install -g @earendil-works/pi-coding-agent"
-
-      iex> ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck.run()
-      [{:provider, :pi, :installed | :not_installed, "npm install -g ..."},
-       {:provider, :claude, :installed | :not_installed, "npm install -g ..."}]
+  Run `install_hint(:pi)` returns the
+  `npm install -g @earendil-works/pi-coding-agent` command. `Run/0`
+  returns a row per supported provider shaped as
+  `{:provider, :pi | :claude, :installed | :not_installed, hint}`.
   """
 
   alias ForemanServer.Telemetry
