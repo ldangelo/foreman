@@ -22,6 +22,15 @@ config :foreman_server, :agent_runtime,
   enabled: true,
   adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
 
+# jido_harness backend rollout switch (PRD-2026-016 §3.4).
+# Phase 1 defaults to false — operators opt in by exporting
+# FOREMAN_USE_JIDO_HARNESS=true (or setting `:jido_harness, :enabled`
+# to true at runtime). When false, `JidoHarnessAdapter.enabled?/0`
+# returns false, the adapter registers as unavailable, and the router
+# rejects `:jido_harness` backend requests.
+config :foreman_server, :jido_harness,
+  enabled: System.get_env("FOREMAN_USE_JIDO_HARNESS", "false") == "true"
+
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 

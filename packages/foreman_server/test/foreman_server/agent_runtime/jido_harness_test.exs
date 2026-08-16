@@ -141,26 +141,26 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessTest do
 
   describe "supported?/0" do
     test "returns the canonical list of supported providers" do
-      assert JidoHarness.supported?() == [:pi, :claude]
+      assert JidoHarness.providers() == [:pi, :claude]
     end
   end
 
   describe "provider?/1" do
     test "returns true for :pi" do
-      assert JidoHarness.provider?(:pi) == true
+      assert JidoHarness.provider(:pi) == true
     end
 
     test "returns true for :claude" do
-      assert JidoHarness.provider?(:claude) == true
+      assert JidoHarness.provider(:claude) == true
     end
 
     test "returns false for unknown atoms and non-atom arguments" do
-      assert JidoHarness.provider?(:unknown) == false
-      assert JidoHarness.provider?(:kimi) == false
-      assert JidoHarness.provider?("pi") == false
-      assert JidoHarness.provider?("claude") == false
-      assert JidoHarness.provider?(nil) == false
-      assert JidoHarness.provider?(123) == false
+      assert JidoHarness.provider(:unknown) == false
+      assert JidoHarness.provider(:kimi) == false
+      assert JidoHarness.provider("pi") == false
+      assert JidoHarness.provider("claude") == false
+      assert JidoHarness.provider(nil) == false
+      assert JidoHarness.provider(123) == false
     end
   end
 
