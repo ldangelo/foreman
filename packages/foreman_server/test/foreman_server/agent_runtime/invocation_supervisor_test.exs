@@ -58,26 +58,64 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
                {:error, :not_found}
     end
 
-    test "returns :ok and sends :terminate when the invocation is registered" do
+    test "returns :ok and stops the invocation child when registered via start_invocation" do
+      defmodule BlockingAdapter do
+        @behaviour ForemanServer.AgentRuntime.BackendAdapter
+
+        @impl true
+        def name, do: :blocking_test_adapter
+
+        @impl true
+        def capabilities do
+          %{
+            type: :cli,
+            strengths: [:code_generation],
+            weaknesses: [],
+            supported_contexts: [:implement]
+          }
+        end
+
+        @impl true
+        def available?, do: true
+
+        @impl true
+        def execute(_request, _opts) do
+          # Block until the supervisor terminates this child process.
+          receive do
+            :stop -> {:ok, "completed", %{}}
+          end
+        end
+      end
+
       sup_name = :"InvocationSupervisor.Test.terminate_ok"
-      registry_name = :"InvocationSupervisor.Test.terminate_ok.InvocationRegistry"
-
-      start_supervised!({Registry, keys: :unique, name: registry_name},
-        id: :invocation_registry_terminate_ok
-      )
-
       start_supervised!({InvocationSupervisor, [name: sup_name]},
         id: :invocation_supervisor_terminate_ok
       )
 
-      invocation_id = "test-invocation-id"
-      {:ok, _ref} = Registry.register(registry_name, invocation_id, nil)
+      policy = %{
+        fail_fast: true,
+        fallback: false,
+        max_attempts: 1,
+        timeout_ms: 60_000
+      }
 
-      assert InvocationSupervisor.terminate_invocation(invocation_id) == :ok
-      assert_receive :terminate, 500
+      {:ok, pid, ref} =
+        InvocationSupervisor.start_invocation(
+          [{BlockingAdapter, true}],
+          policy,
+          %{prompt: "ping"},
+          self(),
+          nil,
+          sup_name,
+          %{}
+        )
+
+      assert InvocationSupervisor.terminate_invocation(ref) == :ok
+
+      monitor = Process.monitor(pid)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :shutdown}, 1_000
     end
   end
-
   describe "DynamicSupervisor configuration" do
     test "uses :one_for_one strategy" do
       sup_name = :"InvocationSupervisor.Test.config"

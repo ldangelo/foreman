@@ -61,25 +61,36 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisor do
   end
 
   @doc """
-  Send `:terminate` to the invocation process identified by `invocation_id`.
+  Forcibly stop the invocation process identified by `invocation_id`.
 
-  Returns `:ok` when an invocation is registered under the given id and the
-  message is delivered, or `{:error, :not_found}` when no invocation is
-  registered. The Registry stores the invocation pid as the entry value
-  while the calling process owns the entry; this function extracts the
-  invocation pid and sends `:terminate` to it.
+  Uses `DynamicSupervisor.terminate_child/2` to interrupt the running
+  invocation (including any in-flight `handle_continue/2` orchestration
+  that is currently blocked in `adapter.execute/2`). Cooperative
+  mailbox cancellation cannot work for this state machine — the
+  GenServer's mailbox is blocked while `handle_continue` runs the
+  adapter, so a `:terminate` message would sit unread until after
+  completion. Terminating the child process is the only way to
+  actually stop the in-flight CLI.
+
+  Returns `:ok` when an invocation is registered under the given id
+  and the supervisor successfully stops it, or `{:error, term()}` when
+  the supervisor rejects the stop (no such child, shutdown timeout,
+  etc.).
   """
   @spec terminate_invocation(invocation_id()) :: :ok | {:error, term()}
   def terminate_invocation(invocation_id) do
     case Registry.lookup(registry_name(), invocation_id) do
-      [{pid, _value}] ->
-        send(pid, :terminate)
-        :ok
+      [{_owner_pid, {supervisor, invocation_pid}}] when is_pid(invocation_pid) ->
+        case DynamicSupervisor.terminate_child(supervisor, invocation_pid) do
+          :ok -> :ok
+          {:error, _reason} = err -> err
+        end
 
       [] ->
         {:error, :not_found}
     end
   end
+
 
   # Returns the Registry name for the most recently started supervisor
   # instance. Tests and production both run a single named supervisor at
@@ -164,12 +175,14 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisor do
 
     case DynamicSupervisor.start_child(supervisor, spec) do
       {:ok, pid} ->
-        # Register the invocation so `terminate_invocation/1` can find the
-        # pid by ref. The caller owns the registry entry; the value is the
-        # invocation pid. If the caller dies before the invocation completes
-        # the entry is reaped automatically. The registry name is read from
-        # the persistent_term key published by this supervisor's `init/1`.
-        {:ok, _owner} = Registry.register(registry_name(), ref, pid)
+        # Register the invocation so `terminate_invocation/1` can find it
+        # by ref. The value is `{supervisor_handle, invocation_pid}` —
+        # Registry.lookup/2 returns `[{owner_pid, value}]` where owner_pid
+        # is the caller of Registry.register and value is whatever we
+        # stored. We need the supervisor handle to terminate the child,
+        # so we store it in the value rather than relying on the
+        # owner_pid (which is the caller, not the supervisor).
+        {:ok, _owner} = Registry.register(registry_name(), ref, {supervisor, pid})
         {:ok, pid, ref}
 
       other ->
