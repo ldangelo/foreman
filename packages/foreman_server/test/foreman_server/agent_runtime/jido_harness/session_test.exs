@@ -91,15 +91,12 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
   end
 
   describe "send_message/3" do
-    test "returns the upstream turn id for a valid session_id" do
+    test "returns the upstream turn result (response) for a valid session_id" do
       assert {:ok, session_id} = Session.start(:pi, [])
       assert :ok = await_idle(session_id)
 
-      assert {:ok, turn_id} = Session.send_message(session_id, "ping", [])
-      assert is_binary(turn_id)
-
       assert {:ok, %Jido.Harness.TurnResult{} = result} =
-               Jido.Harness.Session.await(session_id, turn_id, 5_000)
+               Session.send_message(session_id, "ping", [])
 
       assert result.session_id == session_id
       assert result.provider == :pi
@@ -114,31 +111,25 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SessionTest do
   end
 
   describe "continue/3" do
-    test "returns the upstream turn id for a valid session_id" do
+    test "returns the upstream turn result (response) for a valid session_id" do
       assert {:ok, session_id} = Session.start(:pi, [])
       assert :ok = await_idle(session_id)
 
-      assert {:ok, first_turn_id} = Session.send_message(session_id, "first", [])
       assert {:ok, %Jido.Harness.TurnResult{} = first} =
-               Jido.Harness.Session.await(session_id, first_turn_id, 5_000)
+               Session.send_message(session_id, "first", [])
 
       assert first.provider_session_id == "fixture-session"
       assert :ok = await_idle(session_id)
 
-      assert {:ok, turn_id} = Session.continue(session_id, "second", [])
-      assert is_binary(turn_id)
+      assert {:ok, %Jido.Harness.TurnResult{} = second} =
+               Session.continue(session_id, "second", [])
 
-      assert {:ok, %Jido.Harness.TurnResult{} = result} =
-               Jido.Harness.Session.await(session_id, turn_id, 5_000)
-
-      assert result.session_id == session_id
-      assert result.provider == :pi
-      assert result.status == :completed
-      assert result.text == "fixture-ok"
-      assert result.provider_session_id == "fixture-session"
+      assert second.session_id == session_id
+      assert second.provider == :pi
+      assert second.status == :completed
+      assert second.text == "fixture-ok"
     end
   end
-
   defp await_idle(session_id), do: await_idle(session_id, 100)
   defp await_idle(_session_id, 0), do: {:error, :timeout}
 

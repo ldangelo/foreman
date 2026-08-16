@@ -50,31 +50,39 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.Session do
   end
 
   @doc """
-  Sends a turn through an existing session and returns the upstream turn
-  ID.
+  Sends a turn through an existing session and returns the response.
 
-  Returns `{:error, :invalid_session}` for an unknown session ID. All
-  other upstream success and error values pass through unchanged.
+  Internally awaits the upstream turn result so callers receive the
+  full response, not just the turn id (per TRD-009: "the response is
+  returned"). Returns `{:error, :invalid_session}` for an unknown
+  session ID. All other upstream success and error values pass through
+  unchanged. The `opts` keyword list may include `:await_timeout` (in
+  ms or `:infinity`) — defaults to `:infinity`.
   """
-  @spec send_message(session_id(), turn_input(), keyword()) :: result(turn_id())
   def send_message(session_id, prompt, opts \\ []) when is_list(opts) do
+    await_timeout = Keyword.get(opts, :await_timeout, :infinity)
+    turn_opts = Keyword.delete(opts, :await_timeout)
+
     with :ok <- validate_session_id(session_id),
-         {:ok, turn_id} <- UpstreamSession.send_message(session_id, prompt, opts) do
-      {:ok, turn_id}
+         {:ok, turn_id} <- UpstreamSession.send_message(session_id, prompt, turn_opts),
+         {:ok, %Jido.Harness.TurnResult{} = turn_result} <-
+           UpstreamSession.await(session_id, turn_id, await_timeout) do
+      {:ok, turn_result}
     else
       {:error, :not_found} -> {:error, :invalid_session}
+      {:error, :timeout} -> {:error, :timeout}
       {:error, _reason} = err -> err
     end
   end
 
   @doc """
-  Resumes an existing session and returns the upstream turn ID.
+  Resumes an existing session and returns the response.
 
   The vendored upstream has no `continue` function. For Foreman's idle
-  session-resume behavior, `send_message/3` is the correct upstream
-  operation, so `continue/3` delegates there.
+  session-resume behavior, `send_message/3` (awaited internally) is
+  the correct upstream operation, so `continue/3` delegates there.
   """
-  @spec continue(session_id(), turn_input(), keyword()) :: result(turn_id())
+  @spec continue(session_id(), turn_input(), keyword()) :: result(Jido.Harness.TurnResult.t())
   def continue(session_id, prompt, opts \\ []) when is_list(opts) do
     send_message(session_id, prompt, opts)
   end
