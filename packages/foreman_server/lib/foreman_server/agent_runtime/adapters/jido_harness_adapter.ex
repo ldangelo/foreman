@@ -10,6 +10,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
   @behaviour ForemanServer.AgentRuntime.BackendAdapter
 
   alias ForemanServer.AgentRuntime.BackendAdapter
+  alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, ReadinessCheck, RunResult}
   alias ForemanServer.Telemetry
 
@@ -48,8 +49,8 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @impl true
   @spec execute(BackendAdapter.request(), BackendAdapter.exec_opts()) :: BackendAdapter.execute_result()
-  def execute(%{prompt: prompt, context: context}, opts) when is_binary(prompt) and is_map(context) do
-    provider = requested_provider(context)
+  def execute(request = %{prompt: prompt, context: context}, opts) when is_binary(prompt) and is_map(context) do
+    provider = JidoHarness.request_provider(request)
     started_at_ms = System.monotonic_time(:millisecond)
 
     {result, run_id} =
@@ -99,15 +100,6 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
   end
 
   def execute(_request, _opts), do: {:error, :invalid_request}
-
-  defp requested_provider(context) when is_map(context) do
-    case Map.get(context, :provider) || Map.get(context, "provider") do
-      nil -> :pi
-      "pi" -> :pi
-      "claude" -> :claude
-      provider -> provider
-    end
-  end
 
   defp driver_opts(context, opts) do
     opts
