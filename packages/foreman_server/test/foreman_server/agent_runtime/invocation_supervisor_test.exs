@@ -41,6 +41,43 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
     end
   end
 
+  describe "terminate_invocation/1" do
+    test "returns {:error, :not_found} when the invocation id is unknown" do
+      sup_name = :"InvocationSupervisor.Test.terminate_not_found"
+      registry_name = :"InvocationSupervisor.Test.terminate_not_found.InvocationRegistry"
+
+      start_supervised!({Registry, keys: :unique, name: registry_name},
+        id: :invocation_registry_terminate_not_found
+      )
+
+      start_supervised!({InvocationSupervisor, [name: sup_name]},
+        id: :invocation_supervisor_terminate_not_found
+      )
+
+      assert InvocationSupervisor.terminate_invocation("nonexistent-id") ==
+               {:error, :not_found}
+    end
+
+    test "returns :ok and sends :terminate when the invocation is registered" do
+      sup_name = :"InvocationSupervisor.Test.terminate_ok"
+      registry_name = :"InvocationSupervisor.Test.terminate_ok.InvocationRegistry"
+
+      start_supervised!({Registry, keys: :unique, name: registry_name},
+        id: :invocation_registry_terminate_ok
+      )
+
+      start_supervised!({InvocationSupervisor, [name: sup_name]},
+        id: :invocation_supervisor_terminate_ok
+      )
+
+      invocation_id = "test-invocation-id"
+      {:ok, _ref} = Registry.register(registry_name, invocation_id, nil)
+
+      assert InvocationSupervisor.terminate_invocation(invocation_id) == :ok
+      assert_receive :terminate, 500
+    end
+  end
+
   describe "DynamicSupervisor configuration" do
     test "uses :one_for_one strategy" do
       sup_name = :"InvocationSupervisor.Test.config"
