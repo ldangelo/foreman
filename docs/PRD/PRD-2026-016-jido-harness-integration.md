@@ -450,6 +450,44 @@ The following edges declare which requirements block which others. A dependent R
 
 ## Changelog
 
+### 1.2.0 — 2026-08-16 — implementation complete (TRD-014)
+
+Phase 1 implemented and verified on `slices/go-elixir-cqrs`. All 8 Must
+REQs are satisfied; the `jido_harness` suite (adapter, driver, readiness,
+doctor, session, detached run, parity, telemetry, integration) is green.
+
+**Architecture decision — `JidoHarnessAdapter` over a separate `ForemanDispatch` facade:**
+
+REQ-016-009-3 originally described a dedicated `ForemanDispatch` module as
+the enable path for `FOREMAN_USE_JIDO_HARNESS=true`. The implementation
+instead reuses Foreman's existing `ForemanServer.AgentRuntime` routing and
+registers a single `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
+backend. Rationale:
+
+- **One routing spine.** `AgentRuntime.execute/3` already owns backend
+  selection (`:manual`/`:automatic`/`:policy`), availability caching via
+  `AdapterCatalog`, and the invocation-supervisor lifecycle. A separate
+  `ForemanDispatch` facade would have duplicated that machinery and split
+  the dispatch path in two.
+- **Provider-agnostic.** Both `:pi` and `:claude` (and any future
+  provider) route through the same adapter; the provider is resolved from
+  the request context by `JidoHarness.request_provider/1`. Adding a
+  provider is one entry in `JidoHarness`/`ReadinessCheck` plus one test —
+  see `docs/guides/adding-a-jido-harness-provider.md`.
+- **Flag placement unchanged.** The `FOREMAN_USE_JIDO_HARNESS` flag
+  (config `:foreman_server, :jido_harness, :enabled`, default `false`)
+  still gates the whole path; when false the adapter reports unavailable
+  and the router rejects `:jido_harness` requests, so REQ-016-009-1/2
+  hold. The observable contract of REQ-016-009-3 (flag true → runs route
+  through the jido_harness backend) is met; only the internal module name
+  differs (`JidoHarnessAdapter`, not `ForemanDispatch`).
+
+**Added:**
+- `docs/guides/adding-a-jido-harness-provider.md` — provider onboarding
+  guide (REQ-016-012-2 / AC-016-012-2).
+
+**No requirement IDs changed.** No acceptance criteria removed or added.
+
 ### 1.1.0 — 2026-08-16 — `ensemble:refine-prd`
 
 Refined for TRD-readiness (readiness score 0.0 → 4.0, gate PENDING → PASS).
