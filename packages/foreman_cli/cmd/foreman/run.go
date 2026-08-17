@@ -79,6 +79,10 @@ func runCancel(c *client.Client, args []string) error {
 	return postCommand(c, commandEnvelope{Type: "run.cancel", Payload: payload})
 }
 
+// runSubmit dispatches `foreman run submit --workflow <name> --prompt <text>
+// --project-id <id> [--work-id <id>] [--backend <backend>]`. Posts a JSON-RPC
+// 2.0 tools/call request to /mcp targeting foreman_work_submit.
+// Per TRD-002 AC: backend is omitted when the default "pi" is used.
 func runSubmit(c *client.Client, args []string) error {
 	fs := newFlagSet("run submit")
 	workID := fs.String("work-id", "", "Work ID (auto-generated if omitted)")
@@ -97,6 +101,11 @@ func runSubmit(c *client.Client, args []string) error {
 	if *workflow == "" {
 		return usageError(fs, "foreman run submit: --workflow is required")
 	}
+	if !isValidWorkflow(*workflow) {
+		return usageError(fs,
+			"foreman run submit: --workflow must be one of: prd, trd, fix (got %s)",
+			*workflow)
+	}
 	if *prompt == "" {
 		return usageError(fs, "foreman run submit: --prompt is required")
 	}
@@ -111,16 +120,38 @@ func runSubmit(c *client.Client, args []string) error {
 		wid = generateID("work")
 	}
 
-	envelope := commandEnvelope{
-		Type: "work.submit",
-		Payload: map[string]any{
-			"work_id":    wid,
-			"project_id": *projectID,
-			"workflow":   *workflow,
-			"prompt":     *prompt,
-			"backend":    *backend,
+	// Build tool arguments; omit backend when it's the default "pi" per TRD-002.
+	toolArgs := map[string]any{
+		"work_id":    wid,
+		"project_id": *projectID,
+		"workflow":   *workflow,
+		"prompt":     *prompt,
+	}
+	if *backend != "pi" {
+		toolArgs["backend"] = *backend
+	}
+
+	// JSON-RPC 2.0 tools/call envelope for /mcp.
+	rpcEnvelope := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "foreman_work_submit",
+			"arguments": toolArgs,
 		},
 	}
 
-	return postCommand(c, envelope)
+	var out map[string]any
+	err := c.PostJSON("/mcp", rpcEnvelope, &out)
+	if err != nil {
+		return err
+	}
+
+	return printJSON(out)
+}
+
+// isValidWorkflow returns true for the three curated workflow names.
+func isValidWorkflow(w string) bool {
+	return w == "prd" || w == "trd" || w == "fix"
 }
