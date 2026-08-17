@@ -133,6 +133,27 @@ Example:
 foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
 ```
 
+### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]`
+
+Submit a new work request for dispatch. Issues `POST /api/commands` with a
+`work.submit` envelope. The server creates a `WorkSubmitted` event and
+triggers workflow dispatch.
+
+Flags:
+
+- `--workflow` (required) — the workflow name to execute.
+- `--prompt` (required) — the input prompt/text for the workflow.
+- `--project-id` (required) — the project ID.
+- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--backend` (optional) — backend to use (`pi`, `claude`, `codex`,
+  `opencode`). Defaults to `pi`.
+
+Example:
+
+```text
+foreman run submit --workflow implement-trd --prompt "Fix the CLI submit bug" --project-id foreman
+```
+
 ### `foreman doctor task_provider`
 
 Run the task-provider health check. The command emits one JSON object
