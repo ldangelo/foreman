@@ -8,6 +8,7 @@ defmodule ForemanServer.Integration.ProjectReadRoutesTest do
   use ExUnit.Case, async: false
 
   alias ForemanServerWeb.Endpoint
+  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @token "project-read-routes-test-token"
   @poll_timeout_ms 8_000
@@ -30,9 +31,7 @@ defmodule ForemanServer.Integration.ProjectReadRoutesTest do
       Keyword.put_new(previous_endpoint_config, :secret_key_base, String.duplicate("a", 64))
     )
 
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
-    end)
+    ProjectionStoreReset.reset!()
 
     ref = String.to_atom("project-read-routes-#{System.unique_integer([:positive])}")
 
@@ -44,9 +43,7 @@ defmodule ForemanServer.Integration.ProjectReadRoutesTest do
     base_url = "http://127.0.0.1:#{:ranch.get_port(ref)}"
 
     on_exit(fn ->
-      :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
-      end)
+      ProjectionStoreReset.reset!()
 
       if previous_token == nil do
         Application.delete_env(:foreman_server, :api_bearer_token)

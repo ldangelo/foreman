@@ -237,9 +237,7 @@ defmodule ForemanServerWeb.Integration.ProjectsSmokeTest do
   end
 
   defp reset_projection_store do
-    :sys.replace_state(ProjectionStore, fn state ->
-      %{state | projects: %{}, runs: %{}, project_active_runs: %{}, tasks: %{}, phases: %{}}
-    end)
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!()
   end
 
   defp unique_project_id(label) do

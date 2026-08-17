@@ -28,8 +28,7 @@ defmodule ForemanServerWeb.QueueControllerTest do
         Application.put_env(:foreman_server, :api_bearer_token, previous_token)
       end
     end)
-
-    :ok
+    {:ok, conn: build_conn()}
   end
 
   describe "GET /api/queue" do

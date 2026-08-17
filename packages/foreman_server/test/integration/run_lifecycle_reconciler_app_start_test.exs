@@ -6,10 +6,21 @@ defmodule ForemanServer.RunLifecycleReconcilerAppStartTest do
   Running with `--no-start` will fail because the supervised reconciler is not
   present.
   """
-
   use ExUnit.Case, async: false
 
   alias ForemanServer.RunLifecycleReconciler
+
+  setup do
+    # test.exs sets start_lifecycle_reconciler?: false, so the GenServer
+    # never starts in the app supervision tree. Start it explicitly for
+    # this app-start wiring test.
+    case Process.whereis(RunLifecycleReconciler) do
+      nil -> start_supervised!({RunLifecycleReconciler, []})
+      _ -> :ok
+    end
+
+    :ok
+  end
 
   test "RunLifecycleReconciler is running under its canonical name from application supervision" do
     pid = Process.whereis(RunLifecycleReconciler)
