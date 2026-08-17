@@ -219,6 +219,45 @@ func TestProjectUpdateEnvelope(t *testing.T) {
 	}
 }
 
+func TestProjectUpdateJSONOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted","result":{"events":1,"project_id":"project-123"}}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	stdout := captureStdout(t, func() {
+		if err := projectUpdate(c, []string{
+			"--task-provider", "beads",
+			"--format=json",
+			"project-123",
+		}); err != nil {
+			t.Fatalf("projectUpdate: %v", err)
+		}
+	})
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout is not JSON: %v: %q", err, stdout)
+	}
+
+	if got := out["status"]; got != "accepted" {
+		t.Fatalf("status = %#v, want accepted", got)
+	}
+
+	result, ok := out["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result envelope type = %T, want map[string]any", out["result"])
+	}
+
+	if got := result["project_id"]; got != "project-123" {
+		t.Fatalf("result.project_id = %#v, want project-123", got)
+	}
+}
+
 func TestProjectUpdateIdempotencyKeyDerivation(t *testing.T) {
 	var seen []byte
 

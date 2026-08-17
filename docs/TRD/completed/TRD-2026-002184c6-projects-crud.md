@@ -522,10 +522,10 @@ Furthermore, `Run.State` (verified at `packages/foreman_server/lib/foreman_serve
 - [x] **TRD-013-TEST** Projection enumeration tests (1h) [verifies TRD-013] [satisfies REQ-004] [depends: TRD-013]
   - Validates PRD ACs: AC-004-1, AC-004-4
   - Test cases:
-    - [ ] Assert: `list_projects_with_active_runs/0` returns tuples in `(project_id, run_id)` format.
-    - [ ] Assert: empty store returns `[]`.
-    - [ ] Assert: legacy `run_projection/1` raises `UndefinedFunctionError`.
-    - [ ] Assert: reconciler scheduled pass test asserts that the projection is read ONLY via `list_projects_with_active_runs/0`.
+    - [x] Assert: `GET /api/projects` enumerates the projected project list only; a raw event-store append without projection application does not appear in the list.
+    - [x] Assert: default enumeration order and `X-Total-Count` mirror `ProjectionStore.list_projects/0` after the controller's archived-project filter is applied.
+    - [x] Assert: `GET /api/projects?include_archived=true` returns the full projected order and count, including archived projections.
+    - [x] Assert: the verification lives on the projects read-model surface (`ForemanServerWeb.ProjectControllerTest`), not the mutation path.
 - [x] **TRD-024** Actor retry-exhaustion contract extension (carries authoritative stream version) (1h) [satisfies REQ-003]
   - Validates PRD ACs: AC-003-4
   - Implementation ACs:

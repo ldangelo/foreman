@@ -44,9 +44,10 @@ defmodule ForemanServer.Workflow.CodecRegistryTest do
                    end
     end
 
-    test "registers the run completion codec contract used by booted workflow services" do
+    test "registers the terminal-run codec contract used by booted workflow services" do
       assert "ProjectRunReserved" in EventCodec.registered()
       assert "ProjectRunReservationReleased" in EventCodec.registered()
+      assert "RunCancelled" in EventCodec.registered()
       assert "RunCompleted" in EventCodec.registered()
       assert "RunFailed" in EventCodec.registered()
       assert "RunBlocked" in EventCodec.registered()

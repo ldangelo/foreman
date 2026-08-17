@@ -3,7 +3,9 @@ defmodule ForemanServerWeb.ProjectControllerTest do
 
   use Phoenix.ConnTest
 
-  alias ForemanServer.ProjectStore
+  alias EventStore.EventData
+  alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.{ProjectStore, ProjectionStore}
 
   @endpoint ForemanServerWeb.Endpoint
   @token "project-controller-test-token"
@@ -209,6 +211,72 @@ defmodule ForemanServerWeb.ProjectControllerTest do
     assert Enum.map(body["projects"], & &1["project_id"]) == [archived_id]
     assert Enum.map(body["projects"], & &1["archived?"]) == [true]
   end
+  test "GET /api/projects enumerates projection-store state only for order count and archived filtering" do
+    event_only_id = unique_project_id()
+    archived_projection_id = unique_project_id()
+    visible_projection_id = unique_project_id()
+    stream_id = "project:#{event_only_id}"
+
+    on_exit(fn -> _ = Store.delete_stream(stream_id, :any_version, :hard) end)
+
+    assert :ok =
+             Store.append_to_stream(stream_id, 0, [
+               %EventData{
+                 event_type: "ProjectRegistered",
+                 data: %{
+                   project_id: event_only_id,
+                   name: "Event Only Project",
+                   path: "/tmp/#{event_only_id}",
+                   task_provider: %{provider: :beads}
+                 },
+                 metadata: %{}
+               }
+             ])
+
+    refute ProjectionStore.project_projection(event_only_id)
+
+    put_project_projections([
+      %{
+        project_id: archived_projection_id,
+        name: "Archived Projection",
+        path: "/tmp/#{archived_projection_id}",
+        archived?: true,
+        task_provider: %{provider: :beads}
+      },
+      %{
+        project_id: visible_projection_id,
+        name: "Visible Projection",
+        path: "/tmp/#{visible_projection_id}",
+        archived?: false,
+        task_provider: %{provider: :beads}
+      }
+    ])
+
+    expected_all_ids =
+      ProjectionStore.list_projects()
+      |> Enum.map(& &1.project_id)
+
+    expected_visible_ids =
+      ProjectionStore.list_projects()
+      |> Enum.reject(&(Map.get(&1, :archived?) == true))
+      |> Enum.map(& &1.project_id)
+
+    default_conn = authorized_conn() |> get("/api/projects")
+    default_body = json_response(default_conn, 200)
+
+    assert Enum.map(default_body["projects"], & &1["project_id"]) == expected_visible_ids
+    assert expected_visible_ids == [visible_projection_id]
+    assert get_resp_header(default_conn, "x-total-count") == [Integer.to_string(length(expected_visible_ids))]
+    refute event_only_id in Enum.map(default_body["projects"], & &1["project_id"])
+
+    archived_conn = authorized_conn() |> get("/api/projects?include_archived=true")
+    archived_body = json_response(archived_conn, 200)
+
+    assert Enum.map(archived_body["projects"], & &1["project_id"]) == expected_all_ids
+    assert expected_all_ids == [archived_projection_id, visible_projection_id]
+    assert get_resp_header(archived_conn, "x-total-count") == [Integer.to_string(length(expected_all_ids))]
+    refute event_only_id in Enum.map(archived_body["projects"], & &1["project_id"])
+  end
 
   test "GET /api/projects truncates at the configured hard cap and reports the full count" do
     Application.put_env(:foreman_server, :projects_list_max, 2)
@@ -405,6 +473,17 @@ defmodule ForemanServerWeb.ProjectControllerTest do
     )
 
     handler_id
+  end
+
+  defp put_project_projections(projects) when is_list(projects) do
+    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
+      projected =
+        Enum.reduce(projects, %{}, fn project, acc ->
+          Map.put(acc, project.project_id, project)
+        end)
+
+      %{state | projects: projected}
+    end)
   end
 
   defp unique_project_id do
