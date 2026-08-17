@@ -80,9 +80,9 @@ func runCancel(c *client.Client, args []string) error {
 }
 
 // runSubmit dispatches `foreman run submit --workflow <name> --prompt <text>
-// --project-id <id> [--work-id <id>] [--backend <backend>]`. Posts a JSON-RPC
-// 2.0 tools/call request to /mcp targeting foreman_work_submit.
-// Per TRD-002 AC: backend is omitted when the default "pi" is used.
+// --project-id <id> [--work-id <id>] [--backend <backend>]`. Posts a work.submit
+// command envelope to /api/commands. Backend is omitted when the default "pi"
+// is used (per TRD-002 AC). Valid workflow names are: prd, trd, fix.
 func runSubmit(c *client.Client, args []string) error {
 	fs := newFlagSet("run submit")
 	workID := fs.String("work-id", "", "Work ID (auto-generated if omitted)")
@@ -120,35 +120,18 @@ func runSubmit(c *client.Client, args []string) error {
 		wid = generateID("work")
 	}
 
-	// Build tool arguments; omit backend when it's the default "pi" per TRD-002.
-	toolArgs := map[string]any{
+	// Build payload; omit backend when it's the default "pi" per TRD-002.
+	payload := map[string]any{
 		"work_id":    wid,
 		"project_id": *projectID,
 		"workflow":   *workflow,
 		"prompt":     *prompt,
 	}
 	if *backend != "pi" {
-		toolArgs["backend"] = *backend
+		payload["backend"] = *backend
 	}
 
-	// JSON-RPC 2.0 tools/call envelope for /mcp.
-	rpcEnvelope := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      "foreman_work_submit",
-			"arguments": toolArgs,
-		},
-	}
-
-	var out map[string]any
-	err := c.PostJSON("/mcp", rpcEnvelope, &out)
-	if err != nil {
-		return err
-	}
-
-	return printJSON(out)
+	return postCommand(c, commandEnvelope{Type: "work.submit", Payload: payload})
 }
 
 // isValidWorkflow returns true for the three curated workflow names.
