@@ -60,6 +60,8 @@
 # Local env (secrets, must never be tracked)
 .env
 .env.*
+# direnv shell-env file (treat as secret-bearing even though content is non-secret today)
+.envrc
 
 # OMP plugin state (local agent config)
 .omp/
