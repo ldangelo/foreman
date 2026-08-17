@@ -169,13 +169,13 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
   describe "handle_command/2 — map-type work.submit" do
     test "emits WorkSubmitted with backend from nil state map-type" do
       cmd = %{
-        "type" => "work.submit",
-        "payload" => %{
-          "work_id" => "work-map-1",
-          "project_id" => "proj-1",
-          "prompt" => "test prompt",
-          "workflow_snapshot" => %{},
-          "backend" => "pi"
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-1",
+          project_id: "proj-1",
+          prompt: "test prompt",
+          workflow_snapshot: %{},
+          backend: "pi"
         }
       }
 
@@ -190,12 +190,12 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
       state = %State{}
 
       cmd = %{
-        "type" => "work.submit",
-        "payload" => %{
-          "work_id" => "work-map-2",
-          "project_id" => "proj-1",
-          "prompt" => "another prompt",
-          "workflow_snapshot" => %{}
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-2",
+          project_id: "proj-1",
+          prompt: "another prompt",
+          workflow_snapshot: %{}
         }
       }
 
@@ -214,12 +214,12 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
       }
 
       cmd = %{
-        "type" => "work.submit",
-        "payload" => %{
-          "work_id" => "work-map-3",
-          "project_id" => "proj-1",
-          "prompt" => "duplicate",
-          "workflow_snapshot" => %{}
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-3",
+          project_id: "proj-1",
+          prompt: "duplicate",
+          workflow_snapshot: %{}
         }
       }
 
@@ -234,12 +234,12 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
       }
 
       cmd = %{
-        "type" => "work.submit",
-        "payload" => %{
-          "work_id" => "work-map-4-different",
-          "project_id" => "proj-1",
-          "prompt" => "wrong work_id",
-          "workflow_snapshot" => %{}
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-4-different",
+          project_id: "proj-1",
+          prompt: "wrong work_id",
+          workflow_snapshot: %{}
         }
       }
 
@@ -249,7 +249,7 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
   end
 
   describe "handle_command/2 — work.execution_complete" do
-    test "transitions to terminal with matching run_id" do
+    test "transitions from running to succeeded" do
       state = %State{
         work_id: "work-1",
         status: :running,
