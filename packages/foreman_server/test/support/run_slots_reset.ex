@@ -27,6 +27,7 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
       :ok -> :ok
       {:ok, _} -> :ok
       {:error, :stream_not_found} -> :ok
+      {:error, :not_supported} -> :ok
     end
 
     case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
