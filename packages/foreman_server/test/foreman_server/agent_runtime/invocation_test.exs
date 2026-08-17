@@ -3,6 +3,7 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
 
   alias ForemanServer.AgentRuntime.InvocationSupervisor
   alias ForemanServer.AgentRuntime.BackendAdapter
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
   # Test adapters
   defmodule SuccessAdapter do
@@ -118,7 +119,7 @@ defmodule ForemanServer.AgentRuntime.InvocationTest do
   # Helper to start supervisor with unique name
   defp start_invocation_supervisor(id) do
     name = :"InvocationSupervisor.Test.#{id}"
-    start_supervised!({InvocationSupervisor, [name: name]}, id: id)
+    InvocationSupervisorHelpers.start({InvocationSupervisor, [name: name]}, id: id)
     name
   end
 

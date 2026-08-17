@@ -3,6 +3,8 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
 
   alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter, Supervisor}
 
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
+
   # Test adapters - captures prompt/context for verification
   defmodule EchoAdapter do
     @behaviour BackendAdapter
@@ -68,6 +70,8 @@ defmodule ForemanServer.AgentRuntime.TRD003Test do
       invocation_supervisor_name: invocation_name,
       adapters: []
     ]
+
+    InvocationSupervisorHelpers.schedule_erase()
 
     start_supervised!({Supervisor, sup_opts}, id: sup_id)
 

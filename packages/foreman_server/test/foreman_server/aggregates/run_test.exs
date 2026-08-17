@@ -4,6 +4,15 @@ defmodule ForemanServer.Aggregates.RunTest do
   alias ForemanServer.{Aggregate, CommandRouter, RunAdmission}
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.TestSupport.RunSlotsReset
+
+  setup do
+    # RunAdmission.start/2 (used by seed_run/2 below) consumes a slot on
+    # the shared `run_slots:global` aggregate. Without per-test reset,
+    # later replay tests queue behind earlier admissions.
+    RunSlotsReset.reset!()
+    :ok
+  end
 
   # ---------------------------------------------------------------------------
   # Existing unit tests

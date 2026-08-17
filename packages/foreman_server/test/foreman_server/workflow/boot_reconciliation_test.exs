@@ -34,6 +34,12 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
     ensure_started(ForemanServer.ProjectionStore, ForemanServer.ProjectionStore)
     ensure_started(ForemanServer.Aggregator, ForemanServer.Aggregator)
     ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
+    # start_boot_reconciliation? is false in test config; cast no-op
+    # otherwise.
+    ensure_started(
+      ForemanServer.Workflow.BootReconciliation,
+      ForemanServer.Workflow.BootReconciliation
+    )
 
     :ok
   end

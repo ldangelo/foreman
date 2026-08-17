@@ -141,20 +141,7 @@ defmodule ForemanServer.IdentityBindingTest do
   end
 
   defp reset_projection_store do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{
-        projects: %{},
-        runs: %{},
-        tasks: %{},
-        phases: %{},
-        pr_associations: %{},
-        scheduler_intents: %{},
-        worktrees: %{},
-        worktree_create_orphans: %{},
-        subscribers: Map.get(state, :subscribers, %{}),
-        project_active_runs: %{}
-      }
-    end)
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
   end
 
   defp unique_id(prefix) do

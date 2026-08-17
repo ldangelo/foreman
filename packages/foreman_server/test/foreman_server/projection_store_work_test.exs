@@ -2,40 +2,13 @@ defmodule ForemanServer.ProjectionStoreWorkTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   setup do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{
-        state
-        | projects: %{},
-          tasks: %{},
-          runs: %{},
-          phases: %{},
-          project_active_runs: %{},
-          worktrees: %{},
-          worktree_create_orphans: %{},
-          scheduler_intents: %{},
-          run_slots: %{capacity: 0, holders: %{}, waiters: []}
-      }
-      |> Map.put(:works, %{})
-    end)
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!()
 
     on_exit(fn ->
-      :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{
-          state
-          | projects: %{},
-            tasks: %{},
-            runs: %{},
-            phases: %{},
-            project_active_runs: %{},
-            worktrees: %{},
-            worktree_create_orphans: %{},
-            scheduler_intents: %{},
-            run_slots: %{capacity: 0, holders: %{}, waiters: []}
-        }
-        |> Map.put(:works, %{})
-      end)
+      ForemanServer.TestSupport.ProjectionStoreReset.reset!()
     end)
 
     :ok

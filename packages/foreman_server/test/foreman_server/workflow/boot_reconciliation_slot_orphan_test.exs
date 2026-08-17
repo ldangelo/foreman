@@ -8,6 +8,15 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
 
   @run_slots_stream "run_slots:global"
 
+  setup_all do
+    case Process.whereis(ForemanServer.Workflow.BootReconciliation) do
+      nil -> start_supervised!({ForemanServer.Workflow.BootReconciliation, []})
+      _ -> :ok
+    end
+
+    :ok
+  end
+
   setup do
     cleanup_run_slots_stream()
     cleanup_boot_reconciliation_runs()
@@ -33,11 +42,16 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
 
       assert_eventually(fn ->
         with {:ok, events} <- Store.read_stream_forward(@run_slots_stream, 0, 20),
-             %RecordedEvent{
-               event_type: "RunSlotTransferred",
-               data: %{released_run_id: ^holder_run_id, acquired_run_id: ^waiter_run_id}
-             } <- List.last(events) do
-          :ok
+             %RecordedEvent{event_type: "RunSlotTransferred", data: data}
+               when is_map(data) <- List.last(events) do
+          released = Map.get(data, "released_run_id") || Map.get(data, :released_run_id)
+          acquired = Map.get(data, "acquired_run_id") || Map.get(data, :acquired_run_id)
+
+          if released == holder_run_id and acquired == waiter_run_id do
+            :ok
+          else
+            {:still_waiting, List.last(events)}
+          end
         else
           other -> {:still_waiting, other}
         end
@@ -54,9 +68,15 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
 
       assert_eventually(fn ->
         with {:ok, events} <- Store.read_stream_forward(@run_slots_stream, 0, 20),
-             %RecordedEvent{event_type: "RunSlotReleased", data: %{run_id: ^holder_run_id}} <-
-               List.last(events) do
-          :ok
+             %RecordedEvent{event_type: "RunSlotReleased", data: data}
+               when is_map(data) <- List.last(events) do
+          run_id_str = Map.get(data, "run_id") || Map.get(data, :run_id)
+
+          if run_id_str == holder_run_id do
+            :ok
+          else
+            {:still_waiting, List.last(events)}
+          end
         else
           other -> {:still_waiting, other}
         end
@@ -84,9 +104,10 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
                Enum.any?(events, fn
                  %RecordedEvent{
                    event_type: "RunSlotWaiterRemoved",
-                   data: %{run_id: ^cancelled_waiter_run_id}
+                   data: data
                  } ->
-                   true
+                   Map.get(data, "run_id") == cancelled_waiter_run_id or
+                     Map.get(data, :run_id) == cancelled_waiter_run_id
 
                  _ ->
                    false
@@ -132,7 +153,28 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
   end
 
   defp cleanup_run_slots_stream do
-    _ = Store.delete_stream(@run_slots_stream, :any_version, :hard)
+    case Store.delete_stream(@run_slots_stream, :any_version, :hard) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, :stream_not_found} -> :ok
+    end
+
+    case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
+      [{pid, _}] when is_pid(pid) ->
+        ref = Process.monitor(pid)
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          1_000 -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+
+    Process.sleep(20)
     :ok
   end
 
@@ -150,45 +192,29 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
   end
 
   defp append_run_slot_holder!(run_id, version, capacity) do
-    acquired_at_ms = System.system_time(:millisecond)
-
-    :ok =
-      Store.append_to_stream(@run_slots_stream, version, [
-        %EventStore.EventData{
-          event_type: "RunSlotAcquired",
-          data: %{run_id: run_id, capacity: capacity, acquired_at_ms: acquired_at_ms},
-          metadata: %{}
-        }
-      ])
-
-    :ok =
-      ProjectionStore.apply_events([
-        %{
-          event_type: "RunSlotAcquired",
-          payload: %{run_id: run_id, capacity: capacity, acquired_at_ms: acquired_at_ms}
-        }
-      ])
+    ForemanServer.CommandGateway.dispatch_system(%{
+      type: "run_slots.acquire",
+      aggregate_id: @run_slots_stream,
+      command_id: "seed-holder:#{run_id}:#{version}",
+      payload: %{
+        run_id: run_id,
+        capacity: capacity,
+        acquired_at_ms: System.system_time(:millisecond)
+      }
+    })
   end
 
   defp append_run_slot_waiter!(run_id, version, position) do
-    enqueued_at_ms = System.system_time(:millisecond)
-
-    :ok =
-      Store.append_to_stream(@run_slots_stream, version, [
-        %EventStore.EventData{
-          event_type: "RunSlotQueued",
-          data: %{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms},
-          metadata: %{}
-        }
-      ])
-
-    :ok =
-      ProjectionStore.apply_events([
-        %{
-          event_type: "RunSlotQueued",
-          payload: %{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms}
-        }
-      ])
+    ForemanServer.CommandGateway.dispatch_system(%{
+      type: "run_slots.acquire",
+      aggregate_id: @run_slots_stream,
+      command_id: "seed-waiter:#{run_id}:#{version}",
+      payload: %{
+        run_id: run_id,
+        capacity: 0,
+        acquired_at_ms: System.system_time(:millisecond)
+      }
+    })
   end
 
   defp seed_live_run!(run_id) do

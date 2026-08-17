@@ -30,12 +30,14 @@ defmodule ForemanServer.Workflow.BrBvLeaseConcurrencyTest do
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: Store
-
-  @stream_prefix "beads_db_lease:"
+  alias ForemanServer.TestSupport.RunSlotsReset
 
   setup do
+    RunSlotsReset.reset!()
     :ok
   end
+
+  @stream_prefix "beads_db_lease:"
 
   test "two parallel admissions serialize through the lease with a real registered project" do
     project_id = "br-bv-conc-#{System.unique_integer([:positive])}"

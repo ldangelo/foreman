@@ -5,17 +5,7 @@ defmodule ForemanServer.CommandGatewayWorkTest do
 
   setup do
     # Reset projection store before each test
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{
-        state
-        | projects: %{},
-          runs: %{},
-          tasks: %{},
-          phases: %{},
-          worktrees: %{},
-          worktree_create_orphans: %{}
-      }
-    end)
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!()
 
     :ok
   end

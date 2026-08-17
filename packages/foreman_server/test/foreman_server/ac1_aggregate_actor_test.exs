@@ -17,7 +17,16 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
   alias ForemanServer.{Aggregate, CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
-  alias ForemanServer.TestSupport.{BlockCommand, BlockingAggregate, TestRouter}
+  alias ForemanServer.TestSupport.{BlockCommand, BlockingAggregate, RunSlotsReset, TestRouter}
+
+  setup do
+    # `RunAdmission.start/2` is the seed path for every AC1.* test. The
+    # shared `run_slots:global` aggregate would otherwise accumulate
+    # holders from prior suites or earlier examples in this file and
+    # return `:slot_queued` for fresh admissions.
+    RunSlotsReset.reset!()
+    :ok
+  end
 
   # ---------------------------------------------------------------------------
   # Helpers
@@ -353,15 +362,19 @@ defmodule ForemanServer.AC1AggregateActorTest do
 
     assert {:ok, new_pid} = await_actor_alive(agg_stream, 50)
 
-    {:ok, _} =
-      CommandRouter.dispatch(%{
-        type: "task.close",
-        payload: %{task_id: id},
-        aggregate_id: agg_stream
-      })
+    # After replay, the actor must still respond to commands. Use
+    # `task.create` again — `task.close` was pruned in TRD-049; replaying
+    # the existing TaskCreated event confirms the actor's mailbox and
+    # `handle_command` path is healthy.
+    assert {:error, {:already_exists, :task, ^id}} =
+             CommandRouter.dispatch(%{
+               type: "task.create",
+               payload: %{task_id: id, project_id: project_id},
+               aggregate_id: agg_stream
+             })
 
     state = Aggregate.Actor.get_state(new_pid)
-    assert Map.get(state, :status) == "closed"
+    assert Map.get(state, :task_id) == id
   end
 
   test "AC1.3: Run :permanent crash, immediate restart, stream replay" do

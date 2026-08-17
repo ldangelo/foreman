@@ -9,6 +9,7 @@ defmodule ForemanServer.RunAdmissionTest do
     ProjectionStore,
     RunAdmission
   }
+  alias ForemanServer.TestSupport.RunSlotsReset
 
   @poll_timeout_ms 8_000
 
@@ -16,6 +17,7 @@ defmodule ForemanServer.RunAdmissionTest do
   # Without this, the aggregate starts with initial_state capacity: nil, and
   # nil < 3 is false (not true as expected), causing premature slot queuing.
   setup do
+    RunSlotsReset.reset!()
     # Start aggregate and initialize capacity by dispatching a no-op acquire.
     # Use a unique run_id per setup invocation to avoid idempotency collisions.
     init_run_id = "test-slot-init-#{System.unique_integer([:positive])}"
@@ -92,8 +94,10 @@ defmodule ForemanServer.RunAdmissionTest do
       )
 
       try do
-        assert {:ok, _} = RunAdmission.start(project_id, payload)
-
+        result = RunAdmission.start(project_id, payload)
+        assert {:ok, _} = result
+        refute result in [{:ok, :queued}, {:ok, :slot_queued}],
+               "RunAdmission.start returned #{inspect(result)} — slot/lease phase did not proceed"
         assert_receive {
           :telemetry_event,
           [:foreman, :run_admission, :start],

@@ -15,13 +15,12 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache}
   alias ForemanServer.Workflow.RunExecutor
-
+  alias ForemanServer.TestSupport.RunSlotsReset
   @cache_name :foreman_server_json_schema_cache
   @poll_timeout_ms 8_000
 
   defmodule LifecycleStore do
     use Agent
-
     def start_link(opts \\ []) do
       Agent.start_link(fn -> %{} end, Keyword.put_new(opts, :name, __MODULE__))
     end
@@ -136,6 +135,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
   setup :verify_on_exit!
 
   setup do
+    RunSlotsReset.reset!()
     previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
 
     Application.put_env(

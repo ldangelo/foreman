@@ -13,6 +13,15 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
   alias ForemanServer.{CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch.{CrashLoopDetector, Tracker}
+  alias ForemanServer.TestSupport.RunSlotsReset
+
+  setup do
+    # start_run/1 funnels through RunAdmission.start/2 which acquires a
+    # shared slot. Resetting before each example avoids queued
+    # admissions when threshold tests exhaust the default cap of 3.
+    RunSlotsReset.reset!()
+    :ok
+  end
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 

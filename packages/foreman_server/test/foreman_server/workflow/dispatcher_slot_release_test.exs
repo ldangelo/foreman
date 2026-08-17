@@ -8,6 +8,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.BootReconciliation
   alias ForemanServer.Workflow.Dispatcher
+  alias ForemanServer.TestSupport.RunSlotsReset
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:telemetry)
@@ -45,6 +46,33 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
   end
 
   setup do
+    {:ok, _} = Application.ensure_all_started(:meck)
+    :meck.new(ForemanServer.CommandGateway, [:passthrough, :no_link])
+
+    test_pid = self()
+
+    :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command, timeout ->
+      if command.type == "run_slots.release" do
+        send(test_pid, {:dispatch_system, command, timeout})
+      end
+
+      :meck.passthrough([command, timeout])
+    end)
+
+    :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command ->
+      if command.type == "run_slots.release" do
+        send(test_pid, {:dispatch_system, command, 5_000})
+      end
+
+      :meck.passthrough([command])
+    end)
+
+    on_exit(fn ->
+      if :meck.validate(ForemanServer.CommandGateway) do
+        :meck.unload(ForemanServer.CommandGateway)
+      end
+    end)
+
     parent = self()
     boot_name = ForemanServer.Workflow.BootReconciliation
     real_pid = Process.whereis(boot_name)
@@ -52,7 +80,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
     forwarder =
       spawn(fn ->
         Process.flag(:trap_exit, true)
-        forward_loop(parent)
+        forward_loop(parent, real_pid)
       end)
 
     Process.unregister(boot_name)
@@ -163,22 +191,23 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
     {:noreply, _state} = Dispatcher.handle_info({:projection_event, envelope}, %{pending: %{}})
   end
 
-  defp forward_loop(parent) do
+  defp forward_loop(parent, real_pid) do
     receive do
       {:EXIT, _, _} ->
         :ok
 
       {:"$gen_cast", _} = msg ->
+        send(real_pid, msg)
         send(parent, msg)
-        forward_loop(parent)
+        forward_loop(parent, real_pid)
 
       {:dispatch_system, _, _} = msg ->
         send(parent, msg)
-        forward_loop(parent)
+        forward_loop(parent, real_pid)
 
       msg ->
         send(parent, msg)
-        forward_loop(parent)
+        forward_loop(parent, real_pid)
     end
   end
 

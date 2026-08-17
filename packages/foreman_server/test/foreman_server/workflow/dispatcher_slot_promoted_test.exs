@@ -75,7 +75,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
       # Override RunAdmission: assert it is called with correct payload, return slot_queued
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload, [] ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload, _timeout ->
         assert payload.run_id == run_id
         assert payload.task_id == task_id
         {:ok, :slot_queued}
@@ -133,7 +133,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
       # Admission succeeds
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
         {:ok, %{event_type: "RunStarted"}}
       end)
 
@@ -171,7 +171,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
       # Admission succeeds with nil (already started)
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
         {:ok, nil}
       end)
 
@@ -208,7 +208,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
         {:ok, :slot_queued}
       end)
 
@@ -241,7 +241,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
         {:ok, :queued}
       end)
 
@@ -303,7 +303,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, [] ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
         {:error, {:slot_acquire_failed, :unknown}}
       end)
 

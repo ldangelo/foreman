@@ -3,15 +3,17 @@ defmodule ForemanServer.ProjectionStoreTest do
 
   alias ForemanServer.ProjectionStore
 
+  alias ForemanServer.TestSupport.ProjectionStoreReset
+
   setup do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, tasks: %{}, runs: %{}, phases: %{}, project_active_runs: %{}}
-    end)
+    # Use the canonical reset helper so a partial-shape state left by a
+    # prior failing test (e.g. missing `:project_active_runs`) cannot
+    # crash this setup with a badkey.
+    ProjectionStoreReset.reset!()
 
     on_exit(fn ->
-      :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{state | projects: %{}, tasks: %{}, runs: %{}, phases: %{}, project_active_runs: %{}}
-      end)
+      ProjectionStoreReset.reset!()
+      :ok
     end)
 
     :ok

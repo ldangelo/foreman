@@ -2,29 +2,15 @@ defmodule ForemanServer.RecoveryTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.Recovery
+  alias ForemanServer.TestSupport.{ProjectionStoreReset, RunSlotsReset}
   alias ForemanServer.{CommandRouter, ProjectionStore, RunAdmission}
 
   setup do
-    :sys.replace_state(ProjectionStore, fn state ->
-      %{
-        state
-        | projects: %{},
-          runs: %{},
-          pr_associations: %{},
-          scheduler_intents: %{}
-      }
-    end)
+    RunSlotsReset.reset!()
+    ProjectionStoreReset.reset!()
 
     on_exit(fn ->
-      :sys.replace_state(ProjectionStore, fn state ->
-        %{
-          state
-          | projects: %{},
-            runs: %{},
-            pr_associations: %{},
-            scheduler_intents: %{}
-        }
-      end)
+      ProjectionStoreReset.reset!()
     end)
 
     :ok

@@ -20,6 +20,14 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
 
   alias ForemanServer.{CommandRouter, RunAdmission}
   alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.TestSupport.RunSlotsReset
+
+  setup do
+    # seed_run/1 funnels through RunAdmission.start/2 which reserves a slot
+    # on the shared `run_slots:global` aggregate. Resetting before every
+    # example avoids the AC2.4 admission queueing behind earlier examples.
+    RunSlotsReset.reset!()
+  end
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 

@@ -19,6 +19,7 @@ defmodule ForemanServer.MCPSupervisorTest do
 
   describe "ForemanServer.MCP" do
     test "has a child_spec function" do
+      Code.ensure_loaded(ForemanServer.MCP)
       assert function_exported?(ForemanServer.MCP, :child_spec, 1)
     end
 

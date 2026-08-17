@@ -2,18 +2,11 @@ defmodule ForemanServer.Workflow.ImplementationContextTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.ImplementationContext
 
   setup do
-    original_state = :sys.get_state(ProjectionStore)
-
-    ExUnit.Callbacks.on_exit(fn ->
-      :sys.replace_state(ProjectionStore, fn _ -> original_state end)
-    end)
-
-    :sys.replace_state(ProjectionStore, fn state ->
-      %{state | projects: %{}, tasks: %{}}
-    end)
+    ProjectionStoreReset.reset!()
 
     :ok
   end

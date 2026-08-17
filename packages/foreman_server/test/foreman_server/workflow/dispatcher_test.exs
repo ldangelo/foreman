@@ -243,10 +243,10 @@ defmodule ForemanServer.Workflow.DispatcherTest do
         phase_specs: phase_specs
       }
 
-      :meck.new(ForemanServer.ProjectionStore, [:no_link])
-      :meck.new(ForemanServer.RunAdmission, [:no_link])
-      :meck.new(ForemanServer.CommandRouter, [:no_link])
-      :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
+      :meck.new(ForemanServer.ProjectionStore, [:no_link, :passthrough])
+      :meck.new(ForemanServer.RunAdmission, [:no_link, :passthrough])
+      :meck.new(ForemanServer.CommandRouter, [:no_link, :passthrough])
+      :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
 
       :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
 
@@ -273,7 +273,11 @@ defmodule ForemanServer.Workflow.DispatcherTest do
                 ForemanServer.CommandRouter,
                 ForemanServer.Workflow.RunSupervisor
               ] do
-          if :meck.validate(mod), do: :meck.unload(mod)
+          try do
+            :meck.unload(mod)
+          catch
+            :exit, _ -> :ok
+          end
         end
       end)
 

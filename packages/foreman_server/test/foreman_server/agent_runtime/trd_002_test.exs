@@ -10,6 +10,8 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
     Supervisor
   }
 
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
+
   # --- Test Adapters ---
 
   defmodule OrderAdapterA do
@@ -405,6 +407,8 @@ defmodule ForemanServer.AgentRuntime.TRD002Test do
       invocation_supervisor_name: invocation_name,
       adapters: []
     ]
+
+    InvocationSupervisorHelpers.schedule_erase()
 
     start_supervised!({Supervisor, sup_opts}, id: sup_id)
 

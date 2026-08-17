@@ -75,9 +75,7 @@ defmodule ForemanServer.ProjectsPaginationTest do
   end
 
   defp reset_projection_store do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
-    end)
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!()
   end
 
   defp unique_project_id(index) do

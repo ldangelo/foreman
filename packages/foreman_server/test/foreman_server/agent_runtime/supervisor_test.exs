@@ -2,6 +2,7 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.AgentRuntime.Supervisor
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
   describe "start_link/1" do
     test "starts the supervisor with AdapterCatalog and InvocationSupervisor children" do
@@ -9,6 +10,8 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
       sup_name = :"AgentRuntime.Supervisor.Test.#{unique}"
       catalog_name = :"AdapterCatalog.Test.#{unique}"
       invocation_name = :"InvocationSupervisor.Test.#{unique}"
+
+      InvocationSupervisorHelpers.schedule_erase()
 
       pid =
         start_supervised!(
@@ -35,6 +38,8 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
       catalog_name = :"AdapterCatalog.Test.#{unique}"
       invocation_name = :"InvocationSupervisor.Test.#{unique}"
 
+      InvocationSupervisorHelpers.schedule_erase()
+
       pid =
         start_supervised!(
           {Supervisor,
@@ -56,6 +61,8 @@ defmodule ForemanServer.AgentRuntime.SupervisorTest do
       sup_name = :"AgentRuntime.Supervisor.Test.#{unique}"
       catalog_name = :"AdapterCatalog.Test.#{unique}"
       invocation_name = :"InvocationSupervisor.Test.#{unique}"
+
+      InvocationSupervisorHelpers.schedule_erase()
 
       _pid =
         start_supervised!(

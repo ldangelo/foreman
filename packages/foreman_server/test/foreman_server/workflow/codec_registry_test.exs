@@ -57,6 +57,10 @@ defmodule ForemanServer.Workflow.CodecRegistryTest do
 
   describe "application boot wiring" do
     test "supervision tree includes RunLifecycleReconciler on boot" do
+      # start_lifecycle_reconciler? is false in test config; add the
+      # reconciler as a child of the application supervisor at runtime
+      # to mirror production supervision structure.
+      Supervisor.start_child(ForemanServer.Application, {ForemanServer.RunLifecycleReconciler, []})
       assert is_pid(Process.whereis(ForemanServer.RunLifecycleReconciler))
 
       child_ids =

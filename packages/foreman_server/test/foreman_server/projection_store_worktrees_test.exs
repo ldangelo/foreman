@@ -16,18 +16,14 @@ defmodule ForemanServer.ProjectionStoreWorktreesTest do
   alias ForemanServer.ProjectionStore
 
   setup do
-    # Be defensive against any prior test file that may have rebuilt
-    # state via a helper which omits the `:worktrees` key (the
-    # runs-test helper does so). `Map.put/3` adds the key without
-    # requiring it to exist.
-    :sys.replace_state(ProjectionStore, fn state ->
-      Map.put(state, :worktrees, %{})
-    end)
+    # Be defensive against any prior test file that may have left the
+    # ProjectionStore in a partial shape (missing keys like
+    # `:project_active_runs` or `:run_slots`). The full reset helper
+    # always seeds every key the production `initial_state/0` defines.
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!()
 
     on_exit(fn ->
-      :sys.replace_state(ProjectionStore, fn state ->
-        Map.put(state, :worktrees, %{})
-      end)
+      ForemanServer.TestSupport.ProjectionStoreReset.reset!()
     end)
 
     :ok

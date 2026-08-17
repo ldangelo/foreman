@@ -141,9 +141,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
   setup :set_mox_global
   setup :verify_on_exit!
-
   setup do
     previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
+
+
+    init_run_slots_capacity()
+
 
     Application.put_env(
       :foreman_server,
@@ -1647,7 +1650,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     dispatch_system!("task.dispatch", "task:#{task_id}", %{task_id: task_id})
 
-    assert {:ok, _} =
+    assert {:ok, result} =
              RunAdmission.start(project_id, %{
                run_id: run_id,
                task_id: task_id,
@@ -1656,7 +1659,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                workflow_snapshot: workflow_snapshot,
                phase_specs: Map.get(workflow_snapshot, :phases, [])
              })
+
+    refute result in [:slot_queued, :queued, nil],
+           "RunAdmission.start returned #{inspect(result)} — seeded run did not start"
   end
+
 
   defp dispatch_system!(type, aggregate_id, payload) do
     command_id = "#{type}:#{aggregate_id}:#{System.unique_integer([:positive])}"
@@ -1668,6 +1675,33 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                type: type,
                payload: payload
              })
+  end
+
+  defp init_run_slots_capacity do
+    _ = EventStore.delete_stream("run_slots:global", :any_version, :hard)
+
+    case Registry.lookup(ForemanServer.AggregateRegistry, "run_slots:global") do
+      [{pid, _}] when is_pid(pid) -> Process.exit(pid, :kill)
+      _ -> :ok
+    end
+
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
+    Process.sleep(20)
+
+    on_exit(fn ->
+      try do
+        _ = EventStore.delete_stream("run_slots:global", :any_version, :hard)
+
+        case Registry.lookup(ForemanServer.AggregateRegistry, "run_slots:global") do
+          [{pid, _}] when is_pid(pid) -> Process.exit(pid, :kill)
+          _ -> :ok
+        end
+      rescue
+        _ -> :ok
+      end
+    end)
+
+    :ok
   end
 
   defp start_run_executor!(run_id, task_id) do

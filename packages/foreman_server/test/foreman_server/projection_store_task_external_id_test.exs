@@ -13,6 +13,7 @@ defmodule ForemanServer.ProjectionStoreTaskExternalIdTest do
   use Phoenix.ConnTest
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @endpoint ForemanServerWeb.Endpoint
   @token "projection-store-task-external-id-test-token"
@@ -21,20 +22,20 @@ defmodule ForemanServer.ProjectionStoreTaskExternalIdTest do
     previous = Application.get_env(:foreman_server, :api_bearer_token)
     Application.put_env(:foreman_server, :api_bearer_token, @token)
 
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, tasks: %{}, runs: %{}, phases: %{}, project_active_runs: %{}}
-    end)
+    # Use the canonical reset helper so a partial-shape state left by a
+    # prior failing test cannot crash this setup with a badkey.
+    ProjectionStoreReset.reset!()
 
     on_exit(fn ->
-      :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{state | projects: %{}, tasks: %{}, runs: %{}, phases: %{}, project_active_runs: %{}}
-      end)
+      ProjectionStoreReset.reset!()
 
       if previous == nil do
         Application.delete_env(:foreman_server, :api_bearer_token)
       else
         Application.put_env(:foreman_server, :api_bearer_token, previous)
       end
+
+      :ok
     end)
 
     :ok

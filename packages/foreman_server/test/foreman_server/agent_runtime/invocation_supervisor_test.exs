@@ -2,12 +2,13 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.AgentRuntime.InvocationSupervisor
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
   describe "start_invocation/4" do
     test "returns {:ok, pid, ref} on success" do
       sup_name = :"InvocationSupervisor.Test.unique"
 
-      start_supervised!({InvocationSupervisor, [name: sup_name]},
+      InvocationSupervisorHelpers.start({InvocationSupervisor, [name: sup_name]},
         id: :invocation_supervisor_start
       )
 
@@ -50,7 +51,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
         id: :invocation_registry_terminate_not_found
       )
 
-      start_supervised!({InvocationSupervisor, [name: sup_name]},
+      InvocationSupervisorHelpers.start({InvocationSupervisor, [name: sup_name]},
         id: :invocation_supervisor_terminate_not_found
       )
 
@@ -88,7 +89,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
       end
 
       sup_name = :"InvocationSupervisor.Test.terminate_ok"
-      start_supervised!({InvocationSupervisor, [name: sup_name]},
+      InvocationSupervisorHelpers.start({InvocationSupervisor, [name: sup_name]},
         id: :invocation_supervisor_terminate_ok
       )
 
@@ -125,7 +126,7 @@ defmodule ForemanServer.AgentRuntime.InvocationSupervisorTest do
     test "uses :one_for_one strategy" do
       sup_name = :"InvocationSupervisor.Test.config"
 
-      start_supervised!({InvocationSupervisor, [name: sup_name]},
+      InvocationSupervisorHelpers.start({InvocationSupervisor, [name: sup_name]},
         id: :invocation_supervisor_config
       )
 

@@ -3,6 +3,8 @@ defmodule ForemanServer.AgentRuntime.AutomaticTelemetryTest do
 
   alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter, Supervisor}
 
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
+
   # Test adapter for automatic routing
   defmodule CodeAdapter do
     @behaviour BackendAdapter
@@ -38,6 +40,8 @@ defmodule ForemanServer.AgentRuntime.AutomaticTelemetryTest do
       invocation_supervisor_name: invocation_name,
       adapters: []
     ]
+
+    InvocationSupervisorHelpers.schedule_erase()
 
     start_supervised!({Supervisor, sup_opts}, id: sup_id)
 

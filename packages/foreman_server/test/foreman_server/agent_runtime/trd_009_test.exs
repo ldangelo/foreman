@@ -31,6 +31,8 @@ defmodule ForemanServer.AgentRuntime.TRD009Test do
     Supervisor
   }
 
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
+
   # --- Adapters for the three AC paths ---
 
   defmodule SuccessAdapter do
@@ -118,6 +120,7 @@ defmodule ForemanServer.AgentRuntime.TRD009Test do
       adapters: []
     ]
 
+    InvocationSupervisorHelpers.schedule_erase()
     start_supervised!({Supervisor, sup_opts}, id: sup_id)
     {catalog_name, invocation_name}
   end

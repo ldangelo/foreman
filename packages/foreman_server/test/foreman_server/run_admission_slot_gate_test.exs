@@ -64,8 +64,14 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       assert {:ok, events} = EventStore.read_stream_forward(@run_slots_stream, 0, 50)
 
       assert Enum.any?(events, fn
-               %{event_type: "RunSlotQueued", data: %{run_id: ^queued_run_id}} -> true
-               _ -> false
+               %{event_type: "RunSlotQueued", data: data} ->
+                 run_id_str =
+                   Map.get(data, "run_id") || Map.get(data, :run_id)
+
+                 run_id_str == queued_run_id
+
+               _ ->
+                 false
              end)
     end
 
@@ -80,14 +86,23 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
         :meck.passthrough([command, timeout])
       end)
 
+      :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command ->
+        send(test_pid, {:dispatch_system, command.type, command.aggregate_id})
+        :meck.passthrough([command])
+      end)
+
       project_id = unique_id("project")
       run_id = unique_id("run")
       task_id = unique_id("task")
 
       try do
+        register_project!(project_id)
         set_global_capacity!(3)
 
-        assert {:ok, _} = RunAdmission.start(project_id, lease_payload(run_id, task_id))
+        result = RunAdmission.start(project_id, lease_payload(run_id, task_id))
+        assert {:ok, _} = result
+        refute result in [{:ok, :queued}, {:ok, :slot_queued}],
+               "RunAdmission.start returned #{inspect(result)} — slot/lease phase did not proceed"
 
         assert_receive {:dispatch_system, "run_slots.acquire", "run_slots:global"}
         assert_receive {:dispatch_system, "lease.acquire", aggregate_id}
@@ -105,6 +120,7 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       project_id = unique_id("project")
       run_ids = Enum.map(1..3, &unique_id("run-#{&1}"))
 
+      register_project!(project_id)
       set_global_capacity!(3)
 
       results =
@@ -118,7 +134,9 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       assert {:ok, events} = EventStore.read_stream_forward(@run_slots_stream, 0, 50)
 
       acquired_run_ids =
-        for %{event_type: "RunSlotAcquired", data: %{run_id: run_id}} <- events, do: run_id
+        for %{event_type: "RunSlotAcquired", data: data} <- events,
+            run_id = (Map.get(data, "run_id") || Map.get(data, :run_id)),
+            do: run_id
 
       assert acquired_run_ids == run_ids
     end
@@ -223,5 +241,19 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       nil -> Supervisor.start_child(ForemanServer.Supervisor, child_spec)
       pid -> {:ok, pid}
     end
+  end
+
+  defp register_project!(project_id) do
+    {:ok, _} =
+      ForemanServer.CommandRouter.dispatch(%{
+        aggregate_id: "project:#{project_id}",
+        command_id: "register:#{project_id}",
+        type: "project.register",
+        payload: %{
+          project_id: project_id,
+          name: "SlotGate #{project_id}",
+          path: System.tmp_dir!()
+        }
+      })
   end
 end

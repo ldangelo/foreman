@@ -3,6 +3,7 @@ defmodule ForemanServer.AgentRuntimeTRD008Test do
 
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter, InvocationSupervisor}
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
   # Test adapters that send messages to test process to verify invocation
   defmodule PrimaryFailsAdapter do
@@ -154,7 +155,7 @@ defmodule ForemanServer.AgentRuntimeTRD008Test do
   defp start_inv_sup(id) do
     unique = :erlang.unique_integer()
     name = :"InvocationSupervisor.Test.#{id}.#{unique}"
-    start_supervised!({InvocationSupervisor, [name: name]}, id: {id, unique})
+    InvocationSupervisorHelpers.start({InvocationSupervisor, [name: name]}, id: {id, unique})
     name
   end
 

@@ -1,11 +1,3 @@
-defmodule ForemanServer.TaskProviders.UnexpectedBrRunnerStub do
-  @behaviour ForemanServer.TaskProviders.BrRunner
-
-  @impl true
-  def cmd(request, project_config, opts) do
-    raise "unexpected BrRunnerMock.cmd/3 call: #{inspect({request, project_config, opts})}"
-  end
-end
 
 defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
   use ExUnit.Case, async: false

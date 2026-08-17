@@ -33,6 +33,8 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessIntegrationTest do
   alias ForemanServerWeb.MCP.Tools.Doctor
   alias Jido.Harness.{Adapter, AdapterSpec, Capabilities, Event, ProviderStatus}
 
+  alias ForemanServer.TestSupport.InvocationSupervisorHelpers
+
   # ---------------------------------------------------------------------------
   # Stub adapters
   # ---------------------------------------------------------------------------
@@ -170,6 +172,8 @@ defmodule ForemanServer.AgentRuntime.JidoHarnessIntegrationTest do
     File.chmod!(Path.join(bin_dir, "pi"), 0o755)
     File.write!(Path.join(bin_dir, "claude"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(bin_dir, "claude"), 0o755)
+
+    InvocationSupervisorHelpers.schedule_erase()
 
     start_supervised!(
       {AgentRuntimeSupervisor,

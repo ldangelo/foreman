@@ -8,6 +8,7 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock}
+  alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @cache_name :foreman_server_json_schema_cache
   @project_prefix "doctor-task-provider-"
@@ -370,17 +371,7 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
   end
 
   defp reset_projection_store_state do
-    :sys.replace_state(ProjectionStore, fn state ->
-      %{
-        state
-        | projects: %{},
-          runs: %{},
-          tasks: %{},
-          phases: %{},
-          pr_associations: %{},
-          scheduler_intents: %{}
-      }
-    end)
+    ProjectionStoreReset.reset!()
   end
 
   defp expect_schema_boot_fetches do
