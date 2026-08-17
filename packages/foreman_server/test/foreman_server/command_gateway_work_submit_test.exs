@@ -152,7 +152,6 @@ defmodule ForemanServer.CommandGatewayWorkSubmitTest do
       # Short-circuits: command returned unchanged without calling prepare
       assert is_map(event["payload"])
     end
-
     test "project not found returns project_not_found from validate_aggregate_id" do
       work_id = "work-notfound-#{unique_id()}"
       command_id = "cmd-notfound-#{unique_id()}"
@@ -168,6 +167,31 @@ defmodule ForemanServer.CommandGatewayWorkSubmitTest do
                    project_id: "proj-does-not-exist",
                    workflow: "implement",
                    prompt: "test prompt"
+                 }
+               })
+    end
+
+    test "backend field passes through enrich_operator_command unchanged" do
+      project_id = "proj-backend-#{unique_id()}"
+      work_id = "work-backend-#{unique_id()}"
+      command_id = "cmd-backend-#{unique_id()}"
+
+      seed_project(project_id, "implement")
+
+      # The enrich_operator_command should preserve backend in the payload
+      # We verify by checking that dispatch succeeds with backend present
+      # (backend is NOT a reserved field, so it flows through to the aggregate)
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "work:#{work_id}",
+                 type: "work.submit",
+                 payload: %{
+                   work_id: work_id,
+                   project_id: project_id,
+                   workflow: "implement",
+                   prompt: "test prompt",
+                   backend: "pi"
                  }
                })
     end

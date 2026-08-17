@@ -284,7 +284,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
         run_id: Aggregate.get(payload, :run_id),
         submission_id: Aggregate.get(payload, :submission_id),
         workflow_snapshot: Aggregate.get(payload, :workflow_snapshot),
-        submitted_at: System.monotonic_time(:microsecond)
+        submitted_at: System.monotonic_time(:microsecond),
+        backend: Aggregate.get(payload, :backend)
     }
   end
 
