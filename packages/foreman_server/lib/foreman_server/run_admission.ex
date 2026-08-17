@@ -301,4 +301,73 @@ defmodule ForemanServer.RunAdmission do
       :ok
     end
   end
+
+  # --------------------------------------------------------------------------------
+  # Public recovery API
+  # --------------------------------------------------------------------------------
+
+  alias ForemanServer.Aggregates.Run
+
+  @doc """
+  Reconstruct the current `Run` aggregate state by replaying the event stream
+  for `run:<run_id>`. Returns `{:ok, state, event_count}` on success or
+  `{:error, reason}` if the stream is missing or reconstruction fails.
+
+  Use this to get the authoritative run state when the projection may be stale.
+  """
+  @spec reconstruct_state(String.t()) ::
+          {:ok, Run.State.t(), non_neg_integer()} | {:error, :stream_not_found | term()}
+  def reconstruct_state(run_id) when is_binary(run_id) do
+    stream_id = "run:#{run_id}"
+
+    case Run.load(stream_id) do
+      {state, version} ->
+        {:ok, state, version}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Attempt to resume an interrupted run by re-dispatching it through the normal
+  admission path (slot → lease → dispatch).
+
+  Returns:
+  - `{:ok, :queued}` if the run is durably enqueued behind a beads DB lease holder
+  - `{:ok, :slot_queued}` if no run slots are available
+  - `{:ok, resumed}` if re-dispatch succeeded
+  - `{:error, :stream_not_found}` if the run stream doesn't exist
+  - `{:error, :not_resumable, reason}` if the run is terminal or missing required fields
+  """
+  @spec resume(String.t(), integer()) ::
+          {:ok, :queued | :slot_queued | map()} | {:error, :stream_not_found | term()}
+  def resume(run_id, timeout \\ 5_000)
+
+  def resume(run_id, timeout) when is_binary(run_id) and is_integer(timeout) do
+    with {:ok, state, _version} <- reconstruct_state(run_id) do
+      cond do
+        state.terminal? ->
+          {:error, {:not_resumable, {:run_terminal, state.status}}}
+
+        state.run_id == nil ->
+          {:error, {:not_resumable, :run_not_started}}
+
+        state.task_id == nil ->
+          {:error, {:not_resumable, :task_id_missing}}
+
+        state.project_id == nil ->
+          {:error, {:not_resumable, :project_id_missing}}
+
+        true ->
+          payload = %{
+            run_id: state.run_id,
+            task_id: state.task_id,
+            project_id: state.project_id
+          }
+
+          start(state.project_id, payload, timeout)
+      end
+    end
+  end
 end
