@@ -7,6 +7,9 @@ defmodule ForemanServerWeb.ProjectControllerTest do
 
   @endpoint ForemanServerWeb.Endpoint
   @token "project-controller-test-token"
+  defmodule WrongExpectedVersionGateway do
+    def dispatch_operator(_command), do: {:error, {:wrong_expected_version, 7}}
+  end
 
   setup do
     previous = Application.get_env(:foreman_server, :api_bearer_token)
@@ -81,6 +84,80 @@ defmodule ForemanServerWeb.ProjectControllerTest do
     conn = build_conn() |> get("/api/projects/not/a/uuid")
 
     assert conn.status == 404
+  end
+
+  test "project.register is accepted on the actual HTTP mutation surface and returns 201" do
+    project_id = unique_project_id()
+
+    conn =
+      dispatch_json_conn(:post, "/api/commands", %{
+        type: "project.register",
+        payload: %{project_id: project_id, path: "/tmp/#{project_id}"}
+      })
+
+    assert %{"status" => "accepted", "result" => %{"project_id" => ^project_id}} =
+             json_response(conn, 201)
+  end
+
+  test "project.update is allowlisted on the actual HTTP mutation surface and currently returns 201" do
+    project_id = unique_project_id()
+
+    register_conn =
+      dispatch_json_conn(:post, "/api/commands", %{
+        type: "project.register",
+        payload: %{project_id: project_id, path: "/tmp/#{project_id}"}
+      })
+
+    assert json_response(register_conn, 201)["status"] == "accepted"
+
+    update_conn =
+      dispatch_json_conn(:post, "/api/commands", %{
+        type: "project.update",
+        payload: %{project_id: project_id, path: "/tmp/#{project_id}/updated"}
+      })
+
+    assert %{"status" => "accepted", "result" => %{"project_id" => ^project_id}} =
+             json_response(update_conn, 201)
+  end
+
+  test "project mutations map wrong_expected_version to the current 409 conflict envelope" do
+    previous = Application.get_env(:foreman_server, :command_gateway_module)
+
+    Application.put_env(
+      :foreman_server,
+      :command_gateway_module,
+      WrongExpectedVersionGateway
+    )
+
+    on_exit(fn ->
+      if previous == nil do
+        Application.delete_env(:foreman_server, :command_gateway_module)
+      else
+        Application.put_env(:foreman_server, :command_gateway_module, previous)
+      end
+    end)
+
+    conn =
+      dispatch_json_conn(:post, "/api/commands", %{
+        type: "project.update",
+        payload: %{project_id: unique_project_id(), path: "/tmp/conflict"}
+      })
+
+    assert json_response(conn, 409) == %{"code" => "version_conflict", "current_version" => 7}
+  end
+
+  test "project.register surfaces aggregate validation failures as 422" do
+    conn =
+      dispatch_json_conn(:post, "/api/commands", %{
+        type: "project.register",
+        payload: %{
+          project_id: unique_project_id(),
+          path: "/tmp/project-invalid-provider",
+          task_provider: %{provider: :beads, config: %{database_path: "relative/beads.db"}}
+        }
+      })
+
+    assert json_response(conn, 422) == %{"error" => ":database_path_must_be_absolute"}
   end
 
   test "GET /api/projects excludes archived projects by default and returns 200 with an empty list when none match" do
@@ -304,6 +381,15 @@ defmodule ForemanServerWeb.ProjectControllerTest do
 
   defp authorized_conn do
     build_conn() |> put_req_header("authorization", "Bearer #{@token}")
+  end
+
+  defp dispatch_json_conn(method, path, body) do
+    method
+    |> Plug.Test.conn(path, Jason.encode!(body))
+    |> Plug.Conn.put_req_header("accept", "application/json")
+    |> Plug.Conn.put_req_header("content-type", "application/json")
+    |> Plug.Conn.put_req_header("authorization", "Bearer #{@token}")
+    |> @endpoint.call(@endpoint.init([]))
   end
 
   defp attach_telemetry(test_pid, events) do

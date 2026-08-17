@@ -4,6 +4,7 @@ defmodule ForemanServer.AdmissionFacadeEnforcementTest do
   @server_glob Path.expand("../../lib/foreman_server/**/*.ex", __DIR__)
   @web_glob Path.expand("../../lib/foreman_server_web/**/*.ex", __DIR__)
   @allowed_dispatch_run_start_callers ["run_admission.ex"]
+  @allowed_run_admission_start_callers ["run_lifecycle_reconciler.ex", "workflow/dispatcher.ex"]
 
   @moduledoc """
   Architecture enforcement for the run-admission boundary.
@@ -32,30 +33,39 @@ defmodule ForemanServer.AdmissionFacadeEnforcementTest do
            format_offenders(offenders, "forbidden direct CommandRouter.dispatch_run_start/3")
   end
 
-  test "web layer does not call RunAdmission.start/2 or /3" do
+  test "only allowlisted non-web server files call RunAdmission.start/2 or /3" do
     offenders =
-      source_files(@web_glob)
-      |> Enum.flat_map(&find_matches(&1, fn node -> call_to?(node, :RunAdmission, :start) end))
+      source_files([@server_glob, @web_glob])
+      |> Enum.flat_map(fn file ->
+        relative_path = relative_source_path(file)
+
+        if relative_path in @allowed_run_admission_start_callers do
+          []
+        else
+          find_matches(file, fn node -> call_to?(node, :RunAdmission, :start) end)
+        end
+      end)
 
     assert offenders == [],
-           format_offenders(offenders, "forbidden web-layer RunAdmission.start/2 call")
+           format_offenders(offenders, "forbidden RunAdmission.start/2 call outside allowlist")
   end
 
-  test "workflow dispatcher enters run admission through RunAdmission.start/2" do
-    dispatcher = Path.expand("../../lib/foreman_server/workflow/dispatcher.ex", __DIR__)
+  test "allowlists internal server seams for RunAdmission.start/2 or /3" do
+    hits_by_file =
+      Enum.map(@allowed_run_admission_start_callers, fn relative_path ->
+        file = Path.expand("../../lib/foreman_server/#{relative_path}", __DIR__)
 
-    run_admission_hits =
-      find_matches(dispatcher, fn node ->
-        call_to?(node, :RunAdmission, :start)
+        hits =
+          find_matches(file, fn node ->
+            call_to?(node, :RunAdmission, :start)
+          end)
+
+        {relative_path, hits}
       end)
 
-    direct_dispatch_hits =
-      find_matches(dispatcher, fn node ->
-        call_to?(node, :CommandRouter, :dispatch_run_start)
-      end)
-
-    assert run_admission_hits != []
-    assert direct_dispatch_hits == []
+    assert Enum.all?(hits_by_file, fn {relative_path, hits} ->
+             relative_path in @allowed_run_admission_start_callers and hits != []
+           end)
   end
 
   test "allowlists RunAdmission as the single dispatch_run_start seam" do
@@ -131,6 +141,12 @@ defmodule ForemanServer.AdmissionFacadeEnforcementTest do
     end
   end
 
+  defp source_files(globs) when is_list(globs) do
+    globs
+    |> Enum.flat_map(&Path.wildcard/1)
+    |> Enum.uniq()
+  end
+
   defp source_files(glob) do
     Path.wildcard(glob)
   end
@@ -174,6 +190,11 @@ defmodule ForemanServer.AdmissionFacadeEnforcementTest do
       {_, meta, _} when is_list(meta) -> meta[:line] || 0
       _ -> 0
     end
+  end
+
+  defp relative_source_path(file) do
+    file
+    |> Path.relative_to(Path.expand("../../lib/foreman_server", __DIR__))
   end
 
   defp format_offenders(offenders, prefix) do

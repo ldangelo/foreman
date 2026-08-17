@@ -2,6 +2,7 @@ defmodule ForemanServerWeb.EventStoreWebEnforcementTest do
   use ExUnit.Case, async: true
 
   @controllers_glob Path.expand("../../lib/foreman_server_web/controllers/*.ex", __DIR__)
+  @web_glob Path.expand("../../lib/foreman_server_web/**/*.ex", __DIR__)
 
   @moduledoc """
   Architecture enforcement for the Phoenix web layer.
@@ -9,7 +10,8 @@ defmodule ForemanServerWeb.EventStoreWebEnforcementTest do
   Controller modules may read projections and may send operator commands through
   `ForemanServer.CommandGateway.dispatch_operator/2`, but they must not reach
   into EventStore, CommandRouter append internals, or server-only recovery
-  modules.
+  modules. The broader web layer must not invoke
+  `RunLifecycleReconciler.retry_run_start/2`.
   """
 
   test "controller files do not bypass the web-layer CQRS boundary" do
@@ -39,6 +41,16 @@ defmodule ForemanServerWeb.EventStoreWebEnforcementTest do
       reference_sites(fn node ->
         module_reference_to?(node, :RunLifecycleReconciler)
       end)
+
+    assert offenders == [], format_offenders(offenders)
+  end
+
+  test "web layer does not call RunLifecycleReconciler.retry_run_start/2" do
+    offenders =
+      web_files()
+      |> Enum.flat_map(&find_matches(&1, fn node ->
+        call_to?(node, :RunLifecycleReconciler, :retry_run_start)
+      end))
 
     assert offenders == [], format_offenders(offenders)
   end
@@ -105,6 +117,29 @@ defmodule ForemanServerWeb.EventStoreWebEnforcementTest do
       assert hits != []
     end
 
+    test "detects forbidden RunLifecycleReconciler.retry_run_start/2 call" do
+      source = """
+      defmodule Foo do
+        alias ForemanServer.RunLifecycleReconciler
+
+        def go(run_id, payload) do
+          RunLifecycleReconciler.retry_run_start(run_id, payload)
+        end
+      end
+      """
+
+      {_ast, hits} =
+        Code.string_to_quoted!(source, lines: true, columns: true)
+        |> Macro.prewalk(
+          [],
+          &collect_matches(&1, &2, fn node ->
+            call_to?(node, :RunLifecycleReconciler, :retry_run_start)
+          end)
+        )
+
+      assert hits != []
+    end
+
     test "sees the allowed CommandGateway.dispatch_operator/2 path" do
       source = """
       defmodule Foo do
@@ -131,6 +166,10 @@ defmodule ForemanServerWeb.EventStoreWebEnforcementTest do
 
   defp controller_files do
     Path.wildcard(@controllers_glob)
+  end
+
+  defp web_files do
+    Path.wildcard(@web_glob)
   end
 
   defp forbidden_call_sites(file) do

@@ -181,8 +181,31 @@ defmodule ForemanServer.RunAdmissionTest do
     end
 
     test "does not expose CommandRouter.do_dispatch/2 externally" do
-      assert_raise UndefinedFunctionError, fn ->
-        apply(CommandRouter, :do_dispatch, ["cmd-1", %{payload: %{}, timeout: 5_000}])
+      assert Code.ensure_loaded?(CommandRouter)
+      refute function_exported?(CommandRouter, :do_dispatch, 2)
+
+      probe_module =
+        Module.concat(__MODULE__, :"ExternalDoDispatchProbe#{System.unique_integer([:positive])}")
+
+      previous_ignore_module_conflict = Code.compiler_options()[:ignore_module_conflict]
+
+      try do
+        Code.compiler_options(ignore_module_conflict: true)
+
+        {_definition_result, _binding} =
+          Code.eval_string("""
+          defmodule #{inspect(probe_module)} do
+            def call(command, timeout) do
+              ForemanServer.CommandRouter.do_dispatch(command, timeout)
+            end
+          end
+          """)
+
+        assert_raise UndefinedFunctionError, fn ->
+          probe_module.call(%{aggregate_id: "project:test"}, 0)
+        end
+      after
+        Code.compiler_options(ignore_module_conflict: previous_ignore_module_conflict)
       end
     end
   end

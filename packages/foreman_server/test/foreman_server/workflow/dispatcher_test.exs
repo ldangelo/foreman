@@ -224,6 +224,81 @@ defmodule ForemanServer.Workflow.DispatcherTest do
     end
   end
 
+  describe "TaskDispatched enters the run-start path through RunAdmission" do
+    test "calls RunAdmission.start/2 and not CommandRouter.dispatch_run_start/3 directly" do
+      parent = self()
+      task_id = "task-dispatch-#{System.unique_integer([:positive])}"
+      run_id = "run-dispatch-#{System.unique_integer([:positive])}"
+      project_id = "project-dispatch-#{System.unique_integer([:positive])}"
+      approval_id = "approval-dispatch-#{System.unique_integer([:positive])}"
+      workflow_snapshot = %{phases: [%{id: "phase-1", kind: "exec"}]}
+      phase_specs = [%{id: "phase-1", kind: "exec"}]
+
+      task_proj = %{
+        task_id: task_id,
+        run_id: run_id,
+        project_id: project_id,
+        approval_id: approval_id,
+        workflow_snapshot: workflow_snapshot,
+        phase_specs: phase_specs
+      }
+
+      :meck.new(ForemanServer.ProjectionStore, [:no_link])
+      :meck.new(ForemanServer.RunAdmission, [:no_link])
+      :meck.new(ForemanServer.CommandRouter, [:no_link])
+      :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
+
+      :meck.expect(ForemanServer.ProjectionStore, :task_projection, fn ^task_id -> task_proj end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload ->
+        send(parent, {:run_admission_start, payload})
+        {:ok, :queued}
+      end)
+
+      :meck.expect(ForemanServer.CommandRouter, :dispatch_run_start, fn _, _, _ ->
+        send(parent, :dispatch_run_start_called)
+        {:error, :should_not_be_called}
+      end)
+
+      :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _, _ ->
+        send(parent, :start_run_called)
+        {:ok, :started}
+      end)
+
+      on_exit(fn ->
+        for mod <-
+              [
+                ForemanServer.ProjectionStore,
+                ForemanServer.RunAdmission,
+                ForemanServer.CommandRouter,
+                ForemanServer.Workflow.RunSupervisor
+              ] do
+          if :meck.validate(mod), do: :meck.unload(mod)
+        end
+      end)
+
+      send_envelope(%{event_type: "TaskDispatched", data: %{task_id: task_id}})
+
+      assert_receive {:run_admission_start, payload}, 500
+
+      assert payload == %{
+               run_id: run_id,
+               task_id: task_id,
+               project_id: project_id,
+               approval_id: approval_id,
+               workflow_snapshot: workflow_snapshot,
+               phase_specs: phase_specs
+             }
+
+      assert :meck.called(ForemanServer.RunAdmission, :start, :_)
+      refute :meck.called(ForemanServer.CommandRouter, :dispatch_run_start, :_)
+      refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
+      refute_receive :dispatch_run_start_called, 0
+      refute_receive :start_run_called, 0
+    end
+  end
+
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------

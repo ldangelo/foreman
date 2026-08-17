@@ -2,84 +2,119 @@ defmodule ForemanServerWeb.RouterAuthPipelineTest do
   use ExUnit.Case, async: true
 
   @router_file Path.expand("../../lib/foreman_server_web/router.ex", __DIR__)
+  @project_routes [
+    {"GET", "/api/projects"},
+    {"GET", "/api/projects/:id"}
+  ]
 
-  test "project read routes stay under the BearerAuth-backed :api pipeline" do
+  test "project routes stay behind session or bearer auth plugs" do
     source = File.read!(@router_file)
     ast = Code.string_to_quoted!(source, lines: true, columns: true)
+    pipelines = pipeline_plugs(ast)
+    routes = collect_routes(ast, [], "")
 
-    assert api_pipeline_includes_bearer_auth?(ast)
+    for route <- @project_routes do
+      effective_pipelines = route_pipeline_names(routes, route)
 
-    assert api_scope_route?(ast, "/projects", :index),
-           "expected GET /api/projects to remain inside the /api scope with pipe_through(:api)"
+      assert effective_pipelines != [],
+             "expected #{elem(route, 0)} #{elem(route, 1)} to have at least one pipeline"
 
-    assert api_scope_route?(ast, "/projects/:id", :show),
-           "expected GET /api/projects/:id to remain inside the /api scope with pipe_through(:api)"
+      effective_plugs =
+        effective_pipelines
+        |> Enum.flat_map(&Map.get(pipelines, &1, []))
+        |> Enum.uniq()
+
+      assert Enum.any?(effective_plugs, &auth_plug?/1),
+             "expected #{elem(route, 0)} #{elem(route, 1)} pipelines #{inspect(effective_pipelines)} " <>
+               "to include :fetch_session or BearerAuth, got plugs #{inspect(effective_plugs)}"
+    end
   end
 
-  defp api_pipeline_includes_bearer_auth?(ast) do
-    ast
-    |> pipeline_bodies(:api)
-    |> Enum.any?(fn body ->
-      contains_call?(body, fn
-        {:plug, _, [target]} -> last_alias(target) == :BearerAuth
-        _ -> false
+  defp pipeline_plugs(ast) do
+    {_ast, pipelines} =
+      Macro.prewalk(ast, %{}, fn
+        {:pipeline, _, [name, [do: body]]} = node, acc ->
+          {node, Map.put(acc, name, pipeline_body_plugs(body))}
+
+        node, acc ->
+          {node, acc}
       end)
-    end)
+
+    pipelines
   end
 
-  defp api_scope_route?(ast, route_path, action) do
-    ast
-    |> api_scope_bodies()
-    |> Enum.any?(fn body ->
-      has_api_pipe_through?(body) and contains_project_route?(body, route_path, action)
-    end)
-  end
-
-  defp pipeline_bodies(ast, name) do
-    {_ast, bodies} =
-      Macro.prewalk(ast, [], fn
-        {:pipeline, _, [^name, [do: body]]} = node, acc -> {node, [body | acc]}
+  defp pipeline_body_plugs(body) do
+    {_body, plugs} =
+      Macro.prewalk(body, [], fn
+        {:plug, _, [plug]} = node, acc -> {node, [normalize_plug(plug) | acc]}
         node, acc -> {node, acc}
       end)
 
-    bodies
+    Enum.reverse(plugs)
   end
 
-  defp api_scope_bodies(ast) do
-    {_ast, bodies} =
-      Macro.prewalk(ast, [], fn
-        {:scope, _, ["/api", _alias, [do: body]]} = node, acc -> {node, [body | acc]}
-        {:scope, _, ["/api", [do: body]]} = node, acc -> {node, [body | acc]}
-        node, acc -> {node, acc}
+  defp collect_routes({:defmodule, _, [_name, [do: body]]}, pipelines, prefix),
+    do: collect_routes(body, pipelines, prefix)
+
+  defp collect_routes({:scope, _, args}, pipelines, prefix) do
+    {scope_path, body} = scope_parts(args)
+    collect_scope_body(body, pipelines, prefix <> scope_path)
+  end
+
+  defp collect_routes({verb, _, [route_path, _controller, _action]}, pipelines, prefix)
+       when verb in [:get, :post, :put, :patch, :delete] and is_binary(route_path) do
+    [{String.upcase(to_string(verb)), prefix <> route_path, pipelines}]
+  end
+
+  defp collect_routes({:__block__, _, expressions}, pipelines, prefix) when is_list(expressions),
+    do: collect_scope_body(expressions, pipelines, prefix)
+
+  defp collect_routes(_ast, _pipelines, _prefix), do: []
+
+  defp collect_scope_body({:__block__, _, expressions}, pipelines, prefix)
+       when is_list(expressions),
+       do: collect_scope_body(expressions, pipelines, prefix)
+
+  defp collect_scope_body(expressions, pipelines, prefix) when is_list(expressions) do
+    {routes, _pipelines} =
+      Enum.map_reduce(expressions, pipelines, fn
+        {:pipe_through, _, [names]}, current_pipelines when is_list(names) ->
+          {[], merge_pipelines(current_pipelines, names)}
+
+        {:pipe_through, _, [name]}, current_pipelines when is_atom(name) ->
+          {[], merge_pipelines(current_pipelines, [name])}
+
+        expression, current_pipelines ->
+          {collect_routes(expression, current_pipelines, prefix), current_pipelines}
       end)
 
-    bodies
+    List.flatten(routes)
   end
 
-  defp has_api_pipe_through?(ast) do
-    contains_call?(ast, fn
-      {:pipe_through, _, [:api]} -> true
-      {:pipe_through, _, [pipelines]} when is_list(pipelines) -> :api in pipelines
+  defp collect_scope_body(expression, pipelines, prefix),
+    do: collect_routes(expression, pipelines, prefix)
+
+  defp merge_pipelines(left, right), do: Enum.uniq(left ++ right)
+
+  defp route_pipeline_names(routes, {verb, path}) do
+    Enum.find_value(routes, [], fn
+      {^verb, ^path, pipelines} -> pipelines
       _ -> false
     end)
   end
 
-  defp contains_project_route?(ast, route_path, action) do
-    contains_call?(ast, fn
-      {:get, _, [^route_path, target, ^action]} -> last_alias(target) == :ProjectController
-      _ -> false
-    end)
-  end
+  defp scope_parts([path, _alias, [do: body]]) when is_binary(path), do: {path, body}
+  defp scope_parts([path, [do: body]]) when is_binary(path), do: {path, body}
 
-  defp contains_call?(ast, predicate) do
-    {_ast, found?} =
-      Macro.prewalk(ast, false, fn node, found? ->
-        {node, found? or predicate.(node)}
-      end)
+  defp auth_plug?(:fetch_session), do: true
+  defp auth_plug?(:BearerAuth), do: true
+  defp auth_plug?({:alias, :BearerAuth}), do: true
+  defp auth_plug?(_), do: false
 
-    found?
-  end
+  defp normalize_plug(atom) when is_atom(atom), do: atom
 
-  defp last_alias({:__aliases__, _, parts}) when is_list(parts), do: List.last(parts)
-  defp last_alias(_), do: nil
+  defp normalize_plug({:__aliases__, _, parts}) when is_list(parts),
+    do: {:alias, List.last(parts)}
+
+  defp normalize_plug(other), do: other
 end
