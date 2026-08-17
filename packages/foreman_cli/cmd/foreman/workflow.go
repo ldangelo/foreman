@@ -18,10 +18,12 @@ func runWorkflow(c *client.Client, args []string) error {
 	switch args[0] {
 	case "install":
 		return workflowInstall(c, args[1:])
+	case "remove":
+		return workflowRemove(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman workflow: unknown subcommand %q", args[0]),
-			"Usage:\n  foreman workflow install [flags]",
+			"Usage:\n  foreman workflow [install|remove] [flags]",
 		)
 	}
 }
@@ -76,6 +78,35 @@ func workflowInstall(c *client.Client, args []string) error {
 
 	var out map[string]any
 	if err := c.PostJSON("/api/admin/workflows/install", opts, &out); err != nil {
+		return err
+	}
+	return printJSON(out)
+}
+
+// workflowRemove calls POST /api/admin/workflows/remove with {"remove_all": true}
+// after interactive confirmation from the operator.
+func workflowRemove(c *client.Client, args []string) error {
+	fs := newFlagSet("workflow remove")
+	removeAll := fs.Bool("all", false, "Confirm removal of all legacy workflows")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if !*removeAll {
+		return usageError(fs, "foreman workflow remove: --all flag is required")
+	}
+
+	fmt.Print("Remove legacy workflows (discover, assess, implement, verify, release)? [y/N] ")
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	opts := map[string]any{"remove_all": true}
+	var out map[string]any
+	if err := c.PostJSON("/api/admin/workflows/remove", opts, &out); err != nil {
 		return err
 	}
 

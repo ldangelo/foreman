@@ -31,6 +31,7 @@ defmodule ForemanServerWeb.Router do
 
     scope "/admin" do
       post("/workflows/install", WorkflowInstallController, :install)
+      post("/workflows/remove", WorkflowInstallController, :remove)
     end
   end
 

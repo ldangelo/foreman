@@ -20,9 +20,8 @@ defmodule ForemanServer.Workflow.AutoPR do
 
   require Logger
 
-  # ~w sigil produces ["pr", "create", "--no-editor"] — tl() drops "pr",
-  # leaving ["create", "--no-editor"] for System.cmd("gh", ["create", ...])
-  @gh_args ~w[pr create --no-editor]
+  # gh subcommand args — System.cmd("gh", cmd, opts) prepends "gh" automatically.
+  @gh_args ~w[pr create]
   @branch_regex ~r/FOREMAN_BRANCH=(\S+)/
   @sha_regex ~r/FOREMAN_SHA=(\S+)/
   @complete_regex ~r/FOREMAN_COMPLETE=true/
