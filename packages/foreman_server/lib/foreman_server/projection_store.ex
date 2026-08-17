@@ -1368,7 +1368,8 @@ defmodule ForemanServer.ProjectionStore do
         work_id: work_id,
         project_id: project_id,
         run_id: run_id,
-        submission_id: submission_id
+        submission_id: submission_id,
+        backend: backend
       } = event
       when not is_nil(work_id) and work_id != "" ->
         work = %{
@@ -1377,7 +1378,8 @@ defmodule ForemanServer.ProjectionStore do
           project_id: project_id,
           run_id: run_id,
           submission_id: submission_id,
-          queue_position: nil
+          queue_position: nil,
+          backend: backend
         }
 
         Map.update!(state, :works, &Map.put(&1, work_id, work))

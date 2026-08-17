@@ -95,7 +95,8 @@ defmodule ForemanServer.MCP.Tools do
         work_id: %{type: "string", description: "The work ID"},
         project_id: %{type: "string", description: "The project ID"},
         workflow: %{type: "string", description: "The workflow name"},
-        prompt: %{type: "string", description: "The input prompt"}
+        prompt: %{type: "string", description: "The input prompt"},
+        backend: %{type: "string", description: "The backend to use (e.g. pi). Defaults to pi if not specified."}
       },
       required: ["work_id", "project_id", "workflow", "prompt"]
     }
@@ -384,22 +385,25 @@ defmodule ForemanServer.MCP.Tools do
         project_id: project_id,
         workflow: workflow,
         prompt: prompt
-      }) do
+      } = args) do
+    backend = Map.get(args, :backend) || Map.get(args, "backend")
     start_us = System.monotonic_time(:microsecond)
     command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
+
+    payload = %{
+      work_id: work_id,
+      project_id: project_id,
+      workflow: workflow,
+      prompt: prompt
+    }
 
     envelope = %{
       type: "work.submit",
       command_id: command_id,
       aggregate_id: "work:#{work_id}",
-      payload: %{
-        work_id: work_id,
-        project_id: project_id,
-        workflow: workflow,
-        prompt: prompt
-      }
+      payload:
+        if(backend, do: Map.put(payload, :backend, backend), else: payload)
     }
-
     case CommandGateway.dispatch_operator(envelope) do
       {:ok, result} ->
         duration_us = System.monotonic_time(:microsecond) - start_us

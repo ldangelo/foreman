@@ -6,7 +6,8 @@ defmodule ForemanServer.Events.WorkSubmitted do
           project_id: String.t(),
           run_id: String.t(),
           submission_id: String.t(),
-          workflow_snapshot: map()
+          workflow_snapshot: map(),
+          backend: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -14,6 +15,7 @@ defmodule ForemanServer.Events.WorkSubmitted do
     :project_id,
     :run_id,
     :submission_id,
-    :workflow_snapshot
+    :workflow_snapshot,
+    :backend
   ]
 end
