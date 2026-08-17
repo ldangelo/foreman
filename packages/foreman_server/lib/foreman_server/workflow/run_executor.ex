@@ -33,10 +33,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+  alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Worktree, as: WorktreeLifecycle
   alias ForemanServer.RunExecutorLiveness
-
   require Logger
 
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
@@ -606,6 +606,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     case maybe_complete_task(state) do
       :ok ->
+        # Run auto-PR only after the task provider has confirmed completion.
+        # gh must run from the worktree/repo root so it resolves the correct remote.
+        artifact_path = completion_artifact_path(state)
+        cwd = working_directory(state.task)
+        base_branch = plan_base_branch(state)
+
+        Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
+
+        case AutoPR.maybe_create_pr(state.run_id, artifact_path, base_branch, cwd) do
+          :noop ->
+            Logger.info("RunExecutor #{state.run_id} finalize_run: no auto-pr marker found")
+
+          {:ok, pr_url} ->
+            Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
+
+          {:error, reason} ->
+            Logger.warning(
+              "RunExecutor #{state.run_id} finalize_run: auto-pr failed: #{inspect(reason)}"
+            )
+        end
+
         Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
 
         case dispatch_run_complete(state) do
@@ -628,6 +649,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         err
     end
+  end
+  # Derive the PR base branch from plan_context["base_branch"], falling back to "main".
+  defp plan_base_branch(state) do
+    branch = Map.get(state.plan_context || %{}, "base_branch")
+    if is_binary(branch) and branch != "", do: branch, else: "main"
   end
 
   defp build_request(state, phase_spec, index, worktree_record) do
