@@ -71,12 +71,10 @@ defmodule ForemanServer.Application do
           # so orphan-task scans during normal operation mirror the boot path.
           ForemanServer.Workflow.Dispatcher,
           # CommandRouter handles all append requests.
-          ForemanServer.CommandRouter,
-          # RunLifecycleReconciler releases terminal reservations quickly and
-          # retries orphaned reservations on the scheduled pass.
-          ForemanServer.RunLifecycleReconciler
-        ] ++
-        maybe_agent_runtime_child() ++
+          ForemanServer.CommandRouter
+        ]
+        ++ maybe_lifecycle_reconciler_child()
+        ++ maybe_agent_runtime_child() ++
         maybe_mcp_child() ++
         maybe_overwatch_child() ++
         maybe_stuck_detector_child() ++
@@ -219,7 +217,16 @@ defmodule ForemanServer.Application do
     [{ForemanServer.StuckDetector, [interval_ms: seconds * 1000]}]
   end
 
-  @impl true
+  # Gated on :start_lifecycle_reconciler? config so the test suite
+  # can opt out of it (avoids cross-test state pollution on the
+  # shared `run_slots:global` aggregate).
+  def maybe_lifecycle_reconciler_child do
+    if Application.get_env(:foreman_server, :start_lifecycle_reconciler?, true) do
+      [ForemanServer.RunLifecycleReconciler]
+    else
+      []
+    end
+  end
   def config_change(changed, _new, removed) do
     ForemanServerWeb.Endpoint.config_change(changed, removed)
     :ok

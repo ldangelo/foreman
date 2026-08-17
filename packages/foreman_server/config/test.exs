@@ -27,6 +27,7 @@ config :foreman_server, :start_project_provider_projector?, false
 config :foreman_server, :start_json_schema_cache?, false
 
 config :foreman_server, :start_beads_watcher?, false
+config :foreman_server, :start_lifecycle_reconciler?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
 config :phoenix, Phoenix.Diagnostics, enabled: false
 

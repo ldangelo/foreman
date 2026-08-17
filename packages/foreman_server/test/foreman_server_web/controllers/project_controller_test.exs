@@ -17,14 +17,10 @@ defmodule ForemanServerWeb.ProjectControllerTest do
     previous = Application.get_env(:foreman_server, :api_bearer_token)
     Application.put_env(:foreman_server, :api_bearer_token, @token)
 
-    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-      %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
-    end)
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!()
 
     on_exit(fn ->
-      :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
-        %{state | projects: %{}, runs: %{}, project_active_runs: %{}}
-      end)
+      ForemanServer.TestSupport.ProjectionStoreReset.reset!()
 
       if previous == nil do
         Application.delete_env(:foreman_server, :api_bearer_token)
