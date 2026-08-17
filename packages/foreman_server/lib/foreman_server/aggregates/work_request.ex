@@ -162,6 +162,44 @@ defmodule ForemanServer.Aggregates.WorkRequest do
     do: {:error, {:run_id_mismatch, bound, run_id}}
 
   @impl true
+  def apply_event(%State{} = state, %ForemanServer.Events.WorkSubmitted{} = event) do
+    %State{
+      state
+      | work_id: event.work_id,
+        status: :submitted,
+        project_id: event.project_id,
+        run_id: event.run_id,
+        submission_id: event.submission_id,
+        workflow_snapshot: event.workflow_snapshot,
+        submitted_at: System.monotonic_time(:microsecond)
+    }
+  end
+
+  def apply_event(%State{} = state, %ForemanServer.Events.WorkCancelled{} = _event) do
+    duration_us =
+      if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+
+    run_id = state.run_id || ""
+    Telemetry.work_terminal(state.work_id, run_id, :cancelled, duration_us)
+    %State{state | status: :cancelled}
+  end
+
+  def apply_event(%State{} = state, %ForemanServer.Events.WorkExecutionCompleted{} = event) do
+    duration_us =
+      if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+
+    Telemetry.work_terminal(event.work_id, event.run_id, :succeeded, duration_us)
+    %State{state | status: :succeeded}
+  end
+
+  def apply_event(%State{} = state, %ForemanServer.Events.WorkExecutionFailed{} = event) do
+    duration_us =
+      if state.submitted_at, do: System.monotonic_time(:microsecond) - state.submitted_at, else: 0
+
+    Telemetry.work_terminal(event.work_id, event.run_id, :failed, duration_us)
+    %State{state | status: :failed}
+  end
+
   def apply_event(%State{} = state, event) do
     payload = Aggregate.event_payload(event)
     type = Aggregate.event_type(event)

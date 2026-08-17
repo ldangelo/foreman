@@ -416,6 +416,11 @@ defmodule ForemanServer.ProjectionStore do
     {:reply, Map.values(state.works), state}
   end
 
+  @impl true
+  def handle_call(:list_scheduler_intents, _from, state) do
+    {:reply, Map.values(state.scheduler_intents), state}
+  end
+
   def handle_call({:queue_position, work_id}, _from, state) do
     reply =
       case Map.get(state.works, work_id) do

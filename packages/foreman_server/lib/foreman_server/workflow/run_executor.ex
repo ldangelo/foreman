@@ -664,9 +664,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp render_prompt_template(content, state, phase_spec, index, context) do
     assigns = prompt_template_assigns(state, phase_spec, index, context)
 
-    content
-    |> render_sections(assigns)
-    |> Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, fn _match, key ->
+    result =
+      content
+      |> render_sections(assigns)
+
+    Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, result, fn _match, key ->
       Map.get(assigns, key, "{{#{key}}}")
     end)
   end

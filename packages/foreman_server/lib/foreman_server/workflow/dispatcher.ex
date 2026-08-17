@@ -393,7 +393,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
           phase_specs: phase_specs
         }
 
-        case RunAdmission.start(project_id, payload, []) do
+        case RunAdmission.start(project_id, payload) do
           {:ok, :slot_queued} ->
             {:noreply, state}
 
@@ -485,7 +485,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
       proj ->
         run_payload = RunPayload.from_work_projection(proj)
 
-        case RunAdmission.start(proj.project_id, Map.from_struct(run_payload), []) do
+        case RunAdmission.start(proj.project_id, Map.from_struct(run_payload)) do
           {:ok, :slot_queued} ->
             {:noreply, state}
 

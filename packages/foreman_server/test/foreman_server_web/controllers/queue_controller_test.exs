@@ -31,11 +31,14 @@ defmodule ForemanServerWeb.QueueControllerTest do
     expected = %{capacity: 3, running: ["run-1"], waiting: ["run-2", "run-3"]}
 
     :sys.replace_state(ProjectionStore, fn state ->
-      Map.merge(state, %{
-        run_slots_capacity: expected.capacity,
-        run_slots_allocations: MapSet.new(expected.running),
-        run_slots_waiting: :queue.from_list(expected.waiting)
-      })
+      %{
+        state
+        | run_slots: %{
+            capacity: expected.capacity,
+            holders: Map.new(expected.running, &{&1, %{}}),
+            waiters: Enum.map(expected.waiting, &%{run_id: &1})
+          }
+      }
     end)
 
     conn =
