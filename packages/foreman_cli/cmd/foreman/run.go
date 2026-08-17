@@ -15,6 +15,8 @@ func generateID(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
 }
 
+var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
+
 func runRun(c *client.Client, args []string) error {
 	if len(args) == 0 {
 		return usageTextError(
@@ -57,7 +59,6 @@ func runGet(c *client.Client, args []string) error {
 	return printJSON(out)
 }
 
-// runCancel dispatches `foreman run cancel --id <run-id> [--reason <reason>]`.
 func runCancel(c *client.Client, args []string) error {
 	fs := newFlagSet("run cancel")
 	runID := fs.String("id", "", "Run ID (required)")
@@ -78,16 +79,13 @@ func runCancel(c *client.Client, args []string) error {
 	return postCommand(c, commandEnvelope{Type: "run.cancel", Payload: payload})
 }
 
-// runSubmit dispatches `foreman run submit --workflow <name> --prompt <text>
-// --project-id <id> [--work-id <id>] [--backend <backend>]`. Posts a work.submit
-// command envelope to /api/commands via postCommand.
 func runSubmit(c *client.Client, args []string) error {
 	fs := newFlagSet("run submit")
 	workID := fs.String("work-id", "", "Work ID (auto-generated if omitted)")
 	projectID := fs.String("project-id", "", "Project ID (required)")
 	workflow := fs.String("workflow", "", "Workflow name (required)")
 	prompt := fs.String("prompt", "", "Input prompt (required)")
-	backend := fs.String("backend", "pi", "Backend to use (default: pi)")
+	backend := fs.String("backend", "pi", "Backend to use (pi, claude, codex, opencode; default: pi)")
 
 	if err := fs.parse(args); err != nil {
 		return err
@@ -101,6 +99,11 @@ func runSubmit(c *client.Client, args []string) error {
 	}
 	if *prompt == "" {
 		return usageError(fs, "foreman run submit: --prompt is required")
+	}
+	if !validBackends[*backend] {
+		return usageError(fs,
+			"foreman run submit: --backend must be one of: pi, claude, codex, opencode (got %s)",
+			*backend)
 	}
 
 	wid := *workID
