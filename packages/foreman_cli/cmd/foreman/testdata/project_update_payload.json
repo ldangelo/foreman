@@ -1,0 +1,10 @@
+{
+  "type": "project.update",
+  "command_id": "23ce8e539eb875ade437b7304b8e8feebc1dd80525fa4b7fe538ce0fdb94b1c2",
+  "payload": {
+    "project_id": "project-123",
+    "task_provider": {
+      "provider": "beads"
+    }
+  }
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -216,6 +217,49 @@ func TestProjectUpdateEnvelope(t *testing.T) {
 
 	if !strings.Contains(stdout, "project-123") || !strings.Contains(stdout, "beads") {
 		t.Fatalf("stdout = %q, want human-readable summary with id and provider", stdout)
+	}
+}
+
+func TestProjectUpdatePayloadFixture(t *testing.T) {
+	var seen []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		seen = append([]byte(nil), body...)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted","result":{"events":1}}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, Token: "test-token", HTTP: srv.Client()}
+
+	if err := projectUpdate(c, []string{"--task-provider", "beads", "project-123"}); err != nil {
+		t.Fatalf("projectUpdate: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(seen, &got); err != nil {
+		t.Fatalf("decode captured body: %v: %s", err, seen)
+	}
+
+	wantPath := filepath.Join("testdata", "project_update_payload.json")
+	wantBytes, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", wantPath, err)
+	}
+
+	var want map[string]any
+	if err := json.Unmarshal(wantBytes, &want); err != nil {
+		t.Fatalf("decode fixture %s: %v", wantPath, err)
+	}
+
+	if !equalJSON(want, got) {
+		t.Fatalf("captured payload mismatch\nwant: %s\ngot:  %s", wantBytes, seen)
 	}
 }
 
@@ -959,6 +1003,20 @@ func captureOutput(t *testing.T, fn func()) (string, string) {
 	}
 
 	return string(stdout), string(stderr)
+}
+
+func equalJSON(a, b map[string]any) bool {
+	left, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+
+	right, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+
+	return string(left) == string(right)
 }
 
 func sha256HexTest(input string) string {
