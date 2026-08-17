@@ -96,7 +96,12 @@ defmodule ForemanServer.MCP.Tools do
         project_id: %{type: "string", description: "The project ID"},
         workflow: %{type: "string", description: "The workflow name"},
         prompt: %{type: "string", description: "The input prompt"},
-        backend: %{type: "string", description: "The backend to use (e.g. pi). Defaults to pi if not specified."}
+        backend: %{
+          type: "string",
+          enum: ["pi", "claude", "codex", "opencode"],
+          default: "pi",
+          description: "The backend to use. Defaults to pi."
+        }
       },
       required: ["work_id", "project_id", "workflow", "prompt"]
     }
@@ -371,14 +376,13 @@ defmodule ForemanServer.MCP.Tools do
       {:error, :invalid_params} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
         Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
-
         {:error,
          %{
            code: "INVALID_PARAMS",
            message: "Expected manifest as a YAML string or map"
          }}
+      end
     end
-  end
 
   def call_tool("foreman_work_submit", %{
         work_id: work_id,
@@ -386,7 +390,7 @@ defmodule ForemanServer.MCP.Tools do
         workflow: workflow,
         prompt: prompt
       } = args) do
-    backend = Map.get(args, :backend) || Map.get(args, "backend")
+    backend = Map.get(args, :backend) || Map.get(args, "backend") || "pi"
     start_us = System.monotonic_time(:microsecond)
     command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
 
@@ -401,8 +405,7 @@ defmodule ForemanServer.MCP.Tools do
       type: "work.submit",
       command_id: command_id,
       aggregate_id: "work:#{work_id}",
-      payload:
-        if(backend, do: Map.put(payload, :backend, backend), else: payload)
+      payload: Map.put(payload, :backend, backend)
     }
     case CommandGateway.dispatch_operator(envelope) do
       {:ok, result} ->
