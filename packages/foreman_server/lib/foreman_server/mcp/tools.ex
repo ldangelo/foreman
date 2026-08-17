@@ -7,9 +7,17 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Interpreter
   alias ForemanServer.MCP.Policy
+  alias ForemanServer.AgentRuntime.Router
   alias ForemanServer.Workflow.ManifestWriter
   alias ForemanServerWeb.MCP.Tools.Doctor, as: MCPDoctor
 
+  # String → atom map for backend names accepted by Router.manual/1.
+  @backend_atoms %{
+    "pi" => :pi,
+    "claude" => :claude,
+    "codex" => :codex,
+    "opencode" => :opencode
+  }
 
   @schema_foreman_work_get %{
     name: "foreman_work_get",
@@ -382,7 +390,7 @@ defmodule ForemanServer.MCP.Tools do
            message: "Expected manifest as a YAML string or map"
          }}
       end
-    end
+  end
 
   def call_tool("foreman_work_submit", %{
         work_id: work_id,
@@ -391,35 +399,67 @@ defmodule ForemanServer.MCP.Tools do
         prompt: prompt
       } = args) do
     backend = Map.get(args, :backend) || Map.get(args, "backend") || "pi"
-    start_us = System.monotonic_time(:microsecond)
-    command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
 
-    payload = %{
-      work_id: work_id,
-      project_id: project_id,
-      workflow: workflow,
-      prompt: prompt
-    }
+    with :ok <- check_backend(backend) do
+      start_us = System.monotonic_time(:microsecond)
+      command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
 
-    envelope = %{
-      type: "work.submit",
-      command_id: command_id,
-      aggregate_id: "work:#{work_id}",
-      payload: Map.put(payload, :backend, backend)
-    }
-    case CommandGateway.dispatch_operator(envelope) do
-      {:ok, result} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_work_submit", :ok)
-        {:ok, result}
+      payload = %{
+        work_id: work_id,
+        project_id: project_id,
+        workflow: workflow,
+        prompt: prompt
+      }
 
+      envelope = %{
+        type: "work.submit",
+        command_id: command_id,
+        aggregate_id: "work:#{work_id}",
+        payload: Map.put(payload, :backend, backend)
+      }
+
+      case CommandGateway.dispatch_operator(envelope) do
+        {:ok, result} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_work_submit", :ok)
+          {:ok, result}
+
+        {:error, reason} ->
+          duration_us = System.monotonic_time(:microsecond) - start_us
+          Telemetry.mcp_tool_call(duration_us, "foreman_work_submit", :error)
+          {:error, %{code: "DOMAIN_ERROR", message: inspect(reason)}}
+      end
+    else
       {:error, reason} ->
-        duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_work_submit", :error)
-        {:error, %{code: "DOMAIN_ERROR", message: inspect(reason)}}
+        {:error, %{code: "INVALID_BACKEND", message: reason}}
     end
   end
 
+  # Returns :ok, or {:error, message_string} describing why the backend is rejected.
+  defp check_backend(backend) when is_binary(backend) do
+    case Map.fetch(@backend_atoms, backend) do
+      {:ok, backend_atom} ->
+        case Router.manual(backend_atom) do
+          {:ok, _adapter} -> :ok
+          {:error, :backend_not_found}    -> {:error, "backend \"#{backend}\" is not registered."}
+          {:error, :backend_unavailable}  -> {:error, "backend \"#{backend}\" is registered but currently unavailable."}
+          {:error, :no_available_backend} -> {:error, "no backends are currently available."}
+        end
+      :error ->
+        hint =
+          if backend in ~w[claude codex opencode] do
+            case backend do
+              "claude" -> "Install: npm install -g @anthropic/claude-code"
+              "codex" -> "Install: see https://github.com/openai/codex"
+              "opencode" -> "Install: see the opencode documentation"
+            end
+          else
+            "Ensure the backend binary is on your PATH"
+          end
+
+        {:error, "unknown backend \"#{backend}\". Must be one of: claude, codex, opencode, pi. " <> hint}
+    end
+  end
   def call_tool("foreman_work_cancel", %{work_id: work_id}) do
     start_us = System.monotonic_time(:microsecond)
     command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"

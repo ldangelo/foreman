@@ -55,7 +55,7 @@ defmodule ForemanServer.RunAdmission do
   the router's idempotency path.
   """
   require Logger
-
+  alias ForemanServer.EventStore
   alias ForemanServer.{Aggregate.Actor, CommandGateway, CommandRouter, Telemetry}
   alias ForemanServer.RunSlots.Config
 
@@ -320,12 +320,19 @@ defmodule ForemanServer.RunAdmission do
   def reconstruct_state(run_id) when is_binary(run_id) do
     stream_id = "run:#{run_id}"
 
-    case Run.load(stream_id) do
-      {state, version} ->
-        {:ok, state, version}
+    # Check stream existence by reading the first event; missing stream → :stream_not_found.
+    case EventStore.read_stream_forward(stream_id, 0, 1) do
+      {:ok, _events} ->
+        case Run.load(stream_id) do
+          {state, version} ->
+            {:ok, state, version}
 
-      {:error, reason} ->
-        {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, :stream_not_found} ->
+        {:error, :stream_not_found}
     end
   end
 
