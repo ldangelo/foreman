@@ -18,6 +18,15 @@ defmodule ForemanServer.MixProject do
 
   defp deps do
     [
+      # Ecto + Postgres for the Jido checkpoint store Repo
+      # (TRD-2026-4212be7e, JCR-T004). Both are also pulled in
+      # transitively via eventstore and jido_ecto; we declare them
+      # explicitly here so the supervision tree doesn't have to
+      # rely on transitive resolution.
+      {:ecto, "~> 3.13"},
+      {:ecto_sql, "~> 3.13"},
+      {:postgrex, "~> 0.19"},
+
       # EventStore persistence
       {:eventstore, "~> 1.3"},
 

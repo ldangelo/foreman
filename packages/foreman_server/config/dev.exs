@@ -43,3 +43,13 @@ config :foreman_server, :agent_runtime,
     "implement-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000},
     "implement-trd-beads" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000}
   }
+
+# Jido checkpoint store (TRD-2026-4212be7e, JCR-T004) — opt-in. Set
+# enabled: true and the Repo url via env to bring up the Ecto.Repo
+# under supervision. The wrapper module is safe to load even when
+# disabled (calls return {:error, :repo_not_configured}).
+config :foreman_server, :jido_ecto, enabled: false
+config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
+  url:
+    System.get_env("JIDO_CHECKPOINT_DATABASE_URL",
+      "postgres://postgres:postgres@localhost:55432/foreman_dev")

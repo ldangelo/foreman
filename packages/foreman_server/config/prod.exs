@@ -68,3 +68,13 @@ config :foreman_server, :prod_secret_provider,
       required: false
     ]
   ]
+
+# Jido checkpoint store (TRD-2026-4212be7e, JCR-T004) — off in prod
+# by default. Operators enable via
+#   JIDO_CHECKPOINT_DATABASE_URL=postgres://... \
+#   FOREMAN_JIDO_ECTO_ENABLED=true \
+#   elixir --no-halt -S mix run --no-compile
+# (or by setting config :foreman_server, :jido_ecto, enabled: true).
+config :foreman_server, :jido_ecto, enabled: false
+config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
+  url: System.get_env("JIDO_CHECKPOINT_DATABASE_URL", "")
