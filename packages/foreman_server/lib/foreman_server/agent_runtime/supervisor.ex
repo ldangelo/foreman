@@ -14,7 +14,7 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
 
   use Supervisor
 
-  alias ForemanServer.AgentRuntime.{AdapterCatalog, InvocationSupervisor}
+  alias ForemanServer.AgentRuntime.{AdapterCatalog, InvocationSupervisor, JidoSupervisor}
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do
@@ -25,7 +25,10 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
   @impl true
   def init(opts) do
     catalog_name = Keyword.get(opts, :adapter_catalog_name, AdapterCatalog)
+
+    catalog_name = Keyword.get(opts, :adapter_catalog_name, AdapterCatalog)
     invocation_name = Keyword.get(opts, :invocation_supervisor_name, InvocationSupervisor)
+    jido_sup_name = Keyword.get(opts, :jido_supervisor_name, JidoSupervisor)
 
     # Get adapters from config or opts
     adapters =
@@ -37,7 +40,8 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
 
     children = [
       {AdapterCatalog, [name: catalog_name, adapters: adapters]},
-      {InvocationSupervisor, [name: invocation_name]}
+      {InvocationSupervisor, [name: invocation_name]},
+      {JidoSupervisor, [name: jido_sup_name]}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
