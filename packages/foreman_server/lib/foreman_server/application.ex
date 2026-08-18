@@ -32,7 +32,23 @@ defmodule ForemanServer.Application do
         # Inbox.Poller consumes InboxItemStarted/Deduped events emitted by SharedInbox.
         ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
-        ForemanServer.Aggregator
+        ForemanServer.Aggregator,
+        # Foreman Actions Registry — the tool-catalog layer that
+        # RunExecutor, the agent runtime toolset sync, and the prompt
+        # template loader all consult to find available Jido.Actions.
+        # Started here (in the unconditional block, alongside the
+        # Aggregator) so the catalog is ready when the first
+        # RunExecutor looks up its agent's tools. The default action
+        # set is the single GitStatusAction; operators add more via
+        # config :foreman_server, ForemanServer.Actions.Registry, :actions.
+        {ForemanServer.Actions.Registry,
+          [
+            name: :foreman_actions_registry,
+            actions:
+              :foreman_server
+              |> Application.get_env(ForemanServer.Actions.Registry, [])
+              |> Keyword.get(:actions, [ForemanServer.Actions.GitStatusAction])
+          ]}
       ] ++
         maybe_json_schema_cache_child() ++
         [
@@ -79,7 +95,6 @@ defmodule ForemanServer.Application do
         ++ maybe_lifecycle_reconciler_child()
         ++ maybe_agent_runtime_child()
         ++ maybe_jido_checkpoint_repo_child()
-        ++ maybe_mcp_child()
         ++ maybe_overwatch_child()
         ++ maybe_stuck_detector_child()
         ++
@@ -222,7 +237,6 @@ defmodule ForemanServer.Application do
         []
     end
   end
-
   defp maybe_project_provider_projector_child do
     if Application.get_env(:foreman_server, :start_project_provider_projector?, true) do
       [
