@@ -98,7 +98,9 @@ defmodule ForemanServer.Application do
         ++ maybe_jido_checkpoint_repo_child()
         ++ maybe_jido_signal_bus_child()
         ++ maybe_signal_to_command_child()
+        ++ maybe_task_metadata_query_subscriber_child()
         ++ maybe_overwatch_child()
+        ++ maybe_stuck_detector_child()
         ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -223,6 +225,36 @@ defmodule ForemanServer.Application do
       [{ForemanServer.Agents.SignalToCommandAdapter, [name: adapter_name, bus: :foreman_jido_signal_bus]}]
     else
       []
+    end
+  end
+  # The task-metadata query subscriber consumes the
+  # `com.foreman.query.task_metadata.*` topic pattern (JSI-T012).
+  # The subscriber auto-subscribes its pid to that topic on
+  # :foreman_jido_signal_bus at init, so this child is gated on
+  # the bus being up. We gate on the same always-on flag as the
+  # bus itself (agent_runtime, :enabled), not on :signal_bridge_enabled
+  # (the command-adapter flag) — the subscriber only needs the bus,
+  # not the SignalToCommandAdapter. Operators who want neither the
+  # command bridge nor the query subscriber can leave
+  # agent_runtime, :enabled off and the bus (and the subscriber)
+  # won't be started.
+  def maybe_task_metadata_query_subscriber_child do
+    # Gate on :agent_runtime, :enabled (the always-on Jido signal bus)
+    # rather than :signal_bridge_enabled (the command-adapter flag).
+    # The subscriber only needs the bus to be up; it does not depend
+    # on the SignalToCommandAdapter. Operators who only want the
+    # directive publisher (JSI-T011) — without the command bridge or
+    # the query subscriber — can set agent_runtime, :enabled: false
+    # to suppress the entire Jido AgentRuntime tree.
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [
+          {ForemanServer.Agents.TaskMetadataQuerySubscriber,
+           [name: :foreman_task_metadata_query_subscriber, bus: :foreman_jido_signal_bus]}
+        ]
+
+      _ ->
+        []
     end
   end
 

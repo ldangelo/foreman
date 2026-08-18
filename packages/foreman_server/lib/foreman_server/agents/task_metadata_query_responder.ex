@@ -130,4 +130,44 @@ defmodule ForemanServer.Agents.TaskMetadataQueryResponder do
   def lookup(provider, task_id) when is_function(provider, 1) and is_binary(task_id) do
     provider.(task_id)
   end
+  @doc """
+  Handle an incoming query signal end-to-end: extract task_id, look
+  up the task via the supplied provider, build a response signal,
+  and publish it back to the agent on the directive bus.
+
+  ## Arguments
+
+    - `query_signal` — the %Jido.Signal{} struct published by the agent
+      on the `com.foreman.query.task_metadata.<project>` topic. Must
+      have `:task_id`, `:agent_id`, and `:query_id` in `data`.
+    - `bus` — the bus to publish the response on. Pass a registered
+      name, a pid, or `:default` (resolves to `:foreman_jido_signal_bus`).
+    - `provider` — a 1-arity function `(task_id) -> {:ok, task} | {:error, reason}`.
+      In production this is a closure over `ForemanServer.TaskProvider.get/2`.
+
+  ## Returns
+
+  `{:ok, {:response, recorded_signal}}` on successful publish,
+  `{:error, reason}` if the query data is missing required fields
+  or the publish fails. The provider's `{:error, reason}` is
+  propagated as a response with `data.error` set to `reason`.
+  """
+  @spec respond(struct(), GenServer.server() | :default, (String.t() -> {:ok, term()} | {:error, term()})) ::
+          {:ok, {:response, Jido.Signal.Bus.RecordedSignal.t()}} | {:error, term()}
+  def respond(query_signal, bus, provider)
+      when is_struct(query_signal, Jido.Signal) and is_function(provider, 1) do
+    with {:ok, task_id} <- Map.fetch(query_signal.data, :task_id),
+         {:ok, agent_id} <- Map.fetch(query_signal.data, :agent_id),
+         {:ok, query_id} <- Map.fetch(query_signal.data, :query_id) do
+      result = provider.(task_id)
+      response_signal = build_response(agent_id, query_id, result)
+      ForemanServer.Agents.SignalDirectivePublisher.publish(bus, agent_id, response_signal.data)
+      |> case do
+        {:ok, [recorded]} -> {:ok, {:response, recorded}}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :error -> {:error, :malformed_query}
+    end
+  end
 end
