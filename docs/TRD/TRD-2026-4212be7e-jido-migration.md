@@ -448,4 +448,3 @@ All `Status` cells are `[ ]`.
 
 1. Review and approve this TRD
 2. Refine as needed
-3. Run `foreman sling trd docs/TRD/TRD-2026-4212be7e-jido-migration.md` to create native Foreman tasks
