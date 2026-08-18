@@ -132,9 +132,10 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
 
   @impl true
   def init(opts) do
+    bus = Keyword.get(opts, :bus, :default)
     case attach(self()) do
       :ok ->
-        {:ok, %{attached: true}}
+        {:ok, %{bus: bus}}
 
       {:error, _} = err ->
         Logger.warning(
@@ -146,8 +147,8 @@ defmodule ForemanServer.Agents.OperatorDirectiveProjector do
   end
 
   @impl true
-  def handle_info({:inbox_item_started, _handler, %InboxItemStarted{} = event}, state) do
-    publish(event)
+  def handle_info({:inbox_item_started, _handler, %InboxItemStarted{} = event}, %{bus: bus} = state) do
+    publish(event, bus)
     {:noreply, state}
   end
 
