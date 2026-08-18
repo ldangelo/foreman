@@ -55,7 +55,7 @@ defmodule ForemanServer.RunAdmission do
   the router's idempotency path.
   """
   require Logger
-
+  alias ForemanServer.EventStore
   alias ForemanServer.{Aggregate.Actor, CommandGateway, CommandRouter, Telemetry}
   alias ForemanServer.RunSlots.Config
 
@@ -301,4 +301,39 @@ defmodule ForemanServer.RunAdmission do
       :ok
     end
   end
+
+  # --------------------------------------------------------------------------------
+  # Public recovery API
+  # --------------------------------------------------------------------------------
+
+  alias ForemanServer.Aggregates.Run
+
+  @doc """
+  Reconstruct the current `Run` aggregate state by replaying the event stream
+  for `run:<run_id>`. Returns `{:ok, state, event_count}` on success or
+  `{:error, reason}` if the stream is missing or reconstruction fails.
+
+  Use this to get the authoritative run state when the projection may be stale.
+  """
+  @spec reconstruct_state(String.t()) ::
+          {:ok, Run.State.t(), non_neg_integer()} | {:error, :stream_not_found | term()}
+  def reconstruct_state(run_id) when is_binary(run_id) do
+    stream_id = "run:#{run_id}"
+
+    # Check stream existence by reading the first event; missing stream → :stream_not_found.
+    case EventStore.read_stream_forward(stream_id, 0, 1) do
+      {:ok, _events} ->
+        case Run.load(stream_id) do
+          {state, version} ->
+            {:ok, state, version}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, :stream_not_found} ->
+        {:error, :stream_not_found}
+    end
+  end
+
 end

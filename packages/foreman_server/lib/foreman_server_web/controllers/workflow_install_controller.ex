@@ -34,6 +34,29 @@ defmodule ForemanServerWeb.WorkflowInstallController do
     end
   end
 
+  # POST /api/admin/workflows/remove  {"remove_all": true}
+  # The CLI is responsible for interactive confirmation before calling this endpoint.
+  def remove(conn, %{"remove_all" => true}) do
+    opts = build_opts(conn.body_params)
+
+    case Installer.remove_all(opts) do
+      {:ok, removed_paths} ->
+        conn
+        |> json(%{status: "removed", paths: removed_paths})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
+    end
+  end
+
+  def remove(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "remove_all field is required"})
+  end
+
   defp build_opts(params) when is_map(params) do
     []
     |> put_opt(params, :target_dir)

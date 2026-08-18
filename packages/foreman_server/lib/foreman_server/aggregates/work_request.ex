@@ -41,7 +41,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
       :bound_run_id,
       :submission_id,
       :workflow_snapshot,
-      :submitted_at
+      :submitted_at,
+      :backend
     ]
   end
 
@@ -75,22 +76,34 @@ defmodule ForemanServer.Aggregates.WorkRequest do
          project_id: cmd.project_id,
          workflow_snapshot: cmd.workflow_snapshot,
          submission_id: submission_id,
-         run_id: run_id
+         run_id: run_id,
+         backend: cmd.backend
        }}
     end
   end
 
-  # Map-type commands — only for State structs (not plain maps)
+  # Map-type work.submit — delegates to handle_submit_payload for both nil and State.
+  def handle_command(nil, %{type: "work.submit", payload: payload})
+      when is_map(payload) do
+    handle_submit_payload(payload)
+  end
   def handle_command(state, %{type: type, payload: payload})
       when is_struct(state, State) do
-    case type do
-      "work.execution_complete" ->
+    case {type, state.status} do
+      {"work.submit", nil} ->
+        handle_submit_payload(payload)
+
+      {"work.submit", :submitted} ->
+        work_id = Map.get(payload, "work_id") || Map.get(payload, :work_id)
+        if state.work_id == work_id, do: {:ok, nil}, else: {:error, {:already_submitted, state.work_id}}
+
+      {"work.execution_complete", _} ->
         handle_execution_complete(state, payload)
 
-      "work.execution_fail" ->
+      {"work.execution_fail", _} ->
         handle_execution_fail(state, payload)
 
-      "work.cancel" ->
+      {"work.cancel", _} ->
         handle_cancel(state, payload)
 
       _ ->
@@ -104,6 +117,44 @@ defmodule ForemanServer.Aggregates.WorkRequest do
   # ---------------------------------------------------------------------------
   # Private: command handlers
   # ---------------------------------------------------------------------------
+
+  # Shared payload→WorkSubmitted logic for both nil and State map-type work.submit.
+  defp handle_submit_payload(payload) do
+    with {:ok, _} <- validate_prompt(Map.get(payload, "prompt") || Map.get(payload, :prompt)) do
+      submission_id =
+        Map.get(payload, "submission_id") || Map.get(payload, :submission_id) ||
+          EventStore.UUID.uuid4()
+
+      work_id = Map.get(payload, "work_id") || Map.get(payload, :work_id)
+      run_id =
+        Map.get(payload, "run_id") || Map.get(payload, :run_id) ||
+          Identity.run_id(work_id, submission_id)
+
+      project_id = Map.get(payload, "project_id") || Map.get(payload, :project_id)
+      workflow_snapshot = Map.get(payload, "workflow_snapshot") || Map.get(payload, :workflow_snapshot)
+      backend = Map.get(payload, "backend") || Map.get(payload, :backend)
+
+      workflow =
+        Map.get(workflow_snapshot, "workflow") ||
+          Map.get(workflow_snapshot, :workflow, "")
+
+      prompt_bytes =
+        (Map.get(payload, "prompt") || Map.get(payload, :prompt))
+        |> byte_size()
+
+      Telemetry.work_submitted(work_id, run_id, workflow, project_id, prompt_bytes)
+
+      {:ok,
+       %WorkSubmitted{
+         work_id: work_id,
+         project_id: project_id,
+         workflow_snapshot: workflow_snapshot,
+         submission_id: submission_id,
+         run_id: run_id,
+         backend: backend
+       }}
+    end
+  end
 
   defp handle_execution_complete(state, payload) do
     with {:ok, run_id} <-
@@ -171,7 +222,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
         run_id: event.run_id,
         submission_id: event.submission_id,
         workflow_snapshot: event.workflow_snapshot,
-        submitted_at: System.monotonic_time(:microsecond)
+        submitted_at: System.monotonic_time(:microsecond),
+        backend: event.backend
     }
   end
 
@@ -232,7 +284,8 @@ defmodule ForemanServer.Aggregates.WorkRequest do
         run_id: Aggregate.get(payload, :run_id),
         submission_id: Aggregate.get(payload, :submission_id),
         workflow_snapshot: Aggregate.get(payload, :workflow_snapshot),
-        submitted_at: System.monotonic_time(:microsecond)
+        submitted_at: System.monotonic_time(:microsecond),
+        backend: Aggregate.get(payload, :backend)
     }
   end
 
