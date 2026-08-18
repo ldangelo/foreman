@@ -322,7 +322,7 @@ All `Status` cells are `[ ]`.
 ---
 ### PR 5: Hardening, Benchmark, and Legacy Cleanup
 
-**Shippable State:** Jido upstream releases are evaluated immediately and adopted only if tests pass; hot-loadable workflow templates are verified by characterization tests; action development meets ≥85% coverage and p95 latency targets; legacy code lives on a dedicated archived branch
+**Shippable State:** Workflows load without restart; representative action development is ≤4h; agent→agent and operator→inbox p95 latency is <1s; sandbox and isolation tests pass; legacy code is archived then removed after feature parity
 
 #### Story 5.1: Jido Repository Mirroring
 
