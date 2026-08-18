@@ -364,6 +364,7 @@ All `Status` cells are `[ ]`.
 #### Story 5.7: Legacy Backend Removal
 
 | id | task | Est. | Deps | Status |
+|----|------|------|------|--------|
 | LGC-T008 | Scan codebase for pre-migration agent/orchestration code (grep for pi-sdk-runner patterns, tool factory remnants) | 4h | CTH-T001 | [ ] |
 | LGC-T009 | Archive removed code to dedicated archived branch (not deleted, not git-tag-only) | 3h | LGC-T008 | [ ] |
 | LGC-T010 | Run create/implement/fix workflows end-to-end; verify observable equivalence (PR created, task status updated, operator notified) without pre-migration code | 4h | LGC-T009 | [ ] |
