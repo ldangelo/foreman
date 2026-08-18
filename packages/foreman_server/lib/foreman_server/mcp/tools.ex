@@ -456,7 +456,14 @@ defmodule ForemanServer.MCP.Tools do
       :error ->
         hint =
           case backend do
-            "claude" -> "Install: npm install -g @anthropic/claude-code"
+            "claude" ->
+              # Delegate to the runtime source of truth so MCP and
+              # `foreman server doctor` can never disagree on the
+              # install instruction.
+              ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck.install_hint(
+                :claude
+              )
+
             _ -> "Ensure the backend binary is on your PATH"
           end
 
