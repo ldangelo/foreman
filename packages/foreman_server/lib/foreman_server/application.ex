@@ -39,15 +39,16 @@ defmodule ForemanServer.Application do
         # Started here (in the unconditional block, alongside the
         # Aggregator) so the catalog is ready when the first
         # RunExecutor looks up its agent's tools. The default action
-        # set is the single GitStatusAction; operators add more via
-        # config :foreman_server, ForemanServer.Actions.Registry, :actions.
+        # set is [GitStatusAction, ReadPromptAction]; operators add
+        # more via config :foreman_server, ForemanServer.Actions.
+        # Registry, :actions.
         {ForemanServer.Actions.Registry,
           [
             name: :foreman_actions_registry,
             actions:
               :foreman_server
               |> Application.get_env(ForemanServer.Actions.Registry, [])
-              |> Keyword.get(:actions, [ForemanServer.Actions.GitStatusAction])
+              |> Keyword.get(:actions, [ForemanServer.Actions.GitStatusAction, ForemanServer.Actions.ReadPromptAction])
           ]}
       ] ++
         maybe_json_schema_cache_child() ++
