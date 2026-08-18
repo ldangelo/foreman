@@ -4,44 +4,49 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   CloudEvent into the Foreman inbox pipeline (TRD-2026-4212be7e,
   JSI-T007 — paired with JSI-T006's subscriber).
 
-  ## Current state
+  The dispatcher:
+  1. Receives a Jido.Signal from `OperatorQuestionSubscriber.handle_info/2`.
+  2. Calls `ForemanServer.Inbox.SharedInbox.ingest/2` with
+     `OperatorQuestionSource` as the source module and the
+     signal's `data` map as the payload.
+  3. Returns the standard `SharedInbox.ingest/2` result:
+     `{:ok, :started, _} | {:ok, :deduped, _} | {:error, reason}`.
 
-  JSI-T006 ships the bus subscriber (`OperatorQuestionSubscriber`)
-  that this module is invoked from. JSI-T007's full inbox-API
-  conversion lands in the next session; for now the dispatcher is
-  a no-op that returns `:ok` so the bus delivery path is observable
-  end-to-end without booting the inbox pipeline.
+  The `OperatorQuestionSource.correlation_id/1` function extracts
+  the dedupe key (operator's `question_id`, falling back to
+  `agent_id`). `SharedInbox.ingest/2` calls this to dedupe across
+  retries.
 
-  The signature is stable: `dispatch/1` is the single entry point
-  JSI-T006 calls for every incoming signal. When JSI-T007 lands,
-  the body of `dispatch/1` will translate the signal's data into
-  the Foreman inbox shape (`ForemanServer.Inbox.SharedInbox.ingest/1`)
-  and trigger the projector's downstream.
-
-  See also: `ForemanServer.Agents.JidoSignalTopics.foreman_operator/0`
-  (topic name source of truth), `OperatorQuestionSubscriber`
-  (JSI-T006 bus consumer).
+  See also:
+  - `ForemanServer.Agents.OperatorQuestionSubscriber` (JSI-T006 bus
+    consumer)
+  - `ForemanServer.Agents.OperatorQuestionSource` (correlation_id
+    source module)
+  - `ForemanServer.Agents.JidoSignalTopics.foreman_operator/0`
+    (topic name source of truth)
+  - `ForemanServer.Inbox.SharedInbox.ingest/2` (the downstream)
   """
 
-  require Logger
+  alias ForemanServer.Agents.OperatorQuestionSource
+  alias ForemanServer.Inbox.SharedInbox
 
   @doc """
-  Dispatch a single `com.foreman.operator.*` CloudEvent.
+  Dispatch a single `com.foreman.operator.*` CloudEvent to the
+  Foreman inbox pipeline via `SharedInbox.ingest/2`.
 
-  JSI-T007 will fill in the inbox-API conversion. For now this
-  is a no-op that logs the signal type and returns `:ok`.
+  Returns the standard `SharedInbox.ingest/2` result.
   """
-  @spec dispatch(struct()) :: :ok
-  def dispatch(%Jido.Signal{type: type, data: data}) do
-    Logger.debug("OperatorQuestionDispatcher received signal: type=#{inspect(type)} data=#{inspect(data)}")
-    :ok
+  @spec dispatch(struct() | map()) ::
+          {:ok, :started, any()} | {:ok, :deduped, any()} | {:error, term()}
+  def dispatch(%Jido.Signal{data: data}) when is_map(data) do
+    SharedInbox.ingest(OperatorQuestionSource, data)
+  end
+
+  def dispatch(%{} = data) do
+    SharedInbox.ingest(OperatorQuestionSource, data)
   end
 
   def dispatch(other) do
-    Logger.warning(
-      "OperatorQuestionDispatcher: ignoring non-Jido.Signal payload: #{inspect(other)}"
-    )
-
-    :ok
+    {:error, {:invalid_payload, other}}
   end
 end

@@ -99,8 +99,8 @@ defmodule ForemanServer.Application do
         ++ maybe_jido_signal_bus_child()
         ++ maybe_signal_to_command_child()
         ++ maybe_task_metadata_query_subscriber_child()
+        ++ maybe_operator_question_subscriber_child()
         ++ maybe_overwatch_child()
-        ++ maybe_stuck_detector_child()
         ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -239,18 +239,32 @@ defmodule ForemanServer.Application do
   # agent_runtime, :enabled off and the bus (and the subscriber)
   # won't be started.
   def maybe_task_metadata_query_subscriber_child do
-    # Gate on :agent_runtime, :enabled (the always-on Jido signal bus)
-    # rather than :signal_bridge_enabled (the command-adapter flag).
-    # The subscriber only needs the bus to be up; it does not depend
-    # on the SignalToCommandAdapter. Operators who only want the
-    # directive publisher (JSI-T011) — without the command bridge or
-    # the query subscriber — can set agent_runtime, :enabled: false
-    # to suppress the entire Jido AgentRuntime tree.
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
         [
           {ForemanServer.Agents.TaskMetadataQuerySubscriber,
            [name: :foreman_task_metadata_query_subscriber, bus: :foreman_jido_signal_bus]}
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  def maybe_operator_question_subscriber_child do
+    # The operator-question subscriber consumes the
+    # `com.foreman.operator.*` topic pattern (JSI-T006). The
+    # subscriber auto-subscribes its pid to that topic on
+    # :foreman_jido_signal_bus at init, so this child is gated on
+    # the bus being up — same gate as the task-metadata query
+    # subscriber (agent_runtime, :enabled). The dispatcher that the
+    # subscriber hands each signal to (JSI-T007) writes the operator
+    # question into the Foreman inbox pipeline.
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [
+          {ForemanServer.Agents.OperatorQuestionSubscriber,
+           [name: :foreman_operator_question_subscriber, bus: :foreman_jido_signal_bus]}
         ]
 
       _ ->
