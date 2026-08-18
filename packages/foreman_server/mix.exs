@@ -36,10 +36,25 @@ defmodule ForemanServer.MixProject do
       # Anubis MCP server (TRD-036)
       {:anubis_mcp, "~> 1.10"},
 
-      # Vendored harness fork (TRD-001)
-      {:jido_harness, path: "../jido_harness"}
-    ]
-  end
+      # Jido ecosystem — Sunstone-Partners forks (TRD-2026-4212be7e, JCR-T001)
+      # See ../../../JIDO_FORKS.md for fork URLs and pinned commit SHAs.
+      # All packages sourced from a Sunstone-Partners fork to give Foreman
+      # deterministic, auditable pins and CI-controlled upgrade gating (JRM-T003).
+      # `override: true` forces the fork across the entire transitive closure
+      # (jido_ai pulls jido+req_llm from Hex, jido_shell pulls jido_vfs from Hex;
+      # we deliberately replace every one with our Sunstone-Partners fork).
+      {:jido,            git: "https://github.com/Sunstone-Partners/jido.git",            ref: "accea666713bda68e3d6802024584bfbd95aea2b", override: true},
+      {:jido_action,     git: "https://github.com/Sunstone-Partners/jido_action.git",     ref: "2b6dfb57441454d290cfc3552767fb177ea14a2d", override: true},
+      {:jido_signal,     git: "https://github.com/Sunstone-Partners/jido_signal.git",     ref: "e3f8a34184dfee60f765695d9ca65ac56426ef8a", override: true},
+      {:jido_shell,      git: "https://github.com/Sunstone-Partners/jido_shell.git",      ref: "a180289345e3f2c5b659ed0ea2c4f20fabeeef2f", override: true},
+      {:jido_vfs,        git: "https://github.com/Sunstone-Partners/jido_vfs.git",        ref: "ca34ffb5a303313cf9b878fecb78e6d8bf7d7538", override: true},
+      {:jido_ai,         git: "https://github.com/Sunstone-Partners/jido_ai.git",         ref: "7da2579d32e5ad8e946c06890ac50a793867b0f7", override: true},
+      {:jido_harness,    git: "https://github.com/Sunstone-Partners/jido_harness.git",    ref: "e41fc1651282469f2db4219a48d9f7feef1b0dbc", override: true},
+      {:jido_ecto,       git: "https://github.com/Sunstone-Partners/jido_ecto.git",       ref: "d5993d93be7885f62336251b4b7eb95aa88eef52", override: true},
+      {:req_llm,         git: "https://github.com/Sunstone-Partners/req_llm.git",         ref: "e8d51edd24cf7bc08c3785f25f6bff95846f23e0", override: true},
+      {:jido_otel,       git: "https://github.com/Sunstone-Partners/jido_otel.git",       ref: "e7b1c67ed841da642c38efdb62e884ff9a6c7588", override: true}
+     ]
+   end
 
   def application do
     [
