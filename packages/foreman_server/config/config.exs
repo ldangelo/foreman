@@ -36,7 +36,12 @@ config :foreman_server, :agent_runtime,
 # default. Operators can still fall back to PiAdapter by overriding
 # the `:agent_runtime, :adapters` config to a list containing
 # PiAdapter instead of JidoHarnessAdapter.
-config :foreman_server, :jido_harness, enabled: true
+config :foreman_server, :jido_harness,
+  # JHA-T002 flipped this from a rollout switch (default false) to a
+  # kill switch (default true). Backwards-compat: setting
+  # FOREMAN_USE_JIDO_HARNESS=false at boot still disables the adapter
+  # so older deployment scripts keep working.
+  enabled: System.get_env("FOREMAN_USE_JIDO_HARNESS", "true") == "true"
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 

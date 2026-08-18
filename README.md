@@ -151,7 +151,12 @@ end
 # Register via config (preferred)
 config :foreman_server, :agent_runtime,
   enabled: true,
-  adapters: [MyApp.ClaudeAdapter]
+  # Default adapter is JidoHarnessAdapter (TRD-2026-4212be7e JHA-T002);
+  # the legacy PiAdapter (Port.open to the `pi` Node CLI) remains in
+  # the codebase as a transitional fallback — replace this list
+  # with [ForemanServer.AgentRuntime.Adapters.PiAdapter] to opt back
+  # in to the legacy binary. See docs/user-guide.md §1.
+  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]
 
 # Call it:
 ForemanServer.AgentRuntime.execute("Summarize this PR", %{pr: 123},

@@ -15,35 +15,47 @@ recipe.
 ```elixir
 config :foreman_server, :agent_runtime,
   enabled: true,
-  adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
+  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]
 ```
 
-By default `packages/foreman_server/config/config.exs` already registers
-`ForemanServer.AgentRuntime.Adapters.PiAdapter` under
-`:agent_runtime.adapters` whenever the runtime is enabled, so an
-out-of-the-box `MIX_ENV=dev` (or `prod`) boot has the local `pi` backend
-available without further configuration. `PiAdapter.available?/0`
-self-gates on `System.find_executable/1` returning a path for the
-configured executable (default `"pi"`), so the registration is safe to
-leave in place even on hosts where the binary is missing. When
-`available?/0` returns `false` Pi is silently excluded from routing in
-`:automatic` / `:policy` modes (and `:manual` calls to it return
-`:backend_unavailable`); the caller observes
-`{:error, :no_available_backend}` only when **no** eligible adapter is
-available for the request. The
-test environment (`config/test.exs`) deliberately overrides
-`adapters: []` so individual adapter tests can opt in explicitly and
-stay isolated from production wiring.
+By default `packages/foreman_server/config/config.exs` already
+registers `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
+under `:agent_runtime.adapters` whenever the runtime is enabled
+(see TRD-2026-4212be7e JHA-T002: the in-process Jido.Harness
+runtime replaced the legacy `pi` Node-CLI shell-out as the
+default agent backend). The JidoHarnessAdapter routes through
+`Jido.Harness.Session` / `Run` / `Process` and integrates with
+LiteLLM via `req_llm` (see
+`docs/guides/adding-a-jido-harness-provider.md` for adding a new
+provider). Operators who still need the legacy `pi` binary can
+fall back by overriding `:agent_runtime.adapters` to a list
+containing `PiAdapter` instead of `JidoHarnessAdapter`; the
+`PiAdapter` module remains in the codebase as a transitional
+fallback. `JidoHarnessAdapter.available?/0` self-gates on the
+configured `:jido_harness, :providers` and on
+`ReadinessCheck.installed?/1` per provider; the registration is
+safe to leave in place even on hosts where no provider is
+installed. When `available?/0` returns `false` the adapter is
+silently excluded from routing in `:automatic` / `:policy` modes
+(and `:manual` calls to it return `:backend_unavailable`); the
+caller observes `{:error, :no_available_backend}` only when
+**no** eligible adapter is available for the request. The test
+environment (`config/test.exs`) deliberately overrides
+`adapters: []` and disables `:jido_harness, :enabled` so
+individual adapter tests can opt in explicitly and stay isolated
+from production wiring.
 
 
-When `enabled: true`, `ForemanServer.Application` starts
-`ForemanServer.AgentRuntime.Supervisor`, which boots the catalog and
-the dynamic invocation supervisor. Setting `enabled: false` (or
-omitting the key) means the supervisor never starts and `execute/3`
-is the only entry point with no live catalog — manual `register/1`
-calls succeed against the registered modules but the supervisorless
-catalog is empty.
+The `:jido_harness, :enabled` flag is now a *kill switch* (it
+defaults to `true`). Setting it to `false` at runtime disables
+the JidoHarnessAdapter registration without changing the
+default adapter in `:agent_runtime, :adapters`. Operators who
+want to take the adapter out of rotation without removing it
+from the adapters list can do so via:
 
+    Application.put_env(:foreman_server, :jido_harness, enabled: false)
+
+## 2. Configuration keys (canonical list)
 The runtime configuration is keyed under `:foreman_server,
 :agent_runtime`. The full set of supported keys is below. Adding a
 key not listed here is treated as a feature request, not a bug fix.
@@ -60,9 +72,11 @@ key not listed here is treated as a feature request, not a bug fix.
 Per-adapter config:
 
 | Key | Default | Purpose |
-|---|---|---|
-| `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :executable` | `"pi"` | Binary or absolute path. Bare names are resolved via `System.find_executable/1`. |
-| `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :timeout_ms` | `60_000` | Adapter-side execution deadline enforced in the receive loop. |
+| `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :provider` | `:pi` (then `:claude`) | Jido.Harness backend provider name. Falls back to the next registered provider if the chosen one fails `ReadinessCheck.installed?/1`. |
+| `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :timeout_ms` | `60_000` | Adapter-side execution deadline enforced in the Jido.Harness driver. |
+| `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :await_timeout` | `:infinity` | `Jido.Harness.Run.await/2` timeout. Set to a finite ms value to bound agent run lifetime. |
+| `:foreman_server, :jido_harness, :enabled` | `true` | Kill switch for the JidoHarnessAdapter. Set `false` to remove the adapter from routing without changing `:agent_runtime, :adapters`. |
+| `:foreman_server, :jido_harness, :providers` | `[:pi, :claude]` | Providers the JidoHarnessAdapter is willing to route to. Each must have a corresponding `ReadinessCheck.installed?/1` that returns `true` (otherwise the provider is skipped). |
 
 > Each key maps to exactly one implementation path. If a key is
 > missing, the documented default applies. If a key value is invalid,
@@ -281,12 +295,11 @@ without making a network call.
 - payload isolation: the public result tuple contains no backend
   identifier, prompt, or adapter-internal text.
 
-See `packages/foreman_server/test/foreman_server/agent_runtime/` for
-frozen examples of all four.
+## 9. The Pi adapter as a fallback
 
-## 9. The Pi adapter in practice
-
-The provided `PiAdapter` shells out to the local `pi` binary:
+The provided `PiAdapter` shells out to the local `pi` binary
+and remains in the codebase as a transitional fallback for
+operators who have not yet migrated to the JidoHarnessAdapter:
 
 - Defaults to `"pi"` (PATH-resolved). Set
   `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :executable`
@@ -296,6 +309,10 @@ The provided `PiAdapter` shells out to the local `pi` binary:
 - Cleans up its temporary request file/directory on every resolved
   outcome. On untrappable process death the request file/dir may
   leak — this is a documented v1 limitation, not a regression.
+
+Use the JidoHarnessAdapter (the new default — see
+`docs/guides/adding-a-jido-harness-provider.md`) unless the
+legacy `pi` binary is a hard requirement.
 
 ## 10. Quick troubleshooting
 

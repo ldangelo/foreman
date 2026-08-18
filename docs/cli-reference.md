@@ -12,7 +12,7 @@ host.
 |---|---|---|
 | `FOREMAN_API_URL` | `http://127.0.0.1:4000` | Base URL of the Phoenix API. |
 | `FOREMAN_API_TOKEN` | _unset_ | Optional Bearer credential. When unset the server bypasses auth (dev only). |
-
+| `FOREMAN_USE_JIDO_HARNESS` | `true` | Kill switch for the JidoHarnessAdapter (TRD-2026-4212be7e JHA-T002). Set to `false` to remove the adapter from routing without changing `:agent_runtime, :adapters`. The CLI itself does not read this env var; the server does at boot via `Application.get_env(:foreman_server, :jido_harness, :enabled)`. |
 The CLI exposes no global flags; command-specific flags are listed
 below. Run `foreman <command> -h` for per-command usage.
 
@@ -145,8 +145,17 @@ Flags:
 - `--prompt` (required) — the input prompt/text for the workflow.
 - `--project-id` (required) — the project ID.
 - `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
-- `--backend` (optional) — backend to use (`pi`, `claude`, `codex`,
-  `opencode`). Defaults to `pi`.
+- `--backend` (optional) — backend to use. Valid atoms are
+  `:jido_harness` (the production default, dispatched via the
+  `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
+  entry is currently ready), or the registered `name/0` of any
+  adapter module registered with the catalog (for example `:pi` for
+  the legacy `PiAdapter`). The only Jido.Harness providers the
+  runtime currently supports are `:pi` and `:claude` — `:codex`,
+  `:opencode`, and other unlisted atoms return
+  `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
+  the JidoHarnessAdapter is in the runtime's adapter list; falls back
+  to the first available adapter in the list otherwise.
 
 Example:
 
