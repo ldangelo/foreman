@@ -179,7 +179,7 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [ ] |
+| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [x] |
 | JSI-T002 | Implement Agent→Agent signal pub/sub via Bus.publish to agents/<phase> topic | 4h | JSI-T001 | [ ] |
 | JSI-T003 | Implement missing-subscriber configurable policy (silent/warn/error, default warn) in Foreman config | 3h | JSI-T001 | [ ] |
 | JSI-T004 | Add signal journal for replay on restart | 4h | JSI-T001 | [ ] |
