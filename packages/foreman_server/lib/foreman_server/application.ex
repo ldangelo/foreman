@@ -30,11 +30,23 @@ defmodule ForemanServer.Application do
            strategy: :one_for_one, name: ForemanServer.ProjectDynamicSupervisor},
           {ProjectRegistry, []},
           {Scheduler, []},
-          {PrMonitor, []}
+          {PrMonitor, []},
+          {Jido.Signal.Bus, name: :foreman_signal_bus},
+          {Jido.Signal.Journal, name: :foreman_signal_journal}
         ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  @doc """
+  Starts a JidoAgent GenServer under the RunDynamicSupervisor.
+  """
+  def start_agent(id, state, opts \\ []) do
+    DynamicSupervisor.start_child(
+      ForemanServer.RunDynamicSupervisor,
+      {ForemanServer.JidoAgent, {id, state, opts}}
+    )
   end
 
   defp repo_children do

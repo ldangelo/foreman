@@ -29,16 +29,17 @@ defmodule ForemanServer.MixProject do
       {:jason, "~> 1.4"},
       {:plug, "~> 1.18"},
       {:postgrex, ">= 0.0.0"},
-      {:jido, "~> 2.3"},
-      {:jido_action, "~> 2.3"},
-      {:jido_signal, "~> 2.2"},
-      {:jido_shell, github: "agentjido/jido_shell"},
-      {:jido_vfs, "~> 1.0"},
-      {:jido_ai, "~> 2.3"},
-      {:jido_harness, github: "agentjido/jido_harness"},
-      {:jido_ecto, "~> 1.0"},
+      {:jido, "~> 2.3.3"},
+      {:jido_action, "~> 2.3.2"},
+      {:jido_signal, "~> 2.2.2"},
+      {:jido_shell, github: "agentjido/jido_shell", ref: "a180289345e3f2c5b659ed0ea2c4f20fabeeef2f"},
+      {:jido_vfs, "~> 1.0.1"},
+      {:jido_ai, "~> 2.3.0"},
+      {:jido_harness, github: "agentjido/jido_harness", ref: "e41fc1651282469f2db4219a48d9f7feef1b0dbc"},
+      {:jido_ecto, "~> 1.0.0"},
       {:req_llm, "~> 1.20"},
-      {:jido_otel, "~> 1.0"}
+      {:jido_otel, "~> 1.0.0"},
+      {:opentelemetry_exporter, "~> 1.10.0"}
     ]
   end
 

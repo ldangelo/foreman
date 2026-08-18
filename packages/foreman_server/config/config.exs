@@ -25,5 +25,25 @@ config :foreman_server, ForemanServer.Repo,
 # read the env at call time, so the next request after an env change
 # picks up the new value without restart.
 config :foreman_server, :projection_rebuild_timeout_ms, 600_000
+# Jido Signal Topics Configuration
+# These topics are used for inter-agent and operator communication
+config :foreman_server, Jido.Signal,
+  topics: [
+    "foreman/commands",      # Agent commands from Jido agents
+    "foreman/operator",      # Operator communication
+    "foreman/inbox",         # Foreman inbox messages
+    "agents/<agent-id>/directive"  # Agent directives (use wildcard)
+  ]
+
+# Jido OpenTelemetry Configuration
+# Langfuse-compatible OTLP endpoint for tracing
+config :jido_otel,
+  current_span_mode: :safe
+
+config :opentelemetry,
+  traces_exporter: :otlp
+config :opentelemetry_exporter,
+  otlp_protocol: :http_protobuf,
+  otlp_endpoint: System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 
 import_config "#{config_env()}.exs"

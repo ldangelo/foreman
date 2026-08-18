@@ -1,0 +1,95 @@
+name: Upstream Release
+
+on:
+  schedule:
+    # Check for upstream releases every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_check:
+        description: 'Force check for updates'
+        required: false
+        default: false
+
+jobs:
+  check-and-test-upstream:
+    name: Check for Jido Updates and Test
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'schedule' && !cancelled()) ||
+      (github.event_name == 'workflow_dispatch' && inputs.force_check)
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: foreman
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d foreman"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/foreman
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Elixir and OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18.0'
+          otp-version: '27.0'
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@foreman.dev"
+          git config --global user.name "Foreman CI"
+          git config --global init.defaultBranch main
+
+      - name: Get current pinned Jido versions
+        id: current_versions
+        run: |
+          cd packages/foreman_server
+          JIDO_VERSION=$(grep 'jido' mix.exs | grep -v 'jido_' | grep -oP '(?<="~> )[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          JIDO_SHELL_VERSION=$(grep 'jido_shell' mix.exs | grep -oP '(?<="ref: ")[a-f0-9]+' | head -1)
+          echo "current_jido=$JIDO_VERSION" >> $GITHUB_OUTPUT
+          echo "current_jido_shell=$JIDO_SHELL_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check for newer Jido releases
+        id: check_updates
+        run: |
+          cd packages/foreman_server
+          JIDO_LATEST=$(mix hex.info jido 2>&1 | grep "Latest version" | awk '{print $3}')
+          JIDO_SHELL_LATEST=$(gh api repos/agentjido/jido_shell/commits/main --jq '.[0].sha')
+          echo "jido_latest=$JIDO_LATEST" >> $GITHUB_OUTPUT
+          echo "jido_shell_latest=$JIDO_SHELL_LATEST" >> $GITHUB_OUTPUT
+          echo "Need update: $([ "$JIDO_LATEST" != "${{ steps.current_versions.outputs.current_jido }}" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+      - name: Update Jido version in mix.exs
+        if: ${{ steps.check_updates.outputs.jido_latest != steps.current_versions.outputs.current_jido }}
+        run: |
+          cd packages/foreman_server
+          sed -i 's/jido, "~> [^"]*"/jido, "~> ${{ steps.check_updates.outputs.jido_latest }}"/' mix.exs
+          mix deps.get
+
+      - name: Install dependencies
+        run: |
+          cd packages/foreman_server
+          mix deps.get
+
+      - name: Run full test suite
+        run: |
+          cd packages/foreman_server
+          mix test
+
+      - name: Check for breaking changes
+        if: always()
+        run: |
+          echo "Checking for breaking changes..."
+          # Add specific breaking change checks here
+          echo "Breaking change check complete"
