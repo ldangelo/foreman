@@ -40,12 +40,28 @@ defmodule ForemanServer.Application do
 
   @doc """
   Starts a JidoAgent GenServer under the RunDynamicSupervisor.
+
+  Uses the new Jido.Agent framework with ReAct strategy for proper integration.
   """
   def start_agent(id, state, opts \\ []) do
-    DynamicSupervisor.start_child(
-      ForemanServer.RunDynamicSupervisor,
-      {ForemanServer.JidoAgent, {id, state, opts}}
-    )
+    # Build agent options with metadata
+    agent_opts = [
+      id: id,
+      state: state,
+      task_id: Keyword.get(opts, :task_id),
+      run_id: Keyword.get(opts, :run_id)
+    ]
+
+    # Start the agent with Jido.AgentServer.start/2
+    case ForemanServer.JidoAgent.start(agent_opts) do
+      {:ok, pid} ->
+        Logger.info("JidoAgent #{id} started with pid #{inspect(pid)}")
+        {:ok, pid}
+
+      {:error, reason} ->
+        Logger.error("Failed to start JidoAgent #{id}: #{inspect(reason)}")
+        {:error, reason}
+    end
   end
 
   defp repo_children do

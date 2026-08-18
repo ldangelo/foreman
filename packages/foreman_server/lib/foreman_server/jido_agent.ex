@@ -1,189 +1,151 @@
 defmodule ForemanServer.JidoAgent do
   @moduledoc """
-  Jido.Agent GenServer for managing agent state and lifecycle.
+  Jido.Agent GenServer for managing agent state and lifecycle with ReAct strategy.
 
   This module implements the Jido agent protocol as specified in TRD-2026-4212be7e.
-  It manages the agent's state, handles commands via cmd/2, and coordinates with
-  the event store for state persistence.
-
-  NOTE: Full ReAct/ChainOfThought strategy integration requires proper Jido.Agent
-  framework usage which is still being developed. This is a working GenServer
-  implementation that can be extended later.
+  It uses Jido.Agent.Strategy.ReAct for reasoning and integrates with jido_signal
+  for communication.
   """
 
-  use GenServer
+  use Jido.Agent,
+    name: "foreman_agent",
+    description: "Foreman Jido Agent with ReAct reasoning strategy",
+    strategy: {Jido.AI.Reasoning.ReAct.Strategy, [system_prompt: "You are a Foreman agent that helps with task execution and management."]},
+    schema: [
+      status: [type: :atom, default: :idle],
+      task_id: [type: :string, default: nil],
+      run_id: [type: :string, default: nil]
+    ]
+
   require Logger
 
-  alias ForemanServer.{EventStore, ProjectionStore}
-
-  @type t :: %__MODULE__{
-          id: String.t(),
-          state: map(),
-          task_id: String.t() | nil,
-          run_id: String.t() | nil,
-          status: atom(),
-          checkpoint: map() | nil,
-          directives: list(map())
-        }
-
-  @enforce_keys [:id, :state]
-  defstruct [
-    :id,
-    :state,
-    :task_id,
-    :run_id,
-    status: :idle,
-    checkpoint: nil,
-    directives: []
-  ]
-
   @doc """
-  Starts a Jido.Agent GenServer.
+  Creates a new Foreman Agent.
 
   ## Parameters
-  - `id`: Unique identifier for this agent
-  - `state`: Initial state map
-  - `opts`: Optional configuration (task_id, run_id)
+  - `opts`: Configuration options
+
+  ## Returns
+  - `{:ok, agent}` on success
+  - `{:error, reason}` on failure
   """
-  @spec start_link(String.t(), map(), keyword()) :: GenServer.on_start()
-  def start_link(id, state, opts \\ []) do
-    GenServer.start_link(__MODULE__, {id, state, opts}, name: via_tuple(id))
+  @spec new(keyword()) :: {:ok, Jido.Agent.t()} | {:error, term()}
+  def new(opts) do
+    Jido.Agent.new(__MODULE__, opts)
   end
 
   @doc """
-  Starts a Jido.Agent GenServer from tuple args (for DynamicSupervisor).
+  Starts a Foreman Agent GenServer.
+
+  ## Parameters
+  - `opts`: Configuration options (task_id, run_id, etc.)
+
+  ## Returns
+  - `{:ok, pid}` on success
+  - `{:error, reason}` on failure
   """
-  @spec start_link({String.t(), map(), keyword()}) :: GenServer.on_start()
-  def start_link({id, state, opts}) do
-    start_link(id, state, opts)
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts \\ []) do
+    Jido.AgentServer.start_link(__MODULE__, opts)
   end
 
   @doc """
-  Sends a command to the agent.
+  Starts a Foreman Agent GenServer under a DynamicSupervisor.
 
   ## Parameters
-  - `id`: Agent identifier
-  - `command`: Command map
+  - `opts`: Configuration options (task_id, run_id, etc.)
+
+  ## Returns
+  - `{:ok, pid}` on success
+  - `{:error, reason}` on failure
+  """
+  @spec start(keyword()) :: DynamicSupervisor.on_start_child()
+  def start(opts \\ []) do
+    Jido.AgentServer.start(__MODULE__, opts)
+  end
+
+  @doc """
+  Sends a command to the agent using Jido.Agent's cmd/2 function.
+
+  ## Parameters
+  - `agent`: Agent reference
+  - `command`: Command map with action and parameters
 
   ## Returns
   - `{:ok, result}` on success
   - `{:error, reason}` on failure
   """
-  @spec cmd(String.t(), map()) :: {:ok, term()} | {:error, term()}
-  def cmd(id, command) do
-    GenServer.call(via_tuple(id), {:cmd, command})
+  @spec cmd(any(), map()) :: {:ok, term()} | {:error, term()}
+  def cmd(agent, command) do
+    # Extract action from command
+    action = Map.get(command, :action, "unknown")
+    
+    # Call Jido.AgentServer.call with :cmd message
+    Jido.AgentServer.call(agent, :cmd, command)
   end
 
   @doc """
   Gets the current state of the agent.
 
   ## Parameters
-  - `id`: Agent identifier
+  - `agent`: Agent reference
 
   ## Returns
-  - Agent state map
+  - `{:ok, state}` on success
+  - `{:error, reason}` on failure
   """
-  @spec get_state(String.t()) :: map()
-  def get_state(id) do
-    GenServer.call(via_tuple(id), :get_state)
+  @spec state(any()) :: {:ok, map()} | {:error, term()}
+  def state(agent) do
+    Jido.AgentServer.state(agent)
   end
 
   @doc """
-  Returns the GenServer name via_tuple for this agent.
+  Stops the agent.
+
+  ## Parameters
+  - `agent`: Agent reference
+
+  ## Returns
+  - `:ok` on success
+  - `{:error, reason}` on failure
   """
-  @spec via_tuple(String.t()) :: {:global, String.t()}
-  def via_tuple(id), do: {:global, "jido_agent_#{id}"}
-
-  @impl true
-  def init({id, state, opts}) do
-    task_id = Keyword.get(opts, :task_id)
-    run_id = Keyword.get(opts, :run_id)
-
-    agent = %__MODULE__{
-      id: id,
-      state: state,
-      task_id: task_id,
-      run_id: run_id,
-      status: :running
-    }
-
-    Logger.info("Jido.Agent #{id} started with task_id=#{task_id}, run_id=#{run_id}")
-
-    {:ok, agent}
+  @spec stop(any()) :: :ok | {:error, term()}
+  def stop(agent) do
+    Jido.AgentServer.stop(agent)
   end
 
-  @impl true
-  def handle_call({:cmd, command}, _from, agent) do
-    Logger.debug("Jido.Agent #{agent.id} received command: #{inspect(command)}")
+  @doc """
+  Waits for agent completion.
 
-    # Emit OTEL span for this cmd/2 call
-    Jido.Observe.with_span(
-      [:jido, :agent, :cmd, Map.get(command, :action, "unknown")],
-      %{
-        agent_id: agent.id,
-        task_id: agent.task_id,
-        action: Map.get(command, :action, "unknown"),
-        params: Map.delete(command, :action)
-      },
-      fn ->
-        # Process the command
-        {new_state, directives} = process_command(agent.state, command)
+  ## Parameters
+  - `agent`: Agent reference
+  - `opts`: Options including timeout
 
-        # Update agent struct with new state and directives
-        new_agent = %{
-          agent
-          | state: new_state,
-            status: :processing,
-            directives: agent.directives ++ directives
-        }
+  ## Returns
+  - `{:ok, result}` on success
+  - `{:error, reason}` on failure
+  """
+  @spec await_completion(any(), keyword()) :: {:ok, term()} | {:error, term()}
+  def await_completion(agent, opts \\ []) do
+    Jido.AgentServer.await_completion(agent, opts)
+  end
 
-        {:ok, new_agent}
-      end
-    )
-    |> case do
-      {:ok, new_agent} ->
-        {:reply, {:ok, new_agent}, new_agent}
+  @doc """
+  Returns the process identifier for this agent.
+  """
+  @spec pid(keyword()) :: pid() | nil
+  def pid(opts \\ []) do
+    Jido.AgentServer.whereis(__MODULE__, :foreman_agent, opts)
+  end
 
-      {:error, reason} ->
-        Logger.error("Jido.Agent #{agent.id} cmd error: #{inspect(reason)}")
-        {:reply, {:error, reason}, agent}
+  @doc """
+  Checks if the agent is alive.
+  """
+  @spec alive?(keyword()) :: boolean()
+  def alive?(opts \\ []) do
+    case pid(opts) do
+      nil -> false
+      pid -> Process.alive?(pid)
     end
-  end
-
-  @impl true
-  def handle_call(:get_state, _from, agent) do
-    {:reply, agent.state, agent}
-  end
-
-  @impl true
-  def handle_info(:timeout, agent) do
-    Logger.debug("Jido.Agent #{agent.id} timeout")
-    {:noreply, agent}
-  end
-
-  # Private functions
-
-  defp process_command(state, command) do
-    # Basic command processing - this would be expanded per action type
-    {new_state, directives} =
-      case command do
-        %{action: "git_status"} ->
-          {Map.put(state, :current_action, "git_status"),
-           [%{type: "info", content: "Retrieving git status..."}]}
-
-        %{action: "diff_read"} ->
-          {Map.put(state, :current_action, "diff_read"),
-           [%{type: "info", content: "Reading diff..."}]}
-
-        %{action: "task_get"} ->
-          {Map.put(state, :current_action, "task_get"),
-           [%{type: "info", content: "Fetching task details..."}]}
-
-        _ ->
-          Logger.warning("Unknown command action: #{inspect(command)}")
-          {state, [%{type: "error", content: "Unknown action: #{inspect(command)}"}]}
-      end
-
-    {new_state, directives}
   end
 end
