@@ -26,7 +26,7 @@ total_tasks: 106
 | **PRD Reference** | PRD-2026-4212be7e |
 | **Source PRD Label** | prd-jido-migration |
 | **Design Readiness Score** | 5.0 |
-| **Total Tasks** | 108 |
+| **Total Tasks** | 106 |
 
 ---
 
@@ -157,7 +157,7 @@ All `Status` cells are `[ ]`.
 |----|------|------|------|--------|
 | JHA-T001 | Integrate jido_harness with Jido.Harness.Adapters.Pi | 4h | JCR-T001 | [ ] |
 | JHA-T002 | Replace pi-sdk-runner.ts with Jido.Harness.Session, Jido.Harness.Run, Jido.Harness.Process | 8h | JHA-T001 | [ ] |
-| JHA-T003 | Write characterization test verifying Jido.Harness.Adapters.Pi provides functional equivalent of pi-sdk-runner.ts session lifecycle | 4h | JHA-T002 | [ ] |
+| JHA-T003 | Write harness characterization test: verify Jido.Harness.Adapters.Pi creates Jido.Harness.Session, resolves tools through Jido.Harness.Process, and provides Jido.Harness.Run — without asserting legacy pi-sdk-runner.ts behavioral equivalence | 4h | JHA-T002 | [ ] |
 
 ---
 
@@ -409,19 +409,19 @@ All `Status` cells are `[ ]`.
 
 | NFR | Target | Tasks | Verification |
 |-----|--------|-------|--------------|
-| NFR-01: Action dev time | ≤4 hours | ADT-T001–T003 | Benchmark run with representative action |
-| NFR-02: Signal latency | p95 < 1 second | LGC-T005–T007 | Latency regression tests |
-| NFR-03: Crash recovery | ≤30 seconds resumption | RTE-T004, RTE-T006 | Crash recovery characterization |
-| NFR-04: Checkpoint durability | Agent state survives restart via jido_ecto | JCR-T004, RTE-T001 | Restart test |
-| NFR-05: No auto-merge | Human approval always | MGH-T001–T004 | Merge gate characterization |
-| NFR-06: LiteLLM required | No direct API fallback | LGL-T005 | Unavailable-LiteLLM test |
-| NFR-07: 85% coverage | New actions ≥85% | JAF-T005 | ExUnit coverage report |
-| NFR-08: Workflow format | YAML + Elixir DSL hot-load | HLW-T001–T005 | Hot-load integration tests |
-| NFR-09: Idempotent dispatch | Durable started/completed/ambiguous | RTE-T001–T004 | Crash-recovery characterization |
-| NFR-10: Auditability | Every model="auto" trace in Langfuse | LGL-T002, LGL-T004 | Trace inspection tests |
-| NFR-11: Security isolation | Sandbox enforcement active | LGC-T001–T004 | Security isolation tests |
-| NFR-12: Agent↔Foreman signals | Signal → command envelope → event store | JCR-T005, JSI-T011–T013 | Integration tests |
-| NFR-13: LiteLLM capability routing | model="auto" by cheapest capable | LGL-T001, LGL-T006 | Routing tests |
+| NFR-01 | Action dev time ≤4 hours | ADT-T001–T003 | Benchmark run with representative action |
+| NFR-02 | Signal delivery p95 < 1 second | LGC-T005–T007 | Latency regression tests |
+| NFR-03 | Crash recovery ≤30 seconds to resumption | RTE-T004, RTE-T006 | Crash recovery characterization |
+| NFR-04 | Checkpoint durability via jido_ecto | JCR-T004, RTE-T001 | Restart test |
+| NFR-05 | No auto-merge | MGH-T001–T004 | Merge gate characterization |
+| NFR-06 | Idempotent Ensemble dispatch (no duplicate side effects) | RTE-T001–T004 | Crash-recovery characterization |
+| NFR-07 | LLM trace 100% in Langfuse | LGL-T002, LGL-T004 | Trace inspection tests |
+| NFR-08 | jido_live_dashboard shows full agent state | JLD-T001–T004 | Dashboard integration tests |
+| NFR-09 | Signal trace 100% via jido_otel | JOT-T001–T005 | OTEL span emission tests |
+| NFR-10 | Agent isolation (no privilege escalation) | LGC-T001–T004 | Security isolation tests |
+| NFR-11 | Merge gate integrity (agents can't bypass human review) | MGH-T001–T004 | Merge gate characterization |
+| NFR-12 | Repo mirroring (Jido packages forked and pinned) | JRM-T001–T004 | Upgrade CI workflow |
+| NFR-13 | LiteLLM model="auto" by capability | LGL-T001, LGL-T006 | Routing tests |
 
 ---
 

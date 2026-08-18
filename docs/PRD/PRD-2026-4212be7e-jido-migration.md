@@ -716,7 +716,7 @@ Each Ensemble skill must be enhanced to support idempotent invocation when calle
 
 | REQ | Depends On | Blocked By | Notes |
 |-----|-----------|-----------|-------|
-| REQ-001 | — | — | Foundation; Jido owns state |
+| REQ-001 | — | — | Foundation; Jido agents own agent/checkpoint state via jido_ecto; authoritative Task/Run/Inbox domain events remain in Foreman's event store |
 | REQ-002 | REQ-001 | — | Actions depend on running Jido runtime |
 | REQ-003 | REQ-001 | — | jido_harness Pi adapter |
 | REQ-004 | REQ-001 | — | Signal bus requires Jido runtime |
