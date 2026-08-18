@@ -135,8 +135,8 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JRM-T001 | Fork all required Jido repos under Sunstone-Partners GitHub organization | 2h | | [ ] |
-| JRM-T002 | For each forked Jido repo, select and record the fork URL and specific commit revision for each package; JCR-T001 declares these in mix.exs | 2h | JRM-T001 | [ ] |
+| JRM-T001 | Fork all required Jido repos under Sunstone-Partners GitHub organization | 2h | | [x] |
+| JRM-T002 | For each forked Jido repo, select and record the fork URL and specific commit revision for each package; JCR-T001 declares these in mix.exs | 2h | JRM-T001 | [x] |
 
 #### Story 1.1: Jido Core Runtime
 
