@@ -56,7 +56,7 @@ defmodule ForemanServer.Agents.SignalToCommandWiringTest do
     assert ForemanApp.maybe_signal_to_command_child() == []
   end
 
-  test "returns the bus + adapter child specs when signal_bridge_enabled: true" do
+  test "returns the adapter child spec when signal_bridge_enabled: true" do
     Application.put_env(
       :foreman_server,
       :agent_runtime,
@@ -66,17 +66,24 @@ defmodule ForemanServer.Agents.SignalToCommandWiringTest do
 
     children = ForemanApp.maybe_signal_to_command_child()
 
-    assert length(children) == 2
+    assert length(children) == 1
 
-    [{bus_module, bus_opts}, {adapter_module, adapter_opts}] = children
-
-    assert bus_module == Jido.Signal.Bus
-    assert bus_opts[:name] == :foreman_jido_signal_bus
+    [{adapter_module, adapter_opts}] = children
 
     assert adapter_module == ForemanServer.Agents.SignalToCommandAdapter
-
     assert adapter_opts[:name] == :foreman_signal_to_command_adapter
     assert adapter_opts[:bus] == :foreman_jido_signal_bus
+  end
+
+  test "maybe_jido_signal_bus_child/0 returns the bus when :agent_runtime is enabled" do
+    Application.put_env(:foreman_server, :agent_runtime, enabled: true)
+    children = ForemanApp.maybe_jido_signal_bus_child()
+    assert children == [{Jido.Signal.Bus, [name: :foreman_jido_signal_bus]}]
+  end
+
+  test "maybe_jido_signal_bus_child/0 returns [] when :agent_runtime is disabled" do
+    Application.put_env(:foreman_server, :agent_runtime, enabled: false)
+    assert ForemanApp.maybe_jido_signal_bus_child() == []
   end
 
   test "end-to-end: starting the children brings up a live bus + adapter, " <>

@@ -96,8 +96,9 @@ defmodule ForemanServer.Application do
         ++ maybe_lifecycle_reconciler_child()
         ++ maybe_agent_runtime_child()
         ++ maybe_jido_checkpoint_repo_child()
+        ++ maybe_jido_signal_bus_child()
+        ++ maybe_signal_to_command_child()
         ++ maybe_overwatch_child()
-        ++ maybe_stuck_detector_child()
         ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -161,7 +162,11 @@ defmodule ForemanServer.Application do
         [
           {ForemanServer.AgentRuntime.Supervisor, []}
         ] ++
-          maybe_signal_to_command_child()
+          # `maybe_signal_to_command_child/0` is called separately below
+          # so the bus startup (always-on when agent_runtime is enabled)
+          # and the adapter startup (opt-in via :signal_bridge_enabled)
+          # can be controlled independently.
+          []
 
       _ ->
         []
@@ -190,20 +195,32 @@ defmodule ForemanServer.Application do
   # Integration Ingestion). The bus is started before the adapter so
   # the adapter's deferred auto-subscribe lands on a live bus.
   # Disabled by default (no separate flag): opt in by setting
-  # `config :foreman_server, :agent_runtime, signal_bridge_enabled: true`.
+  # The signal-to-command bridge is split into two opt-in steps:
+  # the bus follows the same :agent_runtime, :enabled flag as the
+  # rest of the Jido AgentRuntime (so the production directive
+  # publisher always has a bus to write to), and the
+  # SignalToCommandAdapter is opt-in via :signal_bridge_enabled.
+  # The directive publisher (JSI-T011) and the agent-directive
+  # subscriber both depend on the bus, NOT on the adapter.
+  def maybe_jido_signal_bus_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{Jido.Signal.Bus, [name: :foreman_jido_signal_bus]}]
+
+      _ ->
+        []
+    end
+  end
+
   def maybe_signal_to_command_child do
     opts = Application.get_env(:foreman_server, :agent_runtime, [])
     enabled? = is_list(opts) and Keyword.get(opts, :enabled, false) in [true, "true"]
     bridge? = enabled? and Keyword.get(opts, :signal_bridge_enabled, false)
 
     if bridge? do
-      bus_name = :foreman_jido_signal_bus
       adapter_name = :foreman_signal_to_command_adapter
 
-      [
-        {Jido.Signal.Bus, [name: bus_name]},
-        {ForemanServer.Agents.SignalToCommandAdapter, [name: adapter_name, bus: bus_name]}
-      ]
+      [{ForemanServer.Agents.SignalToCommandAdapter, [name: adapter_name, bus: :foreman_jido_signal_bus]}]
     else
       []
     end
