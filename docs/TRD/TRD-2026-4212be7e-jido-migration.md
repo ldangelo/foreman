@@ -145,7 +145,7 @@ All `Status` cells are `[ ]`.
 | JCR-T001 | Add all Jido packages to mix.exs: jido, jido_action, jido_signal, jido_shell, jido_vfs, jido_ai, jido_harness, jido_ecto, req_llm, jido_otel — every package is sourced from a Sunstone-Partners fork pinned to a specific revision | 2h | JRM-T002 | [x] |
 | JCR-T002 | Create Jido.Agent GenServer under Foreman.Application supervision tree with OTP restart strategy | 4h | JCR-T001 | [ ] |
 | JCR-T003 | Implement cmd/2 loop in Jido agent: action in → updated agent struct + directives out | 4h | JCR-T002 | [ ] |
-| JCR-T004 | Integrate jido_ecto for agent struct and checkpoint persistence (Postgres adapter) | 4h | JCR-T002 | [ ] |
+| JCR-T004 | Integrate jido_ecto for agent struct and checkpoint persistence (Postgres adapter) | 4h | JCR-T002 | [x] |
 | JCR-T005 | Implement signal-to-command adapter: Phoenix subscriber for foreman/commands topic, normalizes CloudEvent to ExternalTriggerCommand, routes to TRD-014 Integration Ingestion | 6h | JCR-T001 | [ ] |
 | JCR-T006 | Write unit tests for Jido.Agent GenServer lifecycle (start, cmd/2, checkpoint, restart) | 4h | JCR-T004 | [ ] |
 | JCR-T007 | Write integration test verifying agent signal → command envelope → event store → projection update flow | 4h | JCR-T005 | [ ] |
