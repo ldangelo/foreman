@@ -179,11 +179,11 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [ ] |
-| JSI-T002 | Implement Agent→Agent signal pub/sub via Bus.publish to agents/<phase> topic | 4h | JSI-T001 | [ ] |
-| JSI-T003 | Implement missing-subscriber configurable policy (silent/warn/error, default warn) in Foreman config | 3h | JSI-T001 | [ ] |
+| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [x] |
+| JSI-T002 | Implement Agent→Agent signal pub/sub via Bus.publish to agents/<phase> topic | 4h | JSI-T001 | [x] |
+| JSI-T003 | Implement missing-subscriber configurable policy (silent/warn/error, default warn) in Foreman config | 3h | JSI-T001 | [x] |
 | JSI-T004 | Add signal journal for replay on restart | 4h | JSI-T001 | [ ] |
-| JSI-T005 | Write integration tests for signal pub/sub with all three missing-subscriber policies | 3h | JSI-T003 | [ ] |
+| JSI-T005 | Write integration tests for signal pub/sub with all three missing-subscriber policies | 3h | JSI-T003 | [x] |
 
 #### Story 2.2: Operator Communication
 
@@ -200,15 +200,15 @@ All `Status` cells are `[ ]`.
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
 | JSI-T011 | Implement directive publisher (Foreman→Agent) via Bus.publish to agents/<agent-id>/directive | 3h | JSI-T001 | [x] |
-| JSI-T012 | Implement task metadata query signal (Agent→Foreman) and response signal (Foreman→Agent) | 3h | JSI-T011 | [ ] |
-| JSI-T013 | Write integration tests for nudge and query flows | 3h | JSI-T011, JSI-T012 | [ ] |
+| JSI-T012 | Implement task metadata query signal (Agent→Foreman) and response signal (Foreman→Agent) | 3h | JSI-T011 | [x] |
+| JSI-T013 | Write integration tests for nudge and query flows | 3h | JSI-T011, JSI-T012 | [x] |
 
 #### Story 2.4: Shell Integration
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
 | JSH-T001 | Integrate jido_shell for command execution with jido_vfs sandbox | 4h | JSI-T001 | [ ] |
-| JSH-T002 | Implement shell session lifecycle: shell tied to agent lifetime (terminates on agent restart; restarted agent creates new session) | 3h | JSH-T001 | [ ] |
+| JSH-T002 | Implement shell session lifecycle: shell tied to agent lifetime (terminates on agent restart; restarted agent creates new session) | 3h | JSH-T001 | [x] |
 | JSH-T003 | Add VFS isolation per worktree (each agent gets sandboxed filesystem view) | 3h | JSH-T001 | [ ] |
 | JSH-T004 | Write shell integration tests: command execution, session isolation, VFS sandbox | 4h | JSH-T002, JSH-T003 | [ ] |
 
@@ -397,7 +397,7 @@ All `Status` cells are `[ ]`.
 | REQ-003 | Jido Harness Pi Adapter Integration | JHA-T001–T003 | [x] |
 | REQ-004 | Inter-Agent Communication (Agent↔Agent) | JSI-T001–T005 | [ ] |
 | REQ-005 | Agent↔Operator Communication | JSI-T006–T010 | [ ] |
-| REQ-006 | Agent↔Foreman Communication | JSI-T011–T013 | [ ] |
+| REQ-006 | Agent↔Foreman Communication | JSI-T011–T013 | [x] |
 | REQ-007 | Jido Shell Integration | JSH-T001–T007 | [ ] |
 | REQ-008 | Jido AI Strategy Integration | JAI-T001–T003 | [ ] |
 | REQ-009 | LiteLLM+Langfuse Integration | LGL-T001–T006 | [ ] |

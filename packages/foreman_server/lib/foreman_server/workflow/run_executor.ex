@@ -48,7 +48,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
           completed: [non_neg_integer()],
           status: :ready | :in_progress | :completed | :failed,
           artifact_base: String.t(),
-          plan_context: map() | nil
+          plan_context: map() | nil,
+          source: :task | :work_request | :unknown
         }
   @spec start_link(String.t(), map()) :: GenServer.on_start()
   def start_link(run_id, task_projection) do
@@ -144,9 +145,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, reason} -> %{__plan_context_error__: reason}
       end
 
-    # Determine whether this run is sourced from a task or a work-request.
-    # Used by maybe_claim_task / maybe_complete_task / maybe_fail_task to
-    # route to the correct aggregate (Task vs WorkRequest) per TRD-032.
     source =
       cond do
         Map.get(task_projection, :task_id) || Map.get(task_projection, "task_id") ->
@@ -173,6 +171,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     Process.send_after(self(), :kickoff, 0)
     {:ok, state}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    maybe_stop_shell_session(state)
+    :ok
   end
 
   @impl true
@@ -384,33 +388,54 @@ defmodule ForemanServer.Workflow.RunExecutor do
     policy = AgentRuntime.FailurePolicy.resolve(task_type, [])
     deadline_ms = System.system_time(:millisecond) + Map.fetch!(policy, :timeout_ms)
 
-    # Publish the active-phase deadline BEFORE blocking into AgentRuntime so
-    # StuckDetector can read it without calling this GenServer (which would
-    # deadlock on the same mailbox). The deadline is the wall-clock instant
-    # at which the resolved FailurePolicy.timeout_ms expires. The PID is
-    # stored alongside so StuckDetector can reject a stale entry left
-    # behind by a brutally-killed predecessor whose replacement has
-    # already registered under RunExecutorRegistry.
     RunExecutorLiveness.record(state.run_id, self(), deadline_ms)
 
     try do
       AgentRuntime.execute(
         prompt,
         request.context,
-        backend: :pi,
+        backend: execution_backend(),
         strategy: :manual,
         task_type: task_type,
         env: foreman_env(state, worktree_record)
       )
     after
-      # Always clear under the owner guard so a late after-block from a
-      # brutally-killed predecessor cannot delete a freshly-recorded
-      # entry from the supervisor's replacement executor. The owner
-      # mismatch makes this a no-op when the entry no longer belongs
-      # to us; the registered-PID check in StuckDetector would catch
-      # any remaining stale entry the after-block missed.
       RunExecutorLiveness.clear(state.run_id, self())
     end
+  end
+
+  defp execution_backend do
+    configured =
+      Application.get_env(:foreman_server, :agent_runtime, [])
+      |> Keyword.get(:adapters, [])
+      |> Enum.find_value(fn
+        adapter when is_atom(adapter) ->
+          name = adapter.name()
+
+          case ForemanServer.AgentRuntime.AdapterCatalog.lookup(name) do
+            {:ok, ^adapter} ->
+              if adapter.available?(), do: name, else: nil
+
+            _ ->
+              nil
+          end
+
+        _ ->
+          nil
+      end)
+
+    configured ||
+      (ForemanServer.AgentRuntime.AdapterCatalog.routing_snapshot()
+       |> Enum.find_value(fn
+         %{name: name, adapter: adapter, available: true} ->
+           case ForemanServer.AgentRuntime.AdapterCatalog.lookup(name) do
+             {:ok, ^adapter} -> name
+             _ -> nil
+           end
+
+         _ ->
+           nil
+       end))
   end
 
   defmodule ArtifactTemplate do
@@ -1175,11 +1200,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # Env injection (TRD Decision 9). Empty map for non-managed phases or
-  # when the plan context lacks the frozen markers; `AgentRuntime`
-  # threads the map through `Port.open :env` and never copies any of
-  # these keys into telemetry metadata.
-  defp foreman_env(_state, nil), do: %{}
+  # Env injection (TRD Decision 9). Every phase gets the shell-session
+  # export so the common non-worktree path can still bind to the
+  # executor-owned shell lifecycle. Worktree-managed phases add the
+  # remaining Foreman worktree markers below.
+  defp foreman_env(state, nil), do: maybe_put_shell_session_env(%{}, state)
 
   defp foreman_env(state, worktree_record) do
     plan_context = state.plan_context || %{}
@@ -1193,6 +1218,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
       "FOREMAN_IMPLEMENTATION_KEY" => implementation_key
     }
+    |> maybe_put_shell_session_env(state)
 
     case beads_db_path(plan_context) do
       nil ->
@@ -1221,6 +1247,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  defp maybe_put_shell_session_env(env, state) do
+    case ensure_shell_session_id(state) do
+      {:ok, session_id} when is_binary(session_id) and session_id != "" ->
+        Map.put(env, "FOREMAN_SHELL_SESSION_ID", session_id)
+
+      _ ->
+        env
+    end
+  end
+
   # Per TRD Decision 10, `TRD_SCOPE` is exported alongside `BEADS_DB`. The
   # value is computed at provisioning by `create_phase_worktree/4` and
   # stamped on the worktree record; see `compute_trd_scope/2` for the
@@ -1235,6 +1271,37 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Map.get(state.task, :task_id) || Map.get(state.task, "task_id") ||
       Map.get(state.task, :id) || Map.get(state.task, "id") || ""
   end
+
+  defp ensure_shell_session_id(%{run_id: run_id}) do
+    case Process.get({__MODULE__, :shell_session_id, run_id}) do
+      session_id when is_binary(session_id) and session_id != "" ->
+        {:ok, session_id}
+
+      _ ->
+        case ForemanServer.Agents.JidoShellRunner.start_session("run-executor", owner: self()) do
+          {:ok, session_id} ->
+            Process.put({__MODULE__, :shell_session_id, run_id}, session_id)
+            {:ok, session_id}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp maybe_stop_shell_session(%{run_id: run_id}) do
+    case Process.delete({__MODULE__, :shell_session_id, run_id}) do
+      session_id when is_binary(session_id) and session_id != "" ->
+        _ = ForemanServer.Agents.JidoShellRunner.stop_session(session_id)
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_stop_shell_session(_state), do: :ok
+
 
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads

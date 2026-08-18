@@ -116,16 +116,12 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       ForemanServer.AgentRuntime.InvocationSupervisor
     )
 
-    previous_pi_adapter =
-      case AdapterCatalog.lookup(:pi) do
-        {:ok, module} -> module
-        {:error, :not_found} -> nil
-      end
+    previous_backend_adapter = previous_backend_adapter()
 
-    ensure_test_adapter_registered(previous_pi_adapter)
+    ensure_test_adapter_registered(previous_backend_adapter)
 
     on_exit(fn ->
-      restore_pi_adapter(previous_pi_adapter)
+      restore_backend_adapter(previous_backend_adapter)
     end)
 
     :ok
@@ -824,8 +820,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end
   end
 
-  defp ensure_test_adapter_registered(previous_pi_adapter) do
-    case previous_pi_adapter do
+  defp ensure_test_adapter_registered(previous_backend_adapter) do
+    case previous_backend_adapter do
       TestAdapter ->
         :ok
 
@@ -840,8 +836,8 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end
   end
 
-  defp restore_pi_adapter(previous_pi_adapter) do
-    case previous_pi_adapter do
+  defp restore_backend_adapter(previous_backend_adapter) do
+    case previous_backend_adapter do
       TestAdapter ->
         :ok
 
@@ -854,6 +850,30 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         unregister_adapter(TestAdapter)
         :ok
     end
+  end
+
+  defp previous_backend_adapter do
+    configured =
+      Application.get_env(:foreman_server, :agent_runtime, [])
+      |> Keyword.get(:adapters, [])
+      |> Enum.find_value(fn
+        adapter when is_atom(adapter) ->
+          name = adapter.name()
+
+          case AdapterCatalog.lookup(name) do
+            {:ok, module} -> module
+            {:error, :not_found} -> nil
+          end
+
+        _ ->
+          nil
+      end)
+
+    configured ||
+      case AdapterCatalog.routing_snapshot() do
+        [%{adapter: module} | _] -> module
+        _ -> nil
+      end
   end
 
   defp unregister_adapter(module) do

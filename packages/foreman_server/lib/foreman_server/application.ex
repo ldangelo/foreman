@@ -99,6 +99,7 @@ defmodule ForemanServer.Application do
         ++ maybe_jido_signal_bus_child()
         ++ maybe_signal_to_command_child()
         ++ maybe_task_metadata_query_subscriber_child()
+        ++ maybe_jido_shell_runner_child()
         ++ maybe_operator_question_subscriber_child()
         ++ maybe_overwatch_child()
         ++
@@ -245,6 +246,16 @@ defmodule ForemanServer.Application do
           {ForemanServer.Agents.TaskMetadataQuerySubscriber,
            [name: :foreman_task_metadata_query_subscriber, bus: :foreman_jido_signal_bus]}
         ]
+
+      _ ->
+        []
+    end
+  end
+
+  def maybe_jido_shell_runner_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{ForemanServer.Agents.JidoShellRunner, [name: ForemanServer.Agents.JidoShellRunner]}]
 
       _ ->
         []

@@ -14,20 +14,25 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
   2. Each incoming query signal is handled by
      `TaskMetadataQueryResponder.respond/3`, which:
      - extracts `task_id`, `agent_id`, and `query_id` from the signal data,
-     - looks up the task via the injected reader
-       (`ProjectionStore.task_projection/1` — the read model, NOT
-       `TaskProvider.get/2`, which is for upstream integration),
+     - looks up the task via the read-model
+       (`ProjectionStore.task_projection/1` — the right source for
+       metadata queries, not `TaskProvider.get/2` which is for upstream
+       integration),
      - builds a `{:ok, metadata}` or `{:error, reason}` response signal,
      - publishes the response to the agent on its
-       `agents.<id>.directive` topic via
-       `SignalDirectivePublisher.publish/3`.
+       `agents.<id>.directive` topic via `SignalDirectivePublisher`.
+
+  ## Configurable response bus
+
+  The `response_bus:` option lets tests (and future production
+  sharding) publish responses to a different bus than the query bus.
+  Default: same as `bus:`.
   """
 
   use GenServer
 
   require Logger
 
-  alias ForemanServer.Agents.SignalDirectivePublisher
   alias ForemanServer.Agents.TaskMetadataQueryResponder
   alias ForemanServer.ProjectionStore
 
@@ -35,7 +40,8 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
 
   @doc """
   Start the subscriber and subscribe its pid to the query topic on
-  the given bus.
+  the given bus. Optional `response_bus:` overrides where the
+  response signal is published.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -46,15 +52,16 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
   @impl true
   def init(opts) do
     bus = Keyword.fetch!(opts, :bus)
+    response_bus = Keyword.get(opts, :response_bus, bus)
 
     case Jido.Signal.Bus.subscribe(bus, @query_topic,
            dispatch: {:pid, target: self()}
          ) do
       :ok ->
-        {:ok, %{bus: bus, subscription_ref: nil}}
+        {:ok, %{bus: bus, response_bus: response_bus, reader: Keyword.get(opts, :reader, &read_metadata/1), subscription_ref: nil}}
 
       {:ok, ref} ->
-        {:ok, %{bus: bus, subscription_ref: ref}}
+        {:ok, %{bus: bus, response_bus: response_bus, reader: Keyword.get(opts, :reader, &read_metadata/1), subscription_ref: ref}}
 
       other ->
         Logger.warning(
@@ -66,20 +73,20 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
   end
 
   @impl true
-  def handle_info({:signal, signal}, state) do
-    handle_query(signal, state.bus)
+  def handle_info({:signal, signal}, %{response_bus: response_bus, reader: reader} = state) do
+    handle_query(signal, response_bus, reader)
     {:noreply, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Handle a query signal end-to-end. Public so the test (and the
-  # future JSI-T013 integration test) can drive the responder without
-  # going through the bus.
+  # Handle a query signal end-to-end. Public so the JSI-T013 test
+  # can drive the responder without going through the bus.
   @doc false
-  @spec handle_query(struct(), GenServer.server()) :: :ok
-  def handle_query(%Jido.Signal{} = signal, bus) do
-    TaskMetadataQueryResponder.respond(signal, bus, &read_metadata/1)
+  @spec handle_query(struct(), GenServer.server() | :default, (String.t() -> {:ok, term()} | {:error, term()})) ::
+          {:ok, {:response, Jido.Signal.Bus.RecordedSignal.t()}} | {:error, term()}
+  def handle_query(%Jido.Signal{} = signal, response_bus, reader) when is_function(reader, 1) do
+    TaskMetadataQueryResponder.respond(signal, response_bus, reader)
   end
 
   @doc """
@@ -94,6 +101,7 @@ defmodule ForemanServer.Agents.TaskMetadataQuerySubscriber do
       map when is_map(map) -> {:ok, map}
     end
   end
+
 
   @doc """
   Sanity helper: the query topic pattern this subscriber consumes.

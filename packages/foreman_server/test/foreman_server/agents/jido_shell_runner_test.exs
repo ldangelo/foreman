@@ -1,18 +1,7 @@
 defmodule ForemanServer.Agents.JidoShellRunnerTest do
   @moduledoc """
-  Tests for `ForemanServer.Agents.JidoShellRunner` — the JSH-T001
-  Foreman wrapper around `Jido.Shell.ShellSession`
-  (TRD-2026-4212be7e).
-
-  The tests assert the *real* Jido.Shell contract:
-    - `start_session/1` returns `{:ok, session_id}` (the id passed in)
-    - `run_command/2` returns `{:ok, :accepted}` (async ack)
-    - `stop_session/1` returns `:ok`
-
-  The actual command result is delivered asynchronously as a
-  `:command_finished` message. Asserting that requires hooking a
-  callback (Jido.Shell option); this test verifies the
-  acknowledgement contract only.
+  Tests for `ForemanServer.Agents.JidoShellRunner` — the JSH-T001/JSH-T002
+  Foreman wrapper around `Jido.Shell.ShellSession`.
   """
 
   use ExUnit.Case, async: false
@@ -24,27 +13,41 @@ defmodule ForemanServer.Agents.JidoShellRunnerTest do
     :ok
   end
 
-  describe "start_session/1 (uses start_with_vfs/2)" do
-    test "returns {:ok, session_id}" do
-      assert {:ok, session_id} = JidoShellRunner.start_session("test")
-      assert is_binary(session_id)
+  setup do
+    unique = :erlang.unique_integer([:positive])
+    manager = :"JidoShellRunner.Test.#{unique}"
+    start_supervised!({JidoShellRunner, [name: manager]})
+    %{manager: manager}
+  end
 
-      # Cleanup
-      on_exit(fn -> JidoShellRunner.stop_session(session_id) end)
+  describe "start_session/2" do
+    test "returns {:ok, session_id}", %{manager: manager} do
+      assert {:ok, session_id} = JidoShellRunner.start_session("test", manager: manager)
+      assert is_binary(session_id)
+      refute JidoShellRunner.tracked?(session_id, manager: manager)
+      on_exit(fn -> JidoShellRunner.stop_session(session_id, manager: manager) end)
+    end
+
+    test "tracks owner-bound sessions under the selected manager", %{manager: manager} do
+      assert {:ok, session_id} =
+               JidoShellRunner.start_session("owner", manager: manager, owner: self())
+
+      try do
+        assert JidoShellRunner.tracked?(session_id, manager: manager)
+      after
+        JidoShellRunner.stop_session(session_id, manager: manager)
+      end
     end
   end
 
-  describe "run_command/2 (async ack contract)" do
-    test "returns {:ok, :accepted} for a real session" do
-      {:ok, session_id} = JidoShellRunner.start_session("test")
+  describe "run_command/2" do
+    test "returns {:ok, :accepted} for a real session", %{manager: manager} do
+      {:ok, session_id} = JidoShellRunner.start_session("test", manager: manager)
 
       try do
-        # Real upstream contract: {:ok, :accepted}. The actual
-        # result is delivered via a :command_finished message
-        # asynchronously.
         assert {:ok, :accepted} = JidoShellRunner.run_command(session_id, "pwd")
       after
-        JidoShellRunner.stop_session(session_id)
+        JidoShellRunner.stop_session(session_id, manager: manager)
       end
     end
 
@@ -54,10 +57,11 @@ defmodule ForemanServer.Agents.JidoShellRunnerTest do
     end
   end
 
-  describe "stop_session/1" do
-    test "returns :ok for a real session" do
-      {:ok, session_id} = JidoShellRunner.start_session("test")
-      assert :ok = JidoShellRunner.stop_session(session_id)
+  describe "stop_session/2" do
+    test "returns :ok for a real session and clears tracking", %{manager: manager} do
+      {:ok, session_id} = JidoShellRunner.start_session("test", manager: manager, owner: self())
+      assert :ok = JidoShellRunner.stop_session(session_id, manager: manager)
+      refute JidoShellRunner.tracked?(session_id, manager: manager)
     end
   end
 end

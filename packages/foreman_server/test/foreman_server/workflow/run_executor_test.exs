@@ -91,7 +91,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         end
       end
 
-      LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
+      result = LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
+
+      case LifecycleStore.take(script_key, :after_execute, nil) do
+        fun when is_function(fun, 0) -> fun.()
+        _ -> :ok
+      end
+
+      result
     end
   end
 
@@ -124,16 +131,22 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       ForemanServer.AgentRuntime.InvocationSupervisor
     )
 
-    previous_pi_adapter =
-      case AdapterCatalog.lookup(:pi) do
-        {:ok, module} -> module
-        {:error, :not_found} -> nil
-      end
+    ensure_started(
+      ForemanServer.TaskProvider.Registry,
+      ForemanServer.TaskProvider.Registry
+    )
 
-    ensure_test_adapter_registered(previous_pi_adapter)
+    ensure_started(
+      ForemanServer.Agents.JidoShellRunner,
+      ForemanServer.Agents.JidoShellRunner
+    )
+
+    previous_backend_adapter = previous_backend_adapter()
+
+    ensure_test_adapter_registered(previous_backend_adapter)
 
     on_exit(fn ->
-      restore_pi_adapter(previous_pi_adapter)
+      restore_backend_adapter(previous_backend_adapter)
     end)
 
     :ok
@@ -145,7 +158,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     previous_task_provider = Application.get_env(:foreman_server, :task_provider, [])
 
 
-    init_run_slots_capacity()
+    ForemanServer.TestSupport.RunSlotsReset.reset!()
 
 
     Application.put_env(
@@ -157,7 +170,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     )
 
     stop_schema_cache()
-    ForemanServer.TestSupport.TestApplication.reset_application_child!(TaskProviderRegistry)
+
+    if Process.whereis(TaskProviderRegistry) do
+      ForemanServer.TestSupport.TestApplication.reset_application_child!(TaskProviderRegistry)
+    end
+
     dispatcher = Process.whereis(ForemanServer.Workflow.Dispatcher)
 
     if dispatcher do
@@ -295,7 +312,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert context["phase_id"] == Identity.phase_id(run_id, 1)
     assert context["run_id"] == run_id
     assert context["task_id"] == task_id
-
+    assert {:adapter_env, env} = receive_message()
+    assert is_binary(env["FOREMAN_SHELL_SESSION_ID"])
+    assert env["FOREMAN_SHELL_SESSION_ID"] != ""
     artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
 
     assert {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _} = receive_message()
@@ -1332,8 +1351,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
-  defp ensure_test_adapter_registered(previous_pi_adapter) do
-    case previous_pi_adapter do
+  defp ensure_test_adapter_registered(previous_backend_adapter) do
+    case previous_backend_adapter do
       TestAdapter ->
         :ok
 
@@ -1348,8 +1367,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
-  defp restore_pi_adapter(previous_pi_adapter) do
-    case previous_pi_adapter do
+  defp restore_backend_adapter(previous_backend_adapter) do
+    case previous_backend_adapter do
       TestAdapter ->
         :ok
 
@@ -1373,6 +1392,64 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     else
       :ok
     end
+  end
+
+  defp previous_backend_adapter do
+    configured =
+      Application.get_env(:foreman_server, :agent_runtime, [])
+      |> Keyword.get(:adapters, [])
+      |> Enum.find_value(fn
+        adapter when is_atom(adapter) ->
+          name = adapter.name()
+
+          case AdapterCatalog.lookup(name) do
+            {:ok, module} -> module
+            {:error, :not_found} -> nil
+          end
+
+        _ ->
+          nil
+      end)
+
+    configured ||
+      case AdapterCatalog.routing_snapshot() do
+        [%{adapter: module} | _] -> module
+        _ -> nil
+      end
+  end
+
+  defp current_backend_name do
+    configured =
+      Application.get_env(:foreman_server, :agent_runtime, [])
+      |> Keyword.get(:adapters, [])
+      |> Enum.find_value(fn
+        adapter when is_atom(adapter) ->
+          name = adapter.name()
+
+          case AdapterCatalog.lookup(name) do
+            {:ok, ^adapter} ->
+              if adapter.available?(), do: name, else: nil
+
+            _ ->
+              nil
+          end
+
+        _ ->
+          nil
+      end)
+
+    configured ||
+      (AdapterCatalog.routing_snapshot()
+       |> Enum.find_value(fn
+         %{name: name, adapter: adapter, available: true} ->
+           case AdapterCatalog.lookup(name) do
+             {:ok, ^adapter} -> name
+             _ -> nil
+           end
+
+         _ ->
+           nil
+       end))
   end
 
   defp start_telemetry_collector(events) do
@@ -1675,33 +1752,6 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
                type: type,
                payload: payload
              })
-  end
-
-  defp init_run_slots_capacity do
-    _ = EventStore.delete_stream("run_slots:global", :any_version, :hard)
-
-    case Registry.lookup(ForemanServer.AggregateRegistry, "run_slots:global") do
-      [{pid, _}] when is_pid(pid) -> Process.exit(pid, :kill)
-      _ -> :ok
-    end
-
-    ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
-    Process.sleep(20)
-
-    on_exit(fn ->
-      try do
-        _ = EventStore.delete_stream("run_slots:global", :any_version, :hard)
-
-        case Registry.lookup(ForemanServer.AggregateRegistry, "run_slots:global") do
-          [{pid, _}] when is_pid(pid) -> Process.exit(pid, :kill)
-          _ -> :ok
-        end
-      rescue
-        _ -> :ok
-      end
-    end)
-
-    :ok
   end
 
   defp start_run_executor!(run_id, task_id) do
@@ -2009,6 +2059,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end)
 
     start_run_executor!(run_id, task_id)
+
 
     # Claim lands first.
     assert_receive {:claim_cmd, {:update, %{flags: ["--claim", ^task_id]}}}, 1_000
