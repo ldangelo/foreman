@@ -28,7 +28,17 @@ defmodule ForemanServer.MixProject do
       {:ecto_sql, "~> 3.12"},
       {:jason, "~> 1.4"},
       {:plug, "~> 1.18"},
-      {:postgrex, ">= 0.0.0"}
+      {:postgrex, ">= 0.0.0"},
+      {:jido, "~> 2.3"},
+      {:jido_action, "~> 2.3"},
+      {:jido_signal, "~> 2.2"},
+      {:jido_shell, github: "agentjido/jido_shell"},
+      {:jido_vfs, "~> 1.0"},
+      {:jido_ai, "~> 2.3"},
+      {:jido_harness, github: "agentjido/jido_harness"},
+      {:jido_ecto, "~> 1.0"},
+      {:req_llm, "~> 1.20"},
+      {:jido_otel, "~> 1.0"}
     ]
   end
 
