@@ -1,11 +1,14 @@
 defmodule ForemanServer.Application do
   @moduledoc """
-  OTP application for ForemanServer.
+  Top-level Foreman application.
 
-  Starts:
-  - EventStore (Postgrex-backed event log — single source of truth)
-  - Aggregator supervisor (Registry + aggregate Actor children, `:permanent` restart)
-  - CommandRouter (GenServer — sole append point)
+  Boots the Phoenix endpoint, the CQRS event-sourced spine, the
+  task-provider registry, the workflow supervision tree, and a
+  collection of opt-in subsystems (Jido AgentRuntime, Jido signal
+  bus + adapter, jido_ecto checkpoint repo, Overwatch, MCP) gated
+  on configuration keys.
+
+  See `start/2` for the children list and the gating config keys.
   """
 
   use Application
@@ -75,9 +78,11 @@ defmodule ForemanServer.Application do
         ]
         ++ maybe_lifecycle_reconciler_child()
         ++ maybe_agent_runtime_child()
+        ++ maybe_jido_checkpoint_repo_child()
         ++ maybe_mcp_child()
-        ++ maybe_overwatch_child() ++
-        maybe_stuck_detector_child() ++
+        ++ maybe_overwatch_child()
+        ++ maybe_stuck_detector_child()
+        ++
         [
           # Endpoint exposes dev-only debug LiveViews.
           ForemanServerWeb.Endpoint
@@ -144,6 +149,20 @@ defmodule ForemanServer.Application do
 
       _ ->
         []
+    end
+  end
+
+  # The Jido checkpoint store is the persistent backend for Jido
+  # agent state. We start a dedicated Ecto.Repo (so jido's tables live
+  # in their own namespace) gated on
+  # `config :foreman_server, :jido_ecto, enabled: true`. The wrapper
+  # is a no-op (just forwards to Jido.Ecto.Storage) so it does not
+  # need to be a supervisor child; only the Repo does.
+  defp maybe_jido_checkpoint_repo_child do
+    if Application.get_env(:foreman_server, :jido_ecto, [])[:enabled] in [true, "true"] do
+      [{ForemanServer.Agents.JidoCheckpointStore.Repo, []}]
+    else
+      []
     end
   end
 
@@ -257,6 +276,7 @@ defmodule ForemanServer.Application do
       []
     end
   end
+
   def config_change(changed, _new, removed) do
     ForemanServerWeb.Endpoint.config_change(changed, removed)
     :ok
