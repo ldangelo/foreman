@@ -435,11 +435,11 @@ All `Status` cells are `[ ]`.
 
 | Sprint | Focus | Task Count | Critical Path |
 |--------|-------|-----------|---------------|
-| Sprint 1 | Foundation: Jido Core Runtime, Action Authoring, Harness | 15 | JCR-T001 → JCR-T002 → JCR-T003 → JHA-T001 → JHA-T002 |
+| Sprint 1 | Foundation: Jido Core Runtime, Action Authoring, Harness | 17 | JCR-T001 → JCR-T002 → JCR-T003 → JHA-T001 → JHA-T002 |
 | Sprint 2 | Communication: Signal Bus, Operator, Agent↔Foreman, Shell | 20 | JCR-T001 → JSI-T001 → JSI-T002 → JSI-T008 → JSI-T010 |
 | Sprint 3 | AI/LLM: jido_ai, LiteLLM+Langfuse, MCP, Dashboard, OTEL | 25 | JAI-T001 → LGL-T001 → LGL-T002 |
 | Sprint 4 | Orchestration: Workflow Dispatch, Merge Gate, Resumability | 17 | WFD-T001 → WFD-T004 → MGH-T001 → MGH-T004 |
-| Sprint 5 | Hardening: Repo Mirroring, Benchmark, Legacy Removal, Hot-Load | 29 | CTH-T001 → LGC-T008 → LGC-T010 → LGC-T011 → LGC-T012 |
+| Sprint 5 | Hardening: Repo Mirroring, Benchmark, Legacy Removal, Hot-Load | 27 | CTH-T001 → LGC-T008 → LGC-T010 → LGC-T011 → LGC-T012 |
 | **Total** | | **106** | |
 
 ---
@@ -447,5 +447,5 @@ All `Status` cells are `[ ]`.
 ## 6. Next Steps
 
 1. Review and approve this TRD
-2. Run `foreman sling prd docs/PRD/PRD-2026-4212be7e-jido-migration.md` to create native Foreman tasks from the PRD
-3. Proceed to implementation following Sprint 1 task order
+2. Refine as needed
+3. Run `foreman sling trd docs/TRD/TRD-2026-4212be7e-jido-migration.md` to create native Foreman tasks
