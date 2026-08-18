@@ -231,6 +231,23 @@ The auto-install performed by `Workflow.Catalog.init/1` at boot is
 a **no-op** when this command (or any other process) has already
 materialised at least one `*.yaml` manifest under the target — see
 `docs/user-guide.md` §7 for the exact condition.
+### `foreman workflow remove --all`
+
+Removes all legacy workflows (`discover`, `assess`, `implement`, `verify`, `release`) from the catalog. The `--all` flag is required to prevent accidental removal.
+
+The operator is prompted for interactive confirmation before the server call is made. Answering `y` or `Y` proceeds; anything else exits without changes.
+
+The `POST /api/admin/workflows/remove` call is forwarded to `WorkflowTemplate.Installer.remove_all/1`, which deletes each manifest file from disk. Workflows removed in error can be restored from git.
+
+```
+foreman workflow remove --all
+Remove legacy workflows (discover, assess, implement, verify, release)? [y/N] y
+{"removed": ["discover","assess","implement","verify","release"]}
+```
+
+| Flag | Description |
+|---|---|
+| `--all` | **Required.** Confirms intent to remove all legacy workflows. Omitting this flag returns a usage error. |
 
 ### `foreman task create --task-type plan`
 
