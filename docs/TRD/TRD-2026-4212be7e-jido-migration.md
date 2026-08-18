@@ -16,7 +16,6 @@ total_tasks: 106
 ## Document Metadata
 
 | Field | Value |
-|-------|-------|
 | **Document ID** | TRD-2026-4212be7e |
 | **Label** | trd-jido-migration |
 | **Kind** | trd |
@@ -37,7 +36,6 @@ This migration extends existing Foreman infrastructure defined in TRD-2026-014 (
 ### Reused from TRD-2026-014
 
 | Capability | TRD-014 Location | How Extended |
-|------------|-----------------|-------------|
 | Append-only event store (Postgres) | §4.2, §4.4 | Jido agents emit signals to `foreman/commands` topic; jido_signal adapter normalizes CloudEvents to `ExternalTriggerCommand` and routes to existing Integration Ingestion (§4.8) |
 | Command handlers | §4.5 | Reused as-is; signal adapter produces `ExternalTriggerCommand` envelope |
 | Projection workers with rebuild checkpoints | §4.2, §4.5 | Reused as-is; no new projector infrastructure |
@@ -51,7 +49,6 @@ This migration extends existing Foreman infrastructure defined in TRD-2026-014 (
 ### Extended from TRD-2026-009
 
 | Capability | TRD-009 Location | How Extended |
-|------------|-----------------|-------------|
 | Guardrail config (ProjectConfig) | TRD-009-001 | `jido_vfs` sandbox policies extend the same config shape for VFS access control |
 | Security event logging | TRD-009-003, §4.6 | New security vectors: MCP allowlist violations, direct Foreman internal state access, jido_workspace sandbox bypass |
 | Heartbeat manager | TRD-009-006 | Replaced by Jido agent lifecycle heartbeat with `jido_ecto` checkpoint persistence |
@@ -59,7 +56,6 @@ This migration extends existing Foreman infrastructure defined in TRD-2026-014 (
 ### Extended from TRD-2026-015
 
 | Capability | TRD-015 Location | How Extended |
-|------------|-----------------|-------------|
 | WorkflowRunner callbacks | §4.1, §5 | Phase lifecycle callbacks (onPhaseStart, onPhaseComplete, onPipelineComplete) extended: Jido agent phase handoff uses `jido_signal` pub/sub |
 
 ---
@@ -119,7 +115,7 @@ Ensemble Skills (external; Foreman dispatches with --foreman)
 
 ---
 
-## 2. Master Task List
+## Master Task List
 
 **Domain prefixes:** `JCR`=Jido Core Runtime, `JAF`=Jido Action Framework, `JHA`=Jido Harness Adapter, `JSI`=Signal Integration, `JSH`=Shell/VFS, `JAI`=Jido AI, `LGL`=LiteLLM/Langfuse, `MCP`=MCP Client, `JLD`=Live Dashboard, `JOT`=OpenTelemetry, `WFD`=Workflow Dispatch, `MGH`=Merge Gate, `RTE`=Resumability, `JRM`=Jido Repo Mirroring, `ADT`=Action Dev Target, `CTH`=Characterization Harness, `HLW`=Hot-Loadable Workflows, `LGC`=Legacy + Security.
 
@@ -127,255 +123,207 @@ All `Status` cells are `[ ]`.
 
 ---
 
-### 2.1 Sprint 1: Foundation — Jido Core Runtime and Action Authoring
+### Sprint 1: Foundation — Jido Core Runtime and Action Authoring
 
 #### Story 1.1: Jido Core Runtime
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JCR-T001 | Add all Jido packages to mix.exs: jido, jido_action, jido_signal, jido_shell, jido_vfs, jido_ai, jido_harness, jido_ecto, req_llm, jido_otel | 2h | | [ ] |
-| JCR-T002 | Create Jido.Agent GenServer under Foreman.Application supervision tree with OTP restart strategy | 4h | JCR-T001 | [ ] |
-| JCR-T003 | Implement cmd/2 loop in Jido agent: action in → updated agent struct + directives out | 4h | JCR-T002 | [ ] |
-| JCR-T004 | Integrate jido_ecto for agent struct and checkpoint persistence (Postgres adapter) | 4h | JCR-T002 | [ ] |
-| JCR-T005 | Implement signal-to-command adapter: Phoenix subscriber for foreman/commands topic, normalizes CloudEvent to ExternalTriggerCommand, routes to TRD-014 Integration Ingestion | 6h | JCR-T001 | [ ] |
-| JCR-T006 | Write unit tests for Jido.Agent GenServer lifecycle (start, cmd/2, checkpoint, restart) | 4h | JCR-T004 | [ ] |
-| JCR-T007 | Write integration test verifying agent signal → command envelope → event store → projection update flow | 4h | JCR-T005 | [ ] |
+- [ ] **TRD-JCR-T001**: Add all Jido packages to mix.exs: jido, jido_action, jido_signal, jido_shell, jido_vfs, jido_ai, jido_harness, jido_ecto, req_llm, jido_otel (Est: 2h)
+- [ ] **TRD-JCR-T002**: Create Jido.Agent GenServer under Foreman.Application supervision tree with OTP restart strategy (Est: 4h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JCR-T003**: Implement cmd/2 loop in Jido agent: action in → updated agent struct + directives out (Est: 4h) [depends: TRD-JCR-T002]
+- [ ] **TRD-JCR-T004**: Integrate jido_ecto for agent struct and checkpoint persistence (Postgres adapter) (Est: 4h) [depends: TRD-JCR-T002]
+- [ ] **TRD-JCR-T005**: Implement signal-to-command adapter: Phoenix subscriber for foreman/commands topic, normalizes CloudEvent to ExternalTriggerCommand, routes to TRD-014 Integration Ingestion (Est: 6h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JCR-T006**: Write unit tests for Jido.Agent GenServer lifecycle (start, cmd/2, checkpoint, restart) (Est: 4h) [depends: TRD-JCR-T004]
+- [ ] **TRD-JCR-T007**: Write integration test verifying agent signal → command envelope → event store → projection update flow (Est: 4h) [depends: TRD-JCR-T005]
 
 #### Story 1.2: Jido Action Authoring Framework
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JAF-T001 | Define Jido.Action behaviour for tool registration and validation | 3h | JCR-T001 | [ ] |
-| JAF-T002 | Migrate existing TypeScript tool factories to Jido.Action modules (git_status, diff_read, task_get, etc.) | 8h | JAF-T001 | [ ] |
-| JAF-T003 | Add action validation middleware (parameter checking before execution) | 2h | JAF-T001 | [ ] |
-| JAF-T004 | Add Jido.Character prompt template loader for skills (prompt fragments, not actions) | 3h | JCR-T001 | [ ] |
-| JAF-T005 | Write isolation tests for each migrated action achieving ≥85% code coverage | 4h | JAF-T002 | [ ] |
+- [ ] **TRD-JAF-T001**: Define Jido.Action behaviour for tool registration and validation (Est: 3h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JAF-T002**: Migrate existing TypeScript tool factories to Jido.Action modules (git_status, diff_read, task_get, etc.) (Est: 8h) [depends: TRD-JAF-T001]
+- [ ] **TRD-JAF-T003**: Add action validation middleware (parameter checking before execution) (Est: 2h) [depends: TRD-JAF-T001]
+- [ ] **TRD-JAF-T004**: Add Jido.Character prompt template loader for skills (prompt fragments, not actions) (Est: 3h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JAF-T005**: Write isolation tests for each migrated action achieving ≥85% code coverage (Est: 4h) [depends: TRD-JAF-T002]
 
 #### Story 1.3: Jido Harness Pi Adapter
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JHA-T001 | Integrate jido_harness with Jido.Harness.Adapters.Pi | 4h | JCR-T001 | [ ] |
-| JHA-T002 | Replace pi-sdk-runner.ts with Jido.Harness.Session, Jido.Harness.Run, Jido.Harness.Process | 8h | JHA-T001 | [ ] |
-| JHA-T003 | Write characterization test verifying Jido.Harness.Adapters.Pi provides functional equivalent of pi-sdk-runner.ts session lifecycle | 4h | JHA-T002 | [ ] |
+- [ ] **TRD-JHA-T001**: Integrate jido_harness with Jido.Harness.Adapters.Pi (Est: 4h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JHA-T002**: Replace pi-sdk-runner.ts with Jido.Harness.Session, Jido.Harness.Run, Jido.Harness.Process (Est: 8h) [depends: TRD-JHA-T001]
+- [ ] **TRD-JHA-T003**: Write characterization test verifying Jido.Harness.Adapters.Pi provides functional equivalent of pi-sdk-runner.ts session lifecycle (Est: 4h) [depends: TRD-JHA-T002]
 
 ---
 
-### 2.2 Sprint 2: Communication Infrastructure — Signal Bus, Operator, Agent↔Foreman
+### Sprint 2: Communication Infrastructure — Signal Bus, Operator, Agent↔Foreman
 
 #### Story 2.1: Signal Bus (jido_signal)
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [ ] |
-| JSI-T002 | Implement Agent→Agent signal pub/sub via Bus.publish to agents/<phase> topic | 4h | JSI-T001 | [ ] |
-| JSI-T003 | Implement missing-subscriber configurable policy (silent/warn/error, default warn) in Foreman config | 3h | JSI-T001 | [ ] |
-| JSI-T004 | Add signal journal for replay on restart | 4h | JSI-T001 | [ ] |
-| JSI-T005 | Write integration tests for signal pub/sub with all three missing-subscriber policies | 3h | JSI-T003 | [ ] |
+- [ ] **TRD-JSI-T001**: Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive (Est: 2h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JSI-T002**: Implement Agent→Agent signal pub/sub via Bus.publish to agents/<phase> topic (Est: 4h) [depends: TRD-JSI-T001]
+- [ ] **TRD-JSI-T003**: Implement missing-subscriber configurable policy (silent/warn/error, default warn) in Foreman config (Est: 3h) [depends: TRD-JSI-T001]
+- [ ] **TRD-JSI-T004**: Add signal journal for replay on restart (Est: 4h) [depends: TRD-JSI-T001]
+- [ ] **TRD-JSI-T005**: Write integration tests for signal pub/sub with all three missing-subscriber policies (Est: 3h) [depends: TRD-JSI-T003]
 
 #### Story 2.2: Operator Communication
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JSI-T006 | Add foreman/operator topic subscriber | 3h | JSI-T001 | [ ] |
-| JSI-T007 | Implement jido_signal dispatch adapter (webhook/HTTP) to Foreman inbox API | 4h | JSI-T006 | [ ] |
-| JSI-T008 | Implement operator question → inbox domain event → projector → agent directive flow | 4h | JSI-T007 | [ ] |
-| JSI-T009 | Implement per-workflow operator timeout (configurable in workflow definition; mark task blocked on expiry) | 3h | JSI-T008 | [ ] |
-| JSI-T010 | Write integration test for operator question → inbox notification → agent resume | 4h | JSI-T008 | [ ] |
+- [ ] **TRD-JSI-T006**: Add foreman/operator topic subscriber (Est: 3h) [depends: TRD-JSI-T001]
+- [ ] **TRD-JSI-T007**: Implement jido_signal dispatch adapter (webhook/HTTP) to Foreman inbox API (Est: 4h) [depends: TRD-JSI-T006]
+- [ ] **TRD-JSI-T008**: Implement operator question → inbox domain event → projector → agent directive flow (Est: 4h) [depends: TRD-JSI-T007]
+- [ ] **TRD-JSI-T009**: Implement per-workflow operator timeout (configurable in workflow definition; mark task blocked on expiry) (Est: 3h) [depends: TRD-JSI-T008]
+- [ ] **TRD-JSI-T010**: Write integration test for operator question → inbox notification → agent resume (Est: 4h) [depends: TRD-JSI-T008]
 
 #### Story 2.3: Agent↔Foreman Communication
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JSI-T011 | Implement directive publisher (Foreman→Agent) via Bus.publish to agents/<agent-id>/directive | 3h | JSI-T001 | [ ] |
-| JSI-T012 | Implement task metadata query signal (Agent→Foreman) and response signal (Foreman→Agent) | 3h | JSI-T011 | [ ] |
-| JSI-T013 | Write integration tests for nudge and query flows | 3h | JSI-T011, JSI-T012 | [ ] |
+- [ ] **TRD-JSI-T011**: Implement directive publisher (Foreman→Agent) via Bus.publish to agents/<agent-id>/directive (Est: 3h) [depends: TRD-JSI-T001]
+- [ ] **TRD-JSI-T012**: Implement task metadata query signal (Agent→Foreman) and response signal (Foreman→Agent) (Est: 3h) [depends: TRD-JSI-T011]
+- [ ] **TRD-JSI-T013**: Write integration tests for nudge and query flows (Est: 3h) [depends: TRD-JSI-T011, TRD-JSI-T012]
 
 #### Story 2.4: Shell Integration
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JSH-T001 | Integrate jido_shell for command execution with jido_vfs sandbox | 4h | JSI-T001 | [ ] |
-| JSH-T002 | Implement shell session lifecycle: shell tied to agent lifetime (terminates on agent restart; restarted agent creates new session) | 3h | JSH-T001 | [ ] |
-| JSH-T003 | Add VFS isolation per worktree (each agent gets sandboxed filesystem view) | 3h | JSH-T001 | [ ] |
-| JSH-T004 | Write shell integration tests: command execution, session isolation, VFS sandbox | 4h | JSH-T002, JSH-T003 | [ ] |
+- [ ] **TRD-JSH-T001**: Integrate jido_shell for command execution with jido_vfs sandbox (Est: 4h) [depends: TRD-JSI-T001]
+- [ ] **TRD-JSH-T002**: Implement shell session lifecycle: shell tied to agent lifetime (terminates on agent restart; restarted agent creates new session) (Est: 3h) [depends: TRD-JSH-T001]
+- [ ] **TRD-JSH-T003**: Add VFS isolation per worktree (each agent gets sandboxed filesystem view) (Est: 3h) [depends: TRD-JSH-T001]
+- [ ] **TRD-JSH-T004**: Write shell integration tests: command execution, session isolation, VFS sandbox (Est: 4h) [depends: TRD-JSH-T002, TRD-JSH-T003]
 
 #### Story 2.5: jido_workspace Validation Spike
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JSH-T005 | Spike jido_workspace worktree binding and sandbox enforcement: evaluate in-memory VFS, snapshot semantics, host-path adapter | 8h | JCR-T001 | [ ] |
-| JSH-T006 | If spike passes: adopt jido_workspace with validated sandbox policies. If spike fails: use jido_shell + jido_vfs + custom host-path adapter | 4h | JSH-T005 | [ ] |
-| JSH-T007 | Document jido_workspace validation result in spike report | 2h | JSH-T005 | [ ] |
+- [ ] **TRD-JSH-T005**: Spike jido_workspace worktree binding and sandbox enforcement: evaluate in-memory VFS, snapshot semantics, host-path adapter (Est: 8h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JSH-T006**: If spike passes: adopt jido_workspace with validated sandbox policies. If spike fails: use jido_shell + jido_vfs + custom host-path adapter (Est: 4h) [depends: TRD-JSH-T005]
+- [ ] **TRD-JSH-T007**: Document jido_workspace validation result in spike report (Est: 2h) [depends: TRD-JSH-T005]
 
 ---
 
-### 2.3 Sprint 3: AI, LLM, and External Integrations
+### Sprint 3: AI, LLM, and External Integrations
 
 #### Story 3.1: Jido AI + req_llm
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JAI-T001 | Integrate jido_ai strategies (ReAct, Chain-of-Thought) with req_llm HTTP client | 4h | JCR-T001 | [ ] |
-| JAI-T002 | Add LLM timeout/error handling: req_llm error → error directive to agent (retry or escalate) | 3h | JAI-T001 | [ ] |
-| JAI-T003 | Verify jido_ai routes LLM calls through LiteLLM gateway when configured | 2h | JAI-T001, LGL-T001 | [ ] |
+- [ ] **TRD-JAI-T001**: Integrate jido_ai strategies (ReAct, Chain-of-Thought) with req_llm HTTP client (Est: 4h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JAI-T002**: Add LLM timeout/error handling: req_llm error → error directive to agent (retry or escalate) (Est: 3h) [depends: TRD-JAI-T001]
+- [ ] **TRD-JAI-T003**: Verify jido_ai routes LLM calls through LiteLLM gateway when configured (Est: 2h) [depends: TRD-JAI-T001, TRD-LGL-T001]
 
 #### Story 3.2: LiteLLM + Langfuse Integration
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| LGL-T001 | Integrate litellm-langfuse-stack (LiteLLM port 4000, Langfuse port 3000) with model="auto" capability routing | 4h | JAI-T001 | [ ] |
-| LGL-T002 | Add Langfuse tracing for all LLM calls (prompt, response, model, cost, latency) | 3h | LGL-T001 | [ ] |
-| LGL-T003 | Implement zero-candidates failure: LiteLLM returns descriptive error listing excluded filters when all models filtered out; task marked blocked | 2h | LGL-T001 | [ ] |
-| LGL-T004 | Add routing auditability: metadata.routed_to and routing reason in every Langfuse trace | 3h | LGL-T002 | [ ] |
-| LGL-T005 | Implement LiteLLM unavailable → blocked task (no direct API key fallback) | 2h | LGL-T001 | [ ] |
-| LGL-T006 | Write LiteLLM integration tests: auto-routing, budget failover, zero-candidates, unavailable | 4h | LGL-T001 | [ ] |
+- [ ] **TRD-LGL-T001**: Integrate litellm-langfuse-stack (LiteLLM port 4000, Langfuse port 3000) with model="auto" capability routing (Est: 4h) [depends: TRD-JAI-T001]
+- [ ] **TRD-LGL-T002**: Add Langfuse tracing for all LLM calls (prompt, response, model, cost, latency) (Est: 3h) [depends: TRD-LGL-T001]
+- [ ] **TRD-LGL-T003**: Implement zero-candidates failure: LiteLLM returns descriptive error listing excluded filters when all models filtered out; task marked blocked (Est: 2h) [depends: TRD-LGL-T001]
+- [ ] **TRD-LGL-T004**: Add routing auditability: metadata.routed_to and routing reason in every Langfuse trace (Est: 3h) [depends: TRD-LGL-T002]
+- [ ] **TRD-LGL-T005**: Implement LiteLLM unavailable → blocked task (no direct API key fallback) (Est: 2h) [depends: TRD-LGL-T001]
+- [ ] **TRD-LGL-T006**: Write LiteLLM integration tests: auto-routing, budget failover, zero-candidates, unavailable (Est: 4h) [depends: TRD-LGL-T001]
 
 #### Story 3.3: MCP Client Integration
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| MCP-T001 | Fork jido_mcp under Sunstone-Partners GitHub and pin to specific git revision | 2h | | [ ] |
-| MCP-T002 | Integrate jido_mcp client pool with agent toolset sync | 4h | MCP-T001 | [ ] |
-| MCP-T003 | Implement MCP tool sync: registered MCP servers' tools appear in agent's available toolset | 4h | MCP-T002 | [ ] |
-| MCP-T004 | Add bounded diagnostics for malformed MCP responses (endpoint ID, tool ID, correlation ID, parse/schema error, response size, response hash; no raw body without explicit debug policy) | 3h | MCP-T003 | [ ] |
-| MCP-T005 | Add MCP security allowlist: reject calls to tools outside allowlist, log security event | 3h | MCP-T003 | [ ] |
-| MCP-T006 | Add recoverable/non-recoverable MCP error handling with retry directive | 3h | MCP-T003 | [ ] |
-| MCP-T007 | Write MCP integration tests: tool sync, malformed response, allowlist enforcement | 4h | MCP-T003 | [ ] |
+- [ ] **TRD-MCP-T001**: Fork jido_mcp under Sunstone-Partners GitHub and pin to specific git revision (Est: 2h)
+- [ ] **TRD-MCP-T002**: Integrate jido_mcp client pool with agent toolset sync (Est: 4h) [depends: TRD-MCP-T001]
+- [ ] **TRD-MCP-T003**: Implement MCP tool sync: registered MCP servers' tools appear in agent's available toolset (Est: 4h) [depends: TRD-MCP-T002]
+- [ ] **TRD-MCP-T004**: Add bounded diagnostics for malformed MCP responses (endpoint ID, tool ID, correlation ID, parse/schema error, response size, response hash; no raw body without explicit debug policy) (Est: 3h) [depends: TRD-MCP-T003]
+- [ ] **TRD-MCP-T005**: Add MCP security allowlist: reject calls to tools outside allowlist, log security event (Est: 3h) [depends: TRD-MCP-T003]
+- [ ] **TRD-MCP-T006**: Add recoverable/non-recoverable MCP error handling with retry directive (Est: 3h) [depends: TRD-MCP-T003]
+- [ ] **TRD-MCP-T007**: Write MCP integration tests: tool sync, malformed response, allowlist enforcement (Est: 4h) [depends: TRD-MCP-T003]
 
 #### Story 3.4: Live Dashboard
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JLD-T001 | Mount jido_live_dashboard in Phoenix endpoint under existing Foreman auth guards | 3h | JCR-T001 | [ ] |
-| JLD-T002 | Add dashboard views: active agents, current state, signal history, directive queue | 4h | JLD-T001 | [ ] |
-| JLD-T003 | Verify dashboard refresh latency ≤1 second for agent state changes | 2h | JLD-T002 | [ ] |
-| JLD-T004 | Write dashboard integration tests: auth guard enforcement, data freshness | 3h | JLD-T002 | [ ] |
+- [ ] **TRD-JLD-T001**: Mount jido_live_dashboard in Phoenix endpoint under existing Foreman auth guards (Est: 3h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JLD-T002**: Add dashboard views: active agents, current state, signal history, directive queue (Est: 4h) [depends: TRD-JLD-T001]
+- [ ] **TRD-JLD-T003**: Verify dashboard refresh latency ≤1 second for agent state changes (Est: 2h) [depends: TRD-JLD-T002]
+- [ ] **TRD-JLD-T004**: Write dashboard integration tests: auth guard enforcement, data freshness (Est: 3h) [depends: TRD-JLD-T002]
 
 #### Story 3.5: OpenTelemetry Integration
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JOT-T001 | Configure jido_otel with Langfuse-compatible OTLP endpoint | 3h | JCR-T001 | [ ] |
-| JOT-T002 | Emit OTEL span for every cmd/2 call (action name, parameters, duration) | 2h | JOT-T001 | [ ] |
-| JOT-T003 | Emit OTEL span for every LLM call (model, token counts, cost, routing reason) | 2h | JOT-T001 | [ ] |
-| JOT-T004 | Emit OTEL span for signal publish/dispatch (signal type, topic, delivery status) | 2h | JOT-T001 | [ ] |
-| JOT-T005 | Write OTEL integration tests: span emission for cmd/2, LLM calls, signal dispatch | 3h | JOT-T002, JOT-T003, JOT-T004 | [ ] |
+- [ ] **TRD-JOT-T001**: Configure jido_otel with Langfuse-compatible OTLP endpoint (Est: 3h) [depends: TRD-JCR-T001]
+- [ ] **TRD-JOT-T002**: Emit OTEL span for every cmd/2 call (action name, parameters, duration) (Est: 2h) [depends: TRD-JOT-T001]
+- [ ] **TRD-JOT-T003**: Emit OTEL span for every LLM call (model, token counts, cost, routing reason) (Est: 2h) [depends: TRD-JOT-T001]
+- [ ] **TRD-JOT-T004**: Emit OTEL span for signal publish/dispatch (signal type, topic, delivery status) (Est: 2h) [depends: TRD-JOT-T001]
+- [ ] **TRD-JOT-T005**: Write OTEL integration tests: span emission for cmd/2, LLM calls, signal dispatch (Est: 3h) [depends: TRD-JOT-T002, TRD-JOT-T003, TRD-JOT-T004]
 
 ---
 
-### 2.4 Sprint 4: Workflow Dispatch, Merge Gate, and Resumability
+### Sprint 4: Workflow Dispatch, Merge Gate, and Resumability
 
 #### Story 4.1: Workflow Dispatch — create
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| WFD-T001 | Implement create workflow sequential dispatcher: ensemble:create-prd → refine-prd → create-trd → refine-trd → implement-trd | 6h | JSI-T010, JSI-T011 | [ ] |
-| WFD-T002 | Add idempotency key management per step: key = create-prd-{taskId}-{step} | 4h | WFD-T001 | [ ] |
-| WFD-T003 | Add step sequencing with terminal status propagation (completed/failed/blocked) | 4h | WFD-T002 | [ ] |
-| WFD-T004 | Write create workflow characterization test: correct skill in correct order, output routing, no bypass | 4h | WFD-T003 | [ ] |
+- [ ] **TRD-WFD-T001**: Implement create workflow sequential dispatcher: ensemble:create-prd → refine-prd → create-trd → refine-trd → implement-trd (Est: 6h) [depends: TRD-JSI-T010, TRD-JSI-T011]
+- [ ] **TRD-WFD-T002**: Add idempotency key management per step: key = create-prd-{taskId}-{step} (Est: 4h) [depends: TRD-WFD-T001]
+- [ ] **TRD-WFD-T003**: Add step sequencing with terminal status propagation (completed/failed/blocked) (Est: 4h) [depends: TRD-WFD-T002]
+- [ ] **TRD-WFD-T004**: Write create workflow characterization test: correct skill in correct order, output routing, no bypass (Est: 4h) [depends: TRD-WFD-T003]
 
 #### Story 4.2: Workflow Dispatch — implement and fix
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| WFD-T005 | Implement implement workflow dispatcher: ensemble-full-implement-trd with --foreman and key = implement-{taskId}-1 | 4h | WFD-T001 | [ ] |
-| WFD-T006 | Implement fix workflow dispatcher: ensemble:fix-issue with --foreman and key = fix-{taskId}-1 | 4h | WFD-T001 | [ ] |
-| WFD-T007 | Write implement and fix workflow characterization tests | 4h | WFD-T005, WFD-T006 | [ ] |
+- [ ] **TRD-WFD-T005**: Implement implement workflow dispatcher: ensemble-full-implement-trd with --foreman and key = implement-{taskId}-1 (Est: 4h) [depends: TRD-WFD-T001]
+- [ ] **TRD-WFD-T006**: Implement fix workflow dispatcher: ensemble:fix-issue with --foreman and key = fix-{taskId}-1 (Est: 4h) [depends: TRD-WFD-T001]
+- [ ] **TRD-WFD-T007**: Write implement and fix workflow characterization tests (Est: 4h) [depends: TRD-WFD-T005, TRD-WFD-T006]
 
 #### Story 4.3: Merge Gate
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| MGH-T001 | Add merge gate: pause after Ensemble reports PR creation, require explicit human approval signal (extends TRD-014 VCS/PR state machine) | 4h | WFD-T001 | [ ] |
-| MGH-T002 | Verify approver GitHub identity matches authorized identity list for merge execution | 3h | MGH-T001 | [ ] |
-| MGH-T003 | Add merge tool refusal + security event logging when agent calls merge directly | 2h | MGH-T001 | [ ] |
-| MGH-T004 | Add merge gate to create workflow characterization test | 2h | MGH-T002, WFD-T004 | [ ] |
+- [ ] **TRD-MGH-T001**: Add merge gate: pause after Ensemble reports PR creation, require explicit human approval signal (extends TRD-014 VCS/PR state machine) (Est: 4h) [depends: TRD-WFD-T001]
+- [ ] **TRD-MGH-T002**: Verify approver GitHub identity matches authorized identity list for merge execution (Est: 3h) [depends: TRD-MGH-T001]
+- [ ] **TRD-MGH-T003**: Add merge tool refusal + security event logging when agent calls merge directly (Est: 2h) [depends: TRD-MGH-T001]
+- [ ] **TRD-MGH-T004**: Add merge gate to create workflow characterization test (Est: 2h) [depends: TRD-MGH-T002, TRD-WFD-T004]
 
 #### Story 4.4: Resumable Execution
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| RTE-T001 | Add idempotency key store: durable records with status {started, completed, ambiguous} (extends TRD-014 idempotency key contract) | 6h | JCR-T004 | [ ] |
-| RTE-T002 | Add heartbeat lease with expiry detection; transition started → ambiguous on expiry (extends TRD-014 heartbeat protocol) | 4h | RTE-T001 | [ ] |
-| RTE-T003 | Implement crash recovery reconciliation: completed → skip; ambiguous → check side effects before retry (extends TRD-014 reconciliation rules) | 6h | RTE-T002 | [ ] |
-| RTE-T004 | Implement 5-restart backoff loop: exponential backoff on crash; after 5 consecutive failures → blocked + operator error | 4h | RTE-T003 | [ ] |
-| RTE-T005 | Write crash recovery characterization test: no duplicate side effects, correct state resumption | 4h | RTE-T004 | [ ] |
-| RTE-T006 | Verify ≤30 seconds to resumption (NFR-03) under crash recovery scenario | 2h | RTE-T005 | [ ] |
+- [ ] **TRD-RTE-T001**: Add idempotency key store: durable records with status {started, completed, ambiguous} (extends TRD-014 idempotency key contract) (Est: 6h) [depends: TRD-JCR-T004]
+- [ ] **TRD-RTE-T002**: Add heartbeat lease with expiry detection; transition started → ambiguous on expiry (extends TRD-014 heartbeat protocol) (Est: 4h) [depends: TRD-RTE-T001]
+- [ ] **TRD-RTE-T003**: Implement crash recovery reconciliation: completed → skip; ambiguous → check side effects before retry (extends TRD-014 reconciliation rules) (Est: 6h) [depends: TRD-RTE-T002]
+- [ ] **TRD-RTE-T004**: Implement 5-restart backoff loop: exponential backoff on crash; after 5 consecutive failures → blocked + operator error (Est: 4h) [depends: TRD-RTE-T003]
+- [ ] **TRD-RTE-T005**: Write crash recovery characterization test: no duplicate side effects, correct state resumption (Est: 4h) [depends: TRD-RTE-T004]
+- [ ] **TRD-RTE-T006**: Verify ≤30 seconds to resumption (NFR-03) under crash recovery scenario (Est: 2h) [depends: TRD-RTE-T005]
 
 ---
 
-### 2.5 Sprint 5: Hardening, Benchmark, and Legacy Cleanup
+### Sprint 5: Hardening, Benchmark, and Legacy Cleanup
 
 #### Story 5.1: Jido Repository Mirroring
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| JRM-T001 | Fork all required Jido repos under Sunstone-Partners GitHub organization | 2h | | [ ] |
-| JRM-T002 | Pin all mix.exs Jido dependencies to specific git revisions (no floating versions) | 2h | JRM-T001 | [ ] |
-| JRM-T003 | Add CI workflow: on upstream release, immediately run existing action and signal test suite | 4h | JRM-T002 | [ ] |
-| JRM-T004 | Implement immediate upgrade evaluation: suite passes → adopt; suite fails → do not adopt | 4h | JRM-T003 | [ ] |
+- [ ] **TRD-JRM-T001**: Fork all required Jido repos under Sunstone-Partners GitHub organization (Est: 2h)
+- [ ] **TRD-JRM-T002**: Pin all mix.exs Jido dependencies to specific git revisions (no floating versions) (Est: 2h) [depends: TRD-JRM-T001]
+- [ ] **TRD-JRM-T003**: Add CI workflow: on upstream release, immediately run existing action and signal test suite (Est: 4h) [depends: TRD-JRM-T002]
+- [ ] **TRD-JRM-T004**: Implement immediate upgrade evaluation: suite passes → adopt; suite fails → do not adopt (Est: 4h) [depends: TRD-JRM-T003]
 
 #### Story 5.2: Action Development Speed Target
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| ADT-T001 | Define one representative action with completion checklist: typed inputs/outputs, side-effect/integration classification, registration, unit + integration tests, docs, deployment via process restart | 2h | JAF-T002 | [ ] |
-| ADT-T002 | Run representative action end-to-end with mocked/sandbox external services | 4h | ADT-T001 | [ ] |
-| ADT-T003 | Measure and document end-to-end time against 4-hour target; record as benchmark baseline | 2h | ADT-T002 | [ ] |
-| ADT-T004 | Add Jido package upgrade compatibility test: run representative action against upgraded packages | 3h | ADT-T001, JRM-T003 | [ ] |
+- [ ] **TRD-ADT-T001**: Define one representative action with completion checklist: typed inputs/outputs, side-effect/integration classification, registration, unit + integration tests, docs, deployment via process restart (Est: 2h) [depends: TRD-JAF-T002]
+- [ ] **TRD-ADT-T002**: Run representative action end-to-end with mocked/sandbox external services (Est: 4h) [depends: TRD-ADT-T001]
+- [ ] **TRD-ADT-T003**: Measure and document end-to-end time against 4-hour target; record as benchmark baseline (Est: 2h) [depends: TRD-ADT-T002]
+- [ ] **TRD-ADT-T004**: Add Jido package upgrade compatibility test: run representative action against upgraded packages (Est: 3h) [depends: TRD-ADT-T001, TRD-JRM-T003]
 
 #### Story 5.3: Characterization Test Harness
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| CTH-T001 | Build comprehensive characterization harness for create workflow: correct skill order, output routing, PR by Ensemble, merge gate hold | 8h | WFD-T004, MGH-T004 | [ ] |
-| CTH-T002 | Build characterization harness for implement workflow: correct dispatch of ensemble-full-implement-trd | 4h | WFD-T007 | [ ] |
-| CTH-T003 | Build characterization harness for fix workflow: correct dispatch of ensemble:fix-issue | 4h | WFD-T007 | [ ] |
-| CTH-T004 | Add crash-recovery characterization scenario: Foreman crashes mid-sequence, restarts, resumes from next incomplete step, no duplicate side effects | 6h | CTH-T001, RTE-T005 | [ ] |
+- [ ] **TRD-CTH-T001**: Build comprehensive characterization harness for create workflow: correct skill order, output routing, PR by Ensemble, merge gate hold (Est: 8h) [depends: TRD-WFD-T004, TRD-MGH-T004]
+- [ ] **TRD-CTH-T002**: Build characterization harness for implement workflow: correct dispatch of ensemble-full-implement-trd (Est: 4h) [depends: TRD-WFD-T007]
+- [ ] **TRD-CTH-T003**: Build characterization harness for fix workflow: correct dispatch of ensemble:fix-issue (Est: 4h) [depends: TRD-WFD-T007]
+- [ ] **TRD-CTH-T004**: Add crash-recovery characterization scenario: Foreman crashes mid-sequence, restarts, resumes from next incomplete step, no duplicate side effects (Est: 6h) [depends: TRD-CTH-T001, TRD-RTE-T005]
 
 #### Story 5.4: Hot-Loadable Workflows
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| HLW-T001 | Define hot-loadable workflow format specification: YAML and Elixir DSL schemas | 6h | WFD-T001 | [ ] |
-| HLW-T002 | Implement workflow loader: reads workflow definitions from configured directory, no restart required | 6h | HLW-T001 | [ ] |
-| HLW-T003 | Add workflow definition validation: known Ensemble skill, valid idempotency keys, required fields present | 4h | HLW-T002 | [ ] |
-| HLW-T004 | Add invalid workflow error handling: descriptive error message, no crash | 3h | HLW-T003 | [ ] |
-| HLW-T005 | Write hot-load integration tests: valid YAML workflow, valid Elixir DSL workflow, invalid workflow rejection | 4h | HLW-T002 | [ ] |
+- [ ] **TRD-HLW-T001**: Define hot-loadable workflow format specification: YAML and Elixir DSL schemas (Est: 6h) [depends: TRD-WFD-T001]
+- [ ] **TRD-HLW-T002**: Implement workflow loader: reads workflow definitions from configured directory, no restart required (Est: 6h) [depends: TRD-HLW-T001]
+- [ ] **TRD-HLW-T003**: Add workflow definition validation: known Ensemble skill, valid idempotency keys, required fields present (Est: 4h) [depends: TRD-HLW-T002]
+- [ ] **TRD-HLW-T004**: Add invalid workflow error handling: descriptive error message, no crash (Est: 3h) [depends: TRD-HLW-T003]
+- [ ] **TRD-HLW-T005**: Write hot-load integration tests: valid YAML workflow, valid Elixir DSL workflow, invalid workflow rejection (Est: 4h) [depends: TRD-HLW-T002]
 
 #### Story 5.5: Security Isolation
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| LGC-T001 | Verify jido_vfs sandbox: agent accessing path outside worktree → access denied + security event logged (extends TRD-009 guardrail config) | 3h | JSH-T003 | [ ] |
-| LGC-T002 | Verify direct Foreman internal state modification → denied + security event logged | 3h | JCR-T005 | [ ] |
-| LGC-T003 | If jido_workspace adopted: verify sandbox enforcement (network deny-by-default, command allowlisting) on host-path worktree | 3h | JSH-T006 | [ ] |
-| LGC-T004 | Write security isolation integration tests for all three vectors | 4h | LGC-T001, LGC-T002, LGC-T003 | [ ] |
+- [ ] **TRD-LGC-T001**: Verify jido_vfs sandbox: agent accessing path outside worktree → access denied + security event logged (extends TRD-009 guardrail config) (Est: 3h) [depends: TRD-JSH-T003]
+- [ ] **TRD-LGC-T002**: Verify direct Foreman internal state modification → denied + security event logged (Est: 3h) [depends: TRD-JCR-T005]
+- [ ] **TRD-LGC-T003**: If jido_workspace adopted: verify sandbox enforcement (network deny-by-default, command allowlisting) on host-path worktree (Est: 3h) [depends: TRD-JSH-T006]
+- [ ] **TRD-LGC-T004**: Write security isolation integration tests for all three vectors (Est: 4h) [depends: TRD-LGC-T001, TRD-LGC-T002, TRD-LGC-T003]
 
 #### Story 5.6: Signal Delivery Latency
 
-| id | task | Est. | Deps | Status |
-|----|------|------|------|--------|
-| LGC-T005 | Measure Agent→Agent signal delivery latency: p95 < 1 second under normal load | 3h | JSI-T002 | [ ] |
-| LGC-T006 | Measure operator question → Foreman inbox API latency: p95 < 1 second under normal load | 3h | JSI-T008 | [ ] |
-| LGC-T007 | Add latency regression tests with p95 thresholds | 2h | LGC-T005, LGC-T006 | [ ] |
+- [ ] **TRD-LGC-T005**: Measure Agent→Agent signal delivery latency: p95 < 1 second under normal load (Est: 3h) [depends: TRD-JSI-T002]
+- [ ] **TRD-LGC-T006**: Measure operator question → Foreman inbox API latency: p95 < 1 second under normal load (Est: 3h) [depends: TRD-JSI-T008]
+- [ ] **TRD-LGC-T007**: Add latency regression tests with p95 thresholds (Est: 2h) [depends: TRD-LGC-T005, TRD-LGC-T006]
 
 #### Story 5.7: Legacy Backend Removal
 
-| id | task | Est. | Deps | Status |
-| LGC-T008 | Scan codebase for pre-migration agent/orchestration code (grep for pi-sdk-runner patterns, tool factory remnants) | 4h | CTH-T001 | [ ] |
-| LGC-T009 | Archive removed code to dedicated archived branch (not deleted, not git-tag-only) | 3h | LGC-T008 | [ ] |
-| LGC-T010 | Run create/implement/fix workflows end-to-end; verify observable equivalence (PR created, task status updated, operator notified) without pre-migration code | 4h | LGC-T009 | [ ] |
-| LGC-T011 | Remove pre-migration code from active codebase | 8h | LGC-T010 | [ ] |
-| LGC-T012 | Final characterization test pass: all three workflows produce identical observable outcomes | 4h | LGC-T011 | [ ] |
+- [ ] **TRD-LGC-T008**: Scan codebase for pre-migration agent/orchestration code (grep for pi-sdk-runner patterns, tool factory remnants) (Est: 4h) [depends: TRD-CTH-T001]
+- [ ] **TRD-LGC-T009**: Archive removed code to dedicated archived branch (not deleted, not git-tag-only) (Est: 3h) [depends: TRD-LGC-T008]
+- [ ] **TRD-LGC-T010**: Run create/implement/fix workflows end-to-end; verify observable equivalence (PR created, task status updated, operator notified) without pre-migration code (Est: 4h) [depends: TRD-LGC-T009]
+- [ ] **TRD-LGC-T011**: Remove pre-migration code from active codebase (Est: 8h) [depends: TRD-LGC-T010]
+- [ ] **TRD-LGC-T012**: Final characterization test pass: all three workflows produce identical observable outcomes (Est: 4h) [depends: TRD-LGC-T011]
 
 ---
 
 ## 3. Acceptance Criteria Traceability
 
 | REQ | Requirement | Tasks | Status |
-|-----|-------------|-------|--------|
 | REQ-001 | Jido Core Runtime and State Ownership | JCR-T001–T007 | [ ] |
 | REQ-002 | Jido Action Authoring Framework | JAF-T001–T005 | [ ] |
 | REQ-003 | Jido Harness Pi Adapter Integration | JHA-T001–T003 | [ ] |
@@ -408,7 +356,6 @@ All `Status` cells are `[ ]`.
 ## 4. Non-Functional Requirements Coverage
 
 | NFR | Target | Tasks | Verification |
-|-----|--------|-------|--------------|
 | NFR-01: Action dev time | ≤4 hours | ADT-T001–T003 | Benchmark run with representative action |
 | NFR-02: Signal latency | p95 < 1 second | LGC-T005–T007 | Latency regression tests |
 | NFR-03: Crash recovery | ≤30 seconds resumption | RTE-T004, RTE-T006 | Crash recovery characterization |
@@ -428,7 +375,6 @@ All `Status` cells are `[ ]`.
 ## 5. Sprint Summary
 
 | Sprint | Focus | Task Count | Critical Path |
-|--------|-------|-----------|---------------|
 | Sprint 1 | Foundation: Jido Core Runtime, Action Authoring, Harness | 15 | JCR-T001 → JCR-T002 → JCR-T003 → JHA-T001 → JHA-T002 |
 | Sprint 2 | Communication: Signal Bus, Operator, Agent↔Foreman, Shell | 20 | JCR-T001 → JSI-T001 → JSI-T002 → JSI-T008 → JSI-T010 |
 | Sprint 3 | AI/LLM: jido_ai, LiteLLM+Langfuse, MCP, Dashboard, OTEL | 25 | JAI-T001 → LGL-T001 → LGL-T002 |
