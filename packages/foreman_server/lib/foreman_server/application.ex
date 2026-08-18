@@ -31,8 +31,7 @@ defmodule ForemanServer.Application do
           {ProjectRegistry, []},
           {Scheduler, []},
           {PrMonitor, []},
-          {Jido.Signal.Bus, name: :foreman_signal_bus},
-          {Jido.Signal.Journal, name: :foreman_signal_journal}
+          {Jido.Signal.Bus, name: :foreman_signal_bus}
         ] ++ http_children()
 
     opts = [strategy: :one_for_one, name: ForemanServer.Supervisor]
