@@ -26,39 +26,7 @@ defmodule ForemanServer.JidoAI.Integration do
       end
   """
 
-  alias Jido.AI.Reasoning.ChainOfThought
   alias Jido.AI.Reasoning.ReAct
-
-  @doc """
-  Run a ChainOfThought reasoning step.
-
-  This function executes a reasoning step using the ChainOfThought strategy.
-  It runs the ChainOfThought reasoning directly without creating an agent.
-
-  ## Parameters
-  - `action`: The action/instruction to execute
-
-  ## Returns
-  - `{:ok, result}` on success
-  - `{:error, reason}` on failure
-
-  ## Example
-      {:ok, result} = ForemanServer.JidoAI.Integration.run_chain_of_thought(
-        "What is the capital of France?"
-      )
-  """
-  @spec run_chain_of_thought(term()) :: {:ok, term()} | {:error, term()}
-  def run_chain_of_thought(action) do
-    try do
-      # Execute the action using ChainOfThought
-      result = ChainOfThought.stream(action, %{}, [])
-      collected = ChainOfThought.collect_stream(result)
-
-      {:ok, collected}
-    rescue
-      error -> {:error, error}
-    end
-  end
 
   @doc """
   Run a ReAct reasoning step.
