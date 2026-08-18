@@ -9,6 +9,10 @@ prd_reference: PRD-2026-4212be7e
 source_prd_label: prd-jido-migration
 design_readiness_score: 5.0
 total_tasks: 107
+ensemble_implement_trd_beads:
+  branch_name: slices/jido-migration
+  use_proposed: false
+  stacked_prs: false
 ---
 
 # TRD-2026-4212be7e: Jido Agent Ecosystem Migration — Technical Requirements
