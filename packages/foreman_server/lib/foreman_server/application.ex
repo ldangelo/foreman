@@ -74,9 +74,9 @@ defmodule ForemanServer.Application do
           ForemanServer.CommandRouter
         ]
         ++ maybe_lifecycle_reconciler_child()
-        ++ maybe_agent_runtime_child() ++
-        maybe_mcp_child() ++
-        maybe_overwatch_child() ++
+        ++ maybe_agent_runtime_child()
+        ++ maybe_mcp_child()
+        ++ maybe_overwatch_child() ++
         maybe_stuck_detector_child() ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -137,10 +137,40 @@ defmodule ForemanServer.Application do
   defp maybe_agent_runtime_child do
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
-        [{ForemanServer.AgentRuntime.Supervisor, []}]
+        [
+          {ForemanServer.AgentRuntime.Supervisor, []}
+        ] ++
+          maybe_signal_to_command_child()
 
       _ ->
         []
+    end
+  end
+
+  # The signal-to-command bridge is the Jido signal-side counterpart
+  # to the existing Jido AgentRuntime supervision: Jido agents publish
+  # CloudEvents on the `com.foreman.command.*` topic pattern; the
+  # adapter subscribes and routes each event to
+  # `ForemanServer.CommandGateway.dispatch_system/2` (TRD-014
+  # Integration Ingestion). The bus is started before the adapter so
+  # the adapter's deferred auto-subscribe lands on a live bus.
+  # Disabled by default (no separate flag): opt in by setting
+  # `config :foreman_server, :agent_runtime, signal_bridge_enabled: true`.
+  def maybe_signal_to_command_child do
+    opts = Application.get_env(:foreman_server, :agent_runtime, [])
+    enabled? = is_list(opts) and Keyword.get(opts, :enabled, false) in [true, "true"]
+    bridge? = enabled? and Keyword.get(opts, :signal_bridge_enabled, false)
+
+    if bridge? do
+      bus_name = :foreman_jido_signal_bus
+      adapter_name = :foreman_signal_to_command_adapter
+
+      [
+        {Jido.Signal.Bus, [name: bus_name]},
+        {ForemanServer.Agents.SignalToCommandAdapter, [name: adapter_name, bus: bus_name]}
+      ]
+    else
+      []
     end
   end
 
