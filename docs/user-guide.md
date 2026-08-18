@@ -171,6 +171,11 @@ call `AssetCatalog.new/1` and pass it to
 - **Manual reload** — call `ForemanServer.Workflow.Catalog.reload/0`
   from IEx (or any module) to force an immediate pass without
   waiting for the poll.
+- **Removal** — run `foreman workflow remove --all` to delete all legacy
+  workflows (`discover`, `assess`, `implement`, `verify`, `release`) from
+  the catalog. The curated workflows (`plan`, `implement-trd`,
+  `implement-trd-beads`) are preserved. Run `foreman init --force` to
+  restore from git if needed.
 - **Telemetry** — every install, load, reload, and removal emits
   `[:foreman_server, :workflow, ...]` events. Attach handlers to
   observe the catalog in production.
@@ -923,9 +928,33 @@ exceeds the timeout, the run will be flagged on the next scan.
 
 ### CLI
 
+### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]`
+
+Submit a new work request for dispatch. Issues `POST /api/commands` with a
+`work.submit` envelope. The server creates a `WorkSubmitted` event and
+triggers workflow dispatch.
+
+Flags:
+
+- `--workflow` (required) — the workflow name to execute.
+- `--prompt` (required) — the input prompt/text for the workflow.
+- `--project-id` (required) — the project ID.
+- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--backend` (optional) — backend to use (`pi`, `claude`, `codex`,
+  `opencode`). Defaults to `pi`.
+
+Example:
+
 ```text
-foreman run cancel --id <run-id> [--reason <reason>]
+foreman run submit --workflow implement-trd --prompt "Fix the CLI submit bug" --project-id foreman
 ```
+
+### `foreman run cancel --id <run-id> [--reason <reason>]`
+
+Operator-initiated cancellation. Issues `POST /api/commands` with a
+`run.cancel` envelope. The server validates the envelope, the
+`CommandGateway` enforces `aggregate_id == "run:<run_id>"`, and the Run
+aggregate emits `RunCancelled` (terminal, status `cancelled`).
 
 Flags:
 

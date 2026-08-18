@@ -2,9 +2,15 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
   @moduledoc """
   Installs workflow templates into a Foreman workflows directory.
   """
-
   @template_names ~w(discover assess plan implement implement-trd implement-trd-beads verify release)
   @template_files Enum.map(@template_names, &"#{&1}.yaml")
+
+  # Legacy workflows removed by remove_all/1 — discover, assess, implement, verify,
+  # release.  plan.yaml remains (active as of this phase).  Curated workflows
+  # (implement-trd, implement-trd-beads) are also preserved.
+  @legacy_workflow_names ~w(discover assess implement verify release)
+  @legacy_workflow_files Enum.map(@legacy_workflow_names, &"#{&1}.yaml")
+
   @default_retry_attempts 3
   @default_retry_delay_ms 250
 
@@ -27,6 +33,60 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     end
   end
 
+  @doc """
+  Removes all legacy workflow manifests and their prompts from the target
+  directory. Curated workflows (`implement-trd`, `implement-trd-beads`) are
+  preserved.
+
+  Returns `{:ok, removed_paths}` on success.
+  """
+  @spec remove_all([option()]) :: {:ok, [Path.t()]} | {:error, term()}
+  def remove_all(opts) when is_list(opts) do
+    td = target_dir(opts)
+
+    with {:ok, manifest_paths} <- remove_manifests(td),
+         {:ok, prompt_paths} <- remove_prompts(td) do
+      {:ok, manifest_paths ++ prompt_paths}
+    end
+  end
+
+  defp remove_manifests(target_dir) do
+    Enum.reduce_while(@legacy_workflow_files, {:ok, []}, fn filename, {:ok, paths} ->
+      path = Path.join(target_dir, filename)
+
+      case File.rm(path) do
+        :ok -> {:cont, {:ok, [path | paths]}}
+        {:error, :enoent} -> {:cont, {:ok, paths}}  # already absent — idempotent
+        {:error, reason} -> {:halt, {:error, {:remove_failed, path, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, paths} -> {:ok, Enum.reverse(paths)}
+      err -> err
+    end
+  end
+
+  defp remove_prompts(target_dir) do
+    prompts_dir = Path.join(target_dir, "prompts")
+
+    if File.dir?(prompts_dir) do
+      Enum.reduce_while(@legacy_workflow_names, {:ok, []}, fn name, {:ok, paths} ->
+        path = Path.join(prompts_dir, "#{name}.md")
+
+        case File.rm(path) do
+          :ok -> {:cont, {:ok, [path | paths]}}
+          {:error, :enoent} -> {:cont, {:ok, paths}}
+          {:error, reason} -> {:halt, {:error, {:remove_failed, path, reason}}}
+        end
+      end)
+      |> case do
+        {:ok, paths} -> {:ok, Enum.reverse(paths)}
+        err -> err
+      end
+    else
+      {:ok, []}
+    end
+  end
   @spec fetch_remote([option()]) :: {:ok, [Path.t()]} | {:error, term()}
   def fetch_remote(opts) when is_list(opts) do
     with {:ok, remote_url} <- remote_url(opts),

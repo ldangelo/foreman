@@ -1,0 +1,11 @@
+name: prd
+description: Create a PRD through the full ensemble chain: create-prd, refine-prd, create-trd, implement-trd.
+phases:
+  - name: create-prd
+    command: "/skill:ensemble-full-create-prd --foreman"
+  - name: refine-prd
+    command: "/skill:ensemble-full-refine-prd --foreman"
+  - name: create-trd
+    command: "/skill:ensemble-full-create-trd --foreman"
+  - name: implement-trd
+    command: "/skill:ensemble-full-implement-trd --foreman"

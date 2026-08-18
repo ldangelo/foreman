@@ -133,6 +133,27 @@ Example:
 foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
 ```
 
+### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]`
+
+Submit a new work request for dispatch. Issues `POST /api/commands` with a
+`work.submit` envelope. The server creates a `WorkSubmitted` event and
+triggers workflow dispatch.
+
+Flags:
+
+- `--workflow` (required) — the workflow name to execute.
+- `--prompt` (required) — the input prompt/text for the workflow.
+- `--project-id` (required) — the project ID.
+- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--backend` (optional) — backend to use (`pi`, `claude`, `codex`,
+  `opencode`). Defaults to `pi`.
+
+Example:
+
+```text
+foreman run submit --workflow implement-trd --prompt "Fix the CLI submit bug" --project-id foreman
+```
+
 ### `foreman doctor task_provider`
 
 Run the task-provider health check. The command emits one JSON object
@@ -210,6 +231,24 @@ The auto-install performed by `Workflow.Catalog.init/1` at boot is
 a **no-op** when this command (or any other process) has already
 materialised at least one `*.yaml` manifest under the target — see
 `docs/user-guide.md` §7 for the exact condition.
+
+### `foreman workflow remove --all`
+
+Removes all legacy workflows (`discover`, `assess`, `implement`, `verify`, `release`) from the catalog. The `--all` flag is required to prevent accidental removal.
+
+The operator is prompted for interactive confirmation before the server call is made. Answering `y` or `Y` proceeds; anything else exits without changes.
+
+The `POST /api/admin/workflows/remove` call is forwarded to `WorkflowTemplate.Installer.remove_all/1`, which deletes each manifest file from disk. Workflows removed in error can be restored from git.
+
+```
+foreman workflow remove --all
+Remove legacy workflows (discover, assess, implement, verify, release)? [y/N] y
+{"removed": ["discover","assess","implement","verify","release"]}
+```
+
+| Flag | Description |
+|---|---|
+| `--all` | **Required.** Confirms intent to remove all legacy workflows. Omitting this flag returns a usage error. |
 
 ### `foreman task create --task-type plan`
 

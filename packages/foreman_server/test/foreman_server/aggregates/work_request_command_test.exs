@@ -136,23 +136,120 @@ defmodule ForemanServer.Aggregates.WorkRequestCommandTest do
       assert {:ok, %WorkSubmitted{}} = WorkRequest.handle_command(state, cmd)
     end
 
+    test "emits WorkSubmitted with backend from struct path" do
+      state = %State{}
+
+      cmd = %WorkSubmit{
+        work_id: "work-9",
+        project_id: "proj-1",
+        prompt: "test prompt",
+        workflow_snapshot: %{},
+        backend: "pi"
+      }
+
+      assert {:ok, %WorkSubmitted{} = event} = WorkRequest.handle_command(state, cmd)
+      assert event.backend == "pi"
+    end
+
     test "emits WorkSubmitted from nil state" do
       state = nil
 
       cmd = %WorkSubmit{
-        work_id: "work-9",
+        work_id: "work-10",
         project_id: "proj-1",
         prompt: "test prompt",
         workflow_snapshot: %{}
       }
 
       assert {:ok, %WorkSubmitted{} = event} = WorkRequest.handle_command(state, cmd)
-      assert event.work_id == "work-9"
+      assert event.work_id == "work-10"
+    end
+  end
+
+  describe "handle_command/2 — map-type work.submit" do
+    test "emits WorkSubmitted with backend from nil state map-type" do
+      cmd = %{
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-1",
+          project_id: "proj-1",
+          prompt: "test prompt",
+          workflow_snapshot: %{},
+          backend: "pi"
+        }
+      }
+
+      assert {:ok, %WorkSubmitted{} = event} =
+               WorkRequest.handle_command(nil, cmd)
+
+      assert event.work_id == "work-map-1"
+      assert event.backend == "pi"
+    end
+
+    test "emits WorkSubmitted from State{status: nil} map-type" do
+      state = %State{}
+
+      cmd = %{
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-2",
+          project_id: "proj-1",
+          prompt: "another prompt",
+          workflow_snapshot: %{}
+        }
+      }
+
+      assert {:ok, %WorkSubmitted{} = event} =
+               WorkRequest.handle_command(state, cmd)
+
+      assert event.work_id == "work-map-2"
+      assert event.backend == nil
+    end
+
+    test "idempotent — already submitted returns {:ok, nil}" do
+      state = %State{
+        work_id: "work-map-3",
+        status: :submitted,
+        project_id: "proj-1"
+      }
+
+      cmd = %{
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-3",
+          project_id: "proj-1",
+          prompt: "duplicate",
+          workflow_snapshot: %{}
+        }
+      }
+
+      assert {:ok, nil} = WorkRequest.handle_command(state, cmd)
+    end
+
+    test "rejects already submitted with different work_id" do
+      state = %State{
+        work_id: "work-map-4-existing",
+        status: :submitted,
+        project_id: "proj-1"
+      }
+
+      cmd = %{
+        type: "work.submit",
+        payload: %{
+          work_id: "work-map-4-different",
+          project_id: "proj-1",
+          prompt: "wrong work_id",
+          workflow_snapshot: %{}
+        }
+      }
+
+      assert {:error, {:already_submitted, "work-map-4-existing"}} =
+               WorkRequest.handle_command(state, cmd)
     end
   end
 
   describe "handle_command/2 — work.execution_complete" do
-    test "transitions to terminal with matching run_id" do
+    test "transitions from running to succeeded" do
       state = %State{
         work_id: "work-1",
         status: :running,
