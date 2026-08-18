@@ -199,7 +199,7 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JSI-T011 | Implement directive publisher (Foreman→Agent) via Bus.publish to agents/<agent-id>/directive | 3h | JSI-T001 | [ ] |
+| JSI-T011 | Implement directive publisher (Foreman→Agent) via Bus.publish to agents/<agent-id>/directive | 3h | JSI-T001 | [x] |
 | JSI-T012 | Implement task metadata query signal (Agent→Foreman) and response signal (Foreman→Agent) | 3h | JSI-T011 | [ ] |
 | JSI-T013 | Write integration tests for nudge and query flows | 3h | JSI-T011, JSI-T012 | [ ] |
 
