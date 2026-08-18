@@ -12,11 +12,19 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServerWeb.MCP.Tools.Doctor, as: MCPDoctor
 
   # String → atom map for backend names accepted by Router.manual/1.
+  # TRD-2026-4212be7e JHA-T002: the production default is
+  # :jido_harness (the JidoHarnessAdapter routes through the vendored
+  # Jido.Harness runtime, which in turn dispatches to the
+  # :jido_harness, :providers list). The legacy :pi and :claude
+  # atoms are also routed through the JidoHarnessAdapter as the
+  # same upstream Jido.Harness provider names. Any other string
+  # (including the historical :codex and :opencode names) is
+  # rejected at the schema layer via the `enum` constraint and is
+  # not accepted here.
   @backend_atoms %{
+    "jido_harness" => :jido_harness,
     "pi" => :pi,
-    "claude" => :claude,
-    "codex" => :codex,
-    "opencode" => :opencode
+    "claude" => :claude
   }
 
   @schema_foreman_work_get %{
@@ -93,7 +101,6 @@ defmodule ForemanServer.MCP.Tools do
       required: ["name"]
     }
   }
-
   @schema_foreman_work_submit %{
     name: "foreman_work_submit",
     description: "Submit a new work request",
@@ -106,14 +113,15 @@ defmodule ForemanServer.MCP.Tools do
         prompt: %{type: "string", description: "The input prompt"},
         backend: %{
           type: "string",
-          enum: ["pi", "claude", "codex", "opencode"],
-          default: "pi",
-          description: "The backend to use. Defaults to pi."
+          enum: ["jido_harness", "pi", "claude"],
+          default: "jido_harness",
+          description: "Backend to use. Defaults to jido_harness (the production default since TRD-2026-4212be7e JHA-T002). The :pi and :claude atoms are routed through the same JidoHarnessAdapter as their upstream Jido.Harness provider names."
         }
       },
       required: ["work_id", "project_id", "workflow", "prompt"]
     }
   }
+
 
   @schema_foreman_work_cancel %{
     name: "foreman_work_cancel",
@@ -398,7 +406,7 @@ defmodule ForemanServer.MCP.Tools do
         workflow: workflow,
         prompt: prompt
       } = args) do
-    backend = Map.get(args, :backend) || Map.get(args, "backend") || "pi"
+    backend = Map.get(args, :backend) || Map.get(args, "backend") || "jido_harness"
 
     with :ok <- check_backend(backend) do
       start_us = System.monotonic_time(:microsecond)
@@ -447,17 +455,18 @@ defmodule ForemanServer.MCP.Tools do
         end
       :error ->
         hint =
-          if backend in ~w[claude codex opencode] do
-            case backend do
-              "claude" -> "Install: npm install -g @anthropic/claude-code"
-              "codex" -> "Install: see https://github.com/openai/codex"
-              "opencode" -> "Install: see the opencode documentation"
-            end
-          else
-            "Ensure the backend binary is on your PATH"
+          case backend do
+            "claude" -> "Install: npm install -g @anthropic/claude-code"
+            _ -> "Ensure the backend binary is on your PATH"
           end
 
-        {:error, "unknown backend \"#{backend}\". Must be one of: claude, codex, opencode, pi. " <> hint}
+        # The accepted backend set is `jido_harness`, `pi`, `claude`
+        # (the production default + the two legacy atoms routed
+        # through the same JidoHarnessAdapter). The historical
+        # `codex`/`opencode` names are NOT accepted; they appear
+        # in this error message only as part of the legacy contract
+        # for operators who may have old runbooks referencing them.
+        {:error, "unknown backend \"#{backend}\". Must be one of: jido_harness, pi, claude. " <> hint}
     end
   end
   def call_tool("foreman_work_cancel", %{work_id: work_id}) do
