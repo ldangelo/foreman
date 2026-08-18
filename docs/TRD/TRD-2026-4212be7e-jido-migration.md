@@ -193,7 +193,7 @@ All `Status` cells are `[ ]`.
 | JSI-T007 | Implement jido_signal dispatch adapter (webhook/HTTP) to Foreman inbox API | 4h | JSI-T006 | [x] |
 | JSI-T008 | Implement operator question → inbox domain event → projector → agent directive flow | 4h | JSI-T007 | [ ] |
 | JSI-T009 | Implement per-workflow operator timeout (configurable in workflow definition; mark task blocked on expiry) | 3h | JSI-T008 | [ ] |
-| JSI-T010 | Write integration test for operator question → inbox notification → agent resume | 4h | JSI-T008 | [ ] |
+| JSI-T010 | Write integration test for operator question → inbox notification → agent resume | 4h | JSI-T008 | [x] |
 
 #### Story 2.3: Agent↔Foreman Communication
 
