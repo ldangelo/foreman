@@ -231,6 +231,7 @@ The auto-install performed by `Workflow.Catalog.init/1` at boot is
 a **no-op** when this command (or any other process) has already
 materialised at least one `*.yaml` manifest under the target — see
 `docs/user-guide.md` §7 for the exact condition.
+
 ### `foreman workflow remove --all`
 
 Removes all legacy workflows (`discover`, `assess`, `implement`, `verify`, `release`) from the catalog. The `--all` flag is required to prevent accidental removal.
