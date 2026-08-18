@@ -3,12 +3,18 @@ defmodule ForemanServer.Agents.JidoSignalTopics do
   Jido-aligned topic names for Foreman signal-bus subscribers
   (TRD-2026-4212be7e, JSI-T001).
 
-  The TRD's PR 2 names four topics with slash separators:
+  ## Scope (read this before marking JSI-T001 done)
 
-      foreman/commands        — Jido agent → Foreman command ingestion
-      foreman/operator        — operator UI → Jido agent questions
-      foreman/inbox           — Foreman → operator notifications
-      agents/<agent-id>/directive  — Foreman → Jido agent directives
+  This module is the **namespace mapping** — it defines the four
+  topic patterns but does not subscribe any consumer. JSI-T001
+  requires every topic to have at least one consumer wired in
+  production. Today, only the `com.foreman.command.*` topic has a
+  real consumer (`ForemanServer.Agents.SignalToCommandAdapter`).
+  The other three topics — `com.foreman.operator.*`,
+  `com.foreman.inbox.*`, `agents.<id>.directive` — are declared
+  here as the canonical names but their real consumers land in
+  JSI-T006 (operator), JLD (inbox), and JSI-T011 (directive). Until
+  those consumers ship, JSI-T001 must remain `[ ]` in the TRD.
 
   Jido's `Jido.Signal.Bus.subscribe/3` `path` argument is matched
   against `signal.type` via `Jido.Signal.Router.Validator`, whose
