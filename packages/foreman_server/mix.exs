@@ -37,7 +37,7 @@ defmodule ForemanServer.MixProject do
       {:anubis_mcp, "~> 1.10"},
 
       # Jido ecosystem — Sunstone-Partners forks (TRD-2026-4212be7e, JCR-T001)
-      # See ../../../JIDO_FORKS.md for fork URLs and pinned commit SHAs.
+      # See ../../JIDO_FORKS.md for fork URLs and pinned commit SHAs.
       # All packages sourced from a Sunstone-Partners fork to give Foreman
       # deterministic, auditable pins and CI-controlled upgrade gating (JRM-T003).
       # `override: true` forces the fork across the entire transitive closure
