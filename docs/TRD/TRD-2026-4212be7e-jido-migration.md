@@ -165,9 +165,9 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JHA-T001 | Integrate jido_harness with Jido.Harness.Adapters.Pi | 4h | JCR-T001 | [ ] |
-| JHA-T002 | Replace pi-sdk-runner.ts with Jido.Harness.Session, Jido.Harness.Run, Jido.Harness.Process | 8h | JHA-T001 | [ ] |
-| JHA-T003 | Write harness characterization test: verify Jido.Harness.Adapters.Pi creates Jido.Harness.Session, resolves tools through Jido.Harness.Process, and provides Jido.Harness.Run — without asserting legacy pi-sdk-runner.ts behavioral equivalence | 4h | JHA-T002 | [ ] |
+| JHA-T001 | Integrate jido_harness with Jido.Harness.Adapters.Pi | 4h | JCR-T001 | [x] |
+| JHA-T002 | Replace pi-sdk-runner.ts with Jido.Harness.Session, Jido.Harness.Run, Jido.Harness.Process | 8h | JHA-T001 | [x] |
+| JHA-T003 | Write harness characterization test: verify Jido.Harness.Adapters.Pi creates Jido.Harness.Session, resolves tools through Jido.Harness.Process, and provides Jido.Harness.Run — without asserting legacy pi-sdk-runner.ts behavioral equivalence | 4h | JHA-T002 | [x] |
 
 ---
 
