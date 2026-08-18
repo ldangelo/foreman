@@ -29,6 +29,12 @@ config :foreman_server, :start_json_schema_cache?, false
 config :foreman_server, :start_beads_watcher?, false
 config :foreman_server, :start_lifecycle_reconciler?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
+# JHA-T002: the in-process JidoHarnessAdapter is the production
+# default after the JHA migration, but tests that exercise adapter
+# routing assert the empty catalog from `adapters: []` above, so
+# disable the jido_harness rollout switch here. Individual tests
+# that need the adapter re-enable it via Application.put_env/3.
+config :foreman_server, :jido_harness, enabled: false
 config :phoenix, Phoenix.Diagnostics, enabled: false
 
 config :logster,

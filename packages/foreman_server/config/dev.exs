@@ -33,7 +33,7 @@ config :foreman_server, ForemanServer.WorkerLauncher, enabled: true
 # the known long-running ensemble skills.
 config :foreman_server, :agent_runtime,
   enabled: true,
-  adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter],
+  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter],
   default_timeout_ms: 1_800_000,
   failure_policies: %{
     "create-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},

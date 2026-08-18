@@ -20,17 +20,23 @@ config :foreman_server, ForemanServerWeb.Endpoint,
 
 config :foreman_server, :agent_runtime,
   enabled: true,
-  adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
+  # Default agent backend is now JidoHarnessAdapter (JHA-T002:
+  # replaced PiAdapter's Port.open shell-out with the in-process
+  # Jido.Harness runtime). Operators wanting to revert to the
+  # legacy external `pi` Node CLI can override with
+  #   config :foreman_server, :agent_runtime,
+  #     adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
+  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]
 
-# jido_harness backend rollout switch (PRD-2026-016 §3.4).
-# Phase 1 defaults to false — operators opt in by exporting
-# FOREMAN_USE_JIDO_HARNESS=true (or setting `:jido_harness, :enabled`
-# to true at runtime). When false, `JidoHarnessAdapter.enabled?/0`
-# returns false, the adapter registers as unavailable, and the router
-# rejects `:jido_harness` backend requests.
-config :foreman_server, :jido_harness,
-  enabled: System.get_env("FOREMAN_USE_JIDO_HARNESS", "false") == "true"
-
+# jido_harness backend — now the default after JHA-T002 (TRD-2026-
+# 4212be7e): the in-process Jido.Harness runtime replaced the
+# Port.open shell-out to the legacy `pi` Node CLI. The rollout
+# switch is now a *kill switch*: setting `:jido_harness, :enabled`
+# to false at runtime disables the adapter without changing the
+# default. Operators can still fall back to PiAdapter by overriding
+# the `:agent_runtime, :adapters` config to a list containing
+# PiAdapter instead of JidoHarnessAdapter.
+config :foreman_server, :jido_harness, enabled: true
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 
