@@ -129,11 +129,18 @@ All `Status` cells are `[ ]`.
 
 ### 2.1 Sprint 1: Foundation — Jido Core Runtime and Action Authoring
 
+#### Story 1.0: Jido Repo Preparation (prerequisite — all packages forked and pinned before integration)
+
+| id | task | Est. | Deps | Status |
+|----|------|------|------|--------|
+| JRM-T001 | Fork all required Jido repos under Sunstone-Partners GitHub organization | 2h | | [ ] |
+| JRM-T002 | Pin all mix.exs Jido dependencies to specific git revisions (no floating versions); every package integrated in this sprint is already forked and pinned | 2h | JRM-T001 | [ ] |
+
 #### Story 1.1: Jido Core Runtime
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JCR-T001 | Add all Jido packages to mix.exs: jido, jido_action, jido_signal, jido_shell, jido_vfs, jido_ai, jido_harness, jido_ecto, req_llm, jido_otel | 2h | | [ ] |
+| JCR-T001 | Add all Jido packages to mix.exs: jido, jido_action, jido_signal, jido_shell, jido_vfs, jido_ai, jido_harness, jido_ecto, req_llm, jido_otel — every package is sourced from a Sunstone-Partners fork pinned to a specific revision | 2h | JRM-T002 | [ ] |
 | JCR-T002 | Create Jido.Agent GenServer under Foreman.Application supervision tree with OTP restart strategy | 4h | JCR-T001 | [ ] |
 | JCR-T003 | Implement cmd/2 loop in Jido agent: action in → updated agent struct + directives out | 4h | JCR-T002 | [ ] |
 | JCR-T004 | Integrate jido_ecto for agent struct and checkpoint persistence (Postgres adapter) | 4h | JCR-T002 | [ ] |
@@ -311,9 +318,7 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JRM-T001 | Fork all required Jido repos under Sunstone-Partners GitHub organization | 2h | | [ ] |
-| JRM-T002 | Pin all mix.exs Jido dependencies to specific git revisions (no floating versions) | 2h | JRM-T001 | [ ] |
-| JRM-T003 | Add CI workflow: on upstream release, immediately run existing action and signal test suite | 4h | JRM-T002 | [ ] |
+| JRM-T003 | Add CI workflow: on upstream release, immediately run existing action and signal test suite (JRM-T001/T002 completed in Sprint 1 Story 1.0) | 4h | JRM-T002 | [ ] |
 | JRM-T004 | Implement immediate upgrade evaluation: suite passes → adopt; suite fails → do not adopt | 4h | JRM-T003 | [ ] |
 
 #### Story 5.2: Action Development Speed Target
