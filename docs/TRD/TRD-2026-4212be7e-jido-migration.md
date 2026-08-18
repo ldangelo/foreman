@@ -143,10 +143,10 @@ All `Status` cells are `[ ]`.
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
 | JCR-T001 | Add all Jido packages to mix.exs: jido, jido_action, jido_signal, jido_shell, jido_vfs, jido_ai, jido_harness, jido_ecto, req_llm, jido_otel — every package is sourced from a Sunstone-Partners fork pinned to a specific revision | 2h | JRM-T002 | [x] |
-| JCR-T002 | Create Jido.Agent GenServer under Foreman.Application supervision tree with OTP restart strategy | 4h | JCR-T001 | [ ] |
+| JCR-T002 | Create Jido.Agent GenServer under Foreman.Application supervision tree with OTP restart strategy | 4h | JCR-T001 | [x] |
 | JCR-T003 | Implement cmd/2 loop in Jido agent: action in → updated agent struct + directives out | 4h | JCR-T002 | [ ] |
 | JCR-T004 | Integrate jido_ecto for agent struct and checkpoint persistence (Postgres adapter) | 4h | JCR-T002 | [x] |
-| JCR-T005 | Implement signal-to-command adapter: Phoenix subscriber for foreman/commands topic, normalizes CloudEvent to ExternalTriggerCommand, routes to TRD-014 Integration Ingestion | 6h | JCR-T001 | [ ] |
+| JCR-T005 | Implement signal-to-command adapter: Phoenix subscriber for foreman/commands topic, normalizes CloudEvent to ExternalTriggerCommand, routes to TRD-014 Integration Ingestion | 6h | JCR-T001 | [x] |
 | JCR-T006 | Write unit tests for Jido.Agent GenServer lifecycle (start, cmd/2, checkpoint, restart) | 4h | JCR-T004 | [ ] |
 | JCR-T007 | Write integration test verifying agent signal → command envelope → event store → projection update flow | 4h | JCR-T005 | [ ] |
 | JCR-T008 | Write unit tests for signal-to-command adapter in isolation: CloudEvent envelope parsing, topic routing, ExternalTriggerCommand normalization, error handling for malformed CloudEvents | 4h | JCR-T005 | [ ] |
@@ -155,11 +155,11 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JAF-T001 | Define Jido.Action behaviour for tool registration and validation | 3h | JCR-T001 | [ ] |
-| JAF-T002 | Migrate existing TypeScript tool factories to Jido.Action modules (git_status, diff_read, task_get, etc.) | 8h | JAF-T001 | [ ] |
+| JAF-T001 | Define Jido.Action behaviour for tool registration and validation | 3h | JCR-T001 | [x] |
+| JAF-T002 | Migrate existing TypeScript tool factories to Jido.Action modules (git_status, diff_read, task_get, etc.) | 8h | JAF-T001 | [x] |
 | JAF-T003 | Add action validation middleware (parameter checking before execution) | 2h | JAF-T001 | [ ] |
-| JAF-T004 | Add Jido.Character prompt template loader for skills (prompt fragments, not actions) | 3h | JCR-T001 | [ ] |
-| JAF-T005 | Write isolation tests for each migrated action achieving ≥85% code coverage | 4h | JAF-T002 | [ ] |
+| JAF-T004 | Add Jido.Character prompt template loader for skills (prompt fragments, not actions) | 3h | JCR-T001 | [x] |
+| JAF-T005 | Write isolation tests for each migrated action achieving ≥85% code coverage | 4h | JAF-T002 | [x] |
 
 #### Story 1.3: Jido Harness Pi Adapter
 
@@ -179,7 +179,7 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [ ] |
+| JSI-T001 | Configure jido_signal topics: foreman/commands, foreman/operator, foreman/inbox, agents/<agent-id>/directive | 2h | JCR-T001 | [x] |
 | JSI-T002 | Implement Agent→Agent signal pub/sub via Bus.publish to agents/<phase> topic | 4h | JSI-T001 | [ ] |
 | JSI-T003 | Implement missing-subscriber configurable policy (silent/warn/error, default warn) in Foreman config | 3h | JSI-T001 | [ ] |
 | JSI-T004 | Add signal journal for replay on restart | 4h | JSI-T001 | [ ] |
@@ -394,7 +394,7 @@ All `Status` cells are `[ ]`.
 |-----|-------------|-------|--------|
 | REQ-001 | Jido Core Runtime and State Ownership | JCR-T001–T008 | [ ] |
 | REQ-002 | Jido Action Authoring Framework | JAF-T001–T005 | [ ] |
-| REQ-003 | Jido Harness Pi Adapter Integration | JHA-T001–T003 | [ ] |
+| REQ-003 | Jido Harness Pi Adapter Integration | JHA-T001–T003 | [x] |
 | REQ-004 | Inter-Agent Communication (Agent↔Agent) | JSI-T001–T005 | [ ] |
 | REQ-005 | Agent↔Operator Communication | JSI-T006–T010 | [ ] |
 | REQ-006 | Agent↔Foreman Communication | JSI-T011–T013 | [ ] |
