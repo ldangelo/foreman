@@ -2,13 +2,13 @@
 document_id: TRD-2026-4212be7e
 label: trd-jido-migration
 kind: trd
-version: 1.0.0
-status: draft
+version: 1.1.0
 date: 2026-08-18
+status: draft
 prd_reference: PRD-2026-4212be7e
 source_prd_label: prd-jido-migration
 design_readiness_score: 5.0
-total_tasks: 106
+total_tasks: 107
 ---
 
 # TRD-2026-4212be7e: Jido Agent Ecosystem Migration — Technical Requirements
@@ -26,7 +26,7 @@ total_tasks: 106
 | **PRD Reference** | PRD-2026-4212be7e |
 | **Source PRD Label** | prd-jido-migration |
 | **Design Readiness Score** | 5.0 |
-| **Total Tasks** | 106 |
+| **Total Tasks** | 107 |
 
 ---
 
@@ -127,7 +127,9 @@ All `Status` cells are `[ ]`.
 
 ---
 
-### 2.1 Sprint 1: Foundation — Jido Core Runtime and Action Authoring
+### PR 1: Foundation — Jido Core Runtime and Action Authoring
+
+**Shippable State:** Jido agent starts, executes registered actions, checkpoints state to Postgres, and recovers after restart
 
 #### Story 1.0: Jido Repo Preparation (prerequisite — all packages forked and pinned before integration)
 
@@ -147,6 +149,7 @@ All `Status` cells are `[ ]`.
 | JCR-T005 | Implement signal-to-command adapter: Phoenix subscriber for foreman/commands topic, normalizes CloudEvent to ExternalTriggerCommand, routes to TRD-014 Integration Ingestion | 6h | JCR-T001 | [ ] |
 | JCR-T006 | Write unit tests for Jido.Agent GenServer lifecycle (start, cmd/2, checkpoint, restart) | 4h | JCR-T004 | [ ] |
 | JCR-T007 | Write integration test verifying agent signal → command envelope → event store → projection update flow | 4h | JCR-T005 | [ ] |
+| JCR-T008 | Write unit tests for signal-to-command adapter in isolation: CloudEvent envelope parsing, topic routing, ExternalTriggerCommand normalization, error handling for malformed CloudEvents | 4h | JCR-T005 | [ ] |
 
 #### Story 1.2: Jido Action Authoring Framework
 
@@ -168,7 +171,9 @@ All `Status` cells are `[ ]`.
 
 ---
 
-### 2.2 Sprint 2: Communication Infrastructure — Signal Bus, Operator, Agent↔Foreman
+### PR 2: Communication Infrastructure — Signal Bus, Operator, Agent↔Foreman
+
+**Shippable State:** Agent receives operator questions, publishes directives, and Foreman inbox reflects signal delivery — within configurable per-workflow timeouts
 
 #### Story 2.1: Signal Bus (jido_signal)
 
@@ -217,7 +222,9 @@ All `Status` cells are `[ ]`.
 
 ---
 
-### 2.3 Sprint 3: AI, LLM, and External Integrations
+### PR 3: AI, LLM, and External Integrations
+
+**Shippable State:** Agent routes LLM calls through LiteLLM gateway, MCP tools appear in agent toolset, LiveDashboard shows agent state with ≤1s latency, and all LLM/cmd/signal calls emit OTEL spans to Langfuse
 
 #### Story 3.1: Jido AI + req_llm
 
@@ -242,7 +249,7 @@ All `Status` cells are `[ ]`.
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| MCP-T001 | Fork jido_mcp under Sunstone-Partners GitHub and pin to specific git revision | 2h | | [ ] |
+| MCP-T001 | Verify jido_mcp fork URL and pinned commit revision from JRM-T002 dependency manifest; confirm fork exists under Sunstone-Partners and revision is accessible | 1h | JRM-T002 | [ ] |
 | MCP-T002 | Integrate jido_mcp client pool with agent toolset sync | 4h | MCP-T001 | [ ] |
 | MCP-T003 | Implement MCP tool sync: registered MCP servers' tools appear in agent's available toolset | 4h | MCP-T002 | [ ] |
 | MCP-T004 | Add bounded diagnostics for malformed MCP responses (endpoint ID, tool ID, correlation ID, parse/schema error, response size, response hash; no raw body without explicit debug policy) | 3h | MCP-T003 | [ ] |
@@ -271,7 +278,9 @@ All `Status` cells are `[ ]`.
 
 ---
 
-### 2.4 Sprint 4: Workflow Dispatch, Merge Gate, and Resumability
+### PR 4: Workflow Dispatch, Merge Gate, and Resumability
+
+**Shippable State:** create/implement/fix dispatch runs in correct order, resumes idempotently after crashes, and cannot merge without authorized human approval
 
 #### Story 4.1: Workflow Dispatch — create
 
@@ -311,8 +320,9 @@ All `Status` cells are `[ ]`.
 | RTE-T006 | Verify ≤30 seconds to resumption (NFR-03) under crash recovery scenario | 2h | RTE-T005 | [ ] |
 
 ---
+### PR 5: Hardening, Benchmark, and Legacy Cleanup
 
-### 2.5 Sprint 5: Hardening, Benchmark, and Legacy Cleanup
+**Shippable State:** Jido upstream releases are evaluated immediately and adopted only if all tests pass; Foreman is deployed via process restart with all existing tests passing; legacy code is on a dedicated archived branch; hot-loadable workflow characterization tests pass
 
 #### Story 5.1: Jido Repository Mirroring
 
@@ -382,7 +392,7 @@ All `Status` cells are `[ ]`.
 
 | REQ | Requirement | Tasks | Status |
 |-----|-------------|-------|--------|
-| REQ-001 | Jido Core Runtime and State Ownership | JCR-T001–T007 | [ ] |
+| REQ-001 | Jido Core Runtime and State Ownership | JCR-T001–T008 | [ ] |
 | REQ-002 | Jido Action Authoring Framework | JAF-T001–T005 | [ ] |
 | REQ-003 | Jido Harness Pi Adapter Integration | JHA-T001–T003 | [ ] |
 | REQ-004 | Inter-Agent Communication (Agent↔Agent) | JSI-T001–T005 | [ ] |
@@ -431,16 +441,15 @@ All `Status` cells are `[ ]`.
 
 ---
 
-## 5. Sprint Summary
-
-| Sprint | Focus | Task Count | Critical Path |
+## 5. PR Summary
+| PR | Focus | Task Count | Critical Path |
 |--------|-------|-----------|---------------|
-| Sprint 1 | Foundation: Jido Core Runtime, Action Authoring, Harness | 17 | JCR-T001 → JCR-T002 → JCR-T003 → JHA-T001 → JHA-T002 |
-| Sprint 2 | Communication: Signal Bus, Operator, Agent↔Foreman, Shell | 20 | JCR-T001 → JSI-T001 → JSI-T002 → JSI-T008 → JSI-T010 |
-| Sprint 3 | AI/LLM: jido_ai, LiteLLM+Langfuse, MCP, Dashboard, OTEL | 25 | JAI-T001 → LGL-T001 → LGL-T002 |
-| Sprint 4 | Orchestration: Workflow Dispatch, Merge Gate, Resumability | 17 | WFD-T001 → WFD-T004 → MGH-T001 → MGH-T004 |
-| Sprint 5 | Hardening: Repo Mirroring, Benchmark, Legacy Removal, Hot-Load | 27 | CTH-T001 → LGC-T008 → LGC-T010 → LGC-T011 → LGC-T012 |
-| **Total** | | **106** | |
+| PR 1 | Foundation: Jido Core Runtime, Action Authoring, Harness | 18 | JCR-T001 → JCR-T002 → JCR-T003 → JHA-T001 → JHA-T002 |
+| PR 2 | Communication: Signal Bus, Operator, Agent↔Foreman, Shell | 20 | JCR-T001 → JSI-T001 → JSI-T002 → JSI-T008 → JSI-T010 |
+| PR 3 | AI/LLM: jido_ai, LiteLLM+Langfuse, MCP, Dashboard, OTEL | 25 | JAI-T001 → LGL-T001 → LGL-T002 |
+| PR 4 | Orchestration: Workflow Dispatch, Merge Gate, Resumability | 17 | WFD-T001 → WFD-T004 → MGH-T001 → MGH-T004 |
+| PR 5 | Hardening: Repo Mirroring, Benchmark, Legacy Removal, Hot-Load | 27 | CTH-T001 → LGC-T008 → LGC-T010 → LGC-T011 → LGC-T012 |
+| **Total** | | **107** | |
 
 ---
 
