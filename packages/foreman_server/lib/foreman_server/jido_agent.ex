@@ -5,6 +5,10 @@ defmodule ForemanServer.JidoAgent do
   This module implements the Jido agent protocol as specified in TRD-2026-4212be7e.
   It manages the agent's state, handles commands via cmd/2, and coordinates with
   the event store for state persistence.
+
+  NOTE: Full ReAct/ChainOfThought strategy integration requires proper Jido.Agent
+  framework usage which is still being developed. This is a working GenServer
+  implementation that can be extended later.
   """
 
   use GenServer
@@ -122,7 +126,7 @@ defmodule ForemanServer.JidoAgent do
         params: Map.delete(command, :action)
       },
       fn ->
-        # Process the command and update state
+        # Process the command
         {new_state, directives} = process_command(agent.state, command)
 
         # Update agent struct with new state and directives
