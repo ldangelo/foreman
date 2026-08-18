@@ -20,7 +20,7 @@ total_tasks: 107
 | **Document ID** | TRD-2026-4212be7e |
 | **Label** | trd-jido-migration |
 | **Kind** | trd |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | draft |
 | **Date** | 2026-08-18 |
 | **PRD Reference** | PRD-2026-4212be7e |
@@ -322,13 +322,13 @@ All `Status` cells are `[ ]`.
 ---
 ### PR 5: Hardening, Benchmark, and Legacy Cleanup
 
-**Shippable State:** Jido upstream releases are evaluated immediately and adopted only if all tests pass; Foreman is deployed via process restart with all existing tests passing; legacy code is on a dedicated archived branch; hot-loadable workflow characterization tests pass
+**Shippable State:** Jido upstream releases are evaluated immediately and adopted only if tests pass; hot-loadable workflow templates are verified by characterization tests; action development meets ≥85% coverage and p95 latency targets; legacy code lives on a dedicated archived branch
 
 #### Story 5.1: Jido Repository Mirroring
 
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
-| JRM-T003 | Add CI workflow: on upstream release, immediately run existing action and signal test suite (JRM-T001/T002 completed in Sprint 1 Story 1.0) | 4h | JRM-T002 | [ ] |
+| JRM-T003 | Add CI workflow: on upstream release, immediately run existing action and signal test suite (JRM-T001/T002 completed in PR 1 Story 1.0) | 4h | JRM-T002 | [ ] |
 | JRM-T004 | Implement immediate upgrade evaluation: suite passes → adopt; suite fails → do not adopt | 4h | JRM-T003 | [ ] |
 
 #### Story 5.2: Action Development Speed Target
