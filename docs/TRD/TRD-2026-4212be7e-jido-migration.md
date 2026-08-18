@@ -134,7 +134,7 @@ All `Status` cells are `[ ]`.
 | id | task | Est. | Deps | Status |
 |----|------|------|------|--------|
 | JRM-T001 | Fork all required Jido repos under Sunstone-Partners GitHub organization | 2h | | [ ] |
-| JRM-T002 | Pin all mix.exs Jido dependencies to specific git revisions (no floating versions); every package integrated in this sprint is already forked and pinned | 2h | JRM-T001 | [ ] |
+| JRM-T002 | For each forked Jido repo, select and record the specific git revisions to pin; produce a dependency manifest (e.g. deps.edn or pin清单) listing each package's fork URL and pinned revision; JCR-T001 applies this manifest to mix.exs | 2h | JRM-T001 | [ ] |
 
 #### Story 1.1: Jido Core Runtime
 
