@@ -184,7 +184,7 @@ All `Status` cells are `[ ]`.
 - [x] **TRD-024**: JSI-T006 — Add foreman/operator topic subscriber. [satisfies REQ-005] [depends: TRD-019]
 - [x] **TRD-025**: JSI-T007 — Implement jido_signal dispatch adapter (webhook/HTTP) to Foreman inbox API. [satisfies REQ-005] [depends: TRD-024]
 - [x] **TRD-026**: JSI-T008 — Implement operator question → inbox domain event → projector → agent directive flow. [satisfies REQ-005] [depends: TRD-025]
-- [ ] **TRD-027**: JSI-T009 — Implement per-workflow operator timeout (configurable in workflow definition; mark task blocked on expiry). [satisfies REQ-005] [depends: TRD-026]
+- [x] **TRD-027**: JSI-T009 — Implement per-workflow operator timeout (configurable in workflow definition; mark task blocked on expiry). [satisfies REQ-005] [depends: TRD-026]
 - [x] **TRD-028**: JSI-T010 — Write integration test for operator question → inbox notification → agent resume. [satisfies REQ-005] [depends: TRD-026]
 
 #### Story 2.3: Agent↔Foreman Communication
