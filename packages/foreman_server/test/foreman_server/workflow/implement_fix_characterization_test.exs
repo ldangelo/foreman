@@ -715,7 +715,11 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       :ok = KeyStore.mark_started(key)
       assert {:ok, :started} = KeyStore.status(key)
-  end
+    end
+    end
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
   # TRD-090 / CTH-T004 — Crash-recovery characterization

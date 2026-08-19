@@ -1,4 +1,7 @@
 defmodule ForemanServer.Agents.JidoSignalLatencyTest do
+  @moduledoc """
+  Signal delivery latency measurement (TRD-2026-4212be7e / LGC-T005 / TRD-100; NFR-02 p95 < 1s).
+  """
   use ExUnit.Case, async: false
 
   @moduletag :latency
@@ -10,7 +13,8 @@ defmodule ForemanServer.Agents.JidoSignalLatencyTest do
       for _ <- 1..@publish_count do
         {time_us, _result} =
           :timer.tc(fn ->
-            Jido.Signal.Bus.publish(:foreman_jido_signal_bus, "test.latency", %{payload: :ok})
+            {:ok, signal} = Jido.Signal.new("test.latency", %{payload: :ok}, source: "latency_test")
+            Jido.Signal.Bus.publish(:foreman_jido_signal_bus, [signal])
           end)
         time_us
       end
