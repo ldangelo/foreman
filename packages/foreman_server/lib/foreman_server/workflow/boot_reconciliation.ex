@@ -26,11 +26,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   require Logger
 
-  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, ProjectionStore, Telemetry}
+  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, Idempotency,
+                      ProjectionStore, Telemetry}
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
+  alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
-
   @orphan_reopen_event [:foreman_server, :workflow, :boot_reconciliation, :orphan_reopen]
   @matching_in_progress_event [
     :foreman_server,
@@ -40,6 +41,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   ]
   @already_closed_event [:foreman_server, :workflow, :boot_reconciliation, :already_closed]
   @healthy_event [:foreman_server, :workflow, :boot_reconciliation, :healthy]
+  @ambiguous_reconciled_event [
+    :foreman_server,
+    :workflow,
+    :boot_reconciliation,
+    :ambiguous_reconciled
+  ]
   @transition_comment "foreman-run-reconciled"
   @scan_retry_ms 50
   @json_schema_cache_name :foreman_server_json_schema_cache
@@ -137,6 +144,21 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   @doc """
+  Scan every idempotency key with status `:ambiguous` and apply
+  `CrashRecovery.reconcile/1` to each. Keys already marked `:completed`
+  are skipped; keys whose side-effect check reports no side effects are
+  retried.
+
+  Dispatches as a cast so the scan runs inside the `BootReconciliation`
+  process. Returns `:ok` once the cast is enqueued.
+  """
+  @spec scan_ambiguous_keys() :: :ok
+  def scan_ambiguous_keys do
+    GenServer.cast(__MODULE__, :scan_ambiguous_keys)
+    :ok
+  end
+
+  @doc """
   Cast a live terminal-run notification. The Dispatcher calls this on
   every `RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, and `RunFailed`
   projection event so the fan-out path is identical to the boot scan.
@@ -160,13 +182,15 @@ defmodule ForemanServer.Workflow.BootReconciliation do
        reconciled?: false,
        scanned?: false,
        vcs_scan_pid: nil,
-       vcs_scan_ref: nil
+       vcs_scan_ref: nil,
+       ambiguous_reconciled?: false
      }, {:continue, :reconcile}}
   end
 
   @impl true
   def handle_continue(:reconcile, state) do
     reconcile()
+    state = reconcile_ambiguous_keys(state)
     state = run_scan_or_defer(state)
     state = run_lease_scan_or_defer(state)
     state = run_slot_scan_or_defer(state)
@@ -203,6 +227,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   @impl true
+  def handle_cast(:scan_ambiguous_keys, state) do
+    state = reconcile_ambiguous_keys(state)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(:scan_orphans, state) do
     state = run_scan_or_defer(state)
     {:noreply, state}
@@ -217,6 +247,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @impl true
   def handle_info(:scan_run_slot_orphans, state) do
     state = run_slot_scan_or_defer(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:scan_ambiguous_keys, state) do
+    state = reconcile_ambiguous_keys(state)
     {:noreply, state}
   end
 
@@ -547,7 +583,60 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp do_scan_run_slot_orphans do
     reconcile_run_slots_stream()
-    :ok
+  end
+
+  # --- ambiguous key reconciliation (TRD-077) ---
+
+  # Scans every key with status :ambiguous and applies CrashRecovery.reconcile/1.
+  # Runs once at boot via handle_continue(:reconcile, ...). Deferred if the
+  # CommandRouter is not yet registered.
+  @doc false
+  def reconcile_ambiguous_keys(state) do
+    case scan_branch() do
+      :schedule_not_ready ->
+        schedule_ambiguous_scan(:not_ready)
+        state
+
+      _ ->
+        # :schedule_worker_registry or :scan
+        do_reconcile_ambiguous_keys()
+        %{state | ambiguous_reconciled?: true}
+    end
+  end
+
+  defp schedule_ambiguous_scan(_reason) do
+    Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
+  end
+  @doc false
+  def do_reconcile_ambiguous_keys(side_effects_check \\ &CrashRecovery.has_no_side_effects?/1) do
+    {skipped, retried} =
+      :ambiguous
+      |> KeyStore.list_by_status()
+      |> Enum.reduce({0, 0}, fn key, {skipped, retried} ->
+        case CrashRecovery.reconcile(key, side_effects_check) do
+          {:skip, :already_completed} ->
+            {skipped + 1, retried}
+
+          {:retry, reason} ->
+            Logger.warning(
+              "BootReconciliation: ambiguous key #{inspect(key)} retried (#{reason})",
+              key: key,
+              reason: reason
+            )
+
+            {skipped, retried + 1}
+        end
+      end)
+
+    emit_ambiguous_reconciled(skipped, retried)
+  end
+
+  defp emit_ambiguous_reconciled(skipped, retried) do
+    :telemetry.execute(
+      @ambiguous_reconciled_event,
+      %{skipped: skipped, retried: retried},
+      %{}
+    )
   end
 
   defp reconcile_run_slots_stream do
