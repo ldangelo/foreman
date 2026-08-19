@@ -1,5 +1,7 @@
 name: plan
 description: Create draft product and technical requirements for later refinement.
+# Operator timeout in ms (TRD-027). Default: 300000 (5 min).
+operator_timeout_ms: 300000
 phases:
   - name: create-prd
     command: "/skill:ensemble-full-create-prd --foreman"
