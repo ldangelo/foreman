@@ -25,10 +25,14 @@ covers the clean → dirty → reset sequence described above. The scaffold
 exercises `GitStatusAction.run/2` against a real (per-test, tmp) git
 working tree so the Jido.Action contract is validated against actual
 `git` output rather than mocks.
-
 ## Time logged
-Pending actual run; methodology ready. Will be populated by ADT-T003
-(time measurement).
+Not run in this session (sandbox lacks erlexec). Expected to pass based on code
+review — `GitStatusActionE2ETest` exercises `run/2` against a real tmp git repo
+and the action's `git status --porcelain` logic is straightforward. Full development
+time not measured; see timing doc for rough retrospective estimate.
 
 ## Result
-PASS / FAIL — to be populated by ADT-T003 (time measurement).
+Not yet run this session (sandbox constraint). Expected: PASS — the test exercises
+`GitStatusAction.run/2` against a real tmp git working tree (clean→dirty→reset)
+and the action logic is read-only git porcelain. A CI/normal-environment run is
+needed to confirm the timing measurement.
