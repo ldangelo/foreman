@@ -35,18 +35,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.Catalog
+  alias ForemanServer.Workflow.StepSequencer
   alias ForemanServer.Workflow.Worktree, as: WorktreeLifecycle
   alias ForemanServer.RunExecutorLiveness
   require Logger
 
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @type state :: %{
-          run_id: String.t(),
           task: map(),
           phase_specs: [map()],
           current_phase: non_neg_integer() | nil,
           completed: [non_neg_integer()],
-          status: :ready | :in_progress | :completed | :failed,
+          phase_statuses: %{non_neg_integer() => :in_progress | :completed | :failed | :blocked | :skipped},
+          status: :ready | :in_progress | :completed | :failed | :blocked,
           artifact_base: String.t(),
           plan_context: map() | nil,
           source: :task | :work_request | :unknown
@@ -163,12 +164,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_specs: phase_specs,
       current_phase: nil,
       completed: [],
+      phase_statuses: %{},
       status: :ready,
       artifact_base: default_artifact_base(),
       plan_context: plan_context,
       source: source
     }
-
     Process.send_after(self(), :kickoff, 0)
     {:ok, state}
   end
@@ -245,33 +246,49 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def handle_cast({:advance_to, completed_index}, state) do
     completed = Enum.uniq(state.completed ++ [completed_index])
     next_index = completed_index + 1
-    next_state = %{state | completed: completed}
+
+    # Get the previous phase's terminal status from persisted state
+    prev_status = Map.get(state.phase_statuses, completed_index, :in_progress)
 
     case Enum.at(state.phase_specs, next_index) do
       nil ->
+        # All phases complete - finalize run
         Logger.info(
           "RunExecutor #{state.run_id} all #{length(state.phase_specs)} phases complete; finalizing"
         )
 
+        next_state = %{state | completed: completed}
         case finalize_run(next_state) do
           {:ok, finalized_state} ->
             {:noreply, finalized_state}
 
           {:error, reason} ->
             Logger.error("RunExecutor #{state.run_id} finalize_run failed: #{inspect(reason)}")
-
             finalize_terminal_and_stop(next_state, {:finalize_run_failed, reason})
         end
 
-      _phase_spec ->
-        Process.send_after(self(), {:start_at, next_index}, 0)
-        {:noreply, next_state}
+      next_phase_spec ->
+        next_step = phase_spec_name(next_phase_spec)
+
+        # Use StepSequencer to determine if we should proceed based on prev phase status
+        case StepSequencer.propagate_terminal(prev_status, next_step) do
+          {:halt, :blocked} ->
+            Logger.warning("Previous phase #{completed_index} blocked; halting sequence")
+            next_state = %{state | completed: completed, status: :blocked}
+            emit_phase_blocked(state, next_index, "blocked by previous phase")
+            {:noreply, next_state}
+
+          {:halt, :failed} ->
+            Logger.warning("Previous phase #{completed_index} failed; halting sequence")
+            {:noreply, %{state | completed: completed, status: :failed}}
+
+          {:cont, _} ->
+            # Proceed to next phase
+            Process.send_after(self(), {:start_at, next_index}, 0)
+            {:noreply, %{state | completed: completed}}
+        end
     end
   end
-
-  # Orchestrates: start → execute → complete → enqueue-next.
-  # Returns {:ok, updated_state} on success or
-  # {:error, reason} / {:noop, state} on failure / no-phase.
   defp start_phase_at_index(state, index) do
     case Enum.at(state.phase_specs, index) do
       nil ->
@@ -325,13 +342,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
          {:ok, _required_file} <-
            enforce_required_file(state, phase_spec, phase_index, worktree_record),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
-         {:ok, _} <- emit_phase_complete(state, phase_index, artifact) do
-      next_state = %{state | current_phase: index, status: :in_progress}
+         {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
+      next_state = %{state | current_phase: index, status: :in_progress, phase_statuses: new_phase_statuses}
       GenServer.cast(self(), {:advance_to, index})
       {:ok, next_state}
     end
   end
-
   defp validate_phase_action(phase_spec, _phase_index) do
     case phase_action(phase_spec) do
       :command ->
@@ -536,6 +552,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # Returns {:ok, new_phase_statuses} with the completion tracked.
   defp emit_phase_complete(state, phase_index, artifact) do
     phase_id = Identity.phase_id(state.run_id, phase_index)
 
@@ -548,13 +565,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
       artifact_bytes: artifact.bytes
     }
 
-    dispatch_system(
-      "phase.complete",
-      payload,
-      state.run_id,
-      phase_id,
-      "phase:#{state.run_id}:#{phase_id}"
-    )
+    # Track phase completion in executor state for StepSequencer
+    new_phase_statuses = Map.put(state.phase_statuses, phase_index, :completed)
+
+    case dispatch_system(
+           "phase.complete",
+           payload,
+           state.run_id,
+           phase_id,
+           "phase:#{state.run_id}:#{phase_id}"
+         ) do
+      {:ok, _} -> {:ok, new_phase_statuses}
+      {:error, _} = err -> err
+    end
   end
 
   defp emit_phase_failure(state, phase_spec, phase_index, reason) do
@@ -601,6 +624,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # Emit PhaseBlocked event for the next phase when the sequence halts due to blocked status.
+  defp emit_phase_blocked(state, next_phase_index, reason) do
+    phase_id = Identity.phase_id(state.run_id, next_phase_index)
+
+    payload = %{
+      run_id: state.run_id,
+      phase_id: phase_id,
+      index: next_phase_index,
+      reason: reason
+    }
+
+    dispatch_system(
+      "phase.block",
+      payload,
+      state.run_id,
+      phase_id,
+      "phase:#{state.run_id}:#{phase_id}"
+    )
+  end
   # Strict `run.fail` emission from `emit_phase_failure/4`:
   #   * `:ok` → aggregate accepted, run flipped terminal.
   #   * `{:error, {:run_terminal, _status}}` → already terminal from a
