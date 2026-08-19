@@ -79,3 +79,9 @@ The full `JRM-T003` upgrade protocol is described in
 4. CI runs `mix test` against every package plus the full Foreman test suite.
 5. Suite green → adopt (no PR needed; SHA in this manifest is bumped).
 6. Suite red → leave `main` pinned to last-known-good; alert operator.
+
+## jido_mcp (verified 2026-08-18)
+- URL: https://github.com/Sunstone-Partners/jido_mcp
+- Ref: 8986c4cbf4f5e89d9f9a7a4c096d45e45a514863
+- Ref accessible: yes
+- Last verified by: trd-2026-4212be7e-jido-migration/MCP-T001
