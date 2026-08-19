@@ -76,5 +76,13 @@ config :foreman_server, :prod_secret_provider,
 #   elixir --no-halt -S mix run --no-compile
 # (or by setting config :foreman_server, :jido_ecto, enabled: true).
 config :foreman_server, :jido_ecto, enabled: false
+# TRD-2026-4212be7e JOT-T001: jido_otel runtime OTLP endpoint for
+# Langfuse-compatible ingestion. Endpoint comes from the standard
+# OTEL env var; Langfuse requires an Authorization: Bearer header
+# built from LANGFUSE_PUBLIC_KEY when configured.
+otlp_endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+langfuse_key = System.get_env("LANGFUSE_PUBLIC_KEY", "")
+otlp_headers = if langfuse_key != "", do: %{"Authorization" => "Bearer #{langfuse_key}"}, else: %{}
+config :jido_otel, otlp_endpoint: otlp_endpoint, otlp_headers: otlp_headers
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("JIDO_CHECKPOINT_DATABASE_URL", "")

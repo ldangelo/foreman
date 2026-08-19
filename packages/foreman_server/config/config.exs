@@ -66,4 +66,11 @@ config :foreman_server, :mcp,
   mount: "/mcp",
   allow_workflow_writes: false,
   allow_insecure_local: false
+
+# TRD-2026-4212be7e JOT-T001: jido_otel OTLP endpoint (Langfuse-compatible).
+# Defaults to localhost:4318 for local dev; runtime overrides come from
+# prod.exs (env-driven: OTEL_EXPORTER_OTLP_ENDPOINT, LANGFUSE_PUBLIC_KEY).
+config :jido_otel,
+  otlp_endpoint: "http://localhost:4318",
+  service_name: "foreman_server"
 import_config "#{config_env()}.exs"
