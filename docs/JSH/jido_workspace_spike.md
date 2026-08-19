@@ -137,3 +137,11 @@ wrapper unchanged.
 - `docs/TRD/TRD-2026-4212be7e-jido-migration.md`
 - `docs/PRD/PRD-2026-4212be7e-jido-migration.md`
 - `JIDO_FORKS.md`
+
+## Adoption Decision (JSH-T006)
+
+Decision: FALL BACK to jido_shell + jido_vfs + custom host-path adapter.
+
+Rationale: jido_workspace is not in deps/. Fallback stack covers in-memory VFS, snapshot semantics, host-path adapter, network deny-by-default, command allowlist. Custom host-path adapter binds to git worktreePath.
+
+Follow-up: TRD-098 (LGC-T003) security isolation test; TRD-037 closed.
