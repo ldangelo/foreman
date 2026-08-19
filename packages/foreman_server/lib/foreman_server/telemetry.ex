@@ -42,6 +42,7 @@ defmodule ForemanServer.Telemetry do
   @run_slots_transferred [:foreman_server, :run_slots, :transferred]
   @run_slots_waiter_removed [:foreman_server, :run_slots, :waiter_removed]
   @run_slots_reconciled [:foreman_server, :run_slots, :reconciled]
+  @signal_command [:foreman, :signal, :command]
   @all_events [
     @command_dispatch,
     @aggregate_rehydrated,
@@ -67,8 +68,7 @@ defmodule ForemanServer.Telemetry do
     @work_terminal,
     @dispatcher_admission_failed,
     @run_slots_acquired,
-    @run_slots_queued,
-    @run_slots_released,
+    @signal_command,
     @run_slots_transferred,
     @run_slots_waiter_removed,
     @run_slots_reconciled

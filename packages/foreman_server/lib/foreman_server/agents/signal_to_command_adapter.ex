@@ -60,10 +60,13 @@ defmodule ForemanServer.Agents.SignalToCommandAdapter do
   require Logger
 
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Telemetry
 
   @default_topic "com.foreman.command.*"
-
   @default_dispatcher {CommandGateway, :dispatch_system, []}
+
+  # TRD-100: [:foreman, :signal, :command] — signal receipt to dispatcher completion
+  @signal_command [:foreman, :signal, :command]
 
   # --- public API --------------------------------------------------------
 
@@ -134,35 +137,41 @@ defmodule ForemanServer.Agents.SignalToCommandAdapter do
   """
   @spec handle_signal(map() | struct(), term(), keyword()) :: :ok
   def handle_signal(signal, dispatcher \\ @default_dispatcher, _opts \\ []) do
-    case normalize(signal) do
-      {:ok, envelope} ->
-        case invoke_dispatcher(dispatcher, envelope) do
-          {:ok, _event} ->
-            :ok
+    start_ms = System.monotonic_time(:millisecond)
 
-          {:error, reason} ->
-            Logger.warning(
-              "SignalToCommandAdapter: dispatcher returned #{inspect(reason)} for cloud_event_id=#{envelope.payload.cloud_event_id}"
-            )
+    result =
+      case normalize(signal) do
+        {:ok, envelope} ->
+          case invoke_dispatcher(dispatcher, envelope) do
+            {:ok, _event} ->
+              :ok
 
-            :ok
+            {:error, reason} ->
+              Logger.warning(
+                "SignalToCommandAdapter: dispatcher returned #{inspect(reason)} for cloud_event_id=#{inspect(envelope.payload.cloud_event_id)}"
+              )
 
-          other ->
-            Logger.warning(
-              "SignalToCommandAdapter: dispatcher returned unexpected #{inspect(other)} for cloud_event_id=#{envelope.payload.cloud_event_id}"
-            )
+              :ok
 
-            :ok
-        end
+            other ->
+              Logger.warning(
+                "SignalToCommandAdapter: dispatcher returned unexpected #{inspect(other)} for cloud_event_id=#{inspect(envelope.payload.cloud_event_id)}"
+              )
 
-      {:error, reason} ->
-        Logger.warning("SignalToCommandAdapter: dropping malformed CloudEvent: #{inspect(reason)}")
-        :ok
-    end
+              :ok
+          end
+
+        {:error, reason} ->
+          Logger.warning("SignalToCommandAdapter: dropping malformed CloudEvent: #{inspect(reason)}")
+          :ok
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - start_ms
+    Telemetry.execute(@signal_command, %{duration_ms: duration_ms}, %{})
+    result
   end
 
   # --- GenServer --------------------------------------------------------
-
   @impl true
   def init(opts) do
     state = %{
