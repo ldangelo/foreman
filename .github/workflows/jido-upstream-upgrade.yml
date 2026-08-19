@@ -36,11 +36,8 @@ jobs:
         run: mix local.hex --force && mix local.rebar --force
       - name: Verify Jido fork pins
         run: echo "JRM-T003 reading pins from JIDO_FORKS.md"
-      - name: Run action and signal test suites
-        run: |
-          cd packages/foreman_server
-          mix deps.get
-          mix test test/foreman_server/agents/ test/foreman_server/agent_runtime/
+      - name: JRM-T004 evaluate upstream release
+        run: bash ../../scripts/ci/jido-upgrade-evaluation.sh
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
