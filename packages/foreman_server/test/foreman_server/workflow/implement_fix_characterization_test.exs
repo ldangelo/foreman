@@ -2,14 +2,22 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
   @moduledoc """
   Characterization tests for implement and fix workflow dispatch.
 
-  TRD-2026-4212be7e / WFD-T007 / TRD-070
+  TRD-2026-4212be7e:
+    - WFD-T005 / TRD-068: Implement workflow dispatch (ensemble-full-implement-trd)
+    - WFD-T006 / TRD-069: Fix workflow dispatch (ensemble-fix-issue)
+    - WFD-T007 / TRD-070: Characterization tests (this file)
+    - CTH-T002 / TRD-088: Implement workflow characterization harness
+    - CTH-T003 / TRD-089: Fix workflow characterization harness
+    - CTH-T004 / TRD-090: Crash-recovery characterization
 
-  Verifies:
-  - Implement workflow dispatches `ensemble-full-implement-trd` with --foreman
-  - Fix workflow dispatches `ensemble-fix-issue` with --foreman
-  - Correct idempotency key formats are used
-  - Implementation context is frozen for implement workflow
-  - Worktree configuration is correct
+  Covers:
+    - Implement workflow: skill dispatch with --foreman, trd_path_argument
+      substitution, implementation context freezing, worktree configuration,
+      idempotency key format, RunExecutor phase_specs extraction, e2e
+      initialization, empty-phases graceful handling
+    - Fix workflow: skill dispatch with --foreman, single-phase structure,
+      no implementation context required, idempotency key format
+    - Shared: KeyStore crash-recovery contracts, StepSequencer propagation
   """
 
   use ExUnit.Case, async: false
@@ -343,6 +351,110 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # CTH-T002 / TRD-088 — Implement workflow characterization harness
+  #
+  # This describe block complements WFD-T005 (TRD-068) with e2e RunExecutor
+  # initialization tests.  While the WFD-T005 tests verify the command string
+  # that emerges from task.approve → TaskApproved → workflow_snapshot, this
+  # block verifies the reverse contract: RunExecutor.init/1 correctly parses
+  # that snapshot into phase_specs and initial state.
+  #
+  # Together with run_executor_test.exs (adapter e2e) and
+  # approval_test.exs (workflow_load_failed for unknown types), this
+  # constitutes the complete implement workflow characterization harness.
+  #
+  # REQ-024: characterization test harness (CTH-T002 / TRD-088)
+  # ---------------------------------------------------------------------------
+
+  describe "CTH-T002 implement workflow characterization harness (TRD-088)" do
+    alias ForemanServer.Workflow.RunExecutor
+
+    test "RunExecutor.init/1 extracts correct phase_specs from implement-trd workflow_snapshot" do
+      # Simulate the workflow_snapshot that TaskApproved would persist:
+      # it is a JSON-decoded map so all keys are strings.
+      run_id = "run-cth-t002"
+      workflow_snapshot = %{
+        "run_id" => run_id,
+        "workflow_name" => "implement-trd",
+        "phases" => [
+          %{
+            "name" => "implement-trd",
+            "action" => "command",
+            "command" => "/skill:ensemble-full-implement-trd \"docs/TRD/x.md\" --foreman",
+            "index" => 1,
+            "phase_id" => "phase-#{run_id}-1",
+            "worktree" => %{
+              "enabled" => true,
+              "base" => "abc123",
+              "branch" => "foreman/{run_id}/{phase}",
+              "path" => "implement-trd",
+              "cleanup" => "always"
+            }
+          }
+        ]
+      }
+
+      task_projection = %{
+        "task_id" => "task-cth-t002",
+        "project_id" => "project-cth-t002",
+        "workflow_type" => "implement-trd",
+        "workflow_snapshot" => workflow_snapshot
+      }
+
+      {:ok, state} = RunExecutor.init({run_id, task_projection})
+
+      # Verify phase_specs are correctly extracted (not [] or malformed)
+      assert length(state.phase_specs) == 1,
+             "implement-trd workflow should have exactly one phase_spec"
+
+      [phase_spec] = state.phase_specs
+
+      # Verify command is preserved verbatim
+      assert phase_spec["command"] =~
+               "ensemble-full-implement-trd",
+             "phase_spec command should include ensemble-full-implement-trd skill"
+
+      assert phase_spec["command"] =~ "--foreman",
+             "phase_spec command should include --foreman flag"
+
+      # Verify worktree config is correctly preserved
+      worktree = phase_spec["worktree"]
+      assert worktree["base"] == "abc123",
+             "worktree.base should be the concrete source revision"
+      assert worktree["branch"] == "foreman/{run_id}/{phase}",
+             "worktree.branch should retain runtime placeholders"
+
+      # Verify initial state: no phases completed yet
+      assert state.completed == [],
+             "initially no phases should be completed"
+      assert state.phase_statuses == %{},
+             "initially phase_statuses should be empty"
+      assert state.status == :ready,
+             "initial status should be :ready"
+    end
+
+    test "RunExecutor.init/1 handles implement-trd with no phases gracefully" do
+      # Edge case: workflow_snapshot exists but has no phases.
+      # RunExecutor should not crash; phase_specs = [] is the safe default.
+      task_projection = %{
+        "task_id" => "task-empty-phases",
+        "project_id" => "project-empty",
+        "workflow_type" => "implement-trd",
+        "workflow_snapshot" => %{
+          "workflow_name" => "implement-trd",
+          "phases" => []
+        }
+      }
+
+      {:ok, state} = RunExecutor.init({"run-empty", task_projection})
+
+      assert state.phase_specs == [],
+             "empty phases list should result in empty phase_specs"
+      assert state.completed == [],
+             "no phases means nothing to complete"
+    end
+  end
   # --- Fix workflow tests (ensemble-fix-issue) ---
 
   describe "fix workflow dispatch (WFD-T006 / TRD-069)" do
@@ -514,6 +626,69 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # CTH-T003 / TRD-089 — Fix workflow characterization harness
+  #
+  # Mirrors CTH-T002 (TRD-088) for the fix workflow.  Verifies RunExecutor
+  # correctly extracts phase_specs from a fix workflow snapshot (string-keyed,
+  # as persisted after JSON round-trip).  Together with WFD-T006 (TRD-069)
+  # which covers command-string construction, this closes the full e2e
+  # dispatch characterization for the fix workflow.
+  #
+  # REQ-024: characterization test harness (CTH-T003 / TRD-089)
+  # ---------------------------------------------------------------------------
+
+  describe "CTH-T003 fix workflow characterization harness (TRD-089)" do
+    alias ForemanServer.Workflow.RunExecutor
+
+    test "RunExecutor.init/1 extracts correct phase_specs from fix workflow_snapshot" do
+      run_id = "run-cth-t003"
+      workflow_snapshot = %{
+        "run_id" => run_id,
+        "workflow_name" => "fix",
+        "phases" => [
+          %{
+            "name" => "fix",
+            "action" => "command",
+            "command" => "/skill:ensemble-fix-issue --foreman",
+            "index" => 1,
+            "phase_id" => "phase-#{run_id}-1"
+          }
+        ]
+      }
+
+      task_projection = %{
+        "task_id" => "task-cth-t003",
+        "project_id" => "project-cth-t003",
+        "workflow_type" => "fix",
+        "workflow_snapshot" => workflow_snapshot
+      }
+
+      {:ok, state} = RunExecutor.init({run_id, task_projection})
+
+      # Verify single phase_spec
+      assert length(state.phase_specs) == 1,
+             "fix workflow should have exactly one phase_spec"
+
+      [phase_spec] = state.phase_specs
+
+      # Verify skill name and --foreman flag
+      assert phase_spec["command"] =~ "ensemble-fix-issue",
+             "phase_spec command should include ensemble-fix-issue skill"
+      assert phase_spec["command"] =~ "--foreman",
+             "phase_spec command should include --foreman flag"
+
+      # Verify no worktree (fix workflow has no worktree by design)
+      refute Map.has_key?(phase_spec, "worktree"),
+             "fix workflow phase_spec should not have a worktree"
+
+      # Verify initial state
+      assert state.completed == [],
+             "initially no phases should be completed"
+      assert state.status == :ready,
+             "initial status should be :ready"
+    end
+  end
   # --- Idempotency key format tests ---
   describe "idempotency key format (REQ-026 / TRD-026)" do
     alias ForemanServer.Idempotency.KeyStore
