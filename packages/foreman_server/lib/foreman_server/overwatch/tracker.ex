@@ -366,6 +366,14 @@ defmodule ForemanServer.Overwatch.Tracker do
             # downstream cross-aggregate fan-out.
             case trigger_recovery(worker.worker_id, worker.run_id, new_seq) do
               :ok ->
+                # TRD-076: mark the idempotency key ambiguous on liveness
+                # timeout so crash-recovery reconciliation knows to inspect
+                # side effects before retrying. Safe no-op when no lease is
+                # registered (key already completed or expiry fired first).
+                _ = ForemanServer.Idempotency.HeartbeatLease.on_worker_unresponsive(
+                       worker.worker_id, worker.run_id
+                     )
+
                 state = put_sequence(state, k, new_seq)
 
                 worker = %{worker | unresponsive_emitted?: true}
@@ -465,9 +473,18 @@ defmodule ForemanServer.Overwatch.Tracker do
       payload: payload,
       command_id: command_id
     }
-
     case dispatch_command(command) do
       :ok ->
+        # TRD-076: renew the heartbeat lease so the idempotency key
+        # stays `started` while the worker is alive. Safe no-op when no
+        # lease is registered for this worker.
+        _ = ForemanServer.Idempotency.HeartbeatLease.renew(
+               case ForemanServer.Idempotency.HeartbeatLease.key_for(worker.worker_id, worker.run_id) do
+                 {:ok, key} -> key
+                 :not_found -> nil
+               end
+             )
+
         state = put_sequence(state, k, new_seq)
 
         worker = %{worker | unresponsive_emitted?: false}

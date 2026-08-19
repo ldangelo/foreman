@@ -1,63 +1,53 @@
 defmodule ForemanServer.PrGate do
   @moduledoc """
-  TRD-017: PR gate that controls whether a run can transition to
-  merge-pending state.
+  Merge gate check interface used by the Run aggregate's `ensure_pr_gate_ok/2`.
 
-  The gate inspects the PR association recorded for a run and returns
-  `:ok` only when the PR status is one of `:open` or `:merged`. Any
-  other status (`:closed`, `:conflicted`, unknown) returns
-  `{:error, :pr_not_acceptable}`.
+  Queries the `ForemanServer.Workflow.MergeGate` GenServer (ETS-backed) and
+  returns `:ok` when the run has an approved merge gate, or `{:error, reason}`
+  when merge is not yet authorized.
 
-  ## Example
-
-      iex> PrGate.evaluate(:open)
-      :ok
-
-      iex> PrGate.evaluate(:closed)
-      {:error, :pr_not_acceptable}
+  TRD-2026-4212be7e / MGH-T001 / TRD-071.
   """
-
-  alias ForemanServer.PrAssociate
-
-  @acceptable_states [:open, :merged]
+  require Logger
 
   @doc """
-  Pure helper — given a PR status atom, return whether the gate is open.
+  Check whether `run_id` is authorized to merge.
+
+  Returns `:ok` when the gate is not pending, or `{:error, :pr_not_acceptable}` when
+  the gate is still pending.
   """
-  @spec evaluate(atom()) :: :ok | {:error, :pr_not_acceptable}
-  def evaluate(status) when status in @acceptable_states, do: :ok
-  def evaluate(_), do: {:error, :pr_not_acceptable}
-
-  @doc """
-  Check the PR state for a run.
-
-  Returns one of:
-
-    * `:ok` — PR is in an acceptable state.
-    * `{:error, :pr_not_acceptable}` — PR is in a blocking state.
-    * `{:error, :no_pr_association}` — no PR association exists for the run.
-    * `{:error, _}` — projection/lookup error.
-  """
-  @spec check(String.t()) ::
-          :ok | {:error, :pr_not_acceptable | :no_pr_association | term()}
+  @spec check(String.t()) :: :ok | {:error, :pr_not_acceptable}
   def check(run_id) when is_binary(run_id) do
-    case PrAssociate.lookup(run_id) do
-      {:error, :not_found} ->
-        {:error, :no_pr_association}
+    key = "run:#{run_id}"
 
-      {:error, other} ->
-        {:error, other}
-
-      {:ok, %{} = assoc} ->
-        evaluate(Map.get(assoc, :pr_status) || :open)
+    if ForemanServer.Workflow.MergeGate.pending_for_key?(key) do
+      {:error, :pr_not_acceptable}
+    else
+      :ok
     end
   end
 
   def check(_), do: {:error, :no_pr_association}
+  @doc """
+  Record that a run has entered the merge gate pending state.
+  Called by the Run aggregate after `run.pr.ready` is dispatched.
+  """
+  @spec record_pending(String.t(), String.t()) :: :ok
+  def record_pending(run_id, pr_url) when is_binary(run_id) and is_binary(pr_url) do
+    key = "run:#{run_id}"
+    ForemanServer.Workflow.MergeGate.request_approval(pr_url, key)
+    :ok
+  end
 
   @doc """
-  Convenience: returns `true` when the PR gate is open for `run_id`.
+  Record that a run's merge gate has been approved.
+  Called by the Run aggregate after `merge_approve` is dispatched.
   """
-  @spec open?(String.t()) :: boolean()
-  def open?(run_id), do: check(run_id) == :ok
+  @spec record_approved(String.t(), String.t(), String.t()) :: :ok
+  def record_approved(run_id, approver, approver_identity)
+      when is_binary(run_id) and is_binary(approver) and is_binary(approver_identity) do
+    key = "run:#{run_id}"
+    ForemanServer.Workflow.MergeGate.approve_by_key(key, approver, approver_identity)
+    :ok
+  end
 end

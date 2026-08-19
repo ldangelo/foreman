@@ -35,6 +35,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   alias ForemanServer.Agents.OperatorTimeout
   alias ForemanServer.Inbox.SharedInbox
 
+  @operator_timeout_ms 5 * 60 * 1000  # 5 minutes — matches OperatorTimeout.default
   @doc """
   Dispatch a single `com.foreman.operator.*` CloudEvent to the
   Foreman inbox pipeline via `SharedInbox.ingest/2`.
@@ -63,7 +64,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
                        data |> Map.get(:agent_id) |> non_empty()
 
         if question_id && agent_id do
-          _ = OperatorTimeout.schedule(question_id, agent_id)
+          _ = OperatorTimeout.schedule(question_id, agent_id, @operator_timeout_ms)
         end
 
         result

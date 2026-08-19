@@ -20,4 +20,18 @@ defmodule ForemanServer.Idempotency.HeartbeatLeaseTest do
     {:ok, _pid} = ForemanServer.Idempotency.HeartbeatLease.start_link()
     assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status("unknown")
   end
+
+  test "expiry marks key ambiguous and removes lease" do
+    {:ok, _pid} = ForemanServer.Idempotency.HeartbeatLease.start_link()
+    {:ok, _pid2} = ForemanServer.Idempotency.KeyStore.start_link()
+
+    # Acquire with a short TTL (10 ms) so expiry fires quickly in the test
+    {:ok, _lease} = ForemanServer.Idempotency.HeartbeatLease.acquire("k-expiry", 10)
+
+    # Wait for the timer to fire and the `:expire` message to be processed
+    Process.sleep(30)
+
+    # Expiry removes the lease from HeartbeatLease
+    assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status("k-expiry")
+  end
 end

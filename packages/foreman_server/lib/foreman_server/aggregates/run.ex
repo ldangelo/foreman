@@ -3,6 +3,8 @@ defmodule ForemanServer.Aggregates.Run do
   @behaviour ForemanServer.Aggregate
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.Workflow.ApproverAuthorizer
+  alias ForemanServer.PrGate
 
   defmodule PhaseStatus do
     @moduledoc "Phase status keyed by phase_id."
@@ -32,6 +34,7 @@ defmodule ForemanServer.Aggregates.Run do
       :status,
       :terminal?,
       :last_sequence,
+      :merge_gate,
       phase_status: %{},
       worker_status: %{},
       retry_history: []
@@ -48,6 +51,7 @@ defmodule ForemanServer.Aggregates.Run do
       status: nil,
       terminal?: false,
       last_sequence: 0,
+      merge_gate: nil,
       phase_status: %{},
       worker_status: %{},
       retry_history: []
@@ -78,8 +82,14 @@ defmodule ForemanServer.Aggregates.Run do
             project_id: Aggregate.get(payload, :project_id) || state.project_id
         }
 
-      type when type in ["PrUpdated", "PrReady", "PrRetargeted", "PrReset", "PrMerged"] ->
+      type when type in ["PrUpdated", "PrRetargeted", "PrReset", "PrMerged"] ->
         %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id)}
+
+      "PrReady" ->
+        %State{state | exists?: true, run_id: Aggregate.get(payload, :run_id), merge_gate: :pending}
+
+      "MergeGateApproved" ->
+        %State{state | merge_gate: :approved}
 
       "RunCompleted" ->
         %State{
@@ -175,6 +185,12 @@ defmodule ForemanServer.Aggregates.Run do
         # action sequence is owned by the Recovery aggregate; this event is
         # observed here for ordering only and does not change Run state.
         state
+
+      "MergeGatePending" ->
+        %State{state | merge_gate: :pending, run_id: Aggregate.get(payload, :run_id) || state.run_id}
+
+      "MergeGateApproved" ->
+        %State{state | merge_gate: :approved, run_id: Aggregate.get(payload, :run_id) || state.run_id}
     end
   end
 
@@ -352,7 +368,6 @@ defmodule ForemanServer.Aggregates.Run do
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "run.pr.update",
-             "run.pr.ready",
              "run.pr.retarget",
              "run.pr.reset",
              "run.pr.merge"
@@ -360,7 +375,6 @@ defmodule ForemanServer.Aggregates.Run do
     event_type =
       %{
         "run.pr.update" => "PrUpdated",
-        "run.pr.ready" => "PrReady",
         "run.pr.retarget" => "PrRetargeted",
         "run.pr.reset" => "PrReset",
         "run.pr.merge" => "PrMerged"
@@ -370,12 +384,58 @@ defmodule ForemanServer.Aggregates.Run do
          :ok <- require_exists(state, run_id),
          :ok <- allow_pr_lifecycle_on_terminal_runs(state, type),
          :ok <- require_pr_payload(type, payload),
-         :ok <- ensure_pr_gate_ok(type, run_id) do
+         :ok <- ensure_pr_gate_ok(state, type, run_id) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
          event_type: event_type,
          payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
+  # run.pr.ready — Ensemble reports PR creation. Side-effect: record in
+  # MergeGate so run.pr.merge is held until explicit human approval.
+  def handle_command(state, %{type: "run.pr.ready", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- allow_pr_lifecycle_on_terminal_runs(state, "run.pr.ready"),
+         :ok <- require_pr_payload("run.pr.ready", payload) do
+      pr_url = Aggregate.get(payload, :pr_url)
+      # PrGate.record_pending calls MergeGate.request_approval internally.
+      :ok = PrGate.record_pending(run_id, pr_url)
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "PrReady",
+         payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
+  # merge_approve — explicit human approval after merge gate hold.
+  # Verifies approver identity before unblocking run.pr.merge.
+  def handle_command(state, %{type: "merge_approve", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- ensure_merge_gate_pending(state),
+         approver when is_binary(approver) <-
+           Aggregate.get(payload, :approver),
+         approver_identity when is_binary(approver_identity) <-
+           Aggregate.get(payload, :approver_identity),
+         :ok <- ApproverAuthorizer.authorize(approver_identity) do
+      :ok = PrGate.record_approved(run_id, approver, approver_identity)
+
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "MergeGateApproved",
+         payload: %{
+           run_id: run_id,
+           approver: approver,
+           approver_identity: approver_identity,
+           approved_at: System.system_time(:millisecond)
+         }
        }}
     end
   end
@@ -477,16 +537,29 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp validate_pr_reset_action(_type, _action), do: :ok
 
-  defp ensure_pr_gate_ok("run.pr.merge", run_id) do
-    case ForemanServer.PrGate.check(run_id) do
-      :ok -> :ok
-      {:error, :pr_not_acceptable} -> {:error, :pr_not_acceptable}
-      {:error, :no_pr_association} -> {:error, :no_pr_association}
-      _ -> :ok
+  # Enforces the merge gate: only allow run.pr.merge when state.merge_gate is
+  # :approved (set by MergeGateApproved event, emitted after merge_approve).
+  # The aggregate state is the authoritative source — it survives actor restarts
+  # and crash recovery, unlike the ETS-backed MergeGate GenServer.
+  defp ensure_pr_gate_ok(state, "run.pr.merge", _run_id) do
+    case state.merge_gate do
+      :approved -> :ok
+      :pending  -> {:error, :pr_not_acceptable}
+      nil       -> {:error, :pr_not_acceptable}
     end
   end
 
-  defp ensure_pr_gate_ok(_type, _run_id), do: :ok
+  defp ensure_pr_gate_ok(_state, _type, _run_id), do: :ok
+
+  # Verifies the run is at the merge gate (merge has been requested but not yet
+  # approved). Allows merge_approve only when the gate is still pending.
+  defp ensure_merge_gate_pending(state) do
+    case state.merge_gate do
+      :pending -> :ok
+      :approved -> {:error, :merge_gate_already_approved}
+      nil -> {:error, {:merge_gate_not_found, :run}}
+    end
+  end
 
   defp allow_pr_lifecycle_on_terminal_runs(_state, type)
        when type in [

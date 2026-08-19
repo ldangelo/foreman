@@ -33,6 +33,12 @@ defmodule ForemanServer.Application do
         ForemanServer.Inbox.Poller,
         # Aggregator starts the Registry and supervises Actor children.
         ForemanServer.Aggregator,
+        # Idempotency store — durable idempotency key records (TRD-075) and
+        # heartbeat lease with expiry detection (TRD-076). ETS fallback when
+        # JidoCheckpointStore.Repo is unavailable so it starts regardless of
+        # repo configuration.
+        ForemanServer.Idempotency.KeyStore,
+        ForemanServer.Idempotency.HeartbeatLease,
         # Foreman Actions Registry — the tool-catalog layer that
         # RunExecutor, the agent runtime toolset sync, and the prompt
         # template loader all consult to find available Jido.Actions.
@@ -103,6 +109,7 @@ defmodule ForemanServer.Application do
         ++ maybe_operator_question_subscriber_child()
         ++ maybe_operator_timeout_child()
         ++ maybe_overwatch_child()
+        ++ maybe_vfs_isolation_child()
         ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -257,6 +264,18 @@ defmodule ForemanServer.Application do
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
         [{ForemanServer.Agents.JidoShellRunner, [name: ForemanServer.Agents.JidoShellRunner]}]
+
+      _ ->
+        []
+    end
+  end
+  # TRD-2026-4212be7e JSH-T003: VFS isolation per worktree.
+  # VfsIsolation is always-on when agent_runtime is enabled so that
+  # every shell session is bound to a sandboxed worktree root.
+  def maybe_vfs_isolation_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{ForemanServer.Agents.VfsIsolation, [name: ForemanServer.Agents.VfsIsolation]}]
 
       _ ->
         []

@@ -10,6 +10,7 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
 
   alias ForemanServer.Idempotency.KeyStore
 
+  # Restore original app env in on_exit so subsequent test files are unaffected.
   setup do
     original = Application.get_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
 
@@ -25,8 +26,25 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
   describe "fallback mode (no repo)" do
     setup do
       Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
-      {:ok, _pid} = KeyStore.start_link()
-      on_exit(fn -> :ets.delete(:foreman_idempotency_keys) end)
+
+      # KeyStore is a named GenServer that may already be running from a
+      # prior async:false test file with a different repo config.
+      # Gracefully handle {:already_started,pid} and always ensure a clean ETS table.
+      case KeyStore.start_link() do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+      end
+
+      # Wipe stale entries left by prior test files before each test.
+      if :ets.info(:foreman_idempotency_keys) != :undefined do
+        :ets.delete_all_objects(:foreman_idempotency_keys)
+      end
+
+      on_exit(fn ->
+        if :ets.info(:foreman_idempotency_keys) != :undefined do
+          :ets.delete_all_objects(:foreman_idempotency_keys)
+        end
+      end)
     end
 
     test "lifecycle started -> completed" do
@@ -85,8 +103,21 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
   describe "key format (REQ-026)" do
     setup do
       Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
-      {:ok, _pid} = KeyStore.start_link()
-      on_exit(fn -> :ets.delete(:foreman_idempotency_keys) end)
+
+      case KeyStore.start_link() do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+      end
+
+      if :ets.info(:foreman_idempotency_keys) != :undefined do
+        :ets.delete_all_objects(:foreman_idempotency_keys)
+      end
+
+      on_exit(fn ->
+        if :ets.info(:foreman_idempotency_keys) != :undefined do
+          :ets.delete_all_objects(:foreman_idempotency_keys)
+        end
+      end)
     end
 
     test "create workflow key format: create-prd-{taskId}-{step}" do

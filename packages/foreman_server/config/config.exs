@@ -84,5 +84,19 @@ config :litellm,
 
 config :langfuse,
   endpoint: System.get_env("LANGFUSE_ENDPOINT", "http://localhost:3000")
+# TRD-2026-4212be7e JSH-T003: VFS isolation per worktree.
+# Each agent is bound to a worktree root; shell commands outside
+# that root are denied. Allowed worktree roots are enumerated here
+# so the VfsIsolation module can validate new bindings against
+# the configured allowlist.
+config :foreman_server, :jido_vfs,
+  # Worktrees must live under one of these base directories.
+  allowed_roots: [
+    System.get_env("FOREMAN_VFS_ALLOWED_ROOT", "/Users/ldangelo/Development/Fortium")
+  ],
+  # When false, VfsIsolation.allowlist_check/2 returns :ok without
+  # inspecting the configured roots (useful in CI where worktrees
+  # may be in /tmp). Default true in dev/prod.
+  enforce_allowlist: System.get_env("FOREMAN_VFS_ENFORCE_ALLOWLIST", "true") == "true"
 
 import_config "#{config_env()}.exs"

@@ -86,15 +86,32 @@ defmodule ForemanServer.Idempotency.KeyStore do
     {:ok, %{repo: repo_from_config()}}
   end
 
-  # Durable path: repo configured
+  # Durable path: repo configured — merges new metadata into existing so that
+  # later transitions (e.g. started→ambiguous via HeartbeatLease) do not wipe
+  # fields stored earlier (run_id, task_id).
   @impl true
   def handle_call({:record, key, status, meta}, _from, %{repo: repo} = state)
       when repo != nil do
-    changeset = IdempotencyKey.upsert_changeset(%IdempotencyKey{key: key}, %{key: key, status: status, metadata: meta})
-    case repo.insert(changeset, conflict_target: :key, on_conflict: [set: [status: status, metadata: meta]]) do
+    existing_meta =
+      case :ets.lookup(@table, key) do
+        [{^key, _status, existing}] -> existing
+        [] -> %{}
+      end
+
+    merged = Map.merge(existing_meta, meta)
+
+    changeset =
+      IdempotencyKey.upsert_changeset(%IdempotencyKey{key: key}, %{
+        key: key,
+        status: status,
+        metadata: merged
+      })
+
+    case repo.insert(changeset, conflict_target: :key, on_conflict: [set: [status: status, metadata: merged]]) do
       {:ok, _} ->
-        :ets.insert(@table, {key, status, meta})
+        :ets.insert(@table, {key, status, merged})
         {:reply, :ok, state}
+
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
@@ -103,10 +120,17 @@ defmodule ForemanServer.Idempotency.KeyStore do
       {:reply, {:error, err}, state}
   end
 
-  # Fallback path: no repo configured — ETS only
+  # Fallback path: no repo configured — ETS only — same merge semantics.
   @impl true
   def handle_call({:record, key, status, meta}, _from, %{repo: nil} = state) do
-    :ets.insert(@table, {key, status, meta})
+    existing_meta =
+      case :ets.lookup(@table, key) do
+        [{^key, _status, existing}] -> existing
+        [] -> %{}
+      end
+
+    merged = Map.merge(existing_meta, meta)
+    :ets.insert(@table, {key, status, merged})
     {:reply, :ok, state}
   end
 

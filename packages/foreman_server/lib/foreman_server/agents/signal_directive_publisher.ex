@@ -27,9 +27,17 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
   a pid. In production, callers can pass `:default` to resolve to
   the supervised `foreman_jido_signal_bus` process (the name used
   by `ForemanServer.Application.maybe_signal_to_command_child/0`).
+
+  ## Directive queue integration
+
+  When `ForemanServer.Agents.DirectiveQueue` is running, every
+  published directive is recorded in the queue as `:pending` and
+  marked `:dispatched` after successful publish. This feeds the
+  LiveDashboard directive-queue view (TRD-056 / JLD-T002).
   """
 
   alias ForemanServer.Agents.JidoSignalTopics
+  alias ForemanServer.Agents.DirectiveQueue
   alias Jido.Signal.Bus
 
   @doc """
@@ -75,9 +83,34 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
         source: "foreman.signal_directive_publisher"
       )
 
-    Bus.publish(bus, [signal])
+    # Record in directive queue before publishing (TRD-056 / JLD-T002).
+    # If the queue is not running, enqueue/2 returns :error and we
+    # proceed anyway — the queue is optional diagnostic instrumentation.
+    _ = record_in_queue(agent_id, payload)
+
+    result = Bus.publish(bus, [signal])
+
+    # Mark dispatched on success. On failure we leave the entry in
+    # :pending so operators can see it stalled.
+    with {:ok, [recorded | _]} <- result do
+      :ok = DirectiveQueue.dispatched(recording_id(recorded))
+    end
+
+    result
   end
 
   defp resolve_bus(:default), do: production_bus_name()
   defp resolve_bus(other), do: other
+
+  # Record the directive in the queue. Silently ignores if the
+  # DirectiveQueue GenServer is not running.
+  defp record_in_queue(agent_id, payload) do
+    DirectiveQueue.enqueue(agent_id, payload)
+  rescue
+    _ ->
+      :ok
+  end
+
+  defp recording_id(%Jido.Signal.Bus.RecordedSignal{id: id}), do: id
+  defp recording_id(other), do: inspect(other)
 end

@@ -37,6 +37,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.StepSequencer
   alias ForemanServer.Workflow.Worktree, as: WorktreeLifecycle
+  alias ForemanServer.Idempotency.HeartbeatLease
   alias ForemanServer.RunExecutorLiveness
   require Logger
 
@@ -389,7 +390,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "phase:#{state.run_id}:#{phase_id}"
     )
   end
-
   defp execute_agent(state, phase_spec, index, worktree_record) do
     phase_index = phase_number(phase_spec, index)
     request = build_request(state, phase_spec, phase_index, worktree_record)
@@ -404,6 +404,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
     policy = AgentRuntime.FailurePolicy.resolve(task_type, [])
     deadline_ms = System.system_time(:millisecond) + Map.fetch!(policy, :timeout_ms)
 
+    # TRD-076: build idempotency key and acquire heartbeat lease so the
+    # key stays `started` (or transitions `ambiguous` on expiry) regardless
+    # of whether the agent completes, crashes, or hangs.
+    # TRD-077: task_id and run_id are stored in KeyStore metadata so
+    # CrashRecovery.has_no_side_effects? can look them up without parsing
+    # the composite idempotency key string.
+    workflow_prefix = workflow_prefix_for(state)
+    idempotency_key = "#{workflow_prefix}-#{task_id(state)}-#{phase_index}"
+    HeartbeatLease.acquire(idempotency_key, Map.fetch!(policy, :timeout_ms), task_id(state), state.run_id)
+    HeartbeatLease.register_worker(state.run_id, state.run_id, idempotency_key)
+
     RunExecutorLiveness.record(state.run_id, self(), deadline_ms)
 
     try do
@@ -416,8 +427,23 @@ defmodule ForemanServer.Workflow.RunExecutor do
         env: foreman_env(state, worktree_record)
       )
     after
+      # TRD-076: release the heartbeat lease on every exit path (normal
+      # completion, crash, or error). The idempotency key transitions
+      # `completed` in KeyStore so crash-recovery knows it can skip
+      # side-effect inspection on retry.
+      HeartbeatLease.release(idempotency_key)
       RunExecutorLiveness.clear(state.run_id, self())
     end
+  end
+
+  # Strip `-trd` suffix from workflow type so both `implement-trd` and
+  # `implement-trd-beads` produce the same prefix (`implement`).
+  defp workflow_prefix_for(state) do
+    type =
+      Map.get(state.task, :workflow_type) || Map.get(state.task, "workflow_type") ||
+        Map.get(state.task, :workflow_name) || Map.get(state.task, "workflow_name") || "unknown"
+
+    type |> to_string() |> String.replace(~r/-trd$/, "")
   end
 
   defp execution_backend do

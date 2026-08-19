@@ -24,16 +24,35 @@ defmodule ForemanServer.Workflow.MergeGate do
     GenServer.call(__MODULE__, {:approve, pr_url, approver, approver_identity})
   end
 
+  def approve_by_key(key, approver, approver_identity) do
+    GenServer.call(__MODULE__, {:approve_by_key, key, approver, approver_identity})
+  end
+
   def pending do
     :ets.tab2list(@table)
     |> Enum.filter(fn {_url, req} -> req.status == :pending end)
     |> Enum.map(fn {url, _req} -> url end)
   end
 
+  @doc "Returns true if the given run/identity key has a pending merge gate entry."
+  @spec pending_for_key?(String.t()) :: boolean()
+  def pending_for_key?(key) when is_binary(key) do
+    :ets.tab2list(@table)
+    |> Enum.any?(fn {_url, req} -> req.requested_by == key and req.status == :pending end)
+  end
+
+  @doc "Returns true if the given run key has an approved merge gate entry."
+  @spec approved?(String.t()) :: boolean()
+  def approved?(key) when is_binary(key) do
+    :ets.tab2list(@table)
+    |> Enum.any?(fn {_url, req} -> req.requested_by == key and req.status == :approved end)
+  end
+
   @impl true
   def handle_call({:request, pr_url, requested_by}, _from, state) do
     Logger.info("Merge approval requested: pr=#{pr_url} by=#{requested_by}")
-    :ets.insert(@table, {pr_url, %{status: :pending, requested_by: requested_by, approver: nil, approver_identity: nil, requested_at: System.system_time(:millisecond), approved_at: nil}})
+    record = %{status: :pending, requested_by: requested_by, approver: nil, approver_identity: nil, requested_at: System.system_time(:millisecond), approved_at: nil}
+    :ets.insert(@table, {pr_url, record})
     {:reply, {:ok, :pending}, state}
   end
 
@@ -45,6 +64,19 @@ defmodule ForemanServer.Workflow.MergeGate do
         Logger.info("Merge approved: pr=#{pr_url} approver=#{approver}")
         {:reply, {:ok, :approved}, state}
       [] ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:approve_by_key, key, approver, identity}, _from, state) do
+    # Find the entry with matching run_id in the value's requested_by field
+    case :ets.tab2list(@table) |> Enum.find(fn {_url, req} -> req.requested_by == key end) do
+      {pr_url, req} ->
+        updated = %{req | status: :approved, approver: approver, approver_identity: identity, approved_at: System.system_time(:millisecond)}
+        :ets.insert(@table, {pr_url, updated})
+        Logger.info("Merge approved by key: key=#{key} pr=#{pr_url} approver=#{approver}")
+        {:reply, {:ok, :approved}, state}
+      nil ->
         {:reply, {:error, :not_found}, state}
     end
   end

@@ -45,5 +45,11 @@ config :logster,
 # opt in per-test via Application.put_env(:foreman_server, :jido_ecto,
 # enabled: true).
 config :foreman_server, :jido_ecto, enabled: false
+
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")
+
+# JSH-T003: VFS isolation per worktree — allow /tmp for test worktrees.
+config :foreman_server, :jido_vfs,
+  allowed_roots: ["/tmp", "/Users/ldangelo/Development/Fortium"],
+  enforce_allowlist: true
