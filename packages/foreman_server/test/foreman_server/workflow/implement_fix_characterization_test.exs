@@ -540,6 +540,87 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
 
       :ok = KeyStore.mark_started(key)
       assert {:ok, :started} = KeyStore.status(key)
+  end
+
+  # ---------------------------------------------------------------------------
+  # TRD-090 / CTH-T004 — Crash-recovery characterization
+  #
+  # Crash recovery works at two levels, not at the RunExecutor phase level:
+  #
+  #   LAYER 1 — Orphan reopen (BootReconciliation.reconcile/0):
+  #     On boot, reconcile scans all task-provider issues.  If an issue is
+  #     in_progress with no matching active Foreman run (crashed mid-sequence),
+  #     it is reopened via the provider so the next dispatch cycle picks it
+  #     up as a fresh run.  Coverage: boot_reconciliation_test.exs
+  #     "reopens orphaned in-progress provider issues" (line 107).
+  #
+  #   LAYER 2 — Idempotency (CrashRecovery.reconcile/1 + KeyStore):
+  #     A fresh run is dispatched with the same idempotency key.  KeyStore
+  #     tracks three states (:started / :completed / :failed).  On reconcile:
+  #       - :started key  → {:retry, :unknown_state}  (safe; no side effects yet)
+  #       - :completed key → {:skip, :already_done}    (idempotent)
+  #       - :failed key  → {:skip, :already_done}    (idempotent)
+  #     Coverage: crash_recovery_test.exs and crash_recovery_characterization_test.exs.
+  #
+  #   STEP SEQUENCER — phase ordering gate (StepSequencer.propagate_terminal/2):
+  #     Phase completion is recorded as :completed in phase_statuses and
+  #     propagated forward via StepSequencer so the next dispatch knows which
+  #     phase to run.
+  #
+  # REQ-024: crash-recovery characterization (CTH-T004 / TRD-090)
+  # REQ-026: idempotent dispatch (no duplicate side effects)
+  # NFR-03:  crash recovery ≤30s to resumption (RTE-T006 / TRD-080)
+  # ---------------------------------------------------------------------------
+
+  describe "TRD-090 crash-recovery characterization (CTH-T004)" do
+    alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}
+
+    # -------------------------------------------------------------------------
+    # Layer 2 — KeyStore + CrashRecovery idempotency contracts
+    # -------------------------------------------------------------------------
+
+    test "KeyStore :started key is safe to retry (no duplicate dispatch)" do
+      # Simulate a run that was started but crashed before producing side effects.
+      # KeyStore.mark_started leaves the key in :started state.
+      key = "implement-task-crash-rec-1"
+      :ok = KeyStore.mark_started(key)
+
+      # On restart, reconcile/1 returns {:retry, :unknown_state} for :started keys.
+      # This is safe — the run will re-execute as a fresh dispatch, and the
+      # orphan-reopen layer (BootReconciliation) already ensured the task was
+      # reopened before this reconcile call is reached.
+      assert {:retry, :unknown_state} = CrashRecovery.reconcile(key)
+
+      # Key is still :started (not changed by reconcile) — safe for retry.
+      assert {:ok, :started} = KeyStore.status(key)
+    end
+
+    test "KeyStore :completed key is skipped (idempotent)" do
+      key = "implement-task-already-done-1"
+      :ok = KeyStore.mark_started(key)
+      :ok = KeyStore.mark_completed(key)
+
+      # Completed key: reconcile returns skip so the run is not re-dispatched.
+      assert {:skip, :already_completed} = CrashRecovery.reconcile(key)
+
+      # Key is :completed — idempotent on retry.
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    # -------------------------------------------------------------------------
+    # Step sequencer — phase completion propagates forward as :completed
+    # -------------------------------------------------------------------------
+
+    test "StepSequencer propagates :completed status forward (resume condition)" do
+      import ForemanServer.Workflow.StepSequencer
+
+      # :completed previous phase → next phase runs (:cont).
+      assert {:cont, nil} = propagate_terminal(:completed, :phase_1)
+      assert {:cont, nil} = propagate_terminal(:completed, :any_step)
+
+      # :failed and :blocked must halt the sequence.
+      assert {:halt, :failed} = propagate_terminal(:failed, :phase_1)
+      assert {:halt, :blocked} = propagate_terminal(:blocked, :phase_1)
     end
   end
 end
