@@ -91,3 +91,8 @@ The full `JRM-T003` upgrade protocol is described in
 - Trigger: workflow_dispatch (manual) + repository_dispatch types=[jido_release]
 - Runs: action tests + signal tests + agent_runtime tests in packages/foreman_server/
 - Service: postgres:15 for jido_ecto checkpoint store
+
+## jido_workspace adoption (JSH-T006, JSH-T007)
+- Status: NOT ADOPTED — fallback decision per TRD-036 spike
+- Rationale: package not in deps/; jido_shell + jido_vfs + custom host-path adapter covers requirements
+- Decision record: docs/JSH/jido_workspace_spike.md
