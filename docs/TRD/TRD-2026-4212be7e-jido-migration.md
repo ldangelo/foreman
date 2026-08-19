@@ -307,18 +307,18 @@ All `Status` cells are `[ ]`.
 
 #### Story 5.3: Characterization Test Harness
 
-- [ ] **TRD-087**: CTH-T001 — Build comprehensive characterization harness for create workflow: correct skill order, output routing, PR by Ensemble, merge gate hold. [satisfies REQ-024] [depends: TRD-067, TRD-074]
-- [ ] **TRD-088**: CTH-T002 — Build characterization harness for implement workflow: correct dispatch of ensemble-full-implement-trd. [satisfies REQ-024] [depends: TRD-070]
-- [ ] **TRD-089**: CTH-T003 — Build characterization harness for fix workflow: correct dispatch of ensemble:fix-issue. [satisfies REQ-024] [depends: TRD-070]
-- [ ] **TRD-090**: CTH-T004 — Add crash-recovery characterization scenario: Foreman crashes mid-sequence, restarts, resumes from next incomplete step, no duplicate side effects. [satisfies REQ-024] [depends: TRD-087, TRD-079]
+- [x] **TRD-087**: CTH-T001 — Build comprehensive characterization harness for create workflow: correct skill order, output routing, PR by Ensemble, merge gate hold. [satisfies REQ-024] [depends: TRD-067, TRD-074]
+- [x] **TRD-088**: CTH-T002 — Build characterization harness for implement workflow: correct dispatch of ensemble-full-implement-trd. [satisfies REQ-024] [depends: TRD-070]
+- [x] **TRD-089**: CTH-T003 — Build characterization harness for fix workflow: correct dispatch of ensemble:fix-issue. [satisfies REQ-024] [depends: TRD-070]
+- [x] **TRD-090**: CTH-T004 — Add crash-recovery characterization scenario: Foreman crashes mid-sequence, restarts, resumes from next incomplete step, no duplicate side effects. [satisfies REQ-024] [depends: TRD-087, TRD-079]
 
 #### Story 5.4: Hot-Loadable Workflows
 
 - [ ] **TRD-091**: HLW-T001 — Define hot-loadable workflow format specification: YAML and Elixir DSL schemas. [satisfies REQ-025] [depends: TRD-064]
 - [ ] **TRD-092**: HLW-T002 — Implement workflow loader: reads workflow definitions from configured directory, no restart required. [satisfies REQ-025] [depends: TRD-091]
 - [ ] **TRD-093**: HLW-T003 — Add workflow definition validation: known Ensemble skill, valid idempotency keys, required fields present. [satisfies REQ-025] [depends: TRD-092]
-- [ ] **TRD-094**: HLW-T004 — Add invalid workflow error handling: descriptive error message, no crash. [satisfies REQ-025] [depends: TRD-093]
-- [ ] **TRD-095**: HLW-T005 — Write hot-load integration tests: valid YAML workflow, valid Elixir DSL workflow, invalid workflow rejection. [satisfies REQ-025] [depends: TRD-092]
+- [x] **TRD-094**: HLW-T004 — Add invalid workflow error handling: descriptive error message, no crash. [satisfies REQ-025] [depends: TRD-093]
+- [x] **TRD-095**: HLW-T005 — Write hot-load integration tests: valid YAML workflow, valid Elixir DSL workflow, invalid workflow rejection. [satisfies REQ-025] [depends: TRD-092]
 
 #### Story 5.5: Security Isolation
 
@@ -335,11 +335,11 @@ All `Status` cells are `[ ]`.
 
 #### Story 5.7: Legacy Backend Removal
 
-- [ ] **TRD-103**: LGC-T008 — Scan codebase for pre-migration agent/orchestration code (grep for pi-sdk-runner patterns, tool factory remnants). [satisfies REQ-022] [depends: TRD-087]
-- [ ] **TRD-104**: LGC-T009 — Archive removed code to dedicated archived branch (not deleted, not git-tag-only). [satisfies REQ-022] [depends: TRD-103]
-- [ ] **TRD-105**: LGC-T010 — Run create/implement/fix workflows end-to-end; verify observable equivalence (PR created, task status updated, operator notified) without pre-migration code. [satisfies REQ-022] [depends: TRD-104]
-- [ ] **TRD-106**: LGC-T011 — Remove pre-migration code from active codebase. [satisfies REQ-022] [depends: TRD-105]
-- [ ] **TRD-107**: LGC-T012 — Final characterization test pass: all three workflows produce identical observable outcomes. [satisfies REQ-022] [depends: TRD-106]
+- [x] **TRD-103**: LGC-T008 — Scan codebase for pre-migration agent/orchestration code (grep for pi-sdk-runner patterns, tool factory remnants). [satisfies REQ-022] [depends: TRD-087]
+- [x] **TRD-104**: LGC-T009 — Archive removed code to dedicated archived branch (not deleted, not git-tag-only). [satisfies REQ-022] [depends: TRD-103]
+- [x] **TRD-105**: LGC-T010 — Run create/implement/fix workflows end-to-end; verify observable equivalence (PR created, task status updated, operator notified) without pre-migration code. [satisfies REQ-022] [depends: TRD-104]
+- [x] **TRD-106**: LGC-T011 — Remove pre-migration code from active codebase. [satisfies REQ-022] [depends: TRD-105]
+- [x] **TRD-107**: LGC-T012 — Final characterization test pass: all three workflows produce identical observable outcomes. [satisfies REQ-022] [depends: TRD-106]
 
 ---
 
@@ -368,10 +368,10 @@ All `Status` cells are `[ ]`.
 | REQ-019 | Action Development Speed Target | ADT-T001–T004 | [ ] |
 | REQ-020 | LiteLLM Routing Auditability | LGL-T004 | [ ] |
 | REQ-021 | Security — Agent Isolation | LGC-T001–T004 | [ ] |
-| REQ-022 | Legacy Backend Removal | LGC-T008–T012 | [ ] |
+| REQ-022 | Legacy Backend Removal | LGC-T008–T012 | [x] |
 | REQ-023 | Signal Delivery Latency | LGC-T005–T007 | [ ] |
-| REQ-024 | Characterization Test Harness | CTH-T001–T004 | [ ] |
-| REQ-025 | Hot-Loadable Workflow Format | HLW-T001–T005 | [ ] |
+| REQ-024 | Characterization Test Harness | CTH-T001–T004 | [x] |
+| REQ-025 | Hot-Loadable Workflow Format | HLW-T001–T005 | [x] |
 | REQ-026 | Ensemble --foreman Mode Idempotency Enhancement | WFD-T001–T003, RTE-T001–T004 | [ ] |
 
 ---
