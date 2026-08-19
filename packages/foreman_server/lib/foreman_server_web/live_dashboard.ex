@@ -2,12 +2,14 @@ defmodule ForemanServerWeb.LiveDashboard do
   @moduledoc """
   Mount for `jido_live_dashboard` under existing Foreman auth guards.
 
-  TRD-2026-4212be7e / JLD-T001 / TRD-055.
+  TRD-2026-4212be7e / JLD-T001 / TRD-055 (initial mount)
+  TRD-2026-4212be7e / JLD-T002 / TRD-056 (four-view layout)
 
   This LiveView is the Phoenix endpoint for the Jido live dashboard. It
   displays live state for:
 
     * Active Jido agents connected via the signal bus
+    * Current state reported by each tracked agent
     * Queued directives waiting to be dispatched
     * The most recent signals observed (chronological tail)
 
@@ -34,6 +36,7 @@ defmodule ForemanServerWeb.LiveDashboard do
      socket
      |> assign(:page_title, "Jido Live Dashboard")
      |> assign(:active_agents, [])
+     |> assign(:current_states, [])
      |> assign(:directive_queue, [])
      |> assign(:signal_history, [])
      |> assign(:last_refresh_at, DateTime.utc_now() |> DateTime.to_iso8601())}
@@ -72,6 +75,15 @@ defmodule ForemanServerWeb.LiveDashboard do
       </section>
 
       <section>
+        <h2>Current state</h2>
+        <p>{Enum.count(@current_states)} tracked</p>
+        <ul :if={@current_states != []}>
+          <li :for={entry <- @current_states}>{state_label(entry)}</li>
+        </ul>
+        <p :if={@current_states == []}>No agents reporting state.</p>
+      </section>
+
+      <section>
         <h2>Directive queue</h2>
         <p>{Enum.count(@directive_queue)} queued</p>
         <ul :if={@directive_queue != []}>
@@ -99,4 +111,13 @@ defmodule ForemanServerWeb.LiveDashboard do
   defp refresh(socket) do
     assign(socket, last_refresh_at: DateTime.utc_now() |> DateTime.to_iso8601())
   end
+
+  # Format a `current_states` entry for display. Accepts either a
+  # plain atom (treated as an anonymous state) or a 2-tuple of
+  # `{agent_id, state}` so the dashboard can show "agent-1: :ready"
+  # style labels in the Current state section.
+  defp state_label(entry) when is_atom(entry), do: "#{entry}"
+  defp state_label({agent_id, state}) when is_atom(agent_id) or is_binary(agent_id),
+    do: "#{agent_id}: #{state}"
+  defp state_label(other), do: inspect(other)
 end
