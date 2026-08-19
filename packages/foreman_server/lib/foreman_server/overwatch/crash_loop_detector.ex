@@ -158,6 +158,11 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
     GenServer.call(server, :attempt_count)
   end
 
+  @doc "Read the current pending backoff timers. Test/observability helper."
+  @spec pending_timers(GenServer.server()) :: %{{String.t(), String.t()} => reference()}
+  def pending_timers(server \\ __MODULE__) do
+    GenServer.call(server, :pending_timers)
+  end
   # ------------------------------------------------------------------
   # GenServer callbacks
   # ------------------------------------------------------------------
@@ -200,9 +205,12 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   def handle_call(:restart_history, _from, state) do
     {:reply, state.restart_history, state}
   end
-
   def handle_call(:attempt_count, _from, state) do
     {:reply, state.attempt_count, state}
+  end
+
+  def handle_call(:pending_timers, _from, state) do
+    {:reply, state.pending_timers, state}
   end
 
   def handle_call(:status, _from, state) do
