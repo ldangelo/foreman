@@ -17,32 +17,50 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
   alias ForemanServer.Agents.OperatorQuestionSource
   alias ForemanServer.Inbox.{DedupeTable, InboxItemStarted, Poller}
 
+  # Meck helper — calls :meck.new/2 before :meck.expect so passthrough stubs
+  # are established for all three modules before the test runs.
+  defp meck_passthrough(module) do
+    :meck.new(module, [:passthrough, :no_link])
+  end
+
+  defp meck_expect(module, fun, mock_fn) do
+    :meck.expect(module, fun, mock_fn)
+  end
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
-
-    # Start the Poller + DedupeTable explicitly. Mirrors
+    {:ok, _} = Application.ensure_all_started(:meck)
+    # Start the Poller + DedupeTable + OperatorTimeout explicitly. Mirrors
     # `test/foreman_server/inbox/poller_test.exs` — those tests do
     # NOT boot the full Foreman application (which fails in this
     # environment because :erlexec can't start) but still need the
-    # inbox pipeline live.
+    # inbox pipeline and timeout scheduling live.
     case Process.whereis(DedupeTable) do
-      nil -> {:ok, _} = DedupeTable.start_link([])
-      _ -> :ok
+      nil ->
+        {:ok, _} = DedupeTable.start_link(name: DedupeTable)
+        :ok
+
+      _pid ->
+        :ok
     end
 
     case Process.whereis(Poller) do
-      nil -> {:ok, _} = Poller.start_link([])
-      _ -> :ok
+      nil ->
+        {:ok, _} = Poller.start_link(name: Poller)
+        :ok
+
+      _pid ->
+        :ok
     end
 
-    :ok
-  end
+    case Process.whereis(ForemanServer.Agents.OperatorTimeout) do
+      nil ->
+        {:ok, _} = ForemanServer.Agents.OperatorTimeout.start_link(name: ForemanServer.Agents.OperatorTimeout)
+        :ok
 
-  setup do
-    # Clear the dedupe table before each test so :started is the
-    # first-call result (matches the existing inbox test pattern).
-    DedupeTable.clear()
-    Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 60)
+      _pid ->
+        :ok
+    end
+
     :ok
   end
 
@@ -101,6 +119,54 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
     end
   end
 
+  describe "resolve_operator_timeout/1 — manifest-read path (TRD-027)" do
+    setup do
+      # Establish passthrough stubs so the real implementations remain callable
+      # for any functions we don't explicitly mock (e.g. other ProjectionStore calls
+      # in concurrently-running tests).
+      meck_passthrough(ForemanServer.ProjectionStore)
+      meck_passthrough(ForemanServer.Workflow.Catalog)
+      meck_passthrough(ForemanServer.Agents.OperatorTimeout)
+
+      # Mock ProjectionStore → returns a task whose workflow_snapshot names "implement"
+      meck_expect(ForemanServer.ProjectionStore, :task_projection, fn "agent-manifest-123" ->
+        %{workflow_snapshot: %{"workflow_name" => "implement"}}
+      end)
+
+      # Mock Catalog → returns a manifest declaring a 15-minute operator timeout
+      meck_expect(ForemanServer.Workflow.Catalog, :load, fn "implement.yaml" ->
+        {:ok, %{"name" => "implement", "operator_timeout_ms" => 900_000}}
+      end)
+
+      # Mock OperatorTimeout.schedule/3 → send captured timeout_ms to test process
+      meck_expect(ForemanServer.Agents.OperatorTimeout, :schedule, fn
+        question_id, agent_id, timeout_ms when question_id == "q-timeout-test" and agent_id == "agent-manifest-123" ->
+          send(self(), {:captured_timeout_ms, timeout_ms})
+          :ok
+      end)
+
+      on_exit(fn -> :meck.unload([ForemanServer.ProjectionStore, ForemanServer.Workflow.Catalog, ForemanServer.Agents.OperatorTimeout]) end)
+      :ok
+    end
+
+    test "reads operator_timeout_ms from the workflow manifest and passes it to OperatorTimeout.schedule/3" do
+      signal =
+        Jido.Signal.new!(%{
+          id: "evt-op-timeout",
+          source: "operator.ui",
+          type: "com.foreman.operator.question",
+          specversion: "1.0.2",
+          data: %{
+            "question_id" => "q-timeout-test",
+            "question" => "what should I do?",
+            "agent_id" => "agent-manifest-123"
+          }
+        })
+
+      assert {:ok, :started, _} = OperatorQuestionDispatcher.dispatch(signal)
+      assert_receive {:captured_timeout_ms, 900_000}, 1_000, "OperatorTimeout.schedule/3 was not called with the manifest's operator_timeout_ms"
+    end
+  end
   describe "OperatorQuestionSource.correlation_id/1" do
     test "extracts question_id from the signal data" do
       assert "q-42" ==
