@@ -85,3 +85,9 @@ The full `JRM-T003` upgrade protocol is described in
 - Ref: 8986c4cbf4f5e89d9f9a7a4c096d45e45a514863
 - Ref accessible: yes
 - Last verified by: trd-2026-4212be7e-jido-migration/MCP-T001
+
+## CI: jido-upstream-upgrade (JRM-T003)
+- Workflow: .github/workflows/jido-upstream-upgrade.yml
+- Trigger: workflow_dispatch (manual) + repository_dispatch types=[jido_release]
+- Runs: action tests + signal tests + agent_runtime tests in packages/foreman_server/
+- Service: postgres:15 for jido_ecto checkpoint store
