@@ -30,6 +30,7 @@ defmodule ForemanServer.EventCodec do
     BeadsDbLeaseTransferred,
     BeadsDbLeaseWaiterRegistered,
     BeadsDbLeaseWaiterRemoved,
+    PhaseBlocked,
     PhaseCompleted,
     PhaseFailed,
     PhaseStarted,
@@ -135,7 +136,8 @@ defmodule ForemanServer.EventCodec do
     "WorktreeCreated" => WorktreeCreated,
     "WorktreeCleaned" => WorktreeCleaned,
     "WorktreeCreateOrphanRecorded" => WorktreeCreateOrphanRecorded,
-    "WorktreeCreateOrphanResolved" => WorktreeCreateOrphanResolved
+    "WorktreeCreateOrphanResolved" => WorktreeCreateOrphanResolved,
+    "PhaseBlocked" => PhaseBlocked
   }
 
   # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
@@ -185,6 +187,7 @@ defmodule ForemanServer.EventCodec do
       :artifact_sha256,
       :artifact_bytes
     ],
+    PhaseBlocked => [:phase_id, :run_id, :index, :reason],
     PhaseFailed => [:run_id, :phase_id, :index, :reason],
     TaskCreated => [:task_id, :project_id, :title, :status, :task_type],
     TaskUpdated => [:task_id],
