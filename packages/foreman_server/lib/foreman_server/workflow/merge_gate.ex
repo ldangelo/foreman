@@ -31,7 +31,7 @@ defmodule ForemanServer.Workflow.MergeGate do
   @impl true
   def handle_call({:request, pr_url, requested_by}, _from, state) do
     Logger.info("Merge approval requested: pr=#{pr_url} by=#{requested_by}")
-    :ets.insert(@table, {pr_url, %{status: :pending, requested_by: requested_by, approver: nil, requested_at: System.system_time(:millisecond)}})
+    :ets.insert(@table, {pr_url, %{status: :pending, requested_by: requested_by, approver: nil, approver_identity: nil, requested_at: System.system_time(:millisecond), approved_at: nil}})
     {:reply, {:ok, :pending}, state}
   end
 
