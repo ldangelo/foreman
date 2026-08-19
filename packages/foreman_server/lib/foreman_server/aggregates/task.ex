@@ -238,11 +238,8 @@ defmodule ForemanServer.Aggregates.Task do
     end
   end
 
-  # REMOVED: task.block and task.close — pruned per TRD-049
+  # REMOVED: task.close — pruned per TRD-049
 
-  # REMOVED: task.update — pruned per TRD-049
-
-  # REMOVED: task.annotate — pruned per TRD-049
 
   def handle_command(state, %{type: "task.dispatch", payload: payload}) do
     with {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),

@@ -10,6 +10,8 @@ defmodule ForemanServer.Agents.OperatorTimeout do
   use GenServer
   require Logger
 
+  alias ForemanServer.CommandGateway
+
   @table :operator_timeout_registry
   @default_timeout_ms 5 * 60 * 1000  # 5 minutes
 
@@ -50,7 +52,14 @@ defmodule ForemanServer.Agents.OperatorTimeout do
   def handle_info({:expire, workflow_id, task_id}, state) do
     :ets.delete(@table, {workflow_id, task_id})
     Logger.warning("Operator timeout for workflow=#{workflow_id} task=#{task_id}; marking blocked")
-    # Emit domain event (placeholder — wire to real projector)
+
+    _ = CommandGateway.dispatch_system(%{
+      command_id: "operator_timeout:#{workflow_id}:#{task_id}:#{System.unique_integer([:positive])}",
+      aggregate_id: "task:#{task_id}",
+      type: "task.block",
+      payload: %{task_id: task_id, reason: "operator timeout"}
+    })
+
     {:noreply, state}
   end
 end
