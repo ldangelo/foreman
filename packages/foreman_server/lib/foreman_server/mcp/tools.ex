@@ -6,9 +6,11 @@ defmodule ForemanServer.MCP.Tools do
   alias ForemanServer.Workflow.PromptWriter
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.Interpreter
-  alias ForemanServer.MCP.Policy
+  alias ForemanServer.Workflow.Validator
+  alias ForemanServer.Workflow.ErrorReporter
   alias ForemanServer.AgentRuntime.Router
   alias ForemanServer.Workflow.ManifestWriter
+  alias ForemanServer.MCP.Policy
   alias ForemanServerWeb.MCP.Tools.Doctor, as: MCPDoctor
 
   # String → atom map for backend names accepted by Router.manual/1.
@@ -351,43 +353,52 @@ defmodule ForemanServer.MCP.Tools do
               {:error, {:file_write_failed, reason}}
           end
 
-        case parse_result do
-          {:ok, _workflow} ->
-            duration_us = System.monotonic_time(:microsecond) - start_us
-            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :ok)
+          case parse_result do
+            {:ok, workflow} ->
+              # HLW-T004 / TRD-094: check structural AND skill constraints
+              case Validator.validate(workflow) do
+                :ok ->
+                  duration_us = System.monotonic_time(:microsecond) - start_us
+                  Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :ok)
+                  {:ok, %{valid: true}}
 
-            {:ok, %{valid: true}}
+                {:error, reason} ->
+                  duration_us = System.monotonic_time(:microsecond) - start_us
+                  Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+                  message = ErrorReporter.report(reason)
+                  {:error, %{code: "INVALID_WORKFLOW", message: message}}
+              end
 
-          {:error, {:manifest_load_failed, _path, message}} ->
-            duration_us = System.monotonic_time(:microsecond) - start_us
-            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+            {:error, {:manifest_load_failed, _path, message}} ->
+              duration_us = System.monotonic_time(:microsecond) - start_us
+              Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
 
-            {:error,
-             %{
-               code: "INVALID_MANIFEST",
-               message: message
-             }}
+              {:error,
+               %{
+                 code: "INVALID_MANIFEST",
+                 message: message
+               }}
 
-          {:error, {:unsupported_construct, _} = detail} ->
-            duration_us = System.monotonic_time(:microsecond) - start_us
-            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+            {:error, {:unsupported_construct, _} = detail} ->
+              duration_us = System.monotonic_time(:microsecond) - start_us
+              Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
 
-            {:error,
-             %{
-               code: "INVALID_MANIFEST",
-               message: "Manifest validation failed: #{inspect(detail)}"
-             }}
+              {:error,
+               %{
+                 code: "INVALID_MANIFEST",
+                 message: "Manifest validation failed: #{inspect(detail)}"
+               }}
 
-          {:error, reason} ->
-            duration_us = System.monotonic_time(:microsecond) - start_us
-            Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
+            {:error, reason} ->
+              duration_us = System.monotonic_time(:microsecond) - start_us
+              Telemetry.mcp_tool_call(duration_us, "foreman_workflow_validate", :error)
 
-            {:error,
-             %{
-               code: "INVALID_MANIFEST",
-               message: inspect(reason)
-             }}
-        end
+              {:error,
+               %{
+                 code: "INVALID_MANIFEST",
+                 message: inspect(reason)
+               }}
+          end
 
       {:error, :invalid_params} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
