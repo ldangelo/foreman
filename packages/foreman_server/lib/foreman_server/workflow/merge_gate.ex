@@ -25,7 +25,9 @@ defmodule ForemanServer.Workflow.MergeGate do
   end
 
   def pending do
-    :ets.tab2list(@table) |> Enum.map(fn {url, _} -> url end)
+    :ets.tab2list(@table)
+    |> Enum.filter(fn {_url, req} -> req.status == :pending end)
+    |> Enum.map(fn {url, _req} -> url end)
   end
 
   @impl true
