@@ -101,6 +101,7 @@ defmodule ForemanServer.Application do
         ++ maybe_task_metadata_query_subscriber_child()
         ++ maybe_jido_shell_runner_child()
         ++ maybe_operator_question_subscriber_child()
+        ++ maybe_operator_timeout_child()
         ++ maybe_overwatch_child()
         ++
         [
@@ -277,6 +278,16 @@ defmodule ForemanServer.Application do
           {ForemanServer.Agents.OperatorQuestionSubscriber,
            [name: :foreman_operator_question_subscriber, bus: :foreman_jido_signal_bus]}
         ]
+
+      _ ->
+        []
+    end
+  end
+
+  def maybe_operator_timeout_child do
+    case Application.get_env(:foreman_server, :operator_timeout, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{ForemanServer.Agents.OperatorTimeout, [name: ForemanServer.Agents.OperatorTimeout]}]
 
       _ ->
         []

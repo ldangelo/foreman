@@ -9,8 +9,10 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   2. Calls `ForemanServer.Inbox.SharedInbox.ingest/2` with
      `OperatorQuestionSource` as the source module and the
      signal's `data` map as the payload.
-  3. Returns the standard `SharedInbox.ingest/2` result:
-     `{:ok, :started, _} | {:ok, :deduped, _} | {:error, reason}`.
+  3. On `:started`, schedules an operator timeout via
+     `OperatorTimeout.schedule/3` using the question_id as the
+     timeout key and agent_id as the task identifier.
+  4. Returns the standard `SharedInbox.ingest/2` result.
 
   The `OperatorQuestionSource.correlation_id/1` function extracts
   the dedupe key (operator's `question_id`, falling back to
@@ -25,28 +27,57 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   - `ForemanServer.Agents.JidoSignalTopics.foreman_operator/0`
     (topic name source of truth)
   - `ForemanServer.Inbox.SharedInbox.ingest/2` (the downstream)
+  - `ForemanServer.Agents.OperatorTimeout` (JSI-T009 — timeout
+    scheduling; call site here)
   """
 
   alias ForemanServer.Agents.OperatorQuestionSource
+  alias ForemanServer.Agents.OperatorTimeout
   alias ForemanServer.Inbox.SharedInbox
 
   @doc """
   Dispatch a single `com.foreman.operator.*` CloudEvent to the
   Foreman inbox pipeline via `SharedInbox.ingest/2`.
 
+  On `:started`, schedules an operator timeout (JSI-T009).
+
   Returns the standard `SharedInbox.ingest/2` result.
   """
   @spec dispatch(struct() | map()) ::
           {:ok, :started, any()} | {:ok, :deduped, any()} | {:error, term()}
   def dispatch(%Jido.Signal{data: data}) when is_map(data) do
-    SharedInbox.ingest(OperatorQuestionSource, data)
+    dispatch(data)
   end
 
   def dispatch(%{} = data) do
-    SharedInbox.ingest(OperatorQuestionSource, data)
+    case SharedInbox.ingest(OperatorQuestionSource, data) do
+      {:ok, :started, _item} = result ->
+        # Schedule operator timeout (JSI-T009).
+        # Keys are question_id (workflow) and agent_id (task) — the
+        # operator question data carries these; the agent side should
+        # include task_id to enable task.block on expiry. See
+        # foreman-b8s.
+        question_id = data |> Map.get("question_id") |> non_empty() ||
+                         data |> Map.get(:question_id) |> non_empty()
+        agent_id = data |> Map.get("agent_id") |> non_empty() ||
+                       data |> Map.get(:agent_id) |> non_empty()
+
+        if question_id && agent_id do
+          _ = OperatorTimeout.schedule(question_id, agent_id)
+        end
+
+        result
+
+      other ->
+        other
+    end
   end
 
   def dispatch(other) do
     {:error, {:invalid_payload, other}}
   end
+
+  defp non_empty(nil), do: nil
+  defp non_empty(""), do: nil
+  defp non_empty(v), do: v
 end
