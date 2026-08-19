@@ -73,4 +73,16 @@ config :foreman_server, :mcp,
 config :jido_otel,
   otlp_endpoint: "http://localhost:4318",
   service_name: "foreman_server"
+
+# TRD-2026-4212be7e LGL-T001: litellm-langfuse-stack integration.
+# LiteLLM runs on port 4000, Langfuse on port 3000. The `model: "auto"`
+# value tells LiteLLM to pick the best model for the requested capability
+# (code, chat, embeddings, etc.) at request time.
+config :litellm,
+  endpoint: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000"),
+  model: System.get_env("LITELLM_MODEL", "auto")
+
+config :langfuse,
+  endpoint: System.get_env("LANGFUSE_ENDPOINT", "http://localhost:3000")
+
 import_config "#{config_env()}.exs"
