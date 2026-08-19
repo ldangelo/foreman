@@ -26,7 +26,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   require Logger
 
-  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, Idempotency,
+  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter,
                       ProjectionStore, Telemetry}
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
   alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}

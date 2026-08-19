@@ -31,6 +31,14 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @doc "Start the KeyStore server if not already running, otherwise return {:ok, pid}."
+  def ensure_started(opts \\ []) do
+    case GenServer.start_link(__MODULE__, opts, name: __MODULE__) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+    end
+  end
+
   @doc """
   Mark an idempotency key as started, recording optional metadata.
   Returns `:ok` on success.

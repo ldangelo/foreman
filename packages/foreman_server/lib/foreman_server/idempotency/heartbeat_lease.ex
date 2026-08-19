@@ -27,6 +27,14 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @doc "Start the HeartbeatLease server if not already running, otherwise return {:ok, pid}."
+  def ensure_started(opts \\ []) do
+    case GenServer.start_link(__MODULE__, opts, name: __MODULE__) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+    end
+  end
+
   @doc """
   Acquire a heartbeat lease for `key`. Marks the key as `started` in
   `KeyStore` with `task_id` and `run_id` in metadata so crash recovery can
