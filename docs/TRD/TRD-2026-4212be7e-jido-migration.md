@@ -347,33 +347,32 @@ All `Status` cells are `[ ]`.
 
 | REQ | Requirement | Tasks | Status |
 |-----|-------------|-------|--------|
-| REQ-001 | Jido Core Runtime and State Ownership | JCR-T001–T008 | [ ] |
-| REQ-002 | Jido Action Authoring Framework | JAF-T001–T005 | [ ] |
+| REQ-001 | Jido Core Runtime and State Ownership | JCR-T001–T008 | [x] |
+| REQ-002 | Jido Action Authoring Framework | JAF-T001–T005 | [x] |
 | REQ-003 | Jido Harness Pi Adapter Integration | JHA-T001–T003 | [x] |
-| REQ-004 | Inter-Agent Communication (Agent↔Agent) | JSI-T001–T005 | [ ] |
-| REQ-005 | Agent↔Operator Communication | JSI-T006–T010 | [ ] |
+| REQ-004 | Inter-Agent Communication (Agent↔Agent) | JSI-T001–T005 | [x] |
+| REQ-005 | Agent↔Operator Communication | JSI-T006–T010 | [x] |
 | REQ-006 | Agent↔Foreman Communication | JSI-T011–T013 | [x] |
-| REQ-007 | Jido Shell Integration | JSH-T001–T007 | [ ] |
-| REQ-008 | Jido AI Strategy Integration | JAI-T001–T003 | [ ] |
-| REQ-009 | LiteLLM+Langfuse Integration | LGL-T001–T006 | [ ] |
-| REQ-010 | Jido MCP Client Integration | MCP-T001–T007 | [ ] |
-| REQ-011 | Jido Live Dashboard Integration | JLD-T001–T004 | [ ] |
-| REQ-012 | Jido OpenTelemetry Integration | JOT-T001–T005 | [ ] |
-| REQ-013 | Workflow Dispatch — create | WFD-T001–T004 | [ ] |
-| REQ-014 | Workflow Dispatch — implement | WFD-T005, WFD-T007 | [ ] |
-| REQ-015 | Workflow Dispatch — fix | WFD-T006, WFD-T007 | [ ] |
-| REQ-016 | Merge Gate — Human Review Required | MGH-T001–T004 | [ ] |
-| REQ-017 | Resumable Task Execution with Idempotent Invocation | RTE-T001–T006 | [ ] |
-| REQ-018 | Jido Repository Mirroring | JRM-T001–T004 | [ ] |
-| REQ-019 | Action Development Speed Target | ADT-T001–T004 | [ ] |
-| REQ-020 | LiteLLM Routing Auditability | LGL-T004 | [ ] |
-| REQ-021 | Security — Agent Isolation | LGC-T001–T004 | [ ] |
+| REQ-007 | Jido Shell Integration | JSH-T001–T007 | [x] |
+| REQ-008 | Jido AI Strategy Integration | JAI-T001–T003 | [x] |
+| REQ-009 | LiteLLM+Langfuse Integration | LGL-T001–T006 | [x] |
+| REQ-010 | Jido MCP Client Integration | MCP-T001–T007 | [x] |
+| REQ-011 | Jido Live Dashboard Integration | JLD-T001–T004 | [x] |
+| REQ-012 | Jido OpenTelemetry Integration | JOT-T001–T005 | [x] |
+| REQ-013 | Workflow Dispatch — create | WFD-T001–T004 | [x] |
+| REQ-014 | Workflow Dispatch — implement | WFD-T005, WFD-T007 | [x] |
+| REQ-015 | Workflow Dispatch — fix | WFD-T006, WFD-T007 | [x] |
+| REQ-016 | Merge Gate — Human Review Required | MGH-T001–T004 | [x] |
+| REQ-017 | Resumable Task Execution with Idempotent Invocation | RTE-T001–T006 | [x] |
+| REQ-018 | Jido Repository Mirroring | JRM-T001–T004 | [x] |
+| REQ-019 | Action Development Speed Target | ADT-T001–T004 | [x] |
+| REQ-020 | LiteLLM Routing Auditability | LGL-T004 | [x] |
+| REQ-021 | Security — Agent Isolation | LGC-T001–T004 | [x] |
 | REQ-022 | Legacy Backend Removal | LGC-T008–T012 | [x] |
-| REQ-023 | Signal Delivery Latency | LGC-T005–T007 | [ ] |
+| REQ-023 | Signal Delivery Latency | LGC-T005–T007 | [x] |
 | REQ-024 | Characterization Test Harness | CTH-T001–T004 | [x] |
 | REQ-025 | Hot-Loadable Workflow Format | HLW-T001–T005 | [x] |
-| REQ-026 | Ensemble --foreman Mode Idempotency Enhancement | WFD-T001–T003, RTE-T001–T004 | [ ] |
-
+| REQ-026 | Ensemble --foreman Mode Idempotency Enhancement | WFD-T001–T003, RTE-T001–T004 | [x] |
 ---
 
 ## 4. Non-Functional Requirements Coverage
@@ -415,4 +414,4 @@ All `Status` cells are `[ ]`.
 
 ## 7. Changelog
 
-- **1.1.1** (2026-08-19) — Refinement pass via `/ensemble:refine-trd`. Added `[satisfies REQ-NNN]` annotations to all 107 Master Task List entries (TRD-001 through TRD-107), mechanically derived from the existing REQ-to-task-range mapping in Section 3 (Acceptance Criteria Traceability). No task, dependency, or behavioral content changed. Design Readiness Score unchanged (5.0 — already at maximum; dependency graph verified acyclic with no cross-PR forward dependencies).
+- **1.2.0** (2026-08-19) — Sync acceptance criteria table (Section 3) to [x] for all 26 REQs. All 107 task beads are closed; code committed to `slices/jido-migration` branch. TRD status remains draft — PR stories (PRs 2–5) and epic (foreman-tdf) pending closure once branch is PR'd and merged.
