@@ -39,10 +39,11 @@ config :foreman_server, :agent_runtime,
     "create-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
     "create-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
     "refine-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
-    "refine-prd" => %{fallback: false, max_attempts: 1, timeout_ms: 600_000},
     "implement-trd" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000},
     "implement-trd-beads" => %{fallback: false, max_attempts: 1, timeout_ms: 3_600_000}
   }
+
+config :foreman_server, :operator_timeout, enabled: true
 
 # Jido checkpoint store (TRD-2026-4212be7e, JCR-T004) — opt-in. Set
 # enabled: true and the Repo url via env to bring up the Ecto.Repo
