@@ -1,44 +1,267 @@
 defmodule ForemanServer.Agents.SignalToCommandAdapterUnitTest do
+  @moduledoc """
+  Unit tests for `SignalToCommandAdapter.normalize/1` in isolation.
+
+  TRD-2026-4212be7e / JCR-T008 / TRD-010.
+  Verifies: CloudEvent envelope parsing, topic routing, ExternalTriggerCommand
+  normalization, and error handling for malformed CloudEvents.
+  """
   use ExUnit.Case, async: true
 
-  test "parses CloudEvent envelope" do
-    envelope = %{
-      "specversion" => "1.0",
-      "type" => "foreman/commands",
-      "source" => "test",
-      "id" => "evt-1",
-      "data" => %{"command" => "task.create", "params" => %{}}
-    }
-    assert is_map(envelope)
-    assert envelope["type"] == "foreman/commands"
+  alias ForemanServer.Agents.SignalToCommandAdapter
+
+  # -------------------------------------------------------------------------
+  # CloudEvent envelope parsing
+  # -------------------------------------------------------------------------
+
+  describe "normalize/1 parses valid CloudEvent envelopes" do
+    test "parses minimal valid CloudEvent with required fields" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-001",
+        "source" => "test/agent",
+        "type" => "foreman/commands",
+        "data" => %{"command" => "task.create", "args" => %{"title" => "Hello"}}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.command_id == "evt-001"
+      assert envelope.type == "external.trigger"
+      assert envelope.aggregate_id == "external:evt-001"
+      assert envelope.payload.command == "task.create"
+      assert envelope.payload.args == %{"title" => "Hello"}
+    end
+
+    test "uses trigger_id from CloudEvents extension field" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-002",
+        "source" => "test/agent",
+        "type" => "foreman/commands",
+        "trigger_id" => "trigger-abc",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.aggregate_id == "external:trigger-abc"
+      assert envelope.payload.trigger_id == "trigger-abc"
+    end
+
+    test "uses dedupe_key as trigger_id when trigger_id absent" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-003",
+        "source" => "test/agent",
+        "dedupe_key" => "dedupe-xyz",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.aggregate_id == "external:dedupe-xyz"
+    end
+
+    test "uses command_id as trigger_id fallback" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-004",
+        "source" => "test/agent",
+        "command_id" => "cmd-456",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.aggregate_id == "external:cmd-456"
+    end
+
+    test "falls back to data.trigger_id when top-level fields absent" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-005",
+        "source" => "test/agent",
+        "data" => %{"trigger_id" => "data-trigger", "command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.aggregate_id == "external:data-trigger"
+    end
+
+    test "falls back to data.id when no trigger fields present" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-006",
+        "source" => "test/agent",
+        "data" => %{"id" => "data-id-789", "command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.aggregate_id == "external:data-id-789"
+    end
+
+    test "handles atom-keyed map (Jido.Signal struct)" do
+      # Jido.Signal uses atom keys internally
+      event = %{
+        :specversion => "1.0",
+        :id => "evt-007",
+        :source => "test/agent",
+        :data => %{:command => "task.create", :args => %{}}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.command_id == "evt-007"
+    end
+
+    test "normalizes empty data to empty args map" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-008",
+        "source" => "test/agent",
+        "data" => %{}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.payload.args == %{}
+    end
+
+    test "normalizes nil data to empty args map" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-009",
+        "source" => "test/agent",
+        "data" => nil
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.payload.args == %{}
+    end
   end
 
-  test "routes by topic" do
-    # Adapter routing logic — verify topic string matches expected pattern
-    topic = "foreman/commands"
-    assert String.starts_with?(topic, "foreman/")
+  # -------------------------------------------------------------------------
+  # Error handling for malformed CloudEvents
+  # -------------------------------------------------------------------------
+
+  describe "normalize/1 rejects malformed CloudEvents" do
+    test "rejects missing specversion" do
+      event = %{
+        "id" => "evt-bad-001",
+        "source" => "test/agent",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:error, {:invalid_cloud_event, :missing_specversion}} =
+               SignalToCommandAdapter.normalize(event)
+    end
+
+    test "rejects invalid specversion" do
+      event = %{
+        "specversion" => "0.3",
+        "id" => "evt-bad-002",
+        "source" => "test/agent",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:error, {:invalid_cloud_event, :missing_specversion}} =
+               SignalToCommandAdapter.normalize(event)
+    end
+
+    test "rejects missing trigger_id and all fallbacks" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-bad-003",
+        "source" => "test/agent",
+        "data" => %{}
+      }
+
+      assert {:error, {:invalid_cloud_event, :missing_trigger_id}} =
+               SignalToCommandAdapter.normalize(event)
+    end
+
+    test "rejects non-map input" do
+      assert {:error, {:invalid_cloud_event, :not_a_map}} =
+               SignalToCommandAdapter.normalize("not a map")
+
+      assert {:error, {:invalid_cloud_event, :not_a_map}} =
+               SignalToCommandAdapter.normalize(nil)
+
+      assert {:error, {:invalid_cloud_event, :not_a_map}} =
+               SignalToCommandAdapter.normalize([a: 1])
+    end
+
+    test "rejects missing id field (cloud_event_id)" do
+      event = %{
+        "specversion" => "1.0",
+        "source" => "test/agent",
+        "trigger_id" => "t-001",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:error, {:invalid_cloud_event, :missing_trigger_id}} =
+               SignalToCommandAdapter.normalize(event)
+    end
   end
 
-  test "normalizes to ExternalTriggerCommand shape" do
-    # ExternalTriggerCommand envelope expected fields
-    cmd = %{
-      command_type: "task.create",
-      params: %{},
-      idempotency_key: nil,
-      source_topic: "foreman/commands"
-    }
-    assert is_map(cmd)
-    assert Map.has_key?(cmd, :command_type)
-  end
+  # -------------------------------------------------------------------------
+  # ExternalTriggerCommand envelope contract
+  # -------------------------------------------------------------------------
 
-  test "handles malformed CloudEvent without crashing" do
-    malformed = %{"missing" => "fields"}
-    # Adapter should NOT raise on missing fields; return error tuple
-    assert is_map(malformed)
-  end
+  describe "normalize/1 returns ExternalTriggerCommand envelope shape" do
+    test "envelope has required top-level fields" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-shape",
+        "source" => "test/agent",
+        "trigger_id" => "trigger-shape",
+        "data" => %{"command" => "task.create", "args" => %{"x" => 1}}
+      }
 
-  test "rejects unknown topic" do
-    unknown = "garbage/topic"
-    refute String.starts_with?(unknown, "foreman/")
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert Map.has_key?(envelope, :command_id)
+      assert Map.has_key?(envelope, :type)
+      assert Map.has_key?(envelope, :aggregate_id)
+      assert Map.has_key?(envelope, :payload)
+    end
+
+    test "envelope payload has required fields" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-payload",
+        "source" => "test/agent",
+        "trigger_id" => "trigger-payload",
+        "data" => %{"command" => "task.create", "args" => %{"x" => 1}}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      payload = envelope.payload
+      assert Map.has_key?(payload, :trigger_id)
+      assert Map.has_key?(payload, :cloud_event_id)
+      assert Map.has_key?(payload, :source)
+      assert Map.has_key?(payload, :command)
+      assert Map.has_key?(payload, :args)
+    end
+
+    test "envelope type is always external.trigger" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-type",
+        "source" => "test/agent",
+        "trigger_id" => "trigger-type",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.type == "external.trigger"
+    end
+
+    test "aggregate_id format is external:{trigger_id}" do
+      event = %{
+        "specversion" => "1.0",
+        "id" => "evt-agg",
+        "source" => "test/agent",
+        "trigger_id" => "my-trigger",
+        "data" => %{"command" => "task.create"}
+      }
+
+      assert {:ok, envelope} = SignalToCommandAdapter.normalize(event)
+      assert envelope.aggregate_id == "external:my-trigger"
+    end
   end
 end

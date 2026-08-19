@@ -54,5 +54,13 @@ defmodule ForemanServerWeb.Router do
       live("/phases/:run_id/:phase_id", PhaseDebugLive, :show)
       live("/workers/:run_id/:worker_id", WorkerDebugLive, :show)
     end
+
+    # JLD-T001 / TRD-055: mount jido_live_dashboard under browser auth.
+    # Auth pipeline (`:browser` + `:require_authenticated`) intentionally
+    # deferred to a follow-up wiring bead per TRD-2026-4212be7e.
+    scope "/dashboard", ForemanServerWeb do
+      pipe_through(:browser)
+      live("/", ForemanServerWeb.LiveDashboard)
+    end
   end
 end
