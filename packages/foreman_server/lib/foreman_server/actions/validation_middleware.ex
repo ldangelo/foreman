@@ -35,15 +35,24 @@ defmodule ForemanServer.Actions.ValidationMiddleware do
   Validates `params` against `action_module.schema/0` and, on success,
   invokes `next.(validated_params, context)`.
 
-  Returns `{:ok, result}` on success or `{:error, {:invalid_params, params}}`
-  when validation fails.
+  Accepts `params` as either a keyword list (preferred by `NimbleOptions`)
+  or a map (common in Jido/Elixir action invocations). Maps are converted
+  to keyword lists before validation. Returns `{:ok, result}` on success
+  or `{:error, {:invalid_params, params}}` when validation fails.
   """
-  @spec call(module(), map(), map(), (map(), map() -> any())) ::
+  @spec call(module(), NimbleOptions.options(), map(), (map(), map() -> any())) ::
           {:ok, any()} | {:ok, any(), any()} | {:error, any()}
-  def call(action_module, params, context, next) when is_map(params) and is_function(next, 2) do
+  def call(action_module, params, context, next) when is_function(next, 2) do
     schema = action_module.schema()
 
-    case NimbleOptions.validate(params, schema) do
+    normalized =
+      if is_map(params) and not is_list(params) do
+        Map.to_list(params)
+      else
+        params
+      end
+
+    case NimbleOptions.validate(normalized, schema) do
       {:ok, validated} ->
         next.(validated, context)
 
@@ -54,9 +63,5 @@ defmodule ForemanServer.Actions.ValidationMiddleware do
 
         {:error, {:invalid_params, params}}
     end
-  end
-
-  def call(_action_module, params, _context, _next) do
-    {:error, {:invalid_params, params}}
   end
 end
