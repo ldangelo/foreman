@@ -18,18 +18,24 @@ defmodule ForemanServer.Workflow.CreateWorkflowDispatcher do
 
   def dispatch(task_id, opts \\ []) do
     prefix = Keyword.get(opts, :idempotency_prefix, "create-#{task_id}")
-    Enum.reduce_while(@steps, {:ok, %{task_id: task_id, completed: []}}, fn {name, skill}, acc ->
-      key = "#{prefix}-#{name}"
-      case ForemanServer.Idempotency.KeyStore.status(key) do
-        {:ok, :completed} ->
-          Logger.info("Step #{name} already completed for task=#{task_id}; skipping")
-          {:cont, acc}
-        _ ->
-          Logger.info("Dispatching step=#{name} skill=#{skill} task=#{task_id}")
-          :ok = ForemanServer.Idempotency.KeyStore.mark_started(key)
-          :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
-          {:cont, {:ok, %{task_id: task_id, completed: acc.completed ++ [name]}}}
-      end
-    end)
+
+    result =
+      Enum.reduce_while(@steps, %{task_id: task_id, completed: []}, fn {name, skill}, acc ->
+        key = "#{prefix}-#{name}"
+
+        case ForemanServer.Idempotency.KeyStore.status(key) do
+          {:ok, :completed} ->
+            Logger.info("Step #{name} already completed for task=#{task_id}; skipping")
+            {:cont, %{acc | completed: acc.completed ++ [name]}}
+
+          _ ->
+            Logger.info("Dispatching step=#{name} skill=#{skill} task=#{task_id}")
+            :ok = ForemanServer.Idempotency.KeyStore.mark_started(key)
+            :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
+            {:cont, %{acc | completed: acc.completed ++ [name]}}
+        end
+      end)
+
+    {:ok, result}
   end
 end

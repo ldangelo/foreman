@@ -18,7 +18,7 @@ defmodule ForemanServer.Agents.LitellmRouter do
   @doc "LiteLLM HTTP endpoint (default `http://localhost:4000`)."
   def endpoint, do: Application.get_env(:litellm, :endpoint, "http://localhost:4000")
 
-  @doc "LiteLLM model name; `"auto"` defers selection to LiteLLM per capability."
+  @doc ~S(LiteLLM model name; `"auto"` defers selection to LiteLLM per capability.)
   def model, do: Application.get_env(:litellm, :model, "auto")
 
   @doc "Langfuse HTTP endpoint (default `http://localhost:3000`)."
