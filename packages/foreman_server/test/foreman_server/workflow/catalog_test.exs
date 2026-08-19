@@ -124,6 +124,28 @@ defmodule ForemanServer.Workflow.CatalogTest do
     end
   end
 
+  describe "fix workflow (WFD-T006 / TRD-069)" do
+    test "loading fix.yaml yields single command phase with ensemble-fix-issue and --foreman", %{
+      tmp: tmp,
+      server_name: name
+    } do
+      start_catalog(tmp, name)
+
+      assert {:ok, wf} = Catalog.load("fix.yaml")
+      assert wf.name == "fix"
+      assert is_list(wf.phases)
+      assert length(wf.phases) == 1
+
+      [fix_phase] = wf.phases
+
+      assert fix_phase["name"] == "fix"
+      assert fix_phase.action == :command
+      assert fix_phase.command == "/skill:ensemble-fix-issue --foreman"
+      # Single-phase workflow has no routing requirement
+      assert fix_phase.required_file in [nil, ""]
+    end
+  end
+
   describe "read_prompt/1" do
     test "returns the tracked prompt content", %{tmp: tmp, server_name: name} do
       start_catalog(tmp, name)
