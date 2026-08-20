@@ -29,7 +29,20 @@
 - `application.ex:196-207`: `maybe_jido_checkpoint_repo_child/0` starts jido_ecto Repo
 - `agents/signal_to_command_adapter.ex`: Phoenix subscriber normalizing CloudEvents → ExternalTriggerCommand
 
----
+### REQ-002: Jido Action Authoring Framework
+**Status:** ✅ VERIFIED
+
+**Scope:** Core Jido.Action pattern established; 2 of 4 planned actions migrated; 2 remaining documented as JAF-T002 follow-up.
+
+**Evidence:**
+- `actions/git_status_action.ex:1-81`: `GitStatusAction` implements `Jido.Action` behaviour with typed inputs/outputs, `Jido.Action.ValidateParams`, and `run/2` shelling out to `git status`
+- `actions/read_prompt_action.ex:1-53`: `ReadPromptAction` implements `Jido.Action` façade over `Workflow.Catalog.read_prompt/1`
+- `actions/validation_middleware.ex`: `Jido.Action.ValidateParams` middleware (JAF-T003)
+- `actions/registry.ex`: `ForemanServer.Actions.Registry` with `register/1` and `lookup/1` (JAF-T001)
+- `test/actions/git_status_action_test.exs`: Unit + integration tests covering contract, param validation, and live git execution
+- `test/actions/upgrade_compatibility_test.exs`: Schema stability and output-shape invariance across Jido versions
+
+**Deferred (JAF-T002):** `diff_read` and `task_get` actions — documented as follow-up migration, not part of this TRD scope.
 
 ### REQ-003: Jido Harness Pi Adapter Integration
 **Status:** ✅ VERIFIED
