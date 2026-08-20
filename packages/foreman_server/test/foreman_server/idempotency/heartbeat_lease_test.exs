@@ -12,8 +12,16 @@ defmodule ForemanServer.Idempotency.HeartbeatLeaseTest do
     {:ok, _pid} = ForemanServer.Idempotency.HeartbeatLease.ensure_started()
     {:ok, _pid2} = ForemanServer.Idempotency.KeyStore.ensure_started()
     {:ok, _lease} = ForemanServer.Idempotency.HeartbeatLease.acquire("k2", 60_000)
+
+    # Verify key is started in KeyStore
+    assert {:ok, :started} = ForemanServer.Idempotency.KeyStore.status("k2")
+
     assert :ok = ForemanServer.Idempotency.HeartbeatLease.release("k2")
+
+    # HeartbeatLease lease is removed
     assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status("k2")
+    # KeyStore key transitions to completed so crash-recovery skips side-effect inspection
+    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status("k2")
   end
 
   test "status of unknown key is :not_found" do

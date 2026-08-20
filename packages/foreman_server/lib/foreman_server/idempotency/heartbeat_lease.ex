@@ -144,6 +144,7 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
     # Also remove any worker mapping for this key so the Tracker cannot
     # spuriously trigger ambiguity after a clean completion.
     worker_key = worker_key_for_key(state.workers, key)
+    :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
     state = remove_worker_mapping(state, worker_key)
     state = remove_lease(state, key)
     {:reply, :ok, state}
