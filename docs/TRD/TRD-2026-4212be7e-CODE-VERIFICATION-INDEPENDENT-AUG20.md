@@ -5,17 +5,15 @@
 
 ---
 
-## Executive Summary
-
 | Category | Count | Verdict |
 |----------|-------|---------|
-| ✅ Fully implemented, gap-free | 14 | Complete |
+| ✅ Fully implemented, gap-free | 16 | Complete |
 | 🔴 **Critical gap** — missing dep or supervision | 2 | BLOCKED |
 | 🟡 **High-priority gap** — defined but unwired | 4 | Unblocked |
 | 🟠 **Medium gap** — partial completion | 1 | Deferred |
 | ⚠️ **Previously flagged, now corrected** | 2 | False positive |
 
-**Total: 26 REQs assessed.**
+**Total: 26 REQs assessed. Prior report had 14 Complete — corrected to 16.**
 
 ---
 

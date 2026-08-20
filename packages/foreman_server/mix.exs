@@ -61,7 +61,8 @@ defmodule ForemanServer.MixProject do
       {:jido_harness,    git: "https://github.com/Sunstone-Partners/jido_harness.git",    ref: "e41fc1651282469f2db4219a48d9f7feef1b0dbc", override: true},
       {:jido_ecto,       git: "https://github.com/Sunstone-Partners/jido_ecto.git",       ref: "d5993d93be7885f62336251b4b7eb95aa88eef52", override: true},
       {:req_llm,         git: "https://github.com/Sunstone-Partners/req_llm.git",         ref: "e8d51edd24cf7bc08c3785f25f6bff95846f23e0", override: true},
-      {:jido_otel,       git: "https://github.com/Sunstone-Partners/jido_otel.git",       ref: "e7b1c67ed841da642c38efdb62e884ff9a6c7588", override: true}
+      {:jido_otel,       git: "https://github.com/Sunstone-Partners/jido_otel.git",       ref: "e7b1c67ed841da642c38efdb62e884ff9a6c7588", override: true},
+      {:jido_mcp,        git: "https://github.com/Sunstone-Partners/jido_mcp.git",        ref: "8986c4cbf4f5e89d9f9a7a4c096d45e45a514863", override: true}
      ]
    end
 

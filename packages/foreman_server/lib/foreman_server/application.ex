@@ -100,16 +100,15 @@ defmodule ForemanServer.Application do
           ForemanServer.CommandRouter
         ]
         ++ maybe_lifecycle_reconciler_child()
-        ++ maybe_agent_runtime_child()
-        ++ maybe_jido_checkpoint_repo_child()
-        ++ maybe_jido_signal_bus_child()
+        ++ maybe_signal_journal_child()
+        ++ maybe_directive_queue_child()
         ++ maybe_signal_to_command_child()
         ++ maybe_task_metadata_query_subscriber_child()
         ++ maybe_jido_shell_runner_child()
-        ++ maybe_operator_question_subscriber_child()
         ++ maybe_operator_timeout_child()
         ++ maybe_overwatch_child()
         ++ maybe_vfs_isolation_child()
+        ++ maybe_mcp_allowlist_child()
         ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -126,6 +125,9 @@ defmodule ForemanServer.Application do
     # Supervisor.start_link so the AgentRuntime.AdapterCatalog GenServer
     # is already alive.
     _ = register_jido_harness_adapter()
+
+    # Seed MCP allowlist with read-only tools after supervisor starts.
+    _ = seed_mcp_allowlist()
 
     {:ok, pid}
   end
@@ -217,6 +219,33 @@ defmodule ForemanServer.Application do
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
         [{Jido.Signal.Bus, [name: :foreman_jido_signal_bus]}]
+
+      _ ->
+        []
+    end
+  end
+
+  # TRD-022 (JSI-T004) / TRD-056 (JLD-T002): Persistent signal journal for
+  # replay on restart. Referenced by SignalDirectivePublisher (enqueue/dispatch
+  # hooks) and LiveDashboard (replay view). Gated on agent_runtime :enabled
+  # so it starts whenever the Jido signal infrastructure is live.
+  def maybe_signal_journal_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{ForemanServer.Agents.SignalJournal, [name: ForemanServer.Agents.SignalJournal]}]
+
+      _ ->
+        []
+    end
+  end
+
+  # TRD-056 (JLD-T002): Tracks pending directives for Jido agents.
+  # Referenced by SignalDirectivePublisher (enqueue/mark_dispatched) and
+  # LiveDashboard (queued view). Same gate as SignalJournal.
+  def maybe_directive_queue_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [{ForemanServer.Agents.DirectiveQueue, [name: ForemanServer.Agents.DirectiveQueue]}]
 
       _ ->
         []
@@ -323,6 +352,37 @@ defmodule ForemanServer.Application do
     end
   end
 
+  # Seeds the MCP allowlist with read-only Foreman tools. Write tools
+  # (work_submit, workflow_put, etc.) are controlled by the Policy layer
+  # based on allow_workflow_writes config, not the allowlist.
+  defp maybe_mcp_allowlist_child do
+    if Application.get_env(:foreman_server, :mcp, [])[:enabled] do
+      [{ForemanServer.Agents.McpAllowlist, []}]
+    else
+      []
+    end
+  end
+
+  # Seeds the MCP allowlist after supervisor starts so McpAllowlist is alive.
+  # Safe tools = all tools minus write tools (controlled by Policy instead).
+  defp seed_mcp_allowlist do
+    if Application.get_env(:foreman_server, :mcp, [])[:enabled] do
+      write_tools = [
+        "foreman_work_submit",
+        "foreman_work_cancel",
+        "foreman_workflow_put",
+        "foreman_workflow_delete",
+        "foreman_prompt_put"
+      ]
+
+      safe_tools =
+        ForemanServer.MCP.Tools.list_tools()
+        |> Enum.reject(fn %{name: name} -> name in write_tools end)
+        |> Enum.map(fn %{name: name} -> name end)
+
+      Enum.each(safe_tools, &ForemanServer.Agents.McpAllowlist.add/1)
+    end
+  end
   defp maybe_overwatch_child do
     case Application.get_env(:foreman_server, ForemanServer.Overwatch, []) do
       opts when is_list(opts) ->
