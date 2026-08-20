@@ -46,14 +46,32 @@ defmodule ForemanServer.Agents.JidoAiRunner do
   # dependency is loaded. When it isn't (e.g. minimal test envs), we
   # return a clearly-marked placeholder so call-sites can still flow
   # end-to-end.
+  # `Jido.AI.Reasoning.ReAct.run/3` returns a bare `map()` with keys
+  # `result`, `termination_reason`, `usage`, `final_token`, and `trace`.
+  # We normalise to `{:ok, %{output:, termination_reason:, ...}}` or
+  # `{:error, reason}` so call-sites have a consistent contract.
   defp run_react(prompt, opts) do
     if Code.ensure_loaded?(Jido.AI.Reasoning.ReAct) do
       try do
-        Jido.AI.Reasoning.ReAct.run(prompt, %{}, opts)
+        raw = Jido.AI.Reasoning.ReAct.run(prompt, %{}, opts)
+
+        case raw do
+          %{termination_reason: :failed, result: reason} ->
+            {:error, reason}
+
+          %{result: result} when is_binary(result) ->
+            {:ok, Map.put(raw, :output, result)}
+
+          %{result: result} ->
+            {:ok, Map.put(raw, :output, inspect(result))}
+
+          _ ->
+            {:ok, Map.put(raw, :output, inspect(raw))}
+        end
       rescue
         e ->
           Logger.warning("jido_ai react raised: #{Exception.message(e)}")
-          {:ok, %{strategy: :react, output: prompt, status: :degraded, error: Exception.message(e)}}
+          {:error, {:run_error, Exception.message(e)}}
       end
     else
       {:ok, %{strategy: :react, output: "(stub) react reasoning for: #{prompt}", status: :placeholder}}

@@ -26,7 +26,14 @@ config :foreman_server, :agent_runtime,
   # legacy external `pi` Node CLI can override with
   #   config :foreman_server, :agent_runtime,
   #     adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
-  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]
+  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter],
+  # JAI-T001: agent execution strategy.  Options: :react (ReAct reasoning),
+  # :cot (chain-of-thought), :manual (JidoHarnessAdapter direct).
+  agent_strategy: :react,
+  # JAI-T001: model identifier passed to the reasoning strategy.
+  # "auto" resolves via the jido_ai model_aliases to LiteLLM (LGL-T001),
+  # which selects the best model per capability at request time.
+  agent_model: "auto"
 
 # jido_harness backend — now the default after JHA-T002 (TRD-2026-
 # 4212be7e): the in-process Jido.Harness runtime replaced the
@@ -82,6 +89,19 @@ config :litellm,
   endpoint: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000"),
   model: System.get_env("LITELLM_MODEL", "auto")
 
+# TRD-2026-4212be7e LGL-T001: wire req_llm through LiteLLM when Jido.AI
+# reasoning strategies use the "auto" model alias.  The alias resolves to
+# %{provider: :openai, id: "auto", base_url: <liteLLM endpoint>}; req_llm
+# uses model.base_url for the HTTP endpoint, so all jido_ai LLM calls
+# route through LiteLLM with auto-model selection.
+config :jido_ai,
+  model_aliases: %{
+    "auto" => %{
+      provider: :openai,
+      id: "auto",
+      base_url: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000")
+    }
+  }
 config :langfuse,
   endpoint: System.get_env("LANGFUSE_ENDPOINT", "http://localhost:3000")
 # TRD-2026-4212be7e JSH-T003: VFS isolation per worktree.

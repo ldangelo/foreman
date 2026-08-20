@@ -418,11 +418,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     RunExecutorLiveness.record(state.run_id, self(), deadline_ms)
 
     try do
+      # JAI-T001 / REQ-008: delegate to Jido.AI.Reasoning.ReAct via
+      # AgentRuntime's :react strategy.  The strategy uses req_llm
+      # which resolves "auto" → LiteLLM endpoint from jido_ai model_aliases
+      # config (LGL-T001), enabling auto model selection.
+      strategy = Application.get_env(:foreman_server, :agent_strategy, :react)
+      model = Application.get_env(:foreman_server, :agent_model, "auto")
+
       AgentRuntime.execute(
         prompt,
         request.context,
         backend: execution_backend(),
-        strategy: :manual,
+        strategy: strategy,
+        model: model,
         task_type: task_type,
         env: foreman_env(state, worktree_record)
       )

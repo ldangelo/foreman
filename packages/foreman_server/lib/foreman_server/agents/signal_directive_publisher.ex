@@ -31,15 +31,14 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
   ## Directive queue integration
 
   When `ForemanServer.Agents.DirectiveQueue` is running, every
-  published directive is recorded in the queue as `:pending` and
   marked `:dispatched` after successful publish. This feeds the
   LiveDashboard directive-queue view (TRD-056 / JLD-T002).
   """
 
   alias ForemanServer.Agents.JidoSignalTopics
   alias ForemanServer.Agents.DirectiveQueue
+  alias ForemanServer.Agents.OtelSpanEmitter
   alias Jido.Signal.Bus
-
   @doc """
   Sentinel value for `bus` that resolves to the supervised
   `foreman_jido_signal_bus` process.
@@ -89,6 +88,15 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
     _ = record_in_queue(agent_id, payload)
 
     result = Bus.publish(bus, [signal])
+
+    # JOT-T004: emit jido.signal span for directive dispatch.
+    delivery_status =
+      case result do
+        {:ok, _} -> "delivered"
+        {:error, _} -> "failed"
+      end
+
+    _ = OtelSpanEmitter.emit_signal_span("agent.directive", topic, delivery_status)
 
     # Mark dispatched on success. On failure we leave the entry in
     # :pending so operators can see it stalled.

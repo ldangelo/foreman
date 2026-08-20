@@ -5,8 +5,12 @@ defmodule ForemanServer.Agents.CmdLoop do
 
   TRD-2026-4212be7e / JCR-T003 / TRD-005.
   """
+
   require Logger
 
+  alias ForemanServer.Agents.JidoSignalTopics
+  alias ForemanServer.Agents.DirectiveQueue
+  alias ForemanServer.Agents.OtelSpanEmitter
   alias Jido.Agent
   alias Jido.Agent.Directive
   alias Jido.Signal.Bus
@@ -37,7 +41,20 @@ defmodule ForemanServer.Agents.CmdLoop do
     normalized = normalize_action(action_module, params)
     opts = params_to_opts(params)
 
+    # JOT-T002: emit jido.cmd span covering the full Agent.cmd/3 call.
+    # The span captures agent_id, action name, and wall-clock duration.
+    start_us = System.monotonic_time(:microsecond)
     {updated, directives} = agent_struct.agent_module.cmd(agent_struct, normalized, opts)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+
+    action_name =
+      case normalized do
+        {mod, _} -> Atom.to_string(mod)
+        mod when is_atom(mod) -> Atom.to_string(mod)
+      end
+
+    _ = OtelSpanEmitter.emit_cmd_span(agent_struct.id, action_name, duration_us)
+
     {:ok, updated, directives}
   end
 

@@ -50,7 +50,7 @@ defmodule ForemanServer.AgentRuntime do
           | {:error, term()}
 
   @typedoc "Public strategy atom accepted by `execute/3` (TRD-003)."
-  @type strategy :: :manual | :automatic | :policy
+  @type strategy :: :manual | :automatic | :policy | :react | :cot
 
   @doc """
   Validate an adapter module's capability map without mutating any
@@ -197,6 +197,30 @@ defmodule ForemanServer.AgentRuntime do
           inv_supervisor,
           policy,
           fail_on_unavailable,
+          env
+        )
+
+      :react ->
+        model = Keyword.get(opts, :model, :fast)
+
+        execute_react(
+          prompt,
+          request,
+          model,
+          task_type,
+          policy,
+          env
+        )
+
+      :cot ->
+        model = Keyword.get(opts, :model, :fast)
+
+        execute_cot(
+          prompt,
+          request,
+          model,
+          task_type,
+          policy,
           env
         )
 
@@ -622,6 +646,146 @@ defmodule ForemanServer.AgentRuntime do
         emit_early_exit_completion(monotonic_start, :policy_module_raised, task_type)
 
         {:error, raised}
+    end
+  end
+
+  # ReAct strategy: delegate to JidoAiRunner with Jido.AI.Reasoning.ReAct,
+  # which uses req_llm for LLM calls.  The runner is wrapped so exactly
+  # one telemetry completion event fires per execute/3 call.
+  defp execute_react(prompt, _request, model, task_type, policy, _env) do
+    start_time = System.system_time()
+    monotonic_start = System.monotonic_time(:microsecond)
+    timeout_ms = Map.get(policy, :timeout_ms, 60_000)
+
+    try do
+      Telemetry.execute(
+        [:foreman, :agent_runtime, :execute, :start],
+        %{system_time: start_time, status: :started},
+        %{strategy: :react, backend: :jido_ai_runner}
+      )
+
+      case ForemanServer.Agents.JidoAiRunner.run(:react, prompt,
+             model: model,
+             max_tokens: 4096,
+             timeout_ms: timeout_ms
+           ) do
+        {:ok, %{output: output}} when is_binary(output) ->
+          stop_time = System.system_time()
+
+          Telemetry.execute(
+            [:foreman, :agent_runtime, :execute, :stop],
+            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
+            %{strategy: :react, backend: :jido_ai_runner}
+          )
+
+          emit_early_exit_completion(monotonic_start, :ok, task_type)
+          {:ok, output}
+
+        {:ok, %{output: output}} ->
+          stop_time = System.system_time()
+
+          Telemetry.execute(
+            [:foreman, :agent_runtime, :execute, :stop],
+            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
+            %{strategy: :react, backend: :jido_ai_runner}
+          )
+
+          emit_early_exit_completion(monotonic_start, :ok, task_type)
+          {:ok, inspect(output)}
+
+        {:error, _reason} = error ->
+          stop_time = System.system_time()
+
+          Telemetry.execute(
+            [:foreman, :agent_runtime, :execute, :stop],
+            %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
+            %{strategy: :react, backend: :jido_ai_runner}
+          )
+
+          emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
+          error
+      end
+    rescue
+      e ->
+        stop_time = System.system_time()
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: stop_time - start_time, status: :exception, attempts: 1},
+          %{strategy: :react, backend: :jido_ai_runner}
+        )
+
+        emit_early_exit_completion(monotonic_start, :exception, task_type)
+        {:error, {:exception, Exception.message(e)}}
+    end
+  end
+
+  # Chain-of-Thought strategy: same pattern as execute_react/6.
+  defp execute_cot(prompt, _request, model, task_type, policy, _env) do
+    start_time = System.system_time()
+    monotonic_start = System.monotonic_time(:microsecond)
+    timeout_ms = Map.get(policy, :timeout_ms, 60_000)
+
+    try do
+      Telemetry.execute(
+        [:foreman, :agent_runtime, :execute, :start],
+        %{system_time: start_time, status: :started},
+        %{strategy: :cot, backend: :jido_ai_runner}
+      )
+
+      case ForemanServer.Agents.JidoAiRunner.run(:cot, prompt,
+             model: model,
+             max_tokens: 4096,
+             timeout_ms: timeout_ms
+           ) do
+        {:ok, %{output: output}} when is_binary(output) ->
+          stop_time = System.system_time()
+
+          Telemetry.execute(
+            [:foreman, :agent_runtime, :execute, :stop],
+            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
+            %{strategy: :cot, backend: :jido_ai_runner}
+          )
+
+          emit_early_exit_completion(monotonic_start, :ok, task_type)
+          {:ok, output}
+
+        {:ok, %{output: output}} ->
+          stop_time = System.system_time()
+
+          Telemetry.execute(
+            [:foreman, :agent_runtime, :execute, :stop],
+            %{duration_us: stop_time - start_time, status: :ok, attempts: 1},
+            %{strategy: :cot, backend: :jido_ai_runner}
+          )
+
+          emit_early_exit_completion(monotonic_start, :ok, task_type)
+          {:ok, inspect(output)}
+
+        {:error, _reason} = error ->
+          stop_time = System.system_time()
+
+          Telemetry.execute(
+            [:foreman, :agent_runtime, :execute, :stop],
+            %{duration_us: stop_time - start_time, status: :adapter_error, attempts: 1},
+            %{strategy: :cot, backend: :jido_ai_runner}
+          )
+
+          emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
+          error
+      end
+    rescue
+      e ->
+        stop_time = System.system_time()
+
+        Telemetry.execute(
+          [:foreman, :agent_runtime, :execute, :stop],
+          %{duration_us: stop_time - start_time, status: :exception, attempts: 1},
+          %{strategy: :cot, backend: :jido_ai_runner}
+        )
+
+        emit_early_exit_completion(monotonic_start, :exception, task_type)
+        {:error, {:exception, Exception.message(e)}}
     end
   end
 
