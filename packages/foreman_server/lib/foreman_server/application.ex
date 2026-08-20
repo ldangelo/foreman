@@ -99,16 +99,23 @@ defmodule ForemanServer.Application do
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter
         ]
+        ++ maybe_stuck_detector_child()
         ++ maybe_lifecycle_reconciler_child()
+        ++ maybe_jido_signal_bus_child()
         ++ maybe_signal_journal_child()
         ++ maybe_directive_queue_child()
         ++ maybe_signal_to_command_child()
         ++ maybe_task_metadata_query_subscriber_child()
+        ++ maybe_agent_runtime_child()
+        ++ maybe_jido_checkpoint_repo_child()
+        ++ maybe_operator_question_subscriber_child()
+        ++ maybe_operator_directive_projector_child()
         ++ maybe_jido_shell_runner_child()
         ++ maybe_operator_timeout_child()
         ++ maybe_overwatch_child()
         ++ maybe_vfs_isolation_child()
         ++ maybe_mcp_allowlist_child()
+        ++ maybe_mcp_child()
         ++
         [
           # Endpoint exposes dev-only debug LiveViews.
@@ -325,6 +332,22 @@ defmodule ForemanServer.Application do
         [
           {ForemanServer.Agents.OperatorQuestionSubscriber,
            [name: :foreman_operator_question_subscriber, bus: :foreman_jido_signal_bus]}
+        ]
+
+      _ ->
+        []
+    end
+  end
+  # TRD-005 / AC-005-2: The operator-directive projector consumes
+  # InboxItemStarted events from the OperatorQuestionSource and publishes
+  # Jido directive signals to the agent's directive topic, completing the
+  # operator-response → agent flow. Gated on :agent_runtime, :enabled.
+  def maybe_operator_directive_projector_child do
+    case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
+      enabled when enabled in [true, "true"] ->
+        [
+          {ForemanServer.Agents.OperatorDirectiveProjector,
+           [name: :foreman_operator_directive_projector]}
         ]
 
       _ ->

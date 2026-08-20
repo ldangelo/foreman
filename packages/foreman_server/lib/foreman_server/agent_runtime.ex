@@ -33,6 +33,8 @@ defmodule ForemanServer.AgentRuntime do
   alias ForemanServer.AgentRuntime.InvocationSupervisor
   alias ForemanServer.Telemetry
   alias ForemanServer.AgentRuntime.FailurePolicy
+  alias ForemanServer.Agents.OtelSpanEmitter
+  alias ForemanServer.Agents.LlmErrorHandler
 
   @type backend_name :: atom()
   @type adapter :: module()
@@ -669,8 +671,11 @@ defmodule ForemanServer.AgentRuntime do
              max_tokens: 4096,
              timeout_ms: timeout_ms
            ) do
-        {:ok, %{output: output}} when is_binary(output) ->
+        {:ok, %{output: output} = result} when is_binary(output) ->
           stop_time = System.system_time()
+          usage = Map.get(result, :usage, %{})
+          token_count = Map.get(usage, :total_tokens, 0)
+          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -681,8 +686,11 @@ defmodule ForemanServer.AgentRuntime do
           emit_early_exit_completion(monotonic_start, :ok, task_type)
           {:ok, output}
 
-        {:ok, %{output: output}} ->
+        {:ok, %{output: output} = result} ->
           stop_time = System.system_time()
+          usage = Map.get(result, :usage, %{})
+          token_count = Map.get(usage, :total_tokens, 0)
+          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -703,7 +711,17 @@ defmodule ForemanServer.AgentRuntime do
           )
 
           emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
-          error
+
+          # REQ-008 AC-008-2: classify LLM errors and return as agent directives
+          # so the agent can retry or escalate rather than treating them as fatal.
+          error_kind =
+            case _reason do
+              :failed -> :llm_failed
+              {:run_error, _} -> :llm_run_error
+              _ -> :llm_error
+            end
+
+          LlmErrorHandler.classify_and_directive(error_kind, %{source: :jido_ai_runner})
       end
     rescue
       e ->
@@ -738,8 +756,11 @@ defmodule ForemanServer.AgentRuntime do
              max_tokens: 4096,
              timeout_ms: timeout_ms
            ) do
-        {:ok, %{output: output}} when is_binary(output) ->
+        {:ok, %{output: output} = result} when is_binary(output) ->
           stop_time = System.system_time()
+          usage = Map.get(result, :usage, %{})
+          token_count = Map.get(usage, :total_tokens, 0)
+          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -750,8 +771,11 @@ defmodule ForemanServer.AgentRuntime do
           emit_early_exit_completion(monotonic_start, :ok, task_type)
           {:ok, output}
 
-        {:ok, %{output: output}} ->
+        {:ok, %{output: output} = result} ->
           stop_time = System.system_time()
+          usage = Map.get(result, :usage, %{})
+          token_count = Map.get(usage, :total_tokens, 0)
+          _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -772,7 +796,17 @@ defmodule ForemanServer.AgentRuntime do
           )
 
           emit_early_exit_completion(monotonic_start, :adapter_error, task_type)
-          error
+
+          # REQ-008 AC-008-2: classify LLM errors and return as agent directives
+          # so the agent can retry or escalate rather than treating them as fatal.
+          error_kind =
+            case _reason do
+              :failed -> :llm_failed
+              {:run_error, _} -> :llm_run_error
+              _ -> :llm_error
+            end
+
+          LlmErrorHandler.classify_and_directive(error_kind, %{source: :jido_ai_runner})
       end
     rescue
       e ->
