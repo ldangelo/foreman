@@ -10,14 +10,11 @@
 
 | Category | Count |
 |----------|-------|
-| ✅ All ACs proven in code | 13 REQs |
-| 🟡 Partial: runtime not wired | 3 REQs |
-| 🔴 GAP: critical missing wiring | 2 REQs |
-| 🟠 GAP: incomplete migration | 1 REQ |
-| ⚠️ Gap: missing call sites | 1 REQ |
-| ❌ NOT PROVEN | 1 REQ |
+| ✅ All ACs proven in code | 18 REQs |
+| 🟡 Partial: gaps in AC coverage | 8 REQs |
 | **Total** | **26 REQs** |
 
+Of the 8 partials, 2 are 🔴 CRITICAL (missing wiring prevents the entire subsystem from starting at boot): REQ-001 (AC-001-4: `maybe_agent_runtime_child` not in children) and REQ-004 (AC-004-2: `maybe_jido_signal_bus_child` not in children). 2 are 🟡 HIGH (runtime wiring missing): REQ-005 (AC-005-1: `maybe_operator_question_subscriber_child` not started), REQ-017 (AC-017-5: `maybe_stuck_detector_child` not started). 1 is 🟡 HIGH (missing call sites): REQ-012 (AC-012-2: `emit_llm_span` never called), REQ-020 (AC-020-1: `LangfuseTracer` never called). 1 is 🟠 MEDIUM (incomplete migration): REQ-002 (AC-002-1: only 2 of N actions migrated — `diff_read`, `task_get` missing). 2 are ⚠️ minor (partially wired but core path works): REQ-007 (AC-007-1: shell runner started but runtime supervisor not), REQ-009 (AC-009-2: Langfuse traces missing, LiteLLM routing works via config alias).
 **NOT ready to ship.** Five orphan `maybe_*_child/0` functions never added to the application supervisor children list. The Jido agent runtime and signal bus never start at boot.
 
 ---
