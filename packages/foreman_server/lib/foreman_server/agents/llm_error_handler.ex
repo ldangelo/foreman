@@ -29,16 +29,36 @@ defmodule ForemanServer.Agents.LlmErrorHandler do
   """
   def with_timeout(fun, timeout_ms \\ @timeout_ms) do
     task = Task.async(fun)
+    # Detach the link so the caller's process does not receive the
+    # task's exit signal — `with_timeout/2` reports exit reasons via
+    # its return value rather than via process exit propagation.
+    # `Process.unlink/1` is idempotent and safe to call after the task
+    # has exited.
+    Process.unlink(task.pid)
 
     try do
-      case Task.await(task, timeout_ms) do
-        {:ok, _} = ok -> ok
-        {:error, _} = err -> err
-        other -> {:ok, other}
+      case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+        {:ok, value} ->
+          case value do
+            {:ok, _} = ok ->
+              ok
+
+            {:error, _} = err ->
+              err
+
+            other ->
+              {:ok, other}
+          end
+
+        {:exit, reason} ->
+          {:error, {:exit, reason}}
+
+        nil ->
+          {:error, :timeout}
       end
     catch
-      :exit, {:timeout, _} -> {:error, :timeout}
-      :exit, reason -> {:error, {:exit, reason}}
+      :exit, reason ->
+        {:error, {:exit, reason}}
     end
   end
 
@@ -50,6 +70,7 @@ defmodule ForemanServer.Agents.LlmErrorHandler do
   def classify_and_directive(error_kind, context \\ %{}) do
     if error_kind in @retriable do
       Logger.warning("LLM retriable error: #{inspect(error_kind)}")
+
       {:retry,
        %{
          kind: error_kind,
