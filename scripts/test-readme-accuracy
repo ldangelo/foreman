@@ -89,10 +89,23 @@ echo "7. Adapter module references resolve"
 [[ -f packages/foreman_server/lib/foreman_server/agent_runtime/adapters/jido_harness_adapter.ex ]] \
   && pass "ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter" \
   || fail "ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter"
+echo
+echo "8. Scripts referenced in README exist"
+for s in scripts/test-readme-accuracy scripts/e2e-task-approval scripts/trigger-jido-upgrade.sh scripts/ci/jido-upgrade-evaluation.sh; do
+  if [[ -f "$s" ]]; then pass "$s"; else fail "$s"; fi
+done
+
+echo
+echo "9. GitHub Actions workflows referenced in README exist"
+if [[ -f .github/workflows/jido-upstream-upgrade.yml ]]; then 
+  pass ".github/workflows/jido-upstream-upgrade.yml"; 
+else 
+  fail ".github/workflows/jido-upstream-upgrade.yml"; 
+fi
 
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
-  echo "All README accuracy checks passed."
+  echo "All 9 README accuracy checks passed."
   exit 0
 else
   echo "$FAILURES README accuracy check(s) failed."

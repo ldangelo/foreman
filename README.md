@@ -208,3 +208,29 @@ cd packages/jido_harness && mix test
 
 For per-package build/test commands (CLI/daemon/MCP), see each
 package's `package.json`/`mix.exs`.
+## Verification and development
+
+This project includes tools for validating the README accuracy, running end-to-end smoke tests, and managing Jido upstream upgrades:
+
+**README accuracy validator:**
+```bash
+bash scripts/test-readme-accuracy
+```
+Validates that README.md references match the actual repository structure: no legacy paths, existing packages/docs, referenced files, no duplicate headings, correct TRD identifiers, and proper module references. This script ensures the README stays synchronized with the codebase.
+
+**End-to-end task-approval smoke test:**
+```bash
+bash scripts/e2e-task-approval
+```
+Exercises the full project → task → run → worker → projection loop through the Go CLI and Phoenix API, validating atomic task creation, approval, and run dispatch.
+
+**Jido upstream upgrade workflow:**
+
+The [`.github/workflows/jido-upstream-upgrade.yml`](./.github/workflows/jido-upstream-upgrade.yml) CI job runs automatically when upstream Jido releases are detected. It evaluates whether Foreman's test suite passes against new Jido commits and adopts the upgrade only when tests are green.
+
+To manually trigger the upgrade evaluation:
+```bash
+bash scripts/trigger-jido-upgrade.sh
+```
+
+The evaluation logic itself lives in [`scripts/ci/jido-upgrade-evaluation.sh`](./scripts/ci/jido-upgrade-evaluation.sh) (JRM-T004): it runs the full Foreman test suite against the candidate Jido version and reports pass/fail. See [`JIDO_FORKS.md`](./JIDO_FORKS.md) for the pinned fork manifest and [`docs/user-guide.md`](./docs/user-guide.md) §2 for runtime configuration.
