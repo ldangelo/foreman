@@ -28,26 +28,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
   use GenServer
 
   alias ForemanServer.AgentRuntime
+  alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.CommandGateway
+  alias ForemanServer.EventStore, as: EventStore
   alias ForemanServer.Identity
+  alias ForemanServer.Overwatch
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
-  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
-  alias ForemanServer.Workflow.AutoPR
-  alias ForemanServer.Workflow.Catalog
-  alias ForemanServer.Workflow.StepSequencer
-  alias ForemanServer.Workflow.Worktree, as: WorktreeLifecycle
-  alias ForemanServer.Idempotency.HeartbeatLease
-  alias ForemanServer.RunExecutorLiveness
   require Logger
-
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @type state :: %{
           task: map(),
           phase_specs: [map()],
           current_phase: non_neg_integer() | nil,
           completed: [non_neg_integer()],
-          phase_statuses: %{non_neg_integer() => :in_progress | :completed | :failed | :blocked | :skipped},
+          phase_statuses: %{
+            non_neg_integer() => :in_progress | :completed | :failed | :blocked | :skipped
+          },
           status: :ready | :in_progress | :completed | :failed | :blocked,
           artifact_base: String.t(),
           plan_context: map() | nil,
@@ -171,6 +169,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       plan_context: plan_context,
       source: source
     }
+
     Process.send_after(self(), :kickoff, 0)
     {:ok, state}
   end
@@ -259,6 +258,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         )
 
         next_state = %{state | completed: completed}
+
         case finalize_run(next_state) do
           {:ok, finalized_state} ->
             {:noreply, finalized_state}
@@ -290,6 +290,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         end
     end
   end
+
   defp start_phase_at_index(state, index) do
     case Enum.at(state.phase_specs, index) do
       nil ->
@@ -344,11 +345,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
            enforce_required_file(state, phase_spec, phase_index, worktree_record),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
-      next_state = %{state | current_phase: index, status: :in_progress, phase_statuses: new_phase_statuses}
+      next_state = %{
+        state
+        | current_phase: index,
+          status: :in_progress,
+          phase_statuses: new_phase_statuses
+      }
+
       GenServer.cast(self(), {:advance_to, index})
       {:ok, next_state}
     end
   end
+
   defp validate_phase_action(phase_spec, _phase_index) do
     case phase_action(phase_spec) do
       :command ->
@@ -390,6 +398,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "phase:#{state.run_id}:#{phase_id}"
     )
   end
+
+  @default_activation_timeout_ms 30_000
+
   defp execute_agent(state, phase_spec, index, worktree_record) do
     phase_index = phase_number(phase_spec, index)
     request = build_request(state, phase_spec, phase_index, worktree_record)
@@ -412,28 +423,63 @@ defmodule ForemanServer.Workflow.RunExecutor do
     # the composite idempotency key string.
     workflow_prefix = workflow_prefix_for(state)
     idempotency_key = "#{workflow_prefix}-#{task_id(state)}-#{phase_index}"
-    HeartbeatLease.acquire(idempotency_key, Map.fetch!(policy, :timeout_ms), task_id(state), state.run_id)
+
+    HeartbeatLease.acquire(
+      idempotency_key,
+      Map.fetch!(policy, :timeout_ms),
+      task_id(state),
+      state.run_id
+    )
+
     HeartbeatLease.register_worker(state.run_id, state.run_id, idempotency_key)
 
     RunExecutorLiveness.record(state.run_id, self(), deadline_ms)
 
     try do
-      # JAI-T001 / REQ-008: delegate to Jido.AI.Reasoning.ReAct via
-      # AgentRuntime's :react strategy.  The strategy uses req_llm
-      # which resolves "auto" → LiteLLM endpoint from jido_ai model_aliases
-      # config (LGL-T001), enabling auto model selection.
-      strategy = Application.get_env(:foreman_server, :agent_strategy, :react)
-      model = Application.get_env(:foreman_server, :agent_model, "auto")
+      # LGC-T002 / JHA-T002: dispatch through Overwatch.start_phase so the
+      # supervised worker emits WorkerStarted/WorkerHeartbeat/WorkerExited
+      # via CommandRouter. Without this, the run sits in awaiting_worker
+      # forever (WorkerStarted is the only transition trigger).
+      prompt_path = materialize_prompt(state, phase_index, prompt)
+      provider = JidoHarness.request_provider(request)
+      cwd = working_directory_for(state, worktree_record)
+      env = foreman_env(state, worktree_record)
+      remaining_ms = max(deadline_ms - System.system_time(:millisecond), 1_000)
 
-      AgentRuntime.execute(
-        prompt,
-        request.context,
-        backend: execution_backend(),
-        strategy: strategy,
-        model: model,
-        task_type: task_type,
-        env: foreman_env(state, worktree_record)
-      )
+      # Overwatch.build_launch_env assembles the env map from project_id +
+      # opts[:env_map]. We pass our env there so the supervised worker
+      # sees the same env the original AgentRuntime path did.
+      launch_opts = [
+        run_id: state.run_id,
+        session_id: generate_session_id(),
+        adapter: ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter,
+        adapter_name: "jido_harness",
+        prompt_path: prompt_path,
+        provider: provider,
+        prompt: prompt,
+        driver_opts: [
+          timeout: remaining_ms,
+          await_timeout: remaining_ms,
+          cwd: cwd
+        ],
+        env_map: env,
+        result_recipient: self(),
+        activation_timeout_ms: @default_activation_timeout_ms,
+        project_id: project_id(state)
+      ]
+
+      phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))
+
+      case Overwatch.start_phase(phase, launch_opts) do
+        {:ok, %{launch_pid: launch_pid}} ->
+          wait_for_worker_result(launch_pid)
+
+        {:error, {:already_started, _pid}} ->
+          {:error, :worker_already_started}
+
+        {:error, reason} ->
+          {:error, {:overwatch_start_failed, reason}}
+      end
     after
       # TRD-076: release the heartbeat lease on every exit path (normal
       # completion, crash, or error). The idempotency key transitions
@@ -444,6 +490,58 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # Wait for the supervised worker to deliver its result. The worker pid
+  # sends `{:worker_result, result}` before exiting; the launch_pid dies
+  # normally after the worker exits. We accept either ordering: the
+  # result message is the signal, the DOWN is just cleanup.
+  @spec wait_for_worker_result(pid()) :: {:ok, String.t()} | {:error, term()}
+  defp wait_for_worker_result(launch_pid) do
+    ref = Process.monitor(launch_pid)
+
+    result =
+      receive do
+        {:worker_result, result} ->
+          result
+
+        {:DOWN, ^ref, :process, ^launch_pid, _reason} ->
+          {:error, :worker_died_no_result}
+      after
+        :timer.minutes(30) ->
+          {:error, :worker_timeout}
+      end
+
+    # Drain the DOWN if it hasn't arrived yet, so the process monitor
+    # doesn't fire a stray message later.
+    receive do
+      {:DOWN, ^ref, :process, ^launch_pid, _reason} -> :ok
+    after
+      5_000 -> :ok
+    end
+
+    result
+  end
+
+  # Write the prompt to a deterministic path under the run's artifact
+  # directory. WorkerStarted requires prompt_path as an @enforce_key,
+  # but the Jido path keeps the prompt as a string — we materialize it
+  # so the supervised worker (and any downstream tooling) can read it.
+  # Same path on retries, so the file is overwritten, not duplicated.
+  defp materialize_prompt(state, phase_index, prompt) do
+    base = state.artifact_base || File.cwd!()
+    path = Path.join([base, state.run_id, "phase-#{phase_index}-prompt.md"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, prompt)
+    path
+  end
+
+  defp project_id(state) do
+    Map.get(state.task, :project_id) || Map.get(state.task, "project_id")
+  end
+
+  defp generate_session_id do
+    "session-" <> EventStore.UUID.uuid4()
+  end
+
   # Strip `-trd` suffix from workflow type so both `implement-trd` and
   # `implement-trd-beads` produce the same prefix (`implement`).
   defp workflow_prefix_for(state) do
@@ -452,40 +550,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Map.get(state.task, :workflow_name) || Map.get(state.task, "workflow_name") || "unknown"
 
     type |> to_string() |> String.replace(~r/-trd$/, "")
-  end
-
-  defp execution_backend do
-    configured =
-      Application.get_env(:foreman_server, :agent_runtime, [])
-      |> Keyword.get(:adapters, [])
-      |> Enum.find_value(fn
-        adapter when is_atom(adapter) ->
-          name = adapter.name()
-
-          case ForemanServer.AgentRuntime.AdapterCatalog.lookup(name) do
-            {:ok, ^adapter} ->
-              if adapter.available?(), do: name, else: nil
-
-            _ ->
-              nil
-          end
-
-        _ ->
-          nil
-      end)
-
-    configured ||
-      (ForemanServer.AgentRuntime.AdapterCatalog.routing_snapshot()
-       |> Enum.find_value(fn
-         %{name: name, adapter: adapter, available: true} ->
-           case ForemanServer.AgentRuntime.AdapterCatalog.lookup(name) do
-             {:ok, ^adapter} -> name
-             _ -> nil
-           end
-
-         _ ->
-           nil
-       end))
   end
 
   defmodule ArtifactTemplate do
@@ -677,6 +741,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       "phase:#{state.run_id}:#{phase_id}"
     )
   end
+
   # Strict `run.fail` emission from `emit_phase_failure/4`:
   #   * `:ok` → aggregate accepted, run flipped terminal.
   #   * `{:error, {:run_terminal, _status}}` → already terminal from a
@@ -751,6 +816,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         err
     end
   end
+
   # Derive the PR base branch from plan_context["base_branch"], falling back to "main".
   defp plan_base_branch(state) do
     branch = Map.get(state.plan_context || %{}, "base_branch")
@@ -1253,6 +1319,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp cleanup_phase_worktree(state, phase_spec, phase_index, worktree_record) do
     phase_id = Identity.phase_id(state.run_id, phase_index)
 
+    _ = unbind_vfs(state.run_id)
+
     WorktreeLifecycle.clean(%{
       operation_id: worktree_record.operation_id,
       project_id: worktree_record.project_id,
@@ -1286,15 +1354,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
     plan_context = state.plan_context || %{}
     implementation_key = worktree_record.implementation_key || ""
 
-    base_env = %{
-      "FOREMAN_WORKTREE" => "1",
-      "FOREMAN_RUN_ID" => state.run_id,
-      "FOREMAN_WORKTREE_PATH" => worktree_record.worktree_path,
-      "FOREMAN_EXPECTED_BRANCH" => worktree_record.branch,
-      "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
-      "FOREMAN_IMPLEMENTATION_KEY" => implementation_key
-    }
-    |> maybe_put_shell_session_env(state)
+    _ = bind_vfs(state.run_id, worktree_record.worktree_path)
+
+    base_env =
+      %{
+        "FOREMAN_WORKTREE" => "1",
+        "FOREMAN_RUN_ID" => state.run_id,
+        "FOREMAN_WORKTREE_PATH" => worktree_record.worktree_path,
+        "FOREMAN_EXPECTED_BRANCH" => worktree_record.branch,
+        "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
+        "FOREMAN_IMPLEMENTATION_KEY" => implementation_key
+      }
+      |> maybe_put_shell_session_env(state)
 
     case beads_db_path(plan_context) do
       nil ->
@@ -1366,6 +1437,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp maybe_stop_shell_session(%{run_id: run_id}) do
+    _ = unbind_vfs(run_id)
+
     case Process.delete({__MODULE__, :shell_session_id, run_id}) do
       session_id when is_binary(session_id) and session_id != "" ->
         _ = ForemanServer.Agents.JidoShellRunner.stop_session(session_id)
@@ -1378,7 +1451,62 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp maybe_stop_shell_session(_state), do: :ok
 
+  # TRD-2026-4212be7e JSH-T003 / TRD-034 — VFS isolation per worktree.
+  # Bind `run_id` to its worktree root so the shell session rejects
+  # commands outside the worktree. Use `bind_with_check` so the
+  # configured allowlist (`config :foreman_server, :jido_vfs`) is
+  # enforced; if the worktree is outside the allowlist we log and
+  # continue without binding (fail-open at the env layer — the shell
+  # session itself still enforces isolation via JidoShellRunner's
+  # in-memory VFS mount).
+  defp bind_vfs(run_id, worktree_path)
+       when is_binary(run_id) and run_id != "" and is_binary(worktree_path) and
+              worktree_path != "" do
+    case Process.whereis(VfsIsolation) do
+      nil ->
+        _ =
+          Logger.debug("RunExecutor #{run_id}: VfsIsolation GenServer not running; skipping bind")
 
+        :ok
+
+      _pid ->
+        case VfsIsolation.bind_with_check(run_id, worktree_path) do
+          :ok ->
+            :ok
+
+          {:error, :worktree_not_in_allowed_list} ->
+            Logger.warning(
+              "RunExecutor #{run_id}: VFS bind refused for #{worktree_path} (outside allowlist)"
+            )
+
+            :ok
+        end
+    end
+  end
+
+  defp bind_vfs(_run_id, _worktree_path), do: :ok
+
+  # Symmetric to `bind_vfs/2`. Idempotent — calling `unbind/1` on an
+  # unbound run_id is a no-op in VfsIsolation. Failures from the
+  # GenServer (e.g. noproc during shutdown) are swallowed because
+  # unbinding is best-effort cleanup.
+  defp unbind_vfs(run_id) when is_binary(run_id) and run_id != "" do
+    case Process.whereis(VfsIsolation) do
+      nil -> :ok
+      _pid -> _ = VfsIsolation.unbind(run_id)
+    end
+
+    :ok
+  end
+
+  defp unbind_vfs(_run_id), do: :ok
+
+  # Test-only exports. Avoid calling these from production code.
+  @doc false
+  def __bind_vfs_for_test__(run_id, worktree_path), do: bind_vfs(run_id, worktree_path)
+
+  @doc false
+  def __unbind_vfs_for_test__(run_id), do: unbind_vfs(run_id)
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads
   # issue id `foreman-zuk0`), use that — adapters translate it directly
