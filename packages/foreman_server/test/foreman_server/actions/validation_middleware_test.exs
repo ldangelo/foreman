@@ -168,7 +168,7 @@ defmodule ForemanServer.Actions.ValidationMiddlewareTest do
           next
         )
 
-      assert {:ok, [name: "Charlie"]} = result
+      assert {:ok, %{name: "Charlie"}} = result
       assert_received {:called, ^context}
     end
   end

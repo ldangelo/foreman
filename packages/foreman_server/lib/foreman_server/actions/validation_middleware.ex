@@ -45,23 +45,46 @@ defmodule ForemanServer.Actions.ValidationMiddleware do
   def call(action_module, params, context, next) when is_function(next, 2) do
     schema = action_module.schema()
 
-    normalized =
-      if is_map(params) and not is_list(params) do
-        Map.to_list(params)
-      else
-        params
-      end
-
-    case NimbleOptions.validate(normalized, schema) do
-      {:ok, validated} ->
-        next.(validated, context)
-
+    with {:ok, normalized} <- normalize_params(action_module, params),
+         {:ok, validated} <- NimbleOptions.validate(normalized, schema) do
+      next.(fill_optional_keys(Map.new(validated), schema), context)
+    else
       {:error, %NimbleOptions.ValidationError{} = err} ->
         Logger.warning(
           "[ForemanServer.Actions.ValidationMiddleware] rejected params for #{inspect(action_module)}: #{Exception.message(err)}"
         )
 
         {:error, {:invalid_params, params}}
+
+      {:error, _} = err ->
+        err
     end
+  end
+
+  # Fill missing optional schema keys with `nil`. Without this,
+  # NimbleOptions drops optional fields not provided by the caller, so
+  # actions using dot-access (`params.age`) raise `KeyError` instead of
+  # receiving the expected `nil`. Required fields cannot be missing
+  # because NimbleOptions rejects them with `required option not found`.
+  defp fill_optional_keys(validated, schema) do
+    Enum.reduce(schema, validated, fn {key, _opts}, acc ->
+      if Map.has_key?(acc, key), do: acc, else: Map.put(acc, key, nil)
+    end)
+  end
+
+  defp normalize_params(action_module, params) when is_map(params) and not is_list(params) do
+    {:ok, Map.to_list(params)}
+  end
+
+  defp normalize_params(_action_module, params) when is_list(params) do
+    {:ok, params}
+  end
+
+  defp normalize_params(action_module, params) do
+    Logger.warning(
+      "[ForemanServer.Actions.ValidationMiddleware] rejected params for #{inspect(action_module)}: expected map or keyword list, got #{inspect(params)}"
+    )
+
+    {:error, {:invalid_params, params}}
   end
 end
