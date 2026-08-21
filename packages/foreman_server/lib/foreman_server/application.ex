@@ -45,17 +45,18 @@ defmodule ForemanServer.Application do
         # Started here (in the unconditional block, alongside the
         # Aggregator) so the catalog is ready when the first
         # RunExecutor looks up its agent's tools. The default action
-        # set is [GitStatusAction, ReadPromptAction]; operators add
-        # more via config :foreman_server, ForemanServer.Actions.
-        # Registry, :actions.
+        # set is [GitStatusAction, DiffReadAction, TaskGetAction,
+        # ReadPromptAction]; operators add more via config
+        # :foreman_server, ForemanServer.Actions.Registry, :actions.
         {ForemanServer.Actions.Registry,
-          [
-            name: :foreman_actions_registry,
-            actions:
-              :foreman_server
-              |> Application.get_env(ForemanServer.Actions.Registry, [])
-              |> Keyword.get(:actions, [ForemanServer.Actions.GitStatusAction, ForemanServer.Actions.ReadPromptAction])
-          ]}
+         actions:
+           Application.get_env(:foreman_server, ForemanServer.Actions.Registry, [])
+           |> Keyword.get(:actions, [
+             ForemanServer.Actions.GitStatusAction,
+             ForemanServer.Actions.DiffReadAction,
+             ForemanServer.Actions.TaskGetAction,
+             ForemanServer.Actions.ReadPromptAction
+           ])}
       ] ++
         maybe_json_schema_cache_child() ++
         [
@@ -98,25 +99,24 @@ defmodule ForemanServer.Application do
           ForemanServer.Workflow.Dispatcher,
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter
-        ]
-        ++ maybe_stuck_detector_child()
-        ++ maybe_lifecycle_reconciler_child()
-        ++ maybe_jido_signal_bus_child()
-        ++ maybe_signal_journal_child()
-        ++ maybe_directive_queue_child()
-        ++ maybe_signal_to_command_child()
-        ++ maybe_task_metadata_query_subscriber_child()
-        ++ maybe_agent_runtime_child()
-        ++ maybe_jido_checkpoint_repo_child()
-        ++ maybe_operator_question_subscriber_child()
-        ++ maybe_operator_directive_projector_child()
-        ++ maybe_jido_shell_runner_child()
-        ++ maybe_operator_timeout_child()
-        ++ maybe_overwatch_child()
-        ++ maybe_vfs_isolation_child()
-        ++ maybe_mcp_allowlist_child()
-        ++ maybe_mcp_child()
-        ++
+        ] ++
+        maybe_stuck_detector_child() ++
+        maybe_lifecycle_reconciler_child() ++
+        maybe_jido_signal_bus_child() ++
+        maybe_signal_journal_child() ++
+        maybe_directive_queue_child() ++
+        maybe_signal_to_command_child() ++
+        maybe_task_metadata_query_subscriber_child() ++
+        maybe_agent_runtime_child() ++
+        maybe_jido_checkpoint_repo_child() ++
+        maybe_operator_question_subscriber_child() ++
+        maybe_operator_directive_projector_child() ++
+        maybe_jido_shell_runner_child() ++
+        maybe_operator_timeout_child() ++
+        maybe_overwatch_child() ++
+        maybe_vfs_isolation_child() ++
+        maybe_mcp_allowlist_child() ++
+        maybe_mcp_child() ++
         [
           # Endpoint exposes dev-only debug LiveViews.
           ForemanServerWeb.Endpoint
@@ -125,12 +125,8 @@ defmodule ForemanServer.Application do
     opts = [strategy: :one_for_one, name: __MODULE__]
     {:ok, pid} = Supervisor.start_link(children, opts)
 
-    # TRD-004: register the Jido.Harness backend adapter when the rollout
-    # switch is on (PRD-2026-016 §3.4). PiAdapter continues to be seeded
-    # via the `:agent_runtime, :adapters` config; this block is the
-    # in-code counterpart to FOREMAN_USE_JIDO_HARNESS and must run AFTER
-    # Supervisor.start_link so the AgentRuntime.AdapterCatalog GenServer
-    # is already alive.
+    # TRD-004: register the Jido.Harness backend adapter with the
+    # AgentRuntime.AdapterCatalog after the supervisor tree is alive.
     _ = register_jido_harness_adapter()
 
     # Seed MCP allowlist with read-only tools after supervisor starts.
@@ -141,25 +137,16 @@ defmodule ForemanServer.Application do
 
   @doc """
   TRD-004 — Registers `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
-  with the supervised `ForemanServer.AgentRuntime.AdapterCatalog` when
-  `:jido_harness, :enabled` is true.
-
-  This is the runtime counterpart to the static `:adapters` keyword list
-  that `ForemanServer.AgentRuntime.Supervisor.init/1` reads at boot to
-  pre-seed the catalog (currently carrying `PiAdapter`). Operators flip
-  the JidoHarnessAdapter on independently of the static list by setting
-  `config :foreman_server, :jido_harness, enabled: true` (or
-  `FOREMAN_USE_JIDO_HARNESS=true` once Phase-2 rollout wiring lands).
-
-  Returns `{:ok, capability_map}` if registered, or `nil` if the gate
-  is closed (the flag is false or unset). The AgentRuntime catalog must
-  be running for registration to succeed; callers from `start/2` are
-  guaranteed that because the supervisor tree has already started.
+  with the supervised `ForemanServer.AgentRuntime.AdapterCatalog`.
   """
   @spec register_jido_harness_adapter() ::
           {:ok, ForemanServer.AgentRuntime.capability_map()} | nil
   def register_jido_harness_adapter do
-    if jido_harness_enabled?() do
+    if ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter in Application.get_env(
+         :foreman_server,
+         :agent_runtime,
+         []
+       )[:adapters] do
       case ForemanServer.AgentRuntime.register(
              ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
            ) do
@@ -171,21 +158,16 @@ defmodule ForemanServer.Application do
     end
   end
 
-  defp jido_harness_enabled? do
-    Application.get_env(:foreman_server, :jido_harness, [])
-    |> Keyword.get(:enabled, false) == true
-  end
-
   defp maybe_agent_runtime_child do
     case Application.get_env(:foreman_server, :agent_runtime, [])[:enabled] do
       enabled when enabled in [true, "true"] ->
+        # `maybe_signal_to_command_child/0` is called separately below
+        # so the bus startup (always-on when agent_runtime is enabled)
+        # and the adapter startup (opt-in via :signal_bridge_enabled)
+        # can be controlled independently.
         [
           {ForemanServer.AgentRuntime.Supervisor, []}
         ] ++
-          # `maybe_signal_to_command_child/0` is called separately below
-          # so the bus startup (always-on when agent_runtime is enabled)
-          # and the adapter startup (opt-in via :signal_bridge_enabled)
-          # can be controlled independently.
           []
 
       _ ->
@@ -267,11 +249,15 @@ defmodule ForemanServer.Application do
     if bridge? do
       adapter_name = :foreman_signal_to_command_adapter
 
-      [{ForemanServer.Agents.SignalToCommandAdapter, [name: adapter_name, bus: :foreman_jido_signal_bus]}]
+      [
+        {ForemanServer.Agents.SignalToCommandAdapter,
+         [name: adapter_name, bus: :foreman_jido_signal_bus]}
+      ]
     else
       []
     end
   end
+
   # The task-metadata query subscriber consumes the
   # `com.foreman.query.task_metadata.*` topic pattern (JSI-T012).
   # The subscriber auto-subscribes its pid to that topic on
@@ -305,6 +291,7 @@ defmodule ForemanServer.Application do
         []
     end
   end
+
   # TRD-2026-4212be7e JSH-T003: VFS isolation per worktree.
   # VfsIsolation is always-on when agent_runtime is enabled so that
   # every shell session is bound to a sandboxed worktree root.
@@ -338,6 +325,7 @@ defmodule ForemanServer.Application do
         []
     end
   end
+
   # TRD-005 / AC-005-2: The operator-directive projector consumes
   # InboxItemStarted events from the OperatorQuestionSource and publishes
   # Jido directive signals to the agent's directive topic, completing the
@@ -406,6 +394,7 @@ defmodule ForemanServer.Application do
       Enum.each(safe_tools, &ForemanServer.Agents.McpAllowlist.add/1)
     end
   end
+
   defp maybe_overwatch_child do
     case Application.get_env(:foreman_server, ForemanServer.Overwatch, []) do
       opts when is_list(opts) ->
@@ -425,6 +414,7 @@ defmodule ForemanServer.Application do
         []
     end
   end
+
   defp maybe_project_provider_projector_child do
     if Application.get_env(:foreman_server, :start_project_provider_projector?, true) do
       [
