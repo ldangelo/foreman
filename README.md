@@ -1,16 +1,17 @@
 # Foreman
 
 Foreman orchestrates AI-agent workflows backed by the Elixir/Phoenix
-service in `packages/foreman_server`. This repository currently
-contains:
+service in `packages/foreman_server`. This repository contains:
 
 | Path | Role |
 |---|---|
-| `packages/foreman_server/` | The Elixir/Phoenix runtime. Hosts the `ForemanServer.AgentRuntime` subsystem (TRD-2026-6af02293). |
+| `packages/foreman_server/` | The Elixir/Phoenix runtime. Hosts the `ForemanServer.AgentRuntime` subsystem (TRD-2026-6af02293, TRD-2026-4212be7e) and the workflow catalog (TRD-2026-96872fc5). |
+| `packages/foreman_cli/` | The Go CLI. Wraps the Phoenix HTTP boundary for operator use; the only operator-facing path into the runtime. |
+| `packages/jido_harness/` | Vendored Sunstone-Partners fork of `agentjido/jido_harness`. The current agent-execution backend (see `JIDO_FORKS.md` for pinned SHAs). |
 | `docs/PRD/` | Product requirements documents, one per design slice. |
 | `docs/TRD/` | Technical requirements documents, one per design slice. |
-| `docs/architecture/`, `docs/standards/` | Architectural context and conventions. |
-| `dist/` | Generated artifacts (CLI/daemon/MCP/templates). |
+| `docs/architecture/`, `docs/standards/`, `docs/guides/` | Architectural context, the project constitution, and step-by-step operator/developer guides. |
+| `JIDO_FORKS.md` | Pinned Jido fork manifest — single source of truth for which SHA each Jido dependency references in `packages/foreman_server/mix.exs`. |
 | `AGENTS.md` | Agent-context contract for coding subagents (read-only here). |
 | `CLAUDE.md` | Durable developer architecture conventions (start here when modifying the runtime). |
 
@@ -18,7 +19,8 @@ contains:
 
 | Slice | Doc |
 |---|---|
-| `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). This slice did not add a CLI; see the Go CLI slice when it lands. |
+| `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) §1–§10 (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). |
+| Jido migration (TRD-2026-4212be7e) | `JIDO_FORKS.md` (fork inventory), `docs/guides/adding-a-jido-harness-provider.md` (provider extension), and per-PR notes in `docs/TRD/`. |
 | Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` has no `*.yaml`. |
 
 ## Beads sync (atomic task.create + bidirectional sync)
@@ -120,10 +122,20 @@ the Beads side and splits Foreman's responsibilities by lifecycle:
 Enablement, the per-project `task_provider` block, and doctor output are
 documented in the [task-provider enablement guide](./docs/user-guide.md#11-task-provider-enablement).
 
+## Agent runtime (Jido-harness backed)
+
 The agent runtime is an OTP-supervised, backend-agnostic façade over
 pluggable adapters. Callers register a module that implements
 `ForemanServer.AgentRuntime.BackendAdapter`, then call
 `ForemanServer.AgentRuntime.execute/3` to run prompts.
+
+The current default adapter is
+`ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter` (TRD-2026-4212be7e
+JHA-T002 / JCR-T001), which delegates to the vendored
+`Jido.Harness` package under `packages/jido_harness/`. Adapters for
+`:pi` and `:claude` ship with Jido Harness; readiness is checked at
+every `execute/3` call, not at registration time (see `CLAUDE.md`
+§1–§9).
 
 ```elixir
 defmodule MyApp.ClaudeAdapter do
@@ -151,17 +163,18 @@ end
 # Register via config (preferred)
 config :foreman_server, :agent_runtime,
   enabled: true,
-  # Default adapter is JidoHarnessAdapter (TRD-2026-4212be7e JHA-T002);
-  # the legacy PiAdapter (Port.open to the `pi` Node CLI) remains in
-  # the codebase as a transitional fallback — replace this list
-  # with [ForemanServer.AgentRuntime.Adapters.PiAdapter] to opt back
-  # in to the legacy binary. See docs/user-guide.md §1.
   adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]
 
 # Call it:
 ForemanServer.AgentRuntime.execute("Summarize this PR", %{pr: 123},
   strategy: :automatic, task_type: :code_review)
 ```
+
+See [`docs/guides/adding-a-jido-harness-provider.md`](./docs/guides/adding-a-jido-harness-provider.md)
+for the operator-facing provider extension flow, and
+[`docs/user-guide.md`](./docs/user-guide.md) §1 for the adapter
+extension workflow.
+
 ## API authentication
 
 The Foreman JSON API (`/api/*`) is **unauthenticated by default** in development and test environments.
@@ -178,16 +191,20 @@ To run in production without authentication (not recommended), set `allow_insecu
 
 ## Build & test
 
-See [`CLAUDE.md`](./CLAUDE.md) for the full convention catalogue and
-[`docs/user-guide.md`](./docs/user-guide.md) for operator
-configuration and the adapter extension workflow.
-
-## Build & test
-
 The Elixir runtime (verified tests in this slice):
 ```
 cd packages/foreman_server && mix test
 ```
 
-For full-repo build/test (CLI/daemon/MCP), see the per-package
-`package.json`/`mix.exs`.
+The Go CLI:
+```
+cd packages/foreman_cli && go build ./...
+```
+
+The vendored Jido Harness fork:
+```
+cd packages/jido_harness && mix test
+```
+
+For per-package build/test commands (CLI/daemon/MCP), see each
+package's `package.json`/`mix.exs`.

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# scripts/test-readme-accuracy
+#
+# Validates that README.md references only paths and references that
+# exist in the working tree. Designed to fail loud if the README drifts
+# out of sync with the actual codebase.
+#
+# Exit codes:
+#   0  all assertions passed
+#   1  one or more assertions failed
+#   2  environment misconfigured (README not found, not a git repo)
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [[ -z "$REPO_ROOT" ]]; then
+  echo "ERROR: must run inside a git worktree" >&2
+  exit 2
+fi
+
+README="$REPO_ROOT/README.md"
+if [[ ! -f "$README" ]]; then
+  echo "ERROR: README.md not found at $README" >&2
+  exit 2
+fi
+
+cd "$REPO_ROOT"
+
+FAILURES=0
+pass() { printf "  \033[32mPASS\033[0m %s\n" "$1"; }
+fail() {
+  printf "  \033[31mFAIL\033[0m %s\n" "$1"
+  FAILURES=$((FAILURES + 1))
+}
+
+echo "README accuracy — $README"
+echo
+
+echo "1. No legacy path references"
+if [[ -d "dist" ]]; then
+  fail "dist/ directory exists but README should not reference it as a real path"
+elif grep -qE '`dist/`' "$README"; then
+  fail "README still references legacy \`dist/\` path"
+else
+  pass "no legacy dist/ path reference"
+fi
+
+echo
+echo "2. packages/* paths exist"
+for p in packages/foreman_server packages/foreman_cli packages/jido_harness; do
+  if [[ -d "$p" ]]; then pass "$p"; else fail "$p"; fi
+done
+
+echo
+echo "3. docs/* directories exist"
+for d in docs/PRD docs/TRD docs/architecture docs/standards docs/guides; do
+  if [[ -d "$d" ]]; then pass "$d"; else fail "$d"; fi
+done
+
+echo
+echo "4. Top-level file references exist"
+for f in CLAUDE.md AGENTS.md JIDO_FORKS.md \
+         docs/user-guide.md docs/cli-reference.md \
+         docs/guides/adding-a-jido-harness-provider.md \
+         docs/standards/constitution.md; do
+  if [[ -f "$f" ]]; then pass "$f"; else fail "$f"; fi
+done
+
+echo
+echo "5. No duplicate top-level sections"
+DUPS=$(grep -E '^## ' "$README" | sed -E 's/^## +//' | sort | uniq -d)
+if [[ -n "$DUPS" ]]; then
+  while IFS= read -r d; do
+    [[ -z "$d" ]] && continue
+    fail "duplicate heading: ## $d"
+  done <<< "$DUPS"
+else
+  pass "no duplicate ## headings"
+fi
+
+echo
+echo "6. TRD identifiers referenced exist"
+[[ -f docs/TRD/TRD-2026-4212be7e-jido-migration.md ]] && pass "TRD-2026-4212be7e" || fail "TRD-2026-4212be7e"
+[[ -f docs/TRD/TRD-2026-6af02293-otp-agent-runtime.md ]] && pass "TRD-2026-6af02293" || fail "TRD-2026-6af02293"
+[[ -f docs/TRD/TRD-2026-96872fc5-go-elixir-cqrs-parity.md ]] && pass "TRD-2026-96872fc5" || fail "TRD-2026-96872fc5"
+
+echo
+echo "7. Adapter module references resolve"
+[[ -f packages/foreman_server/lib/foreman_server/agent_runtime/adapters/jido_harness_adapter.ex ]] \
+  && pass "ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter" \
+  || fail "ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter"
+
+echo
+if [[ "$FAILURES" -eq 0 ]]; then
+  echo "All README accuracy checks passed."
+  exit 0
+else
+  echo "$FAILURES README accuracy check(s) failed."
+  exit 1
+fi
