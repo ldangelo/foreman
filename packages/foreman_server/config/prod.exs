@@ -78,12 +78,28 @@ config :foreman_server, :prod_secret_provider,
 config :foreman_server, :jido_ecto, enabled: false
 # TRD-2026-4212be7e JOT-T001: jido_otel runtime OTLP endpoint for
 # Langfuse-compatible ingestion. Endpoint comes from the standard
-# OTEL env var; Langfuse requires an Authorization: Bearer header
+# OTEL env var; Langfuse OTLP ingest uses HTTP Basic auth with the
+# public:secret key pair.
 otlp_endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-langfuse_key = System.get_env("LANGFUSE_PUBLIC_KEY", "")
+langfuse_public_key = System.get_env("LANGFUSE_PUBLIC_KEY", "")
+langfuse_secret_key = System.get_env("LANGFUSE_SECRET_KEY", "")
+# Langfuse v3 OTLP ingest uses HTTP Basic auth with the public:secret
+# key pair (verified empirically 2026-08-21 against
+# /api/public/otel/v1/traces on the local litellm-langfuse stack:
+# Bearer with public-only returns 403, Basic with both keys returns
+# 400-on-empty-payload which is the expected post-auth response).
+# Earlier this session shipped Bearer-with-public-only which is the
+# standard Langfuse SDK error case; this fixes it.
+#
 # opentelemetry_exporter expects otlp_headers as a list of {binary, binary}
 # tuples (per opentelemetry_exporter.erl doc comment), not a map.
-otlp_headers = if langfuse_key != "", do: [{"Authorization", "Bearer #{langfuse_key}"}], else: []
+otlp_headers =
+  if langfuse_public_key != "" and langfuse_secret_key != "" do
+    encoded = Base.encode64("#{langfuse_public_key}:#{langfuse_secret_key}")
+    [{"Authorization", "Basic " <> encoded}]
+  else
+    []
+  end
 config :jido_otel, otlp_endpoint: otlp_endpoint, otlp_headers: otlp_headers
 
 # OpenTelemetry OTLP exporter override (TRD-2026-4212be7e / JOT-T001).
