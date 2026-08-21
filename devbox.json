@@ -1,19 +1,19 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.0/.schema/devbox.schema.json",
   "packages": [
-    "elixir_1_18",
-    "erlang_28",
-    "postgres-client_17",
-    "redis-7_4",
-    "docker-client_25",
-    "jq",
-    "openssl",
-    "python3",
-    "pipx",
-    "git",
-    "gh",
-    "watch",
-    "direnv"
+    "elixir_1_18@latest",
+    "erlang_28@latest",
+    "postgresql_16@latest",
+    "redis@latest",
+    "docker-client@latest",
+    "jq@latest",
+    "openssl@latest",
+    "python3@latest",
+    "pipx@latest",
+    "git@latest",
+    "gh@latest",
+    "watch@latest",
+    "direnv@latest"
   ],
   "shell": {
     "init_hook": [
@@ -74,7 +74,7 @@
         "echo ''"
       ],
       "setup": [
-        "# First-time bootstrap. Idempotent — safe to re-run.",
+        "# First-time bootstrap. Idempotent \u2014 safe to re-run.",
         "# 1. Foreman repo .env (copy from .env.example if missing).",
         "[ -f .env ] || cp .env.example .env 2>/dev/null || true",
         "# 2. Litellm stack env.",
@@ -93,7 +93,7 @@
         "# compose network before otel-collector starts (it forwards Basic-auth",
         "# traces there). depends_on handles this in compose, but the stack",
         "# must be up first so the external network exists.",
-        "test -d \"$LITELLM_LANGFUSE_STACK\" || { echo \"missing $LITELLM_LANGFUSE_STACK — set LITELLM_LANGFUSE_STACK\"; exit 1; }",
+        "test -d \"$LITELLM_LANGFUSE_STACK\" || { echo \"missing $LITELLM_LANGFUSE_STACK \u2014 set LITELLM_LANGFUSE_STACK\"; exit 1; }",
         "echo '== bringing up litellm-langfuse stack =='",
         "cd \"$LITELLM_LANGFUSE_STACK\" && docker compose up -d --build",
         "echo '== waiting for langfuse-web to be reachable =='",
