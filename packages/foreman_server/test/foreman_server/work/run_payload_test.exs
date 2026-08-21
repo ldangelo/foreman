@@ -4,14 +4,13 @@ defmodule ForemanServer.Work.RunPayloadTest do
   alias ForemanServer.Work.RunPayload
 
   describe "from_task_projection/1" do
-    test "returns correct struct with all 7 keys" do
+    test "derives phase_specs from workflow_snapshot string key" do
       task_proj = %{
         run_id: "run-123",
         task_id: "task-456",
         project_id: "proj-789",
         approval_id: "approval-abc",
-        workflow_snapshot: %{"phases" => [%{"id" => "phase-1"}]},
-        phase_specs: [%{"id" => "phase-1"}]
+        workflow_snapshot: %{"phases" => [%{"id" => "phase-1"}]}
       }
 
       result = RunPayload.from_task_projection(task_proj)
@@ -22,6 +21,21 @@ defmodule ForemanServer.Work.RunPayloadTest do
       assert result.approval_id == "approval-abc"
       assert result.workflow_snapshot == %{"phases" => [%{"id" => "phase-1"}]}
       assert result.phase_specs == [%{"id" => "phase-1"}]
+      assert result.source == :task
+    end
+
+    test "derives phase_specs from workflow_snapshot atom key" do
+      task_proj = %{
+        run_id: "run-123",
+        task_id: "task-456",
+        project_id: "proj-789",
+        approval_id: "approval-abc",
+        workflow_snapshot: %{phases: [%{id: "phase-1", kind: "exec"}]}
+      }
+
+      result = RunPayload.from_task_projection(task_proj)
+
+      assert result.phase_specs == [%{id: "phase-1", kind: "exec"}]
       assert result.source == :task
     end
   end

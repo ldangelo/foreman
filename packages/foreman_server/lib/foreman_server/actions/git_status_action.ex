@@ -12,8 +12,7 @@ defmodule ForemanServer.Actions.GitStatusAction do
   effectively a "first author" exercise.
 
   The action shells out to `git` directly. Foreman runs every
-  workflow inside a worktree (per `ForemanServer.Aggregates.Run` and
-  the existing `ForemanServer.AgentRuntime.PiAdapter` design), so
+  workflow inside a worktree (per `ForemanServer.Aggregates.Run`), so
   the default `:path` is the current working directory. Tests and
   Jido agents can override with `params.path`.
 

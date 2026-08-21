@@ -12,7 +12,6 @@ host.
 |---|---|---|
 | `FOREMAN_API_URL` | `http://127.0.0.1:4000` | Base URL of the Phoenix API. |
 | `FOREMAN_API_TOKEN` | _unset_ | Optional Bearer credential. When unset the server bypasses auth (dev only). |
-| `FOREMAN_USE_JIDO_HARNESS` | `true` | Kill switch for the JidoHarnessAdapter (TRD-2026-4212be7e JHA-T002). Set to `false` to remove the adapter from routing without changing `:agent_runtime, :adapters`. The CLI itself does not read this env var; the server does at boot via `Application.get_env(:foreman_server, :jido_harness, :enabled)`. |
 The CLI exposes no global flags; command-specific flags are listed
 below. Run `foreman <command> -h` for per-command usage.
 

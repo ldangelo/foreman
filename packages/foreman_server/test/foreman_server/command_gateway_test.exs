@@ -1645,7 +1645,7 @@ defmodule ForemanServer.CommandGatewayTest do
     end
 
     test "rejects nonterminal bound run (active spoof)" do
-      # Operator sends task.retry, but the bound run is still in_progress.
+      # Operator sends task.retry, but the bound run is still awaiting_worker.
       # Gateway MUST refuse to enrich — a client cannot synthesize
       # acknowledgement by hand.
       assert :ok =
@@ -1690,7 +1690,7 @@ defmodule ForemanServer.CommandGatewayTest do
                  }
                ])
 
-      assert {:error, {:run_not_terminal, "in_progress"}} =
+      assert {:error, {:run_not_terminal, "awaiting_worker"}} =
                CommandGateway.dispatch_operator(%{
                  command_id: "cid-1",
                  aggregate_id: "task:task-active",

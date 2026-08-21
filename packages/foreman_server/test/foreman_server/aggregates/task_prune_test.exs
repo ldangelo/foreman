@@ -18,7 +18,7 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
     end
 
     test "task.approve still works" do
-      state = %State{
+      state = %Task.State{
         Task.initial_state()
         | exists?: true,
           task_id: "t-1",
@@ -42,7 +42,7 @@ defmodule ForemanServer.Aggregates.TaskPruneTest do
     end
 
     test "task.dispatch still works" do
-      state = %State{
+      state = %Task.State{
         Task.initial_state()
         | exists?: true,
           task_id: "t-1",

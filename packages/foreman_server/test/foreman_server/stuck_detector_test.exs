@@ -29,7 +29,7 @@ defmodule StuckDetectorTestHelper do
         Map.put(state.runs, run_id, %{
           run
           | last_event_at_ms: last_event_at_ms,
-            status: "in_progress",
+            status: "awaiting_worker",
             terminal?: false
         })
       )

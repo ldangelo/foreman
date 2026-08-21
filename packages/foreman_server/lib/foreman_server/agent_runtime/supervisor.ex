@@ -14,7 +14,7 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
 
   use Supervisor
 
-  alias ForemanServer.AgentRuntime.{AdapterCatalog, InvocationSupervisor, JidoSupervisor}
+  alias ForemanServer.AgentRuntime.{AdapterCatalog, InvocationSupervisor, JidoSupervisor, Adapters.JidoHarnessAdapter}
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do
@@ -25,12 +25,8 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
   @impl true
   def init(opts) do
     catalog_name = Keyword.get(opts, :adapter_catalog_name, AdapterCatalog)
-
-    catalog_name = Keyword.get(opts, :adapter_catalog_name, AdapterCatalog)
     invocation_name = Keyword.get(opts, :invocation_supervisor_name, InvocationSupervisor)
-    jido_sup_name = Keyword.get(opts, :jido_supervisor_name, JidoSupervisor)
 
-    # Get adapters from config or opts
     adapters =
       Keyword.get(
         opts,
@@ -40,9 +36,19 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
 
     children = [
       {AdapterCatalog, [name: catalog_name, adapters: adapters]},
-      {InvocationSupervisor, [name: invocation_name]},
-      {JidoSupervisor, [name: jido_sup_name]}
+      {InvocationSupervisor, [name: invocation_name]}
     ]
+
+    # Only start JidoSupervisor when JidoHarnessAdapter is registered.
+    # This prevents "already started" collisions in test env where the app
+    # is already running and JidoSupervisor was started with the default name.
+    children =
+      if JidoHarnessAdapter in adapters do
+        jido_sup_name = Keyword.get(opts, :jido_supervisor_name, JidoSupervisor)
+        children ++ [{JidoSupervisor, [name: jido_sup_name]}]
+      else
+        children
+      end
 
     Supervisor.init(children, strategy: :one_for_one)
   end

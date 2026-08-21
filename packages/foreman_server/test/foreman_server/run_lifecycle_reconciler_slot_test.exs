@@ -292,7 +292,7 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       run_id: run_id,
       task_id: "task-1",
       project_id: project_id,
-      status: "in_progress",
+      status: "awaiting_worker",
       terminal?: false,
       last_sequence: 1,
       phase_status: %{},

@@ -96,23 +96,12 @@ keeps `Jido.Harness.Registry.spec/1`'s `spec.provider == queried`
 invariant true when the doctor loop probes several providers in one
 window.
 
-## Kill switch
+## Backend selection
 
-The JidoHarnessAdapter is the production default for all
-`config :foreman_server, :agent_runtime` configurations (see
-`docs/user-guide.md` §1). The `:jido_harness, :enabled` config
-key is now a **kill switch** rather than a rollout switch — it
-defaults to `true`. Setting it to `false` removes the
-JidoHarnessAdapter from routing without requiring a code change:
-
-    Application.put_env(:foreman_server, :jido_harness, enabled: false)
-
-The historical `FOREMAN_USE_JIDO_HARNESS` environment variable is
-still honored at boot (it sets `:jido_harness, :enabled` from
-`"true"`), so operators with older deployment scripts can keep
-using the env var to disable the adapter. A new provider added
-per the steps above inherits the kill switch automatically — no
-per-provider flag exists.
+The JidoHarnessAdapter is the sole agent backend (TRD-2026-4212be7e).
+The `:agent_runtime, :adapters` list in `config/config.exs` selects
+which adapter modules are registered. To use a different backend,
+override that list in your deployment config.
 
 ## Telemetry
 

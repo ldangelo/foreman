@@ -14,6 +14,11 @@ config :foreman_server, ForemanServer.Repo,
 config :foreman_server,
   worker_launcher_enabled: false
 
+# Overwatch stays off in test env. The infrastructure is exercised by
+# dedicated overwatch_test.exs; flipping it on here would require every
+# test that appends events to also stand up the WorkerSupervisor tree.
+config :foreman_server, ForemanServer.Overwatch, enabled: false
+
 config :foreman_server, :agent_runtime,
   enabled: true,
   adapters: []

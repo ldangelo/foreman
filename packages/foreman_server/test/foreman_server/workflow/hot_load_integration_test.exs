@@ -65,11 +65,12 @@ defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
 
   describe "Validator.validate/1 — valid workflows" do
     test "passes a minimal valid workflow" do
+      # Schema: name + phases (not id + steps); skill extracted from /skill: prefix
       workflow = %{
-        id: "my-workflow",
-        steps: [
-          %{name: "step1", skill: "create-prd"},
-          %{name: "step2", skill: "implement-trd"}
+        "name" => "my-workflow",
+        "phases" => [
+          %{"name" => "step1", "command" => "/skill:create-prd"},
+          %{"name" => "step2", "command" => "/skill:implement-trd"}
         ]
       }
 
@@ -78,16 +79,12 @@ defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
 
     test "passes a workflow with all optional step fields" do
       workflow = %{
-        id: "full-workflow",
-        version: "1.0.0",
-        steps: [
+        "name" => "full-workflow",
+        "phases" => [
           %{
-            name: "create",
-            skill: "create-prd",
-            idempotency_key: "my-key",
-            timeout_ms: 300_000,
-            on_failure: :halt,
-            inputs: %{arg1: "value1"}
+            "name" => "create",
+            "command" => "/skill:create-prd --foreman",
+            "prompt" => nil
           }
         ]
       }
@@ -97,39 +94,42 @@ defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
   end
 
   describe "Validator.validate/1 — invalid workflows" do
-    test "rejects workflow missing id" do
-      assert {:error, :missing_id} =
-               Validator.validate(%{steps: [%{name: "s", skill: "create-prd"}]})
+    test "rejects workflow missing name" do
+      assert {:error, :missing_name} =
+               Validator.validate(%{"phases" => [%{"name" => "s", "command" => "/skill:create-prd"}]})
     end
 
-    test "rejects workflow with empty steps" do
-      assert {:error, :missing_steps} =
-               Validator.validate(%{id: "bad", steps: []})
+    test "rejects workflow with empty phases" do
+      assert {:error, :empty_phases} =
+               Validator.validate(%{"name" => "bad", "phases" => []})
     end
 
     test "rejects step missing name" do
-      assert {:error, :missing_step_name} =
-               Validator.validate(%{id: "bad", steps: [%{skill: "create-prd"}]})
+      assert {:error, {:missing_phase_name, 0}} =
+               Validator.validate(%{"name" => "bad", "phases" => [%{"command" => "/skill:create-prd"}]})
     end
 
-    test "rejects step missing skill" do
-      assert {:error, :missing_skill} =
-               Validator.validate(%{id: "bad", steps: [%{name: "s"}]})
+    test "rejects step missing action" do
+      assert {:error, {:missing_phase_action, 0}} =
+               Validator.validate(%{"name" => "bad", "phases" => [%{"name" => "s"}]})
     end
 
     test "rejects step with unknown skill" do
       assert {:error, {:unknown_skill, "unknown-skill"}} =
-               Validator.validate(%{id: "bad", steps: [%{name: "s", skill: "unknown-skill"}]})
+               Validator.validate(%{
+                 "name" => "bad",
+                 "phases" => [%{"name" => "s", "command" => "/skill:unknown-skill"}]
+               })
     end
 
-    test "stops at first invalid step" do
-      # First step invalid → no pass-through
-      assert {:error, :missing_step_name} =
+    test "stops at first invalid phase" do
+      # First phase invalid → no pass-through
+      assert {:error, {:missing_phase_name, 0}} =
                Validator.validate(%{
-                 id: "bad",
-                 steps: [
-                   %{skill: "create-prd"},
-                   %{name: "s2", skill: "create-prd"}
+                 "name" => "bad",
+                 "phases" => [
+                   %{"command" => "/skill:create-prd"},
+                   %{"name" => "s2", "command" => "/skill:create-prd"}
                  ]
                })
     end

@@ -114,10 +114,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     assert JidoHarnessAdapter.available?()
   end
 
-  test "available?/0 returns false when disabled" do
-    Application.put_env(:foreman_server, :jido_harness, enabled: false)
-    refute JidoHarnessAdapter.available?()
-  end
+
 
   test "available?/0 returns false when enabled but no provider reports installed",
        %{original_path: original_path} do
@@ -164,26 +161,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     assert JidoHarnessAdapter.execute(request, []) == {:error, :unsupported_provider}
   end
 
-  test "execute/2 returns {:error, :backend_unavailable} when the disabled flag is set",
-       %{original_path: original_path} do
-    # Per the PRD-2026-016 §3.4 rollout contract, the
-    # :jido_harness, :enabled config flag gates every run. With it
-    # false, even an installed provider must not run.
-    tmp = Path.join(System.tmp_dir!(), "jido-harness-disabled-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(tmp)
-    File.write!(Path.join(tmp, "pi"), "#!/bin/sh\nexit 0\n")
-    File.chmod!(Path.join(tmp, "pi"), 0o755)
 
-    try do
-      System.put_env("PATH", tmp)
-      Application.put_env(:foreman_server, :jido_harness, enabled: false)
-      assert JidoHarnessAdapter.execute(%{prompt: "ping", context: %{provider: :pi}}, []) ==
-               {:error, :backend_unavailable}
-    after
-      restore_path(original_path)
-      File.rm_rf!(tmp)
-    end
-  end
 
   test "execute/2 returns {:error, :backend_unavailable} when the requested provider is not installed" do
     # ReadinessCheck.installed?/1 probes Jido.Harness.status/1; flip the

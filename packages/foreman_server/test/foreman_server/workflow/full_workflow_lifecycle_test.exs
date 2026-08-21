@@ -58,43 +58,36 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
   defp unique_id(prefix), do: "#{prefix}-#{:rand.uniform(99_999_999)}"
 
-  defp ensure_started(mod, arg) do
-    case Application.start(mod, arg) do
-      :ok -> :ok
-      {:error, {:already_started, ^mod}} -> :ok
-      {:error, {:not_started, _}} -> ensure_started(mod, arg)
+  defp start_or_ignore(child) do
+    case start_supervised(child) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
     end
   end
+
+  defp dump, do: %{projects: ProjectionStore.list_projects() |> Enum.map(&{&1.project_id, &1}) |> Map.new(), tasks: ProjectionStore.list_tasks() |> Enum.map(&{&1.task_id, &1}) |> Map.new(), runs: Map.new(ProjectionStore.list_runs(), &{&1.run_id, &1})}
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:telemetry)
     {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
+    start_or_ignore({Phoenix.PubSub, name: ForemanServer.PubSub})
     {:ok, _} = Application.ensure_all_started(:eventstore)
-    ensure_started({Phoenix.PubSub, name: ForemanServer.PubSub}, ForemanServer.PubSub)
-    ensure_started(ForemanServerWeb.Presence, ForemanServerWeb.Presence)
-    ensure_started(ForemanServer.EventStore, ForemanServer.EventStore)
-    ensure_started(ForemanServer.ProjectionStore, ForemanServer.ProjectionStore)
-    ensure_started(ForemanServer.Aggregator, ForemanServer.Aggregator)
-
-    {:ok, _} = ForemanServer.Dispatcher.start_link([])
-    {:ok, _} = ForemanServer.RunLifecycleReconciler.start_link([])
-
-    on_exit(fn ->
-      for pid <- Process.registered() |> Enum.map(&elem(&1, 0)) do
-        if pid in [ForemanServer.Dispatcher, ForemanServer.RunLifecycleReconciler] do
-          ref = Process.monitor(pid)
-          Process.exit(pid, :shutdown)
-          receive do: ({:DOWN, ^ref, :process, _, _} -> :ok), do: :ok
-        end
-      end
-    end)
-
+    start_or_ignore(ForemanServerWeb.Presence)
+    start_or_ignore(ForemanServer.EventStore)
+    start_or_ignore(ForemanServer.ProjectionStore)
+    start_or_ignore(ForemanServer.Aggregator)
+    start_or_ignore(ForemanServer.Workflow.Dispatcher)
+    start_or_ignore(ForemanServer.RunLifecycleReconciler)
+    start_or_ignore(ForemanServer.Workflow.Catalog)
+    start_or_ignore(ForemanServer.TaskProvider.Registry)
+    start_or_ignore(ForemanServer.Workflow.RunSupervisor)
+    start_or_ignore({Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry})
+    start_or_ignore(ForemanServer.AgentRuntime.AdapterCatalog)
+    start_or_ignore(ForemanServer.CommandRouter)
     :ok
   end
-
   setup do
-    # Snapshot ProjectionStore state so we can assert on deltas.
-    %{before: ProjectionStore.dump()}
+    %{before: dump()}
   end
 
   # ===========================================================================
@@ -127,7 +120,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                    task_id: task_id,
                    project_id: project_id,
                    title: "Lifecycle test task",
-                   task_type: "task"
+                   task_type: "task",
+                   workflow_type: "implement"
                  }
                })
 
@@ -141,25 +135,26 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                })
 
       # Wait for TaskDispatched to land — run_id is derived from task.
-      {run_id, _} =
+      # Also wait for the run aggregate to be created (async via Dispatcher PubSub).
+      run_id =
         poll_until(
           fn ->
-            %{tasks: tasks} = ProjectionStore.dump()
+            %{tasks: tasks, runs: runs} = dump()
 
-            case Map.get(tasks, task_id, %{}) do
-              %{run_id: run_id, status: "in_progress"} when is_binary(run_id) ->
-                {:ok, run_id}
-
-              _ ->
-                nil
+            with %{run_id: run_id, status: "in_progress"} when is_binary(run_id) <-
+                   Map.get(tasks, task_id, %{}),
+                 true <- Map.has_key?(runs, run_id) do
+              {:ok, run_id}
+            else
+              _ -> nil
             end
           end,
-          "task in_progress with run_id"
+          "task in_progress with run_id and run exists"
         )
 
-      # 4. Emit RunCompleted via operator command (terminal signal).
+      # 4. Emit RunCompleted via system command (terminal signal).
       assert {:ok, _} =
-               CommandGateway.dispatch_operator(%{
+               CommandGateway.dispatch_system(%{
                  command_id: "complete-#{run_id}",
                  aggregate_id: "run:#{run_id}",
                  type: "run.complete",
@@ -169,7 +164,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       # 5. Poll until run projection is status="completed".
       poll_until(
         fn ->
-          %{runs: runs} = ProjectionStore.dump()
+          %{runs: runs} = dump()
 
           case Map.get(runs, run_id, %{}) do
             %{status: "completed", terminal?: true} ->
@@ -183,15 +178,24 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       )
 
       # 6. Verify run terminal reason recorded on task.
-      %{tasks: tasks} = ProjectionStore.dump()
-      task_state = Map.get(tasks, task_id, %{})
+      poll_until(
+        fn ->
+          %{tasks: tasks} = dump()
 
-      assert task_state[:acknowledged_run_id] == run_id
-      assert is_binary(task_state[:run_terminal_reason])
+          case Map.get(tasks, task_id, %{}) do
+            %{acknowledged_run_id: ^run_id, run_terminal_reason: reason}
+            when is_binary(reason) ->
+              {:ok, reason}
 
+            _ ->
+              nil
+          end
+        end,
+        "task run_terminal_reason set"
+      )
       # 7. Verify slot was released (run_slots released on terminal event).
-      %{before: before_state} = before
-      %{projects: projects} = ProjectionStore.dump()
+      before_state = before
+      %{projects: projects} = dump()
 
       project_runs_before = Map.get(before_state.projects, project_id, %{}) |> Map.get(:runs, [])
       project_runs_after = Map.get(projects, project_id, %{}) |> Map.get(:runs, [])
@@ -222,7 +226,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                    task_id: task_id,
                    project_id: project_id,
                    title: "Fail test task",
-                   task_type: "task"
+                   task_type: "task",
+                   workflow_type: "implement"
                  }
                })
 
@@ -233,26 +238,26 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                  type: "task.approve",
                  payload: %{task_id: task_id, approved_by: "test-operator"}
                })
-
-      {run_id, _} =
+      # Wait for run aggregate to be created (async via Dispatcher PubSub).
+      run_id =
         poll_until(
           fn ->
-            %{tasks: tasks} = ProjectionStore.dump()
+            %{tasks: tasks, runs: runs} = dump()
 
-            case Map.get(tasks, task_id, %{}) do
-              %{run_id: run_id, status: "in_progress"} when is_binary(run_id) ->
-                {:ok, run_id}
-
-              _ ->
-                nil
+            with %{run_id: run_id, status: "in_progress"} when is_binary(run_id) <-
+                   Map.get(tasks, task_id, %{}),
+                 true <- Map.has_key?(runs, run_id) do
+              {:ok, run_id}
+            else
+              _ -> nil
             end
           end,
-          "task in_progress with run_id"
+          "task in_progress with run_id and run exists"
         )
 
       # Emit RunFailed.
       assert {:ok, _} =
-               CommandGateway.dispatch_operator(%{
+               CommandGateway.dispatch_system(%{
                  command_id: "fail-#{run_id}",
                  aggregate_id: "run:#{run_id}",
                  type: "run.fail",
@@ -261,7 +266,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
       poll_until(
         fn ->
-          %{runs: runs} = ProjectionStore.dump()
+          %{runs: runs} = dump()
 
           case Map.get(runs, run_id, %{}) do
             %{status: "failed", terminal?: true} ->
@@ -274,14 +279,26 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
         "run status=failed"
       )
 
-      %{tasks: tasks} = ProjectionStore.dump()
-      task_state = Map.get(tasks, task_id, %{})
+      # Verify run terminal reason recorded on task.
+      poll_until(
+        fn ->
+          %{tasks: tasks} = dump()
 
-      assert task_state[:acknowledged_run_id] == run_id
-      assert is_binary(task_state[:run_terminal_reason])
+          case Map.get(tasks, task_id, %{}) do
+            %{acknowledged_run_id: ^run_id, run_terminal_reason: reason}
+            when is_binary(reason) ->
+              {:ok, reason}
+
+            _ ->
+              nil
+          end
+        end,
+        "task run_terminal_reason set"
+      )
     end
   end
 
+  # ===========================================================================
   # ===========================================================================
   # AC 1: Workflow correctness — spot-check the manifest structure for each
   # workflow type. Full characterization is in the dedicated characterization
@@ -365,7 +382,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                    task_id: task_id,
                    project_id: project_id,
                    title: "Slot test task",
-                   task_type: "task"
+                   task_type: "task",
+                   workflow_type: "implement"
                  }
                })
 
@@ -377,30 +395,30 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
                  payload: %{task_id: task_id, approved_by: "test-operator"}
                })
 
-      # Wait for run.
-      {run_id, _} =
+      # Wait for run aggregate to be created (async via Dispatcher PubSub).
+      run_id =
         poll_until(
           fn ->
-            %{tasks: tasks} = ProjectionStore.dump()
+            %{tasks: tasks, runs: runs} = dump()
 
-            case Map.get(tasks, task_id, %{}) do
-              %{run_id: run_id, status: "in_progress"} when is_binary(run_id) ->
-                {:ok, run_id}
-
-              _ ->
-                nil
+            with %{run_id: run_id, status: "in_progress"} when is_binary(run_id) <-
+                   Map.get(tasks, task_id, %{}),
+                 true <- Map.has_key?(runs, run_id) do
+              {:ok, run_id}
+            else
+              _ -> nil
             end
           end,
-          "task in_progress with run_id"
+          "task in_progress with run_id and run exists"
         )
 
       # Record slot state before completion.
-      %{projects: projects_before} = ProjectionStore.dump()
+      %{projects: projects_before} = dump()
       before_runs = Map.get(projects_before, project_id, %{}) |> Map.get(:runs, [])
 
       # Emit RunCompleted.
       assert {:ok, _} =
-               CommandGateway.dispatch_operator(%{
+               CommandGateway.dispatch_system(%{
                  command_id: "complete-#{run_id}",
                  aggregate_id: "run:#{run_id}",
                  type: "run.complete",
@@ -410,7 +428,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       # Poll until run terminal.
       poll_until(
         fn ->
-          %{runs: runs} = ProjectionStore.dump()
+          %{runs: runs} = dump()
 
           case Map.get(runs, run_id, %{}) do
             %{status: "completed", terminal?: true} -> {:ok, :completed}
@@ -422,7 +440,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
       # RunLifecycleReconciler processes terminal event and releases slot.
       # Verify the slot was released: project runs count should decrease.
-      %{projects: projects_after} = ProjectionStore.dump()
+      %{projects: projects_after} = dump()
       after_runs = Map.get(projects_after, project_id, %{}) |> Map.get(:runs, [])
 
       assert length(after_runs) < length(before_runs) + 2,

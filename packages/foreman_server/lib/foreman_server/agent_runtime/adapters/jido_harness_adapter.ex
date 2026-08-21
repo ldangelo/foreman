@@ -32,24 +32,30 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
     }
   end
 
+  @doc """
+  Adapter contract — `WorkerProtocol.start_worker/3` calls this to spawn
+  a supervised worker that runs the Jido.Harness agent. Forwards to
+  `ForemanServer.Overwatch.Adapters.JidoHarnessWorker.start_link/1`.
+
+  Required opts passed through from `Overwatch.start_phase/2`:
+  `:worker_id`, `:run_id`, `:provider`, `:prompt`, `:driver_opts`,
+  `:result_recipient`. See `JidoHarnessWorker` for the full contract.
+  """
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    ForemanServer.Overwatch.Adapters.JidoHarnessWorker.start_link(opts)
+  end
+
   @impl true
   def available? do
-    enabled?() and (ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude))
-  end
-
-  # Per-deployment rollout switch (PRD-2026-016 §3.4): when the
-  # :jido_harness, :enabled config is false, the adapter must reject
-  # every run regardless of provider availability. This is the in-code
-  # counterpart of the FOREMAN_USE_JIDO_HARNESS env var.
-  @spec enabled?() :: boolean()
-  def enabled? do
-    Application.get_env(:foreman_server, :jido_harness, [])
-    |> Keyword.get(:enabled, false) == true
+    ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude)
   end
 
   @impl true
-  @spec execute(BackendAdapter.request(), BackendAdapter.exec_opts()) :: BackendAdapter.execute_result()
-  def execute(request = %{prompt: prompt, context: context}, opts) when is_binary(prompt) and is_map(context) do
+  @spec execute(BackendAdapter.request(), BackendAdapter.exec_opts()) ::
+          BackendAdapter.execute_result()
+  def execute(request = %{prompt: prompt, context: context}, opts)
+      when is_binary(prompt) and is_map(context) do
     provider = JidoHarness.request_provider(request)
     started_at_ms = System.monotonic_time(:millisecond)
 
@@ -58,16 +64,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
         provider not in @supported_providers ->
           {{:error, :unsupported_provider}, ""}
 
-        not enabled?() ->
-          # Honor the :jido_harness, :enabled config flag. This is the
-          # per-deployment rollout switch (see PRD-2026-016 §3.4):
-          # Phase 1 defaults to false; operators opt in with
-          # FOREMAN_USE_JIDO_HARNESS=true. With the flag false, even an
-          # installed provider must not run.
-          {{:error, :backend_unavailable}, ""}
-
         not ReadinessCheck.installed?(provider) ->
-          # Per-provider check (not the OR-check in available?/0):
           # :pi not installed must fail when :pi is requested, even if
           # :claude is installed (and vice versa). available?/0 reports
           # whether the adapter can run AT ALL; execute/2 enforces
@@ -82,7 +79,14 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
             {:ok, detached} when is_map(detached) ->
               run_id = error_run_id(detached)
 
-              case Driver.await(run_id, Keyword.get(driver_opts(context, opts), :await_timeout, @default_await_timeout)) do
+              case Driver.await(
+                     run_id,
+                     Keyword.get(
+                       driver_opts(context, opts),
+                       :await_timeout,
+                       @default_await_timeout
+                     )
+                   ) do
                 {:ok, %Jido.Harness.RunResult{} = run_result} ->
                   {RunResult.normalize(run_result), run_result.run_id}
 
@@ -117,12 +121,13 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
     end
   end
 
-  defp maybe_put_env(opts, env) when is_map(env) and map_size(env) > 0, do: Keyword.put(opts, :env, env)
+  defp maybe_put_env(opts, env) when is_map(env) and map_size(env) > 0,
+    do: Keyword.put(opts, :env, env)
+
   defp maybe_put_env(opts, _env), do: opts
 
   defp error_run_id(%{run_id: run_id}) when is_binary(run_id), do: run_id
   defp error_run_id(_reason), do: ""
-
 
   defp translate_timeout_ms(opts) do
     case Keyword.pop(opts, :timeout_ms) do
@@ -131,8 +136,15 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
     end
   end
 
-  defp normalize_raw_error(reason) when reason in [:tool_error, :process_terminated, :unsupported_provider, :timeout, :cancelled],
-    do: {:error, reason}
+  defp normalize_raw_error(reason)
+       when reason in [
+              :tool_error,
+              :process_terminated,
+              :unsupported_provider,
+              :timeout,
+              :cancelled
+            ],
+       do: {:error, reason}
 
   defp normalize_raw_error(reason) do
     case ErrorCodes.map(reason) do
@@ -140,6 +152,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
       nil -> {:error, :unknown_error}
     end
   end
+
   defp emit_stop(started_at_ms, provider, run_id, result) do
     duration_ms = max(System.monotonic_time(:millisecond) - started_at_ms, 0)
 

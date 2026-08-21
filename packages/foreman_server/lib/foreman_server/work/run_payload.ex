@@ -30,9 +30,11 @@ defmodule ForemanServer.Work.RunPayload do
         task_id: task_id,
         project_id: project_id,
         approval_id: approval_id,
-        workflow_snapshot: workflow_snapshot,
-        phase_specs: phase_specs
+        workflow_snapshot: workflow_snapshot
       }) do
+    phase_specs =
+      Map.get(workflow_snapshot, "phases", []) ++ Map.get(workflow_snapshot, :phases, [])
+
     %__MODULE__{
       run_id: run_id,
       task_id: task_id,

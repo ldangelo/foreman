@@ -152,7 +152,7 @@ defmodule ForemanServer.AC2DuplicateOutOfOrderTest do
     :timer.sleep(100)
 
     state_after_start = run_state(run_id)
-    assert state_after_start.status == "in_progress"
+    assert state_after_start.status == "awaiting_worker"
     assert state_after_start.terminal? == false
 
     # AC2 step 1: run.complete sequence 1 — succeeds

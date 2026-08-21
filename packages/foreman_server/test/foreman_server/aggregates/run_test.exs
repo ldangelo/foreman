@@ -18,7 +18,7 @@ defmodule ForemanServer.Aggregates.RunTest do
   # Existing unit tests
   # ---------------------------------------------------------------------------
 
-  test "run.start emits RunStarted and apply_event marks the run in progress" do
+  test "run.start emits RunStarted and apply_event marks the run awaiting_worker" do
     run_id = "run-start"
 
     {:ok, event_spec} =
@@ -43,8 +43,89 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert state.run_id == run_id
     assert state.task_id == "task-1"
     assert state.project_id == "project-test-run_id"
+    assert state.status == "awaiting_worker"
+    assert state.terminal? == false
+  end
+
+  test "WorkerStarted transitions awaiting_worker → in_progress" do
+    run_id = "run-worker-started-#{uuid()}"
+
+    state =
+      Run.initial_state()
+      |> Run.apply_event(%{
+        event_type: "RunStarted",
+        payload: %{
+          run_id: run_id,
+          task_id: "task-1",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
+      })
+
+    assert state.status == "awaiting_worker"
+
+    state =
+      Run.apply_event(state, %{
+        event_type: "WorkerStarted",
+        payload: %{
+          worker_id: "worker-1",
+          run_id: run_id,
+          session_id: "session-1",
+          adapter: "default",
+          prompt_path: "/tmp/prompt.md"
+        }
+      })
+
     assert state.status == "in_progress"
     assert state.terminal? == false
+    assert state.worker_status["worker-1"].status == "running"
+  end
+
+  test "WorkerStarted on a non-awaiting run does not regress status" do
+    run_id = "run-already-in-progress-#{uuid()}"
+
+    state =
+      Run.initial_state()
+      |> Run.apply_event(%{
+        event_type: "RunStarted",
+        payload: %{
+          run_id: run_id,
+          task_id: "task-1",
+          project_id: "project-test-run_id",
+          workflow_snapshot: %{}
+        }
+      })
+      |> Run.apply_event(%{
+        event_type: "WorkerStarted",
+        payload: %{
+          worker_id: "worker-1",
+          run_id: run_id,
+          session_id: "session-1",
+          adapter: "default",
+          prompt_path: "/tmp/prompt.md"
+        }
+      })
+      |> Run.apply_event(%{
+        event_type: "RunPaused",
+        payload: %{run_id: run_id, reason: "manual_pause"}
+      })
+
+    assert state.status == "paused"
+
+    state =
+      Run.apply_event(state, %{
+        event_type: "WorkerStarted",
+        payload: %{
+          worker_id: "worker-2",
+          run_id: run_id,
+          session_id: "session-2",
+          adapter: "default",
+          prompt_path: "/tmp/prompt.md"
+        }
+      })
+
+    assert state.status == "paused",
+           "WorkerStarted must not flip a paused run back to in_progress"
   end
 
   # all of :task_id, :project_id, and :workflow_snapshot used to slip through
@@ -445,7 +526,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert state.run_id == run_id
     assert state.task_id == "task-a"
     assert state.project_id == "project-#{run_id}"
-    assert state.status == "in_progress"
+    assert state.status == "awaiting_worker"
     assert state.terminal? == false
     assert version == 1
   end
@@ -672,7 +753,7 @@ defmodule ForemanServer.Aggregates.RunTest do
     [{actor_pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream)
 
     state_initial = Aggregate.Actor.get_state(actor_pid)
-    assert state_initial.status == "in_progress"
+    assert state_initial.status == "awaiting_worker"
     refute state_initial.terminal?
 
     # 2. Two concurrent :append of RunCompleted at expected_version=1.
@@ -707,20 +788,20 @@ defmodule ForemanServer.Aggregates.RunTest do
            "exactly one concurrent append must win; the other is rejected at the EventStore layer"
 
     # Stream is now at version 2 with one RunCompleted. Actor's local state
-    # is unchanged — still version 1, status=in_progress, not terminal.
+    # is unchanged — still version 1, status=awaiting_worker, not terminal.
     {:ok, events_after_race} = Store.read_stream_forward(stream, 0, 10)
     assert length(events_after_race) == 2
     assert Enum.map(events_after_race, & &1.event_type) == ["RunStarted", "RunCompleted"]
 
     state_after_race = Aggregate.Actor.get_state(actor_pid)
 
-    assert state_after_race.status == "in_progress",
+    assert state_after_race.status == "awaiting_worker",
            "actor must not have observed the racing :append messages"
 
     refute state_after_race.terminal?
 
     # 3. Fresh dispatch via the normal actor+router path. Locally the actor
-    # sees in_progress, so handle_command returns a RunCompleted event spec
+    # sees awaiting_worker, so handle_command returns a RunCompleted event spec
     assert {:ok, %{"event_type" => "RunAlreadyCompleted"}} =
              dispatch(%{
                command_id: "cmd-#{uuid()}",

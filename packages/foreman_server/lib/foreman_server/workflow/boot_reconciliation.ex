@@ -26,10 +26,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   require Logger
 
-  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter,
-                      ProjectionStore, Telemetry}
+  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
-  alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}
+  alias ForemanServer.Idempotency.{CrashRecovery, KeyStore, RestartBackoff}
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   @orphan_reopen_event [:foreman_server, :workflow, :boot_reconciliation, :orphan_reopen]
@@ -50,6 +49,19 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @transition_comment "foreman-run-reconciled"
   @scan_retry_ms 50
   @json_schema_cache_name :foreman_server_json_schema_cache
+  # Per-orphan dispatch-attempt counter for orphan slot releases and waiter
+  # removes. The `run_slots:global` aggregate actor can be force-killed by
+  # test reset helpers or operator intervention; `release_run_slot/2` and
+  # `remove_run_slot_waiter/2` apply the same 5-restart exponential backoff
+  # used by the agent crash-recovery loop (RTE-T004 / RestartBackoff).
+  # After 5 consecutive failures the orphan is logged as BLOCKED with
+  # operator-facing telemetry so operators can intervene. Attempt counts
+  # are per-session (lost on restart, by design — this tracks consecutive
+  # dispatch failures within a boot-reconciliation cycle, mirroring the
+  # semantics in REQ-017 AC-017-5).
+  @dispatch_attempts_table :boot_recon_dispatch_attempts
+  @dispatch_retry_event [:foreman_server, :workflow, :boot_reconciliation, :dispatch_retry]
+  @dispatch_blocked_event [:foreman_server, :workflow, :boot_reconciliation, :dispatch_blocked]
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
     GenServer.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -177,6 +189,16 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def init(_init_arg) do
+    if :ets.whereis(@dispatch_attempts_table) == :undefined do
+      :ets.new(@dispatch_attempts_table, [
+        :set,
+        :named_table,
+        :public,
+        read_concurrency: true,
+        write_concurrency: true
+      ])
+    end
+
     {:ok,
      %{
        reconciled?: false,
@@ -187,7 +209,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
      }, {:continue, :reconcile}}
   end
 
-  @impl true
   def handle_continue(:reconcile, state) do
     reconcile()
     state = reconcile_ambiguous_keys(state)
@@ -289,12 +310,20 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
 
     :ok
+
+    if :ets.whereis(@dispatch_attempts_table) != :undefined do
+      :ets.delete(@dispatch_attempts_table)
+    end
+
+    :ok
   end
 
   defp active_runs_by_project do
+    active_statuses = ProjectionStore.active_run_statuses()
+
     ProjectionStore.list_runs()
     |> Enum.reduce(%{}, fn run, acc ->
-      if fetch_status(run) == "in_progress" do
+      if fetch_status(run) in active_statuses do
         with {:ok, project_id} <- fetch_project_id(run),
              {:ok, task_id} <- fetch_task_id(run) do
           Map.update(acc, project_id, MapSet.new([task_id]), &MapSet.put(&1, task_id))
@@ -607,6 +636,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp schedule_ambiguous_scan(_reason) do
     Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
   end
+
   @doc false
   def do_reconcile_ambiguous_keys(side_effects_check \\ &CrashRecovery.has_no_side_effects?/1) do
     {skipped, retried} =
@@ -683,17 +713,38 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp release_run_slot(run_id, reason) when is_binary(run_id) and run_id != "" do
     ms = System.system_time(:millisecond)
 
-    _ =
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.release",
-        command_id: "foreman:boot-slot-release:#{run_id}:#{ms}",
-        aggregate_id: "run_slots:global",
-        payload: %{
-          run_id: run_id,
-          released_at_ms: ms,
-          reason: reason
-        }
-      })
+    result =
+      try do
+        _ =
+          CommandGateway.dispatch_system(%{
+            type: "run_slots.release",
+            command_id: "foreman:boot-slot-release:#{run_id}:#{ms}",
+            aggregate_id: "run_slots:global",
+            payload: %{
+              run_id: run_id,
+              released_at_ms: ms,
+              reason: reason
+            }
+          })
+
+        :ok
+      catch
+        # The `run_slots:global` actor is shared across the application and
+        # any process (test reset, operator intervention, runtime supervisor)
+        # can force-kill it between BootReconciliation's load and dispatch.
+        # Without this rescue the synchronous `GenServer.call` exits with
+        # `:killed` and terminates BootReconciliation, which cascades up to
+        # `:foreman_server` shutting down. Apply the 5-restart exponential
+        # backoff (RTE-T004 / RestartBackoff); after the limit the orphan is
+        # logged as BLOCKED for operator intervention.
+        :exit, exit_reason ->
+          handle_dispatch_failure(run_id, reason, :slot_release, exit_reason)
+          :failed
+      end
+
+    if result == :ok do
+      reset_dispatch_attempt(run_id)
+    end
 
     :ok
   end
@@ -701,17 +752,30 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp remove_run_slot_waiter(run_id, reason) when is_binary(run_id) and run_id != "" do
     ms = System.system_time(:millisecond)
 
-    _ =
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.remove_waiter",
-        command_id: "foreman:boot-slot-remove-waiter:#{run_id}:#{ms}",
-        aggregate_id: "run_slots:global",
-        payload: %{
-          run_id: run_id,
-          removed_at_ms: ms,
-          reason: reason
-        }
-      })
+    result =
+      try do
+        _ =
+          CommandGateway.dispatch_system(%{
+            type: "run_slots.remove_waiter",
+            command_id: "foreman:boot-slot-remove-waiter:#{run_id}:#{ms}",
+            aggregate_id: "run_slots:global",
+            payload: %{
+              run_id: run_id,
+              removed_at_ms: ms,
+              reason: reason
+            }
+          })
+
+        :ok
+      catch
+        :exit, exit_reason ->
+          handle_dispatch_failure(run_id, reason, :waiter_remove, exit_reason)
+          :failed
+      end
+
+    if result == :ok do
+      reset_dispatch_attempt(run_id)
+    end
 
     :ok
   end
@@ -1081,6 +1145,60 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp schedule_scan(_reason) do
     Process.send_after(self(), :scan_orphans, @scan_retry_ms)
+  end
+
+  # Bump the per-orphan dispatch attempt counter and apply the 5-restart
+  # backoff (RTE-T004). Returns the attempt number that just completed.
+  # On success of the next dispatch, `reset_dispatch_attempt/1` clears the
+  # counter so transient failures don't accumulate forever.
+  defp handle_dispatch_failure(run_id, reason, kind, exit_reason) do
+    attempt = bump_dispatch_attempt(run_id)
+
+    case RestartBackoff.next_attempt(attempt) do
+      {:retry, delay_ms} ->
+        Logger.warning(
+          "BootReconciliation: #{kind} for #{run_id} attempt #{attempt} failed " <>
+            "(#{inspect(exit_reason)}); next retry in #{delay_ms}ms"
+        )
+
+        :telemetry.execute(
+          @dispatch_retry_event,
+          %{count: 1},
+          %{run_id: run_id, kind: kind, attempt: attempt, exit_reason: inspect(exit_reason)}
+        )
+
+      {:blocked, :max_attempts_exceeded} ->
+        Logger.error(
+          "BootReconciliation: #{kind} for #{run_id} marked BLOCKED after " <>
+            "#{attempt} consecutive dispatch failures (#{inspect(exit_reason)}); " <>
+            "operator intervention required. Reason: #{inspect(reason)}"
+        )
+
+        :telemetry.execute(
+          @dispatch_blocked_event,
+          %{count: 1},
+          %{
+            run_id: run_id,
+            kind: kind,
+            attempts: attempt,
+            exit_reason: inspect(exit_reason),
+            reason: inspect(reason)
+          }
+        )
+
+        # Drop the counter so a later manual recovery does not start with
+        # a stale attempt count.
+        reset_dispatch_attempt(run_id)
+    end
+  end
+
+  defp bump_dispatch_attempt(run_id) do
+    :ets.update_counter(@dispatch_attempts_table, run_id, 1, {run_id, 0})
+  end
+
+  defp reset_dispatch_attempt(run_id) do
+    :ets.delete(@dispatch_attempts_table, run_id)
+    :ok
   end
 
   defp command_router_ready? do

@@ -93,12 +93,10 @@ defmodule ForemanServer.AgentRuntime.BackendAdapter do
 
   @doc """
   Synchronously execute the request. The Invocation process owns timeout
-  enforcement and adapter termination (see TRD §Pi Process Protocol and
-  Timeout Ownership for the PiAdapter case). The adapter MUST return
+  enforcement and adapter termination. The adapter MUST return
   `{:ok, output, metadata}` for a successful execution or
   `{:error, reason}` otherwise. Adapter-private metadata MUST NOT include
   the backend name — the public facade strips it before returning.
-
   The optional `:env` key in the keyword list forwards a trusted,
   adapter-private environment map to the spawned child. Adapters MUST
   NOT echo this map back into the request, the prompt, or the

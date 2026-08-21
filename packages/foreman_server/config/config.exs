@@ -20,12 +20,9 @@ config :foreman_server, ForemanServerWeb.Endpoint,
 
 config :foreman_server, :agent_runtime,
   enabled: true,
-  # Default agent backend is now JidoHarnessAdapter (JHA-T002:
-  # replaced PiAdapter's Port.open shell-out with the in-process
-  # Jido.Harness runtime). Operators wanting to revert to the
-  # legacy external `pi` Node CLI can override with
-  #   config :foreman_server, :agent_runtime,
-  #     adapters: [ForemanServer.AgentRuntime.Adapters.PiAdapter]
+  # JidoHarnessAdapter is the sole agent backend after JHA-T002
+  # (TRD-2026-4212be7e). The in-process Jido.Harness runtime replaced
+  # the Port.open shell-out to the legacy `pi` Node CLI.
   adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter],
   # JAI-T001: agent execution strategy.  Options: :react (ReAct reasoning),
   # :cot (chain-of-thought), :manual (JidoHarnessAdapter direct).
@@ -35,20 +32,12 @@ config :foreman_server, :agent_runtime,
   # which selects the best model per capability at request time.
   agent_model: "auto"
 
-# jido_harness backend — now the default after JHA-T002 (TRD-2026-
-# 4212be7e): the in-process Jido.Harness runtime replaced the
-# Port.open shell-out to the legacy `pi` Node CLI. The rollout
-# switch is now a *kill switch*: setting `:jido_harness, :enabled`
-# to false at runtime disables the adapter without changing the
-# default. Operators can still fall back to PiAdapter by overriding
-# the `:agent_runtime, :adapters` config to a list containing
-# PiAdapter instead of JidoHarnessAdapter.
-config :foreman_server, :jido_harness,
-  # JHA-T002 flipped this from a rollout switch (default false) to a
-  # kill switch (default true). Backwards-compat: setting
-  # FOREMAN_USE_JIDO_HARNESS=false at boot still disables the adapter
-  # so older deployment scripts keep working.
-  enabled: System.get_env("FOREMAN_USE_JIDO_HARNESS", "true") == "true"
+# Overwatch worker-runtime supervision tree. Production default enabled so
+# the Jido path (RunExecutor → Overwatch.start_phase → LaunchWorker) can
+# emit WorkerStarted/WorkerHeartbeat/WorkerExited through CommandRouter
+# and flip run.status from awaiting_worker → in_progress. Test mode
+# overrides this to false in config/test.exs.
+config :foreman_server, ForemanServer.Overwatch, enabled: true
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 
@@ -102,8 +91,10 @@ config :jido_ai,
       base_url: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000")
     }
   }
+
 config :langfuse,
   endpoint: System.get_env("LANGFUSE_ENDPOINT", "http://localhost:3000")
+
 # TRD-2026-4212be7e JSH-T003: VFS isolation per worktree.
 # Each agent is bound to a worktree root; shell commands outside
 # that root are denied. Allowed worktree roots are enumerated here

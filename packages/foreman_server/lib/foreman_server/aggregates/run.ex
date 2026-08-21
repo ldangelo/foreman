@@ -69,7 +69,7 @@ defmodule ForemanServer.Aggregates.Run do
             run_id: Aggregate.get(payload, :run_id),
             task_id: Aggregate.get(payload, :task_id),
             project_id: Aggregate.get(payload, :project_id),
-            status: "in_progress",
+            status: "awaiting_worker",
             last_sequence: Aggregate.get(payload, :sequence, state.last_sequence)
         }
 
@@ -172,7 +172,14 @@ defmodule ForemanServer.Aggregates.Run do
         put_phase(state, payload, "retrying")
 
       "WorkerStarted" ->
-        put_worker(state, payload, "running")
+        state = put_worker(state, payload, "running")
+        # First worker-acknowledged liveness event flips the run from
+        # "awaiting_worker" (admitted but no worker attached) to "in_progress".
+        if state.status == "awaiting_worker" do
+          %State{state | status: "in_progress"}
+        else
+          state
+        end
 
       "WorkerHeartbeat" ->
         put_worker(state, payload, "heartbeat")

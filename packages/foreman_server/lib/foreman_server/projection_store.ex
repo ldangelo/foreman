@@ -30,7 +30,7 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, RecordedEvent}
   alias ForemanServer.{EventCodec, EventStore}
 
-  @active_run_statuses ["in_progress"]
+  @active_run_statuses ["awaiting_worker", "in_progress"]
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg) do
@@ -48,6 +48,18 @@ defmodule ForemanServer.ProjectionStore do
   def active_runs do
     GenServer.call(__MODULE__, :active_runs)
   end
+
+  @doc """
+  Canonical list of run statuses that count as "actively dispatching" —
+  i.e. holding a project slot and not yet terminal. Reuse this for any
+  check that wants to know whether a run is still in flight.
+
+  Currently `"awaiting_worker"` (admitted but no worker attached yet)
+  and `"in_progress"` (worker attached and acknowledged). Adding a new
+  pre-terminal state? Add it here and only here.
+  """
+  @spec active_run_statuses() :: [String.t()]
+  def active_run_statuses, do: @active_run_statuses
 
   @doc "Return active runs whose last activity is older than the threshold."
   @spec stuck_runs(non_neg_integer(), integer() | nil) :: [String.t()]
@@ -816,7 +828,7 @@ defmodule ForemanServer.ProjectionStore do
             workflow_snapshot: event.workflow_snapshot,
             phase_ids: [],
             last_sequence: event.sequence,
-            status: "in_progress",
+            status: "awaiting_worker",
             terminal?: false,
             started_at_ms: event_at_ms,
             last_event_at_ms: event_at_ms,
@@ -1101,7 +1113,12 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "WorkerStarted", payload) do
-    touch_run_for_payload(state, payload)
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      case run do
+        %{status: "awaiting_worker"} -> %{run | status: "in_progress"}
+        run -> run
+      end
+    end)
   end
 
   defp apply_event_by_type(state, "WorkerHeartbeat", payload) do
@@ -1548,7 +1565,7 @@ defmodule ForemanServer.ProjectionStore do
   defp base_run_projection(run_id, now_ms) do
     %{
       run_id: run_id,
-      status: "in_progress",
+      status: "awaiting_worker",
       task_id: nil,
       project_id: nil,
       workflow_name: nil,

@@ -14,7 +14,11 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
     ensure_started(ForemanServer.Aggregator, ForemanServer.Aggregator)
     ensure_started(ForemanServer.CommandRouter, ForemanServer.CommandRouter)
     # start_boot_reconciliation? is false in test config.
-    ensure_started(ForemanServer.Workflow.BootReconciliation, ForemanServer.Workflow.BootReconciliation)
+    ensure_started(
+      ForemanServer.Workflow.BootReconciliation,
+      ForemanServer.Workflow.BootReconciliation
+    )
+
     :ok
   end
 
@@ -36,6 +40,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
     {:ok, telemetry_ref: ref}
   end
+
   describe "scan_run_slot_orphans/0" do
     test "no holders or waiters → no dispatches" do
       assert :ok = BootReconciliation.scan_run_slot_orphans()
@@ -148,6 +153,38 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       removed_events = Enum.filter(events, &(&1.event_type == "RunSlotWaiterRemoved"))
       assert removed_events == []
     end
+
+    test "survives force-kill of run_slots:global actor mid-scan (regression: race with RunSlotsReset.reset!/0)" do
+      terminal_run_id = unique_id("kill-orphan-run")
+      seed_terminal_run!(terminal_run_id)
+      append_run_slot_holder!(terminal_run_id, 0)
+
+      # Force the actor into the same dead state RunSlotsReset.reset!/0
+      # creates between test cases — this is the real-world race.
+      [{actor_pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream)
+      ref = Process.monitor(actor_pid)
+      Process.exit(actor_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^actor_pid, _}, 1_000
+
+      boot_pid = Process.whereis(BootReconciliation)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          # Without the try/catch rescue in release_run_slot/2 this scan
+          # propagates `(EXIT) killed` up through handle_info and terminates
+          # BootReconciliation, which cascades into ForemanServer.Application
+          # shutting down and Process.whereis(ForemanServer.EventStore) going
+          # nil for the rest of the test file.
+          assert :ok = BootReconciliation.scan_run_slot_orphans()
+
+          # Give the dispatcher a chance to surface an exit if the rescue
+          # is missing.
+          Process.sleep(50)
+        end)
+
+      assert Process.alive?(boot_pid)
+      assert Process.whereis(BootReconciliation) == boot_pid
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -163,6 +200,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       :ok -> :ok
       {:ok, _} -> :ok
       {:error, :stream_not_found} -> :ok
+      {:error, :not_supported} -> :ok
     end
 
     case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
@@ -195,6 +233,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       }
     end)
   end
+
   defp append_run_slot_holder!(run_id, version) do
     ForemanServer.CommandGateway.dispatch_system(%{
       type: "run_slots.acquire",

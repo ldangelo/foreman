@@ -135,7 +135,20 @@ defmodule ForemanServer.Overwatch do
         project_id: project_id,
         env_map: env_map
       ]
-      |> Keyword.merge(Keyword.take(opts, [:tool_names, :artifact_paths, :activation_timeout_ms]))
+      |> Keyword.merge(
+        Keyword.take(opts, [
+          :tool_names,
+          :artifact_paths,
+          :activation_timeout_ms,
+          # LGC-T002: agent-runtime hooks for the Jido path. The supervised
+          # worker needs the prompt, provider, driver_opts, and a result
+          # recipient to run the agent and report completion to the caller.
+          :provider,
+          :prompt,
+          :driver_opts,
+          :result_recipient
+        ])
+      )
 
     case WorkerSupervisor.start_worker(launch_opts) do
       {:ok, launch_pid} ->
