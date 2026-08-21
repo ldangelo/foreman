@@ -19,6 +19,21 @@
     "init_hook": [
       "# Source .env files from this repo + the litellm-langfuse-stack if present.",
       "# Operators can override LITELLM_LANGFUSE_STACK to point at a checkout elsewhere.",
+      "# Ensure SHELL is set for erlexec (port driver) and similar deps.",
+      "export SHELL=\"${SHELL:-/bin/sh}\"",
+      "# --- INTERIM WORKAROUND (see foreman-NNN) ---",
+      "# Devbox-search pins elixir_1_18@latest to 1.18.1, but 1.18.1 has",
+      "# a Module.ParallelChecker.cache_module/2 bug that crashes on",
+      "# telemetry_metrics (and probably other deps) at compile time.",
+      "# If elixir-1.18.4 is cached in /nix/store, prefer it.",
+      "# This is host-specific; a fresh clone without this store path",
+      "# falls through to the broken 1.18.1 default.",
+      "for elixir_dir in /nix/store/*-elixir-1.18.4; do",
+      "  if [ -x \"$elixir_dir/bin/elixir\" ]; then",
+      "    export PATH=\"$elixir_dir/bin:$PATH\"",
+      "    break",
+      "  fi",
+      "done",
       "export LITELLM_LANGFUSE_STACK=\"${LITELLM_LANGFUSE_STACK:-$HOME/Development/Sunstone/litellm-langfuse-stack}\"",
       "[ -f .env ] && set -a && . ./.env && set +a || true",
       "[ -f \"$LITELLM_LANGFUSE_STACK/.env\" ] && set -a && . \"$LITELLM_LANGFUSE_STACK/.env\" && set +a || true",
@@ -177,5 +192,8 @@
         "cd packages/foreman_server && mix test --include langfuse"
       ]
     }
+  },
+  "env": {
+    "SHELL": "${SHELL:-/bin/sh}"
   }
 }
