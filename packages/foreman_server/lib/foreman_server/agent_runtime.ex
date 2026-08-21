@@ -35,6 +35,7 @@ defmodule ForemanServer.AgentRuntime do
   alias ForemanServer.AgentRuntime.FailurePolicy
   alias ForemanServer.Agents.OtelSpanEmitter
   alias ForemanServer.Agents.LlmErrorHandler
+  alias ForemanServer.Agents.LangfuseTracer
 
   @type backend_name :: atom()
   @type adapter :: module()
@@ -653,7 +654,11 @@ defmodule ForemanServer.AgentRuntime do
 
   # ReAct strategy: delegate to JidoAiRunner with Jido.AI.Reasoning.ReAct,
   # which uses req_llm for LLM calls.  The runner is wrapped so exactly
-  # one telemetry completion event fires per execute/3 call.
+  # one telemetry completion event fires per execute/3 call.  Each
+  # successful branch emits a Langfuse trace (REQ-020) so the routing
+  # decision (routed_to, routing_reason, capability) lands in the live
+  # trace — without this call site the LangfuseTracer helper exists but
+  # nothing ever invokes it.
   defp execute_react(prompt, _request, model, task_type, policy, _env) do
     start_time = System.system_time()
     monotonic_start = System.monotonic_time(:microsecond)
@@ -676,6 +681,7 @@ defmodule ForemanServer.AgentRuntime do
           usage = Map.get(result, :usage, %{})
           token_count = Map.get(usage, :total_tokens, 0)
           _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
+          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -691,6 +697,7 @@ defmodule ForemanServer.AgentRuntime do
           usage = Map.get(result, :usage, %{})
           token_count = Map.get(usage, :total_tokens, 0)
           _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
+          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -761,6 +768,7 @@ defmodule ForemanServer.AgentRuntime do
           usage = Map.get(result, :usage, %{})
           token_count = Map.get(usage, :total_tokens, 0)
           _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
+          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -776,6 +784,7 @@ defmodule ForemanServer.AgentRuntime do
           usage = Map.get(result, :usage, %{})
           token_count = Map.get(usage, :total_tokens, 0)
           _ = OtelSpanEmitter.emit_llm_span(model, token_count, 0.0, "auto")
+          _ = emit_langfuse_trace(prompt, output, model, monotonic_start, task_type, token_count)
 
           Telemetry.execute(
             [:foreman, :agent_runtime, :execute, :stop],
@@ -944,5 +953,49 @@ defmodule ForemanServer.AgentRuntime do
         final_backend: nil
       }
     )
+  end
+
+  # REQ-020 / LGL-T004 — wire LangfuseTracer.emit_trace/6 into every
+  # successful LLM call so routed_to / routing_reason / capability land
+  # in the live trace. cost_usd is 0.0 here because the JidoAiRunner
+  # abstraction doesn't surface pricing; once req_llm's response carries
+  # cost, swap the literal for the actual value. Latency is measured
+  # from `monotonic_start` so the trace mirrors the Otel span duration.
+  defp emit_langfuse_trace(prompt, response, model, monotonic_start, task_type, token_count) do
+    duration_ms = div(System.monotonic_time(:microsecond) - monotonic_start, 1_000)
+    capability = capability_for_task_type(task_type)
+
+    LangfuseTracer.emit_trace(prompt, response, model, 0.0, duration_ms,
+      routed_to: model,
+      routing_reason: routing_reason_for(capability),
+      capability: capability,
+      token_count: token_count
+    )
+  end
+
+  # Map a Foreman task_type to a LiteLLM routing capability. Anything
+  # unknown falls through to :chat.
+  defp capability_for_task_type(task_type) when is_atom(task_type) do
+    case task_type do
+      :code -> :code_generation
+      :code_generation -> :code_generation
+      :embedding -> :embedding
+      :chat -> :chat
+      :reasoning -> :chat
+      _ -> :chat
+    end
+  end
+
+  defp capability_for_task_type(_), do: :chat
+
+  defp routing_reason_for(:code_generation), do: "auto-routing:code"
+  defp routing_reason_for(:embedding), do: "auto-routing:embedding"
+  defp routing_reason_for(:chat), do: "auto-routing:chat"
+  defp routing_reason_for(_), do: "auto-routing"
+
+  # Test-only export. Avoid calling from production code.
+  @doc false
+  def __emit_langfuse_trace_for_test__(prompt, response, model, monotonic_start, task_type, token_count) do
+    emit_langfuse_trace(prompt, response, model, monotonic_start, task_type, token_count)
   end
 end
