@@ -166,6 +166,25 @@ shape; safe but cosmetic. Will be addressed in a follow-up.
 
 ---
 
+### Known environmental workarounds in devbox.json
+
+Two `init_hook` lines in `devbox.json` carry interim workarounds for
+environmental problems that block `devbox run test:langfuse`:
+
+1. **`SHELL` export** — `erlexec` (transitive dep) starts an `:exec` port
+   driver at app boot that requires `SHELL` in env. Defaulted to
+   `/bin/sh` if unset.
+2. **Elixir 1.18.4 PATH override** — `devbox-search` resolves
+   `elixir_1_18@latest` to 1.18.1, which has a deterministic
+   `Module.ParallelChecker.cache_module/2` crash on `telemetry_metrics`
+   compile. The hook scans `/nix/store/*-elixir-1.18.4` and prepends
+   the first match to PATH, falling through to the broken 1.18.1
+   default on a fresh clone (where this would need a follow-up).
+   Tracked in beads issue `foreman-w4b`. Remove the workaround once
+   devbox pins 1.18.4 natively or `br close foreman-w4b`.
+
+---
+
 ## Operator Reference
 
 ### Starting the Phoenix Server
