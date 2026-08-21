@@ -70,6 +70,29 @@ config :jido_otel,
   otlp_endpoint: "http://localhost:4318",
   service_name: "foreman_server"
 
+# OpenTelemetry SDK resource attributes (TRD-2026-4212be7e / JOT-T001).
+# Spans emitted by OtelSpanEmitter carry service.name = "foreman_server"
+# and the version below; Langfuse / OTel Collector use this to bucket traces.
+config :opentelemetry, :resource,
+  service: [
+    name: "foreman_server",
+    version: "0.1.0"
+  ]
+
+# OpenTelemetry OTLP exporter (TRD-2026-4212be7e / JOT-T001).
+# Without these keys, the SDK's batch processor logs
+# "OTLP exporter module `opentelemetry_exporter` not found" every 5s and
+# no spans leave the box — the dep is now in mix.exs so the module loads,
+# and these settings tell the exporter where to send spans.
+#
+# Dev default points at the OTel Collector's standard local port (4318).
+# prod.exs overrides otlp_endpoint from OTEL_EXPORTER_OTLP_ENDPOINT and
+# adds an Authorization: Bearer header built from LANGFUSE_PUBLIC_KEY when
+# set, so Langfuse-compatible ingest accepts the traces.
+config :opentelemetry_exporter,
+  otlp_endpoint: "http://localhost:4318",
+  otlp_protocol: :http_protobuf
+
 # TRD-2026-4212be7e LGL-T001: litellm-langfuse-stack integration.
 # LiteLLM runs on port 4000, Langfuse on port 3000. The `model: "auto"`
 # value tells LiteLLM to pick the best model for the requested capability

@@ -58,3 +58,11 @@ config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
 config :foreman_server, :jido_vfs,
   allowed_roots: ["/tmp", "/Users/ldangelo/Development/Fortium"],
   enforce_allowlist: true
+
+# OpenTelemetry tracer no-op in test (TRD-2026-4212be7e / JOT-T001).
+# Default tracer is :otel_tracer_default which records every span and
+# ships it through the batch processor. We don't want every test run to
+# generate network traffic or batch-processor log noise — opt-in tests
+# (e.g. OtelSpanEmitterIntegrationTest) flip the tracer back to
+# :otel_tracer_default via Application.put_env/3.
+config :opentelemetry, :tracer, :otel_tracer_noop

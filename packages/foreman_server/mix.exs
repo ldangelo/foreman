@@ -42,6 +42,11 @@ defmodule ForemanServer.MixProject do
       # JSON serialization for EventStore
       {:jason, "~> 1.4"},
 
+      # OpenTelemetry OTLP/HTTP exporter (TRD-2026-4212be7e / JOT-T001).
+      # Pairs with :opentelemetry 1.7.0; without this dep, the SDK's batch
+      # processor logs `OTLP exporter module opentelemetry_exporter not found`
+      {:opentelemetry_exporter, "~> 1.10.0"},
+
       # Anubis MCP server (TRD-036)
       {:anubis_mcp, "~> 1.10"},
 

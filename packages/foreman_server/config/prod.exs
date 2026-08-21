@@ -79,10 +79,20 @@ config :foreman_server, :jido_ecto, enabled: false
 # TRD-2026-4212be7e JOT-T001: jido_otel runtime OTLP endpoint for
 # Langfuse-compatible ingestion. Endpoint comes from the standard
 # OTEL env var; Langfuse requires an Authorization: Bearer header
-# built from LANGFUSE_PUBLIC_KEY when configured.
 otlp_endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 langfuse_key = System.get_env("LANGFUSE_PUBLIC_KEY", "")
-otlp_headers = if langfuse_key != "", do: %{"Authorization" => "Bearer #{langfuse_key}"}, else: %{}
+# opentelemetry_exporter expects otlp_headers as a list of {binary, binary}
+# tuples (per opentelemetry_exporter.erl doc comment), not a map.
+otlp_headers = if langfuse_key != "", do: [{"Authorization", "Bearer #{langfuse_key}"}], else: []
 config :jido_otel, otlp_endpoint: otlp_endpoint, otlp_headers: otlp_headers
+
+# OpenTelemetry OTLP exporter override (TRD-2026-4212be7e / JOT-T001).
+# Base config sets http://localhost:4318 + http_protobuf; in prod we read
+# the standard OTEL env var and add Langfuse's auth header so the SDK's
+# batch processor ships spans to the configured collector.
+config :opentelemetry_exporter,
+  otlp_endpoint: otlp_endpoint,
+  otlp_protocol: :http_protobuf,
+  otlp_headers: otlp_headers
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("JIDO_CHECKPOINT_DATABASE_URL", "")
