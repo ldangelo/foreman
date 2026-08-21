@@ -1,0 +1,181 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.0/.schema/devbox.schema.json",
+  "packages": [
+    "elixir_1_18",
+    "erlang_28",
+    "postgres-client_17",
+    "redis-7_4",
+    "docker-client_25",
+    "jq",
+    "openssl",
+    "python3",
+    "pipx",
+    "git",
+    "gh",
+    "watch",
+    "direnv"
+  ],
+  "shell": {
+    "init_hook": [
+      "# Source .env files from this repo + the litellm-langfuse-stack if present.",
+      "# Operators can override LITELLM_LANGFUSE_STACK to point at a checkout elsewhere.",
+      "export LITELLM_LANGFUSE_STACK=\"${LITELLM_LANGFUSE_STACK:-$HOME/Development/Sunstone/litellm-langfuse-stack}\"",
+      "[ -f .env ] && set -a && . ./.env && set +a || true",
+      "[ -f \"$LITELLM_LANGFUSE_STACK/.env\" ] && set -a && . \"$LITELLM_LANGFUSE_STACK/.env\" && set +a || true",
+      "# Use a quick 'foreman' alias that points mix at the right host.",
+      "export FOREMAN_API_URL=\"${FOREMAN_API_URL:-http://127.0.0.1:4766}\"",
+      "# Tell Elixir to print a banner on shell entry so the operator knows which fork they're in.",
+      "echo \"devbox shell  ::  foreman.jido-migration  ::  $(mix --version 2>/dev/null || elixir --version | head -1)\""
+    ],
+    "scripts": {
+      "info": [
+        "echo \"Foreman dev environment\"",
+        "echo '------------------------'",
+        "echo ''",
+        "echo 'Stack repo:   $LITELLM_LANGFUSE_STACK'",
+        "echo 'Foreman API:  $FOREMAN_API_URL'",
+        "echo ''",
+        "echo 'Quick commands:'",
+        "echo '  devbox run setup    first-time: copy .env, install deps, fetch mix deps'",
+        "echo '  devbox run up       bring up Langfuse stack + otel-collector (the full dev stack)'",
+        "echo '  devbox run down     tear down dev services (keep volumes)'",
+        "echo '  devbox run reset    tear down + drop volumes (destructive)'",
+        "echo '  devbox run ps       show service status for both repos'",
+        "echo '  devbox run logs     tail all logs (Langfuse stack + otel-collector)'",
+        "echo '  devbox run server   start the Phoenix server (foreground)'",
+        "echo '  devbox run iex      start the Phoenix server with iex'",
+        "echo '  devbox run db:migrate    run ecto migrations'",
+        "echo '  devbox run db:reset      drop + re-migrate the dev database'",
+        "echo '  devbox run test     run all ExUnit tests'",
+        "echo '  devbox run test:langfuse  run only the :langfuse-tagged integration tests'",
+        "echo '  devbox run test:unit   run ExUnit tests EXCEPT the :langfuse ones'",
+        "echo '  devbox run deps     fetch + compile mix dependencies'",
+        "echo '  devbox run fmt      format the Elixir code'",
+        "echo ''"
+      ],
+      "env:list": [
+        "echo 'env vars (subset):'",
+        "echo '  LITELLM_LANGFUSE_STACK = $LITELLM_LANGFUSE_STACK'",
+        "echo '  FOREMAN_API_URL        = $FOREMAN_API_URL'",
+        "echo '  LANGFUSE_PUBLIC_KEY    = ${LANGFUSE_PUBLIC_KEY:-<not set>}'",
+        "echo '  LANGFUSE_SECRET_KEY    = ${LANGFUSE_SECRET_KEY:+***set***}${LANGFUSE_SECRET_KEY:-<not set>}'",
+        "echo '  DATABASE_URL           = ${DATABASE_URL:-<not set>}'",
+        "echo ''",
+        "echo 'Cluster services (verify after devbox run up):'",
+        "echo '  litellm:           http://127.0.0.1:4000'",
+        "echo '  langfuse-web:      http://127.0.0.1:3000 (UI + public REST API)'",
+        "echo '  langfuse OTLP:     http://127.0.0.1:3000/api/public/otel/v1/traces'",
+        "echo '  otel-collector:    http://127.0.0.1:4318 (OTLP/HTTP, foreman -> langfuse)'",
+        "echo '  otel health:       http://127.0.0.1:13133/status'",
+        "echo '  postgres (stack):  localhost:55434  (databases langfuse, litellm)'",
+        "echo '  redis (stack):     localhost:6380'",
+        "echo '  clickhouse:        (internal, langfuse analytics)'",
+        "echo '  minio:             http://127.0.0.1:9091 (langfuse blob storage)'",
+        "echo ''"
+      ],
+      "setup": [
+        "# First-time bootstrap. Idempotent — safe to re-run.",
+        "# 1. Foreman repo .env (copy from .env.example if missing).",
+        "[ -f .env ] || cp .env.example .env 2>/dev/null || true",
+        "# 2. Litellm stack env.",
+        "test -d \"$LITELLM_LANGFUSE_STACK\" || { echo \"litellm-langfuse-stack not at $LITELLM_LANGFUSE_STACK\"; echo 'Clone it: git clone <repo> $LITELLM_LANGFUSE_STACK'; exit 1; }",
+        "cd \"$LITELLM_LANGFUSE_STACK\" && ([ -f .env ] || (echo 'generating .env' && cp .env.example .env || true))",
+        "# 3. Mix deps for foreman_server.",
+        "cd packages/foreman_server && mix local.hex --force 2>/dev/null || true",
+        "cd packages/foreman_server && mix local.rebar --force 2>/dev/null || true",
+        "cd packages/foreman_server && mix deps.get",
+        "echo '---'",
+        "echo 'setup done. Next: devbox run up'"
+      ],
+      "up": [
+        "# Bring up the full dev stack: litellm-langfuse stack + foreman's otel-collector.",
+        "# Order matters: the langfuse web service must be reachable on the",
+        "# compose network before otel-collector starts (it forwards Basic-auth",
+        "# traces there). depends_on handles this in compose, but the stack",
+        "# must be up first so the external network exists.",
+        "test -d \"$LITELLM_LANGFUSE_STACK\" || { echo \"missing $LITELLM_LANGFUSE_STACK — set LITELLM_LANGFUSE_STACK\"; exit 1; }",
+        "echo '== bringing up litellm-langfuse stack =='",
+        "cd \"$LITELLM_LANGFUSE_STACK\" && docker compose up -d --build",
+        "echo '== waiting for langfuse-web to be reachable =='",
+        "for i in $(seq 1 30); do",
+        "  if curl -sf -m 2 http://127.0.0.1:3000/api/public/health > /dev/null; then echo \"  langfuse ready in ${i}s\"; break; fi;",
+        "  sleep 2;",
+        "done",
+        "echo '== bringing up foreman otel-collector =='",
+        "set -a && . \"$LITELLM_LANGFUSE_STACK/.env\" && set +a",
+        "cd \"$DEVBOX_PROJECT_ROOT\" && docker compose -f ops/otel-collector/docker-compose.yml up -d --build",
+        "echo '== overall ps =='",
+        "cd \"$DEVBOX_PROJECT_ROOT\" && devbox run ps"
+      ],
+      "down": [
+        "echo '== tearing down foreman otel-collector =='",
+        "cd \"$DEVBOX_PROJECT_ROOT\" && docker compose -f ops/otel-collector/docker-compose.yml down 2>&1 || true",
+        "echo '== tearing down litellm-langfuse stack =='",
+        "cd \"$LITELLM_LANGFUSE_STACK\" && docker compose down 2>&1 || true",
+        "echo 'done'"
+      ],
+      "reset": [
+        "# DESTRUCTIVE: drops all volumes. Requires confirmation.",
+        "echo 'This will DROP all volumes (langfuse metadata, litellm virtual keys, etc.)'",
+        "read -p 'Type YES to continue: ' CONFIRM",
+        "test \"$CONFIRM\" = 'YES' || { echo 'cancelled'; exit 1; }",
+        "cd \"$DEVBOX_PROJECT_ROOT\" && docker compose -f ops/otel-collector/docker-compose.yml down -v 2>&1 || true",
+        "cd \"$LITELLM_LANGFUSE_STACK\" && docker compose down -v 2>&1 || true",
+        "echo 'done'"
+      ],
+      "ps": [
+        "echo '== foreman otel-collector =='",
+        "cd \"$DEVBOX_PROJECT_ROOT\" && docker compose -f ops/otel-collector/docker-compose.yml ps 2>&1 || true",
+        "echo ''",
+        "echo '== litellm-langfuse stack =='",
+        "cd \"$LITELLM_LANGFUSE_STACK\" && docker compose ps 2>&1 || true"
+      ],
+      "logs": [
+        "echo '== foreman otel-collector =='",
+        "cd \"$DEVBOX_PROJECT_ROOT\" && docker compose -f ops/otel-collector/docker-compose.yml logs -f otel-collector"
+      ],
+      "logs:stack": [
+        "cd \"$LITELLM_LANGFUSE_STACK\" && docker compose logs -f"
+      ],
+      "deps": [
+        "cd packages/foreman_server && mix deps.get"
+      ],
+      "fmt": [
+        "cd packages/foreman_server && mix format"
+      ],
+      "compile": [
+        "cd packages/foreman_server && mix compile"
+      ],
+      "server": [
+        "cd packages/foreman_server && mix phx.server"
+      ],
+      "iex": [
+        "cd packages/foreman_server && iex -S mix"
+      ],
+      "db:console": [
+        "psql \"${DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:55432/foreman_dev}\""
+      ],
+      "db:migrate": [
+        "cd packages/foreman_server && mix ecto.migrate"
+      ],
+      "db:rollback": [
+        "cd packages/foreman_server && mix ecto.rollback --step 1"
+      ],
+      "db:reset": [
+        "cd packages/foreman_server && mix ecto.drop && mix ecto.create && mix ecto.migrate"
+      ],
+      "test": [
+        "cd packages/foreman_server && mix test"
+      ],
+      "test:langfuse": [
+        "cd packages/foreman_server && mix test --only langfuse"
+      ],
+      "test:unit": [
+        "cd packages/foreman_server && mix test --exclude langfuse"
+      ],
+      "test:all": [
+        "cd packages/foreman_server && mix test --include langfuse"
+      ]
+    }
+  }
+}

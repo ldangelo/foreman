@@ -74,6 +74,98 @@ Workflow note: PR/merge behavior is controlled by phase-level `checkpointPr: tru
 ---
 
 
+## Devbox — single entry point for the full dev environment
+
+A new dev cloning this repo should be productive with `devbox` alone. The
+`devbox.json` at the repo root declares Nix packages (elixir/erlang/postgres/
+redis/docker-client/jq/openssl/python3/git/gh/watch/direnv) and a script
+catalog that orchestrates the Langfuse stack + otel-collector + the foreman
+app from one place.
+
+Prereqs: [Devbox](https://www.jetpack.io/devbox/) (which installs Nix on
+macOS/Linux). Once devbox is on PATH, every script below is one
+`devbox run X` invocation from the repo root.
+
+The Langfuse/litellm observability stack itself lives in a separate repo
+(`~/Development/Sunstone/litellm-langfuse-stack/`). Override that path via
+`export LITELLM_LANGFUSE_STACK=/path/to/stack` if yours is elsewhere. The
+default works for `~/Development/<org>/<repo>` side-by-side checkouts.
+
+### Common dev workflows
+
+```bash
+# ONE-TIME bootstrap (after cloning):
+devbox run setup            # copy .env, install mix deps, ensure stack .env
+
+# DAILY:
+devbox run up               # bring up Langfuse stack + otel-collector
+devbox run server           # start the Phoenix server (foreground)
+devbox run iex              # start with iex for interactivity
+devbox run ps               # show all services across both repos
+devbox run logs             # tail otel-collector logs
+devbox run logs:stack       # tail litellm-langfuse stack logs
+
+# TEAR DOWN (preserves volumes):
+devbox run down
+
+# FULL RESET (DROPS all data — will prompt):
+devbox run reset
+
+# TESTING:
+devbox run test             # all tests
+devbox run test:langfuse    # only :langfuse-tagged (the OTel+Langfuse e2e path)
+devbox run test:unit        # everything except :langfuse
+
+# DATABASE:
+devbox run db:migrate
+devbox run db:reset
+devbox run db:console       # psql on foreman-postgres
+
+# QUICK REFERENCE:
+devbox run info             # all commands + status summary
+devbox run env:list         # current env vars + endpoints
+```
+
+### What `devbox run up` does
+
+1. Sources the litellm-langfuse-stack's `.env` so it can find
+   `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`.
+2. `cd $LITELLM_LANGFUSE_STACK && docker compose up -d --build` — brings up
+   litellm + langfuse-web + langfuse-worker + headroom + postgres + redis
+   + clickhouse + minio. (Host ports already pre-remapped in the stack repo
+   to avoid analytics-postgres on 5432 and analytics-redis on 6379.)
+3. Waits up to 60 s for `http://127.0.0.1:3000/api/public/health`.
+4. `cd $DEVBOX_PROJECT_ROOT && docker compose -f ops/otel-collector/docker-compose.yml up -d --build`
+   — brings up the in-repo OTel collector (Foreman -> collector -> Langfuse).
+5. `devbox run ps` — final status.
+
+### What the otel-collector does
+
+The collector at `ops/otel-collector/` is the bridge between Foreman's OTLP
+exporter (`packages/foreman_server/config/config.exs`,
+`packages/foreman_server/config/prod.exs`) and Langfuse v3's OTLP ingest
+endpoint. Foreman exports to `http://127.0.0.1:4318`; the collector batches,
+retries, and forwards to `http://langfuse-web:3000/api/public/otel/v1/traces`
+with HTTP Basic auth (`base64(public:secret)`).
+
+Why this exists:
+
+- Langfuse v3's OTLP ingest requires Basic auth with both the public AND
+  secret keys — Bearer-with-public-only returns 403. Earlier this session
+  shipped that broken shape against real Langfuse; `prod.exs` was patched
+  (commit 5296992).
+- In dev, Foreman points at the collector; prod deployment points
+  directly at the Langfuse ingest URL via the same `OTEL_EXPORTER_OTLP_ENDPOINT`
+  env var (see `packages/foreman_server/config/prod.exs`).
+
+### Lint warning
+
+`devbox.json` is in legacy format (the warning at every `devbox run`).
+Running `devbox update` rewrites it to the modern `{packages: [{name: ...}]}`
+shape; safe but cosmetic. Will be addressed in a follow-up.
+
+---
+
 ## Operator Reference
 
 ### Starting the Phoenix Server

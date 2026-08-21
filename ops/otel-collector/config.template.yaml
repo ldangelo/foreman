@@ -1,0 +1,84 @@
+# OTel Collector config (template — entrypoint.sh envsubst's
+# ${LANGFUSE_HOST}, ${LANGFUSE_PUBLIC_KEY}, ${LANGFUSE_SECRET_KEY},
+# ${LANGFUSE_BASIC_AUTH} before exec'ing the collector).
+#
+# Receivers:
+#   otlp/http on :4318   - Foreman's OTLP exporter (config.exs)
+#   otlp/grpc on :4317   - gRPC variant (future-proof)
+#
+# Exporters:
+#   debug          - log spans/logs to stdout for debugging
+#   otlphttp/langfuse  - HTTP-only OTLP exporter with full-URL endpoint
+#                    support; forwards to Langfuse v3's OTLP ingest at
+#                    http://${LANGFUSE_HOST}/api/public/otel/v1/traces
+#                    with HTTP Basic auth (public:secret base64-encoded).
+#                    NOTE: the older 'otlp' exporter in contrib 0.104.x has
+#                    a path-agnostic 'endpoint' field — `langfuse-web:3000/
+#                    api/public/otel/v1/traces` is rejected with
+#                    "invalid port". otlphttp accepts a full URL.
+#
+# Service:
+#   ONE pipelines: map with traces + logs as siblings. Do NOT add a second
+#   `service.pipelines:` top-level key — YAML deep-merges silently and
+#   drops the first map. Verified empirically 2026-08-21.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Batched retries — drops nothing on transient forwarding errors (Langfuse
+  # restarts etc.) and smooths bursts. 1s timeout keeps the e2e test sane.
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  debug:
+    verbosity: normal
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  otlphttp/langfuse:
+    # Langfuse v3 OTLP ingest endpoint (HTTP/protobuf). The otlphttp
+    # exporter appends /v1/traces to the configured endpoint, so the host
+    # stops at /api/public/otel — leaving the suffix out produces
+    # requests to /api/public/otel/v1/traces/v1/traces -> 404 (verified
+    # empirically 2026-08-21). LANGFUSE_HOST is in hostname:port form
+    # (entrypoint.sh defaults to langfuse-web:3000); the http:// prefix
+    # lives in this template so an operator can point LANGFUSE_HOST at a
+    # remote URL (e.g. https://cloud.langfuse.com) and it still parses.
+    endpoint: "http://${LANGFUSE_HOST}/api/public/otel"
+    # Auth: HTTP Basic with public:secret base64-encoded (LANGFUSE_BASIC_AUTH
+    # computed by entrypoint.sh). Bearer-with-public-only returns 403,
+    # Basic with both keys returns 4xx post-auth.
+    headers:
+      Authorization: "Basic ${LANGFUSE_BASIC_AUTH}"
+    # Langfuse's OTLP endpoint is plain HTTP inside the compose network;
+    # no TLS to terminate here.
+    tls:
+      insecure: true
+    compression: none
+
+extensions:
+  # Health endpoint for `docker compose ps` / `make health`
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    # Single top-level `pipelines` map. Do NOT add a second `pipelines:` key
+    # here — the YAML deep-merge silently overwrites the first.
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlphttp/langfuse]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

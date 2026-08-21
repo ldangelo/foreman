@@ -82,3 +82,4 @@
 /packages/jido_harness/_build/**
 /packages/jido_harness/cover/**
 /packages/jido_harness/deps/**/_build/**
+.devbox/
