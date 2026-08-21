@@ -1,7 +1,7 @@
 defmodule ForemanServer.Agents.LangfuseTracer do
   @moduledoc "Langfuse tracing with routing auditability. TRD-2026-4212be7e / LGL-T002 + LGL-T004."
 
-  def endpoint, do: Application.get_env(:langfuse, :endpoint, "http://localhost:3000")
+  def endpoint, do: Application.get_env(:foreman_server, :langfuse)[:endpoint] || "http://localhost:3000"
 
   def emit_trace(prompt, response, model, cost_usd, latency_ms, opts \\ []) do
     trace = %{

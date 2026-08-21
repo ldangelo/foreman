@@ -97,7 +97,7 @@ config :opentelemetry_exporter,
 # LiteLLM runs on port 4000, Langfuse on port 3000. The `model: "auto"`
 # value tells LiteLLM to pick the best model for the requested capability
 # (code, chat, embeddings, etc.) at request time.
-config :litellm,
+config :foreman_server, :litellm,
   endpoint: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000"),
   model: System.get_env("LITELLM_MODEL", "auto")
 
@@ -115,7 +115,7 @@ config :jido_ai,
     }
   }
 
-config :langfuse,
+config :foreman_server, :langfuse,
   endpoint: System.get_env("LANGFUSE_ENDPOINT", "http://localhost:3000")
 
 # TRD-2026-4212be7e JSH-T003: VFS isolation per worktree.

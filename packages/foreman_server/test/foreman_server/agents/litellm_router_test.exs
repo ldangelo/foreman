@@ -46,12 +46,13 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
   # model selection without restarting Foreman.
   describe "dynamic config changes" do
     @tag :litellm_routing_config
-    test "route/2 reflects model change when :litellm :model env is updated" do
+    test "route/2 reflects model change when :foreman_server :litellm :model env is updated" do
       # Store original value
-      original_model = Application.get_env(:litellm, :model, "auto")
+      original = Application.get_env(:foreman_server, :litellm) || []
+      original_model = Keyword.get(original, :model, "auto")
 
       on_exit(fn ->
-        Application.put_env(:litellm, :model, original_model)
+        Application.put_env(:foreman_server, :litellm, original)
       end)
 
       # Default: model=auto
@@ -59,28 +60,33 @@ defmodule ForemanServer.Agents.LitellmRouterTest do
       assert default_route.model == "auto"
 
       # Switch to explicit model — route/2 should reflect immediately
-      Application.put_env(:litellm, :model, "openai:gpt-4o")
+      Application.put_env(:foreman_server, :litellm, Keyword.put(original, :model, "openai:gpt-4o"))
       explicit_route = LitellmRouter.route(:chat)
       assert explicit_route.model == "openai:gpt-4o"
 
       # Switch back to auto
-      Application.put_env(:litellm, :model, "auto")
+      Application.put_env(:foreman_server, :litellm, Keyword.put(original, :model, "auto"))
       restored_route = LitellmRouter.route(:chat)
       assert restored_route.model == "auto"
     end
 
     @tag :litellm_routing_config
-    test "route/2 reflects endpoint change when :litellm :endpoint env is updated" do
-      original_endpoint = Application.get_env(:litellm, :endpoint, "http://localhost:4000")
+    test "route/2 reflects endpoint change when :foreman_server :litellm :endpoint env is updated" do
+      original = Application.get_env(:foreman_server, :litellm) || []
+      original_endpoint = Keyword.get(original, :endpoint, "http://localhost:4000")
 
       on_exit(fn ->
-        Application.put_env(:litellm, :endpoint, original_endpoint)
+        Application.put_env(:foreman_server, :litellm, original)
       end)
 
       default_route = LitellmRouter.route(:chat)
       assert default_route.endpoint == "http://localhost:4000"
 
-      Application.put_env(:litellm, :endpoint, "https://litellm.internal.example.com")
+      Application.put_env(
+        :foreman_server,
+        :litellm,
+        Keyword.put(original, :endpoint, "https://litellm.internal.example.com")
+      )
       updated_route = LitellmRouter.route(:chat)
       assert updated_route.endpoint == "https://litellm.internal.example.com"
     end
