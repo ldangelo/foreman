@@ -24,6 +24,16 @@ devbox run iex            # same server with IEx
 devbox run ps             # stack + collector status
 devbox run logs           # Foreman OTel collector logs
 devbox run logs:stack     # litellm/langfuse stack logs
+devbox run info           # command catalog + endpoint summary
+devbox run env:list       # relevant env vars + service URLs
+devbox run test           # full ExUnit suite
+devbox run test:unit      # ExUnit excluding :langfuse tests
+devbox run test:langfuse  # OTel/Langfuse integration tests
+devbox run db:migrate     # run Ecto migrations
+devbox run db:reset       # drop/recreate/migrate dev DB
+devbox run deps           # fetch + compile mix deps
+devbox run fmt            # format Elixir code
+devbox run compile        # compile foreman_server
 devbox run down           # stop services, keep volumes
 devbox run reset          # destructive volume reset; prompts first
 ```
@@ -35,8 +45,9 @@ present, and defaults `LITELLM_LANGFUSE_STACK` to
 Phoenix dev port. Outside devbox, set `FOREMAN_API_URL` yourself; the
 CLI's compiled fallback is still `http://127.0.0.1:4000`. If the server
 is configured with `FOREMAN_API_TOKEN`, pass the same value in the CLI
-env or send `Authorization: Bearer <token>` to the HTTP API. When no
-server token is configured, dev auth is bypassed.
+env or send `Authorization: Bearer <token>` to the HTTP API. The API
+also accepts `?token=<token>` for narrow tooling. When no server token
+is configured, dev auth is bypassed.
 
 ## 0.1 Operator API surface
 
@@ -87,7 +98,10 @@ moves the task to `ready`. Dispatch requires `ready` plus a bound
 `in_progress`. Terminal execution emits `TaskExecutionCompleted` or
 `TaskExecutionFailed`; the current task projection stores successful
 completion as `closed` and failure as `failed` (run projections use
-`completed`/`failed`). The operator retry path is only for tasks still
+`completed`/`failed`). In operator shorthand, this is
+`open -> ready -> in_progress -> terminal`, where the terminal branch is
+completed/failed at the event/run level and `closed`/`failed` in the
+task read model. The operator retry path is only for tasks still
 `in_progress` against a terminal run, or already `failed` by the
 terminal invariant; successful `task.retry` clears run-bound fields and
 returns the task to `open`.
