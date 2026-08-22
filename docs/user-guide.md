@@ -51,13 +51,18 @@ is configured, dev auth is bypassed.
 
 ## 0.1 Operator API surface
 
-All external mutations go through `POST /api/commands`. The server
+Operator domain commands go through `POST /api/commands`. The server
 allowlist currently accepts `project.register`, `project.update`,
 `project.archive`, `task.create`, `task.approve`, `task.retry`,
 `run.cancel`, `work.submit`, and `work.cancel`. The controller derives
 or verifies `aggregate_id` as `<prefix>:<id>` before forwarding to
 `ForemanServer.CommandGateway`; mismatched IDs are rejected before any
 aggregate handles the command.
+
+Other ingress paths do not use the command envelope: workflow install/remove
+use `POST /api/admin/workflows/install` and
+`POST /api/admin/workflows/remove`, webhooks use their own controllers, and
+MCP is mounted separately at `/mcp`.
 
 Example work submission:
 
@@ -75,11 +80,12 @@ Example work submission:
 }
 ```
 
-`work.submit` requires a non-empty `work_id`, `project_id`, `workflow`,
-and `prompt`; the project must exist and must not be archived. The server
-loads `<workflow>.yaml`, derives `submission_id`, `run_id`, and
-`workflow_snapshot`, and rejects client-supplied reserved fields such as
-`submission_id`, `run_id`, or `workflow_snapshot`. The command response is
+`work.submit` requires a non-empty `work_id` and `project_id`; the
+project must exist and must not be archived. `workflow` and `prompt` must
+be strings; the server then loads `<workflow>.yaml`, derives
+`submission_id`, `run_id`, and `workflow_snapshot`, and rejects
+client-supplied reserved fields such as `submission_id`, `run_id`, or
+`workflow_snapshot`. The command response is
 only the generic accepted envelope; use `GET /api/work/{work_id}` to read
 the derived `run_id`, `submission_id`, backend, and status. The current work
 projection stores `submitted`, `succeeded`, `failed`, or `cancelled`; do not
@@ -193,17 +199,17 @@ key not listed here is treated as a feature request, not a bug fix.
 | `:failure_policies` | `%{}` | Map of `task_type => %{fallback?, timeout_ms?, max_attempts?}` overrides. |
 | `:default_timeout_ms` | `60_000` | Global default `timeout_ms` for `FailurePolicy.resolve/2` when no per-call or per-task override applies. |
 
-Per-adapter config:
+Request/execution inputs consumed by `JidoHarnessAdapter`:
 
-| Key | Default | Purpose |
+| Input | Default | Purpose |
 |---|---|---|
 | `request.context.provider` / `request.context["provider"]` | `:pi` | Per-request Jido.Harness upstream provider. Supported values are `:pi` and `:claude`; unknown providers return `:unsupported_provider`, and an unavailable chosen provider returns `:backend_unavailable` without falling back to another provider. |
-| `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :timeout_ms` | `60_000` | Adapter-side execution deadline enforced in the Jido.Harness driver. |
-| `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :await_timeout` | `:infinity` | `Jido.Harness.Run.await/2` timeout. Set to a finite ms value to bound agent run lifetime. |
+| `opts[:timeout_ms]` / `opts[:timeout]` | `60_000` | Execution deadline passed to the Jido.Harness driver (`:timeout_ms` is translated to the driver field). |
+| `opts[:await_timeout]` | `:infinity` | `Jido.Harness.Run.await/2` timeout. Set to a finite ms value to bound agent run lifetime. |
 
-> Each key maps to exactly one implementation path. If a key is
-> missing, the documented default applies. If a key value is invalid,
-> startup or registration returns a typed error.
+> These Jido Harness inputs are not application config keys. If the
+> runtime config key is missing, the documented default applies. Invalid
+> startup config fails registration; invalid request inputs fail the call.
 
 ## 3. Per-task failure policies
 
@@ -399,11 +405,13 @@ routing.
 
 ### Availability semantics
 
-`available?/0` is called on every `execute/3`. An adapter that
-returns `false` is **silently skipped** in `:automatic` and `:policy`
-modes; under `:manual`, the call returns `:backend_unavailable`.
-Implementations should consult local credentials / binary paths
-without making a network call.
+`available?/0` is sampled when an adapter is registered in
+`AdapterCatalog`; the routing snapshot stores that point-in-time value.
+An adapter recorded as unavailable is **silently skipped** in
+`:automatic` and `:policy` modes; under `:manual`, the call returns
+`:backend_unavailable`. Re-register the adapter or restart the runtime to
+refresh availability. Implementations should consult local credentials /
+binary paths without making a network call.
 
 ### Test expectations (ExUnit coverage for a new adapter)
 
@@ -1082,7 +1090,9 @@ Flags:
 - `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
 - `--backend` (optional) — backend selector accepted by the CLI (`pi`,
   `claude`, `codex`, `opencode`). The default `pi` value is omitted from
-  the envelope so the server uses its current configured default backend.
+  the envelope. Current Jido Harness execution supports only `pi` and
+  `claude`; `codex`/`opencode` are stale CLI-accepted values and are not
+  valid Jido Harness providers unless a future provider is added.
 
 Example:
 
