@@ -76,14 +76,21 @@ defmodule ForemanServer.Workflow.AutoPR do
   @doc "Extract handoff fields from skill output text."
   @spec parse_handoff(String.t()) :: {:ok, handoff()} | {:error, :no_handoff}
   def parse_handoff(content) when is_binary(content) do
-    branch = Regex.run(@branch_regex, content, capture: :all_but_first) |> List.first()
-    sha = Regex.run(@sha_regex, content, capture: :all_but_first) |> List.first()
+    branch = first_capture(@branch_regex, content)
+    sha = first_capture(@sha_regex, content)
     complete? = Regex.match?(@complete_regex, content)
 
     if complete? do
       {:ok, %{branch: branch || "", sha: sha || ""}}
     else
       {:error, :no_handoff}
+    end
+  end
+
+  defp first_capture(regex, content) do
+    case Regex.run(regex, content, capture: :all_but_first) do
+      nil -> nil
+      list -> List.first(list)
     end
   end
 
