@@ -1080,7 +1080,11 @@ exceeds the timeout, the run will be flagged on the next scan.
 
 ### CLI
 
-### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]`
+### `foreman run submit`
+
+```text
+foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]
+```
 
 Submit a new work request for dispatch. The CLI validates `--workflow`
 against the curated work-request workflows `prd`, `trd`, and `fix`, then
@@ -1097,16 +1101,33 @@ Flags:
 - `--prompt` (required) — the input prompt/text for the workflow.
 - `--project-id` (required) — existing, non-archived project ID.
 - `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
-- `--backend` (optional) — backend selector accepted by the CLI (`pi`,
-  `claude`, `codex`, `opencode`). The default `pi` value is omitted from
-  the envelope. Current Jido Harness execution supports only `pi` and
-  `claude`; `codex`/`opencode` are stale CLI-accepted values and are not
-  valid Jido Harness providers unless a future provider is added.
+- `--backend` (optional) — stored on the `WorkSubmitted` event and work
+  projection when not the CLI default `pi`; it is **not** currently wired
+  into Jido Harness provider selection for the spawned run. The CLI accepts
+  `pi`, `claude`, `codex`, and `opencode`, but current Jido Harness execution
+  supports only `pi` and `claude` as providers. `codex`/`opencode` are stale
+  CLI-accepted values unless a future provider is added. Because
+  `Work.Submission` builds the workflow snapshot without `backend` and
+  `Work.RunPayload.from_work_projection/1` omits it from admission payloads,
+  operators should treat this flag as read-model metadata, not an execution
+  switch.
 
 Example:
 
 ```text
 foreman run submit --workflow fix --prompt "Update docs/user-guide.md for issue #410" --project-id foreman
+```
+
+### `foreman run get <run-id>`
+
+Fetch a run projection through `GET /api/runs/{id}`. The HTTP response wraps
+stringified projection keys under `run`; missing runs return
+`{error: "run_not_found", run_id: "..."}` with `404`.
+
+Example:
+
+```text
+foreman run get run-f971378012da4da2fec3ec74dbac325d
 ```
 
 ### `foreman run cancel --id <run-id> [--reason <reason>]`
