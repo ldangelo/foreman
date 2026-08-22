@@ -88,9 +88,10 @@ project must exist and must not be archived. `workflow` and `prompt` must
 be strings; the server then loads `<workflow>.yaml`, derives
 `submission_id`, `run_id`, and `workflow_snapshot`, and rejects
 client-supplied reserved fields such as `submission_id`, `run_id`, or
-`workflow_snapshot`. The command response is
-only the generic accepted envelope; use `GET /api/work/{work_id}` to read
-the derived `run_id`, `submission_id`, backend, and status. The current work
+`workflow_snapshot`. The HTTP response is `201` with
+`{status: "accepted", result: ...}`; treat that result as an acknowledgement,
+not the stable work read model. Use `GET /api/work/{work_id}` to read the
+derived `run_id`, `submission_id`, backend, and status. The current work
 projection stores `submitted`, `succeeded`, `failed`, or `cancelled`; do not
 assume live queue position or running-state fields unless a future projector
 adds them.
@@ -1084,8 +1085,8 @@ Submit a new work request for dispatch. The CLI validates `--workflow`
 against the curated work-request workflows `prd`, `trd`, and `fix`, then
 issues `POST /api/commands` with a `work.submit` envelope. The server
 creates a `WorkSubmitted` event and admission/Dispatcher starts the run
-when capacity and any provider-specific leases allow it. For arbitrary
-server workflow manifests such as `implement-trd` and
+when the global run-slot gate and any workflow `beads_database_path` lease
+allow it. For arbitrary server workflow manifests such as `implement-trd` and
 `implement-trd-beads`, create/approve a task with `--workflow-type`
 instead of using `foreman run submit`.
 
