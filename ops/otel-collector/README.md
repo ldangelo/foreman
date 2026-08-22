@@ -15,7 +15,7 @@ exporter needs an OTLP endpoint. Two paths are wired:
 | Path | Where | What for |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318` | dev | Send to this collector, which forwards to Langfuse |
-| `OTEL_EXPORTER_OTLP_ENDPOINT=http://langfuse-web:3000/api/public/otel/v1/traces` | direct | Ship spans straight to Langfuse (e.g. in CI without a collector) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=http://langfuse-web:3000/api/public/otel` | direct | Ship spans straight to Langfuse (the OTLP HTTP exporter appends `/v1/traces`) |
 
 This collector is the dev path. It adds:
 - batching and retries so a Langfuse restart doesn't drop spans,
@@ -49,17 +49,17 @@ langfuse-web:3000    ◄── external: ~/Development/Sunstone/litellm-langfuse
   `/otelcol-contrib --config=$CONF`. The `--config` flag is required in
   contrib 0.104.x; omitting it produces an immediate restart loop.
 - `docker-compose.yml` — runs the collector only; attaches to the
-  langfuse-langfuse-stack's external network so `langfuse-web:3000`
+  `litellm-langfuse-stack_default` external network so `langfuse-web:3000`
   resolves by name.
 
 ## Usage
 
 ```bash
 # From the foreman repo root, via devbox:
-devbox run observability:up      # bring up the collector
-devbox run observability:logs    # tail its stdout
+devbox run up                    # bring up Langfuse stack + collector
+devbox run logs                  # tail collector stdout
 devbox run test:langfuse         # send a synthetic OTLP trace and verify
-devbox run observability:down    # tear it down
+devbox run down                  # tear down collector + stack
 
 # Without devbox:
 docker compose -f ops/otel-collector/docker-compose.yml up -d --build
@@ -90,6 +90,6 @@ docker compose directly, set them yourself.
   silently overwrites the first map (verified empirically 2026-08-21).
   Don't add a second.
 - The collector attaches to the **stack's** network; it cannot run without
-  that compose being up. Bring the stack up first via the devbox
-  `observability:up` script (which calls into `make up` in
-  `~/Development/Sunstone/litellm-langfuse-stack/`) — or directly.
+  that compose being up. Bring the full stack up first via `devbox run up`
+  (which starts `~/Development/Sunstone/litellm-langfuse-stack/` and then
+  this collector) — or start both compose projects directly.

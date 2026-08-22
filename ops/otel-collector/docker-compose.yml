@@ -7,9 +7,9 @@
 # collector can reach `langfuse-web:3000` as if it lived in that stack.
 #
 # Usage (via devbox at the repo root, or directly):
-#   devbox run observability:up
-#   devbox run observability:down
-#   devbox run observability:logs
+#   devbox run up
+#   devbox run down
+#   devbox run logs
 #
 # Or without devbox:
 #   docker compose -f ops/otel-collector/docker-compose.yml up -d --build
@@ -23,10 +23,9 @@ name: foreman-otel-collector
 # Network reference: the collector lives in a separate compose file, but it
 # needs to resolve `langfuse-web` (the Langfuse web container that runs in
 # `~/Development/Sunstone/litellm-langfuse-stack/`). We do that by attaching
-# to that compose's external default network. The devbox observability:up
-# script creates this network alias when it asks the stack repo to come up
-# (`docker compose -p litellm-langfuse-stack up -d`), then we attach by
-# using the same project name.
+# to that compose's external default network. `devbox run up` starts the
+# stack first so the external network exists, then this collector attaches by
+# using the same project/network name.
 networks:
   litellm-langfuse-stack_default:
     # Compose creates a default network named "<project>_default". We declare
