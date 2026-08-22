@@ -1,14 +1,126 @@
-# Agent runtime — operator & developer guide
+# Foreman operator & developer guide
 
-This guide explains how to operate and extend the `ForemanServer.AgentRuntime`
-subsystem. It documents behavior implemented by
-TRD-2026-6af02293 (TRD-001 through TRD-009). Anything speculative
-about future slices is intentionally omitted.
+This guide explains how to run Foreman, submit work, inspect runs, and
+operate the current Elixir/Jido worker runtime. It documents current
+behavior in `packages/foreman_server/lib/foreman_server/`,
+`packages/foreman_server/lib/foreman_server_web/`, `packages/foreman_cli/`,
+and `ops/`; speculative behavior is intentionally omitted.
 
 For invariant developer conventions (process layering, error shapes,
 telemetry contract) see [`../CLAUDE.md`](../CLAUDE.md). This file
-focuses on configuration keys, defaults, and the adapter-extension
-recipe.
+focuses on day-to-day operator workflows, runtime configuration,
+commands, and extension recipes.
+
+## 0. Current operator quickstart
+
+Use `devbox` from the repository root as the single entry point for the
+local development stack:
+
+```bash
+devbox run setup          # first-time env + mix deps bootstrap
+devbox run up             # litellm/langfuse stack + Foreman OTel collector
+devbox run server         # Phoenix server on http://127.0.0.1:4766
+devbox run iex            # same server with IEx
+devbox run ps             # stack + collector status
+devbox run logs           # Foreman OTel collector logs
+devbox run logs:stack     # litellm/langfuse stack logs
+devbox run down           # stop services, keep volumes
+devbox run reset          # destructive volume reset; prompts first
+```
+
+The devbox shell loads `.env`, then `$LITELLM_LANGFUSE_STACK/.env` when
+present, and defaults `LITELLM_LANGFUSE_STACK` to
+`$HOME/Development/Sunstone/litellm-langfuse-stack`. It also exports
+`FOREMAN_API_URL=http://127.0.0.1:4766` so the Go CLI talks to the
+Phoenix dev port. Outside devbox, set `FOREMAN_API_URL` yourself; the
+CLI's compiled fallback is still `http://127.0.0.1:4000`. If the server
+is configured with `FOREMAN_API_TOKEN`, pass the same value in the CLI
+env or send `Authorization: Bearer <token>` to the HTTP API. When no
+server token is configured, dev auth is bypassed.
+
+## 0.1 Operator API surface
+
+All external mutations go through `POST /api/commands`. The server
+allowlist currently accepts `project.register`, `project.update`,
+`project.archive`, `task.create`, `task.approve`, `task.retry`,
+`run.cancel`, `work.submit`, and `work.cancel`. The controller derives
+or verifies `aggregate_id` as `<prefix>:<id>` before forwarding to
+`ForemanServer.CommandGateway`; mismatched IDs are rejected before any
+aggregate handles the command.
+
+Example work submission:
+
+```json
+{
+  "type": "work.submit",
+  "command_id": "op-work-1",
+  "aggregate_id": "work:work-123",
+  "payload": {
+    "work_id": "work-123",
+    "project_id": "foreman",
+    "workflow": "fix",
+    "prompt": "Update docs/user-guide.md for issue #410"
+  }
+}
+```
+
+`work.submit` requires a non-empty `work_id`, `project_id`, and `prompt`;
+the project must exist and must not be archived. The WorkRequest
+aggregate emits `WorkSubmitted` with a deterministic or supplied `run_id`,
+`submission_id`, `workflow_snapshot`, and optional `backend`. The work
+projection moves through `submitted -> queued -> running -> succeeded |
+failed | cancelled` as Dispatcher/admission and terminal run events arrive.
+
+Read endpoints are projection-only:
+
+- `GET /api/work/{id}` returns the work projection directly, or
+  `{error: "work_not_found"}` with `404`.
+- `GET /api/runs/{id}` returns `{run: ...}` with stringified keys, or
+  `{error: "run_not_found", run_id: "..."}` with `404`.
+- `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
+  and `GET /api/queue` expose the corresponding projections.
+
+Task lifecycle is event-driven. `task.create` defaults to `open`.
+`task.approve` enriches operator input with trusted workflow data and
+moves the task to `ready`. Dispatch requires `ready` plus a bound
+`run_id`/`approval_id` and emits `TaskDispatched`, moving the task to
+`in_progress`. Terminal execution emits `TaskExecutionCompleted`
+(`closed` in the projection) or `TaskExecutionFailed` (`failed`). The
+operator retry path is only for tasks still `in_progress` against a
+terminal run, or already `failed` by the terminal invariant; successful
+`task.retry` clears run-bound fields and returns the task to `open`.
+
+## 0.2 Current worker runtime and tracing
+
+`ForemanServer.Overwatch` is enabled by default outside tests. Command
+phases run through `RunExecutor -> Overwatch.start_phase/1 ->
+LaunchWorker -> JidoHarnessWorker`. `LaunchWorker` starts the adapter,
+registers the pid with `Overwatch.Tracker`, emits `WorkerStarted` as
+sequence `0`, then activates the worker. `WorkerStarted` is the signal
+that flips a run projection from `awaiting_worker` to `in_progress`.
+The Jido worker runs `Jido.Harness` in a supervised task, emits periodic
+`WorkerHeartbeat`, emits `WorkerExited` on completion/crash, forwards the
+normalized `{:ok, text} | {:error, reason}` result to `RunExecutor`, and
+then exits normally so the supervisor can clean up.
+
+The default backend is the in-process `JidoHarnessAdapter`. Legacy
+`PiAdapter` remains only as a transitional fallback for operators who
+explicitly configure it. The current aggregate model uses per-aggregate
+`State` structs (for example `ForemanServer.Aggregates.Task.State` and
+`ForemanServer.Aggregates.WorkRequest.State`) plus the shared
+`ForemanServer.Aggregate` behavior/helpers; do not depend on a legacy
+global `Aggregate.State` shape in new code or runbooks.
+
+OTel defaults point Foreman at `http://localhost:4318`. In local dev,
+`devbox run up` starts `ops/otel-collector`, which joins the
+`litellm-langfuse-stack_default` Docker network and forwards traces to
+Langfuse v3 at `http://langfuse-web:3000/api/public/otel` (the
+`otlphttp` exporter appends `/v1/traces`). Langfuse v3 requires HTTP
+Basic auth using `LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY`; bearer auth
+with only the public key returns `403`. In production, set
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `LANGFUSE_PUBLIC_KEY`, and
+`LANGFUSE_SECRET_KEY`; `prod.exs` builds the same Basic auth header for
+both `:jido_otel` and `:opentelemetry_exporter`.
 
 ## 1. Enabling the runtime
 
@@ -59,8 +171,6 @@ from the adapters list can do so via:
 The runtime configuration is keyed under `:foreman_server,
 :agent_runtime`. The full set of supported keys is below. Adding a
 key not listed here is treated as a feature request, not a bug fix.
-
-## 2. Configuration keys (canonical list)
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -947,23 +1057,29 @@ exceeds the timeout, the run will be flagged on the next scan.
 
 ### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]`
 
-Submit a new work request for dispatch. Issues `POST /api/commands` with a
-`work.submit` envelope. The server creates a `WorkSubmitted` event and
-triggers workflow dispatch.
+Submit a new work request for dispatch. The CLI validates `--workflow`
+against the curated work-request workflows `prd`, `trd`, and `fix`, then
+issues `POST /api/commands` with a `work.submit` envelope. The server
+creates a `WorkSubmitted` event and admission/Dispatcher starts the run
+when capacity and any provider-specific leases allow it. For arbitrary
+server workflow manifests such as `implement-trd` and
+`implement-trd-beads`, create/approve a task with `--workflow-type`
+instead of using `foreman run submit`.
 
 Flags:
 
-- `--workflow` (required) — the workflow name to execute.
+- `--workflow` (required) — one of `prd`, `trd`, or `fix`.
 - `--prompt` (required) — the input prompt/text for the workflow.
-- `--project-id` (required) — the project ID.
+- `--project-id` (required) — existing, non-archived project ID.
 - `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
-- `--backend` (optional) — backend to use (`pi`, `claude`, `codex`,
-  `opencode`). Defaults to `pi`.
+- `--backend` (optional) — backend selector accepted by the CLI (`pi`,
+  `claude`, `codex`, `opencode`). The default `pi` value is omitted from
+  the envelope so the server uses its current configured default backend.
 
 Example:
 
 ```text
-foreman run submit --workflow implement-trd --prompt "Fix the CLI submit bug" --project-id foreman
+foreman run submit --workflow fix --prompt "Update docs/user-guide.md for issue #410" --project-id foreman
 ```
 
 ### `foreman run cancel --id <run-id> [--reason <reason>]`
