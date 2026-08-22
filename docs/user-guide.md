@@ -924,10 +924,11 @@ phase execution when the worktree is enabled:
 - `FOREMAN_SOURCE_REVISION` — the rendered base revision.
 - `FOREMAN_IMPLEMENTATION_KEY` — opaque key tying the run to its
   approval.
-- `BEADS_DB` — set only by `implement-trd-beads` when the planning
-  context provides a Beads database path.
-- `TRD_SCOPE` — set only by `implement-trd-beads` when the planning
-  context provides a TRD scope.
+- `BEADS_DB` — set only by `implement-trd-beads` from the frozen
+  implementation context's Beads database path.
+- `TRD_SCOPE` — set only by `implement-trd-beads`; computed during
+  worktree provisioning from the frozen TRD path and implementation key,
+  then stamped on the worktree record.
 
 `FOREMAN_EXPECTED_BASE` is **not** injected; the base is resolved
 lazily at completion time to honor any pushes that landed during the

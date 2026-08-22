@@ -87,8 +87,9 @@ config :opentelemetry, :resource,
 #
 # Dev default points at the OTel Collector's standard local port (4318).
 # prod.exs overrides otlp_endpoint from OTEL_EXPORTER_OTLP_ENDPOINT and
-# adds an Authorization: Bearer header built from LANGFUSE_PUBLIC_KEY when
-# set, so Langfuse-compatible ingest accepts the traces.
+# adds an Authorization: Basic header built from LANGFUSE_PUBLIC_KEY and
+# LANGFUSE_SECRET_KEY when both are set, so Langfuse-compatible ingest
+# accepts the traces.
 config :opentelemetry_exporter,
   otlp_endpoint: "http://localhost:4318",
   otlp_protocol: :http_protobuf
