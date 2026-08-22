@@ -422,8 +422,8 @@ without making a network call.
 
 Foreman no longer ships `ForemanServer.AgentRuntime.Adapters.PiAdapter`
 or a direct shell-out adapter for the local `pi` binary. Runtime execution
-now goes through the JidoHarnessAdapter and its bundled providers (`:pi`
-and `:claude` in the current server adapter).
+now goes through the JidoHarnessAdapter and its supported Jido Harness
+provider names (`:pi` and `:claude` in the current server adapter).
 
 Operators should keep `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
 in `:agent_runtime.adapters`. Requests default to the `:pi` provider; set
