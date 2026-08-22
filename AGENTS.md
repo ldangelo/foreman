@@ -287,13 +287,18 @@ Task statuses: `open` (created), `ready` (approved, waiting for dispatch), `in_p
 ```bash
 # Via the run
 foreman run cancel --id <run-id> --reason "reason"
+foreman run remove --id <run-id>
+foreman run reset --id <run-id>
 ```
 
 ### Go CLI Commands
 
 ```bash
 foreman task get <id>       # Fetch task projection
+foreman run list            # List run projections
 foreman run get <id>        # Fetch run projection
+foreman run remove --id <id> # Remove run and clean worktree/branch
+foreman run reset --id <id>  # Clear failed/stuck run projection
 foreman project list        # List projects
 foreman project get <id>    # Fetch project
 
@@ -556,6 +561,8 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 | `RunReserved` | `Run.handle_command/2` | Implementation key reservation |
 | `RunStarted` | `Run.handle_command/2` | Creates run projection, spawns worker |
 | `RunCancelled` | `Run.handle_command/2` | Marks run cancelled |
+| `RunDeleted` | `Run.handle_command/2` | Marks run removed and triggers cleanup fan-out |
+| `RunReset` | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
 | `RunCompleted` | `Run.handle_command/2` | Marks run terminal success |
 | `RunFailed` | `Run.handle_command/2` | Marks run terminal failure |
 | `RunFlaggedStuck` | `StuckDetector` | Flags run as stuck |
@@ -640,7 +647,7 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
 - **Acquire**: `lease.acquire` is atomic — if the DB is free, the run becomes holder;
   if held, the run is enqueued as a waiter and admission returns `:queued`.
 - **Release**: `lease.release` and `lease.remove_waiter` are dispatched at run
-  terminal time (`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+  terminal time (`RunCancelled`, `RunDeleted`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
   `RunBlocked`) by the Dispatcher. Both are idempotent no-ops when the run_id is not
   bound to the lease.
 - **Promotion**: when the holder releases with waiters, the aggregate emits a single

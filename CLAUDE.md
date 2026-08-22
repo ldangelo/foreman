@@ -445,7 +445,7 @@ register separate lease streams.
   event and re-enters `RunAdmission.start/2` for the promoted run.
 - **Terminal fan-out.** The `Dispatcher` dispatches `lease.release`
   and `lease.remove_waiter` on every terminal run event
-  (`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+  (`RunCancelled`, `RunDeleted`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
   `RunBlocked`). `RunBlocked` is terminal for lease cleanup: a blocked
   run must release its Beads-DB lease so queued peers can be promoted.
 - **Fail-closed gating.** `RunAdmission.start/3` reads the lease

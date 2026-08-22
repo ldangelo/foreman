@@ -6,8 +6,9 @@ defmodule ForemanServerWeb.CommandController do
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on the operator allowlist
   (`project.register`, `project.update`, `project.archive`, `task.create`,
-  `task.approve`, `task.retry`, `run.cancel`, `work.submit`, and
-  `work.cancel`), enriches the payload, and dispatches to `CommandRouter`.
+  `task.approve`, `task.retry`, `run.cancel`, `run.remove`, `run.reset`,
+  `work.submit`, and `work.cancel`), enriches the payload, and dispatches to
+  `CommandRouter`.
 
   The `aggregate_id` is derived from the payload (e.g. `task:<task_id>`
   for `task.create`); operators may supply it explicitly but the value
@@ -19,7 +20,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel work.submit work.cancel)
+  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset work.submit work.cancel)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -167,6 +168,8 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("task.approve"), do: "task"
   defp aggregate_prefix("task.retry"), do: "task"
   defp aggregate_prefix("run.cancel"), do: "run"
+  defp aggregate_prefix("run.remove"), do: "run"
+  defp aggregate_prefix("run.reset"), do: "run"
   defp aggregate_prefix("work.submit"), do: "work"
   defp aggregate_prefix("work.cancel"), do: "work"
   defp aggregate_prefix(_), do: ""
@@ -178,6 +181,8 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("task.approve"), do: :task_id
   defp id_field_for("task.retry"), do: :task_id
   defp id_field_for("run.cancel"), do: :run_id
+  defp id_field_for("run.remove"), do: :run_id
+  defp id_field_for("run.reset"), do: :run_id
   defp id_field_for("work.submit"), do: :work_id
   defp id_field_for("work.cancel"), do: :work_id
   defp id_field_for(_), do: nil
