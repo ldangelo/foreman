@@ -471,18 +471,23 @@ defmodule ForemanServer.Workflow.Dispatcher do
     work_id = payload["work_id"] || payload[:work_id]
 
     if is_binary(work_id) and work_id != "" do
-      reenter_work_admission(work_id, state)
+      reenter_work_admission(work_id, envelope, state)
     else
       {:noreply, state}
     end
   end
 
-  defp reenter_work_admission(work_id, state) do
+  defp reenter_work_admission(work_id, envelope, state) do
     case ProjectionStore.work_projection(work_id) do
       nil ->
         {:noreply, state}
 
       proj ->
+        payload = unwrap_data(envelope)
+        workflow_snapshot =
+          payload["workflow_snapshot"] || payload[:workflow_snapshot] || %{}
+        proj = Map.put(proj, :workflow_snapshot, workflow_snapshot)
+
         run_payload = RunPayload.from_work_projection(proj)
 
         case RunAdmission.start(proj.project_id, Map.from_struct(run_payload)) do

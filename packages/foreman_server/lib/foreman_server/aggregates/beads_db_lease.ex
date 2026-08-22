@@ -112,14 +112,15 @@ defmodule ForemanServer.Aggregates.BeadsDbLease do
 
     with {:ok, db_path} <- Aggregate.required_binary(Aggregate.get(payload, :db_path), :db_path),
          {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
-         {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
+         :ok <- Aggregate.optional_binary(Aggregate.get(payload, :task_id), :task_id),
          {:ok, acquired_at_ms} <-
            positive_integer(Aggregate.get(payload, :acquired_at_ms), :acquired_at_ms) do
-      acquire_event(state, db_path, run_id, task_id, acquired_at_ms)
+      acquire_event(state, db_path, run_id, Aggregate.get(payload, :task_id), acquired_at_ms)
     else
       {:error, _} = err -> err
     end
   end
+
 
   def handle_command(state, %{type: "lease.release"} = command) do
     payload = Map.get(command, :payload) || %{}

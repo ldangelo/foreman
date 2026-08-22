@@ -31,6 +31,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.CommandGateway
   alias ForemanServer.EventStore, as: EventStore
+  alias ForemanServer.Idempotency.HeartbeatLease
+  alias ForemanServer.RunExecutorLiveness
   alias ForemanServer.Identity
   alias ForemanServer.Overwatch
   alias ForemanServer.ProjectionStore

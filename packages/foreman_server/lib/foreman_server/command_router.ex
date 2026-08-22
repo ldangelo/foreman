@@ -82,8 +82,7 @@ defmodule ForemanServer.CommandRouter do
   def dispatch_run_start(project_id, payload, timeout)
       when is_binary(project_id) and project_id != "" and is_map(payload) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
-         {:ok, _task_id} <-
-           Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id) do
+         :ok <- Aggregate.optional_binary(Aggregate.get(payload, :task_id), :task_id) do
       command_id =
         Identity.run_start_command_id(
           project_id,
@@ -100,8 +99,6 @@ defmodule ForemanServer.CommandRouter do
     do: {:error, {:missing_or_invalid, :project_id, project_id}}
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
-
-  # -------------------------------------------------------------------------
   # GenServer callbacks
   # -------------------------------------------------------------------------
 

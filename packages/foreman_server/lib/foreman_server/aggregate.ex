@@ -149,6 +149,19 @@ defmodule ForemanServer.Aggregate do
   def required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
   def required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
 
+  @doc """
+  Validate an optional binary field: passes `:ok` for nil or a non-empty binary,
+  rejects empty strings and other values with `{:error, {:missing_or_invalid, key}}`.
+
+  Used by work-flow commands where the `task_id` may be nil because work flows
+  are not anchored to a Task aggregate.
+  """
+  @spec optional_binary(term(), atom() | String.t()) ::
+          :ok | {:error, {:missing_or_invalid, atom() | String.t()}}
+  def optional_binary(value, _key) when is_binary(value) and value != "", do: :ok
+  def optional_binary(nil, _key), do: :ok
+  def optional_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
+
   # -------------------------------------------------------------------------
   # Load (default implementation)
   # -------------------------------------------------------------------------
