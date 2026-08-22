@@ -125,9 +125,9 @@ forwards the normalized `{:ok, text} | {:error, reason}` result to
 paths can emit `WorkerCrashed`; normal Jido metadata is not part of the
 operator result.
 
-The default backend is the in-process `JidoHarnessAdapter`. Legacy
-`PiAdapter` remains only as a transitional fallback for operators who
-explicitly configure it. The current aggregate model uses per-aggregate
+The default and only bundled backend adapter is the in-process
+`JidoHarnessAdapter`; the old shell-out `PiAdapter` is no longer shipped.
+The current aggregate model uses per-aggregate
 `State` structs (for example `ForemanServer.Aggregates.Task.State`,
 `ForemanServer.Aggregates.Worker.State`, and
 `ForemanServer.Aggregates.BeadsDbLease.State`) plus the shared
@@ -165,11 +165,7 @@ default agent backend). The JidoHarnessAdapter routes through
 `Jido.Harness.Session` / `Run` / `Process` and integrates with
 LiteLLM via `req_llm` (see
 `docs/guides/adding-a-jido-harness-provider.md` for adding a new
-provider). Operators who still need the legacy `pi` binary can
-fall back by overriding `:agent_runtime.adapters` to a list
-containing `PiAdapter` instead of `JidoHarnessAdapter`; the
-`PiAdapter` module remains in the codebase as a transitional
-fallback. `JidoHarnessAdapter.available?/0` self-gates on the
+provider). `JidoHarnessAdapter.available?/0` self-gates on the
 configured `:jido_harness, :providers` and on
 `ReadinessCheck.installed?/1` per provider; the registration is
 safe to leave in place even on hosts where no provider is
@@ -432,24 +428,18 @@ without making a network call.
 - payload isolation: the public result tuple contains no backend
   identifier, prompt, or adapter-internal text.
 
-## 9. The Pi adapter as a fallback
+## 9. Historical Pi adapter removal
 
-The provided `PiAdapter` shells out to the local `pi` binary
-and remains in the codebase as a transitional fallback for
-operators who have not yet migrated to the JidoHarnessAdapter:
+Foreman no longer ships `ForemanServer.AgentRuntime.Adapters.PiAdapter`
+or a direct shell-out adapter for the local `pi` binary. Runtime execution
+now goes through the JidoHarnessAdapter and its configured providers
+(`:pi` and `:claude` in the current server adapter).
 
-- Defaults to `"pi"` (PATH-resolved). Set
-  `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :executable`
-  to an absolute path.
-- Enforces `:timeout_ms` (default `60_000`) inside its own receive
-  loop and returns `{:error, :timeout}` on expiry.
-- Cleans up its temporary request file/directory on every resolved
-  outcome. On untrappable process death the request file/dir may
-  leak — this is a documented v1 limitation, not a regression.
-
-Use the JidoHarnessAdapter (the new default — see
-`docs/guides/adding-a-jido-harness-provider.md`) unless the
-legacy `pi` binary is a hard requirement.
+Operators should keep `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
+in `:agent_runtime.adapters` and configure providers through
+`:jido_harness, :providers`. If a new execution backend is required, add it
+as a Jido Harness provider instead of documenting or configuring the removed
+PiAdapter (see `docs/guides/adding-a-jido-harness-provider.md`).
 
 ## 10. Quick troubleshooting
 
