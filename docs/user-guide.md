@@ -28,9 +28,12 @@ devbox run info           # command catalog + endpoint summary
 devbox run env:list       # relevant env vars + service URLs
 devbox run test           # full ExUnit suite
 devbox run test:unit      # ExUnit excluding :langfuse tests
-devbox run test:langfuse  # OTel/Langfuse integration tests
+devbox run test:langfuse  # only :langfuse-tagged OTel/Langfuse tests
+devbox run test:all       # ExUnit with :langfuse tests included
 devbox run db:migrate     # run Ecto migrations
+devbox run db:rollback    # roll back one migration step
 devbox run db:reset       # drop/recreate/migrate dev DB
+devbox run db:console     # psql on the dev database
 devbox run deps           # fetch + compile mix deps
 devbox run fmt            # format Elixir code
 devbox run compile        # compile foreman_server
