@@ -188,7 +188,7 @@ key not listed here is treated as a feature request, not a bug fix.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `:enabled` | `false` | Whether the runtime supervisor starts at boot. |
+| `:enabled` | `true` in `config.exs` (`false` only when explicitly overridden, e.g. tests) | Whether the runtime supervisor starts at boot. |
 | `:adapters` | `[]` | Modules registered with the catalog at boot. Each must `use` or implement `BackendAdapter`. |
 | `:failure_policies` | `%{}` | Map of `task_type => %{fallback?, timeout_ms?, max_attempts?}` overrides. |
 | `:default_timeout_ms` | `60_000` | Global default `timeout_ms` for `FailurePolicy.resolve/2` when no per-call or per-task override applies. |
@@ -197,6 +197,7 @@ Per-adapter config:
 
 | Key | Default | Purpose |
 |---|---|---|
+| `request.context.provider` / `request.context["provider"]` | `:pi` | Per-request Jido.Harness upstream provider. Supported values are `:pi` and `:claude`; unknown providers return `:unsupported_provider`, and an unavailable chosen provider returns `:backend_unavailable` without falling back to another provider. |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :timeout_ms` | `60_000` | Adapter-side execution deadline enforced in the Jido.Harness driver. |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :await_timeout` | `:infinity` | `Jido.Harness.Run.await/2` timeout. Set to a finite ms value to bound agent run lifetime. |
 
@@ -421,14 +422,15 @@ without making a network call.
 
 Foreman no longer ships `ForemanServer.AgentRuntime.Adapters.PiAdapter`
 or a direct shell-out adapter for the local `pi` binary. Runtime execution
-now goes through the JidoHarnessAdapter and its configured providers
-(`:pi` and `:claude` in the current server adapter).
+now goes through the JidoHarnessAdapter and its bundled providers (`:pi`
+and `:claude` in the current server adapter).
 
 Operators should keep `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
-in `:agent_runtime.adapters` and configure providers through
-`:jido_harness, :providers`. If a new execution backend is required, add it
-as a Jido Harness provider instead of documenting or configuring the removed
-PiAdapter (see `docs/guides/adding-a-jido-harness-provider.md`).
+in `:agent_runtime.adapters`. Requests default to the `:pi` provider; set
+`context.provider` to `:claude` only for calls that should use the Claude
+provider. If a new execution backend is required, add it as a Jido Harness
+provider instead of documenting or configuring the removed PiAdapter (see
+`docs/guides/adding-a-jido-harness-provider.md`).
 
 ## 10. Quick troubleshooting
 
@@ -737,8 +739,8 @@ phases:
 ```
 
 - `command:` — non-empty string beginning with `/`. Passes through to
-  the Pi adapter as the prompt body, so the skill sees a slash command
-  at byte zero.
+  the configured agent runtime/JidoHarnessAdapter as the prompt body, so
+  the skill sees a slash command at byte zero.
 - `requiredFile:` (singular) — dotted scalar in the planning context
   (e.g. `planning.prd_path`). The phase gate fails with
   `:required_file_missing` if the resolved path does not exist on disk
