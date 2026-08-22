@@ -2,4 +2,7 @@ name: fix
 description: Fix an issue via the ensemble fix workflow.
 phases:
   - name: fix
-    command: "/skill:ensemble-fix-issue --foreman"
+    # ensemble-fix-issue takes the description as a positional arg (not --description flag).
+    # {{input.prompt}} renders the work-submission prompt via run_executor.ex
+    # render_command_template/4 with shell-safe single-quote escaping.
+    command: "/skill:ensemble-fix-issue --foreman /Users/ldangelo/Development/Fortium/foreman.jido-migration {{input.prompt}}"

@@ -36,6 +36,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Identity
   alias ForemanServer.Overwatch
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   require Logger
@@ -409,7 +410,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     prompt =
       case phase_action(phase_spec) do
-        :command -> phase_value(phase_spec, :command) || request.prompt
+        :command -> render_command_template(phase_value(phase_spec, :command), state, phase_spec, index) || request.prompt
         _ -> request.prompt
       end
 
@@ -867,6 +868,36 @@ defmodule ForemanServer.Workflow.RunExecutor do
       Map.get(assigns, key, "{{#{key}}}")
     end)
   end
+
+  # Renders {{var}} placeholders inside a phase.command string with
+  # shell-safe single-quote-escaped values. Variables come from the same
+  # assigns map used by render_prompt_template/4 so manifests can reference
+  # {{input.prompt}}, {{project_id}}, etc. in their command string.
+  # Manifests that don't reference any variable still work (no-op).
+  defp render_command_template(nil, _state, _phase_spec, _index), do: nil
+
+  defp render_command_template(command, state, phase_spec, index)
+       when is_binary(command) do
+    assigns = prompt_template_assigns(state, phase_spec, index, %{})
+
+    Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, command, fn _match, key ->
+      case Map.get(assigns, key) do
+        nil -> "''"
+        value -> shell_quote(value)
+      end
+    end)
+  end
+
+  # Shell-safe single-quote wrapping: every embedded ' becomes '\''
+  # (close-quote, escaped-quote, open-quote), the standard POSIX idiom.
+  # The result is safe to interpolate into a shell command line under
+  # any input, including values containing $, `, ;, &, |, etc.
+  defp shell_quote(value) when is_binary(value) do
+    escaped = String.replace(value, "'", "'\\''")
+    "'" <> escaped <> "'"
+  end
+
+  defp shell_quote(value), do: shell_quote(to_string(value))
 
   # Strips {{#section KEY}}...{{/section}} blocks when KEY is empty.
   defp render_sections(content, assigns) do
