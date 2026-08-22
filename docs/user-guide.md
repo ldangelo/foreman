@@ -322,7 +322,8 @@ call `AssetCatalog.new/1` and pass it to
   waiting for the poll.
 - **Removal** — run `foreman workflow remove --all` to delete all legacy
   workflows (`discover`, `assess`, `implement`, `verify`, `release`) from
-  the catalog. The curated workflows (`plan`, `implement-trd`,
+  the catalog. The CLI prompts for `y`/`Y` confirmation before posting the
+  remove request. The curated workflows (`plan`, `implement-trd`,
   `implement-trd-beads`) are preserved. Run `foreman init --force` to
   restore from git if needed.
 - **Telemetry** — every install, load, reload, and removal emits
