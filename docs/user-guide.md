@@ -84,11 +84,13 @@ Task lifecycle is event-driven. `task.create` defaults to `open`.
 `task.approve` enriches operator input with trusted workflow data and
 moves the task to `ready`. Dispatch requires `ready` plus a bound
 `run_id`/`approval_id` and emits `TaskDispatched`, moving the task to
-`in_progress`. Terminal execution emits `TaskExecutionCompleted`
-(`closed` in the projection) or `TaskExecutionFailed` (`failed`). The
-operator retry path is only for tasks still `in_progress` against a
-terminal run, or already `failed` by the terminal invariant; successful
-`task.retry` clears run-bound fields and returns the task to `open`.
+`in_progress`. Terminal execution emits `TaskExecutionCompleted` or
+`TaskExecutionFailed`; the current task projection stores successful
+completion as `closed` and failure as `failed` (run projections use
+`completed`/`failed`). The operator retry path is only for tasks still
+`in_progress` against a terminal run, or already `failed` by the
+terminal invariant; successful `task.retry` clears run-bound fields and
+returns the task to `open`.
 
 ## 0.2 Current worker runtime and tracing
 
@@ -182,6 +184,7 @@ key not listed here is treated as a feature request, not a bug fix.
 Per-adapter config:
 
 | Key | Default | Purpose |
+|---|---|---|
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :provider` | `:pi` (then `:claude`) | Jido.Harness backend provider name. Falls back to the next registered provider if the chosen one fails `ReadinessCheck.installed?/1`. |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :timeout_ms` | `60_000` | Adapter-side execution deadline enforced in the Jido.Harness driver. |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :await_timeout` | `:infinity` | `Jido.Harness.Run.await/2` timeout. Set to a finite ms value to bound agent run lifetime. |
