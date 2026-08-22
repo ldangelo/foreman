@@ -75,12 +75,16 @@ Example work submission:
 }
 ```
 
-`work.submit` requires a non-empty `work_id`, `project_id`, and `prompt`;
-the project must exist and must not be archived. The WorkRequest
-aggregate emits `WorkSubmitted` with a deterministic or supplied `run_id`,
-`submission_id`, `workflow_snapshot`, and optional `backend`. The work
-projection moves through `submitted -> queued -> running -> succeeded |
-failed | cancelled` as Dispatcher/admission and terminal run events arrive.
+`work.submit` requires a non-empty `work_id`, `project_id`, `workflow`,
+and `prompt`; the project must exist and must not be archived. The server
+loads `<workflow>.yaml`, derives `submission_id`, `run_id`, and
+`workflow_snapshot`, and rejects client-supplied reserved fields such as
+`submission_id`, `run_id`, or `workflow_snapshot`. The command response is
+only the generic accepted envelope; use `GET /api/work/{work_id}` to read
+the derived `run_id`, `submission_id`, backend, and status. The current work
+projection stores `submitted`, `succeeded`, `failed`, or `cancelled`; do not
+assume live queue position or running-state fields unless a future projector
+adds them.
 
 Read endpoints are projection-only:
 
@@ -109,23 +113,29 @@ returns the task to `open`.
 ## 0.2 Current worker runtime and tracing
 
 `ForemanServer.Overwatch` is enabled by default outside tests. Command
-phases run through `RunExecutor -> Overwatch.start_phase/1 ->
+phases run through `RunExecutor -> Overwatch.start_phase/2 ->
 LaunchWorker -> JidoHarnessWorker`. `LaunchWorker` starts the adapter,
 registers the pid with `Overwatch.Tracker`, emits `WorkerStarted` as
-sequence `0`, then activates the worker. `WorkerStarted` is the signal
-that flips a run projection from `awaiting_worker` to `in_progress`.
-The Jido worker runs `Jido.Harness` in a supervised task, emits periodic
-`WorkerHeartbeat`, emits `WorkerExited` on completion/crash, forwards the
-normalized `{:ok, text} | {:error, reason}` result to `RunExecutor`, and
-then exits normally so the supervisor can clean up.
+sequence `0`, then activates the worker. A run can be admitted as
+`awaiting_worker`; `WorkerStarted` is the signal that moves it to
+`in_progress`. The Jido worker runs `Jido.Harness` in a supervised task,
+emits periodic `WorkerHeartbeat`, emits `WorkerExited` on normal completion,
+forwards the normalized `{:ok, text} | {:error, reason}` result to
+`RunExecutor`, and then exits normally so the supervisor can clean up. Crash
+paths can emit `WorkerCrashed`; normal Jido metadata is not part of the
+operator result.
 
 The default backend is the in-process `JidoHarnessAdapter`. Legacy
 `PiAdapter` remains only as a transitional fallback for operators who
 explicitly configure it. The current aggregate model uses per-aggregate
-`State` structs (for example `ForemanServer.Aggregates.Task.State` and
-`ForemanServer.Aggregates.WorkRequest.State`) plus the shared
+`State` structs (for example `ForemanServer.Aggregates.Task.State`,
+`ForemanServer.Aggregates.Worker.State`, and
+`ForemanServer.Aggregates.BeadsDbLease.State`) plus the shared
 `ForemanServer.Aggregate` behavior/helpers; do not depend on a legacy
-global `Aggregate.State` shape in new code or runbooks.
+global `Aggregate.State` shape in new code or runbooks. Beads-backed runs
+serialize access with a `beads_db_lease:<db_path>` aggregate keyed by the
+configured absolute DB path; use one canonical path, because symlink or path
+aliases are not normalized by the lease.
 
 OTel defaults point Foreman at `http://localhost:4318`. In local dev,
 `devbox run up` starts `ops/otel-collector`, which joins the
