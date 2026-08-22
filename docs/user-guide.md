@@ -143,10 +143,12 @@ OTel defaults point Foreman at `http://localhost:4318`. In local dev,
 Langfuse v3 at `http://langfuse-web:3000/api/public/otel` (the
 `otlphttp` exporter appends `/v1/traces`). Langfuse v3 requires HTTP
 Basic auth using `LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY`; bearer auth
-with only the public key returns `403`. In production, set
-`OTEL_EXPORTER_OTLP_ENDPOINT`, `LANGFUSE_PUBLIC_KEY`, and
-`LANGFUSE_SECRET_KEY`; `prod.exs` builds the same Basic auth header for
-both `:jido_otel` and `:opentelemetry_exporter`.
+with only the public key returns `403`. In production, override
+`OTEL_EXPORTER_OTLP_ENDPOINT` when the default `http://localhost:4318`
+is not the target collector, and set `LANGFUSE_PUBLIC_KEY` plus
+`LANGFUSE_SECRET_KEY` when Langfuse auth is required; `prod.exs` builds
+the same Basic auth header for both `:jido_otel` and
+`:opentelemetry_exporter`.
 
 ## 1. Enabling the runtime
 
@@ -165,29 +167,19 @@ default agent backend). The JidoHarnessAdapter routes through
 `Jido.Harness.Session` / `Run` / `Process` and integrates with
 LiteLLM via `req_llm` (see
 `docs/guides/adding-a-jido-harness-provider.md` for adding a new
-provider). `JidoHarnessAdapter.available?/0` self-gates on the
-configured `:jido_harness, :providers` and on
-`ReadinessCheck.installed?/1` per provider; the registration is
-safe to leave in place even on hosts where no provider is
-installed. When `available?/0` returns `false` the adapter is
-silently excluded from routing in `:automatic` / `:policy` modes
-(and `:manual` calls to it return `:backend_unavailable`); the
-caller observes `{:error, :no_available_backend}` only when
-**no** eligible adapter is available for the request. The test
-environment (`config/test.exs`) deliberately overrides
-`adapters: []` and disables `:jido_harness, :enabled` so
-individual adapter tests can opt in explicitly and stay isolated
-from production wiring.
-
-
-The `:jido_harness, :enabled` flag is now a *kill switch* (it
-defaults to `true`). Setting it to `false` at runtime disables
-the JidoHarnessAdapter registration without changing the
-default adapter in `:agent_runtime, :adapters`. Operators who
-want to take the adapter out of rotation without removing it
-from the adapters list can do so via:
-
-    Application.put_env(:foreman_server, :jido_harness, enabled: false)
+provider). Supported Jido Harness providers are hard-coded to
+`:pi` and `:claude`. Requests default to `:pi` unless the runtime
+context sets `provider: :claude` (or another value, which returns
+`:unsupported_provider`). `JidoHarnessAdapter.available?/0` checks
+whether either bundled provider is installed; per-request execution
+still enforces readiness for the specific requested provider. When
+`available?/0` returns `false` the adapter is silently excluded from
+routing in `:automatic` / `:policy` modes (and `:manual` calls to it
+return `:backend_unavailable`); the caller observes
+`{:error, :no_available_backend}` only when **no** eligible adapter is
+available for the request. The test environment (`config/test.exs`)
+deliberately overrides `adapters: []` so individual adapter tests can
+opt in explicitly and stay isolated from production wiring.
 
 ## 2. Configuration keys (canonical list)
 The runtime configuration is keyed under `:foreman_server,
@@ -205,11 +197,8 @@ Per-adapter config:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :provider` | `:pi` (then `:claude`) | Jido.Harness backend provider name. Falls back to the next registered provider if the chosen one fails `ReadinessCheck.installed?/1`. |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :timeout_ms` | `60_000` | Adapter-side execution deadline enforced in the Jido.Harness driver. |
 | `:foreman_server, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter, :await_timeout` | `:infinity` | `Jido.Harness.Run.await/2` timeout. Set to a finite ms value to bound agent run lifetime. |
-| `:foreman_server, :jido_harness, :enabled` | `true` | Kill switch for the JidoHarnessAdapter. Set `false` to remove the adapter from routing without changing `:agent_runtime, :adapters`. |
-| `:foreman_server, :jido_harness, :providers` | `[:pi, :claude]` | Providers the JidoHarnessAdapter is willing to route to. Each must have a corresponding `ReadinessCheck.installed?/1` that returns `true` (otherwise the provider is skipped). |
 
 > Each key maps to exactly one implementation path. If a key is
 > missing, the documented default applies. If a key value is invalid,
