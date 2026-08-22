@@ -197,8 +197,8 @@ key not listed here is treated as a feature request, not a bug fix.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `:enabled` | `true` in `config.exs` (`false` only when explicitly overridden, e.g. tests) | Whether the runtime supervisor starts at boot. |
-| `:adapters` | `[]` | Modules registered with the catalog at boot. Each must `use` or implement `BackendAdapter`. |
+| `:enabled` | `true` in `config/config.exs` | Whether the runtime supervisor starts at boot. |
+| `:adapters` | `[ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]` in `config/config.exs` | Modules registered with the catalog at boot. Each must `use` or implement `BackendAdapter`. Test config overrides this to `[]`. |
 | `:failure_policies` | `%{}` | Map of `task_type => %{fallback?, timeout_ms?, max_attempts?}` overrides. |
 | `:default_timeout_ms` | `60_000` | Global default `timeout_ms` for `FailurePolicy.resolve/2` when no per-call or per-task override applies. |
 
@@ -245,16 +245,19 @@ A few invariants:
 
 ## 4. Routing strategies
 
-`execute/3` accepts three strategies via `:strategy`:
+`execute/3` accepts five strategies via the `:strategy` call option:
 
 | Strategy | Required opt | Behavior |
 |---|---|---|
 | `:manual` | `:backend` | Returns `:backend_not_found` or `:backend_unavailable` if the named backend is missing or unavailable. Never substitutes. |
 | `:automatic` | `:task_type` | Filters `supported_contexts` → `available?/0`, sorts by `(cost_per_call, typical_latency_ms, registration order)`, no randomness. |
 | `:policy` | `:task_type`, `:policy_module` | Delegates to `policy_module.route(task_type, capabilities)`. Returns `:backend_not_found` for unregistered selections; skips unavailable ones when fallback is on. |
+| `:react` | none | Calls `ForemanServer.Agents.JidoAiRunner.run(:react, ...)` with `model: opts[:model] || :fast`; emits execution telemetry plus LLM/Langfuse spans. |
+| `:cot` | none | Calls `ForemanServer.Agents.JidoAiRunner.run(:cot, ...)` with `model: opts[:model] || :fast`; emits execution telemetry plus LLM/Langfuse spans. |
 
 Default strategy is `:manual`. If `:backend` is omitted under
-`:manual`, the call returns `{:error, :backend_not_found}`.
+`:manual`, the call returns `{:error, :backend_not_found}`. Invalid
+strategy atoms return `{:error, {:invalid_strategy, strategy}}`.
 
 ## 5. Public result shape
 
