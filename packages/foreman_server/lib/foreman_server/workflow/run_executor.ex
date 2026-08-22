@@ -541,7 +541,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp generate_session_id do
-    "session-" <> EventStore.UUID.uuid4()
+    "session-" <> Elixir.EventStore.UUID.uuid4()
   end
 
   # Strip `-trd` suffix from workflow type so both `implement-trd` and
