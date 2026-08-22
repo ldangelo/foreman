@@ -39,6 +39,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.Workflow.Worktree
   require Logger
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @type state :: %{
@@ -1065,13 +1066,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `:worktree` (or "worktree") map. The block is honored when the
   # `enabled` field is not the literal `false`. Absence or `enabled: false`
   # both return `nil` so the phase runs unchanged.
+  # The `worktree` block is opt-IN by explicit declaration but the PRD
+  # contract ("Dispatch agents with git isolation: N agents running on N
+  # worktrees, zero conflicts") is opt-OUT: every dispatch must isolate
+  # its writes from the active checkout so the worker cannot race the
+  # operator or other concurrent dispatches. Manifests that omit the
+  # block get a default worktree off the current branch tip (HEAD) with
+  # cleanup: always. Opting OUT is still explicit via `enabled: false`.
   defp maybe_create_worktree(state, phase_spec, phase_index) do
     case worktree_block(phase_spec) do
-      nil ->
-        {:ok, nil}
-
       %{enabled: false} ->
         {:ok, nil}
+
+      nil ->
+        create_default_worktree(state, phase_spec, phase_index)
 
       worktree when is_map(worktree) ->
         create_phase_worktree(state, phase_spec, phase_index, worktree)
@@ -1102,7 +1110,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          branch = render_worktree_template(branch_template(worktree), state, slug),
          :ok <- ensure_worktree_parent_dir(worktree_path),
          trd_scope = compute_trd_scope(plan_context, implementation_key) do
-      WorktreeLifecycle.create(%{
+      Worktree.create(%{
         operation_id: operation_id,
         project_id: project_id,
         run_id: state.run_id,
@@ -1137,6 +1145,104 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, _} = err ->
           err
       end
+    end
+  end
+
+  # Default-on worktree for manifests without an explicit worktree block.
+  # Enforces the PRD contract (git isolation per dispatch) without requiring
+  # plan_context — derives project_root from the project projection's
+  # registered path and resolves `base_ref` from `HEAD` (the current branch
+  # tip). Skips TRD-specific assertions (base match against frozen
+  # source_revision, implementation_key, trd_scope) because work-request and
+  # non-plan flows don't have those values. The worktree is still pinned to
+  # the current branch tip and cleaned up on terminal phases.
+  defp create_default_worktree(state, phase_spec, phase_index) do
+    with {:ok, project_id} <- fetch_project_id(state),
+         {:ok, project_root} <- default_project_root(project_id, state),
+         :ok <- assert_git_repo(project_root),
+         {:ok, base_ref} <- resolve_revision(project_root, "HEAD"),
+         phase_id = Identity.phase_id(state.run_id, phase_index),
+         slug = phase_slug(phase_spec),
+         operation_id = "wt-default-" <> state.run_id <> "-" <> phase_id,
+         worktree_path = default_worktree_path_for(project_id, state.run_id, slug),
+         :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
+         branch = "foreman/" <> state.run_id <> "/" <> slug,
+         :ok <- ensure_worktree_parent_dir(worktree_path) do
+      Worktree.create(%{
+        operation_id: operation_id,
+        project_id: project_id,
+        run_id: state.run_id,
+        phase_id: phase_id,
+        repo_path: project_root,
+        worktree_path: worktree_path,
+        base_ref: base_ref,
+        branch: branch
+      })
+      |> case do
+        {:ok, ^worktree_path} ->
+          {:ok,
+           %{
+             operation_id: operation_id,
+             worktree_path: worktree_path,
+             branch: branch,
+             base_ref: base_ref,
+             project_root: project_root,
+             project_id: project_id,
+             implementation_key: nil,
+             trd_scope: nil,
+             cleanup: :always
+           }}
+
+        {:ok, other_path} ->
+          _ = other_path
+          {:error, {:worktree_path_drift, worktree_path, other_path}}
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  # Default-on worktrees use the slug as the leaf directory (no template
+  # rendering) so the path is deterministic and trivially auditable from
+  # the run_id alone.
+  defp default_worktree_path_for(project_id, run_id, slug) do
+    Path.join([worktree_base_root(), project_id, run_id, slug])
+  end
+
+  # Resolve the project_root for default-on worktrees. Prefers
+  # `state.task.working_directory` (set for plan tasks) and falls back to
+  # the project's registered path on disk (set for work requests via
+  # `foreman project create --path ...`).
+  defp default_project_root(project_id, state) do
+    home = System.fetch_env!("HOME")
+    project_root = working_directory(state.task)
+
+    case project_root do
+      dir when is_binary(dir) and dir != "" and dir != home ->
+        {:ok, dir}
+
+      _ ->
+        case ProjectionStore.project_projection(project_id) do
+          %{path: path} when is_binary(path) and path != "" ->
+            {:ok, path}
+
+          nil ->
+            {:error, :project_not_found}
+
+          _ ->
+            {:error, :project_path_missing}
+        end
+    end
+  end
+
+  # Confirm project_root is a git working tree before resolving HEAD
+  # against it. `git rev-parse --verify HEAD^{commit}` returns
+  # :unresolvable_revision for a non-repo directory.
+  defp assert_git_repo(project_root) do
+    case System.cmd("git", ["-C", project_root, "rev-parse", "--git-dir"], stderr_to_stdout: true) do
+      {_out, 0} -> :ok
+      _ -> {:error, {:not_a_git_repo, project_root}}
     end
   end
 
@@ -1354,7 +1460,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     _ = unbind_vfs(state.run_id)
 
-    WorktreeLifecycle.clean(%{
+    Worktree.clean(%{
       operation_id: worktree_record.operation_id,
       project_id: worktree_record.project_id,
       run_id: state.run_id,
