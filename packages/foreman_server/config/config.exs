@@ -92,11 +92,31 @@ config :opentelemetry, :resource,
 # accepts the traces.
 config :opentelemetry_exporter,
   otlp_endpoint: "http://localhost:4318",
-  otlp_protocol: :http_protobuf
+  otlp_protocol: :http_protobuf,
+  otlp_headers: []
+
+# Wire the OpenTelemetry SDK so spans actually flow:
+# - :processors routes spans through the batch processor (the default
+#   recommended pipeline for production; in dev it still helps cut
+#   per-span HTTP overhead against the collector).
+# - :traces_exporter hands completed batches to :otel_exporter_otlp
+#   (Erlang module; the Elixir OpentelemetryExporter wrapper does not
+#   exist in :opentelemetry_exporter 1.10.0). The exporter's own
+#   :opentelemetry_exporter env keys (otlp_endpoint, otlp_protocol,
+#   otlp_headers) are read inside otel_exporter_otlp:init/1.
+# Without these, `Application.started_applications/0` shows
+# :opentelemetry + :opentelemetry_exporter running, but the batch processor
+# is never started and no spans leave the box (verified 2026-08-22: collector
+# self-metrics showed only 2 self-test spans in 14h).
+config :opentelemetry,
+  processors: [
+    {:otel_batch_processor, %{}}
+  ],
+  traces_exporter: {:otel_exporter_traces_otlp, %{endpoints: ["http://localhost:4318"]}}
+
 
 # TRD-2026-4212be7e LGL-T001: litellm-langfuse-stack integration.
 # LiteLLM runs on port 4000, Langfuse on port 3000. The `model: "auto"`
-# value tells LiteLLM to pick the best model for the requested capability
 # (code, chat, embeddings, etc.) at request time.
 config :foreman_server, :litellm,
   endpoint: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000"),
@@ -127,7 +147,8 @@ config :foreman_server, :langfuse,
 config :foreman_server, :jido_vfs,
   # Worktrees must live under one of these base directories.
   allowed_roots: [
-    System.get_env("FOREMAN_VFS_ALLOWED_ROOT", "/Users/ldangelo/Development/Fortium")
+    System.get_env("FOREMAN_VFS_ALLOWED_ROOT", "/Users/ldangelo/Development/Fortium"),
+    Path.join([System.get_env("HOME", "/Users/ldangelo"), ".foreman", "worktrees"])
   ],
   # When false, VfsIsolation.allowlist_check/2 returns :ok without
   # inspecting the configured roots (useful in CI where worktrees
