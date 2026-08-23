@@ -3,14 +3,20 @@ defmodule ForemanServer.Idempotency.CrashRecoveryCharacterizationTest do
   @moduletag :characterization
 
   alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}
+  alias ForemanServer.TestSupport.KeyStoreReset
 
   # ---------------------------------------------------------------------------
   # Core reconciliation contracts — no duplicate side effects
   # ---------------------------------------------------------------------------
 
   describe "no duplicate side effects" do
+    setup do
+      {:ok, _} = KeyStore.ensure_started()
+      KeyStoreReset.reset!()
+      :ok
+    end
+
     test "completed key is skipped on recovery" do
-      {:ok, _pid} = KeyStore.start_link()
       :ok = KeyStore.mark_completed("k1")
 
       counter = :counters.new(1, [])
@@ -26,7 +32,6 @@ defmodule ForemanServer.Idempotency.CrashRecoveryCharacterizationTest do
     end
 
     test "ambiguous with side effects detected and key marked completed before returning" do
-      {:ok, _pid} = KeyStore.start_link()
       :ok = KeyStore.mark_ambiguous("k3_sidefx")
 
       # reconcile/2 calls the side_effects_check; if it returns false
@@ -53,13 +58,17 @@ defmodule ForemanServer.Idempotency.CrashRecoveryCharacterizationTest do
   # ---------------------------------------------------------------------------
 
   describe "correct state resumption" do
+    setup do
+      {:ok, _} = KeyStore.ensure_started()
+      KeyStoreReset.reset!()
+      :ok
+    end
+
     test "fresh key retried on first crash recovery" do
-      {:ok, _pid} = KeyStore.start_link()
       assert {:retry, :fresh} = CrashRecovery.reconcile("k_fresh")
     end
 
     test "ambiguous with no side effects retries safely" do
-      {:ok, _pid} = KeyStore.start_link()
       :ok = KeyStore.mark_ambiguous("k_ambiguous_clean")
 
       assert {:retry, :no_side_effects} =
@@ -67,7 +76,6 @@ defmodule ForemanServer.Idempotency.CrashRecoveryCharacterizationTest do
     end
 
     test "unknown key with bad type is not retried" do
-      {:ok, _pid} = KeyStore.start_link()
       # reconcile/2 guards on is_binary(key) — non-binary returns unknown_state.
       assert {:retry, :unknown_state} = CrashRecovery.reconcile(:not_a_string)
     end
