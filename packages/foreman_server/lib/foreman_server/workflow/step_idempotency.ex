@@ -9,6 +9,6 @@ defmodule ForemanServer.Workflow.StepIdempotency do
   end
 
   def all_keys_for(task_id, steps) do
-    Enum.map(steps, fn {name, _skill} -> {name, key_for(task_id, name)} end)
+    Enum.map(steps, fn {name, _skill} -> {to_string(name), key_for(task_id, name)} end)
   end
 end
