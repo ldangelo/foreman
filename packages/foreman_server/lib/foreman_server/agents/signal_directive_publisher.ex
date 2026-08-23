@@ -77,10 +77,13 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
     bus = resolve_bus(bus)
     topic = JidoSignalTopics.agent_directive(agent_id)
 
-    {:ok, signal} =
-      Jido.Signal.new(topic, payload,
-        source: "foreman.signal_directive_publisher"
-      )
+    signal =
+      case Jido.Signal.new(topic, payload,
+             source: "foreman.signal_directive_publisher"
+           ) do
+        {:ok, s} -> s
+        s -> s
+      end
 
     # Record in directive queue before publishing (TRD-056 / JLD-T002).
     # If the queue is not running, enqueue/2 returns :error and we

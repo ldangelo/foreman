@@ -12,6 +12,10 @@ config :foreman_server, ForemanServer.EventStore,
 config :foreman_server, ForemanServer.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")
 
+config :foreman_server, ForemanServerWeb.Endpoint,
+  secret_key_base: String.duplicate("a", 64),
+  live_view: [signing_salt: "foremandebug"]
+
 config :foreman_server,
   worker_launcher_enabled: false
 

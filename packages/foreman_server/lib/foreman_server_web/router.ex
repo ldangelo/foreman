@@ -1,6 +1,7 @@
 defmodule ForemanServerWeb.Router do
   use ForemanServerWeb, :router
 
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -43,25 +44,25 @@ defmodule ForemanServerWeb.Router do
 
   end
 
-  if Mix.env() == :dev do
+  if Mix.env() in [:dev, :test] do
     scope "/debug", ForemanServerWeb do
       pipe_through(:browser)
-
-      live("/", DebugDashboardLive, :index)
-      live("/runs", DebugDashboardLive, :runs)
-      live("/phases", DebugDashboardLive, :phases)
-      live("/workers", DebugDashboardLive, :workers)
-      live("/runs/:run_id", RunDebugLive, :show)
-      live("/phases/:run_id/:phase_id", PhaseDebugLive, :show)
-      live("/workers/:run_id/:worker_id", WorkerDebugLive, :show)
+      if Mix.env() == :dev do
+        live("/", DebugDashboardLive, :index)
+        live("/runs", DebugDashboardLive, :runs)
+        live("/phases", DebugDashboardLive, :phases)
+        live("/workers", DebugDashboardLive, :workers)
+        live("/runs/:run_id", RunDebugLive, :show)
+        live("/phases/:run_id/:phase_id", PhaseDebugLive, :show)
+        live("/workers/:run_id/:worker_id", WorkerDebugLive, :show)
+      end
     end
 
     # JLD-T001 / TRD-055: mount jido_live_dashboard under browser auth.
     # Auth pipeline (`:browser` + `:require_authenticated`) intentionally
     # deferred to a follow-up wiring bead per TRD-2026-4212be7e.
     scope "/dashboard", ForemanServerWeb do
-      pipe_through(:browser)
-      live("/", ForemanServerWeb.LiveDashboard)
+      live("/", LiveDashboard)
     end
   end
 end

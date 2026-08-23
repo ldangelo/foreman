@@ -17,6 +17,7 @@ defmodule ForemanServerWeb.WebhookControllerTest do
 
   use Plug.Test
 
+  alias ForemanServer.Agents.OperatorTimeout
   alias ForemanServer.Inbox.{DedupeTable, Poller}
   alias ForemanServerWeb.WebhookController
 
@@ -32,12 +33,11 @@ defmodule ForemanServerWeb.WebhookControllerTest do
       _ -> :ok
     end
 
-    :ok
-  end
+    case Process.whereis(OperatorTimeout) do
+      nil -> {:ok, _} = OperatorTimeout.start_link([])
+      _ -> :ok
+    end
 
-  setup do
-    DedupeTable.clear()
-    Application.put_env(:foreman_server, :inbox_dedupe_window_seconds, 60)
     :ok
   end
 
