@@ -156,6 +156,9 @@ defmodule ForemanServer.Aggregates.Run do
       "RunDeleted" ->
         %State{state | status: "deleted", terminal?: true}
 
+      "RunReset" ->
+        initial_state()
+
       "PhaseStarted" ->
         put_phase(state, payload, "in_progress")
 
@@ -249,6 +252,39 @@ defmodule ForemanServer.Aggregates.Run do
          stream_id: "run:#{run_id}",
          event_type: "RunDeleted",
          payload: Map.put(payload, :run_id, run_id)
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "run.remove", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunDeleted",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:project_id, state.project_id)
+           |> Map.put_new(:reason, "operator_remove")
+       }}
+    end
+  end
+
+  def handle_command(state, %{type: "run.reset", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         :ok <- require_resettable(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunReset",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:project_id, state.project_id)
+           |> Map.put_new(:reason, "operator_reset")
        }}
     end
   end
@@ -641,6 +677,11 @@ defmodule ForemanServer.Aggregates.Run do
     do: {:error, {:run_terminal, status}}
 
   defp reject_terminal_mutation(_state), do: :ok
+
+  defp require_resettable(%State{status: status}) when status in ["failed", "stuck", "blocked", "paused"],
+    do: :ok
+
+  defp require_resettable(%State{status: status}), do: {:error, {:run_not_resettable, status}}
 
   defp allow_delete_on_terminal(%State{status: "deleted"}),
     do: {:error, {:run_terminal, "deleted"}}

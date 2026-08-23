@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
@@ -18,26 +19,75 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (get, cancel, submit)",
-			"Usage:\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]",
+			"foreman run: missing subcommand (list, get, cancel, remove, reset, submit)",
+			usage,
 		)
 	}
 
 	switch args[0] {
+	case "list":
+		return runList(c, args[1:])
 	case "get":
 		return runGet(c, args[1:])
 	case "cancel":
 		return runCancel(c, args[1:])
+	case "remove":
+		return runRemove(c, args[1:])
+	case "reset":
+		return runReset(c, args[1:])
 	case "submit":
 		return runSubmit(c, args[1:])
 	default:
 		return usageTextError(
 			fmt.Sprintf("foreman run: unknown subcommand %q", args[0]),
-			"Usage:\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]",
+			usage,
 		)
 	}
+}
+
+func runList(c *client.Client, args []string) error {
+	fs := newFlagSet("run list")
+	status := fs.String("status", "", "Filter by run status")
+	projectID := fs.String("project-id", "", "Filter by project ID")
+	limit := fs.Int("limit", 0, "Maximum runs to return")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 0 {
+		return usageError(fs, "foreman run list: expected no positional arguments")
+	}
+
+	values := url.Values{}
+	if *status != "" {
+		values.Set("status", *status)
+	}
+	if *projectID != "" {
+		values.Set("project_id", *projectID)
+	}
+	if *limit < 0 {
+		return usageError(fs, "foreman run list: --limit must be non-negative")
+	}
+	if *limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", *limit))
+	}
+
+	path := client.JoinPath("/api/runs")
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	var out map[string]any
+	err := c.GetJSON(path, &out)
+	if err != nil {
+		return err
+	}
+
+	return printJSON(out)
 }
 
 func runGet(c *client.Client, args []string) error {
@@ -77,6 +127,34 @@ func runCancel(c *client.Client, args []string) error {
 	}
 
 	return postCommand(c, commandEnvelope{Type: "run.cancel", Payload: payload})
+}
+
+func runRemove(c *client.Client, args []string) error {
+	fs := newFlagSet("run remove")
+	runID := fs.String("id", "", "Run ID (required)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run remove: --id is required")
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.remove", Payload: map[string]any{"run_id": *runID}})
+}
+
+func runReset(c *client.Client, args []string) error {
+	fs := newFlagSet("run reset")
+	runID := fs.String("id", "", "Run ID (required)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run reset: --id is required")
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.reset", Payload: map[string]any{"run_id": *runID}})
 }
 
 // runSubmit dispatches `foreman run submit --workflow <name> --prompt <text>

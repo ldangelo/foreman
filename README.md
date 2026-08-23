@@ -87,8 +87,8 @@ register separate lease streams.
   holder; if held, the run is enqueued as a waiter and admission
   returns `:queued`.
 - `lease.release` and `lease.remove_waiter` are dispatched at every
-  terminal run event (`RunCancelled`, `RunFlaggedStuck`, `RunCompleted`,
-  `RunFailed`, `RunBlocked`).
+  terminal run event (`RunCancelled`, `RunDeleted`, `RunFlaggedStuck`,
+  `RunCompleted`, `RunFailed`, `RunBlocked`).
 - When the holder releases with waiters, the aggregate emits a single
   `BeadsDbLeaseTransferred` event that releases the old holder and
   promotes the head waiter atomically.

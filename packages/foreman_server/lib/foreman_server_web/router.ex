@@ -24,6 +24,7 @@ defmodule ForemanServerWeb.Router do
     get("/projects", ProjectController, :index)
     get("/projects/:id", ProjectController, :show)
     get("/tasks/:id", TaskController, :show)
+    get("/runs", RunController, :index)
     get("/runs/:id", RunController, :show)
     get("/queue", QueueController, :index)
 

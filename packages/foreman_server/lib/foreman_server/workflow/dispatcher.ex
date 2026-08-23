@@ -46,7 +46,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.{ProjectionStore, RunAdmission, Telemetry}
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Workflow.BootReconciliation
+  alias ForemanServer.Workflow.{BootReconciliation, Worktree}
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
@@ -79,7 +79,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   end
 
   @task_dispatch_event_types ~w(TaskApproved TaskDispatched)
-  @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked)
+  @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked RunDeleted)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
   @slot_promotion_event_types ~w(RunSlotTransferred)
   @work_submitted_event_types ~w(WorkSubmitted)
@@ -159,6 +159,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
     reason = payload["reason"] || payload[:reason] || terminal_reason_from_event_type(event_type)
 
     if is_binary(run_id) and run_id != "" do
+      if event_type == "RunDeleted", do: Worktree.clean_for_run(run_id)
       BootReconciliation.run_terminated(run_id, reason)
       terminate_lease(run_id, reason)
       terminate_slot(run_id, reason)
@@ -252,6 +253,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   defp terminal_reason_from_event_type("RunCompleted"), do: "run_completed"
   defp terminal_reason_from_event_type("RunFailed"), do: "run_failed"
   defp terminal_reason_from_event_type("RunBlocked"), do: "run_blocked"
+  defp terminal_reason_from_event_type("RunDeleted"), do: "run_removed"
   defp terminal_reason_from_event_type(_), do: "run_terminated"
 
   defp handle_task_approved(envelope, state) do

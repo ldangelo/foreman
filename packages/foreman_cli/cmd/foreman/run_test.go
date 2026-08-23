@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -271,5 +272,110 @@ func TestRunSubmitRunDispatch(t *testing.T) {
 	}
 	if env.Payload["base_branch"] != "feat/x" {
 		t.Fatalf("base_branch: got %v, want feat/x", env.Payload["base_branch"])
+	}
+}
+
+func TestRunListFilters(t *testing.T) {
+	var seenPath string
+	var seenQuery string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"runs":[]}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if err := runList(c, []string{"-status", "failed", "-project-id", "foreman", "-limit", "5"}); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+
+	if seenPath != "/api/runs" {
+		t.Fatalf("path: got %q", seenPath)
+	}
+	values, err := url.ParseQuery(seenQuery)
+	if err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	if values.Get("status") != "failed" || values.Get("project_id") != "foreman" || values.Get("limit") != "5" {
+		t.Fatalf("query: got %q", seenQuery)
+	}
+}
+
+func TestRunRemoveEnvelope(t *testing.T) {
+	assertRunCommandEnvelope(t, func(c *client.Client) error {
+		return runRemove(c, []string{"-id", "run-42"})
+	}, "run.remove", "run-42")
+}
+
+func TestRunRemoveRequiresID(t *testing.T) {
+	assertRunCommandRequiresID(t, func(c *client.Client) error { return runRemove(c, []string{}) })
+}
+
+func TestRunResetEnvelope(t *testing.T) {
+	assertRunCommandEnvelope(t, func(c *client.Client) error {
+		return runReset(c, []string{"-id", "run-42"})
+	}, "run.reset", "run-42")
+}
+
+func TestRunResetRequiresID(t *testing.T) {
+	assertRunCommandRequiresID(t, func(c *client.Client) error { return runReset(c, []string{}) })
+}
+
+func assertRunCommandEnvelope(t *testing.T, call func(*client.Client) error, wantType string, wantRunID string) {
+	t.Helper()
+	var captured []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		if r.URL.Path != "/api/commands" {
+			http.Error(w, "wrong path", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	if err := call(c); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	var env commandEnvelope
+	if err := json.Unmarshal(captured, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Type != wantType {
+		t.Fatalf("type: got %q, want %q", env.Type, wantType)
+	}
+	if env.Payload["run_id"] != wantRunID {
+		t.Fatalf("run_id: got %v", env.Payload["run_id"])
+	}
+}
+
+func assertRunCommandRequiresID(t *testing.T, call func(*client.Client) error) {
+	t.Helper()
+	var hitServer bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitServer = true
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	if err := call(c); err == nil {
+		t.Fatalf("expected missing id error")
+	}
+	if hitServer {
+		t.Fatalf("server should not be hit when --id is missing")
 	}
 }

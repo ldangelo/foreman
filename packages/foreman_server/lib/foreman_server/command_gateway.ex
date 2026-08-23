@@ -7,7 +7,7 @@ defmodule ForemanServer.CommandGateway do
     * `dispatch_operator/2` — public operator commands. Currently allows
       `project.register`, `project.update`, `project.archive`,
       `task.create`, `task.approve`, `task.retry`, `run.cancel`,
-      `work.submit`, and `work.cancel`. The command must carry
+      `run.remove`, `run.reset`, `work.submit`, and `work.cancel`. The command must carry
       `command_id`, `type`, and a `payload` map.
       `aggregate_id` is required except for `task.create` in no-id mode
       (where both `aggregate_id` and `payload.task_id` are absent); in that
@@ -46,7 +46,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
-  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel work.submit work.cancel)
+  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset work.submit work.cancel)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -288,7 +288,8 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
-  defp validate_aggregate_id(%{type: "run.cancel", aggregate_id: aggregate_id, payload: payload}) do
+  defp validate_aggregate_id(%{type: type, aggregate_id: aggregate_id, payload: payload})
+       when type in ["run.cancel", "run.remove", "run.reset"] do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
 
     cond do
