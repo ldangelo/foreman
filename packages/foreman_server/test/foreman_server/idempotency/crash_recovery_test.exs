@@ -2,7 +2,8 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
   use ExUnit.Case, async: false
 
   setup do
-    {:ok, _pid} = ForemanServer.Idempotency.KeyStore.start_link()
+    {:ok, _pid} = ForemanServer.Idempotency.KeyStore.ensure_started()
+    ForemanServer.TestSupport.KeyStoreReset.reset!()
     :ok
   end
 

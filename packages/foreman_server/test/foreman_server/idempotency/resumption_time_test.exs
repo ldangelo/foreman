@@ -41,7 +41,8 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
 
   describe "NFR-03: crash recovery ≤30 seconds to resumption" do
     setup do
-      {:ok, _pid} = KeyStore.start_link()
+      {:ok, _} = KeyStore.ensure_started()
+      ForemanServer.TestSupport.KeyStoreReset.reset!()
       :ok
     end
 
