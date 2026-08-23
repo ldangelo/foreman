@@ -206,15 +206,20 @@ defmodule ForemanServer.Idempotency.HeartbeatLease do
   @impl true
   def handle_info({:expire, key}, state) do
     case Map.pop(state.leases, key) do
-      {nil, _} -> {:noreply, state}
-      {_lease, new_state} ->
-        # Also remove the worker mapping so Tracker cannot double-fire.
+      {nil, _} ->
+        {:noreply, state}
+
+      {lease, new_leases} ->
+        # Cancel the timer the lease registered (best-effort: it may have
+        # already fired concurrently).
+        Process.cancel_timer(lease.timer_ref)
+        state = %{state | leases: new_leases}
         worker_k = worker_key_for_key(state.workers, key)
-        new_state = remove_worker_mapping(new_state, worker_k)
+        state = remove_worker_mapping(state, worker_k)
 
         Logger.warning("HeartbeatLease: lease expired for key=#{key}; marking ambiguous")
         ForemanServer.Idempotency.KeyStore.mark_ambiguous(key, "heartbeat_timeout")
-        {:noreply, new_state}
+        {:noreply, state}
     end
   end
 
