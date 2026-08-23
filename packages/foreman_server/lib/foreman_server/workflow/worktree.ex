@@ -217,6 +217,21 @@ defmodule ForemanServer.Workflow.Worktree do
   end
 
   @doc """
+  Best-effort cleanup for every projected worktree owned by a run, then delete
+  each matching local branch. Used by `run.remove` after the run is terminated.
+  """
+  @spec clean_for_run(String.t()) :: :ok
+  def clean_for_run(run_id) when is_binary(run_id) and run_id != "" do
+    ProjectionStore.worktrees_for_run(run_id)
+    |> Enum.each(fn worktree ->
+      _ = clean(worktree)
+      _ = delete_branch(worktree)
+    end)
+
+    :ok
+  end
+
+  @doc """
   Recover a worktree-create orphan: tear down the durable worktree path
   directly via the adapter. This path bypasses
   `ProjectionStore.worktree/1` because the orphan's `WorktreeCreated` event
@@ -250,6 +265,22 @@ defmodule ForemanServer.Workflow.Worktree do
   # ---------------------------------------------------------------------------
   # Internal helpers
   # ---------------------------------------------------------------------------
+
+  defp delete_branch(%{repo_path: repo_path, branch: branch})
+       when is_binary(repo_path) and repo_path != "" and is_binary(branch) and branch != "" do
+    if protected_branch?(branch) do
+      :ok
+    else
+      case System.cmd("git", ["-C", repo_path, "branch", "-D", branch], stderr_to_stdout: true) do
+        {_output, 0} -> :ok
+        {output, _} -> {:error, {:branch_delete_failed, branch, output}}
+      end
+    end
+  end
+
+  defp delete_branch(_worktree), do: :ok
+
+  defp protected_branch?(branch), do: branch in ["main", "master", "trunk"]
 
   defp handle_append_failure(
          started_ms,

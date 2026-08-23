@@ -14,7 +14,10 @@
 //	task create         POST /api/commands with type=task.create
 //	task approve        POST /api/commands with type=task.approve
 //	task get <id>       Fetch a task projection
+//	run list            List run projections
 //	run get <id>        Fetch a run projection
+//	run remove          Remove a run and clean worktree/branch
+//	run reset           Reset a failed or stuck run projection
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
 //
@@ -51,7 +54,10 @@ Commands:
   task create         Register a new task
   task approve        Approve a task and bind it to a workflow
   task get <id>       Fetch a task projection
+  run list            List run projections
   run get <id>        Fetch a run projection
+  run remove          Remove a run and clean worktree/branch
+  run reset           Reset a failed or stuck run projection
   workflow install    Install workflow assets
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
 Env:

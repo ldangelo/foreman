@@ -196,10 +196,10 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_projects_with_active_runs)
   end
 
-  @doc "Return every projected run."
-  @spec list_runs() :: [map()]
-  def list_runs do
-    GenServer.call(__MODULE__, :list_runs)
+  @doc "Return every projected run, optionally filtered by status, project_id, and limit."
+  @spec list_runs(keyword()) :: [map()]
+  def list_runs(opts \\ []) when is_list(opts) do
+    GenServer.call(__MODULE__, {:list_runs, opts})
   end
 
   @doc "Return every projected scheduler intent."
@@ -504,8 +504,15 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call(:list_runs, _from, state) do
-    {:reply, Map.values(state.runs), state}
+  def handle_call({:list_runs, opts}, _from, state) do
+    runs =
+      state.runs
+      |> Map.values()
+      |> filter_runs(opts)
+      |> Enum.sort_by(fn run -> {get(run, :last_event_at_ms, 0), get(run, :run_id, "")} end, :desc)
+      |> limit_runs(Keyword.get(opts, :limit))
+
+    {:reply, runs, state}
   end
 
   @impl true
@@ -862,6 +869,26 @@ defmodule ForemanServer.ProjectionStore do
 
   defp apply_event_by_type(state, "RunDeleted", payload) do
     apply_terminal_run_event(state, payload, "deleted")
+  end
+
+  defp apply_event_by_type(state, "RunReset", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      project_id = get(payload, :project_id)
+
+      state
+      |> Map.update(:project_active_runs, %{}, fn active_runs ->
+        if valid_id?(project_id) do
+          remove_project_run_id(active_runs, project_id, run_id)
+        else
+          active_runs
+        end
+      end)
+      |> put_state(state.projects, Map.delete(state.runs, run_id))
+    else
+      state
+    end
   end
 
   defp apply_event_by_type(state, "RunFlaggedStuck", payload) do
@@ -1579,6 +1606,21 @@ defmodule ForemanServer.ProjectionStore do
       failure_reason: nil
     }
   end
+
+  defp filter_runs(runs, opts) do
+    status = Keyword.get(opts, :status)
+    project_id = Keyword.get(opts, :project_id)
+
+    Enum.filter(runs, fn run ->
+      status_match? = is_nil(status) or status == "" or get(run, :status) == status
+      project_match? = is_nil(project_id) or project_id == "" or get(run, :project_id) == project_id
+      status_match? and project_match?
+    end)
+  end
+
+  defp limit_runs(runs, nil), do: runs
+  defp limit_runs(runs, limit) when is_integer(limit) and limit > 0, do: Enum.take(runs, limit)
+  defp limit_runs(runs, _limit), do: runs
 
   defp active_run_ids(state) do
     state.runs
