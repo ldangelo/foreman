@@ -324,4 +324,73 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       assert count(events, "WorkerStarted") == 1
     end
   end
+  describe "Tracker.terminal?/3 (TRD-2026-80ba0665 PR 0)" do
+    test "returns :fresh for a stream with no events" do
+      start_tracker()
+      worker_id = "wkr-#{uuid()}"
+      run_id = "run-#{uuid()}"
+
+      assert Tracker.terminal?(worker_id, run_id) == :fresh
+    end
+
+    test "returns {:ok, false} after a non-terminal event (WorkerStarted)" do
+      start_tracker()
+      worker_id = "wkr-#{uuid()}"
+      run_id = "run-#{uuid()}"
+      sid = Tracker.stream_id(worker_id, run_id)
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          aggregate_id: sid,
+          type: "worker.record",
+          payload: %{
+            "event_type" => "WorkerStarted",
+            "worker_id" => worker_id,
+            "run_id" => run_id,
+            "sequence" => 0,
+            "session_id" => "session-t",
+            "adapter" => "fake",
+            "prompt_path" => "/tmp/t"
+          },
+          command_id: "#{run_id}:#{worker_id}:WorkerStarted:0"
+        })
+
+      assert Tracker.terminal?(worker_id, run_id) == {:ok, false}
+    end
+
+    test "returns {:ok, true} after a WorkerCrashed event" do
+      start_tracker()
+      worker_id = "wkr-#{uuid()}"
+      run_id = "run-#{uuid()}"
+      sid = Tracker.stream_id(worker_id, run_id)
+
+      # Seed: WorkerStarted, then WorkerCrashed (seals the aggregate).
+      for {event_type, seq, extra} <- [
+             {"WorkerStarted", 0,
+              %{"session_id" => "s", "adapter" => "fake", "prompt_path" => "/p"}},
+             {"WorkerCrashed", 1,
+              %{"reason" => "crash_loop", "restarts_in_window" => 6,
+                "window_ms" => 60_000}}
+           ] do
+        {:ok, _} =
+          CommandRouter.dispatch(%{
+            aggregate_id: sid,
+            type: "worker.record",
+            payload: Map.merge(
+              %{
+                "event_type" => event_type,
+                "worker_id" => worker_id,
+                "run_id" => run_id,
+                "sequence" => seq
+              },
+              extra
+            ),
+            command_id: "#{run_id}:#{worker_id}:#{event_type}:#{seq}"
+          })
+      end
+
+      assert Tracker.terminal?(worker_id, run_id) == {:ok, true}
+    end
+  end
+
 end
