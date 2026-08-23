@@ -75,10 +75,16 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   the calling process (the underlying implementation subscribes and
   receives session events on the caller's mailbox, so this must not
   be proxied through a GenServer call).
-  """
-  @spec run_command(session_id(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def run_command(session_id, command, opts \\ []) do
-    Jido.Shell.Agent.run(session_id, command, opts)
+  @spec run_command(session_id(), String.t(), keyword()) ::
+          {:ok, String.t(), non_neg_integer()} | {:error, term()}
+  def run_command(session_id, command, opts \\ [])
+
+  def run_command(session_id, command, opts) do
+    case Jido.Shell.Agent.run(session_id, command, opts) do
+      {:ok, output, code} when is_integer(code) -> {:ok, output, code}
+      {:ok, output} -> {:ok, output, 0}
+      {:error, _} = err -> err
+    end
   end
 
   @doc """
@@ -163,9 +169,13 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   end
 
   defp system_cmd(cmd, args, cwd) do
-    case System.cmd(cmd, args, cd: cwd, into: "") do
-      {output, 0} -> {:ok, output, 0}
-      {output, code} -> {:ok, output, code}
+    try do
+      case System.cmd(cmd, args, cd: cwd, into: "") do
+        {output, 0} -> {:ok, output, 0}
+        {output, code} -> {:ok, output, code}
+      end
+    rescue
+      ErlangError -> {:ok, "", 127}
     end
   end
 end

@@ -71,7 +71,9 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       tmpdir = Path.join(System.tmp_dir!(), "shell-cwd-#{System.unique_integer()}")
       File.mkdir_p!(tmpdir)
       assert {:ok, out, 0} = JidoShellRunner.execute("pwd", [], cwd: tmpdir)
-      assert String.trim(out) == tmpdir
+      # macOS resolves /var/folders -> /private/var/folders in pwd output;
+      # Path.expand normalizes both sides for comparison.
+      assert String.trim(out) == Path.expand(tmpdir)
     end
 
     test "output captures stdout, not stderr by default" do
