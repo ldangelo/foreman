@@ -118,6 +118,10 @@ defmodule ForemanServer.MCP.Tools do
           enum: ["jido_harness", "pi", "claude"],
           default: "jido_harness",
           description: "Backend to use. Defaults to jido_harness (the production default since TRD-2026-4212be7e JHA-T002). The :pi and :claude atoms are routed through the same JidoHarnessAdapter as their upstream Jido.Harness provider names."
+        },
+        base_branch: %{
+          type: "string",
+          description: "Parent branch for the new task's worktree and PR. Captured at the protocol level only — server-side consumption (PlanContext derivation, plan_base_branch resolution, AutoPR target) is forthcoming per TRD-2026-80ba0665. When omitted the key is absent from the work.submit envelope."
         }
       },
       required: ["work_id", "project_id", "workflow", "prompt"]
@@ -418,6 +422,7 @@ defmodule ForemanServer.MCP.Tools do
         prompt: prompt
       } = args) do
     backend = Map.get(args, :backend) || Map.get(args, "backend") || "jido_harness"
+    base_branch = Map.get(args, :base_branch) || Map.get(args, "base_branch")
 
     with :ok <- check_backend(backend) do
       start_us = System.monotonic_time(:microsecond)
@@ -429,6 +434,13 @@ defmodule ForemanServer.MCP.Tools do
         workflow: workflow,
         prompt: prompt
       }
+
+      payload =
+        if is_binary(base_branch) and base_branch != "" do
+          Map.put(payload, :base_branch, base_branch)
+        else
+          payload
+        end
 
       envelope = %{
         type: "work.submit",

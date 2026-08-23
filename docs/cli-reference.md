@@ -132,7 +132,7 @@ Example:
 foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
 ```
 
-### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]`
+### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`
 
 Submit a new work request for dispatch. Issues `POST /api/commands` with a
 `work.submit` envelope. The server creates a `WorkSubmitted` event and
@@ -155,6 +155,16 @@ Flags:
   `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
   the JidoHarnessAdapter is in the runtime's adapter list; falls back
   to the first available adapter in the list otherwise.
+- `--base-branch <branch>` (optional, forthcoming per
+  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
+  — parent branch for the new task's worktree and PR. **Protocol-level
+  capture only in this release**: the CLI accepts and forwards the flag
+  inside the `work.submit` envelope, but the server does not yet consume
+  it. The forthcoming behavior: when omitted, the server will resolve the
+  parent from the operator's current checkout HEAD (replacing the
+  historical `"main"` fallback); when supplied, that value wins. Use
+  `gh pr edit <n> --base <branch>` to retarget any PR created before the
+  server-side change ships.
 
 Example:
 

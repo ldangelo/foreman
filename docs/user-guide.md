@@ -140,7 +140,7 @@ run projections and `GET /api/queue`, not the work read model.
 ### `foreman run submit`
 
 ```text
-foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]
+foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]
 ```
 
 Current CLI contract:
@@ -151,6 +151,15 @@ Current CLI contract:
 - `--work-id` is optional; the CLI generates `work-<random>` when omitted.
 - `--backend` is optional. The CLI accepts `pi`, `claude`, `codex`, and
   `opencode`; it omits the field when the value is the default `pi`.
+- `--base-branch <branch>` is optional and forthcoming per
+  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md).
+  The CLI accepts and forwards the flag inside the `work.submit`
+  envelope but the server does not yet consume it. When the server-side
+  change ships, the default parent branch for a new task will become the
+  operator's current checkout HEAD (replacing the historical `"main"`
+  fallback), and `--base-branch` will pin the task to an explicit branch.
+  Use `gh pr edit <n> --base <branch>` to retarget a PR created before
+  the server-side change ships.
 
 Important backend caveat: `--backend` is read-model metadata for `work.submit`,
 not a runtime execution switch. `Work.Submission` builds the workflow snapshot
@@ -162,12 +171,6 @@ unless a future provider is added.
 Use `foreman run submit` for the curated work-request workflows (`prd`, `trd`,
 `fix`). For arbitrary server workflow manifests such as `implement-trd` or
 `implement-trd-beads`, create and approve a task with `--workflow-type`.
-
-Example:
-
-```text
-foreman run submit --workflow fix --prompt "Update docs/user-guide.md for issue #410" --project-id foreman
-```
 
 ### `foreman run get <run-id>`
 

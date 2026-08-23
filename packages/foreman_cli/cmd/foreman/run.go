@@ -80,9 +80,14 @@ func runCancel(c *client.Client, args []string) error {
 }
 
 // runSubmit dispatches `foreman run submit --workflow <name> --prompt <text>
-// --project-id <id> [--work-id <id>] [--backend <backend>]`. Posts a work.submit
-// command envelope to /api/commands. Backend is omitted when the default "pi"
-// is used (per TRD-002 AC). Valid workflow names are: prd, trd, fix.
+// --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`.
+// Posts a work.submit command envelope to /api/commands. Backend is omitted when
+// the default "pi" is used (per TRD-002 AC). Valid workflow names are: prd, trd, fix.
+//
+// --base-branch is captured at the protocol level only — server-side consumption
+// (PlanContext derivation, plan_base_branch nil fallback, AutoPR skip-when-nil)
+// is forthcoming per TRD-2026-80ba0665. When the flag is omitted the key is
+// absent from the payload; when supplied, it is forwarded verbatim.
 func runSubmit(c *client.Client, args []string) error {
 	fs := newFlagSet("run submit")
 	workID := fs.String("work-id", "", "Work ID (auto-generated if omitted)")
@@ -90,6 +95,8 @@ func runSubmit(c *client.Client, args []string) error {
 	workflow := fs.String("workflow", "", "Workflow name (required)")
 	prompt := fs.String("prompt", "", "Input prompt (required)")
 	backend := fs.String("backend", "pi", "Backend to use (pi, claude, codex, opencode; default: pi)")
+	baseBranch := fs.String("base-branch", "",
+		"Parent branch for the new task's worktree and PR. Protocol-level capture only; server-side consumption forthcoming per TRD-2026-80ba0665.")
 
 	if err := fs.parse(args); err != nil {
 		return err
@@ -121,6 +128,9 @@ func runSubmit(c *client.Client, args []string) error {
 	}
 
 	// Build payload; omit backend when it's the default "pi" per TRD-002.
+	// Omit base_branch when empty so the server can apply its forthcoming
+	// default resolution (operator's current checkout HEAD per
+	// TRD-2026-80ba0665).
 	payload := map[string]any{
 		"work_id":    wid,
 		"project_id": *projectID,
@@ -129,6 +139,9 @@ func runSubmit(c *client.Client, args []string) error {
 	}
 	if *backend != "pi" {
 		payload["backend"] = *backend
+	}
+	if *baseBranch != "" {
+		payload["base_branch"] = *baseBranch
 	}
 
 	return postCommand(c, commandEnvelope{Type: "work.submit", Payload: payload})
