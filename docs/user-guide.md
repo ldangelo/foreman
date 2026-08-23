@@ -95,7 +95,274 @@ Set `FOREMAN_DIRENV_AUTO_COMPOSE=0` before entering the repository to opt out of
 
 A project is a repository registered with Foreman. `foreman init` creates the local `.foreman/` config assets and registers the project with the Elixir backend; the CLI does not apply Postgres migrations or connect directly to the database. Commands that act on a project accept `--project <name-or-path>` so you can operate from another directory.
 
-Common commands:
+- If the server has `FOREMAN_API_TOKEN`, send
+  `Authorization: Bearer <token>` or set the same token in CLI env.
+- `/api/*` also accepts `?token=<token>` for narrow tooling.
+- When no token is configured, dev auth is bypassed.
+
+## 2. Operator API surface
+
+All external domain mutations go through `POST /api/commands`. The current
+operator allowlist is:
+
+- `project.register`
+- `project.update`
+- `project.archive`
+- `task.create`
+- `task.approve`
+- `task.retry`
+- `run.cancel`
+- `work.submit`
+- `work.cancel`
+
+`ForemanServerWeb.CommandController` derives or verifies `aggregate_id` before
+calling `ForemanServer.CommandGateway`. The expected form is `<prefix>:<id>`
+(`task:<task_id>`, `run:<run_id>`, `work:<work_id>`, `project:<project_id>`).
+A mismatched supplied `aggregate_id` is rejected before the aggregate handles
+the command.
+
+Other ingress paths are separate:
+
+- workflow install/remove: `POST /api/admin/workflows/install` and
+  `POST /api/admin/workflows/remove`
+- webhooks: `/webhooks/*`
+- MCP: `/mcp`
+- dev-only dashboards: `/debug/*` and `/dashboard/*`
+
+Read endpoints are projection-only:
+
+- `GET /api/work/{id}` returns the work projection directly, or
+  `{error: "work_not_found"}` with `404`.
+- `GET /api/runs/{id}` returns `{run: ...}` with stringified keys, or
+  `{error: "run_not_found", run_id: "..."}` with `404`.
+- `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`, and
+  `GET /api/queue` expose corresponding projections.
+
+## 3. Work submission API
+
+Example command envelope:
+
+```json
+{
+  "type": "work.submit",
+  "command_id": "op-work-1",
+  "aggregate_id": "work:work-123",
+  "payload": {
+    "work_id": "work-123",
+    "project_id": "foreman",
+    "workflow": "fix",
+    "prompt": "Update docs/user-guide.md for issue #410"
+  }
+}
+```
+
+Current behavior:
+
+- `work_id` and `project_id` must be non-empty.
+- `project_id` must refer to an existing, non-archived project.
+- `workflow` and `prompt` must be non-empty strings.
+- `CommandGateway` rejects client-supplied reserved fields:
+  `submission_id`, `run_id`, and `workflow_snapshot`.
+- `ForemanServer.Work.Submission.prepare/1` loads `<workflow>.yaml`, derives
+  `submission_id` and deterministic `run_id`, and freezes the workflow snapshot.
+- HTTP response is `201` with `{status: "accepted", result: ...}`. Treat this
+  as acknowledgement only; read `GET /api/work/{work_id}` for the stable work
+  projection and derived IDs.
+
+The work projection stores `submitted`, `succeeded`, `failed`, or `cancelled`.
+Queue position is currently `nil`; live run admission state is visible through
+run projections and `GET /api/queue`, not the work read model.
+
+## 4. CLI work and run commands
+
+### `foreman run submit`
+
+```text
+foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]
+```
+
+Current CLI contract:
+
+- `--workflow` is required and must be one of `prd`, `trd`, or `fix`.
+- `--prompt` is required.
+- `--project-id` is required and must name an existing non-archived project.
+- `--work-id` is optional; the CLI generates `work-<random>` when omitted.
+- `--backend` is optional. The CLI accepts `pi`, `claude`, `codex`, and
+  `opencode`; it omits the field when the value is the default `pi`.
+- `--base-branch <branch>` is optional and forthcoming per
+  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md).
+  The CLI accepts and forwards the flag inside the `work.submit`
+  envelope but the server does not yet consume it. When the server-side
+  change ships, the default parent branch for a new task will become the
+  operator's current checkout HEAD (replacing the historical `"main"`
+  fallback), and `--base-branch` will pin the task to an explicit branch.
+  Use `gh pr edit <n> --base <branch>` to retarget a PR created before
+  the server-side change ships.
+
+Important backend caveat: `--backend` is read-model metadata for `work.submit`,
+not a runtime execution switch. `Work.Submission` builds the workflow snapshot
+without `backend`, and `Work.RunPayload.from_work_projection/1` does not pass a
+backend into admission. Current Jido Harness execution supports `pi` and
+`claude` providers only; `codex` and `opencode` remain stale CLI-accepted values
+unless a future provider is added.
+
+Use `foreman run submit` for the curated work-request workflows (`prd`, `trd`,
+`fix`). For arbitrary server workflow manifests such as `implement-trd` or
+`implement-trd-beads`, create and approve a task with `--workflow-type`.
+
+### `foreman run get <run-id>`
+
+Fetches `GET /api/runs/{id}` and prints the JSON response.
+
+```text
+foreman run get run-f971378012da4da2fec3ec74dbac325d
+```
+
+### `foreman run cancel --id <run-id> [--reason <reason>]`
+
+Issues `POST /api/commands` with a `run.cancel` envelope. The gateway enforces
+`aggregate_id == "run:<run_id>"`; the Run aggregate emits `RunCancelled`, making
+the run terminal with status `cancelled`.
+
+`--reason` defaults to `operator_cancel`.
+
+```text
+foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
+```
+
+### `foreman task retry --id <task-id> [--reason <text>]`
+
+Use `task.retry` only for a task whose bound run is already terminal.
+`CommandGateway` reads the task projection, verifies the bound run exists,
+checks `terminal? == true`, requires matching `task_id`, then attaches trusted
+terminal attestation fields (`acknowledged_run_id`, `acknowledged_at`,
+`run_terminal_reason`). The Task aggregate then clears run-bound fields and
+returns the task to `open`.
+
+The retry is rejected when the task is missing, has no bound run, references a
+missing run projection, references a run bound to another task, or the run is
+not terminal.
+
+## 5. Task lifecycle
+
+Task lifecycle is event-driven:
+
+```text
+open -> ready -> in_progress -> closed | failed
+blocked -> ready -> in_progress -> closed | failed
+```
+
+Operator shorthand sometimes describes the terminal branch as
+`completed/failed`; the exact task read-model success status is `closed`.
+Run projections use `completed`, `failed`, `blocked`, `deleted`, `stuck`, or
+`cancelled` depending on the terminal event.
+
+Lifecycle details:
+
+- `task.create` defaults status to `open`; the aggregate also recognizes
+  `blocked` as a valid non-terminal task status.
+- `task.approve` enriches the operator payload with trusted workflow data and
+  moves an `open` or `blocked` task to `ready`.
+- Dispatch requires `ready` plus bound `run_id`/`approval_id`; it emits
+  `TaskDispatched`, moving the task to `in_progress`.
+- Terminal execution emits `TaskExecutionCompleted` or `TaskExecutionFailed`.
+  The task projection stores success as `closed` and failure as `failed`.
+- `task.retry` is only for a task still bound to a terminal run, or already
+  `failed` by the terminal invariant. Success clears run-bound fields and
+  returns the task to `open`.
+
+## 6. Worker runtime and Overwatch
+
+`ForemanServer.Overwatch` is enabled by default outside tests. Command phases
+run through this path:
+
+```text
+RunExecutor -> Overwatch.start_phase/2 -> LaunchWorker -> JidoHarnessWorker
+```
+
+Current behavior:
+
+- `RunExecutor` materializes the phase prompt, chooses the Jido Harness provider
+  from the request context, builds the execution cwd/env, and calls
+  `Overwatch.start_phase/2`.
+- `LaunchWorker` starts the adapter, registers the worker pid with
+  `Overwatch.Tracker`, emits `WorkerStarted` with sequence `0`, then sends the
+  activation handshake.
+- A newly reserved run can be admitted as `awaiting_worker`; `WorkerStarted` is
+  the signal that moves the run to `in_progress`.
+- `JidoHarnessWorker` runs `Jido.Harness` in a supervised task after activation,
+  emits periodic `WorkerHeartbeat`, emits `WorkerExited` on normal completion,
+  forwards normalized `{:ok, text} | {:error, reason}` to `RunExecutor`, then
+  exits normally so the supervisor can clean up.
+- If the harness task crashes before returning a result, the worker emits
+  best-effort `WorkerExited` and forwards `{:error, {:task_crashed, reason}}`.
+- Separate crash paths can emit `WorkerCrashed`; normal Jido metadata is not the
+  operator result.
+
+## 7. Agent runtime and Jido Harness
+
+The only bundled runtime adapter is the in-process
+`ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`. The old shell-out
+`PiAdapter` is no longer shipped.
+
+Default runtime config:
+
+```elixir
+config :foreman_server, :agent_runtime,
+  enabled: true,
+  adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter],
+  agent_strategy: :react,
+  agent_model: "auto"
+```
+
+The adapter routes through `ForemanServer.AgentRuntime.JidoHarness` and the
+vendored `Jido.Harness` package. Supported upstream providers are `:pi` and
+`:claude`.
+
+Provider semantics:
+
+- Requests default to `:pi` unless runtime context sets `provider: :claude`.
+- Unknown providers return `:unsupported_provider`.
+- A selected but unavailable provider returns `:backend_unavailable` without
+  falling back to another provider.
+- `JidoHarnessAdapter.available?/0` checks whether either bundled provider is
+  installed. Automatic routing excludes unavailable adapters before invocation;
+  policy routing can still select a primary candidate and then skip it during
+  invocation if unavailable.
+- Test config deliberately sets `adapters: []`; adapter tests opt in explicitly.
+
+When adding a provider, update code and docs together. Do not document `codex`,
+`opencode`, or `PiAdapter` as runnable backends until the runtime actually
+supports them.
+
+## 8. Telemetry, OTel, LiteLLM, and Langfuse
+
+Local stack topology:
+
+```text
+Foreman OTLP exporter -> ops/otel-collector -> Langfuse v3
+```
+
+Defaults and env vars:
+
+- Foreman OTel defaults to `http://localhost:4318` in `config/config.exs`.
+- `devbox run up` starts `ops/otel-collector`, which listens on local
+  `4318`/`4317` and joins the `litellm-langfuse-stack_default` Docker network.
+- The collector forwards traces with `otlphttp/langfuse` to
+  `http://langfuse-web:3000/api/public/otel`; the exporter appends
+  `/v1/traces`.
+- Langfuse v3 OTLP ingest requires HTTP Basic auth using
+  `LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY`. Bearer auth with only the public
+  key returns `403`.
+- The collector computes `LANGFUSE_BASIC_AUTH` in `ops/otel-collector/entrypoint.sh`.
+- In production, set `OTEL_EXPORTER_OTLP_ENDPOINT` when `http://localhost:4318`
+  is not the target collector/ingest URL. `prod.exs` builds the same Basic auth
+  header for both `:jido_otel` and `:opentelemetry_exporter` when both Langfuse
+  keys are present.
+- LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`; `agent_model:
+  "auto"` maps through `:jido_ai` model aliases to LiteLLM.
+
+Useful checks:
 
 ```bash
 foreman init --name my-project

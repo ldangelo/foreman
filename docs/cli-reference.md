@@ -166,9 +166,39 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
 
-### `foreman run reset --id <run-id>`
+### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`
 
-Reset a failed or stuck run's projection state so it can be re-submitted fresh. Issues `POST /api/commands` with a `run.reset` envelope. Cancelled or completed runs are rejected with `{:run_not_resettable, "<status>"}`.
+- `--workflow` (required) — the workflow name to execute.
+- `--prompt` (required) — the input prompt/text for the workflow.
+- `--project-id` (required) — the project ID.
+- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--backend` (optional) — backend to use. Valid atoms are
+  `:jido_harness` (the production default, dispatched via the
+  `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
+  entry is currently ready), or the registered `name/0` of any
+  adapter module registered with the catalog (for example `:pi` for
+  the legacy `PiAdapter`). The only Jido.Harness providers the
+  runtime currently supports are `:pi` and `:claude` — `:codex`,
+  `:opencode`, and other unlisted atoms return
+  `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
+  the JidoHarnessAdapter is in the runtime's adapter list; falls back
+  to the first available adapter in the list otherwise.
+- `--base-branch <branch>` (optional, forthcoming per
+  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
+  — parent branch for the new task's worktree and PR. **Protocol-level
+  capture only in this release**: the CLI accepts and forwards the flag
+  inside the `work.submit` envelope, but the server does not yet consume
+  it. The forthcoming behavior: when omitted, the server will resolve the
+  parent from the operator's current checkout HEAD (replacing the
+  historical `"main"` fallback); when supplied, that value wins. Use
+  `gh pr edit <n> --base <branch>` to retarget any PR created before the
+  server-side change ships.
+
+Example:
+
+```text
+foreman run submit --workflow implement-trd --prompt "Fix the CLI submit bug" --project-id foreman
+```
 
 ```bash
 foreman run reset --id run-f971378012da4da2fec3ec74dbac325d

@@ -166,6 +166,115 @@ func TestRunRunDispatchesCancel(t *testing.T) {
 	}
 }
 
+// TestRunSubmitEnvelopeWithBaseBranch asserts that
+// `foreman run submit --base-branch <branch>` posts the flag verbatim in
+// the work.submit envelope payload. Per TRD-2026-80ba0665 the flag is
+// captured at the protocol level only — server-side consumption is
+// forthcoming.
+func TestRunSubmitEnvelopeWithBaseBranch(t *testing.T) {
+	var captured []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if err := runSubmit(c, []string{
+		"-project-id", "foreman",
+		"-workflow", "fix",
+		"-prompt", "sample",
+		"-base-branch", "slices/jido-migration",
+	}); err != nil {
+		t.Fatalf("runSubmit: %v", err)
+	}
+
+	var env commandEnvelope
+	if err := json.Unmarshal(captured, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Type != "work.submit" {
+		t.Fatalf("type: got %q, want work.submit", env.Type)
+	}
+	if env.Payload["base_branch"] != "slices/jido-migration" {
+		t.Fatalf("base_branch: got %v, want slices/jido-migration", env.Payload["base_branch"])
+	}
+}
+
+// TestRunSubmitOmitsBaseBranch asserts that omitting --base-branch
+// produces a payload where the base_branch key is ABSENT (not nil) so the
+// forthcoming server-side default resolution (operator's current checkout
+// HEAD) can apply without being shadowed by an empty value.
+func TestRunSubmitOmitsBaseBranch(t *testing.T) {
+	var captured []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if err := runSubmit(c, []string{
+		"-project-id", "foreman",
+		"-workflow", "fix",
+		"-prompt", "sample",
+	}); err != nil {
+		t.Fatalf("runSubmit: %v", err)
+	}
+
+	var env commandEnvelope
+	if err := json.Unmarshal(captured, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Type != "work.submit" {
+		t.Fatalf("type: got %q, want work.submit", env.Type)
+	}
+	if _, present := env.Payload["base_branch"]; present {
+		t.Fatalf("base_branch should be absent, got %v", env.Payload["base_branch"])
+	}
+}
+
+// TestRunSubmitRunDispatch confirms `foreman run submit` routes to
+// runSubmit.
+func TestRunSubmitRunDispatch(t *testing.T) {
+	var captured []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+	defer srv.Close()
+
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if err := runRun(c, []string{"submit",
+		"-project-id", "foreman",
+		"-workflow", "fix",
+		"-prompt", "sample",
+		"-base-branch", "feat/x",
+	}); err != nil {
+		t.Fatalf("runRun submit: %v", err)
+	}
+
+	var env commandEnvelope
+	if err := json.Unmarshal(captured, &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Type != "work.submit" {
+		t.Fatalf("type: got %q, want work.submit", env.Type)
+	}
+	if env.Payload["base_branch"] != "feat/x" {
+		t.Fatalf("base_branch: got %v, want feat/x", env.Payload["base_branch"])
+	}
+}
+
 func TestRunListFilters(t *testing.T) {
 	var seenPath string
 	var seenQuery string
