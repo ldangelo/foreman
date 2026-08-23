@@ -4,10 +4,9 @@ label: trd-branch-parent-resolution
 version: 0.2.0
 status: Draft
 date: 2026-08-22
-design_readiness_score: 3.6
 kind: trd
+design_readiness_score: 4.0
 ---
-
 # TRD: Branch Parent Resolution for Foreman Tasks
 
 ## Document Purpose
