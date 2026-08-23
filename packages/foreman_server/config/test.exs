@@ -6,7 +6,8 @@ config :foreman_server, ForemanServer.EventStore,
   url:
     System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test"),
   serializer: ForemanServer.TermOrJsonSerializer,
-  schema: "public"
+  schema: "public",
+  enable_hard_deletes: true
 
 config :foreman_server, ForemanServer.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")

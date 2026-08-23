@@ -44,7 +44,7 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
     # the stale dead pid and the subsequent `GenServer.call` exits.
     Process.sleep(20)
 
-    ForemanServer.TestSupport.ProjectionStoreReset.reset!([])
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
     :ok
   end
 end
