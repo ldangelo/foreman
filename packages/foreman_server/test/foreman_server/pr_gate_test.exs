@@ -3,6 +3,11 @@ defmodule ForemanServer.PrGateTest do
 
   alias ForemanServer.PrGate
 
+  setup do
+    {:ok, _pid} = ForemanServer.Workflow.MergeGate.start_link()
+    :ok
+  end
+
   describe "evaluate/1 — pure status check" do
     test ":open returns :ok" do
       assert PrGate.evaluate(:open) == :ok

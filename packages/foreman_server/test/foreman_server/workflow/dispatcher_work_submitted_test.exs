@@ -36,7 +36,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
     # Default: no work projection; admission returns queued; supervisor returns ok
     :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn _ -> nil end)
-    :meck.expect(ForemanServer.RunAdmission, :start, fn _, _, _ -> {:ok, :queued} end)
+    :meck.expect(ForemanServer.RunAdmission, :start, fn _, _ -> {:ok, :queued} end)
     :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _, _ -> {:ok, :started} end)
 
     on_exit(fn ->
@@ -79,7 +79,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload ->
         assert payload.run_id == run_id
         assert payload.project_id == project_id
         {:ok, :queued}
@@ -163,7 +163,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, %{event_type: "RunStarted"}}
       end)
 
@@ -203,7 +203,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, nil}
       end)
 
@@ -249,7 +249,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, :queued}
       end)
 
@@ -291,7 +291,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, :slot_queued}
       end)
 
@@ -333,7 +333,7 @@ defmodule ForemanServer.Workflow.DispatcherWorkSubmittedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :work_projection, fn ^work_id -> work_proj end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:error, {:slot_acquire_failed, :unknown}}
       end)
 
