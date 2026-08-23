@@ -36,8 +36,8 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
       ]
 
     @impl true
-    def run(%{marker: marker}, _context) do
-      {:ok, %{last_marker: marker, tick: 1}}
+    def run(%{marker: marker}, %{state: %{tick: tick} = state}) do
+      {:ok, %{state | last_marker: marker, tick: tick + 1}}
     end
   end
 
@@ -49,7 +49,7 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
       schema: []
 
     @impl true
-    def run(_params, _context), do: {:ok, %{tick: 1}}
+    def run(_params, %{state: %{tick: tick} = state}), do: {:ok, %{state | tick: tick + 1}}
   end
 
   # ---------------------------------------------------------------------------
