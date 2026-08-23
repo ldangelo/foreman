@@ -110,6 +110,26 @@ defmodule ForemanServer.Overwatch.Tracker do
     GenServer.call(server, {:unregister, worker_id, run_id})
   end
 
+  @doc """
+  Read the Worker aggregate's terminal? flag for `(worker_id, run_id)`.
+  Used by `LaunchWorker.init/1` as a pre-flight check to refuse re-launch
+  on a stream that was already sealed by a prior `WorkerCrashed` (or
+  other terminal) event. Returns one of:
+
+    * `{:ok, true}` — the aggregate is terminal.
+    * `{:ok, false}` — the aggregate exists and is not terminal.
+    * `:fresh` — the stream has no events (no WorkerStarted has been
+      appended yet).
+
+  Returns `:error` on transient rehydration failures; callers should
+  treat that as "proceed" rather than block on it.
+  """
+  @spec terminal?(GenServer.server(), String.t(), String.t()) ::
+          {:ok, boolean()} | :fresh | :error
+  def terminal?(server \\ __MODULE__, worker_id, run_id) do
+    GenServer.call(server, {:terminal?, worker_id, run_id})
+  end
+
   @doc "Look up the tracked pid for a worker, or `nil` if not registered."
   @spec pid_for(GenServer.server(), String.t(), String.t()) :: pid() | nil
   def pid_for(server \\ __MODULE__, worker_id, run_id) do
@@ -175,6 +195,40 @@ defmodule ForemanServer.Overwatch.Tracker do
     end
   rescue
     _ -> -1
+  end
+
+  defp terminal_state_from_aggregate(worker_id, run_id) do
+    sid = stream_id(worker_id, run_id)
+
+    case Aggregator.start_aggregate(ForemanServer.Aggregates.Worker, sid) do
+      {:ok, actor_pid} ->
+        try do
+          case Actor.get_state(actor_pid) do
+            %{terminal?: terminal?, last_sequence: seq}
+            when is_boolean(terminal?) and is_integer(seq) ->
+              cond do
+                seq < 0 -> :fresh
+                true -> {:ok, terminal?}
+              end
+
+            %{last_sequence: seq} when is_integer(seq) ->
+              # State struct without a terminal? field — unknown shape.
+              # Report non-terminal so the caller proceeds and the
+              # dispatch surfaces any actual rejection.
+              if seq < 0, do: :fresh, else: {:ok, false}
+
+            _ ->
+              :fresh
+          end
+        catch
+          :exit, _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    _ -> :error
   end
 
   @impl true
@@ -300,6 +354,18 @@ defmodule ForemanServer.Overwatch.Tracker do
       end
 
     {:reply, seq, state}
+  end
+
+  def handle_call({:terminal?, worker_id, run_id}, _from, state) do
+    k = key(worker_id, run_id)
+
+    result =
+      case get_sequence(state, k) do
+        nil -> terminal_state_from_aggregate(worker_id, run_id)
+        _seq -> terminal_state_from_aggregate(worker_id, run_id)
+      end
+
+    {:reply, result, state}
   end
 
   def handle_call({:unregister, worker_id, run_id}, _from, state) do

@@ -101,6 +101,37 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
     worker_id = Keyword.fetch!(opts, :worker_id)
     run_id = Keyword.fetch!(opts, :run_id)
 
+    # Pre-flight: refuse re-launch when the Worker aggregate for this
+    # (worker_id, run_id) is already terminal. LaunchWorker has
+    # restart: :permanent, so without this guard a crashed-then-restarted
+    # LaunchWorker would loop on WorkerStarted dispatch forever —
+    # `allow_after_terminal/2` in the Worker aggregate rejects the
+    # re-launch as `:worker_terminal` and the run dies at p001 with
+    # `{:initialization_failed, :phase_terminal}` (see TRD-2026-80ba0665).
+    case Tracker.terminal?(worker_id, run_id) do
+      {:ok, true} ->
+        Logger.warning(
+          "LaunchWorker: refusing re-launch on terminal stream " <>
+            "#{worker_id}/#{run_id}"
+        )
+
+        :telemetry.execute(
+          [:foreman_server, :overwatch, :worker_already_terminal],
+          %{},
+          %{worker_id: worker_id, run_id: run_id}
+        )
+
+        {:stop, {:worker_already_terminal, {worker_id, run_id}}}
+
+      _other ->
+        # :fresh, {:ok, false}, or :error all mean "proceed". The
+        # subsequent dispatch will surface any actual rejection from
+        # the Worker aggregate if the stream really is sealed.
+        do_init(opts, worker_id, run_id)
+    end
+  end
+
+  defp do_init(opts, worker_id, run_id) do
     case WorkerProtocol.start_worker(worker_id, run_id, opts) do
       {:ok, worker_pid} ->
         # Step 1: spawn succeeded. Adapter must NOT have emitted anything yet.
@@ -175,6 +206,7 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
         {:stop, {:worker_spawn_failed, reason}}
     end
   end
+
 
   @impl true
   def handle_info({:overwatch_activated, pid}, %{worker_pid: pid} = state) do
