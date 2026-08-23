@@ -453,10 +453,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
       # Overwatch.build_launch_env assembles the env map from project_id +
       # opts[:env_map]. We pass our env there so the supervised worker
       # sees the same env the original AgentRuntime path did.
+      # Resolve the adapter module from AdapterCatalog using the
+      # routing_snapshot. This lets tests register a TestAdapter (or
+      # any custom backend in production) and have it picked up here.
+      # Falls back to the jido_harness default when the catalog has
+      # no entry yet (e.g. early bootstrap paths).
+      adapter_module =
+        case ForemanServer.AgentRuntime.AdapterCatalog.routing_snapshot() do
+          [%{adapter: mod} | _] -> mod
+          _ ->
+            case ForemanServer.AgentRuntime.AdapterCatalog.lookup(:jido_harness) do
+              {:ok, mod} -> mod
+              _ -> ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+            end
+        end
+
       launch_opts = [
         run_id: state.run_id,
         session_id: generate_session_id(),
-        adapter: ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter,
+        adapter: adapter_module,
         adapter_name: "jido_harness",
         prompt_path: prompt_path,
         provider: provider,
