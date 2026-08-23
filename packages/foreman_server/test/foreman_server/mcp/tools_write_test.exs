@@ -8,8 +8,25 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
     {:ok, _} = Application.ensure_all_started(:meck)
     :meck.new(CommandGateway, [:passthrough, :no_link])
 
+    # Pre-register a real adapter so Router.manual/1 returns
+    # {:ok, _} instead of {:error, :no_available_backend}.
+    # Per foreman-test-isolation skill RC #10.
+    {:ok, _} =
+      ForemanServer.AgentRuntime.AdapterCatalog.register(
+        ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+      )
+
     on_exit(fn ->
       :meck.unload(CommandGateway)
+
+      # Tear down the pre-registered adapter only if we registered it.
+      try do
+        ForemanServer.AgentRuntime.AdapterCatalog.unregister(
+          ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+        )
+      catch
+        :exit, _ -> :ok
+      end
     end)
 
     :ok
@@ -32,7 +49,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                  work_id: "work-123",
                  project_id: "proj-456",
                  workflow: "default",
-                 prompt: "Do the thing"
+                 prompt: "Do the thing",
+                 backend: "jido_harness"
                }
 
         {:ok, %{work_id: "work-123", status: "submitted"}}

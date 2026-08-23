@@ -4,7 +4,7 @@ defmodule ForemanServer.PrGateTest do
   alias ForemanServer.PrGate
 
   setup do
-    {:ok, _pid} = ForemanServer.Workflow.MergeGate.start_link()
+    {:ok, _} = ForemanServer.Workflow.MergeGate.ensure_started()
     :ok
   end
 
