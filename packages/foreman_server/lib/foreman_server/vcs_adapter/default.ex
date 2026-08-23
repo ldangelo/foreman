@@ -86,7 +86,7 @@ defmodule ForemanServer.VcsAdapter.Default do
   def create_worktree(repo_path, worktree_path, opts) do
     operation_id = Keyword.fetch!(opts, :operation_id)
     base = Keyword.fetch!(opts, :base)
-    branch = Keyword.fetch!(opts, :branch)
+    branch = Keyword.get(opts, :branch)
     project_id = Keyword.fetch!(opts, :project_id)
     run_id = Keyword.fetch!(opts, :run_id)
     phase_id = Keyword.fetch!(opts, :phase_id)
@@ -96,7 +96,10 @@ defmodule ForemanServer.VcsAdapter.Default do
 
     emit_started(operation_id, "worktree_create", target, metadata)
 
-    base_args = if branch_exists?(repo_path, branch), do: [worktree_path, branch], else: branch_args(branch) ++ [worktree_path, base]
+    base_args =
+      if is_binary(branch) and branch != "" and branch_exists?(repo_path, branch),
+        do: [worktree_path, branch],
+        else: branch_args(branch) ++ [worktree_path, base]
     args = ["-C", repo_path, "worktree", "add"] ++ base_args
 
     case System.cmd("git", args, stderr_to_stdout: true) do
