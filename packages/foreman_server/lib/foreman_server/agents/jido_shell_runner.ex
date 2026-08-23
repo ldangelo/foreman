@@ -75,18 +75,27 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   the calling process (the underlying implementation subscribes and
   receives session events on the caller's mailbox, so this must not
   be proxied through a GenServer call).
-  @spec run_command(session_id(), String.t(), keyword()) ::
-          {:ok, String.t(), non_neg_integer()} | {:error, term()}
+  """
   def run_command(session_id, command, opts \\ [])
-
   def run_command(session_id, command, opts) do
     case Jido.Shell.Agent.run(session_id, command, opts) do
-      {:ok, output, code} when is_integer(code) -> {:ok, output, code}
-      {:ok, output} -> {:ok, output, 0}
-      {:error, _} = err -> err
+      {:ok, output, code} when is_integer(code) ->
+        {:ok, output, code}
+
+      {:ok, output} ->
+        {:ok, output, 0}
+
+      {:error, %Jido.Shell.Error{code: {:shell, :unknown_command}}} ->
+        # Jido's shell recognises a small set of builtins (cd, pwd, echo,
+        # exit, ...). For anything else (e.g. \`false\`, \`true\`, \`cat\`)
+        # it returns :unknown_command; fall through to a real shell so
+        # session users get exit-code semantics, not a hard error.
+        run_shell(command, [], File.cwd!(), File.cwd!())
+
+      {:error, _} = err ->
+        err
     end
   end
-
   @doc """
   Ad-hoc single-shot command execution, independent of the session
   registry. Tries the real `Jido.Shell` API when loaded, falling back
@@ -119,10 +128,17 @@ defmodule ForemanServer.Agents.JidoShellRunner do
     end
   end
 
-  @impl true
   def handle_call({:stop_session, session_id}, _from, state) do
     state = untrack_session(state, session_id)
-    result = Jido.Shell.Agent.stop(session_id)
+    # Jido.Shell.Agent.stop returns {:error, :not_found} if the session
+    # is already stopped. Make the call idempotent — second stop is
+    # a no-op: success.
+    result =
+      case Jido.Shell.Agent.stop(session_id) do
+        {:error, :not_found} -> :ok
+        other -> other
+      end
+
     {:reply, result, state}
   end
 

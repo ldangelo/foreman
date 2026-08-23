@@ -73,7 +73,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       assert {:ok, out, 0} = JidoShellRunner.execute("pwd", [], cwd: tmpdir)
       # macOS resolves /var/folders -> /private/var/folders in pwd output;
       # Path.expand normalizes both sides for comparison.
-      assert String.trim(out) == Path.expand(tmpdir)
+      assert String.trim(out) == normalize_path(tmpdir)
     end
 
     test "output captures stdout, not stderr by default" do
@@ -299,6 +299,17 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
   # ---------------------------------------------------------------------------
   # Helper
   # ---------------------------------------------------------------------------
+
+  # macOS exposes /var/folders as a symlink to /private/var/folders;
+  # `pwd` prints the resolved path while the test's tmpdir is built
+  # from System.tmp_dir/! (unresolved). Run `readlink -f` to normalise
+  # both sides for an equality comparison.
+  defp normalize_path(path) do
+    case System.cmd("readlink", ["-f", path], stderr_to_stdout: true) do
+      {resolved, 0} -> String.trim(resolved)
+      _ -> path
+    end
+  end
 
   defp assert_eventually(fun, attempts \\ 20)
 

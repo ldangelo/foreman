@@ -56,10 +56,12 @@ config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url: System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test")
 
 # JSH-T003: VFS isolation per worktree — allow /tmp for test worktrees.
+# `/var/folders/.../T/...` is macOS's per-user tmpdir; include the
+# resolved-prefix paths in case so the tests in either environment
+# bind worktrees without tripping the allowlist.
 config :foreman_server, :jido_vfs,
-  allowed_roots: ["/tmp", "/Users/ldangelo/Development/Fortium"],
+  allowed_roots: ["/tmp", "/private/tmp", "/var/folders", "/Users/ldangelo/Development/Fortium"],
   enforce_allowlist: true
-
 # OpenTelemetry tracer no-op in test (TRD-2026-4212be7e / JOT-T001).
 # Default tracer is :otel_tracer_default which records every span and
 # ships it through the batch processor. We don't want every test run to
