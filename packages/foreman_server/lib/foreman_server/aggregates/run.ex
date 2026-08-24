@@ -207,7 +207,7 @@ defmodule ForemanServer.Aggregates.Run do
   @impl true
   def handle_command(state, %{type: "run.start", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
-         :ok <- Aggregate.optional_binary(Aggregate.get(payload, :task_id), :task_id),
+         {:ok, task_id} <- Aggregate.required_binary(Aggregate.get(payload, :task_id), :task_id),
          {:ok, project_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :project_id), :project_id),
          :ok <- require_workflow_snapshot(Aggregate.get(payload, :workflow_snapshot)),
