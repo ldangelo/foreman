@@ -98,9 +98,13 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       assert retried == 3, "all 3 ambiguous keys must be retried (2 no-effects + 1 has-effects)"
     end
   end
-
   describe "reconcile_ambiguous_keys/1 (deferral when CommandRouter absent)" do
     test "defers when command_router_ready? returns false" do
+      # Stub command_router_ready?/0 via the :br_command_router_ready_override
+      # process-dict hook checked in BootReconciliation.command_router_ready?/0
+      # so the scan takes the :schedule_not_ready branch.
+      on_exit(fn -> Process.delete(:br_command_router_ready_override) end)
+      Process.put(:br_command_router_ready_override, false)
       # CommandRouter is not running → scan_branch returns :schedule_not_ready →
       # reconcile_ambiguous_keys defers via schedule_ambiguous_scan.
       # No telemetry fires synchronously (it fires after the deferred message).

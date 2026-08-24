@@ -1200,8 +1200,13 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     :ets.delete(@dispatch_attempts_table, run_id)
     :ok
   end
-
   defp command_router_ready? do
-    is_pid(Process.whereis(CommandRouter))
+    # Test hook: allow BootReconciliationAmbiguousKeysTest (and any other
+    # caller) to force the "not ready" branch via a process-dict key set in
+    # the test's on_exit. Production callers do not set the key.
+    case Process.get(:br_command_router_ready_override) do
+      false -> false
+      _ -> is_pid(Process.whereis(CommandRouter))
+    end
   end
 end
