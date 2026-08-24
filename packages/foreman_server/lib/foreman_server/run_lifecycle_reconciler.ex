@@ -149,6 +149,7 @@ defmodule ForemanServer.RunLifecycleReconciler do
   def handle_info(_message, state), do: {:noreply, state}
 
   @doc false
+  @spec process_terminal_event(term(), deps()) :: :ok
   def process_terminal_event(%RecordedEvent{event_type: event_type} = event, state) do
     if MapSet.member?(@terminal_event_types, event_type) do
       payload = Aggregate.event_payload(event)
@@ -161,11 +162,6 @@ defmodule ForemanServer.RunLifecycleReconciler do
         if valid_id?(project_id) do
           started_at_ms = System.monotonic_time(:millisecond)
           release_reservation(project_id, run_id, "terminal_event", state)
-          # Also release the run_slots:global holder so subsequent
-          # admissions can take the slot; the test foreman_server/
-          # run_lifecycle_reconciler_slot_test.exs asserts the
-          # run_slots.release dispatch alongside the lease release.
-          dispatch_slot_release(run_id, "terminal_event", state)
 
           state.telemetry_module.reconciler_terminal_release(
             elapsed_ms(started_at_ms),
