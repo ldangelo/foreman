@@ -84,7 +84,13 @@ defmodule ForemanServer.Inbox.PollerTest do
     test "removes a binding" do
       :ok = Poller.attach_handler(TestSource, :stub_handler, self())
       :ok = Poller.detach_handler(TestSource)
-      assert Poller.handlers() == []
+      # OperatorQuestionSource is registered by OperatorDirectiveProjector
+      # in the application supervision tree; only the TestSource binding
+      # we just attached+detached should be gone.
+      refute Enum.any?(
+               Poller.handlers(),
+               fn {source, _handler} -> source == TestSource end
+             )
     end
   end
 end
