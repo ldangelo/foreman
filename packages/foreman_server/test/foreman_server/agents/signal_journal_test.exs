@@ -2,7 +2,7 @@ defmodule ForemanServer.Agents.SignalJournalTest do
   use ExUnit.Case, async: false
 
   test "record and replay" do
-    start_supervised!(ForemanServer.Agents.SignalJournal)
+    {:ok, _pid} = ForemanServer.Agents.SignalJournal.start_link()
     {:ok, id1} = ForemanServer.Agents.SignalJournal.record("topic.a", %{x: 1})
     {:ok, id2} = ForemanServer.Agents.SignalJournal.record("topic.b", %{y: 2})
     assert is_binary(id1)
@@ -12,7 +12,7 @@ defmodule ForemanServer.Agents.SignalJournalTest do
   end
 
   test "replay filtered by topic" do
-    start_supervised!(ForemanServer.Agents.SignalJournal)
+    {:ok, _pid} = ForemanServer.Agents.SignalJournal.start_link()
     {:ok, _} = ForemanServer.Agents.SignalJournal.record("topic.x", %{})
     {:ok, _} = ForemanServer.Agents.SignalJournal.record("topic.y", %{})
     x_only = ForemanServer.Agents.SignalJournal.replay("topic.x")

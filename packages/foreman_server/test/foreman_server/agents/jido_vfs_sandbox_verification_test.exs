@@ -6,7 +6,7 @@ defmodule ForemanServer.Agents.JidoVfsSandboxVerificationTest do
   alias ForemanServer.Agents.VfsIsolation
 
   test "agent bound to worktree cannot access outside path" do
-    start_supervised!(VfsIsolation)
+    {:ok, _pid} = VfsIsolation.start_link()
     :ok = VfsIsolation.bind("agent-x", "/tmp/wt-test")
 
     refute VfsIsolation.allowed?("agent-x", "/etc/passwd")
@@ -17,7 +17,7 @@ defmodule ForemanServer.Agents.JidoVfsSandboxVerificationTest do
   end
 
   test "unbound agent cannot access anything" do
-    start_supervised!(VfsIsolation)
+    {:ok, _pid} = VfsIsolation.start_link()
     refute VfsIsolation.allowed?("agent-unbound", "/tmp/anything")
   end
 end
