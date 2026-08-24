@@ -73,7 +73,16 @@ defmodule ForemanServer.OverwatchTest do
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
   defp start_overwatch do
-    start_supervised!({Overwatch, []}, id: :overwatch)
+    # The ForemanServer.Application supervisor already starts Overwatch
+    # in the :test env (see application.ex `maybe_overwatch_child/0`
+    # — the `Mix.env() == :test` guard). If it's already running,
+    # reuse it instead of starting a second instance, which would
+    # collide on the registered WorkerSupervisor name.
+    if Process.whereis(ForemanServer.Overwatch) do
+      :ok
+    else
+      start_supervised!({Overwatch, []}, id: :overwatch)
+    end
   end
 
   defp read_worker_events(worker_id, run_id) do

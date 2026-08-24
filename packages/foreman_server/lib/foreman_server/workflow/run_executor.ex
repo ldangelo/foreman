@@ -484,7 +484,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         env_map: env,
         result_recipient: self(),
         activation_timeout_ms: @default_activation_timeout_ms,
-        project_id: project_id(state)
+        project_id: project_id(state),
+        # Phase-level context (e.g. script_key, working_directory) so the
+        # supervised worker pid — invoked via the adapter's
+        # `start_link/1` → `execute/2` path through Overwatch — sees the
+        # same context the in-process AdapterCatalog.execute call used to
+        # receive before the LGC-T002 Overwatch migration.
+        context: request.context
       ]
 
       phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))

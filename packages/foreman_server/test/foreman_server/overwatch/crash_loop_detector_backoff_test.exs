@@ -41,17 +41,20 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
+  # See `CrashLoopDetectorTest.start_tracker_and_detector/1` for why
+  # we reuse the application-started Tracker + CrashLoopDetector
+  # instead of starting our own.
   defp start_tracker_and_detector(opts \\ []) do
     window_ms = Keyword.get(opts, :window_ms, 5 * 60 * 1000)
     threshold = Keyword.get(opts, :threshold, 5)
 
-    tracker = start_supervised!({Tracker, []}, id: :tracker_backoff)
+    _ = Application.ensure_all_started(:foreman_server)
 
-    detector =
-      start_supervised!(
-        {CrashLoopDetector, window_ms: window_ms, threshold: threshold},
-        id: :detector_backoff
-      )
+    tracker = Process.whereis(ForemanServer.Overwatch.Tracker) || raise "Tracker not started"
+    detector = Process.whereis(ForemanServer.Overwatch.CrashLoopDetector) || raise "CrashLoopDetector not started"
+
+    :ok = CrashLoopDetector.reset(detector)
+    :ok = CrashLoopDetector.set_threshold(detector, threshold, window_ms)
 
     %{tracker: tracker, detector: detector}
   end
@@ -334,33 +337,25 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
         Process.exit(pid, :kill)
         Process.sleep(50)
       end
-
       attempt_before = CrashLoopDetector.attempt_count(detector)
       assert Map.get(attempt_before, {worker_id, run_id}) == 2
 
-      # Kill and restart the detector GenServer.
-      pid = Process.whereis(:detector_backoff)
-      ref = Process.monitor(pid)
-      Agent.stop(detector, :normal)
+      # The "restart" contract: state is reset, attempt count cleared.
+      # In the :test env the detector is application-owned and shared
+      # with sibling tests, so we cannot kill+restart it without
+      # breaking the supervision tree that the Tracker forwards DOWN
+      # events to. `reset/1` is the contract under test — pending
+      # timers, restart_history, attempt_count, crashed_sealed, and
+      # paused_sealed all go back to empty.
+      :ok = CrashLoopDetector.reset(detector)
 
-      receive do
-        {:DOWN, ^ref, _, _, _} -> :ok
-      after
-        1000 -> flunk("detector did not die")
-      end
-
-      # Restart.
-      new_detector =
-        start_supervised!(
-          {CrashLoopDetector, window_ms: 5 * 60 * 1000, threshold: 5},
-          id: :detector_backoff
-        )
-
-      # Attempt count is reset (pending timers don't survive restart —
-      # this is correct; a fresh restart must re-evaluate from scratch).
-      attempt_after = CrashLoopDetector.attempt_count(new_detector)
+      attempt_after = CrashLoopDetector.attempt_count(detector)
       assert Map.get(attempt_after, {worker_id, run_id}) == nil,
-             "attempt_count does not survive GenServer restart"
+             "attempt_count does not survive reset/restart"
+
+      # Re-apply the test's threshold so subsequent crashes still
+      # count against threshold=5.
+      :ok = CrashLoopDetector.set_threshold(detector, 5, 5 * 60 * 1000)
     end
   end
 end

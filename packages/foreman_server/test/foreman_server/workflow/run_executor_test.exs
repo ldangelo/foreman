@@ -100,6 +100,79 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       result
     end
+
+    # Worker-runtime hook so this adapter satisfies the
+    # `ForemanServer.Overwatch.WorkerProtocol.start_worker/3` contract
+    # (see lib/foreman_server/overwatch/worker_protocol.ex). The
+    # production path goes through `execute/2`, but with Overwatch the
+    # executor calls `adapter.start_link/1` first to spawn the supervised
+    # worker pid and only invokes `execute/2` from the spawned worker
+    # after the activation handshake completes. The spawned pid below
+    # honors that handshake, drives `execute/2`, forwards the result to
+    # `result_recipient` so RunExecutor's `wait_for_worker_result/1`
+    # unblocks, and exits normally so LaunchWorker's monitor fires.
+    def start_link(opts) do
+      TestAdapter.Worker.start_link(opts)
+    end
+  end
+
+  defmodule Worker do
+    @moduledoc false
+    use GenServer
+
+    alias __MODULE__, as: Worker
+
+    def start_link(opts) do
+      worker_id = Keyword.fetch!(opts, :worker_id)
+      run_id = Keyword.fetch!(opts, :run_id)
+      name = :"#{__MODULE__}-#{run_id}-#{worker_id}"
+      GenServer.start_link(__MODULE__, opts, name: name)
+    end
+
+    @impl true
+    def init(opts) do
+      {:ok,
+       %{
+         worker_id: Keyword.fetch!(opts, :worker_id),
+         run_id: Keyword.fetch!(opts, :run_id),
+         prompt: Keyword.fetch!(opts, :prompt),
+         context: Keyword.get(opts, :context, %{}),
+         driver_opts: Keyword.get(opts, :driver_opts, []),
+         env_map: Keyword.get(opts, :env_map, %{}),
+         result_recipient: Keyword.get(opts, :result_recipient),
+         adapter_state: Keyword.get(opts, :adapter_state, %{})
+       }}
+    end
+
+    @impl true
+    def handle_info({:overwatch_activate, _worker_id, _run_id, launcher_pid}, state) do
+      send(launcher_pid, {:overwatch_activated, self()})
+
+      parent = self()
+
+      Task.start(fn ->
+        result =
+          TestAdapter.execute(
+            %{prompt: state.prompt, context: Map.put(state.context, "worker_id", state.worker_id)},
+            env: state.env_map,
+            timeout_ms: 30_000
+          )
+
+        send(parent, {:adapter_done, result})
+      end)
+
+      {:noreply, state}
+    end
+
+    def handle_info({:adapter_done, result}, state) do
+      if state.result_recipient do
+        send(state.result_recipient, {:worker_result, result})
+      end
+
+      {:stop, :normal, state}
+    end
+
+    def handle_info(_msg, state), do: {:noreply, state}
   end
 
   setup_all do

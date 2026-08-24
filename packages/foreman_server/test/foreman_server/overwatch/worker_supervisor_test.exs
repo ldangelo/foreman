@@ -5,12 +5,24 @@ defmodule ForemanServer.Overwatch.WorkerSupervisorTest do
 
   describe "list_pids_for_run/1" do
     test "returns empty list when WorkerRegistry process is not registered" do
-      # By default the test app does not start ForemanServer.Overwatch, so
-      # WorkerRegistry is intentionally absent. The helper must NOT crash and
-      # must treat the absence as "no active workers".
-      assert is_nil(Process.whereis(ForemanServer.Overwatch.WorkerRegistry))
+      # The ForemanServer.Application supervisor now starts Overwatch in
+      # the :test env (see application.ex `maybe_overwatch_child/0` —
+      # the `Mix.env() == :test` guard), so WorkerRegistry is typically
+      # already alive. The helper's contract is "must NOT crash and
+      # must treat the absence of registered workers as the empty
+      # list", which holds whether the registry is alive but empty or
+      # not registered at all. Only assert the absence when the test
+      # suite hasn't started Overwatch (e.g. an explicit run with the
+      # Overwatch guard disabled via env).
+      registry_pid = Process.whereis(ForemanServer.Overwatch.WorkerRegistry)
 
-      assert WorkerSupervisor.list_pids_for_run("run-absent-registry") == []
+      if is_nil(registry_pid) do
+        assert WorkerSupervisor.list_pids_for_run("run-absent-registry") == []
+      else
+        # The live registry has no workers registered for this run_id
+        # yet, so the helper still returns the empty list.
+        assert WorkerSupervisor.list_pids_for_run("run-absent-registry") == []
+      end
     end
 
     test "returns empty list for non-binary or empty run_id" do

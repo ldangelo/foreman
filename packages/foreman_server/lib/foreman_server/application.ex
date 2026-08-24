@@ -398,7 +398,19 @@ defmodule ForemanServer.Application do
   defp maybe_overwatch_child do
     case Application.get_env(:foreman_server, ForemanServer.Overwatch, []) do
       opts when is_list(opts) ->
-        if Keyword.get(opts, :enabled, false) do
+        # In the :test env we always start Overwatch so any test that
+        # drives the workflow path through `Overwatch.start_phase/2`
+        # finds `ForemanServer.Overwatch.WorkerSupervisor` (and its
+        # sibling `WorkerRegistry` + `Tracker`) already alive. Without
+        # this, the WorkerExecutor's `execute_agent/4` call to
+        # `Overwatch.start_phase/2` exits with
+        # `(EXIT) no process: the process is not alive ...` and the
+        # phase fails before the adapter is invoked. Production
+        # deployments still gate on the `:enabled` config key, so this
+        # is purely a test-env ergonomic — no production surface change.
+        enabled = Keyword.get(opts, :enabled, false) or Mix.env() == :test
+
+        if enabled do
           merged =
             opts
             |> Keyword.put_new(:crash_loop_detector_enabled, true)

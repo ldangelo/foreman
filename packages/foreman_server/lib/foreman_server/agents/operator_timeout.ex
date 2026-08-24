@@ -17,6 +17,7 @@ defmodule ForemanServer.Agents.OperatorTimeout do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @impl true
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table])
     {:ok, %{timers: %{}}}
