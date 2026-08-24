@@ -1,7 +1,7 @@
 defmodule ForemanServer.WorkflowTemplate.InstallerTest do
   use ExUnit.Case, async: false
 
-  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads verify release)
+  @template_names ~w(discover assess plan implement implement-trd implement-trd-beads fix verify release)
   @template_files Enum.map(@template_names, &"#{&1}.yaml")
   @prompt_names ~w(create-pr discover assess implement verify release)
   @prompt_files Enum.map(@prompt_names, &"#{&1}.md")
@@ -177,6 +177,7 @@ defmodule ForemanServer.WorkflowTemplate.InstallerTest do
         "implement" -> "code-generation"
         "implement-trd" -> "implement-trd"
         "implement-trd-beads" -> "implement-trd-beads"
+        "fix" -> "fix"
         "verify" -> "test-and-validate"
         "release" -> "finalize-and-release"
       end
