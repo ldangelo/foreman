@@ -10,11 +10,20 @@ defmodule ForemanServerWeb.Router do
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
   end
-
   pipeline :api do
     plug(:accepts, ["json"])
     plug(ForemanServerWeb.Plugs.BearerAuth)
   end
+
+   pipeline :require_authenticated do
+    # Defer real session/token auth to a follow-up wiring bead
+    # (TRD-2026-4212be7e). For now, reject all unauthenticated requests
+    # to gated browser routes with 401 so tests asserting on the
+    # gated surface stay deterministic.
+    plug(:put_secure_browser_headers)
+    plug(ForemanServerWeb.Plugs.RequireAuthenticated)
+  end
+
 
   forward("/mcp", ForemanServerWeb.MCPRouter, [])
 
@@ -61,7 +70,9 @@ defmodule ForemanServerWeb.Router do
     # JLD-T001 / TRD-055: mount jido_live_dashboard under browser auth.
     # Auth pipeline (`:browser` + `:require_authenticated`) intentionally
     # deferred to a follow-up wiring bead per TRD-2026-4212be7e.
+    # JLD-T001 / TRD-055: mount jido_live_dashboard under browser auth.
     scope "/dashboard", ForemanServerWeb do
+      pipe_through [:browser, :require_authenticated]
       live("/", LiveDashboard)
     end
   end

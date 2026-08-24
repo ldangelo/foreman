@@ -9,6 +9,9 @@ defmodule ForemanServerWeb.MCPRouter do
   scope "/mcp" do
     pipe_through(:mcp)
 
-    forward("/", Anubis.Server.Transport.StreamableHTTP.Plug, server: ForemanServer.MCP)
+    forward("/", ForemanServerWeb.Plugs.SafeMCPForward,
+      inner: Anubis.Server.Transport.StreamableHTTP.Plug,
+      server: ForemanServer.MCP
+    )
   end
 end

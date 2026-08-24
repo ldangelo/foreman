@@ -114,13 +114,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     def start_link(opts) do
       TestAdapter.Worker.start_link(opts)
     end
-  end
-
   defmodule Worker do
     @moduledoc false
     use GenServer
-
-    alias __MODULE__, as: Worker
 
     def start_link(opts) do
       worker_id = Keyword.fetch!(opts, :worker_id)
@@ -174,6 +170,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     def handle_info(_msg, state), do: {:noreply, state}
   end
+  end
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:mox)
@@ -213,7 +210,17 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       ForemanServer.Agents.JidoShellRunner,
       ForemanServer.Agents.JidoShellRunner
     )
-
+    # LGC-T002: RunExecutor.execute_agent/4 dispatches through
+    # Overwatch.start_phase/2, which requires the supervised worker tree
+    # (WorkerRegistry, Tracker, WorkerSupervisor). The application
+    # supervision tree does NOT start Overwatch in :test env (see
+    # config/test.exs which sets `enabled: false`). Per-test opt-in
+    # here keeps the rest of the suite isolated — flipping Overwatch on
+    # globally previously caused 29 regressions.
+    ensure_started(
+      {ForemanServer.Overwatch, [crash_loop_detector_enabled: false]},
+      ForemanServer.Overwatch.WorkerSupervisor
+    )
     previous_backend_adapter = previous_backend_adapter()
 
     ensure_test_adapter_registered(previous_backend_adapter)

@@ -160,8 +160,14 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
   @doc "Read the current pending backoff timers. Test/observability helper."
   @spec pending_timers(GenServer.server()) :: %{{String.t(), String.t()} => reference()}
-  def pending_timers(server \\ __MODULE__) do
-    GenServer.call(server, :pending_timers)
+   def pending_timers(server \\ __MODULE__) do
+     GenServer.call(server, :pending_timers)
+   end
+
+  @doc "Override the sliding-window threshold and window for the running detector. Test helper."
+  @spec set_threshold(GenServer.server(), pos_integer(), pos_integer()) :: :ok
+  def set_threshold(server \\ __MODULE__, threshold, window_ms) do
+    GenServer.call(server, {:set_threshold, threshold, window_ms})
   end
   # ------------------------------------------------------------------
   # GenServer callbacks
@@ -211,6 +217,11 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
   def handle_call(:pending_timers, _from, state) do
     {:reply, state.pending_timers, state}
+  end
+
+  def handle_call({:set_threshold, threshold, window_ms}, _from, state) do
+    new_state = %{state | threshold: threshold, window_ms: window_ms}
+    {:reply, :ok, new_state}
   end
 
   def handle_call(:status, _from, state) do
@@ -359,14 +370,19 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
           "Overwatch.CrashLoopDetector: max restart attempts exceeded for #{worker_id}/#{run_id} (#{window_count} restarts); emitting RunBlocked + operator error"
         )
 
+        # Emit run.pause FIRST (RunPaused), then run.block (RunBlocked).
+        # Order matters: a successful run.block transitions the run to
+        # terminal "blocked", so run.pause must succeed BEFORE run.block
+        # to keep both events in the stream AND `paused_sealed` set.
+        state = try_pause(state, key, worker_id, run_id)
+
         # Emit run.block — Run aggregate transitions to status "blocked".
         emit_run_blocked(worker_id, run_id)
 
         # Emit task.block for every task bound to this run — notifies operator.
         emit_task_blocked(run_id)
 
-        try_pause(state, key, worker_id, run_id)
-
+        state
       {:error, reason} ->
         Logger.error(
           "Overwatch.CrashLoopDetector: WorkerCrashed dispatch failed for #{worker_id}/#{run_id}: #{inspect(reason)} — NOT sealing; will retry on next DOWN"

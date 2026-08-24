@@ -146,7 +146,15 @@ defmodule ForemanServer.Overwatch do
           :provider,
           :prompt,
           :driver_opts,
-          :result_recipient
+          :result_recipient,
+          # Phase-level context (e.g. script_key, working_directory) so
+          # the supervised worker — invoked via the adapter's
+          # `start_link/1` → `execute/2` path — sees the same context the
+          # in-process AdapterCatalog.execute call used to receive before
+          # the LGC-T002 Overwatch migration. Without this, `script_key`
+          # is dropped at the boundary and adapter `execute/2` raises
+          # `KeyError: key "script_key" not found`.
+          :context
         ])
       )
 
