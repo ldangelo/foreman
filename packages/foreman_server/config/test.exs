@@ -16,10 +16,10 @@ config :foreman_server, ForemanServerWeb.Endpoint,
   secret_key_base: String.duplicate("a", 64),
   live_view: [signing_salt: "foremandebug"]
 
-config :foreman_server, :operator_timeout, enabled: true
+config :foreman_server,
+  worker_launcher_enabled: false
 
- config :foreman_server,
-   worker_launcher_enabled: false
+# Overwatch stays off in test env. The infrastructure is exercised by
 # dedicated overwatch_test.exs; flipping it on here would require every
 # test that appends events to also stand up the WorkerSupervisor tree.
 config :foreman_server, ForemanServer.Overwatch, enabled: false
