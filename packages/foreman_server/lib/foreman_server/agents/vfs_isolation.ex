@@ -16,7 +16,12 @@ defmodule ForemanServer.Agents.VfsIsolation do
 
   @table :foreman_vfs_isolation
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []) do
+    case Process.whereis(__MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+      pid when is_pid(pid) -> {:ok, pid}
+    end
+  end
 
   @impl true
   def init(_opts) do

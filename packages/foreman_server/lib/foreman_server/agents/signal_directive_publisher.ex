@@ -103,8 +103,14 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
 
     # Mark dispatched on success. On failure we leave the entry in
     # :pending so operators can see it stalled.
+    # Mark dispatched on success. On failure (or when the recording
+    # isn't tracked by the queue) we leave the entry in :pending so
+    # operators can see it stalled. Tolerate `{:error, :not_found}`
+    # here so the publish call still returns `{:ok, recorded}` to
+    # callers — the recorded signal is the source of truth for the
+    # publish contract.
     with {:ok, [recorded | _]} <- result do
-      :ok = DirectiveQueue.dispatched(recording_id(recorded))
+      _ = DirectiveQueue.dispatched(recording_id(recorded))
     end
 
     result
