@@ -163,12 +163,9 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   def pending_timers(server \\ __MODULE__) do
     GenServer.call(server, :pending_timers)
   end
-
-  @doc "Override the sliding-window threshold and window for the running detector. Test helper."
-  @spec set_threshold(GenServer.server(), pos_integer(), pos_integer()) :: :ok
-  def set_threshold(server \\ __MODULE__, threshold, window_ms) do
-    GenServer.call(server, {:set_threshold, threshold, window_ms})
-  end
+  # ------------------------------------------------------------------
+  # GenServer callbacks
+  # ------------------------------------------------------------------
 
   @impl true
   def init(opts) do
@@ -208,7 +205,6 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   def handle_call(:restart_history, _from, state) do
     {:reply, state.restart_history, state}
   end
-
   def handle_call(:attempt_count, _from, state) do
     {:reply, state.attempt_count, state}
   end
@@ -217,15 +213,12 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
     {:reply, state.pending_timers, state}
   end
 
-  def handle_call({:set_threshold, threshold, window_ms}, _from, state) do
-    new_state = %{state | threshold: threshold, window_ms: window_ms}
-    {:reply, :ok, new_state}
-  end
-
   def handle_call(:status, _from, state) do
-    crashed = Map.keys(state.crashed_sealed)
-    paused = Map.keys(state.paused_sealed)
-    {:reply, %{crashed: crashed, paused: paused}, state}
+    {:reply,
+     %{
+       crashed: Map.keys(state.crashed_sealed),
+       paused: Map.keys(state.paused_sealed)
+     }, state}
   end
 
   @impl true
@@ -236,15 +229,24 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
           Logger.info(
             "Overwatch.CrashLoopDetector: orphan worker #{worker_id}/#{run_id} (reason=#{inspect(reason)}) — no events emitted"
           )
+
           state
+
         false ->
           record_and_maybe_fire(state, worker_id, run_id)
       end
+
     {:noreply, state}
   end
 
+  def handle_cast(_msg, state), do: {:noreply, state}
+
   @impl true
   def handle_info({:backoff_expired, _worker_id, _run_id}, state) do
+    # Timer fired but no real crash arrived during the backoff window.
+    # The attempt counter already reflects the crash that scheduled this
+    # timer — do NOT re-evaluate (record_and_evaluate records a phantom
+    # restart that never happened). Just drain the message.
     {:noreply, state}
   end
 
@@ -354,21 +356,17 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
         }
 
         Logger.error(
-          "Overwatch.CrashLoopDetector: max restart attempts exceeded for #{worker_id}/#{run_id} (#{window_count} restarts); emitting RunPaused + RunBlocked + operator error"
+          "Overwatch.CrashLoopDetector: max restart attempts exceeded for #{worker_id}/#{run_id} (#{window_count} restarts); emitting RunBlocked + operator error"
         )
-
-        # Emit run.pause BEFORE run.block so RunPaused lands in a
-        # non-terminal run; the previous order (block → pause) hit
-        # the Run aggregate's reject_terminal_mutation guard and
-        # silently failed (paused_sealed stayed empty, breaking
-        # dual-seal + 5-restart-blocking tests).
-        state = try_pause(state, key, worker_id, run_id)
 
         # Emit run.block — Run aggregate transitions to status "blocked".
         emit_run_blocked(worker_id, run_id)
 
         # Emit task.block for every task bound to this run — notifies operator.
         emit_task_blocked(run_id)
+
+        try_pause(state, key, worker_id, run_id)
+
       {:error, reason} ->
         Logger.error(
           "Overwatch.CrashLoopDetector: WorkerCrashed dispatch failed for #{worker_id}/#{run_id}: #{inspect(reason)} — NOT sealing; will retry on next DOWN"

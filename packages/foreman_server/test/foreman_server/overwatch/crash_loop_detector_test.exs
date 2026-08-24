@@ -25,32 +25,17 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
-  # In the :test env, the application supervisor starts the Overwatch
-  # subtree (Tracker + CrashLoopDetector) via the `Mix.env() == :test`
-  # guard in `application.ex :maybe_overwatch_child/0`. The Tracker
-  # hard-codes `Process.whereis(ForemanServer.Overwatch.CrashLoopDetector)`
-  # in `notify_crash_loop_detector/2` to forward DOWN events, so any
-  # extra detector we start with a different name will never be notified.
-  # We must reuse the application-started pair and reset both between
-  # tests so each scenario gets a clean state.
   defp start_tracker_and_detector(opts \\ []) do
     window_ms = Keyword.get(opts, :window_ms, 5 * 60 * 1000)
     threshold = Keyword.get(opts, :threshold, 3)
 
-    # Make sure the application supervisor is up (idempotent in :test).
-    _ = Application.ensure_all_started(:foreman_server)
+    tracker = start_supervised!({Tracker, []}, id: :tracker)
 
-    tracker = Process.whereis(ForemanServer.Overwatch.Tracker) || raise "Tracker not started"
-    detector = Process.whereis(ForemanServer.Overwatch.CrashLoopDetector) || raise "CrashLoopDetector not started"
+    detector =
+      start_supervised!({CrashLoopDetector, window_ms: window_ms, threshold: threshold},
+        id: :detector
+      )
 
-    # Reset any leftover state from a previous test in the suite.
-    :ok = CrashLoopDetector.reset(detector)
-    # Reset any leftover state from a previous test in the suite.
-    # We don't override the threshold — the supervisor started the
-    # detector with the default threshold=3, and `set_threshold/3`
-    # was unreliable here. Tests that need a different threshold
-    # use the default and fire enough crashes to exceed it.
-    :ok = CrashLoopDetector.reset(detector)
     %{tracker: tracker, detector: detector}
   end
 
