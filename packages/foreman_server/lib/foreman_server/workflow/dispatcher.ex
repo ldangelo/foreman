@@ -78,6 +78,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+
   @task_dispatch_event_types ~w(TaskApproved TaskDispatched)
   @run_terminated_event_types ~w(RunCancelled RunFlaggedStuck RunCompleted RunFailed RunBlocked RunDeleted)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
@@ -172,51 +173,84 @@ defmodule ForemanServer.Workflow.Dispatcher do
   defp terminate_slot(run_id, reason) do
     ms = System.monotonic_time(:millisecond)
 
-    _ =
-      CommandGateway.dispatch_system(%{
-        type: "run_slots.release",
-        command_id: "workflow:dispatcher:slot-release:#{run_id}:#{ms}",
-        aggregate_id: "run_slots:global",
-        payload: %{
-          run_id: run_id,
-          reason: reason
-        }
-      })
-
-    :ok
+    safe_dispatch_system(%{
+      type: "run_slots.release",
+      command_id: "workflow:dispatcher:slot-release:#{run_id}:#{ms}",
+      aggregate_id: "run_slots:global",
+      payload: %{
+        run_id: run_id,
+        reason: reason
+      }
+    })
   end
 
   defp terminate_lease(run_id, reason) do
     with {:ok, db_path} <- db_path_for_run(run_id) do
       ms = System.system_time(:millisecond)
+      lease_stream_id = ForemanServer.Aggregates.BeadsDbLease.stream_id(db_path)
 
-      _ =
-        CommandGateway.dispatch_system(%{
-          type: "lease.release",
-          command_id: "workflow:dispatcher:lease-release:#{run_id}:#{ms}",
-          aggregate_id: ForemanServer.Aggregates.BeadsDbLease.stream_id(db_path),
-          payload: %{
-            db_path: db_path,
-            run_id: run_id,
-            released_at_ms: ms,
-            reason: reason
-          }
-        })
+      safe_dispatch_system(%{
+        type: "lease.release",
+        command_id: "workflow:dispatcher:lease-release:#{run_id}:#{ms}",
+        aggregate_id: lease_stream_id,
+        payload: %{
+          db_path: db_path,
+          run_id: run_id,
+          released_at_ms: ms,
+          reason: reason
+        }
+      })
 
-      _ =
-        CommandGateway.dispatch_system(%{
-          type: "lease.remove_waiter",
-          command_id: "workflow:dispatcher:lease-remove-waiter:#{run_id}:#{ms}",
-          aggregate_id: ForemanServer.Aggregates.BeadsDbLease.stream_id(db_path),
-          payload: %{
-            db_path: db_path,
-            run_id: run_id,
-            removed_at_ms: ms,
-            reason: reason
-          }
-        })
+      safe_dispatch_system(%{
+        type: "lease.remove_waiter",
+        command_id: "workflow:dispatcher:lease-remove-waiter:#{run_id}:#{ms}",
+        aggregate_id: lease_stream_id,
+        payload: %{
+          db_path: db_path,
+          run_id: run_id,
+          removed_at_ms: ms,
+          reason: reason
+        }
+      })
     else
       _ -> :ok
+    end
+  end
+
+  # Best-effort dispatch used from terminal-event reactions: the target
+  # aggregate actor can legitimately be mid-restart (a crash, or a test's
+  # deliberate reset) when these fire. A GenServer.call exit from the
+  # target dying mid-call must not crash this always-on Dispatcher — that
+  # would drop its ProjectionStore subscription and stall admission for
+  # every other in-flight run until it restarts and resubscribes.
+  defp safe_dispatch_system(command) do
+    try do
+      _ = CommandGateway.dispatch_system(command)
+      :ok
+    catch
+      :exit, exit_reason ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: #{command.type} dispatch for #{inspect(command.aggregate_id)} exited: #{inspect(exit_reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  # Same rationale as safe_dispatch_system, for the multi-actor admission
+  # path (run_slots:global, the Beads lease, the run aggregate). Any of
+  # those actors can be mid-restart when RunAdmission.start/2 calls into
+  # them; an uncaught exit here must not crash this always-on Dispatcher.
+  defp safe_run_admission_start(project_id, payload) do
+    try do
+      RunAdmission.start(project_id, payload)
+    catch
+      :exit, exit_reason ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: RunAdmission.start for #{inspect(Map.get(payload, :run_id))} exited: #{inspect(exit_reason)}"
+        )
+
+        {:error, {:run_admission_exit, exit_reason}}
     end
   end
 
@@ -265,13 +299,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
       # Deterministic command_id keyed on (task_id, approval_id) so retries of
       # the same approval collapse through CommandRouter's idempotency path,
       # but a fresh approval for a re-approved task produces a new dispatch.
-      _ =
-        CommandGateway.dispatch_system(%{
-          type: "task.dispatch",
-          command_id: "workflow:dispatcher:task-dispatch:#{task_id}:#{approval_id}",
-          aggregate_id: "task:#{task_id}",
-          payload: %{task_id: task_id}
-        })
+      # Uses safe_dispatch_system: the task aggregate actor can legitimately
+      # be mid-restart (crash, or a test's deliberate reset) when this
+      # fires, and an uncaught exit here would crash this always-on
+      # Dispatcher, dropping its ProjectionStore subscription and losing
+      # every other event queued in its mailbox at the moment of the crash.
+      safe_dispatch_system(%{
+        type: "task.dispatch",
+        command_id: "workflow:dispatcher:task-dispatch:#{task_id}:#{approval_id}",
+        aggregate_id: "task:#{task_id}",
+        payload: %{task_id: task_id}
+      })
 
       {:noreply, state}
     else
@@ -283,15 +321,28 @@ defmodule ForemanServer.Workflow.Dispatcher do
     payload = unwrap_data(envelope)
     task_id = payload["task_id"] || payload[:task_id]
 
+    if is_binary(task_id) and task_id != "" do
+      dispatch_task_projection(task_id, state)
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp dispatch_task_projection(task_id, state) do
     case ProjectionStore.task_projection(task_id) do
       nil ->
         {:noreply, state}
-
       task_proj ->
         run_payload = RunPayload.from_task_projection(task_proj)
 
+        # RunAdmission.start dispatches through several aggregate actors
+        # (run_slots:global, the Beads lease, the run aggregate). Any of
+        # them can legitimately be mid-restart (crash, or a test's
+        # deliberate reset) when this fires; an uncaught exit here would
+        # crash this always-on Dispatcher, dropping its ProjectionStore
+        # subscription and losing every other event queued in its mailbox.
         result =
-          RunAdmission.start(run_payload.project_id, %{
+          safe_run_admission_start(run_payload.project_id, %{
             run_id: run_payload.run_id,
             task_id: run_payload.task_id,
             project_id: run_payload.project_id,
@@ -395,7 +446,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
           phase_specs: phase_specs
         }
 
-        case RunAdmission.start(project_id, payload) do
+        case safe_run_admission_start(project_id, payload) do
           {:ok, :slot_queued} ->
             {:noreply, state}
 
@@ -429,15 +480,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
         workflow_snapshot =
           Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
 
-        result =
-          RunAdmission.start(project_id, %{
-            run_id: run_id,
-            task_id: task_id,
-            project_id: project_id,
-            approval_id: approval_id,
-            workflow_snapshot: workflow_snapshot,
-            phase_specs: phase_specs
-          })
+        result = safe_run_admission_start(project_id, %{
+          run_id: run_id,
+          task_id: task_id,
+          project_id: project_id,
+          approval_id: approval_id,
+          workflow_snapshot: workflow_snapshot,
+          phase_specs: phase_specs
+        })
 
         case result do
           {:ok, :queued} ->
@@ -492,7 +542,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
         run_payload = RunPayload.from_work_projection(proj)
 
-        case RunAdmission.start(proj.project_id, Map.from_struct(run_payload)) do
+        case safe_run_admission_start(proj.project_id, Map.from_struct(run_payload)) do
           {:ok, :slot_queued} ->
             {:noreply, state}
 

@@ -143,22 +143,44 @@ defmodule ForemanServer.RunAdmission do
     end
   end
 
-  defp slot_decision(run_id, _timeout) do
+  defp slot_decision(run_id, _timeout), do: slot_decision_retry(run_id, 5)
+
+  defp slot_decision_retry(_run_id, 0), do: :unknown
+
+  defp slot_decision_retry(run_id, retries_left) do
     aggregate_id = "run_slots:global"
 
     case Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id) do
       [{pid, _}] ->
-        state = Actor.get_state(pid)
+        case safe_get_state(pid) do
+          {:ok, state} ->
+            cond do
+              is_map(state) and Map.has_key?(state.holders, run_id) -> :slot_acquired
+              is_map(state) and Enum.any?(state.waiters, &(&1.run_id == run_id)) -> :slot_queued
+              true -> :unknown
+            end
 
-        cond do
-          is_map(state) and Map.has_key?(state.holders, run_id) -> :slot_acquired
-          is_map(state) and Enum.any?(state.waiters, &(&1.run_id == run_id)) -> :slot_queued
-          true -> :unknown
+          :retry ->
+            Process.sleep(20)
+            slot_decision_retry(run_id, retries_left - 1)
         end
 
       [] ->
-        :unknown
+        # The run_slots:global actor can be mid-restart (e.g. a test's
+        # force-kill reset, or a crash/restart under load) in the brief
+        # window between the earlier `run_slots.acquire` dispatch (which
+        # would have restarted it via Aggregator.start_aggregate) and
+        # this lookup. Retry briefly instead of surfacing a false
+        # "unknown" admission failure that nothing else retries.
+        Process.sleep(20)
+        slot_decision_retry(run_id, retries_left - 1)
     end
+  end
+
+  defp safe_get_state(pid) do
+    {:ok, Actor.get_state(pid)}
+  catch
+    :exit, _reason -> :retry
   end
 
   defp release_after_failed_slot(payload) do

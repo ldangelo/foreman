@@ -6,6 +6,8 @@ defmodule ForemanServer.RunLifecycleReconciler do
 
   use GenServer
 
+  require Logger
+
   alias EventStore.RecordedEvent
 
   alias ForemanServer.{
@@ -162,6 +164,7 @@ defmodule ForemanServer.RunLifecycleReconciler do
         if valid_id?(project_id) do
           started_at_ms = System.monotonic_time(:millisecond)
           release_reservation(project_id, run_id, "terminal_event", state)
+          dispatch_slot_release(run_id, "terminal_event", state)
 
           state.telemetry_module.reconciler_terminal_release(
             elapsed_ms(started_at_ms),
@@ -345,21 +348,34 @@ defmodule ForemanServer.RunLifecycleReconciler do
     :ok
   end
 
+
   defp dispatch_slot_release(run_id, reason, state) do
     ms = System.monotonic_time(:millisecond)
 
-    _ =
-      state.dispatch_fun.(
-        %{
-          aggregate_id: "run_slots:global",
-          command_id: "reconciler:slot-release:#{run_id}:#{ms}",
-          type: "run_slots.release",
-          payload: %{run_id: run_id, reason: reason}
-        },
-        state.timeout_ms
-      )
+    command = %{
+      aggregate_id: "run_slots:global",
+      command_id: "reconciler:slot-release:#{run_id}:#{ms}",
+      type: "run_slots.release",
+      payload: %{run_id: run_id, reason: reason}
+    }
 
-    :ok
+    # Best-effort: the run_slots:global actor can legitimately be mid-restart
+    # (e.g. a crash, or a test's deliberate reset) when this fires. This is a
+    # reconciliation sweep, not a user-facing command — losing one attempt is
+    # safe, since the next terminal event or backstop sweep will retry it. A
+    # GenServer.call exit (the target dying mid-call) must NOT be allowed to
+    # crash this always-on reconciler process itself.
+    try do
+      _ = state.dispatch_fun.(command, state.timeout_ms)
+      :ok
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "RunLifecycleReconciler: run_slots.release dispatch for #{run_id} exited: #{inspect(reason)}"
+        )
+
+        :ok
+    end
   end
 
   defp outcome_for({:ok, _}), do: :ok
