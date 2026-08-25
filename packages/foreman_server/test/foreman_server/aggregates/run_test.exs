@@ -128,13 +128,18 @@ defmodule ForemanServer.Aggregates.RunTest do
            "WorkerStarted must not flip a paused run back to in_progress"
   end
 
-  # all of :task_id, :project_id, and :workflow_snapshot used to slip through
-  # the aggregate and reach the event store, where the typed `RunStarted`
-  # struct's `@enforce_keys` raised at projection time and crashed the boot.
-  # The aggregate boundary now rejects these malformed payloads.
+  # :project_id and :workflow_snapshot used to slip through the aggregate and
+  # reach the event store, where the typed `RunStarted` struct's
+  # `@enforce_keys` raised at projection time and crashed the boot. The
+  # aggregate boundary now rejects these malformed payloads.
+  #
+  # `:task_id` is deliberately NOT in this table: commit ac72149f ("fix
+  # (aggregate): relax task_id and source for work-flow events") relaxed
+  # both `RunStarted.@enforce_keys` and this handler to `optional_binary`
+  # for task_id because `work.submit`-sourced runs
+  # (`RunPayload.from_work_projection/1`) legitimately start with no
+  # task_id. See the "accepts a missing task_id" test below.
   for {field, bad_payload} <- [
-        {:task_id,
-         %{run_id: "run-missing-task", project_id: "project-x", workflow_snapshot: %{}}},
         {:project_id,
          %{run_id: "run-missing-project", task_id: "task-x", workflow_snapshot: %{}}},
         {:workflow_snapshot,
@@ -147,6 +152,24 @@ defmodule ForemanServer.Aggregates.RunTest do
                  payload: unquote(Macro.escape(bad_payload))
                })
     end
+  end
+
+  test "run.start accepts a missing task_id and preserves payload.source (work-flow runs have no task_id)" do
+    assert {:ok, event_spec} =
+             Run.handle_command(Run.initial_state(), %{
+               type: "run.start",
+               payload: %{
+                 run_id: "run-work-no-task",
+                 project_id: "project-x",
+                 workflow_snapshot: %{},
+                 source: :work
+               }
+             })
+
+    assert event_spec.event_type == "RunStarted"
+    assert event_spec.payload.run_id == "run-work-no-task"
+    assert event_spec.payload.task_id == nil
+    assert event_spec.payload.source == :work
   end
 
   test "run.start rejects non-map workflow_snapshot" do

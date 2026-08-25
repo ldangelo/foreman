@@ -29,10 +29,18 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
   + ProjectionStore + Dispatcher stack via Application.start.
   """
   use ExUnit.Case, async: false
+  @moduletag timeout: 90_000
 
   alias ForemanServer.{CommandGateway, ProjectionStore}
+  alias ForemanServer.TestSupport.RunSlotsReset
 
-  @poll_timeout_ms 8_000
+  # 8s is comfortable in isolation, but the real Dispatcher/RunLifecycleReconciler
+  # subscribe to the EventStore's global "$all" stream, which accumulates
+  # events monotonically across the whole `mix test` process; late in a full
+  # 2300+ test suite run there can be tens of thousands of backlogged events
+  # to catch up on before this test's own dispatch reacts, causing sporadic
+  # false-negative timeouts under load that don't reproduce in isolation.
+  @poll_timeout_ms 30_000
 
   defp poll_until(fun, message \\ "condition") do
     deadline = System.monotonic_time(:millisecond) + @poll_timeout_ms
@@ -48,7 +56,7 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
         if System.monotonic_time(:millisecond) >= deadline do
           flunk("timed out waiting for #{message} (last: #{inspect(other)})")
         else
-          Process.sleep(25)
+          Process.sleep(5)
           poll_loop(fun, deadline, message)
         end
     end
@@ -67,6 +75,45 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
 
   defp dump, do: %{projects: ProjectionStore.list_projects() |> Enum.map(&{&1.project_id, &1}) |> Map.new(), tasks: ProjectionStore.list_tasks() |> Enum.map(&{&1.task_id, &1}) |> Map.new(), runs: Map.new(ProjectionStore.list_runs(), &{&1.run_id, &1})}
 
+  # The test's project path (System.tmp_dir!()) is not a real git
+  # working tree, so the REAL RunExecutor spawned by RunSupervisor via
+  # admission fails phase 1 almost immediately via `assert_git_repo/1`
+  # (a `git rev-parse` subprocess) and autonomously dispatches its own
+  # run.fail — racing this test's own deliberate terminal-event
+  # simulation below. Stop that executor as soon as the run is observed
+  # in-progress so this test's own dispatch is the only source of the
+  # terminal event (otherwise "RunCompleted" tests intermittently see
+  # the run already failed, and "RunFailed" tests intermittently see
+  # `{:error, {:run_terminal, "failed"}}` from their own dispatch).
+  #
+  # `"in_progress"` becomes visible to pollers as soon as
+  # `RunAdmission.start` returns inside `Dispatcher.handle_task_dispatched/2`
+  # — one line *before* it calls `RunSupervisor.start_run/2` — so the
+  # executor may not be registered yet at the instant this test's poll
+  # wakes up. Retry for a short bounded window instead of a single
+  # check-and-give-up.
+  defp terminate_run_executor(run_id) do
+    # 100 attempts * 2ms (200ms) is comfortable in isolation, but under a
+    # full 2300+ test suite's cumulative load, RunAdmission.start ->
+    # RunSupervisor.start_run can take noticeably longer to actually
+    # register the executor. Widen to 4s so this test reliably wins the
+    # race against the real executor's autonomous phase-1 failure instead
+    # of silently giving up and letting it run loose.
+    Enum.reduce_while(1..2_000, :ok, fn _attempt, :ok ->
+      case ForemanServer.Workflow.RunExecutor.pid_for(run_id) do
+        pid when is_pid(pid) ->
+          _ = DynamicSupervisor.terminate_child(ForemanServer.Workflow.RunSupervisor, pid)
+          {:halt, :ok}
+
+        nil ->
+          Process.sleep(2)
+          {:cont, :ok}
+      end
+    end)
+
+    :ok
+  end
+
   setup_all do
     {:ok, _} = Application.ensure_all_started(:telemetry)
     {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
@@ -78,6 +125,16 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     start_or_ignore(ForemanServer.Aggregator)
     start_or_ignore(ForemanServer.Workflow.Dispatcher)
     start_or_ignore(ForemanServer.RunLifecycleReconciler)
+    # BootReconciliation is gated off by default in test
+    # (config :foreman_server, :start_boot_reconciliation?, false) to avoid
+    # cross-test pollution from its ambiguous-key / run-slot-orphan scans.
+    # This test needs it live: Dispatcher.handle_run_terminated/3 fans
+    # out RunCompleted/RunFailed to `BootReconciliation.run_terminated/2`,
+    # which is a `GenServer.cast` to the registered name — a silent
+    # fire-and-forget no-op (no crash, no log) when nothing is running
+    # under that name. Without starting it here, TaskRunTerminated is
+    # never dispatched and `run_terminal_reason` never gets set on the task.
+    start_or_ignore(ForemanServer.Workflow.BootReconciliation)
     start_or_ignore(ForemanServer.Workflow.Catalog)
     start_or_ignore(ForemanServer.TaskProvider.Registry)
     start_or_ignore(ForemanServer.Workflow.RunSupervisor)
@@ -87,6 +144,13 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
     :ok
   end
   setup do
+    # `run_slots:global` is a process-wide singleton shared across every
+    # test file (and, in this shared-Postgres dev environment, every
+    # concurrently-running mix test invocation). Without a reset, holders
+    # leaked by earlier runs exhaust the default capacity (3) and this
+    # test's admission silently queues instead of reserving a slot — see
+    # foreman-test-isolation root causes #2/#3.
+    RunSlotsReset.reset!()
     %{before: dump()}
   end
 
@@ -151,6 +215,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
           end,
           "task in_progress with run_id and run exists"
         )
+
+      terminate_run_executor(run_id)
 
       # 4. Emit RunCompleted via system command (terminal signal).
       assert {:ok, _} =
@@ -254,6 +320,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
           end,
           "task in_progress with run_id and run exists"
         )
+
+      terminate_run_executor(run_id)
 
       # Emit RunFailed.
       assert {:ok, _} =
@@ -411,6 +479,8 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
           end,
           "task in_progress with run_id and run exists"
         )
+
+      terminate_run_executor(run_id)
 
       # Record slot state before completion.
       %{projects: projects_before} = dump()

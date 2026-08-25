@@ -30,21 +30,26 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
   # `queue_controller_test.exs`).
   @spec reset!(keyword()) :: :ok
   def reset!(opts \\ []) when is_list(opts) do
-    :sys.replace_state(ForemanServer.ProjectionStore, fn _state ->
-      empty_initial_state(opts)
+    :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
+      empty_initial_state(opts, state)
     end)
     :ok
   end
 
-  defp empty_initial_state(opts) do
+  # `current_state` is the GenServer's live state as handed to us by
+  # `:sys.replace_state`'s callback — it is already the correct source
+  # for "subscribers before this reset". Do NOT re-fetch it via
+  # `:sys.get_state(ForemanServer.ProjectionStore)` here: that callback
+  # already runs ON the ProjectionStore process (inside its own
+  # `:sys.handle_system_msg`), so a nested `:sys.get_state` call on the
+  # same pid is a self-call. OTP detects that and immediately exits
+  # `{:calling_self, ...}` — which the old code silently caught and
+  # treated as "no subscribers", making `keep_subscribers: true` a
+  # permanent no-op regardless of what was actually subscribed.
+  defp empty_initial_state(opts, current_state) do
     subscribers =
-      if Keyword.get(opts, :keep_subscribers, false) and
-           Process.whereis(ForemanServer.ProjectionStore) do
-        try do
-          :sys.get_state(ForemanServer.ProjectionStore).subscribers || %{}
-        catch
-          :exit, _ -> %{}
-        end
+      if Keyword.get(opts, :keep_subscribers, false) do
+        Map.get(current_state, :subscribers, %{})
       else
         %{}
       end

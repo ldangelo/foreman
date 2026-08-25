@@ -27,6 +27,12 @@ defmodule ForemanServer.Agents.SignalJournal do
 
   def replay(topic \\ nil), do: GenServer.call(__MODULE__, {:replay, topic})
 
+  @doc """
+  Clear all entries from the journal. Primarily intended for testing.
+  """
+  @spec clear() :: :ok
+  def clear, do: GenServer.call(__MODULE__, :clear)
+
   @impl true
   def handle_call({:record, entry}, _from, state) do
     :ets.insert(@table, {entry.id, entry})
@@ -44,5 +50,10 @@ defmodule ForemanServer.Agents.SignalJournal do
       |> Enum.map(fn {_id, e} -> e end)
       |> Enum.filter(fn e -> e.topic == topic end)
     {:reply, matched, state}
+  end
+
+  def handle_call(:clear, _from, state) do
+    :ets.delete_all_objects(@table)
+    {:reply, :ok, state}
   end
 end

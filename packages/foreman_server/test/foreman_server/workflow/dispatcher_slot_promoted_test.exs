@@ -6,7 +6,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
   The handler:
     1. Extracts acquired_run_id from the event envelope
     2. Looks up the task via ProjectionStore.tasks_by_run_id/1
-    3. Re-enters RunAdmission.start/3 for the promoted run
+    3. Re-enters RunAdmission.start/2 for the promoted run
     4. Starts RunSupervisor if admission succeeds
   """
 
@@ -37,7 +37,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
     # Default: no task found; admission returns queued; supervisor returns ok
     :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn _ -> [] end)
-    :meck.expect(ForemanServer.RunAdmission, :start, fn _, _, _ -> {:ok, :queued} end)
+    :meck.expect(ForemanServer.RunAdmission, :start, fn _, _ -> {:ok, :queued} end)
     :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _, _ -> {:ok, :started} end)
 
     on_exit(fn ->
@@ -59,7 +59,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
   # ---------------------------------------------------------------------------
 
   describe "RunSlotTransferred re-enters admission" do
-    test "calls RunAdmission.start/3 with the promoted run's task data" do
+    test "calls RunAdmission.start/2 with the promoted run's task data" do
       task_id = "task-slot-#{unique_id()}"
       run_id = "run-promoted-#{unique_id()}"
       project_id = "project-slot-test"
@@ -75,7 +75,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
       # Override RunAdmission: assert it is called with correct payload, return slot_queued
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, payload ->
         assert payload.run_id == run_id
         assert payload.task_id == task_id
         {:ok, :slot_queued}
@@ -133,7 +133,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
       # Admission succeeds
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, %{event_type: "RunStarted"}}
       end)
 
@@ -171,7 +171,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
       # Admission succeeds with nil (already started)
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, nil}
       end)
 
@@ -208,7 +208,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, :slot_queued}
       end)
 
@@ -241,7 +241,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:ok, :queued}
       end)
 
@@ -303,7 +303,7 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
 
       :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
 
-      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload, _timeout ->
+      :meck.expect(ForemanServer.RunAdmission, :start, fn ^project_id, _payload ->
         {:error, {:slot_acquire_failed, :unknown}}
       end)
 

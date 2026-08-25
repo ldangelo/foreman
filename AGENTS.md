@@ -17,6 +17,10 @@ Before implementing:
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
+## 1.5 Be concise
+
+Just the facts and findings, you can skip the discovery and detailed explaination.  Be BRIEF!
+
 ## 2. Simplicity First
 
 **Minimum code that solves the problem. Nothing speculative.**
@@ -72,7 +76,6 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 Workflow note: PR/merge behavior is controlled by phase-level `checkpointPr: true` on mutating phases plus explicit `create-pr`, `pr-wait`, and `merge` phases. Do not add top-level workflow `merge:` or `pr:` tags.
 
 ---
-
 
 ## Devbox — single entry point for the full dev environment
 
@@ -132,7 +135,7 @@ devbox run env:list         # current env vars + endpoints
    `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`.
 2. `cd $LITELLM_LANGFUSE_STACK && docker compose up -d --build` — brings up
    litellm + langfuse-web + langfuse-worker + headroom + postgres + redis
-   + clickhouse + minio. (Host ports already pre-remapped in the stack repo
+   - clickhouse + minio. (Host ports already pre-remapped in the stack repo
    to avoid analytics-postgres on 5432 and analytics-redis on 6379.)
 3. Waits up to 60 s for `http://127.0.0.1:3000/api/public/health`.
 4. `cd $DEVBOX_PROJECT_ROOT && docker compose -f ops/otel-collector/docker-compose.yml up -d --build`
@@ -240,6 +243,7 @@ curl -s -X POST $FOREMAN_API_URL/api/commands \
 ```
 
 **Fields:**
+
 - `task_id`: Required. A unique string identifier for the task.
 - `project_id`: Required. Must be a registered project (e.g., `foreman`).
 - `task_type`: Required. One of: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`.
@@ -264,6 +268,7 @@ curl -s -X POST $FOREMAN_API_URL/api/commands \
 ```
 
 **Prerequisites:**
+
 - The `trd_path` (if specified) must be a committed git blob at `HEAD`.
 - The project must exist and have a valid `task_provider` configuration.
 
@@ -311,7 +316,7 @@ foreman workflow install
 Bundled workflows live in `packages/foreman_server/priv/defaults/workflows/`:
 
 | Workflow | Select via | Description |
-|---|---|---|
+| --- | --- | --- |
 | `implement-trd-beads` | `--workflow-type implement-trd-beads` | Implement a TRD using Beads-backed ensemble skill with Kata/pi agent |
 | `implement-trd` | `--workflow-type implement-trd` | Implement a TRD using the ensemble skill |
 | `plan` | `--workflow-type plan` | Run the plan workflow (create-prd → create-trd) |
@@ -549,7 +554,7 @@ Every event is emitted by an aggregate `handle_command/2` function routed throug
 `CommandRouter` — no module emits events directly.
 
 | Event | Emitted by | Effects |
-|---|---|---|
+| --- | --- | --- |
 | `ProjectRegistered` | `Project.handle_command/2` | Creates project projection |
 | `ProjectUpdated` | `Project.handle_command/2` | Updates project projection |
 | `ProjectArchived` | `Project.handle_command/2` | Archives project projection |
@@ -592,6 +597,7 @@ are not domain types. `EventData.data` / `RecordedEvent.data` holds the serializ
 struct; on replay, the struct MUST be reconstructed before `apply_event` pattern-matches it.
 
 Canonical event struct (`@derive` before `defstruct`):
+
 ```elixir
 defmodule ForemanServer.Events.RunCompleted do
   @enforce_keys [:run_id, :sequence]
@@ -602,6 +608,7 @@ end
 ```
 
 `apply_event` pattern-matches the typed struct directly:
+
 ```elixir
 def apply_event(state, %RunCompleted{run_id: run_id, sequence: seq}) do
   %State{state | status: "completed", terminal?: true, run_id: run_id, last_sequence: seq}
@@ -679,11 +686,13 @@ absolute path on every dispatch — symlink aliasing (e.g. `/tmp/...` vs
 ## Go CLI Boundaries
 
 The Go CLI never writes to:
+
 - The event store directly
 - The projection store directly
 - Any Elixir internal state
 
 The Go CLI only:
+
 - Sends commands via `POST /api/commands`
 - Queries read models via `GET /api/...`
 - Formats and displays output
@@ -780,6 +789,7 @@ bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/
 #### The Workflow: Start With Triage
 
 **`bv --robot-triage` is your single entry point.** It returns everything you need in one call:
+
 - `quick_ref`: at-a-glance counts + top 3 picks
 - `recommendations`: ranked actionable items with scores, reasons, unblock info
 - `quick_wins`: low-effort high-impact items
@@ -800,7 +810,7 @@ Before claiming, verify current state with `br show <id> --json` or `br ready --
 #### Other bv Commands
 
 | Command | Returns |
-|---------|---------|
+| --------- | --------- |
 | `--robot-plan` | Parallel execution tracks with unblocks lists |
 | `--robot-priority` | Priority misalignment detection with confidence |
 | `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |

@@ -5,10 +5,12 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
 
   Observes `Tracker.handle_info({:DOWN, ...})` notifications via
   `observe_down/4` and counts restart events per `(worker_id, run_id)`
-  within a sliding window. On each non-orphaned DOWN:
+  within a sliding window. On each non-orphaned DOWN, two independent
+  escalation paths are consulted, most severe first:
 
-    1. Increment the consecutive-failure counter for the key.
-    2. Consult `RestartBackoff.next_attempt/1`:
+    1. Consult `RestartBackoff.next_attempt/1` against the
+       consecutive-attempt counter (persists across window boundaries;
+       resets only on a successful worker start):
          * attempts 1-5 → `{:retry, delay_ms}` — schedule a delayed
            re-injection of the crash event after exponential backoff,
            then return. The LaunchWorker supervisor continues to
@@ -17,37 +19,25 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
            the key and emit:
              (a) `WorkerCrashed` on the worker stream via Tracker
                  (sole-dispatch owner), which seals the Worker stream.
-             (b) `run.block` on the run stream, flipping the run to
+             (b) `run.pause` on the run stream (see "Dual-seal design").
+             (c) `run.block` on the run stream, flipping the run to
                  `"blocked"` terminal state.
-             (c) `task.block` on every task bound to this run_id,
+             (d) `task.block` on every task bound to this run_id,
                  so the operator is notified via the inbox pipeline.
+    2. Otherwise (RestartBackoff says retry), consult the configurable
+       sliding-window `threshold` (TRD-012, default 5 — chosen to line
+       up with RestartBackoff's own 5-retry schedule so both paths
+       agree on when a *default*-configured detector escalates).
+       Strictly exceeding it (e.g. a caller-supplied smaller threshold,
+       used to detect a tighter crash-loop policy per run) seals the
+       key and emits `WorkerCrashed` + `run.pause` only — a softer,
+       recoverable escalation that does NOT block the run.
 
-  The sliding window (default 5 minutes, threshold 5) prunes stale
-  crash noise. The attempt counter is independent — it resets on
-  successful worker start, not on window expiry. This ensures
-  "5 consecutive failures → blocked" is satisfied even across window
-  boundaries.
-
-  When the threshold is strictly exceeded (6th DOWN within the
-  window), the detector:
-
-    1. Dispatches `WorkerCrashed` on the worker stream
-       (`worker:<run_id>:<worker_id>`) via
-       `ForemanServer.Overwatch.Tracker.dispatch_lifecycle/3` so the
-       Tracker allocates the sequence atomically (sole-dispatch-owner
-       contract) and appends through `CommandRouter`. The Worker
-       aggregate folds this as a terminal event — its stream is sealed.
-    2. Terminates the `LaunchWorker` child of `WorkerSupervisor` so the
-       `:permanent` restart policy cannot churn against the now-sealed
-       worker stream. Without this, every new `WorkerStarted` would be
-       rejected by the Worker aggregate and the restart loop would
-       never end.
-    3. Dispatches `run.block` on the run stream (`run:<run_id>`) directly
-       through `CommandRouter` so the Run aggregate folds a `RunBlocked`
-       event and surfaces `status: "blocked"` to operators.
-    4. Dispatches `task.block` for every task bound to `run_id` via
-       `ProjectionStore.tasks_by_run_id/1` so the inbox pipeline
-       surfaces the operator error.
+  The two paths are independent: the RestartBackoff/block path always
+  wins when both would fire on the same DOWN (it is strictly more
+  severe), but a caller-supplied `threshold` smaller than 5 lets the
+  sliding-window/pause path fire first, well before RestartBackoff
+  exhausts its own schedule.
 
   ## Dual-seal design
 
@@ -61,6 +51,16 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
       this key. Independent from `crashed_sealed` so a partial-success
       (crash succeeded but pause failed) is recoverable: the next DOWN
       retries the pause without re-emitting the crash event.
+
+  Both the pause-only path and the block path dispatch `run.pause`
+  before `run.block` when both apply to the same DOWN (block path
+  only). `run.pause` folds to `status: "paused", terminal?: false`;
+  `run.block` folds to `status: "blocked", terminal?: true`. Every
+  run-mutating command is rejected once `terminal?` is true
+  (`reject_terminal_mutation/1` in the Run aggregate), so pausing
+  first — while the run is still non-terminal — lets both `RunPaused`
+  and `RunBlocked` land; blocking first would permanently reject the
+  follow-up pause with `{:error, {:run_terminal, "blocked"}}`.
 
   ## Orphan semantics
 
@@ -303,42 +303,51 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
         # Already crashed-sealed — only retry pause if needed.
         try_pause(state, key, worker_id, run_id)
 
-      window_count > state.threshold ->
-        # Strict-greater-than: window_count=6 triggers blocked (5 retries exhausted).
-        try_crash_and_blocked(state, key, worker_id, run_id, window_count)
-
       true ->
-        # Within backoff range (window_count 1-5) — consult RestartBackoff.
+        # Consult RestartBackoff's own consecutive-attempt counter FIRST.
+        # It is the more severe, terminal escalation (TRD-078) and must
+        # win over the softer sliding-window pause below whenever both
+        # are satisfied on the same DOWN — the default threshold of 5 is
+        # chosen to line up with RestartBackoff's 5-retry schedule, so
+        # the two can coincide on the same event.
         attempt = Map.get(state.attempt_count, key, 0) + 1
 
         case RestartBackoff.next_attempt(attempt) do
-          {:retry, delay_ms} ->
-            state = %{
-              state
-              | attempt_count: Map.put(state.attempt_count, key, attempt)
-            }
-
-            timer_ref =
-              Process.send_after(self(), {:backoff_expired, worker_id, run_id}, delay_ms)
-
-            Logger.warning(
-              "Overwatch.CrashLoopDetector: crash retry attempt=#{attempt} for #{worker_id}/#{run_id} — scheduling backoff delay=#{delay_ms}ms"
-            )
-
-            %{
-              state
-              | pending_timers: Map.put(state.pending_timers, key, timer_ref)
-            }
-
           {:blocked, :max_attempts_exceeded} ->
-            # Attempt counter has caught up to the window count: 5 retries
-            # exhausted. Transition to the blocked terminal state.
+            # Attempt counter exhausted the 5-retry schedule: block.
             try_crash_and_blocked(state, key, worker_id, run_id, window_count)
+
+          {:retry, delay_ms} ->
+            if window_count > state.threshold do
+              # Configurable sliding-window threshold breached (TRD-012):
+              # softer, recoverable escalation — pause, don't block.
+              # Independent of, and normally reached well before, the
+              # RestartBackoff exhaustion handled above.
+              try_crash_and_pause(state, key, worker_id, run_id, window_count)
+            else
+              state = %{
+                state
+                | attempt_count: Map.put(state.attempt_count, key, attempt)
+              }
+
+              timer_ref =
+                Process.send_after(self(), {:backoff_expired, worker_id, run_id}, delay_ms)
+
+              Logger.warning(
+                "Overwatch.CrashLoopDetector: crash retry attempt=#{attempt} for #{worker_id}/#{run_id} — scheduling backoff delay=#{delay_ms}ms"
+              )
+
+              %{
+                state
+                | pending_timers: Map.put(state.pending_timers, key, timer_ref)
+              }
+            end
         end
     end
   end
 
-  # try_crash_and_blocked/4 — emitted on the 6th DOWN; the worker stream is
+  # try_crash_and_blocked/5 — emitted when RestartBackoff exhausts its
+  # 5-retry schedule (6th consecutive attempt); the worker stream is
   # sealed and the run is marked "blocked". Operator error is emitted via
   # task.block for every task bound to this run.
   defp try_crash_and_blocked(state, key, worker_id, run_id, window_count) do
@@ -359,13 +368,20 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
           "Overwatch.CrashLoopDetector: max restart attempts exceeded for #{worker_id}/#{run_id} (#{window_count} restarts); emitting RunBlocked + operator error"
         )
 
+        # Pause BEFORE block: run.pause is rejected once the run is
+        # terminal, and run.block makes the run terminal (`terminal?:
+        # true`). Pausing first is a non-terminal transition, so both
+        # RunPaused and RunBlocked land; blocking second still succeeds
+        # because `terminal?` is still false immediately after a pause.
+        state = try_pause(state, key, worker_id, run_id)
+
         # Emit run.block — Run aggregate transitions to status "blocked".
         emit_run_blocked(worker_id, run_id)
 
         # Emit task.block for every task bound to this run — notifies operator.
         emit_task_blocked(run_id)
 
-        try_pause(state, key, worker_id, run_id)
+        state
 
       {:error, reason} ->
         Logger.error(

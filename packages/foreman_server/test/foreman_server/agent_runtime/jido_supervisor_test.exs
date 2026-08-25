@@ -24,6 +24,7 @@ defmodule ForemanServer.AgentRuntime.JidoSupervisorTest do
   end
 
   alias ForemanServer.AgentRuntime.JidoSupervisor
+  alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.TestSupport.InvocationSupervisorHelpers
 
 
@@ -61,15 +62,31 @@ defmodule ForemanServer.AgentRuntime.JidoSupervisorTest do
     test "can be embedded as a child of AgentRuntime.Supervisor" do
       unique = :erlang.unique_integer()
       jido_sup_name = :"JidoSupervisor.Test.#{unique}"
+      catalog_name = :"AdapterCatalog.Test.#{unique}"
+      invocation_name = :"InvocationSupervisor.Test.#{unique}"
+      ars_name = :"AgentRuntime.Supervisor.Test.#{unique}"
 
       InvocationSupervisorHelpers.schedule_preserve()
 
       # The whole AgentRuntime.Supervisor should be able to bring up the
-      # JidoSupervisor as a child without error.
+      # JidoSupervisor as a child without error. Every nested name must
+      # be overridden: AgentRuntime.Supervisor, AdapterCatalog, and
+      # InvocationSupervisor all default to their own module name in
+      # init/1, which collides with the app-supervised production
+      # instance (started unconditionally whenever :agent_runtime,
+      # :enabled is true, which config/test.exs always sets). And
+      # JidoSupervisor itself is only added as a child when
+      # JidoHarnessAdapter is present in :adapters — otherwise
+      # jido_supervisor_name is silently ignored and the child never
+      # starts (see AgentRuntime.Supervisor.init/1).
       sup_pid =
         start_supervised!(
           {ForemanServer.AgentRuntime.Supervisor,
            [
+             name: ars_name,
+             adapter_catalog_name: catalog_name,
+             invocation_supervisor_name: invocation_name,
+             adapters: [JidoHarnessAdapter],
              jido_supervisor_name: jido_sup_name
            ]},
           id: :Jido_supervisor_under_ARS

@@ -28,8 +28,16 @@ defmodule ForemanServer.Actions.RegistryTest do
       # We trap exits because start_link is called outside the
       # ExUnit supervisor (the GenServer never starts, so the
       # supervised! macro can't catch the EXIT signal for us).
+      #
+      # A unique :name is required here: start_link/1 defaults the
+      # registration name to the module itself, which would collide
+      # with the app-supervised ForemanServer.Actions.Registry
+      # instance (started unconditionally in Application.start/2)
+      # and fail with {:already_started, pid} before init/1 ever
+      # gets a chance to validate the actions list.
       Process.flag(:trap_exit, true)
-      result = Registry.start_link(actions: [StringIO])
+      name = :"Actions.Registry.BadActionTest.#{:erlang.unique_integer()}"
+      result = Registry.start_link(name: name, actions: [StringIO])
       assert {:error, {:not_a_jido_action, StringIO}} = result
     end
   end

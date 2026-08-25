@@ -30,6 +30,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Workflow.Catalog
   alias ForemanServer.EventStore, as: EventStore
   alias ForemanServer.Idempotency.HeartbeatLease
   alias ForemanServer.RunExecutorLiveness
@@ -456,7 +457,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
       launch_opts = [
         run_id: state.run_id,
         session_id: generate_session_id(),
-        adapter: ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter,
+        # Overridable so integration tests can inject an
+        # Overwatch-worker-protocol test double (start_link/1 +
+        # {:overwatch_activate,...} handshake + {:worker_result,...})
+        # instead of spawning a real Jido.Harness agent session.
+        # Defaults to the real production adapter everywhere this isn't
+        # explicitly configured.
+        adapter:
+          Application.get_env(
+            :foreman_server,
+            :worker_adapter,
+            ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+          ),
         adapter_name: "jido_harness",
         prompt_path: prompt_path,
         provider: provider,
@@ -475,8 +487,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))
 
       case Overwatch.start_phase(phase, launch_opts) do
-        {:ok, %{launch_pid: launch_pid}} ->
-          wait_for_worker_result(launch_pid)
+        {:ok, %{worker_id: worker_id, launch_pid: launch_pid}} ->
+          wait_for_worker_result(launch_pid, worker_id, state.run_id)
 
         {:error, {:already_started, _pid}} ->
           {:error, :worker_already_started}
@@ -498,8 +510,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # sends `{:worker_result, result}` before exiting; the launch_pid dies
   # normally after the worker exits. We accept either ordering: the
   # result message is the signal, the DOWN is just cleanup.
-  @spec wait_for_worker_result(pid()) :: {:ok, String.t()} | {:error, term()}
-  defp wait_for_worker_result(launch_pid) do
+  @spec wait_for_worker_result(pid(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp wait_for_worker_result(launch_pid, worker_id, run_id) do
     ref = Process.monitor(launch_pid)
 
     result =
@@ -513,6 +526,23 @@ defmodule ForemanServer.Workflow.RunExecutor do
         :timer.minutes(30) ->
           {:error, :worker_timeout}
       end
+
+    # Remove the finished LaunchWorker so its `restart: :permanent`
+    # DynamicSupervisor child spec (worker_supervisor.ex) doesn't relaunch
+    # it and re-run this already-finished phase — a plain WorkerExited does
+    # NOT seal the Worker aggregate (only WorkerCrashed/RunCompleted/
+    # RunFailed do, see aggregates/worker.ex). `stop_worker/2` internally
+    # blocks on `DynamicSupervisor.terminate_child/2`, which waits for
+    # LaunchWorker's own `terminate/2` to finish; that callback can need to
+    # round-trip through CommandRouter back to THIS run's aggregate actor —
+    # i.e. back to this very process. Calling it synchronously here
+    # deadlocks RunExecutor against itself (confirmed empirically: caused
+    # ~300 cascading suite-wide failures once EventStore subscriptions
+    # started timing out waiting on a stalled RunExecutor mailbox). Run it
+    # in a detached task instead so it can't block this GenServer callback;
+    # `LifecycleStore.claim_execution/1` (test doubles) plus this eventual
+    # cleanup together close the re-launch gap without the deadlock risk.
+    Task.start(fn -> Overwatch.WorkerSupervisor.stop_worker(worker_id, run_id) end)
 
     # Drain the DOWN if it hasn't arrived yet, so the process monitor
     # doesn't fire a stray message later.

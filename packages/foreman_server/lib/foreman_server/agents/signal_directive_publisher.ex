@@ -83,9 +83,9 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
       )
 
     # Record in directive queue before publishing (TRD-056 / JLD-T002).
-    # If the queue is not running, enqueue/2 returns :error and we
+    # If the queue is not running, record_in_queue/2 returns nil and we
     # proceed anyway — the queue is optional diagnostic instrumentation.
-    _ = record_in_queue(agent_id, payload)
+    directive_id = record_in_queue(agent_id, payload)
 
     result = Bus.publish(bus, [signal])
 
@@ -98,10 +98,14 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
 
     _ = OtelSpanEmitter.emit_signal_span("agent.directive", topic, delivery_status)
 
-    # Mark dispatched on success. On failure we leave the entry in
-    # :pending so operators can see it stalled.
-    with {:ok, [recorded | _]} <- result do
-      :ok = DirectiveQueue.dispatched(recording_id(recorded))
+    # Mark dispatched on success, using the same directive id the
+    # entry was enqueued under (the bus's own recording id lives in
+    # an unrelated id space and never matches a queue entry). On
+    # failure we leave the entry in :pending so operators can see
+    # it stalled.
+    with {:ok, [_recorded | _]} <- result,
+         true <- is_binary(directive_id) do
+      :ok = DirectiveQueue.dispatched(directive_id)
     end
 
     result
@@ -110,15 +114,14 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
   defp resolve_bus(:default), do: production_bus_name()
   defp resolve_bus(other), do: other
 
-  # Record the directive in the queue. Silently ignores if the
-  # DirectiveQueue GenServer is not running.
+  # Record the directive in the queue, returning its generated id.
+  # Silently ignores if the DirectiveQueue GenServer is not running.
   defp record_in_queue(agent_id, payload) do
-    DirectiveQueue.enqueue(agent_id, payload)
+    case DirectiveQueue.enqueue(agent_id, payload) do
+      {:ok, id} -> id
+    end
   rescue
     _ ->
-      :ok
+      nil
   end
-
-  defp recording_id(%Jido.Signal.Bus.RecordedSignal{id: id}), do: id
-  defp recording_id(other), do: inspect(other)
 end

@@ -53,7 +53,8 @@ defmodule ForemanServer.Agents.JidoAiRunner do
   defp run_react(prompt, opts) do
     if Code.ensure_loaded?(Jido.AI.Reasoning.ReAct) do
       try do
-        raw = Jido.AI.Reasoning.ReAct.run(prompt, %{}, opts)
+        model = opts |> Keyword.get(:model, "auto") |> resolve_react_model()
+        raw = Jido.AI.Reasoning.ReAct.run(prompt, %{model: model}, opts)
 
         case raw do
           %{termination_reason: :failed, result: reason} ->
@@ -77,6 +78,14 @@ defmodule ForemanServer.Agents.JidoAiRunner do
       {:ok, %{strategy: :react, output: "(stub) react reasoning for: #{prompt}", status: :placeholder}}
     end
   end
+
+  # The runner's own "auto" sentinel (the default when no `:model` opt is
+  # given) must resolve through `config :jido_ai, model_aliases: %{auto: ...}`
+  # (an atom-keyed alias, per `Jido.AI.ModelAliases`) so it routes through
+  # LiteLLM. Any other value is treated as an explicit ReqLLM model spec
+  # (e.g. "openai:gpt-4o") and passed through unchanged.
+  defp resolve_react_model("auto"), do: :auto
+  defp resolve_react_model(model), do: model
 
   defp run_cot(prompt, opts) do
     if Code.ensure_loaded?(Jido.AI.Reasoning.ChainOfThought) do

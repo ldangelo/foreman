@@ -73,11 +73,8 @@ defmodule ForemanServer.Application do
         maybe_beads_watcher_child() ++
         maybe_beads_orphan_janitor_child() ++
         maybe_project_provider_projector_child() ++
+        maybe_boot_reconciliation_child() ++
         [
-          # BootReconciliation runs once after the projector has rebuilt
-          # per-project routing so orphaned upstream in-progress issues can be
-          # reopened before any dispatcher/executor work resumes.
-          ForemanServer.Workflow.BootReconciliation,
           # RunExecutorRegistry must exist before RunExecutor children start;
           # RunSupervisor and Dispatcher both rely on it for via-tuple lookup.
           {Registry, keys: :unique, name: ForemanServer.RunExecutorRegistry},
@@ -97,6 +94,13 @@ defmodule ForemanServer.Application do
           # RunFailed), forwarding the latter to BootReconciliation.run_terminated/2
           # so orphan-task scans during normal operation mirror the boot path.
           ForemanServer.Workflow.Dispatcher,
+          # Merge gate: pauses a run after PR creation pending explicit
+          # human approval (TRD-014). Previously never supervised anywhere
+          # (dev/prod/test) — every call site and every test file started
+          # it ad hoc via `MergeGate.start_link()`, which only worked by
+          # accident when nothing else had already started it under the
+          # same registered name in the same test run.
+          ForemanServer.Workflow.MergeGate,
           # CommandRouter handles all append requests.
           ForemanServer.CommandRouter
         ] ++
@@ -464,6 +468,19 @@ defmodule ForemanServer.Application do
   def maybe_lifecycle_reconciler_child do
     if Application.get_env(:foreman_server, :start_lifecycle_reconciler?, true) do
       [ForemanServer.RunLifecycleReconciler]
+    else
+      []
+    end
+  end
+
+  # Gated on :start_boot_reconciliation? config so the test suite can
+  # opt out of the always-on GenServer (each test file that needs it
+  # starts its own supervised instance via `ensure_started/2`, avoiding
+  # cross-test pollution of the ambiguous-key / run-slot-orphan scans
+  # this process drives).
+  def maybe_boot_reconciliation_child do
+    if Application.get_env(:foreman_server, :start_boot_reconciliation?, true) do
+      [ForemanServer.Workflow.BootReconciliation]
     else
       []
     end

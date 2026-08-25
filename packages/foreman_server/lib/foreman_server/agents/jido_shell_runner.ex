@@ -116,7 +116,16 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   @impl true
   def handle_call({:stop_session, session_id}, _from, state) do
     state = untrack_session(state, session_id)
-    result = Jido.Shell.Agent.stop(session_id)
+
+    result =
+      case Jido.Shell.Agent.stop(session_id) do
+        :ok -> :ok
+        # Idempotent: stopping an already-stopped (or never-tracked) session
+        # is a successful no-op, not an error.
+        {:error, :not_found} -> :ok
+        other -> other
+      end
+
     {:reply, result, state}
   end
 
@@ -163,9 +172,16 @@ defmodule ForemanServer.Agents.JidoShellRunner do
   end
 
   defp system_cmd(cmd, args, cwd) do
-    case System.cmd(cmd, args, cd: cwd, into: "") do
-      {output, 0} -> {:ok, output, 0}
-      {output, code} -> {:ok, output, code}
-    end
+    System.cmd(cmd, args, cd: cwd, into: "")
+  rescue
+    e in ErlangError ->
+      if e.original == :enoent do
+        {:ok, "#{cmd}: command not found\n", 127}
+      else
+        reraise e, __STACKTRACE__
+      end
+  else
+    {output, 0} -> {:ok, output, 0}
+    {output, code} -> {:ok, output, code}
   end
 end

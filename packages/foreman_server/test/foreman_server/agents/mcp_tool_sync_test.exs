@@ -3,6 +3,7 @@ defmodule ForemanServer.Agents.McpToolSyncTest do
 
   test "sync and tools_for" do
     {:ok, _pid} = ForemanServer.Agents.McpToolSync.start_link()
+    {:ok, _pool_pid} = ForemanServer.Agents.McpClientPool.start_link()
     assert :ok = ForemanServer.Agents.McpToolSync.sync(["test-server"])
     assert [] = ForemanServer.Agents.McpToolSync.tools_for("test-server")
   end

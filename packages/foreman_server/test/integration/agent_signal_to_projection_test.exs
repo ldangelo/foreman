@@ -31,7 +31,10 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
     topic = "foreman/commands"
 
     payload = %{
-      "specversion" => "1.0",
+      # jido_signal's Signal.new/1 requires the exact literal "1.0.2"
+      # (see Jido.Signal.parse_specversion/1); the generic CloudEvents
+      # "1.0" is rejected.
+      "specversion" => "1.0.2",
       "type" => topic,
       "source" => "test-agent",
       "id" => "evt-#{System.unique_integer([:positive])}",
@@ -45,7 +48,10 @@ defmodule ForemanServer.Integration.AgentSignalToProjectionTest do
     }
 
     # Stage 1: agent publishes signal to the jido_signal Bus.
-    :ok = Jido.Signal.Bus.publish(:foreman_jido_signal_bus, topic, payload)
+    # `Bus.publish/2` takes `(bus, signals)` where `signals` is a list of
+    # `Jido.Signal` structs — build one from the CloudEvent-shaped map.
+    {:ok, signal} = Jido.Signal.new(payload)
+    {:ok, [_recorded]} = Jido.Signal.Bus.publish(:foreman_jido_signal_bus, [signal])
 
     # Stage 2: adapter normalizes to ExternalTriggerCommand envelope.
     # The adapter is allowed to be a no-op / dispatcher-stub;

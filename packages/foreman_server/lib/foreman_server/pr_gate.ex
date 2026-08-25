@@ -11,23 +11,46 @@ defmodule ForemanServer.PrGate do
   require Logger
 
   @doc """
+  Evaluate a raw PR status atom (as reported by GitHub webhooks or
+  `ForemanServer.PrMonitor` polling) for merge acceptability.
+
+  Returns `:ok` for statuses that permit merge (`:open`, `:merged`), or
+  `{:error, :pr_not_acceptable}` for any other status (`:closed`,
+  `:conflicted`, unknown atoms, or `nil`).
+  """
+  @spec evaluate(atom() | nil) :: :ok | {:error, :pr_not_acceptable}
+  def evaluate(:open), do: :ok
+  def evaluate(:merged), do: :ok
+  def evaluate(_), do: {:error, :pr_not_acceptable}
+
+  @doc """
   Check whether `run_id` is authorized to merge.
 
-  Returns `:ok` when the gate is not pending, or `{:error, :pr_not_acceptable}` when
+  Returns `{:error, :no_pr_association}` when `run_id` is not a binary, or
+  when the `ForemanServer.ProjectionStore` has no PR association recorded
+  for it (i.e. `run.pr.ready`/webhook association never happened). Returns
+  `:ok` when the gate is not pending, or `{:error, :pr_not_acceptable}` when
   the gate is still pending.
   """
-  @spec check(String.t()) :: :ok | {:error, :pr_not_acceptable}
+  @spec check(String.t()) :: :ok | {:error, :pr_not_acceptable | :no_pr_association}
   def check(run_id) when is_binary(run_id) do
-    key = "run:#{run_id}"
+    case ForemanServer.ProjectionStore.pr_association(run_id) do
+      {:error, :not_found} ->
+        {:error, :no_pr_association}
 
-    if ForemanServer.Workflow.MergeGate.pending_for_key?(key) do
-      {:error, :pr_not_acceptable}
-    else
-      :ok
+      {:ok, _association} ->
+        key = "run:#{run_id}"
+
+        if ForemanServer.Workflow.MergeGate.pending_for_key?(key) do
+          {:error, :pr_not_acceptable}
+        else
+          :ok
+        end
     end
   end
 
   def check(_), do: {:error, :no_pr_association}
+
   @doc """
   Record that a run has entered the merge gate pending state.
   Called by the Run aggregate after `run.pr.ready` is dispatched.

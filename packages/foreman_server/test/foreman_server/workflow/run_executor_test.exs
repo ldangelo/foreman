@@ -57,6 +57,25 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         {result, Map.put(state, script_key, next_script)}
       end)
     end
+
+    # Overwatch/LaunchWorker restarts a worker's supervised process
+    # `:permanent`ly on ANY exit (see worker_supervisor.ex), and a clean
+    # WorkerExited does not seal the Worker aggregate — only
+    # WorkerCrashed/RunCompleted/RunFailed do (see aggregates/worker.ex).
+    # A finished phase can therefore be re-launched by the supervisor
+    # before the run has fully completed. TestWorkerAdapter uses this to
+    # detect a duplicate re-launch and avoid re-driving the script.
+    def claim_execution(script_key) do
+      Agent.get_and_update(__MODULE__, fn state ->
+        script = Map.get(state, script_key, %{})
+
+        if Map.get(script, :claimed?, false) do
+          {false, state}
+        else
+          {true, Map.put(state, script_key, Map.put(script, :claimed?, true))}
+        end
+      end)
+    end
   end
 
   defmodule TestAdapter do
@@ -102,6 +121,122 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
+  # Phase execution (LGC-T002/JHA-T002) always routes through
+  # Overwatch.start_phase/2, which spawns whatever module
+  # `Application.get_env(:foreman_server, :worker_adapter, ...)` names as
+  # a supervised worker following the Overwatch worker protocol (see
+  # ForemanServer.Overwatch.Adapters.JidoHarnessWorker for the production
+  # contract this mirrors): `start_link/1`, reply to the
+  # `{:overwatch_activate, worker_id, run_id, parent}` handshake with
+  # `{:overwatch_activated, self()}`, then report completion with
+  # `{:worker_result, result}` sent directly to `opts[:result_recipient]`.
+  # `TestAdapter` above implements the legacy synchronous
+  # `BackendAdapter.execute/2` callback, which this pipeline never calls;
+  # this double bridges the same LifecycleStore-driven scripting the
+  # tests assert against onto the real worker protocol.
+  defmodule TestWorkerAdapter do
+    use GenServer
+
+    alias ForemanServer.Overwatch.WorkerProtocol
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+    @impl true
+    def init(opts), do: {:ok, opts}
+
+    @impl true
+    def handle_info({:overwatch_activate, _worker_id, _run_id, parent}, state) do
+      send(parent, {:overwatch_activated, self()})
+      send(self(), :run)
+      {:noreply, state}
+    end
+
+    def handle_info(:run, state) do
+      phase = Keyword.fetch!(state, :phase)
+      context = Map.get(phase, :context, %{})
+      script_key = Map.fetch!(context, "script_key")
+
+      # See LifecycleStore.claim_execution/1: Overwatch/LaunchWorker
+      # restarts this worker :permanently on ANY exit, and a clean
+      # WorkerExited does not seal the Worker aggregate, so the
+      # supervisor can re-launch it for a phase that already delivered
+      # its result. Only the first (winning) launch drives the script
+      # and reports a result; a duplicate re-launch finishes the
+      # handshake quietly — re-sending {:worker_result, ...} would hit a
+      # RunExecutor that already moved past this phase and has no
+      # catch-all handle_info/2 clause to absorb the stray message.
+      # A duplicate re-launch can fire well after its originating test
+      # has already finished (LifecycleStore is start_supervised! per
+      # test, but Overwatch's crash-loop backoff can delay the retry
+      # past that window) — guard against calling a dead Agent.
+      claimed? =
+        Process.whereis(LifecycleStore) != nil and LifecycleStore.claim_execution(script_key)
+
+      if claimed? do
+        result = run_phase(state, context)
+
+        _ =
+          WorkerProtocol.emit(:worker_exited, %{
+            worker_id: Keyword.fetch!(state, :worker_id),
+            run_id: Keyword.fetch!(state, :run_id)
+          })
+
+        case Keyword.get(state, :result_recipient) do
+          pid when is_pid(pid) -> send(pid, {:worker_result, result})
+          _ -> :ok
+        end
+      else
+        _ =
+          WorkerProtocol.emit(:worker_exited, %{
+            worker_id: Keyword.fetch!(state, :worker_id),
+            run_id: Keyword.fetch!(state, :run_id)
+          })
+      end
+
+      # Mirrors Overwatch.Adapters.JidoHarnessWorker.handle_info/2 for
+      # {:agent_done, result}: the worker MUST exit after delivering its
+      # result so LaunchWorker's monitor fires and RunExecutor's
+      # wait_for_worker_result/1 drain-receive (which waits on launch_pid
+      # going DOWN) completes instead of blocking until its internal
+      # 30-minute ceiling.
+      {:stop, :normal, state}
+    end
+
+    def handle_info(_msg, state), do: {:noreply, state}
+
+    defp run_phase(state, context) do
+      prompt = Keyword.fetch!(state, :prompt)
+      env = Keyword.get(state, :env_map, %{})
+      script_key = Map.fetch!(context, "script_key")
+
+      if pid = LifecycleStore.test_pid(script_key) do
+        send(pid, {:adapter_execute, prompt, context})
+
+        if map_size(env) > 0 do
+          send(pid, {:adapter_env, env})
+        end
+      end
+
+      result = LifecycleStore.take(script_key, :adapter_results, {:ok, "artifact body", %{}})
+
+      case LifecycleStore.take(script_key, :after_execute, nil) do
+        fun when is_function(fun, 0) -> fun.()
+        _ -> :ok
+      end
+
+      # execute_agent/4 (run_executor.ex) expects the legacy 2-tuple
+      # {:ok, content} | {:error, reason} — the same normalization
+      # Overwatch.Adapters.JidoHarnessWorker performs on a real
+      # Jido.Harness.RunResult. LifecycleStore scripts (and the old
+      # TestAdapter.execute/2 contract above) use the 3-tuple
+      # {:ok, content, metadata} shape, so unwrap it here.
+      case result do
+        {:ok, content, _metadata} -> {:ok, content}
+        other -> other
+      end
+    end
+  end
+
   setup_all do
     {:ok, _} = Application.ensure_all_started(:mox)
     {:ok, _} = Application.ensure_all_started(:telemetry)
@@ -141,6 +276,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       ForemanServer.Agents.JidoShellRunner
     )
 
+    # Phase execution always routes through Overwatch.start_phase/2
+    # (LGC-T002/JHA-T002 — see run_executor.ex execute_agent/4). Overwatch
+    # is disabled by default in test config (config/test.exs) since most
+    # test files never dispatch a real phase; this file drives full
+    # RunExecutor phases end to end, so it needs the supervisor tree up,
+    # mirroring overwatch_test.exs's own opt-in.
+    ensure_started(ForemanServer.Overwatch, ForemanServer.Overwatch)
+
     previous_backend_adapter = previous_backend_adapter()
 
     ensure_test_adapter_registered(previous_backend_adapter)
@@ -159,6 +302,16 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
 
     ForemanServer.TestSupport.RunSlotsReset.reset!()
+
+    previous_worker_adapter = Application.get_env(:foreman_server, :worker_adapter)
+    Application.put_env(:foreman_server, :worker_adapter, TestWorkerAdapter)
+
+    on_exit(fn ->
+      case previous_worker_adapter do
+        nil -> Application.delete_env(:foreman_server, :worker_adapter)
+        adapter -> Application.put_env(:foreman_server, :worker_adapter, adapter)
+      end
+    end)
 
 
     Application.put_env(
@@ -497,6 +650,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              receive_message()
 
     assert {:adapter_execute, "Run phase implement", _context} = receive_message()
+    assert {:adapter_env, _env} = receive_message()
 
     assert {:runner_cmd, :fail,
             {:update,
@@ -686,6 +840,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              receive_message()
 
     assert {:adapter_execute, "Run phase implement", _context} = receive_message()
+    assert {:adapter_env, _env} = receive_message()
     assert {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _} = receive_message()
 
     assert %{status: "closed"} =
@@ -1516,7 +1671,14 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     %{
       name: :implement,
       artifact_template: %{path: Path.join([artifact_dir, "{run_id}-{task_id}.md"])},
-      context: %{"script_key" => script_key}
+      context: %{"script_key" => script_key},
+      # Phases default to a real git-worktree checkout (TRD-2026 default-on
+      # worktrees, see `maybe_create_worktree/3`). Most tests in this file
+      # exercise claim/dispatch/complete plumbing against a plain
+      # `System.tmp_dir!()` project path (not a git repo) and don't care
+      # about worktree provisioning, so opt out explicitly here. Tests that
+      # DO want a real worktree override this via `put_worktree/2`.
+      worktree: %{enabled: false}
     }
   end
 
@@ -2251,7 +2413,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
               "name" => "code-generation",
               "prompt_path" => "/ignored/implement.md",
               "artifact_template" => "{task.projectReportsDir}/IMPLEMENT_REPORT.md",
-              "context" => %{"script_key" => script_key}
+              "context" => %{"script_key" => script_key},
+              "worktree" => %{enabled: false}
             }
           ]
         }
@@ -2321,7 +2484,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
               "artifact_template" => %{
                 "path" => Path.join([artifact_dir, "{run_id}-{task_id}.md"])
               },
-              "context" => %{"script_key" => script_key}
+              "context" => %{"script_key" => script_key},
+              "worktree" => %{enabled: false}
             }
           ]
         }

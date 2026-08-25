@@ -3,13 +3,38 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
   alias ForemanServer.MCP.Tools
   alias ForemanServer.CommandGateway
+  alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter}
+
+  # `foreman_work_submit` gates on `Router.manual/1` (default backend
+  # "jido_harness") before ever touching CommandGateway. Router.manual/1
+  # always reads the production global AdapterCatalog (no override hook),
+  # and test env boots it empty (`config :foreman_server, :agent_runtime,
+  # adapters: []`), so without a registered adapter every call falls
+  # through to `{:error, :no_available_backend}` before dispatch. Register
+  # a minimal stub adapter for the duration of this test (see
+  # skill://foreman-test-isolation root cause #10).
+  defmodule StubBackendAdapter do
+    @moduledoc false
+    @behaviour BackendAdapter
+    @impl true
+    def name, do: :jido_harness
+    @impl true
+    def capabilities,
+      do: %{type: :cli, strengths: [:general], weaknesses: [], supported_contexts: [:code]}
+    @impl true
+    def available?, do: true
+    @impl true
+    def execute(_req, _opts), do: {:ok, "stub", %{}}
+  end
 
   setup do
     {:ok, _} = Application.ensure_all_started(:meck)
     :meck.new(CommandGateway, [:passthrough, :no_link])
+    {:ok, _} = AdapterCatalog.register(StubBackendAdapter)
 
     on_exit(fn ->
       :meck.unload(CommandGateway)
+      AdapterCatalog.unregister(StubBackendAdapter)
     end)
 
     :ok
@@ -32,7 +57,8 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
                  work_id: "work-123",
                  project_id: "proj-456",
                  workflow: "default",
-                 prompt: "Do the thing"
+                 prompt: "Do the thing",
+                 backend: "jido_harness"
                }
 
         {:ok, %{work_id: "work-123", status: "submitted"}}

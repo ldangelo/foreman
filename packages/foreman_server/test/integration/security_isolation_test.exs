@@ -8,7 +8,10 @@ defmodule ForemanServer.Integration.SecurityIsolationTest do
   alias ForemanServer.Workflow.MergeToolRefuser
 
   test "vector 1: jido_vfs denies out-of-worktree access" do
-    {:ok, _pid} = VfsIsolation.start_link()
+    case GenServer.whereis(VfsIsolation) do
+      nil -> start_supervised!(VfsIsolation)
+      _pid -> :ok
+    end
     :ok = VfsIsolation.bind("agent-sec", "/tmp/wt-sec")
     refute VfsIsolation.allowed?("agent-sec", "/etc/passwd")
     assert VfsIsolation.allowed?("agent-sec", "/tmp/wt-sec/file.txt")

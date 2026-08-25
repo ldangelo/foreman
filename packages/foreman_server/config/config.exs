@@ -129,7 +129,7 @@ config :foreman_server, :litellm,
 # route through LiteLLM with auto-model selection.
 config :jido_ai,
   model_aliases: %{
-    "auto" => %{
+    auto: %{
       provider: :openai,
       id: "auto",
       base_url: System.get_env("LITELLM_ENDPOINT", "http://localhost:4000")

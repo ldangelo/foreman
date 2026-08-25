@@ -338,9 +338,12 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
       attempt_before = CrashLoopDetector.attempt_count(detector)
       assert Map.get(attempt_before, {worker_id, run_id}) == 2
 
-      # Kill and restart the detector GenServer.
-      pid = Process.whereis(:detector_backoff)
-      ref = Process.monitor(pid)
+      # Kill the detector GenServer. `use GenServer` gives it a
+      # `:permanent` child spec, so the ExUnit test supervisor restarts
+      # it automatically under the same `id: :detector_backoff` slot —
+      # a second explicit `start_supervised!/2` call would collide with
+      # that auto-restarted child (`{:already_started, pid}}`).
+      ref = Process.monitor(detector)
       Agent.stop(detector, :normal)
 
       receive do
@@ -349,16 +352,19 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorBackoffTest do
         1000 -> flunk("detector did not die")
       end
 
-      # Restart.
-      new_detector =
-        start_supervised!(
-          {CrashLoopDetector, window_ms: 5 * 60 * 1000, threshold: 5},
-          id: :detector_backoff
-        )
+      # Wait for the supervisor to finish restarting it under the same
+      # registered name before querying the fresh instance.
+      wait_until(fn ->
+        case Process.whereis(CrashLoopDetector) do
+          nil -> false
+          ^detector -> false
+          _new_pid -> true
+        end
+      end)
 
       # Attempt count is reset (pending timers don't survive restart —
       # this is correct; a fresh restart must re-evaluate from scratch).
-      attempt_after = CrashLoopDetector.attempt_count(new_detector)
+      attempt_after = CrashLoopDetector.attempt_count()
       assert Map.get(attempt_after, {worker_id, run_id}) == nil,
              "attempt_count does not survive GenServer restart"
     end

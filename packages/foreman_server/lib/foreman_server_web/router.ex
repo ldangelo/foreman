@@ -15,6 +15,10 @@ defmodule ForemanServerWeb.Router do
     plug(ForemanServerWeb.Plugs.BearerAuth)
   end
 
+  pipeline :require_authenticated do
+    plug(ForemanServerWeb.Plugs.RequireAuthenticated)
+  end
+
   forward("/mcp", ForemanServerWeb.MCPRouter, [])
 
   scope "/api", ForemanServerWeb do
@@ -55,13 +59,14 @@ defmodule ForemanServerWeb.Router do
       live("/phases/:run_id/:phase_id", PhaseDebugLive, :show)
       live("/workers/:run_id/:worker_id", WorkerDebugLive, :show)
     end
+  end
 
-    # JLD-T001 / TRD-055: mount jido_live_dashboard under browser auth.
-    # Auth pipeline (`:browser` + `:require_authenticated`) intentionally
-    # deferred to a follow-up wiring bead per TRD-2026-4212be7e.
-    scope "/dashboard", ForemanServerWeb do
-      pipe_through(:browser)
-      live("/", ForemanServerWeb.LiveDashboard)
-    end
+  # JLD-T001 / TRD-055: jido_live_dashboard mounted under browser auth +
+  # the shared bearer-token guard (see ForemanServerWeb.LiveDashboard
+  # moduledoc for the originally-documented wiring). Available in every
+  # env (not dev-only) now that the auth guard is wired.
+  scope "/dashboard", ForemanServerWeb do
+    pipe_through([:browser, :require_authenticated])
+    live("/", LiveDashboard)
   end
 end

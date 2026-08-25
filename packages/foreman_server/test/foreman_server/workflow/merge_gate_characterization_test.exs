@@ -19,7 +19,12 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
   alias ForemanServer.Aggregates.Run
 
   setup do
-    {:ok, _pid} = ForemanServer.Workflow.MergeGate.start_link()
+    case GenServer.whereis(ForemanServer.Workflow.MergeGate) do
+      nil -> {:ok, _pid} = ForemanServer.Workflow.MergeGate.start_link()
+      _pid -> :ok
+    end
+
+    ForemanServer.Workflow.MergeGate.clear()
     :ok
   end
 

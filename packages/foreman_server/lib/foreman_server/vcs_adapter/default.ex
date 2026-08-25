@@ -334,6 +334,8 @@ defmodule ForemanServer.VcsAdapter.Default do
   end
 
 
+  defp branch_exists?(_repo_path, nil), do: false
+
   defp branch_exists?(repo_path, branch) do
     case System.cmd("git", ["-C", repo_path, "rev-parse", "--verify", "--quiet", "refs/heads/" <> branch], stderr_to_stdout: true) do
       {_output, 0} -> true

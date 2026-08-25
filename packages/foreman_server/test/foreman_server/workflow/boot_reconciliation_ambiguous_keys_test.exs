@@ -101,9 +101,26 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
 
   describe "reconcile_ambiguous_keys/1 (deferral when CommandRouter absent)" do
     test "defers when command_router_ready? returns false" do
-      # CommandRouter is not running → scan_branch returns :schedule_not_ready →
-      # reconcile_ambiguous_keys defers via schedule_ambiguous_scan.
-      # No telemetry fires synchronously (it fires after the deferred message).
+      # CommandRouter is a real supervised singleton that the full app
+      # boots unconditionally, so scan_branch/0 only returns
+      # :schedule_not_ready while the router is genuinely absent. Stop it
+      # under its own supervisor (mirrors boot_reconciliation_test.exs's
+      # "run_terminated/2 defers dispatch when CommandRouter is not
+      # registered") and restart it before the test ends so later tests
+      # in this run still see a live router.
+      app_sup = Process.whereis(ForemanServer.Application)
+      assert is_pid(app_sup)
+
+      :ok = Supervisor.terminate_child(app_sup, ForemanServer.CommandRouter)
+      assert is_nil(Process.whereis(ForemanServer.CommandRouter))
+
+      on_exit(fn ->
+        case Process.whereis(ForemanServer.CommandRouter) do
+          nil -> Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+          _pid -> :ok
+        end
+      end)
+
       state = %{
         reconciled?: false,
         scanned?: false,
@@ -119,6 +136,8 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
 
       refute_receive {@ambiguous_event, _, _, _}, 100,
                      "no telemetry synchronously when scan is deferred"
+
+      {:ok, _} = Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
     end
   end
 

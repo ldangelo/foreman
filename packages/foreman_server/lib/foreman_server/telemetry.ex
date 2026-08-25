@@ -68,6 +68,8 @@ defmodule ForemanServer.Telemetry do
     @work_terminal,
     @dispatcher_admission_failed,
     @run_slots_acquired,
+    @run_slots_queued,
+    @run_slots_released,
     @signal_command,
     @run_slots_transferred,
     @run_slots_waiter_removed,

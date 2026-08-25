@@ -100,6 +100,41 @@ A project is a repository registered with Foreman. `foreman init` creates the lo
 - `/api/*` also accepts `?token=<token>` for narrow tooling.
 - When no token is configured, dev auth is bypassed.
 
+Manage registered projects with `foreman project <subcommand>`:
+
+### Create a project
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider beads
+```
+
+### Get one project
+
+```
+foreman project get project-123
+```
+
+### Update a project
+
+```
+foreman project update --task-provider beads project-123
+```
+
+### Delete a project
+
+```
+foreman project delete project-123
+```
+
+### List projects
+
+```
+foreman project list
+```
+
 ## 2. Operator API surface
 
 All external domain mutations go through `POST /api/commands`. The current

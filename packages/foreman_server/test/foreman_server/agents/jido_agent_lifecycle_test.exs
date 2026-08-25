@@ -36,8 +36,8 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
       ]
 
     @impl true
-    def run(%{marker: marker}, _context) do
-      {:ok, %{last_marker: marker, tick: 1}}
+    def run(%{marker: marker}, context) do
+      {:ok, %{last_marker: marker, tick: context.state.tick + 1}}
     end
   end
 
@@ -49,7 +49,7 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
       schema: []
 
     @impl true
-    def run(_params, _context), do: {:ok, %{tick: 1}}
+    def run(_params, context), do: {:ok, %{tick: context.state.tick + 1}}
   end
 
   # ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
         :"foreman_jido_lifecycle_#{System.unique_integer([:positive])}"
 
       {:ok, jido_pid} = Jido.start_link(name: jido_name)
-      on_exit(fn -> if Process.alive?(jido_pid), do: GenServer.stop(jido_pid) end)
+      on_exit(fn -> safe_stop(jido_pid) end)
 
       id = "agent-server-#{System.unique_integer([:positive])}"
 
@@ -293,9 +293,7 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
           id: id
         )
 
-      on_exit(fn ->
-        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 100)
-      end)
+      on_exit(fn -> safe_stop(pid, 100) end)
 
       assert is_pid(pid)
       assert Process.alive?(pid)
@@ -305,6 +303,23 @@ defmodule ForemanServer.Agents.JidoAgentLifecycleTest do
       assert state.id == id
       assert state.agent.agent_module == LifecycleAgent
       assert state.agent.id == id
+    end
+  end
+
+  # jido_pid and the AgentServer pid are both linked to this test's own
+  # process (started via start_link, not start_supervised!). ExUnit tears
+  # that process down before running on_exit callbacks, which cascades an
+  # exit signal to both linked processes concurrently with this cleanup —
+  # so by the time on_exit runs, Process.alive?/1 can still say true a
+  # moment before the process actually terminates. Mirrors the safe_stop/1
+  # convention already used in beads_supervisors_test.exs.
+  defp safe_stop(pid, timeout \\ :infinity) do
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid, :normal, timeout)
+      catch
+        :exit, _ -> :ok
+      end
     end
   end
 end

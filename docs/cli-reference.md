@@ -64,26 +64,85 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Manage Elixir-registered projects.
 
-```bash
-foreman project list              # List all registered projects
-foreman project add owner/repo     # Add a project from GitHub
-foreman project register .         # Register an existing local repository
-foreman project remove <id>       # Archive a project
-foreman project edit <id>         # Edit project settings
+**Subcommands:**
+| Command | Description |
+|---------|-------------|
+| `create` | Register a new project |
+| `get <id>` | Fetch a project projection |
+| `update <id>` | Update a project's task provider |
+| `delete <id>` | Soft-delete (archive) a project |
+| `list` | List project projections |
+
+### `foreman project create`
+
+Register a new project. `--id`, `--path`, and `--task-provider` are required.
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider beads
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-h, --help` | Display help for command |
+| `--id <id>` | Project ID (required) |
+| `--path <path>` | Project path (required) |
+| `--task-provider <provider>` | Task provider (required) |
+| `--idempotency-key <key>` | Idempotency key |
+| `--format json` | Print the raw command response as JSON |
 
-**Subcommands:**
-| Command | Description |
-|---------|-------------|
-| `add <github-url>` | Add a project from GitHub URL |
-| `register [path]` | Register an existing local repository |
-| `list` | List all registered projects |
-| `remove <id>` | Archive a project |
-| `edit <id>` | Edit project settings |
+### `foreman project get <id>`
+
+Fetch a project projection.
+
+```
+foreman project get project-123
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format json` | Print the raw projection as JSON |
+
+### `foreman project update <id>`
+
+Update a project's task provider. `--task-provider` is required.
+
+```
+foreman project update --task-provider beads project-123
+```
+
+| Option | Description |
+|--------|-------------|
+| `--task-provider <provider>` | Task provider (required) |
+| `--idempotency-key <key>` | Idempotency key |
+| `--format json` | Print the raw command response as JSON |
+
+### `foreman project delete <id>`
+
+Soft-delete (archive) a project. The server rejects the archive while active runs remain.
+
+```
+foreman project delete --force project-123
+```
+
+| Option | Description |
+|--------|-------------|
+| `--force` | Print active run ids if archive is blocked |
+| `--idempotency-key <key>` | Idempotency key |
+
+### `foreman project list`
+
+List project projections. Default table columns: ID, PATH, ARCHIVED, REGISTERED, VERSION.
+
+```
+foreman project list --include-archived
+```
+
+| Option | Description |
+|--------|-------------|
+| `--include-archived` | Include archived projects |
+| `--format json\|ndjson` | Output format |
 
 ---
 

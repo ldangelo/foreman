@@ -13,10 +13,11 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
   # `init_run_slots_capacity/0`: hard-delete the stream, kill the actor
   # (so the next lookup re-replays the now-empty stream), then reset the
   # projection store's slot view via the suite-wide helper that seeds
-  # every key the production `initial_state/0` defines. A short settle
-  # delay afterwards gives the Aggregator supervisor time to finish
-  # re-registering the restarted actor so the next `GenServer.call`
-  # dispatches into a live pid.
+  # every key the production `initial_state/0` defines, passing
+  # `keep_subscribers: true` so a live Dispatcher/RunLifecycleReconciler
+  # subscription survives the reset (see foreman-test-isolation root
+  # cause #4 — the default clobbers subscribers, which silently kills
+  # the dispatch chain for tests exercising the wired Dispatcher).
   # Hard delete requires `enable_hard_deletes: true` in
   # `ForemanServer.EventStore` config, which `config/test.exs` sets.
   @spec reset!() :: :ok
@@ -44,7 +45,7 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
     # the stale dead pid and the subsequent `GenServer.call` exits.
     Process.sleep(20)
 
-    ForemanServer.TestSupport.ProjectionStoreReset.reset!([])
+    ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
     :ok
   end
 end

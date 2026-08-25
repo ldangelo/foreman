@@ -30,8 +30,14 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
   end
 
   defp with_session(manager, owner \\ self()) do
+    # No on_exit-based stop_session here: `manager` is a start_supervised!
+    # process, which ExUnit guarantees to terminate *before* any on_exit
+    # callback runs — a later `GenServer.call(manager, ...)` would always
+    # hit a dead process. Cleanup instead relies on the owner-exit monitor
+    # (see "owner process exit tears down tracked session" below): when this
+    # test process exits, JidoShellRunner's `handle_info({:DOWN, ...})` tears
+    # the session down automatically before the manager itself is stopped.
     {:ok, session_id} = JidoShellRunner.start_session("test-workspace", manager: manager, owner: owner)
-    on_exit(fn -> JidoShellRunner.stop_session(session_id, manager: manager) end)
     session_id
   end
 
@@ -71,7 +77,10 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       tmpdir = Path.join(System.tmp_dir!(), "shell-cwd-#{System.unique_integer()}")
       File.mkdir_p!(tmpdir)
       assert {:ok, out, 0} = JidoShellRunner.execute("pwd", [], cwd: tmpdir)
-      assert String.trim(out) == tmpdir
+      # Compare against the OS-canonicalized path: on macOS, System.tmp_dir!()
+      # resolves under /var, which is itself a symlink to /private/var, so the
+      # `pwd` executable's getcwd() may report the /private-prefixed form.
+      assert String.trim(out) == canonical(tmpdir)
     end
 
     test "output captures stdout, not stderr by default" do
@@ -122,13 +131,13 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
 
     test "run_command/3 executes command in session context", %{manager: manager} do
       session_id = with_session(manager)
-      assert {:ok, _out, 0} = JidoShellRunner.run_command(session_id, "echo hello")
+      assert {:ok, out} = JidoShellRunner.run_command(session_id, "echo hello")
+      assert out =~ "hello"
     end
 
-    test "run_command/3 returns non-zero exit code on failure", %{manager: manager} do
+    test "run_command/3 returns an error for a command not in the shell registry", %{manager: manager} do
       session_id = with_session(manager)
-      assert {:ok, _out, code} = JidoShellRunner.run_command(session_id, "false")
-      assert code != 0
+      assert {:error, _reason} = JidoShellRunner.run_command(session_id, "false")
     end
 
     test "owner process exit tears down tracked session", %{manager: manager} do
@@ -169,7 +178,7 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
         Task.async_stream(
           [s1, s2],
           fn session_id ->
-            JidoShellRunner.run_command(session_id, "echo #{session_id}")
+            {session_id, JidoShellRunner.run_command(session_id, "echo #{session_id}")}
           end,
           ordered: true,
           timeout: 10_000
@@ -177,8 +186,9 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
         |> Enum.to_list()
 
       assert length(results) == 2
+
       assert Enum.all?(results, fn
-        {:ok, {:ok, _out, 0}} -> true
+        {:ok, {session_id, {:ok, out}}} -> out =~ session_id
         _ -> false
       end)
     end
@@ -249,7 +259,11 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
     end
 
     test "bind_with_check succeeds for allowed worktree" do
-      worktree = Path.join(System.tmp_dir!(), "vfs-ok-#{System.unique_integer()}")
+      # `System.tmp_dir!()` resolves to a per-user TMPDIR on macOS (not
+      # literal `/tmp`), which config/test.exs's `:jido_vfs, :allowed_roots`
+      # does not include. Use a literal /tmp path, matching the allowlist and
+      # the pattern already used by vfs_isolation_test.exs's equivalent test.
+      worktree = "/tmp/vfs-ok-#{System.unique_integer([:positive])}"
       File.mkdir_p!(worktree)
       agent_id = "agent-ok-#{System.unique_integer()}"
 
@@ -311,5 +325,13 @@ defmodule ForemanServer.Agents.JidoShellIntegrationTest do
       Process.sleep(25)
       assert_eventually(fun, attempts - 1)
     end
+  end
+
+  # Canonicalizes `path` via the OS `realpath` utility — robust against the
+  # /var/folders -> /private/var/folders symlink on macOS, which the `pwd`
+  # executable resolves via getcwd() but a plain tmpdir string does not.
+  defp canonical(path) do
+    {out, 0} = System.cmd("realpath", [path])
+    String.trim(out)
   end
 end

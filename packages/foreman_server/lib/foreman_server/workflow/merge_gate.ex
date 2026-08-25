@@ -11,6 +11,10 @@ defmodule ForemanServer.Workflow.MergeGate do
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  @doc "Clears all pending/approved entries. For test isolation now that MergeGate is a supervised app singleton."
+  @spec clear() :: :ok
+  def clear, do: GenServer.call(__MODULE__, :clear)
+
   def init(_opts) do
     :ets.new(@table, [:set, :public, :named_table])
     {:ok, %{}}
@@ -79,5 +83,10 @@ defmodule ForemanServer.Workflow.MergeGate do
       nil ->
         {:reply, {:error, :not_found}, state}
     end
+  end
+
+  def handle_call(:clear, _from, state) do
+    :ets.delete_all_objects(@table)
+    {:reply, :ok, state}
   end
 end

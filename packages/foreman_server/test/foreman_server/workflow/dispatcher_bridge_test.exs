@@ -17,10 +17,18 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
   """
 
   use ExUnit.Case, async: false
+  @moduletag timeout: 90_000
 
   alias ForemanServer.{CommandGateway, ProjectionStore}
+  alias ForemanServer.TestSupport.RunSlotsReset
 
-  @poll_timeout_ms 8_000
+  # 8s is comfortable in isolation, but the real Dispatcher/RunLifecycleReconciler
+  # subscribe to the EventStore's global "$all" stream, which accumulates
+  # events monotonically across the whole `mix test` process; late in a full
+  # 2300+ test suite run there can be tens of thousands of backlogged events
+  # to catch up on before this test's own dispatch reacts, causing sporadic
+  # false-negative timeouts under load that don't reproduce in isolation.
+  @poll_timeout_ms 30_000
 
   defp poll_until(fun, message \\ "condition") do
     deadline = System.monotonic_time(:millisecond) + @poll_timeout_ms
@@ -70,6 +78,17 @@ defmodule ForemanServer.Workflow.DispatcherBridgeTest do
 
     on_exit(fn -> terminate_run_supervisor_children() end)
 
+    :ok
+  end
+
+  setup do
+    # `run_slots:global` is a process-wide singleton shared across every
+    # test file (and, in this shared-Postgres dev environment, every
+    # concurrently-running mix test invocation). Without a reset, holders
+    # leaked by earlier runs exhaust the default capacity (3) and this
+    # test's admission silently queues instead of reserving a slot — see
+    # foreman-test-isolation root causes #2/#3.
+    RunSlotsReset.reset!()
     :ok
   end
 
