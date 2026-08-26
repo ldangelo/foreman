@@ -4,12 +4,19 @@ defmodule ForemanServer.Aggregates.Attachment do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:requested?, :terminal?, :status, :run_id, :worker_id]
+    defstruct [:requested?, :terminal?, :status, :run_id, :worker_id]
+  end
+
   @impl true
   def initial_state do
-    %{
+    %State{
       requested?: false,
       terminal?: false,
-      status: nil
+      status: nil,
+      run_id: nil,
+      worker_id: nil
     }
   end
 
@@ -19,16 +26,22 @@ defmodule ForemanServer.Aggregates.Attachment do
 
     case Aggregate.event_type(event) do
       "AttachRequested" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:requested?, true)
-        |> Map.put(:status, "requested")
+        %State{
+          state
+          | requested?: true,
+            status: "requested",
+            run_id: Aggregate.get(payload, :run_id),
+            worker_id: Aggregate.get(payload, :worker_id)
+        }
 
       "AttachUnsupported" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:terminal?, true)
-        |> Map.put(:status, "unsupported")
+        %State{
+          state
+          | terminal?: true,
+            status: "unsupported",
+            run_id: Aggregate.get(payload, :run_id),
+            worker_id: Aggregate.get(payload, :worker_id)
+        }
 
       _ ->
         state
@@ -68,10 +81,10 @@ defmodule ForemanServer.Aggregates.Attachment do
     "attach:#{escape(run_id)}:#{escape(worker_id)}"
   end
 
-  defp require_open(%{terminal?: true}), do: {:error, :attachment_terminal}
+  defp require_open(%State{terminal?: true}), do: {:error, :attachment_terminal}
   defp require_open(_state), do: :ok
 
-  defp reject_requested(%{requested?: true}), do: {:error, :attachment_already_requested}
+  defp reject_requested(%State{requested?: true}), do: {:error, :attachment_already_requested}
   defp reject_requested(_state), do: :ok
 
   defp escape(value), do: String.replace(value, ":", "%3A")

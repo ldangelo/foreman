@@ -1,0 +1,5 @@
+name: fix
+description: Fix an issue via the ensemble fix workflow.
+phases:
+  - name: fix
+    command: "/skill:ensemble-fix-issue --foreman"

@@ -4,8 +4,21 @@ defmodule ForemanServer.Aggregates.Integration do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:seen?]
+    defstruct [:seen?, :dedupe_key, :configured?, :sync_status, config: %{}, last_sync: nil]
+  end
+
   @impl true
-  def initial_state, do: %{seen?: false, config: %{}}
+  def initial_state,
+    do: %State{
+      seen?: false,
+      dedupe_key: nil,
+      configured?: false,
+      sync_status: nil,
+      config: %{},
+      last_sync: nil
+    }
 
   @impl true
   def apply_event(state, event) do
@@ -13,27 +26,29 @@ defmodule ForemanServer.Aggregates.Integration do
 
     case Aggregate.event_type(event) do
       "IntegrationCommandIngested" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:seen?, true)
-        |> Map.put(
-          :dedupe_key,
-          Aggregate.get(payload, :dedupe_key) || Aggregate.get(payload, :idempotency_key)
-        )
+        dedupe_key =
+          Aggregate.get(payload, :dedupe_key) ||
+            Aggregate.get(payload, :idempotency_key)
+
+        %State{
+          state
+          | seen?: true,
+            dedupe_key: dedupe_key,
+            config: Map.merge(state.config, Map.get(payload, :config, %{}))
+        }
 
       "IntegrationConfigured" ->
-        state
-        |> Map.put(:configured?, true)
-        |> Map.put(
-          :config,
-          Map.merge(Map.get(state, :config, %{}), Aggregate.get(payload, :config, %{}))
-        )
+        %State{
+          state
+          | configured?: true,
+            config: Map.merge(state.config, Map.get(payload, :config, %{}))
+        }
 
       "IntegrationSyncRequested" ->
-        state |> Map.put(:sync_status, "requested") |> Map.put(:last_sync, payload)
+        %State{state | sync_status: "requested", last_sync: payload}
 
       "IntegrationSyncCompleted" ->
-        state |> Map.put(:sync_status, "completed") |> Map.put(:last_sync, payload)
+        %State{state | sync_status: "completed", last_sync: payload}
 
       _ ->
         state
@@ -82,7 +97,7 @@ defmodule ForemanServer.Aggregates.Integration do
 
   def handle_command(_state, _command), do: :unhandled
 
-  defp require_new(%{seen?: true}, dedupe_key),
+  defp require_new(%State{seen?: true}, dedupe_key),
     do: {:error, {:duplicate_integration_event, dedupe_key}}
 
   defp require_new(_state, _dedupe_key), do: :ok

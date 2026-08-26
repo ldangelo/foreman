@@ -1,0 +1,11 @@
+2026-08-03: TRD-008-TEST unit coverage gap closed.
+
+`packages/foreman_server/test/foreman_server/aggregates/phase_test.exs` now pins the Phase aggregate's state machine (25 tests, all green). Coverage spans:
+- `phase.start` happy path + missing-field validation (`{:missing_or_invalid, :run_id | :phase_id}`) + duplicate-start rejection
+- `phase.complete` / `phase.fail` / `phase.timeout` / `phase.skip` from initial_state (reject with `:phase_not_started`) and from in_progress (emit corresponding event)
+- Terminal-state guard for non-retry commands (`:phase_terminal`)
+- `phase.retry` from failed/timed_out (allowed, attempt++) vs. from in_progress (`:phase_not_retryable`) vs. from completed/skipped (`:phase_not_retryable` — distinct from `:phase_terminal` because retry has its own discriminator)
+- `apply_event/2` fold for each typed event using `%State{state | ...}` projection
+- Unknown command returns `:unhandled`
+
+Net test count: 189 → 214. This was the only meaningful test gap for code that actually exists; the remaining 50 open test sub-beads under this follow-up still reference unimplemented modules (Operations/LiveView, Inbox, PR lifecycle, Project infra, MigrationImporter, etc.) and cannot close without their corresponding impl work.

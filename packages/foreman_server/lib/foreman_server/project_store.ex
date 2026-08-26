@@ -1,66 +1,60 @@
 defmodule ForemanServer.ProjectStore do
   @moduledoc """
-  Loads configured projects from a durable term file or application config.
+  TRD-004: ProjectStore.
 
-  The file format uses `:erlang.term_to_binary/1` so this shell can stay
-  dependency-free until the Postgres-backed store lands in TRD-003.
+  Thin façade over the `ProjectionStore` and `CommandRouter`. Persists
+  project configuration by appending events through the canonical command
+  path; reads from the projection store.
   """
 
-  alias ForemanServer.Project
+  alias ForemanServer.{CommandGateway, ProjectionStore}
 
-  @type project_source :: :file | :application_env
-
-  @spec load_projects() :: {:ok, [Project.t()], project_source()} | {:error, term()}
-  def load_projects do
-    path = store_path()
-
-    cond do
-      is_binary(path) and File.exists?(path) -> load_file(path)
-      true -> load_application_env()
-    end
-  end
-
-  @spec save_projects([Project.t()]) :: :ok | {:error, term()}
-  def save_projects(projects) when is_list(projects) do
-    path = store_path(required?: true)
-    File.mkdir_p!(Path.dirname(path))
-    binary = :erlang.term_to_binary(projects)
-    File.write(path, binary)
-  end
-
-  defp load_file(path) do
-    with {:ok, binary} <- File.read(path),
-         projects when is_list(projects) <- :erlang.binary_to_term(binary),
-         {:ok, normalized} <- normalize_projects(projects) do
-      {:ok, normalized, :file}
-    else
-      error -> {:error, {:invalid_project_store, error}}
-    end
-  end
-
-  defp load_application_env do
-    projects = Application.get_env(:foreman_server, :projects, [])
-
-    with {:ok, normalized} <- normalize_projects(projects) do
-      {:ok, normalized, :application_env}
-    end
-  end
-
-  defp normalize_projects(projects) do
-    projects
-    |> Enum.reduce_while({:ok, []}, fn project, {:ok, acc} ->
-      case Project.new(project) do
-        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
+  def save(%{project_id: project_id} = payload) when is_binary(project_id) do
+    type =
+      case ProjectionStore.project_projection(project_id) do
+        nil -> "project.register"
+        _ -> "project.update"
       end
-    end)
-    |> case do
-      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-      {:error, reason} -> {:error, reason}
-    end
+
+    CommandGateway.dispatch_system(%{
+      aggregate_id: "project:#{project_id}",
+      type: type,
+      payload: Map.put(payload, :project_id, project_id)
+    })
   end
 
-  defp store_path(opts \\ []) do
-    ForemanServer.RuntimeInfo.project_store_path(opts)
+  def save(%{project_id: nil}), do: {:error, :missing_project_id}
+  def save(%{}), do: {:error, :missing_project_id}
+
+  @doc "List all project projections."
+  @spec list() :: [map()]
+  def list do
+    ProjectionStore.list_projects()
+  end
+
+  @doc "Get a single project projection."
+  @spec get(String.t()) :: map() | nil
+  def get(project_id) when is_binary(project_id) do
+    ProjectionStore.project_projection(project_id)
+  end
+
+  @doc "Archive a project."
+  @spec archive(String.t()) :: {:ok, term()} | {:error, term()}
+  def archive(project_id) when is_binary(project_id) do
+    CommandGateway.dispatch_system(%{
+      aggregate_id: "project:#{project_id}",
+      type: "project.archive",
+      payload: %{project_id: project_id}
+    })
+  end
+
+  @doc "Reactivate a project."
+  @spec reactivate(String.t()) :: {:ok, term()} | {:error, term()}
+  def reactivate(project_id) when is_binary(project_id) do
+    CommandGateway.dispatch_system(%{
+      aggregate_id: "project:#{project_id}",
+      type: "project.reactivate",
+      payload: %{project_id: project_id}
+    })
   end
 end

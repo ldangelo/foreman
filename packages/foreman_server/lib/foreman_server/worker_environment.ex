@@ -1,90 +1,86 @@
 defmodule ForemanServer.WorkerEnvironment do
-  @moduledoc "Prepares scoped worker environment variables without leaking forbidden host secrets."
+  @moduledoc """
+  Builds immutable worker environment snapshots from the registered project config.
+  """
 
-  @forbidden_exact MapSet.new(~w(
-    AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-    DATABASE_URL FOREMAN_SERVER_AUTH_TOKEN GITHUB_TOKEN GIT_ASKPASS
-    NPM_TOKEN SSH_AGENT_PID SSH_AUTH_SOCK
-  ))
+  alias ForemanServer.ProjectionStore
 
-  @forbidden_prefixes ["AWS_", "GITHUB_", "NPM_", "SSH_", "DATABASE_"]
+  @type env_map :: %{optional(String.t()) => String.t()}
 
-  @spec prepare(map()) :: {:ok, map()} | {:error, term()}
-  def prepare(input) when is_map(input) do
-    with {:ok, project_id} <- required_binary(get(input, :project_id), :project_id),
-         {:ok, run_id} <- required_binary(get(input, :run_id), :run_id),
-         {:ok, env} <- string_map(get(input, :env, %{}), :env),
-         {:ok, project_secrets} <-
-           string_map(get(input, :project_secrets, %{}), :project_secrets),
-         {:ok, run_secrets} <- string_map(get(input, :run_secrets, %{}), :run_secrets) do
-      prepared =
-        env
-        |> strip_forbidden()
-        |> Map.merge(strip_forbidden(project_secrets))
-        |> Map.merge(strip_forbidden(run_secrets))
-        |> Map.put("FOREMAN_PROJECT_ID", project_id)
-        |> Map.put("FOREMAN_RUN_ID", run_id)
+  @spec build(String.t(), keyword()) :: env_map()
+  def build(project_id, opts \\ []) when is_binary(project_id) and is_list(opts) do
+    project_id
+    |> project_snapshot(opts)
+    |> extract_env_map()
+  end
 
-      {:ok,
-       %{
-         env: prepared,
-         stripped: stripped_keys(env, project_secrets, run_secrets),
-         scoped_secret_keys: %{
-           project: scoped_keys(project_secrets),
-           run: scoped_keys(run_secrets)
-         }
-       }}
+  @spec build_env_map(String.t()) :: env_map()
+  def build_env_map(project_id) when is_binary(project_id), do: build(project_id, [])
+
+  @spec refresh_on_relaunch(String.t(), env_map()) :: env_map()
+  def refresh_on_relaunch(project_id, _current_env) when is_binary(project_id) do
+    build_env_map(project_id)
+  end
+
+  defp project_snapshot(project_id, opts) do
+    case Keyword.fetch(opts, :project) do
+      {:ok, project} -> project
+      :error -> ProjectionStore.project(project_id) || application_project(project_id)
     end
   end
 
-  def prepare(_input), do: {:error, {:missing_or_invalid, :environment}}
-
-  @spec forbidden_key?(String.t()) :: boolean()
-  def forbidden_key?(key) when is_binary(key) do
-    MapSet.member?(@forbidden_exact, key) or
-      Enum.any?(@forbidden_prefixes, &String.starts_with?(key, &1))
+  defp application_project(project_id) do
+    %{config: application_project_config(project_id)}
   end
 
-  def forbidden_key?(_key), do: true
+  defp application_project_config(project_id) do
+    scoped_config = Application.get_env(:foreman_server, __MODULE__, [])
+    fallback_config = Application.get_env(:foreman_server, :worker_environment, %{})
 
-  defp get(map, key, default \\ nil) do
-    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+    scoped_projects = fetch(scoped_config, :projects, %{})
+    fallback_projects = fetch(fallback_config, :projects, fallback_config)
+
+    fetch(scoped_projects, project_id, fetch(fallback_projects, project_id, %{}))
   end
 
-  defp strip_forbidden(env) do
-    Map.reject(env, fn {key, _value} -> forbidden_key?(key) end)
+  defp extract_env_map(nil), do: %{}
+
+  defp extract_env_map(project) do
+    project
+    |> fetch(:config, %{})
+    |> extract_env_config()
+    |> stringify_env()
   end
 
-  defp scoped_keys(secrets) do
-    secrets
-    |> strip_forbidden()
-    |> Map.keys()
-    |> Enum.sort()
+  defp extract_env_config(config) when is_map(config) or is_list(config) do
+    fetch(config, :env, fetch(config, :environment, %{}))
   end
 
-  defp stripped_keys(collections) do
-    collections
-    |> Enum.flat_map(fn env ->
-      env
-      |> Map.keys()
-      |> Enum.filter(&forbidden_key?/1)
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
+  defp extract_env_config(_config), do: %{}
+
+  defp stringify_env(env) when is_map(env), do: stringify_pairs(Map.to_list(env), %{})
+  defp stringify_env(env) when is_list(env), do: stringify_pairs(env, %{})
+  defp stringify_env(_env), do: %{}
+
+  defp stringify_pairs([], acc), do: acc
+
+  defp stringify_pairs([{_key, nil} | rest], acc), do: stringify_pairs(rest, acc)
+
+  defp stringify_pairs([{key, value} | rest], acc) do
+    stringify_pairs(rest, Map.put(acc, to_string(key), to_string(value)))
   end
 
-  defp stripped_keys(env, project_secrets, run_secrets),
-    do: stripped_keys([env, project_secrets, run_secrets])
-
-  defp string_map(nil, _key), do: {:ok, %{}}
-
-  defp string_map(map, _key) when is_map(map) do
-    valid? = Enum.all?(map, fn {key, value} -> is_binary(key) and is_binary(value) end)
-    if valid?, do: {:ok, map}, else: {:error, {:missing_or_invalid, :env}}
+  defp fetch(data, key, default) when is_list(data) and is_atom(key) do
+    case List.keyfind(data, key, 0) || List.keyfind(data, Atom.to_string(key), 0) do
+      {_, value} -> value
+      nil -> default
+    end
   end
 
-  defp string_map(_value, key), do: {:error, {:missing_or_invalid, key}}
+  defp fetch(%{} = data, key, default) when is_atom(key) do
+    Map.get(data, key, Map.get(data, Atom.to_string(key), default))
+  end
 
-  defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
-  defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
+  defp fetch(%{} = data, key, default), do: Map.get(data, key, default)
+  defp fetch(_data, _key, default), do: default
 end

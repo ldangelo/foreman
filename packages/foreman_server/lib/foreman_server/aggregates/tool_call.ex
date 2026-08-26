@@ -4,10 +4,16 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
   alias ForemanServer.Aggregate
 
+  defmodule State do
+    @enforce_keys [:exists?, :tool_call_id, :status, :terminal?]
+    defstruct [:exists?, :tool_call_id, :status, :terminal?]
+  end
+
   @impl true
   def initial_state do
-    %{
+    %State{
       exists?: false,
+      tool_call_id: nil,
       status: nil,
       terminal?: false
     }
@@ -19,30 +25,38 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
     case Aggregate.event_type(event) do
       "ToolCallRequested" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:status, "requested")
+        %State{
+          state
+          | exists?: true,
+            tool_call_id: Aggregate.get(payload, :tool_call_id),
+            status: "requested"
+        }
 
       "ToolCallApproved" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:status, "approved")
+        %State{
+          state
+          | exists?: true,
+            tool_call_id: Aggregate.get(payload, :tool_call_id),
+            status: "approved"
+        }
 
       "ToolCallDenied" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:status, "denied")
-        |> Map.put(:terminal?, true)
+        %State{
+          state
+          | exists?: true,
+            tool_call_id: Aggregate.get(payload, :tool_call_id),
+            status: "denied",
+            terminal?: true
+        }
 
       "ToolCallFinished" ->
-        state
-        |> Map.merge(payload)
-        |> Map.put(:exists?, true)
-        |> Map.put(:status, "finished")
-        |> Map.put(:terminal?, true)
+        %State{
+          state
+          | exists?: true,
+            tool_call_id: Aggregate.get(payload, :tool_call_id),
+            status: "finished",
+            terminal?: true
+        }
 
       _ ->
         state
@@ -79,7 +93,7 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
   def handle_command(state, %{type: "tool.finish", payload: payload}) do
     with {:ok, tool_call_id} <- tool_call_id(payload),
-         :ok <- require_status(state, ["requested", "approved", "running"]) do
+         :ok <- require_status(state, ["requested", "approved"]) do
       {:ok,
        %{
          stream_id: stream_id(payload, tool_call_id),
@@ -93,7 +107,7 @@ defmodule ForemanServer.Aggregates.ToolCall do
 
   defp tool_call_id(payload) do
     payload
-    |> first_present([:tool_call_id, :tool_call, :call_id, :id])
+    |> first_present(["tool_call_id", "id", "call_id"])
     |> Aggregate.required_binary(:tool_call_id)
   end
 
@@ -102,27 +116,20 @@ defmodule ForemanServer.Aggregates.ToolCall do
   end
 
   defp stream_id(payload, tool_call_id) do
-    case Aggregate.get(payload, :run_id) do
-      run_id when is_binary(run_id) and run_id != "" ->
-        "tool_call:#{escape(run_id)}:#{escape(tool_call_id)}"
-
-      _ ->
-        "tool_call:#{escape(tool_call_id)}"
-    end
+    run_id = Aggregate.get(payload, :run_id, "global") || "global"
+    "tool_call:#{escape(run_id)}:#{escape(tool_call_id)}"
   end
 
-  defp require_absent(%{exists?: true}), do: {:error, :tool_call_already_requested}
+  defp require_absent(%State{exists?: true}), do: {:error, :tool_call_already_requested}
   defp require_absent(_state), do: :ok
 
-  defp require_status(%{terminal?: true, status: status}, _allowed),
+  defp require_status(%State{terminal?: true, status: status}, _allowed),
     do: {:error, {:tool_call_terminal, status}}
 
-  defp require_status(%{exists?: false}, _allowed), do: {:error, :tool_call_not_requested}
+  defp require_status(%State{exists?: false}, _allowed), do: {:error, :tool_call_not_requested}
 
-  defp require_status(%{status: status}, allowed) do
-    if status in allowed,
-      do: :ok,
-      else: {:error, {:invalid_tool_call_state, status}}
+  defp require_status(%State{status: status}, allowed) do
+    if status in allowed, do: :ok, else: {:error, {:invalid_tool_call_status, status}}
   end
 
   defp escape(value), do: String.replace(value, ":", "%3A")

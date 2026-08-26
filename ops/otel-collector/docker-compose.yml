@@ -1,0 +1,75 @@
+# OTel Collector — bridges Foreman's OTLP exporter to Langfuse.
+#
+# This is a SEPARATE compose from the Langfuse/LiteLLM stack at
+#   ~/Development/Sunstone/litellm-langfuse-stack/
+# (the stack that actually runs Langfuse web + worker + Postgres + Redis).
+# To make them talk, this compose joins the stack's default network so the
+# collector can reach `langfuse-web:3000` as if it lived in that stack.
+#
+# Usage (via devbox at the repo root, or directly):
+#   devbox run up
+#   devbox run down
+#   devbox run logs
+#
+# Or without devbox:
+#   docker compose -f ops/otel-collector/docker-compose.yml up -d --build
+#
+# Required env (loaded from the stack's .env by the devbox scripts):
+#   LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST (optional,
+#     defaults to langfuse-web:3000 on the stack's network)
+
+name: foreman-otel-collector
+
+# Network reference: the collector lives in a separate compose file, but it
+# needs to resolve `langfuse-web` (the Langfuse web container that runs in
+# `~/Development/Sunstone/litellm-langfuse-stack/`). We do that by attaching
+# to that compose's external default network. `devbox run up` starts the
+# stack first so the external network exists, then this collector attaches by
+# using the same project/network name.
+networks:
+  litellm-langfuse-stack_default:
+    # Compose creates a default network named "<project>_default". We declare
+    # it as external so this compose file joins without trying to create it.
+    # The Stack's compose project name (set via the `name:` directive in its
+    # docker-compose.yml) is "litellm-langfuse-stack", so the network is
+    # `litellm-langfuse-stack_default`.
+    external: true
+    name: litellm-langfuse-stack_default
+
+services:
+  otel-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: foreman-otel-collector
+    restart: unless-stopped
+    ports:
+      - "4317:4317"   # OTLP/gRPC (future-proof)
+      - "4318:4318"   # OTLP/HTTP — matches Foreman's config.exs default
+      - "13133:13133" # collector health endpoint
+    environment:
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    # Attach to the stack's network so we can resolve langfuse-web:3000 by
+    # service name (envsubst's default in entrypoint.sh).
+    networks:
+      - litellm-langfuse-stack_default
+
+  # Headroom-equivalent: a one-shot 'validator' that runs the bundled config
+  # through `otelcol-contrib validate` after build. Use:
+  #   docker compose -f ops/otel-collector/docker-compose.yml run --rm validate
+  # to check the rendered config parses BEFORE booting the collector.
+  validate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["check"]
+    entrypoint: /entrypoint.sh
+    command:
+      - validate
+      - --config=/etc/otelcol-contrib/config.yaml
+    environment:
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: pk-lf-validate
+      LANGFUSE_SECRET_KEY: sk-lf-validate

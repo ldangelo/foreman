@@ -64,26 +64,85 @@ foreman init --wizard             # Interactive setup wizard that writes .forema
 
 Manage Elixir-registered projects.
 
-```bash
-foreman project list              # List all registered projects
-foreman project add owner/repo     # Add a project from GitHub
-foreman project register .         # Register an existing local repository
-foreman project remove <id>       # Archive a project
-foreman project edit <id>         # Edit project settings
+**Subcommands:**
+| Command | Description |
+|---------|-------------|
+| `create` | Register a new project |
+| `get <id>` | Fetch a project projection |
+| `update <id>` | Update a project's task provider |
+| `delete <id>` | Soft-delete (archive) a project |
+| `list` | List project projections |
+
+### `foreman project create`
+
+Register a new project. `--id`, `--path`, and `--task-provider` are required.
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider beads
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-h, --help` | Display help for command |
+| `--id <id>` | Project ID (required) |
+| `--path <path>` | Project path (required) |
+| `--task-provider <provider>` | Task provider (required) |
+| `--idempotency-key <key>` | Idempotency key |
+| `--format json` | Print the raw command response as JSON |
 
-**Subcommands:**
-| Command | Description |
-|---------|-------------|
-| `add <github-url>` | Add a project from GitHub URL |
-| `register [path]` | Register an existing local repository |
-| `list` | List all registered projects |
-| `remove <id>` | Archive a project |
-| `edit <id>` | Edit project settings |
+### `foreman project get <id>`
+
+Fetch a project projection.
+
+```
+foreman project get project-123
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format json` | Print the raw projection as JSON |
+
+### `foreman project update <id>`
+
+Update a project's task provider. `--task-provider` is required.
+
+```
+foreman project update --task-provider beads project-123
+```
+
+| Option | Description |
+|--------|-------------|
+| `--task-provider <provider>` | Task provider (required) |
+| `--idempotency-key <key>` | Idempotency key |
+| `--format json` | Print the raw command response as JSON |
+
+### `foreman project delete <id>`
+
+Soft-delete (archive) a project. The server rejects the archive while active runs remain.
+
+```
+foreman project delete --force project-123
+```
+
+| Option | Description |
+|--------|-------------|
+| `--force` | Print active run ids if archive is blocked |
+| `--idempotency-key <key>` | Idempotency key |
+
+### `foreman project list`
+
+List project projections. Default table columns: ID, PATH, ARCHIVED, REGISTERED, VERSION.
+
+```
+foreman project list --include-archived
+```
+
+| Option | Description |
+|--------|-------------|
+| `--include-archived` | Include archived projects |
+| `--format json\|ndjson` | Output format |
 
 ---
 
@@ -136,6 +195,78 @@ Operator use of `foreman run task` was removed after the Elixir cutover. The hid
 | Option | Default | Description |
 |--------|---------|-------------|
 This command remains registered only so operator invocations receive an explicit removal message. The internal `--run-id` bridge is hidden and reserved for Elixir scheduler launches.
+
+### `foreman run list [--status <status>] [--project-id <id>] [--limit <n>]`
+
+List run projections as JSON. Issues `GET /api/runs` with optional query filters forwarded to the server-side projection store. Use it before run maintenance to find failed or stuck runs.
+
+```bash
+foreman run list                                # all runs, no filter
+foreman run list --limit 20                     # cap result count
+foreman run list --status failed --limit 10     # filter by status
+foreman run list --project-id foreman           # filter by project
+```
+
+| Option | Description |
+|--------|-------------|
+| `--status <status>` | Filter by run status (`in_progress`, `completed`, `failed`, `cancelled`, etc.). |
+| `--project-id <id>` | Filter by registered project id. |
+| `--limit <n>` | Maximum number of runs to return. Must be non-negative. |
+
+### `foreman run remove --id <run-id>`
+
+Remove a run and clean up its worktree/branch. Issues `POST /api/commands` with a `run.remove` envelope. The server terminates the run, releases its run slot and per-DB Beads lease, and best-effort cleans the projected worktree plus the local branch.
+
+```bash
+foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
+```
+
+| Option | Description |
+|--------|-------------|
+| `--id <run-id>` | Run ID (required). |
+
+### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`
+
+- `--workflow` (required) — the workflow name to execute.
+- `--prompt` (required) — the input prompt/text for the workflow.
+- `--project-id` (required) — the project ID.
+- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--backend` (optional) — backend to use. Valid atoms are
+  `:jido_harness` (the production default, dispatched via the
+  `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
+  entry is currently ready), or the registered `name/0` of any
+  adapter module registered with the catalog (for example `:pi` for
+  the legacy `PiAdapter`). The only Jido.Harness providers the
+  runtime currently supports are `:pi` and `:claude` — `:codex`,
+  `:opencode`, and other unlisted atoms return
+  `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
+  the JidoHarnessAdapter is in the runtime's adapter list; falls back
+  to the first available adapter in the list otherwise.
+- `--base-branch <branch>` (optional, forthcoming per
+  [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
+  — parent branch for the new task's worktree and PR. **Protocol-level
+  capture only in this release**: the CLI accepts and forwards the flag
+  inside the `work.submit` envelope, but the server does not yet consume
+  it. The forthcoming behavior: when omitted, the server will resolve the
+  parent from the operator's current checkout HEAD (replacing the
+  historical `"main"` fallback); when supplied, that value wins. Use
+  `gh pr edit <n> --base <branch>` to retarget any PR created before the
+  server-side change ships.
+
+Example:
+
+```text
+foreman run submit --workflow implement-trd --prompt "Fix the CLI submit bug" --project-id foreman
+```
+
+```bash
+foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
+```
+
+| Option | Description |
+|--------|-------------|
+| `--id <run-id>` | Run ID (required). |
+
 
 ---
 

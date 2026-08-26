@@ -1,61 +1,85 @@
-node_modules
-node_modules/
-dist/
-.devbox/
-.foreman/
-*.db
+# Backend (Elixir/Phoenix) — scoped to packages/foreman_server
+/packages/foreman_server/_build
+/packages/foreman_server/deps
+/packages/foreman_server/.fetch
+/packages/foreman_server/tmp
+/packages/foreman_server/erl_crash.dump
+/packages/foreman_server/*.ez
+/packages/foreman_server/.elixir_ls
+/packages/foreman_server/cover
+/packages/foreman_server/excover
+/packages/foreman_server/doc
+
+# Language server (repo-root, if any)
+/.elixir_ls
+
+# Node (if mixed frontend)
+/node_modules
+/dist
+
+# Editor/IDE
+/.vscode
+/.idea
+*.iml
+.env.local
+
+# macOS
+.DS_Store
+
+# Coverage reports (repo-root, if any)
+/cover
+/excover
+
+# Certs / secrets (never commit)
+/*.pem
+/*.key
+/secrets/
+
+# Crash dumps
+*.dump
+
+# macOS quarantine artifacts
+.Compatibility*
+
+# bv (beads viewer) local config and caches
+.bv/
+# br doctor per-run artifacts
+.doctor/
+
+# br corruption recovery directory (forensic-preserve on disk, hidden from VCS)
+.beads.bad/
+
+# Scout artifacts (per-task markdown output, regenerated each run)
+.local/scout/*.md
+# CLI escript build artifacts
+/packages/foreman_cli/foreman
+# Repo-root foreman binary
+/foreman
+/tmp/
+
+# Local env (secrets, must never be tracked)
 .env
+.env.*
+# direnv shell-env file (treat as secret-bearing even though content is non-secret today)
+.envrc
 
-# Legacy Dolt database files
-.dolt/
+# OMP plugin state (local agent config)
+.omp/
 
-# TRD Implementation State
-.trd-state/
+# Vendored jido_harness (TRD-001) build artifacts
+/packages/jido_harness/_build/
+/packages/jido_harness/cover/
+/packages/jido_harness/erl_crash.dump
+/packages/jido_harness/deps/**/_build
+/packages/jido_harness/deps/**/priv/native
+/packages/jido_harness/deps/**/c_src/_build
 
-# Foreman worktrees
-.foreman-worktrees/
-
-# Agent report files (archived to .foreman/reports/ on merge)
-# Leading / anchors each pattern to the repo root so it cannot accidentally
-# match source files in subdirectories (e.g. templates/reviewer-prompt.md).
-/EXPLORER_REPORT*.md
-/DEVELOPER_REPORT*.md
-/QA_REPORT*.md
-/REVIEW*.md
-/FINALIZE_REPORT*.md
-/TRIAGE_REPORT*.md
-/*_SESSION_SUMMARY*.md
-/TASK.md
-/AGENTS.md
-!/AGENTS.md
-
-# task store local runtime files
-.tasks/*.lock
-.tasks/*.db-wal
-.tasks/*.db-shm
-
-# Backup files
-*.bak
-
-# Session logs
-SessionLogs/
-SESSION_LOG.md
-RUN_LOG.md
-
-# Generated Refinery queue-entry logs
-docs/reports/queue-entry-*/
-
-# Claude Code local config and worktrees
-.claude/settings.local.json
-.claude/worktrees/
-
-# oh-my-codex runtime state
-.omx/
-
-var/
-dist-new-*/
-
-
-# Graphify-generated local artifacts
-/graphify-out/
-/.omp/agents/skills/graphify/
+# Vendored C source build outputs (erlexec native compile)
+/packages/jido_harness/deps/erlexec/c_src/*.o
+/packages/jido_harness/deps/erlexec/c_src/*.d
+/packages/jido_harness/deps/erlexec/priv/*/exec-port
+/packages/jido_harness/deps/erlexec/priv/*/exec-port.sock
+/packages/jido_harness/_build/**
+/packages/jido_harness/cover/**
+/packages/jido_harness/deps/**/_build/**
+.devbox/

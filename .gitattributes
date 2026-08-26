@@ -1,5 +1,0 @@
-.tasks/issues.jsonl merge=union
-.tasks/templates.jsonl merge=union
-.mulch/expertise/*.jsonl merge=union
-.canopy/prompts.jsonl merge=union
-.canopy/schemas.jsonl merge=union

@@ -1,617 +1,589 @@
 defmodule ForemanServer.CommandRouter do
-  @moduledoc "Command boundary for server-side project/task mutations."
+  @moduledoc """
+  Sole append point for the event store.
 
-  alias ForemanServer.{
-    AggregateRouter,
-    EventStore,
-    Inbox,
-    IntegrationIngestion,
-    MigrationImporter,
-    PlanningFlow,
-    ProjectionStore,
-    Security
-  }
+  All commands from all ingress paths (Phoenix HTTP, worker protocol, overwatch)
+  must eventually route through this module. Only this module (or its private
+  helpers) call `EventStore.append_to_stream`.
 
-  @external_trigger_types ["ExternalTriggerCommand", "external.trigger"]
-  @planning_command_types ["PlanningFlowCommand", "plan.prd", "plan.trd"]
-  @migration_command_types ["MigrationImportCommand", "migration.import"]
-  @task_statuses MapSet.new([
-                   "backlog",
-                   "ready",
-                   "approved",
-                   "in_progress",
-                   "in-progress",
-                   "review",
-                   "merged",
-                   "closed",
-                   "conflict",
-                   "failed",
-                   "stuck",
-                   "blocked",
-                   "cooldown"
-                 ])
+  ## Actor ↔ CommandRouter protocol
 
-  @spec handle(map()) :: {:ok, map()} | {:error, term()}
-  def handle(%{"command_type" => command_type} = command)
-      when command_type in @planning_command_types do
-    command
-    |> normalize_payload()
-    |> Map.put(:command_type, command_type)
-    |> Map.put_new(:command_id, external_command_id(command))
-    |> handle()
+  1. Actor sends `{:append, aggregate_id, event_data_list, expected_version, actor_pid}`.
+     The `event_data_list` is a list of pre-normalized `%EventData{}` structs.
+  2. CommandRouter appends via `EventStore.append_to_stream(stream_uuid, expected_version, event_data_list)`.
+     Returns `:ok` on success.
+  3. CommandRouter sends result back to `actor_pid`:
+     - `{:append_ok, event_count}` on success
+     - `{:append_error, reason}` on conflict or other failure
+
+  ## Run admission
+
+  Run admission follows a one-way internal call graph:
+
+      Dispatcher / Reconciler -> RunAdmission.start/2 -> dispatch_run_start/2 -> do_dispatch/2
+
+  `dispatch_run_start/2` is public so supervised workflow components can call it,
+  but it remains an internal OTP surface. External callers MUST enter through
+  `ForemanServer.RunAdmission.start/2` so telemetry is emitted consistently.
+  """
+
+  alias EventStore.{EventData, RecordedEvent}
+  alias ForemanServer.{Aggregate, EventStore, Aggregate.Actor, Identity, Telemetry}
+  use GenServer
+  require Logger
+
+  @default_post_commit_retry_delays_ms [50, 200, 1_000]
+  @run_reservation_sequence 0
+  @definitive_run_start_rejections MapSet.new([
+                                     :phase_terminal,
+                                     :project_archived,
+                                     :unknown_project,
+                                     :unknown_workflow
+                                   ])
+
+  @project_projection_event_types MapSet.new([
+                                    "ProjectRegistered",
+                                    "ProjectUpdated",
+                                    "ProjectArchived",
+                                    "ProjectReactivated"
+                                  ])
+
+  @doc """
+  Dispatch a command to its aggregate.
+
+  Determines the aggregate module from the aggregate_id prefix, starts the aggregate
+  actor, and returns the command result.
+  """
+  @spec dispatch(command :: map(), timeout :: integer()) ::
+          {:ok, event_spec :: map() | nil}
+          | {:error, any()}
+  def dispatch(command, timeout \\ 5_000)
+
+  def dispatch(%{type: "run.start"}, _timeout) do
+    raise ArgumentError,
+          "ForemanServer.CommandRouter.dispatch/2 rejects type: \"run.start\"; use ForemanServer.RunAdmission.start/2"
   end
 
-  def handle(%{"command_type" => command_type} = command)
-      when command_type in @migration_command_types do
-    command
-    |> normalize_payload()
-    |> Map.put(:command_type, command_type)
-    |> Map.put_new(:command_id, external_command_id(command))
-    |> handle()
+  def dispatch(%{aggregate_id: _aggregate_id} = command, timeout) do
+    do_dispatch(command, timeout)
   end
 
-  def handle(%{"command_type" => command_type} = command)
-      when command_type in @external_trigger_types do
-    command
-    |> normalize_payload()
-    |> Map.put(:command_type, command_type)
-    |> Map.put_new(:command_id, external_command_id(command))
-    |> handle()
-  end
+  @doc """
+  Internal run-start dispatch surface.
 
-  def handle(%{"command_id" => command_id, "command_type" => command_type} = command) do
-    handle(%{
-      command_id: command_id,
-      command_type: command_type,
-      correlation_id: Map.get(command, "correlation_id"),
-      payload: Map.get(command, "payload", %{}),
-      metadata: Map.get(command, "metadata", %{})
-    })
-  end
+  Public only so supervised workflow automation can preserve the one-way
+  admission flow. External callers MUST use `ForemanServer.RunAdmission.start/2`.
+  """
+  @spec dispatch_run_start(String.t(), map(), integer()) ::
+          {:ok, event_spec :: map() | nil}
+          | {:error, any()}
+  def dispatch_run_start(project_id, payload, timeout \\ 5_000)
 
-  def handle(%{command_type: command_type} = command)
-      when command_type in @planning_command_types do
-    command_id = Map.get(command, :command_id) || external_command_id(command)
-    metadata = normalize_metadata(Map.put(command, :command_id, command_id))
+  def dispatch_run_start(project_id, payload, timeout)
+      when is_binary(project_id) and project_id != "" and is_map(payload) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- Aggregate.optional_binary(Aggregate.get(payload, :task_id), :task_id) do
+      command_id =
+        Identity.run_start_command_id(
+          project_id,
+          run_id,
+          workflow_snapshot_hash(Aggregate.get(payload, :workflow_snapshot))
+        )
 
-    command
-    |> planning_payload(command_type)
-    |> Map.put_new(:command_id, command_id)
-    |> handle_planning_flow(metadata)
-  end
-
-  def handle(%{command_type: command_type} = command)
-      when command_type in @migration_command_types do
-    command_id = Map.get(command, :command_id) || external_command_id(command)
-    metadata = normalize_metadata(Map.put(command, :command_id, command_id))
-
-    command
-    |> migration_payload()
-    |> Map.put_new(:command_id, command_id)
-    |> Map.put_new(:migration_id, command_id)
-    |> handle_migration_import(metadata)
-  end
-
-  def handle(%{command_type: "inbox.send"} = command) do
-    command_id = Map.get(command, :command_id) || external_command_id(command)
-
-    command
-    |> external_trigger_payload()
-    |> Map.put_new(:message_id, command_id)
-    |> Inbox.send_operator_message()
-    |> case do
-      {:ok, %{event: event, projection: projection, result: result}} ->
-        {:ok, %{event: event, projection: projection, inbox: result}}
-
-      error ->
-        error
+      normalized_payload = Map.put(payload, :project_id, project_id)
+      do_dispatch_run_start(command_id, %{payload: normalized_payload, timeout: timeout})
     end
   end
 
-  def handle(%{command_type: command_type} = command)
-      when command_type in @external_trigger_types do
-    command_id = Map.get(command, :command_id) || external_command_id(command)
-    metadata = normalize_metadata(Map.put(command, :command_id, command_id))
+  def dispatch_run_start(project_id, _payload, _timeout),
+    do: {:error, {:missing_or_invalid, :project_id, project_id}}
 
-    command
-    |> external_trigger_payload()
-    |> Map.put_new(:command_id, command_id)
-    |> handle_external_trigger(metadata)
+  def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
+  # GenServer callbacks
+  # -------------------------------------------------------------------------
+
+  @impl true
+  def init(_init_arg) do
+    {:ok, %{quarantined_aggregates: MapSet.new()}}
   end
 
-  def handle(%{command_id: command_id, command_type: command_type} = command)
-      when is_binary(command_id) and is_binary(command_type) do
-    payload =
-      command
-      |> Map.get(:payload, %{})
-      |> normalize_payload()
-      |> Map.put_new(:command_id, command_id)
-
-    metadata = normalize_metadata(command)
-
-    with {:ok, event_spec} <- command_event(command_type, payload),
-         event_type = Map.fetch!(event_spec, :event_type),
-         enriched_payload =
-           event_spec
-           |> Map.fetch!(:payload)
-           |> Map.put_new(:command_id, command_id)
-           |> Map.put_new(:updated_at, DateTime.utc_now()),
-         append_input =
-           %{
-             stream_id: Map.fetch!(event_spec, :stream_id),
-             event_type: event_type,
-             payload: enriched_payload,
-             metadata: metadata,
-             correlation_id: Map.get(metadata, :correlation_id)
-           }
-           |> maybe_put_expected_version(Map.get(event_spec, :expected_stream_version)),
-         {:ok, event} <- EventStore.append(append_input),
-         {:ok, audit_events} <- maybe_audit(command, event_type, enriched_payload) do
-      {:ok, %{event: event, audit_events: audit_events, projection: ProjectionStore.snapshot()}}
+  @impl true
+  def handle_info(
+        {:append, aggregate_id, event_data_list, expected_version, ref, actor_pid},
+        state
+      ) do
+    if MapSet.member?(state.quarantined_aggregates, aggregate_id) do
+      send(actor_pid, {:error, ref, :projection_recovery_failed, 0})
+      {:noreply, state}
+    else
+      append_and_project(
+        aggregate_id,
+        event_data_list,
+        expected_version,
+        ref,
+        actor_pid,
+        state
+      )
     end
   end
 
-  def handle(_command), do: {:error, :invalid_command}
+  # -------------------------------------------------------------------------
+  # Internal
+  # -------------------------------------------------------------------------
+  defp append_and_project(
+         aggregate_id,
+         event_data_list,
+         expected_version,
+         ref,
+         actor_pid,
+         state
+       ) do
+    append_started_at_ms = System.monotonic_time(:millisecond)
+    result = append_events(aggregate_id, expected_version, event_data_list)
+    append_latency_ms = elapsed_ms(append_started_at_ms)
 
-  defp command_event(command_type, payload) do
-    case AggregateRouter.route(command_type, payload) do
-      {:ok, event_spec} -> {:ok, event_spec}
-      :unhandled -> legacy_domain_event(command_type, payload)
+    case result do
+      :ok ->
+        recovery_result =
+          case post_commit_apply(aggregate_id, expected_version, event_data_list) do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              recover_projection_store(aggregate_id, event_data_list, reason)
+          end
+
+        send(actor_pid, {:append_ok, ref, length(event_data_list), append_latency_ms})
+
+        case recovery_result do
+          :ok ->
+            {:noreply, state}
+
+          {:error, reason} ->
+            Logger.error(
+              "CommandRouter quarantined #{aggregate_id} after projection recovery failed: " <>
+                inspect(reason)
+            )
+
+            {:noreply, update_in(state.quarantined_aggregates, &MapSet.put(&1, aggregate_id))}
+        end
+
+      {:error, reason} ->
+        send(actor_pid, {:error, ref, reason, append_latency_ms})
+        {:noreply, state}
+    end
+  end
+
+  defp do_dispatch_run_start(command_id, %{payload: payload, timeout: timeout}) do
+    project_id = Aggregate.get(payload, :project_id)
+    run_id = Aggregate.get(payload, :run_id)
+    implementation_key = extract_implementation_key(payload)
+
+    reservation_result =
+      do_dispatch(
+        %{
+          aggregate_id: "project:#{project_id}",
+          command_id: command_id,
+          type: "project.reserve_run",
+          payload: %{
+            project_id: project_id,
+            run_id: run_id,
+            command_id: command_id,
+            sequence: @run_reservation_sequence,
+            run_start_payload: payload,
+            implementation_key: implementation_key,
+            max_concurrent_runs_per_project:
+              ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
+          }
+        },
+        timeout
+      )
+
+    case reservation_result do
+      {:ok, _event_spec} ->
+        dispatch_reserved_run_start(command_id, payload, timeout, project_id, run_id)
+
+      {:error, reason} ->
+        {:error, normalize_run_start_reason(reason)}
+    end
+  end
+
+  defp dispatch_reserved_run_start(command_id, payload, timeout, project_id, run_id) do
+    result =
+      do_dispatch(
+        %{
+          aggregate_id: "run:#{run_id}",
+          command_id: command_id,
+          type: "run.start",
+          payload: payload
+        },
+        timeout
+      )
+
+    case result do
+      {:error, reason} ->
+        normalized_reason = normalize_run_start_reason(reason)
+        maybe_release_reservation(project_id, run_id, normalized_reason, timeout)
+        {:error, normalized_reason}
+
+      other ->
+        other
+    end
+  end
+
+  defp maybe_release_reservation(project_id, run_id, reason, timeout) do
+    if MapSet.member?(@definitive_run_start_rejections, reason) do
+      release_reason = release_reason(reason)
+
+      _ =
+        do_dispatch(
+          %{
+            aggregate_id: "project:#{project_id}",
+            command_id:
+              Identity.project_run_reservation_release_command_id(
+                project_id,
+                run_id,
+                release_reason
+              ),
+            type: "project.release_run_reservation",
+            payload: %{
+              project_id: project_id,
+              run_id: run_id,
+              reason: release_reason
+            }
+          },
+          timeout
+        )
+
+      :ok
+    else
+      :ok
+    end
+  end
+
+  defp do_dispatch(%{aggregate_id: aggregate_id} = command, timeout) do
+    started_at_ms = System.monotonic_time(:millisecond)
+    aggregate_module = aggregate_module_for(aggregate_id)
+    {:ok, _pid} = ForemanServer.Aggregator.start_aggregate(aggregate_module, aggregate_id)
+
+    result =
+      aggregate_id
+      |> Actor.via()
+      |> GenServer.call({:command, command}, timeout)
+
+    finalize_dispatch(result, aggregate_id, started_at_ms)
+  end
+
+  defp release_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp release_reason(reason) when is_binary(reason), do: reason
+  defp release_reason(reason), do: inspect(reason)
+
+  defp normalize_run_start_reason({:project_archived, _project_id}), do: :project_archived
+  defp normalize_run_start_reason({:not_found, :project, _project_id}), do: :unknown_project
+
+  defp normalize_run_start_reason({:missing_or_invalid, :workflow_snapshot}),
+    do: :unknown_workflow
+
+  defp normalize_run_start_reason({:missing_or_invalid, :workflow_snapshot, _value}),
+    do: :unknown_workflow
+
+  defp normalize_run_start_reason(
+         {:implementation_already_active, implementation_key, existing_run_id}
+       ),
+       do: {:implementation_already_active, implementation_key, existing_run_id}
+
+  defp normalize_run_start_reason(reason), do: reason
+
+  defp extract_implementation_key(%{workflow_snapshot: workflow_snapshot})
+       when is_map(workflow_snapshot) do
+    case Aggregate.get(workflow_snapshot, "implementation") do
+      %{} = impl -> Aggregate.get(impl, "implementation_key")
+      _ -> nil
+    end
+  end
+
+  defp extract_implementation_key(_payload), do: nil
+
+  defp workflow_snapshot_hash(snapshot) when is_map(snapshot) do
+    snapshot
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp workflow_snapshot_hash(_snapshot), do: "unknown_workflow"
+
+  # event_data_list is already a list of %EventData{} — pass through directly.
+  # EventStore.append_to_stream/4 returns :ok on success.
+  defp append_events(aggregate_id, expected_version, event_data_list)
+       when is_list(event_data_list) do
+    case EventStore.append_to_stream(aggregate_id, expected_version, event_data_list) do
+      :ok -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp legacy_domain_event(command_type, payload) do
-    with {:ok, event_type, event_payload, stream_id} <- domain_event(command_type, payload) do
-      {:ok, %{event_type: event_type, payload: event_payload, stream_id: stream_id}}
+  defp read_back_appended_events(aggregate_id, expected_version, event_data_list)
+       when is_binary(aggregate_id) and is_integer(expected_version) and is_list(event_data_list) do
+    appended_count = length(event_data_list)
+    appended_start_version = expected_version + 1
+
+    case EventStore.read_stream_forward(aggregate_id, appended_start_version, appended_count) do
+      {:ok, recorded_events} ->
+        validate_appended_events(recorded_events, expected_version, event_data_list)
+
+      {:error, reason} ->
+        {:error, {:appended_tail_read_failed, reason}}
     end
   end
 
-  defp domain_event("project.register", payload) do
-    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
+  defp validate_appended_events(recorded_events, expected_version, event_data_list)
+       when is_list(recorded_events) and is_list(event_data_list) do
+    expected_count = length(event_data_list)
 
-    with {:ok, project_id} <- required_binary(project_id, :project_id),
-         {:ok, path} <- required_binary(Map.get(payload, :path), :path) do
-      {:ok, "ProjectRegistered",
-       %{
-         project_id: project_id,
-         path: path,
-         status: Map.get(payload, :status, "active"),
-         default_branch: Map.get(payload, :default_branch, "main"),
-         config: Map.get(payload, :config, %{}),
-         health: Map.get(payload, :health, %{ok: true})
-       }, "project:#{project_id}"}
+    cond do
+      length(recorded_events) != expected_count ->
+        {:error,
+         {:appended_tail_count_mismatch,
+          %{expected_count: expected_count, actual_count: length(recorded_events)}}}
+
+      appended_tail_matches?(recorded_events, expected_version, event_data_list) ->
+        {:ok, recorded_events}
+
+      true ->
+        {:error,
+         {:appended_tail_mismatch,
+          %{expected_version: expected_version, event_count: expected_count}}}
     end
   end
 
-  defp domain_event("project.update", payload) do
-    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
-
-    with {:ok, project_id} <- required_binary(project_id, :project_id),
-         :ok <- require_existing_project(project_id) do
-      {:ok, "ProjectUpdated", Map.put(payload, :project_id, project_id), "project:#{project_id}"}
-    end
+  defp appended_tail_matches?(recorded_events, expected_version, event_data_list) do
+    recorded_events
+    |> Enum.zip(event_data_list)
+    |> Enum.with_index(1)
+    |> Enum.all?(fn {{%RecordedEvent{} = recorded, %EventData{} = event_data}, offset} ->
+      recorded.stream_version == expected_version + offset and
+        recorded.event_type == event_data.event_type and
+        appended_event_id_matches?(recorded.event_id, event_data.event_id)
+    end)
   end
 
-  defp domain_event("project.archive", payload) do
-    project_id = Map.get(payload, :project_id) || Map.get(payload, :id)
+  defp appended_event_id_matches?(_recorded_event_id, nil), do: true
+  defp appended_event_id_matches?(recorded_event_id, event_id), do: recorded_event_id == event_id
 
-    with {:ok, project_id} <- required_binary(project_id, :project_id),
-         :ok <- require_existing_project(project_id) do
-      {:ok, "ProjectArchived",
-       %{
-         project_id: project_id,
-         status: "archived",
-         force: Map.get(payload, :force, false),
-         reason: Map.get(payload, :reason)
-       }, "project:#{project_id}"}
-    end
-  end
-
-  defp domain_event("task.create", payload) do
-    task_id = Map.get(payload, :task_id) || Map.get(payload, :id)
-
-    if is_binary(task_id) and task_id != "" do
-      {:ok, "TaskCreated",
-       %{
-         task_id: task_id,
-         project_id: Map.get(payload, :project_id),
-         title: Map.get(payload, :title, task_id),
-         description: Map.get(payload, :description),
-         priority: Map.get(payload, :priority),
-         status: Map.get(payload, :status, "open"),
-         dependencies: Map.get(payload, :dependencies, []),
-         task_type: Map.get(payload, :task_type) || Map.get(payload, :type),
-         source: Map.get(payload, :source),
-         external_id: Map.get(payload, :external_id),
-         external_link: Map.get(payload, :external_link),
-         dedupe_key: Map.get(payload, :dedupe_key),
-         integration_event_type: Map.get(payload, :integration_event_type),
-         planning_run_id: Map.get(payload, :planning_run_id),
-         planning_kind: Map.get(payload, :planning_kind),
-         planning_phase_id: Map.get(payload, :planning_phase_id),
-         trace_event_id: Map.get(payload, :trace_event_id)
-       }, "task:#{task_id}"}
-    else
-      command_accepted("task.create", payload)
-    end
-  end
-
-  defp domain_event("task.approve", payload),
-    do: task_status_event("task.approve", payload, "ready")
-
-  defp domain_event("task.block", payload),
-    do: task_status_event("task.block", payload, "blocked")
-
-  defp domain_event("task.close", payload), do: task_status_event("task.close", payload, "closed")
-
-  defp domain_event("task.update", payload) do
-    with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
-         :ok <- validate_task_status(Map.get(payload, :status)) do
-      {:ok, "TaskUpdated", Map.put(payload, :task_id, task_id), "task:#{task_id}"}
-    end
-  end
-
-  defp domain_event("task.annotate", payload) do
-    with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
-         {:ok, body} <- required_binary(Map.get(payload, :body), :body) do
-      {:ok, "TaskAnnotated", %{task_id: task_id, body: body, author: Map.get(payload, :author)},
-       "task:#{task_id}"}
-    end
-  end
-
-  defp domain_event("task.add_dependency", payload) do
-    with {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
-         {:ok, depends_on} <- required_binary(Map.get(payload, :depends_on), :depends_on) do
-      {:ok, "TaskDependencyAdded", %{task_id: task_id, depends_on: depends_on}, "task:#{task_id}"}
-    end
-  end
-
-  defp domain_event("run.start", payload) do
-    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
-      {:ok, "RunStarted", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
-    end
-  end
-
-  defp domain_event("run.update", payload) do
-    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
-      {:ok, "RunUpdated", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
-    end
-  end
-
-  defp domain_event(command_type, payload) when command_type in ["run.retry", "run.reset"] do
-    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id),
-         {:ok, task_id} <- required_binary(Map.get(payload, :task_id), :task_id),
-         :ok <- require_existing_run(run_id),
-         :ok <- require_existing_task(task_id) do
-      default_reason =
-        if command_type == "run.retry", do: "retry requested", else: "reset requested"
-
-      reason = Map.get(payload, :reason) || default_reason
-
-      task_payload =
-        payload
-        |> Map.put(:run_id, run_id)
-        |> Map.put(:task_id, task_id)
-        |> Map.put(:status, "ready")
-        |> Map.put(:reason, reason)
-        |> Map.put_new(:source, "command_bus")
-
-      {:ok, "TaskUpdated", task_payload, "task:#{task_id}"}
-    end
-  end
-
-  defp domain_event(command_type, payload)
-       when command_type in [
-              "run.pr.update",
-              "run.pr.ready",
-              "run.pr.retarget",
-              "run.pr.reset",
-              "run.pr.merge"
-            ] do
-    event_type =
-      %{
-        "run.pr.update" => "PrUpdated",
-        "run.pr.ready" => "PrReady",
-        "run.pr.retarget" => "PrRetargeted",
-        "run.pr.reset" => "PrReset",
-        "run.pr.merge" => "PrMerged"
-      }[command_type]
-
-    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
-      {:ok, event_type, Map.put(payload, :run_id, run_id), "run:#{run_id}"}
-    end
-  end
-
-  defp domain_event("run.delete", payload) do
-    with {:ok, run_id} <- required_binary(Map.get(payload, :run_id), :run_id) do
-      {:ok, "RunDeleted", Map.put(payload, :run_id, run_id), "run:#{run_id}"}
-    end
-  end
-
-  defp domain_event("event.log", payload) do
-    event_type = Map.get(payload, :event_type, "cli-event")
-
-    stream_id =
-      case Map.get(payload, :run_id) do
-        run_id when is_binary(run_id) and run_id != "" -> "run:#{run_id}"
-        _ -> "project:#{Map.get(payload, :project_id, "unknown")}:events"
-      end
-
-    {:ok, "CliEventLogged", Map.put(payload, :event_type, event_type), stream_id}
-  end
-
-  defp domain_event(command_type, command), do: command_accepted(command_type, command)
-
-  defp require_existing_project(project_id) do
-    if ProjectionStore.project(project_id) do
-      :ok
-    else
-      {:error, {:not_found, :project, project_id}}
-    end
-  end
-
-  defp require_existing_run(run_id) do
-    if Map.has_key?(ProjectionStore.snapshot().runs, run_id) do
-      :ok
-    else
-      {:error, {:not_found, :run, run_id}}
-    end
-  end
-
-  defp require_existing_task(task_id) do
-    if ProjectionStore.task(task_id) do
-      :ok
-    else
-      {:error, {:not_found, :task, task_id}}
-    end
-  end
-
-  defp command_accepted(command_type, command) do
-    {:ok, "CommandAccepted",
-     %{
-       command_id: Map.get(command, :command_id),
-       command_type: command_type,
-       status: "accepted",
-       input: command
-     }, "command:#{Map.get(command, :command_id, command_type)}"}
-  end
-
-  defp maybe_put_expected_version(input, nil), do: input
-
-  defp maybe_put_expected_version(input, expected),
-    do: Map.put(input, :expected_stream_version, expected)
-
-  defp maybe_audit(%{command_type: command_type} = command, event_type, payload) do
-    if Security.destructive_command?(command_type) do
-      Security.append_destructive_audit(command, event_type, payload)
-    else
-      {:ok, []}
-    end
-  end
-
-  defp task_status_event(command_type, payload, status) do
-    case Map.get(payload, :task_id) do
-      task_id when is_binary(task_id) and task_id != "" ->
-        {:ok, "TaskUpdated", %{task_id: task_id, status: status}, "task:#{task_id}"}
-
-      _ ->
-        command_accepted(command_type, payload)
-    end
-  end
-
-  defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
-  defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
-
-  defp validate_task_status(nil), do: :ok
-
-  defp validate_task_status(status) when is_binary(status) do
-    if MapSet.member?(@task_statuses, status),
-      do: :ok,
-      else: {:error, {:invalid_task_status, status}}
-  end
-
-  defp validate_task_status(status), do: {:error, {:invalid_task_status, status}}
-
-  defp handle_external_trigger(payload, metadata) do
-    input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))
-
-    with {:ok, result} <- IntegrationIngestion.ingest(input),
-         {:ok, event} <- result_event(result) do
-      {:ok, %{event: event, projection: ProjectionStore.snapshot(), integration: result}}
-    end
-  end
-
-  defp result_event(%{ingestion: event}), do: {:ok, event}
-  defp result_event(%{command: %{event: event}}), do: {:ok, event}
-
-  defp result_event(%{existing: %{dedupe_key: dedupe_key}}) do
-    case Enum.find(EventStore.all(), &(&1.stream_id == "integration:#{dedupe_key}")) do
-      nil -> {:error, {:missing_integration_event, dedupe_key}}
-      event -> {:ok, event}
-    end
-  end
-
-  defp normalize_metadata(command) do
-    metadata = normalize_payload(Map.get(command, :metadata, %{}))
-
-    metadata
-    |> Map.put_new(
-      :correlation_id,
-      Map.get(command, :correlation_id, Map.get(command, :command_id))
-    )
-    |> Map.put_new(:source, "node-cli-boundary")
-    |> Map.put_new(:idempotency_key, Map.get(command, :command_id))
-  end
-
-  defp handle_planning_flow(payload, metadata) do
-    input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))
-
-    with {:ok, result} <- PlanningFlow.run(input) do
-      {:ok, %{event: result.event, projection: ProjectionStore.snapshot(), planning: result}}
-    end
-  end
-
-  defp handle_migration_import(payload, metadata) do
-    input = Map.put_new(payload, :correlation_id, Map.get(metadata, :correlation_id))
-
-    with {:ok, result} <- MigrationImporter.import(input) do
-      {:ok, %{event: result.event, projection: ProjectionStore.snapshot(), migration: result}}
-    end
-  end
-
-  defp planning_payload(command, command_type) do
-    payload = external_trigger_payload(command)
-
-    case command_type do
-      "plan.prd" -> Map.put(payload, :kind, "prd")
-      "plan.trd" -> Map.put(payload, :kind, "trd")
-      _ -> payload
-    end
-  end
-
-  defp migration_payload(command), do: external_trigger_payload(command)
-
-  defp external_trigger_payload(command) do
-    top_level =
-      command
-      |> normalize_payload()
-      |> Map.drop([:command_id, :command_type, :correlation_id, :metadata])
-
-    nested = normalize_payload(Map.get(command, :payload, %{}))
-
-    if map_size(nested) == 0 do
-      top_level
-    else
-      command
-      |> Map.has_key?(:command_id)
-      |> case do
-        true -> top_level |> Map.drop([:payload]) |> Map.merge(nested)
-        false -> Map.merge(top_level, nested)
-      end
-    end
-  end
-
-  defp external_command_id(command) do
-    normalized = normalize_payload(command)
-
-    Enum.find_value(
-      [:command_id, :idempotency_key, :dedupe_key, :event_id, :external_id],
-      fn key ->
-        value = Map.get(normalized, key)
-        if is_binary(value) and value != "", do: value
-      end
-    ) || "external-trigger:#{System.unique_integer([:positive])}"
-  end
-
-  defp normalize_payload(map) when is_map(map) do
-    Enum.reduce(known_keys(), %{}, fn key, acc ->
-      case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
-        nil -> acc
-        value -> Map.put(acc, key, value)
+  defp projection_events_for_apply(recorded_events, event_data_list)
+       when is_list(recorded_events) and is_list(event_data_list) do
+    recorded_events
+    |> Enum.zip(event_data_list)
+    |> Enum.map(fn {recorded, event_data} ->
+      if MapSet.member?(@project_projection_event_types, recorded.event_type) do
+        recorded
+      else
+        event_data
       end
     end)
   end
 
-  defp normalize_payload(_), do: %{}
+  defp post_commit_apply(aggregate_id, expected_version, event_data_list) do
+    try do
+      result =
+        if requires_recorded_metadata?(event_data_list) do
+          with :ok <-
+                 maybe_fail_post_commit_readback(
+                   aggregate_id,
+                   expected_version,
+                   event_data_list
+                 ),
+               {:ok, recorded_events} <-
+                 read_back_appended_events(aggregate_id, expected_version, event_data_list) do
+            apply_projection_events(recorded_events, event_data_list)
+          end
+        else
+          ForemanServer.ProjectionStore.apply_events(event_data_list)
+        end
 
-  defp known_keys do
-    [
-      :author,
-      :body,
-      :command_id,
-      :config,
-      :correlation_id,
-      :count,
-      :create_prd_command,
-      :dedupe_key,
-      :default_branch,
-      :dependencies,
-      :description,
-      :depends_on,
-      :event_id,
-      :event_type,
-      :external_id,
-      :flow_id,
-      :external_link,
-      :fingerprint,
-      :health,
-      :id,
-      :inbox_messages,
-      :input,
-      :kind,
-      :idempotency_key,
-      :import_id,
-      :import_index,
-      :integration_event_type,
-      :metadata,
-      :migration_id,
-      :name,
-      :record_id,
-      :record_type,
-      :actor,
-      :occurred_at,
-      :output_dir,
-      :path,
-      :payload,
-      :phase_id,
-      :plan_type,
-      :planning_kind,
-      :planning_phase_id,
-      :planning_run_id,
-      :project_id,
-      :projects,
-      :repo,
-      :run_id,
-      :runs,
-      :severity,
-      :site,
-      :source,
-      :status,
-      :task_id,
-      :task_type,
-      :threshold,
-      :tool_call_id,
-      :tool_name,
-      :trigger_id,
-      :title,
-      :trace_event_id,
-      :priority,
-      :task_type,
-      :type,
-      :transition_id,
-      :url,
-      :verdict,
-      :final,
-      :supersedes,
-      :revision,
-      :report_id,
-      :artifact_path,
-      :args,
-      :allowed,
-      :action,
-      :base_branch,
-      :branch_name,
-      :head_sha,
-      :old_base_branch,
-      :new_base_branch,
-      :phase,
-      :pr_url,
-      :reason,
-      :message,
-      :workflows,
-      :adapter,
-      :compatibility_mode,
-      :from_prd,
-      :provider,
-      :from,
-      :to,
-      :subject,
-      :message_id,
-      :worker_id,
-      :sender_agent_type,
-      :recipient_agent_type,
-      :worker_supports_receiving
-    ]
+      with :ok <- result do
+        broadcast_debug_updates(event_data_list)
+        :ok
+      end
+    rescue
+      exception ->
+        {:error, {:post_commit_exception, exception.__struct__, Exception.message(exception)}}
+    catch
+      kind, reason ->
+        {:error, {:post_commit_throw, kind, reason}}
+    end
   end
+
+  defp requires_recorded_metadata?(event_data_list) do
+    Enum.any?(event_data_list, fn %EventData{event_type: event_type} ->
+      MapSet.member?(@project_projection_event_types, event_type)
+    end)
+  end
+
+  defp maybe_fail_post_commit_readback(aggregate_id, expected_version, event_data_list) do
+    case Application.get_env(:foreman_server, :command_router_post_commit_readback_hook) do
+      hook when is_function(hook, 3) ->
+        hook.(aggregate_id, expected_version, event_data_list)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp apply_projection_events(recorded_events, event_data_list) do
+    ForemanServer.ProjectionStore.apply_events(
+      projection_events_for_apply(recorded_events, event_data_list)
+    )
+  end
+
+  defp recover_projection_store(aggregate_id, event_data_list, initial_reason) do
+    Logger.warning(
+      "CommandRouter post-commit apply failed for #{aggregate_id}: #{inspect(initial_reason)}; " <>
+        "rebuilding projection before releasing the aggregate"
+    )
+
+    case rebuild_projection_store(aggregate_id, event_data_list) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        retry_projection_rebuild(
+          aggregate_id,
+          event_data_list,
+          post_commit_retry_delays_ms(),
+          reason
+        )
+    end
+  end
+
+  defp rebuild_projection_store(aggregate_id, event_data_list) do
+    try do
+      case aggregate_id do
+        "project:" <> project_id ->
+          ForemanServer.ProjectionStore.rebuild_project(project_id, event_data_list)
+
+        _ ->
+          ForemanServer.ProjectionStore.rebuild(event_data_list)
+      end
+    rescue
+      exception ->
+        {:error,
+         {:projection_rebuild_exception, exception.__struct__, Exception.message(exception)}}
+    catch
+      kind, reason ->
+        {:error, {:projection_rebuild_throw, kind, reason}}
+    end
+  end
+
+  defp retry_projection_rebuild(_aggregate_id, _event_data_list, [], reason),
+    do: {:error, reason}
+
+  defp retry_projection_rebuild(aggregate_id, event_data_list, [delay_ms | remaining], reason) do
+    Logger.warning(
+      "CommandRouter projection rebuild failed for #{aggregate_id}: #{inspect(reason)}; " <>
+        "retrying in #{delay_ms}ms"
+    )
+
+    Process.sleep(delay_ms)
+
+    case rebuild_projection_store(aggregate_id, event_data_list) do
+      :ok ->
+        :ok
+
+      {:error, next_reason} ->
+        retry_projection_rebuild(aggregate_id, event_data_list, remaining, next_reason)
+    end
+  end
+
+  defp post_commit_retry_delays_ms do
+    case Application.get_env(:foreman_server, :command_router_post_commit_retry_delays_ms) do
+      delays_ms when is_list(delays_ms) ->
+        Enum.filter(delays_ms, fn
+          delay_ms when is_integer(delay_ms) and delay_ms >= 0 -> true
+          _ -> false
+        end)
+
+      _ ->
+        @default_post_commit_retry_delays_ms
+    end
+  end
+
+  defp broadcast_debug_updates(event_data_list) do
+    event_data_list
+    |> Enum.flat_map(&debug_topics_for_event/1)
+    |> MapSet.new()
+    |> Enum.each(fn topic ->
+      Phoenix.PubSub.broadcast(ForemanServer.PubSub, topic, {:debug_state_changed, topic})
+    end)
+  end
+
+  defp debug_topics_for_event(%EventData{data: payload}) do
+    run_id = Map.get(payload, :run_id) || Map.get(payload, "run_id")
+    phase_id = Map.get(payload, :phase_id) || Map.get(payload, "phase_id")
+    worker_id = Map.get(payload, :worker_id) || Map.get(payload, "worker_id")
+
+    []
+    |> maybe_add_topic("runs")
+    |> maybe_add_topic(run_id && "runs:#{run_id}")
+    |> maybe_add_topic(phase_id && "phases")
+    |> maybe_add_topic(phase_id && "phases:#{phase_id}")
+    |> maybe_add_topic(worker_id && "workers")
+    |> maybe_add_topic(worker_id && "workers:#{worker_id}")
+  end
+
+  defp maybe_add_topic(topics, nil), do: topics
+  defp maybe_add_topic(topics, topic), do: [topic | topics]
+
+  defp finalize_dispatch(
+         {:telemetry, result, %{append_latency_ms: append_latency_ms}},
+         aggregate_id,
+         started_at_ms
+       ) do
+    Telemetry.command_dispatch(
+      elapsed_ms(started_at_ms),
+      append_latency_ms,
+      telemetry_status(result),
+      aggregate_id
+    )
+
+    result
+  end
+
+  defp finalize_dispatch(result, aggregate_id, started_at_ms) do
+    Telemetry.command_dispatch(
+      elapsed_ms(started_at_ms),
+      0,
+      telemetry_status(result),
+      aggregate_id
+    )
+
+    result
+  end
+
+  defp telemetry_status({:ok, _}), do: "ok"
+  defp telemetry_status(_), do: "error"
+
+  defp elapsed_ms(started_at_ms) do
+    max(System.monotonic_time(:millisecond) - started_at_ms, 0)
+  end
+
+  def aggregate_module_for("project:" <> _), do: ForemanServer.Aggregates.Project
+  def aggregate_module_for("task:" <> _), do: ForemanServer.Aggregates.Task
+  def aggregate_module_for("run:" <> _), do: ForemanServer.Aggregates.Run
+  def aggregate_module_for("worker:" <> _), do: ForemanServer.Aggregates.Worker
+  def aggregate_module_for("phase:" <> _), do: ForemanServer.Aggregates.Phase
+  def aggregate_module_for("recovery:" <> _), do: ForemanServer.Aggregates.Recovery
+  def aggregate_module_for("pr_association:" <> _), do: ForemanServer.Aggregates.PrAssociation
+  def aggregate_module_for("beads_db_lease:" <> _), do: ForemanServer.Aggregates.BeadsDbLease
+  def aggregate_module_for("run_slots:" <> _), do: ForemanServer.Aggregates.RunSlots
+  def aggregate_module_for("vcs_operation:" <> _), do: ForemanServer.Aggregates.VcsOperation
+  def aggregate_module_for("vcs:" <> _), do: ForemanServer.Aggregates.VcsOperation
+
+  def aggregate_module_for("scheduler_intent:" <> _),
+    do: ForemanServer.Aggregates.SchedulerIntent
+
+  def aggregate_module_for("migration:" <> _), do: ForemanServer.Aggregates.ImportMigration
+  def aggregate_module_for("blocking:" <> _), do: ForemanServer.TestSupport.BlockingAggregate
+  def aggregate_module_for("work:" <> _), do: ForemanServer.Aggregates.WorkRequest
 end

@@ -1,0 +1,12 @@
+name: discover
+description: Scope the request and collect the repository context needed for execution.
+phases:
+  - name: scope-and-explore
+    prompt: discover.md
+    models:
+      default: MiniMax
+    maxTurns: 40
+    artifact: "{task.projectReportsDir}/DISCOVER_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

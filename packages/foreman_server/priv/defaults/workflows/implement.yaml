@@ -1,0 +1,16 @@
+name: implement
+description: Generate and refine the code changes required for the task.
+# Per-workflow operator timeout in milliseconds. When an agent emits an
+# AskOperator directive, this value controls how long Foreman waits for an
+# Defaults to 5 minutes (300000 ms) when absent. (TRD-2026-4212be7e / TRD-027)
+operator_timeout_ms: 600000
+phases:
+  - name: code-generation
+    prompt: implement.md
+    models:
+      default: MiniMax
+    maxTurns: 80
+    artifact: "{task.projectReportsDir}/IMPLEMENT_REPORT.md"
+    mail:
+      onStart: true
+      onComplete: true

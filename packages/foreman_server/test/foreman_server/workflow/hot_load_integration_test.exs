@@ -1,0 +1,137 @@
+defmodule ForemanServer.Workflow.HotLoadIntegrationTest do
+  @moduledoc """
+  HLW-T005 / TRD-095 — hot-load integration tests.
+  Valid YAML workflow, valid Elixir DSL workflow, invalid workflow rejection.
+  """
+  use ExUnit.Case, async: true
+  @moduletag :integration
+  alias ForemanServer.Workflow.{Loader, Validator}
+
+  setup do
+    # priv/workflows is the Loader's source dir; create it if absent for file-write tests.
+    File.mkdir_p!("priv/workflows")
+    on_exit(fn -> File.rm_rf("priv/workflows") end)
+  end
+  describe "Loader.load_all/0" do
+    test "returns a list of loaded workflow descriptors" do
+      assert is_list(Loader.load_all())
+    end
+  end
+
+  describe "Loader.load_file/1 — YAML" do
+    test "returns {:ok, %{path:, format: :yaml, content:}}" do
+      yaml = """
+      workflow:
+        id: test-workflow
+        name: Test
+        version: "1.0.0"
+        steps:
+          - name: create-prd
+            skill: create-prd
+      """
+
+      name = "hot-yaml-#{System.unique_integer()}.yaml"
+      path = Path.join("priv/workflows", name)
+      File.write!(path, yaml)
+
+      try do
+        assert {:ok, %{path: ^path, format: :yaml, content: ^yaml}} =
+                 Loader.load_file(name)
+      after
+        File.rm!(path)
+      end
+    end
+
+    test "returns {:ok, %{format: :elixir_dsl}} for .ex files" do
+      elixir = "defmodule MyApp.Workflows.Test do end"
+
+      name = "hot-ex-#{System.unique_integer()}.ex"
+      path = Path.join("priv/workflows", name)
+      File.write!(path, elixir)
+
+      try do
+        assert {:ok, %{path: ^path, format: :elixir_dsl, content: ^elixir}} =
+                 Loader.load_file(name)
+      after
+        File.rm!(path)
+      end
+    end
+
+    test "returns nil for unknown extensions" do
+      assert is_nil(Loader.load_file("test.txt"))
+      assert is_nil(Loader.load_file("test.md"))
+    end
+  end
+
+  describe "Validator.validate/1 — valid workflows" do
+    test "passes a minimal valid workflow" do
+      # Schema: name + phases (not id + steps); skill extracted from /skill: prefix
+      workflow = %{
+        "name" => "my-workflow",
+        "phases" => [
+          %{"name" => "step1", "command" => "/skill:create-prd"},
+          %{"name" => "step2", "command" => "/skill:implement-trd"}
+        ]
+      }
+
+      assert :ok = Validator.validate(workflow)
+    end
+
+    test "passes a workflow with all optional step fields" do
+      workflow = %{
+        "name" => "full-workflow",
+        "phases" => [
+          %{
+            "name" => "create",
+            "command" => "/skill:create-prd --foreman",
+            "prompt" => nil
+          }
+        ]
+      }
+
+      assert :ok = Validator.validate(workflow)
+    end
+  end
+
+  describe "Validator.validate/1 — invalid workflows" do
+    test "rejects workflow missing name" do
+      assert {:error, :missing_name} =
+               Validator.validate(%{"phases" => [%{"name" => "s", "command" => "/skill:create-prd"}]})
+    end
+
+    test "rejects workflow with empty phases" do
+      assert {:error, :empty_phases} =
+               Validator.validate(%{"name" => "bad", "phases" => []})
+    end
+
+    test "rejects step missing name" do
+      assert {:error, {:missing_phase_name, 0}} =
+               Validator.validate(%{"name" => "bad", "phases" => [%{"command" => "/skill:create-prd"}]})
+    end
+
+    test "rejects step missing action" do
+      assert {:error, {:missing_phase_action, 0}} =
+               Validator.validate(%{"name" => "bad", "phases" => [%{"name" => "s"}]})
+    end
+
+    test "rejects step with unknown skill" do
+      assert {:error, {:unknown_skill, "unknown-skill"}} =
+               Validator.validate(%{
+                 "name" => "bad",
+                 "phases" => [%{"name" => "s", "command" => "/skill:unknown-skill"}]
+               })
+    end
+
+    test "stops at first invalid phase" do
+      # First phase invalid → no pass-through
+      assert {:error, {:missing_phase_name, 0}} =
+               Validator.validate(%{
+                 "name" => "bad",
+                 "phases" => [
+                   %{"command" => "/skill:create-prd"},
+                   %{"name" => "s2", "command" => "/skill:create-prd"}
+                 ]
+               })
+    end
+  end
+end

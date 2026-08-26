@@ -1,377 +1,473 @@
-# Foreman — Claude Code Context
+# CLAUDE.md — durable developer architecture conventions
 
-## Project Overview
+This file records durable, behavior-grounded architecture decisions
+for the Foreman repo. Anything that drifts from these rules without
+a tracked TRD is a regression. `AGENTS.md` (the agent-context file)
+is read-only here — it's a session-level contract for coding
+subagents and remains authoritative for that purpose.
 
-Foreman is an AI-powered engineering orchestrator that decomposes work into tasks, dispatches them to AI agents in isolated git worktrees, and merges results back. Built with TypeScript, [Pi SDK](https://pi.dev) (`@mariozechner/pi-coding-agent`) for in-process agent sessions, with the Elixir backend for task tracking.
+## 1. The agent runtime façade is the only public mutation surface
 
-## Quick Reference
+Callers interact with the runtime **only** through
+`ForemanServer.AgentRuntime.execute/3` and `register/1` /
+`register_adapter/2`. No other module is allowed to:
 
-```bash
-# Development
-npm run build          # tsc compile
-npm test               # vitest run
-npm run test:coverage:transition  # Elixir-transition coverage gate
-npm run dev            # tsx watch mode
-npx tsc --noEmit       # type check only
-npx vitest run <file>  # run a single test file
-devbox run dev:up    # start shared Postgres + Hindsight dev containers
-devbox run db:up     # start only shared pgvector Postgres
-# Foreman reads DATABASE_URL from .env/process env; compose's fresh/default Postgres port is 127.0.0.1:55432 (FOREMAN_POSTGRES_PORT overrides)
+- start or stop an invocation
+- send a `GenServer.call` directly to `AdapterCatalog` from outside
+  the façade
+- read `Application.get_env(:foreman_server, :agent_runtime, ...)`
+  outside of the supervisor, the façade, `FailurePolicy`, or a
+  per-adapter config accessor
 
-# CLI (after build or via tsx)
-foreman init           # Initialize project and register it with the Elixir backend
-foreman run            # Tick Elixir scheduler for ready-task dispatch
-foreman status         # Show tasks + active agents; --live opens cockpit status/workflow
-foreman metrics        # Show total cost, cost per turn, total time, time per turn, and total turns
-foreman watch          # Canonical live cockpit TUI; action palette reset asks y then runs reset; aliases: 'monitor' and deprecated 'dashboard'
-foreman sentinel       # Background health daemon
-foreman retry <task>   # Re-run a failed pipeline phase
-foreman reset <task>   # Close open/draft PRs, clean stale artifacts, and re-dispatch unless the recorded PR is already merged; merged-PR resets preserve run artifacts
-foreman run kill-switch <run-id>  # Stop a stuck run, preserve worktree/PR/reports by default; use --route-to, --reset, --force, --close-pr, --discard-reports, --dry-run
-foreman doctor         # Health checks + safe stale run/worktree cleanup with --fix
-foreman debug <id>     # AI-powered execution analysis (Opus)
-foreman sling trd X    # TRD -> task hierarchy
-foreman plan X         # PRD -> TRD pipeline
-foreman plan prd|trd X # Server-backed PRD/TRD planning
-foreman import --to-elixir --file migration.json  # Import legacy state into Elixir events
-foreman server doctor # Elixir default backend; scheduler ticks every 5s and launches workers; validates DB/projection/worker/VCS/provider/integration health + metrics
-foreman merge          # Merge completed branches
-foreman pr             # Create PRs for completed work
-foreman attach         # Attach to a running agent session
-foreman worktree       # Git worktree management
-foreman purge logs     # Remove old agent logs (~/.foreman/logs/)
-foreman purge runs     # Remove stale failed run records
-foreman inbox          # TTY cockpit inbox view; non-TTY summary
-foreman inbox task X   # Scriptable task mail/events; add --interactive for cockpit selection
-foreman inbox --task X --events  # Legacy task selector with lifecycle table
-foreman inbox send     # Send an Agent Mail message (replaces 'foreman mail send')
-foreman inbox --all --watch  # Live stream all mail across runs
-foreman mcp --transport stdio # MCP tools via Elixir backend plus local reset cleanup; use --transport http for remote clients
-# In Pi: /foreman-smoke, /foreman-tasks, /foreman-task <id>, /foreman-approve, /foreman-runs, /foreman-inbox, /foreman-events, /foreman-scheduler, /foreman-tick
+Adapters do **not** mutate catalog state. The catalog is the durable
+registry of which adapters exist; adapter execution lives in short-
+lived `Invocation` processes that the catalog never sees.
 
-# Elixir task tracking
-native task store ready               # Unblocked tasks
-native task store list --status=open  # All tasks
-native task store show <id>           # Task detail
-native task store create --title "X" --type task --priority 2
-native task store update <id> --status=in_progress
-native task store close <id>          # Complete
-```
-
-## Architecture
+## 2. Process layering (agent runtime)
 
 ```
-CLI (commander) -> Dispatcher -> Agent Workers (detached processes)
-                      |              |
-                   PostgreSQL         Pi SDK (in-process)
-                   (state)        createAgentSession()
-                      |              |
-                   Elixir task store   Pipeline Executor
-                   (task graph)      (workflow YAML-driven)
-                                     |
-                                  Refinery + autoMerge
-                                  (merge queue → dev branch)
+ForemanServer.Application
+  └── ForemanServer.AgentRuntime.Supervisor         (permanent, :one_for_one)
+        ├── ForemanServer.AgentRuntime.AdapterCatalog  (GenServer + Registry)
+        └── ForemanServer.AgentRuntime.InvocationSupervisor (DynamicSupervisor)
+              └── Invocation                       (temporary — one per execute/3 call)
 ```
 
-TRD-2026-014 Elixir migration split:
+- `AdapterCatalog` is **permanent**: registrations are runtime configuration, not request
+  state.
+- `InvocationSupervisor` is a `DynamicSupervisor` and is **permanent**.
+- `Invocation` children are **temporary** — they never restart. A crashed
+  invocation is reported to the façade as `{:error, term()}`; sibling
+  invocations and the catalog are unaffected (PRD REQ-002).
 
-**Event-sourced orchestration invariant:** domain events are the source of truth and operational trigger. Projections are read models only. In Postgres event-store mode, project/task/run/inbox projections persist in Postgres read-model tables; in term mode they remain in memory and rebuild from the term log. Scheduler/run loop, inbox/watch surfaces, and recovery flows must consume or reconcile from events, then read projections to decide action; do not rely on projection polling as the primary signal. Node/Pi workers emit authoritative terminal run/task events plus Pi SDK tool-call/assistant-message trace events; raw logs are compatibility/debug projections and must not contain unique operational truth. Launchers only record process-exit facts and must not infer success/failure from stdout.
+## 3. Errors flow one way
 
-```
-Node CLI -> authenticated JSON -> Elixir/OTP server -> worker HTTP protocol -> Node/Pi worker
-   |                              |                                  |
-   |                              |                                  └─ Pi SDK phases, ordered events/heartbeats/logs/artifacts + Elixir overwatch policy/nudges
-   |                              └─ commands, events, projections, run/phase actors, recovery, VCS/PR, doctor/metrics, audits
-   └─ command parsing, auto-start, projection rendering, legacy alias/deprecation warnings
-```
+Public `:execute/3` always returns one of:
 
-See `docs/guides/elixir-backend-architecture.md` for the operator architecture, deprecated command mapping, and event/projection/recovery troubleshooting model.
-
-**Key modules:**
-
-- `src/cli/commands/` — 26 CLI commands (including `debug` for AI-powered analysis)
-- `src/orchestrator/pipeline-executor.ts` — generic workflow YAML-driven phase executor
-- `src/orchestrator/pi-sdk-runner.ts` — Pi SDK wrapper (`createAgentSession` + `session.prompt()`)
-- `src/orchestrator/pi-sdk-tools.ts` — custom tools for agents (`send_mail`, `mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`, `diff_read`, `git_status`, `pr_review_finding`, `merge_gate_status`, `task_get`, `task_status`, `task_note_add`, `task_risk_add`, `file_reserve`, `file_release`, `file_changes`)
-- `src/orchestrator/agent-worker.ts` — detached worker process, pipeline orchestration
-- `src/orchestrator/merge-polling.ts` — composable polling interface for GitHub PR merge detection; replaces inline `while` loop in `runMergeBuiltinPhase` with configurable timeout/interval/backoff; exports `pollForMerge` and `adminMergeResolver`
-- `src/orchestrator/dispatcher.ts` — task dispatch, worktree creation, model selection
-- `src/orchestrator/refinery.ts` — merge queue processing, conflict resolution
-- `src/orchestrator/auto-merge.ts` — immediate post-pipeline merge trigger
-- `src/lib/store.ts` — local state for unregistered/offline paths (runs, progress, messages)
-- `src/lib/postgres-mail-client.ts` — legacy-named Agent Mail shim; no direct database access
-- `src/lib/workflow-loader.ts` — YAML workflow config parser
-- `src/orchestrator/roles.ts` — prompt generation (`buildPhasePrompt()` + per-phase functions)
-- `src/defaults/skills/` — bundled Foreman Pi guidance skills; required names live in `src/lib/prompt-loader.ts`, sandbox exposure lives in `src/orchestrator/pi-sdk-runner.ts`, and changes require `npm run build` plus `foreman init --force` before dispatch validation
-
-**Workflow YAML-driven pipeline** (see [Workflow YAML Reference](docs/workflow-yaml-reference.md)):
-
-- Phase sequence, models, retries, mail hooks, artifacts all defined in YAML
-- No hardcoded phase names in the executor — new phases need only YAML + prompt file
-- Per-phase model selection with priority-based overrides (P0→opus, default→sonnet, etc.)
-- Retry loops: verdict failures route to focused repair phases when configured (`repair.md` in bundled `task`/`docs` workflows) so agents fix only reported QA/review/finalize assertions; specialized retry targets still handle CI, CodeRabbit, and merge-conflict failures.
-- Mutating phases with `checkpointPr: true` commit/push successful dirty work and maintain a draft PR before the final `create-pr` gate marks it ready.
-- Phase-control tools (`ask_operator`, `abort_phase`, `needs_retry`) and `send_mail` registered as native Pi SDK tools — agents call them directly, no bash commands
-
-**Default pipeline phases:**
-
-1. **Explorer** — concise read-only developer handoff → EXPLORER_REPORT.md
-2. **Developer** — implementation only; QA/finalize own tests → DEVELOPER_REPORT.md
-3. **cicd-developer** — retry-only target for CI/CD check failures
-4. **cr-developer** — retry-only target for CodeRabbit findings
-5. **merge-resolver** — retry-only target for merge conflicts
-6. **documentation** — update required operator/developer docs or explain why no docs changed → DOCUMENTATION_REPORT.md
-7. **QA** — targeted test verification only → QA_REPORT.md (verdict: PASS/FAIL; product failures must stay report-driven, not `agent-error`)
-8. **Reviewer** — code review → REVIEW.md (verdict: PASS/FAIL)
-9. **cli-review** — CodeRabbit CLI review (builtin) → CR_CLI_REPORT.md
-10. **Finalize** (builtin) — rebase, scope-check, changed-domain validate, commit, push → FINALIZE_VALIDATION.md
-11. **create-pr** (builtin) — create or update draft PR → PR_METADATA.json
-12. **pr-wait** (builtin) — wait for PR checks/review → PR_WAIT_REPORT.md
-13. **merge** (builtin) — merge to target branch → MERGE_REPORT.md
-
-Retry phases (cicd-developer, cr-developer, merge-resolver) are activated only when a later phase fails with a matching `retryWithByReason` pattern (e.g., `ci_failed:`, `coderabbit_`, `merge_conflict:`). Verdict FAIL reports route through `retryWith`; `agent-error` is reserved for unrecoverable infrastructure/runtime failures. The `onFailure` handler runs the troubleshooter prompt for unrecoverable errors.
-
-After finalize: worker enqueues/reports merge readiness via Elixir-backed paths; merge/refinery processing owns the drain/merge lifecycle.
-
-The Elixir server also runs PR reconciliation: recorded GitHub PR URLs are checked periodically, GitHub `MERGED` records `run.pr.merge`, and the associated task is updated to `merged`. GitHub closed-without-merge only closes the run PR state. As a real-time optimization, the server also exposes `POST /webhooks/github` for GitHub pull_request webhook events (HMAC-SHA256 verification via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback.
-
-## VCS Backend Abstraction (PRD-2026-004)
-
-Foreman abstracts all VCS operations behind a `VcsBackend` interface so that orchestration code is decoupled from the concrete VCS tool. Two built-in implementations ship with Foreman:
-
-- **`GitBackend`** (`src/lib/vcs/git-backend.ts`) — wraps standard git CLI commands
-- **`JujutsuBackend`** (`src/lib/vcs/jujutsu-backend.ts`) — wraps jj CLI; requires **colocated mode** (`.jj/` + `.git/` both present)
-
-**All orchestration code uses VcsBackend — no direct git/jj calls outside the backend implementations.**
-
-### Key modules
-
-- `src/lib/vcs/interface.ts` — `VcsBackend` interface (25+ methods)
-- `src/lib/vcs/types.ts` — Shared types (`Workspace`, `MergeResult`, `FinalizeCommands`, etc.)
-- `src/lib/vcs/index.ts` — Re-exports + `VcsBackendFactory` (auto-detection + creation)
-- `src/lib/project-config.ts` — `ProjectConfig` loader for `.foreman/config.yaml`
-
-### Configuration precedence
-
-```
-Workflow YAML vcs.backend   (highest priority)
-    ↓
-.foreman/config.yaml vcs.backend
-    ↓
-Auto-detection (.jj/ → jujutsu, .git/ → git)   (lowest priority)
+```elixir
+{:ok, String.t()}
+| {:error, :no_available_backend | :backend_not_found | :backend_unavailable | :timeout}
+| {:error, {:non_zero_exit, non_neg_integer()}}
+| {:error, :all_backends_failed, %{attempts: [attempt_result()]}}
+| {:error, term()}
 ```
 
-Example `.foreman/config.yaml`:
+The successful branch **never** contains a backend name. Backend
+identity is recorded only in telemetry metadata. Adapter-private
+metadata (e.g. raw output tokens) does not leak into the public
+result; the adapter may produce it but the invocation returns only
+the public text.
 
-```yaml
-vcs:
-  backend: jujutsu        # 'git' | 'jujutsu' | 'auto' (default: 'auto')
-  jujutsu:
-    minVersion: "0.21.0"  # validated by 'foreman doctor'
+## 4. The `BackendAdapter` behaviour
+
+```elixir
+@callback name() :: atom()
+@callback capabilities() :: %{required(:type) => atom(),
+                              required(:strengths) => [...],
+                              required(:weaknesses) => [...],
+                              required(:supported_contexts) => [...],
+                              optional(:cost_per_call) => number(),
+                              optional(:typical_latency_ms) => non_neg_integer()}
+@callback available?() :: boolean()
+@callback execute(%{prompt: String.t(), context: map()}, keyword()) ::
+            {:ok, String.t(), map()} | {:error, term()}
 ```
 
-### Documentation
+- `capabilities/0` is validated by `ForemanServer.AgentRuntime.BackendAdapter.validate_capabilities/1`
+  at registration time. A missing required field or wrong type returns
+  `{:error, reason}` and **nothing is inserted** into the catalog.
+- `available?/0` is consulted on every `execute/3` call, not at
+  registration time. An unavailable adapter is silently skipped in
+  automatic/policy modes but produces `{:error, :backend_unavailable}`
+  in manual mode.
+- `execute/2` runs inside the `Invocation` process. Adapters are
+  responsible for the timeout clock, for any port/process cleanup, and
+  for returning a canonical `{:ok, text, metadata}` or
+  `{:error, reason}` shape. The invocation adapts that shape into the
+  public result types above.
 
-- [VcsBackend Interface Reference](docs/guides/vcs-backend-interface.md) — Method reference, custom backend guide
-- [VCS Configuration Guide](docs/guides/vcs-configuration.md) — Config examples, precedence, troubleshooting
-- [Jujutsu Considerations](docs/guides/jujutsu-considerations.md) — Colocated mode, bookmarks, finalize diffs, migration
+## 5. `execute/3` strategies
 
-## Development Rules
-
-- **TypeScript strict mode** — no `any` escape hatches
-- **ESM only** — all imports use `.js` extensions
-- **TDD** — RED-GREEN-REFACTOR cycle
-- **Test coverage** — unit >= 80%, integration >= 70%
-- **Vitest** for testing, co-located in `__tests__/` subdirs
-- **No secrets in code** — use env vars
-- **Input validation at boundaries only**
-- **TDD** use test driven development for all modifications, when adding features create a test first, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
-- **TDD** use test driven development for all modifications, when fixing bugs write a test first that exposes the bug, prove it fails and then make the tests work, afterwards refine/simplify the tests and code for maintainability.
-- **Documentation gate** — every fix/feature must consider updates to `CLAUDE.md`, `AGENTS.md`, `README.md`, the Foreman User Guide (`docs/user-guide.md`), and the CLI Reference (`docs/cli-reference.md`) before finalization. Update only docs affected by real behavior, workflow, command, setup, troubleshooting, or operator-expectation changes.
-
-## Workflow YAML Configuration
-
-Workflows live in `src/defaults/workflows/` (bundled) and `.foreman/workflows/` (project-local overrides). A workflow may declare top-level `task_type: <type>`; each task type must be declared by at most one workflow. PR/merge behavior is phase-driven: mutating phases may set `checkpointPr: true` to create/update a draft PR early, while final gating stays in explicit `create-pr`, `pr-wait`, and `merge` phases; top-level `merge:` and `pr:` workflow tags are invalid. The bundled workflows use lightweight `Grep`, `Glob`, and targeted `Read` discovery; they do not build or update a graph index. After editing bundled source workflows or prompts, run `foreman init --force`; dispatch (`foreman run`, `foreman run --watch`, and direct worker startup) aborts if installed prompts/workflows are stale so agents cannot run with outdated runtime instructions.
-
-```yaml
-# Example: src/defaults/workflows/default.yaml
-name: default
-phases:
-  - name: explorer
-    prompt: explorer.md
-    models:
-      default: haiku
-      P0: opus
-    maxTurns: 12
-    artifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
-    skipIfArtifact: "{task.projectReportsDir}/EXPLORER_REPORT.md"
-    mail:
-      onStart: true
-      onComplete: true
-      forwardArtifactTo: developer
-
-  - name: qa
-    prompt: qa.md
-    models:
-      default: MiniMax
-      P0: MiniMax-highspeed
-    artifact: "{task.projectReportsDir}/QA_REPORT.md"
-    verdict: true            # parse PASS/FAIL from artifact
-    retryWith: developer     # on FAIL, loop back to developer
-    retryOnFail: 2           # max retry count
-    retryWithByReason:
-      "ci_failed:": cicd-developer
-      "coderabbit_": cr-developer
-      "merge_conflict:": merge-resolver
-    mail:
-      onFail: developer      # send feedback to developer on FAIL
+```elixir
+ForemanServer.AgentRuntime.execute(prompt, context,
+  strategy: :manual,        # | :automatic | :policy
+  backend: :my_backend,      # required when strategy is :manual
+  task_type: :code_review,   # required when strategy is :automatic or :policy
+  policy_module: SomeMod,    # only for :policy
+  timeout_ms: 60_000,        # per-call override; falls back to FailurePolicy
+  fallback: true,            # per-call override; falls back to FailurePolicy
+  max_attempts: 3,           # per-call override; falls back to FailurePolicy
+  fail_on_unavailable: true # if true (default), no_available_backend is reported
+                            # even when fallback is on but no backend is available
+)
 ```
 
-**Model shorthands:** `haiku` → `anthropic/claude-haiku-4-5`, `sonnet` → `anthropic/claude-sonnet-4-6`, `opus` → `anthropic/claude-opus-4-6`. Full model IDs also accepted (e.g. `openai/gpt-4o`).
+- `:manual` requires `backend`; missing registration returns
+  `:backend_not_found`; unavailable registration returns
+  `:backend_unavailable`. Manual mode **never** substitutes another
+  backend.
+- `:automatic` filters `supported_contexts` → `available?/0`, then
+  sorts by lower `cost_per_call` (missing values sort last), lower
+  `typical_latency_ms` (missing values sort last), and earliest
+  registration order. **No random selection.**
+- `:policy` calls `policy_module.route(task_type, capabilities)`.
+  A non-registered result returns `{:error, :backend_not_found}`.
+  An unavailable result is skipped if the resolved failure policy
+  has `fallback: true`.
 
-## Critical Constraints
+## 6. `FailurePolicy.resolve/2` precedence
 
-- **Non-interactive shell commands**: Always use `cp -f`, `mv -f`, `rm -f` (agents hang on `-i` prompts)
-- **No nested Claude sessions**: Can't run Claude-invoked commands inside Claude Code (use `--no-llm` variants or run from terminal)
-- **TASK.md not AGENTS.md**: Foreman writes per-task context to `TASK.md` in worktrees (not AGENTS.md, which is the project file)
-- **CLAUDECODE env var**: Must be stripped from worker spawn env to avoid nested session errors
-- **FileHandle cleanup**: Always close `fs.promises.open()` handles after spawn inherits fds (Node v25+)
-- **Worktree reuse**: `createWorktree()` handles existing worktree (rebase) and existing branch (attach)
-- **Auto-reset on failure**: `markStuck()` resets task to open when pipeline fails (rate limits); marks failed for permanent errors
-- **Node workers do not connect to the database**: Elixir owns database access. Node/Pi workers and CLI clients use Elixir HTTP commands/projections for task/run/mail state; do not pass `DATABASE_URL` into workers or add Postgres-backed worker fallbacks.
-- **Workspace artifacts excluded from commits**: Finalize unstages `node_modules` (including setup-cache symlinks), `SESSION_LOG.md`, `RUN_LOG.md`, root report files, `docs/reports/**`, after `git add -A` to prevent polluted PRs and shared-state churn
-- **Finalize always rebases**: `git fetch origin && git rebase origin/dev` before pushing, so refinery can fast-forward merge
-- **Finalize is file-sensitive**: changed files outside Explorer's `Edit First` scope require a structured per-file entry under `## Scope Expansions` in `DEVELOPER_REPORT.md` (bullet of the form ``- `path/to/file` — substantive justification``). Mentions in any other section (`## Decisions & Trade-offs`, `## CI Findings Addressed`, prose) do NOT count as justification. Placeholders (`TODO`, `TBD`, `n/a`, blank, dashes) and justifications shorter than 12 characters are rejected. Elixir/Go/workflow-prompt changes run matching domain validation even when QA already passed.
-- **PR readiness is stabilized**: `pr-wait` requires a short stable ready window, and merge re-waits if GitHub surfaces late pending checks after `pr-wait`
-- **PR merge state is source-of-truth reconciled**: the Elixir PR monitor treats GitHub `MERGED` as authoritative for recorded PR URLs and updates the run/task to `merged`; `CLOSED` without merge never marks the task merged.
+Resolved keys: `:fail_fast`, `:fallback`, `:max_attempts`, `:timeout_ms`.
 
-## Debugging & Recovery
+`fail_fast` is always `true` in the resolved map (the operator cannot
+override it; the literal matches the TRD default verbatim).
 
-```bash
-# AI-powered execution analysis
-foreman debug <task-id>         # Full Opus analysis of pipeline run
-foreman debug <task-id> --raw   # Dump all artifacts without AI
-foreman debug <task-id> --model anthropic/claude-sonnet-4-6  # Cheaper model
+Resolution order, high → low:
 
-# Stuck or failed runs
-foreman doctor         # Check native task store/Pi, DB integrity, stale runs/worktrees
-foreman status         # See all active/failed agents
-foreman retry <task>   # Re-run a specific pipeline phase
+1. Per-call `opts` — **only present keys override.**
+2. App config: `config :foreman_server, :agent_runtime, failure_policies: %{task_type => %{...}}`.
+3. Built-in defaults:
+   `%{fail_fast: true, fallback: false, max_attempts: 1, timeout_ms: 60_000}`.
 
-# Agent logs (streamed during run)
-ls ~/.foreman/logs/    # One .log file per runId
-cat ~/.foreman/logs/<runId>.log
-foreman purge logs     # Remove old log files (retention policy)
-foreman purge runs     # Remove stale failed run records
+Special rule (TRD-007 AC-3): if the resolved `:fallback` is `true`
+and **no layer** supplies `:max_attempts`, then `:max_attempts` is `2`.
 
-# Mail inspection
-foreman inbox --all --watch  # Live task-first mail/events with LAST timestamps across runs
-foreman inbox task X --logs --reports --files  # Scriptable mail/events plus artifacts
-foreman inbox task X --select-report           # Interactively choose a report artifact to open in $EDITOR
-foreman inbox task X --interactive             # Unified cockpit with task selected
+## 7. Telemetry contract
 
-# Worktree cleanup
-foreman worktree list   # See all active worktrees
-foreman worktree clean  # Remove orphaned worktrees
+A **single** completion event is emitted per `execute/3` call, on
+`[:foreman, :agent_runtime, :invocation, :complete]`. The façade owns
+this emission (early-exit branches call `emit_early_exit_completion/3`;
+the invocation's terminal branch emits the normal-completion event).
+Duplicate emissions are a contract violation.
 
-# Test failures
-npm test               # Run all tests
-npx vitest run src/orchestrator/__tests__/dispatcher.test.ts  # Single file
-npx tsc --noEmit       # Type-check without building
+Measurements:
+
+```elixir
+%{duration_us: non_neg_integer(), attempt_count: non_neg_integer()}
 ```
 
-**Common failure modes:**
+Metadata (a stable whitelist — this is the **only** shape emitted):
 
-- Agent stuck in Developer phase → check `foreman inbox --task <id> --events` for overwatch nudges, then `foreman retry <task>`, `foreman run kill-switch <run-id>` (preserves worktree/PR/reports by default), or Elixir recovery workflow
-- Branch not merged after completion → `foreman merge` to trigger manually
-- autoMerge returns failed=1 → check run status is "completed" before merge queue entry
-- Merge conflict on SESSION_LOG.md → already fixed (excluded from commits)
-- native task store state diverged from git → `native task store sync --flush-only && git add .tasks/ && git commit -m "sync tasks"`
-- agent-worker crash on startup → check `~/.foreman/logs/<runId>.err` for syntax/import errors
-
-<!-- native task store-agent-instructions-v1 -->
-
-### Session Protocol
-
-Follow the worker phase instructions, write required reports, and keep audit artifacts out of commits.
-
-### Session Logging
-
-Session logging is required, not optional. The worker also writes automatic logs under `~/.foreman/logs/`; each agent session must maintain `SESSION_LOG.md` using this format:
-
----
-
-## Metadata
-- Date: <ISO date>
-- Phase: <explorer | developer | qa | reviewer | finalize>
-- Task: <task-id>
-- Run ID: <run-id>
-
-## Key Activities
-- <brief description of each major action taken>
-
-## Artifacts Created
-- <list of files created or modified>
-
-## Notes
-- <any observations, blockers, or context for the next agent>
+```elixir
+%{
+  status: :ok | :no_available_backend | :backend_not_found
+        | :backend_unavailable | :direct_error | :all_backends_failed
+        | :policy_module_raised | :invocation_start_failed
+        | :timeout | {:non_zero_exit, non_neg_integer()},
+  task_type: atom() | nil,
+  attempted_backends: [atom()],
+  final_backend: atom() | nil,
+  successful_backend: atom() | nil,
+  adapter_metadata: map()   # adapter-private; never the prompt
+}
 ```
 
-### Best Practices
+Privacy-safe by construction: every metadata key is constructed by a
+narrow clause that pattern-matches the result shape and **projects**
+the whitelist — adapters cannot accidentally leak prompt text,
+secrets, or full output bodies through metadata. Adapter `metadata`
+from a successful adapter is forwarded as `:adapter_metadata`; this
+is the only adapter contribution to the completion event.
 
-- Check `native task store ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `native task store create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always sync before ending session
+## 8. Configuration keys (operator-visible)
 
-<!-- end-native task store-agent-instructions -->
+App config read by the runtime:
 
-<!-- mulch:start -->
-## Project Expertise (Mulch)
-<!-- mulch-onboard-v:1 -->
+| Key | Where read | Default |
+|---|---|---|
+| `:foreman_server, :agent_runtime, :enabled` | `Application.start/2` child wiring | `false` (set to `true` in `config.exs`) |
+| `:foreman_server, :agent_runtime, :adapters` | `AgentRuntime.Supervisor.init/1` | `[]` |
+| `:foreman_server, :agent_runtime, :failure_policies` | `FailurePolicy.resolve/2` | `%{}` |
+| `:foreman_server, :agent_runtime, :default_timeout_ms` | `FailurePolicy.resolve/2` | `60_000` |
+| `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :executable` | `PiAdapter.execute/2` | `"pi"` (resolved via `System.find_executable/1`) |
+| `:foreman_server, ForemanServer.AgentRuntime.Adapters.PiAdapter, :timeout_ms` | `PiAdapter.execute/2` | `60_000` |
 
-This project uses [Mulch](https://github.com/jayminwest/mulch) for structured expertise management.
+The per-`task_type` policy map uses the same shape as the resolved
+`FailurePolicy.t/0` minus `:fail_fast`:
 
-**At the start of every session**, run:
-
-```bash
-mulch prime
+```elixir
+config :foreman_server, :agent_runtime,
+  failure_policies: %{
+    code_review: %{fallback: true},
+    long_running: %{timeout_ms: 5 * 60_000, max_attempts: 3, fallback: true}
+  }
 ```
 
-This injects project-specific conventions, patterns, decisions, and other learnings into your context.
-Use `mulch prime --files src/foo.ts` to load only records relevant to specific files.
+Adding a key not listed above is treated as a feature request, not
+a bug; do not invent behavior for undocumented keys.
 
-**Before completing your task**, review your work for insights worth preserving — conventions discovered,
-patterns applied, failures encountered, or decisions made — and record them:
+## 9. Adapter extension checklist (developer workflow)
 
-```bash
-mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
-```
+1. `defmodule MyApp.MyAdapter do` with `use ForemanServer.AgentRuntime.BackendAdapter`
+   (or implement the four callbacks by hand).
+2. Implement `name/0`, `capabilities/0`, `available?/0`, `execute/2`.
+3. Register via config (`adapters: [...]`) or at boot:
+   `ForemanServer.AgentRuntime.register(MyAdapter)`.
+4. Validation runs on every registration; fix any
+   `{:error, reason}` reply before considering the adapter wired.
+5. ExUnit coverage:
+   - adapter returns `{:ok, text, %{}}` for the happy path,
+   - adapter returns `{:error, reason}` for the canonical failure,
+   - `available?/0` is `false` when the underlying resource is gone,
+   - the public `execute/3` result contains **no** backend identifier.
 
-Link evidence when available: `--evidence-commit <sha>`, `--evidence-task <id>`
+## 10. Things that are deliberately not in this slice
 
-Run `mulch status` to check domain health and entry counts.
-Run `mulch --help` for full usage.
-Mulch write commands use file locking and atomic writes — multiple agents can safely record to the same domain concurrently.
+- No streaming. Each `execute/3` is one round-trip; partial progress
+  is not surfaced.
+- No retry of the entire execution across crashes. The invocation
+  process owns attempt history; the OS process backing a crashed
+  adapter may leak a temp file.
+- No queueing for unavailable adapters. An empty / unavailable
+  catalog returns `:no_available_backend` immediately.
+- No remote backend in this slice. `PiAdapter` is local only.
 
-### Before You Finish
+These are tracked in the TRD-2026-6af02293 documentation under
+*Open Issues / Future Work*. Any code that introduces them inline
+without a TRD is out of scope.
 
-1. Discover what to record:
+## 11. Workflow catalog is the only manifest source (Go/Elixir CQRS slice)
 
-   ```bash
-   mulch learn
-   ```
+`ForemanServer.Workflow.Catalog` is the supervised GenServer that owns
+every parsed workflow manifest and prompt body in memory and keeps
+them in sync with the on-disk root (`~/.foreman/workflows`,
+hardcoded by `AssetCatalog.default/0`).
 
-2. Store insights from this work session:
+- **Single owner of manifests.** `Approval.resolve_workflow_snapshot/2`
+  (the public `Approval.prepare/2` path) and the private
+  `RunExecutor.read_phase_prompt/2` read through the catalog.
+  No module reads a workflow manifest or prompt file directly;
+  the catalog is the only path.
+- **Auto-install is gated.** `init/1` calls
+  `ForemanServer.WorkflowTemplate.Installer` only when the root
+  contains no `*.yaml` manifests. A populated `prompts/` directory
+  does **not** suppress the install; the installer uses
+  `File.cp/2`/`File.write/2` and will overwrite any same-named
+  prompt already on disk. Keep custom templates under their own
+  filenames.
+- **Synchronous load.** Every manifest is parsed via
+  `ForemanServer.Workflow.Interpreter.load/1` and every prompt via
+  `File.read/1` during `init/1` so the first command after boot
+  finds the catalog ready.
+- **Hot reload by polling.** A periodic timer (default 2 s,
+  override via `Application.put_env(:foreman_server,
+  :workflow_catalog_poll_ms, ms)`) re-hashes every entry and
+  replaces any whose content or mtime changed; vanished files are
+  removed. `:fs` is **not** used; this slice does not depend on
+  the `FileSystem` package.
+- **Test isolation.** `Catalog.server/0` reads the
+  `:workflow_catalog` app env so tests can redirect to a scoped
+  instance via `Application.put_env(:foreman_server,
+  :workflow_catalog, server_name)` without tearing down the
+  app-managed catalog.
 
-   ```bash
-   mulch record <domain> --type <convention|pattern|failure|decision|reference|guide> --description "..."
-   ```
+Telemetry: `[:foreman_server, :workflow, :installed]`,
+`[:foreman_server, :workflow, :manifest, :loaded | :reload, :ok |
+:reload, :error | :removed]`,
+`[:foreman_server, :workflow, :prompt, :loaded | :reload, :ok |
+:reload, :error | :removed]`.
 
-3. Validate and commit:
+Operator-facing CLI: `foreman workflow install --target PATH [--source PATH | --remote URL]`
+(see `docs/cli-reference.md`). The CLI is a thin shell around the
+HTTP admin endpoint and is **not** an alternate write path to the
+event store; it only materialises assets on disk.
 
-   ```bash
-   mulch sync
-   ```
-<!-- mulch:end -->
+## 12. Foreman-managed worktree contract for implement-trd workflows (Go/Elixir CQRS slice)
+
+Foreman bundles two workflow manifests at
+`packages/foreman_server/priv/defaults/workflows/`:
+`implement-trd.yaml` and `implement-trd-beads.yaml`. Both declare
+the worktree schema, register with
+`ForemanServer.WorkflowTemplate.Installer` (`@template_names`), and
+are deployed by `foreman init --force`. The CLI selects them via
+`--workflow-type implement-trd` or `--workflow-type implement-trd-beads`
+(see `docs/cli-reference.md` for the full flag set).
+
+Strict approval rendering materializes the `command` field and the
+`worktree.base` field so the human review surfaces the exact slash
+command and base ref Foreman will execute. Branch and path
+placeholders (`{run_id}`, `{phase}`) remain runtime-resolved.
+
+The phase runner (`ForemanServer.Workflow.RunExecutor`) auto-injects
+the following env vars when the worktree is enabled:
+`FOREMAN_WORKTREE`, `FOREMAN_RUN_ID`, `FOREMAN_WORKTREE_PATH`,
+`FOREMAN_EXPECTED_BRANCH`, `FOREMAN_SOURCE_REVISION`, and
+`FOREMAN_IMPLEMENTATION_KEY`. The Beads-backed flow additionally
+receives `BEADS_DB` and `TRD_SCOPE` when the planning context
+provides them. `FOREMAN_EXPECTED_BASE` is **not** injected; the base
+is resolved lazily at completion time to honor pushes that landed
+during the phase.
+
+`RunExecutor.init/1` parses the persisted `workflow_snapshot` via
+`extract_phase_specs/1`, which uses the dual-key pattern
+`Map.get(snapshot, :phases) || Map.get(snapshot, "phases")` so the
+persisted (JSON-decoded) projection shape is honored. The
+renderer in `CommandGateway.enrich_approval_via_workflow/2` writes
+back the canonical string-keyed form so the EventStore-bound
+`TaskApproved` payload has exactly one entry per field and the
+JSON round-trip is lossless.
+
+### Contract checklist for contributors (worktree/TRD slice)
+
+- **Task vs. workflow.** Provider task type is independent of
+  implementation workflow. `--workflow-type` selects which bundled
+  manifest Foreman resolves at approval. Approval precedence is
+  `workflow_type || task_type || default_task_type`; absent fields
+  preserve existing behavior.
+- **Tracked TRD.** `--trd-path` must be a tracked regular blob in
+  the registered project at the frozen source revision.
+  `ImplementationContext.build/1` rejects untracked, working-copy,
+  directory, symlink, and traversal cases; the frozen relative path
+  and SHA persist for idempotent re-approval.
+- **Worktree ownership.** Foreman exclusively creates, pins, and
+  cleans the worktree at `~/.foreman/worktrees/<project_id>/<run_id>/<path>`.
+  Skills under `--foreman` must verify the trusted
+  cwd/branch/revision markers and must not create, switch, append,
+  or stack branches. There is no skill-owned worktree fallback.
+- **Same-TRD single-flight.** `implementation_key = SHA256(project_id
+  <> "\0" <> normalized_trd_path)` is reserved through
+  `ProjectRunReserved`. Concurrent `run.start` for the same key is
+  rejected with `{:implementation_already_active, key, run_id}`
+  before any worktree side effect. The key is server-derived and
+  cannot be overridden by operator payload or phase YAML context.
+- **Beads scope.** For `implement-trd-beads`, freeze
+  `task_provider.config.database_path` (from the TaskProvider
+  Registry, not cwd discovery) and `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
+  at approval. Every `br`/`bv` invocation passes `BEADS_DB` and
+  `TRD_SCOPE` explicitly. Scaffolds are prefixed `[trd:<TRD_SCOPE>]`.
+- **Clean-vs-dirty cleanup.** Clean worktrees are removed on
+  terminal phases; dirty worktrees are preserved with reason
+  `:dirty` / `:active_workers` / `:clean_failed` /
+  `:resolve_dispatch_failed` on
+  `[:foreman_server, :vcs, :worktree, :orphan_preserved]`. Recovery
+  never force-deletes.
+
+## 13. Task-provider boundary reminder (Go/Elixir CQRS slice)
+
+RunExecutor drives claim/complete/fail. Workflow.BootReconciliation
+drives orphan-reopen. `set_priority` and `add_dependency` stay at the
+adapter boundary until a separate operator surface TRD introduces them.
+
+## 14. Beads sync invariants (Go/Elixir CQRS slice)
+
+Atomic `task.create` and bidirectional Beads sync are governed by
+these invariants. Drift without a tracked TRD is a regression.
+
+- **Atomic `task.create`.** `Task.create` flows through the `Task`
+  aggregate in a four-stage pipeline (`actor.ex`: `do_dispatch/4`):
+  (1) `handle_command/2` produces the stage-1 event spec;
+  (2) `resolve_enriched_event_spec/3` invokes the project's configured
+  `:create` provider (`TaskProvider.Registry.route(:create, ...)` →
+  `provider.create/2`) to mint a Bead **before** the append;
+  (3) the actor re-decides `handle_command/2` with the Bead ID
+  populated as `payload.external_id` on the event spec;
+  (4) `append_and_commit/7` performs the append/ack/commit.
+  **Provider failure aborts the command entirely**: a `{:error, _}`
+  from `provider.create/2` returns `{:error, reason, state}` with no
+  append, no event, and no compensation (no Bead was minted to close).
+  **Conflict / re-decision failures compensate the Bead**: on the
+  bounded retry path, `compensate_for_conflict/3` closes the Bead via
+  `BeadsAdapter.complete/3` with the canonical `transition_comment`
+  so a successful stage 2 does not strand. The cache entry in
+  `state.in_flight_beads` is the single source of truth for "Bead
+  minted but not committed"; clearing it after compensation prevents
+  double-close on a subsequent retry. (Other append-failure modes
+  outside the conflict-retry path are not characterized here.)
+- **`external_id` surface contract.** The successful `task.create`
+  HTTP response (HTTP 201 with `status: "accepted"`,
+  `result: %{events: 1}`) does **not** carry `external_id` —
+  `CommandController.serialize/1` returns `%{events: 1}` for
+  `{:ok, _events}` and does not enrich the response with the
+  persisted event's fields. Operators retrieve the bead linkage by
+  reading the task projection (`GET /api/tasks/:id`,
+  surfaced via `foreman task get`), whose `external_id` field is
+  populated on the persisted `TaskCreated` event when the
+  project's `task_provider` capabilities advertised `:create`.
+  Provider failure aborts the command entirely (no event, no
+  successful response, no `external_id` surface).
+
+- **Operator-issued ≠ no-Bead.** A `task.create` issued by the
+  operator on a project with a configured `:create` provider still
+  gets an `external_id`. The presence/absence of `external_id` means
+  "Bead linked" vs "Bead not linked", **not** "operator-issued" vs
+  "system-issued".
+- **Beads → Foreman (inbound) is opt-in.** The
+  `BeadsWatcherSupervisor` is added to `ForemanServer.Application`
+  only when `config :foreman_server, :start_beads_watcher?, true`.
+  The watcher dispatches `task.create` for each new Bead it sees in
+  the project's JSONL; that `task.create` re-enters the same Actor
+  hook path, so a Bead originated by the watcher does **not** cause
+  another Bead to be minted (provider skips when the Bead already
+  exists).
+- **Orphan janitor is opt-in.** `BeadsOrphanJanitorSupervisor` is
+  added only when `config :foreman_server, :start_beads_orphan_janitor?,
+  true`. The janitor closes stranded issuance (Bead minted but no
+  Foreman task landed within the grace window) and stranded execution
+  (Foreman task terminal but Bead never closed by `RunExecutor`). Both
+  flags are required for production: watcher-only strands execution,
+  janitor-only strands inbound issuance.
+- **Adapter boundary holds.** `set_priority` and `add_dependency`
+  remain adapter callbacks. No operator surface promotes them into
+  Foreman commands in this slice.
+- **Doctor surface is honest about current scope.**
+  `foreman doctor task_provider` reports the fields it actually
+  emits per project: `project_id`, `healthy`, `provider_id`,
+  `contract_version`, `br_version`, `capabilities`, `sample_ready`,
+  `schema_validation_failures`, `janitor_enabled`, `janitor_running`,
+  `orphan_backlog`, and (on the unhappy branch) `error`. The
+  janitor fields are a CQRS read of the cached snapshot maintained
+  by `BeadsOrphanJanitor`'s own scan loop; the doctor MUST NOT
+  invoke `BeadsOrphanJanitor.run_scan/2` itself. Operators needing
+  finer-grained runtime visibility (per-scan event streams,
+  supervisor lifecycle transitions) should rely on the
+  `[:foreman_server, :task_provider, :beads, ...]` telemetry events.
+
+## 15. Per-DB Beads lease (Go/Elixir CQRS slice)
+
+SQLite's single-writer protocol cannot tolerate concurrent `br`/`bv`
+writers or writers running alongside `bv --robot-plan`. The
+`ForemanServer.Aggregates.BeadsDbLease` aggregate is an event-sourced
+lock keyed by the configured absolute Beads DB path passed at acquire
+time, giving process-local serialization through the Actor mailbox
+while surviving Foreman restarts via persisted events. Different DBs
+and direct (`foreman run`) workflows remain parallel. Callers must
+pass the same absolute path on every dispatch — symlink aliasing
+(e.g. `/tmp/...` vs `/private/tmp/...`) is NOT collapsed and will
+register separate lease streams.
+
+- **Acquire-or-enqueue.** `lease.acquire` is atomic: if the DB is
+  free, the run becomes the holder; if held, the run is enqueued as a
+  waiter and admission returns `:queued`.
+- **Release-with-promotion.** When the holder releases with waiters,
+  the aggregate emits a single `BeadsDbLeaseTransferred` event that
+  releases the old holder and promotes the head waiter, so cancellation
+  cannot race with promotion. The `Dispatcher` subscribes to this
+  event and re-enters `RunAdmission.start/2` for the promoted run.
+- **Terminal fan-out.** The `Dispatcher` dispatches `lease.release`
+  and `lease.remove_waiter` on every terminal run event
+  (`RunCancelled`, `RunDeleted`, `RunFlaggedStuck`, `RunCompleted`, `RunFailed`,
+  `RunBlocked`). `RunBlocked` is terminal for lease cleanup: a blocked
+  run must release its Beads-DB lease so queued peers can be promoted.
+- **Fail-closed gating.** `RunAdmission.start/3` reads the lease
+  decision before starting the run supervisor. Any uncertainty
+  (acquire error, atom state of `:unknown` or `:unexpected`) returns
+  `{:error, ...}` and skips dispatch. A `:queued` decision returns
+  without starting the supervisor; the dispatcher picks the run up
+  again on `BeadsDbLeaseTransferred`.
+- **Compensation.** `lease.release` on admission failure is only emitted
+  for definitively non-retryable rejections (`{:missing_or_invalid, …}`,
+  `{:implementation_already_active, …}`, `{:command_rejected, …}`).
+  Compensating transient errors would break retry semantics.
+- **Scope limitation (operator responsibility).** The lease serializes
+  only admission through Foreman. External `br` writers and
+  `bv --robot-plan` invocations launched outside Foreman (e.g. from a
+  human shell or unrelated automation) are NOT gated by this lease.
+  If you bypass Foreman and write to the same Beads DB concurrently
+  with a held lease, SQLite's single-writer model will still observe
+  concurrent writers. Operators must observe single-writer discipline
+  themselves. The lease exists to prevent two Foreman-dispatched runs
+  from racing on the same DB, not to mediate file-system access against
+  unrelated processes. The contract test
+  `test/foreman_server/workflow/br_bv_lease_concurrency_test.exs`
+  verifies the admission contract; cross-process discipline against
+  external writers is a separate, operator-owned concern.

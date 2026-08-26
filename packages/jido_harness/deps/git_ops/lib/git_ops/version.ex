@@ -1,0 +1,205 @@
+defmodule GitOps.Version do
+  @moduledoc """
+  Functionality around parsing and comparing versions contained in git tags
+  """
+
+  alias GitOps.Commit
+
+  @spec last_valid_non_rc_version([String.t()], String.t()) :: String.t() | nil
+  def last_valid_non_rc_version(versions, prefix) do
+    versions
+    |> Enum.reject(fn tag -> parse(prefix, tag) == :error end)
+    |> Enum.find(fn version ->
+      match?({:ok, %{pre: []}}, parse(prefix, version))
+    end)
+  end
+
+  @spec last_valid_version([String.t()], String.t()) :: String.t() | nil
+  def last_valid_version(versions, prefix) do
+    versions
+    |> Enum.reject(fn tag -> parse(prefix, tag) == :error end)
+    |> Enum.find(fn version ->
+      match?({:ok, %{}}, parse(prefix, version))
+    end)
+  end
+
+  def determine_new_version(current_version, prefix, commits, last_valid_non_rc_version, opts) do
+    if opts[:override] do
+      opts[:override]
+    else
+      parsed = parse!(prefix, prefix <> current_version)
+
+      rc? = opts[:rc]
+
+      build = opts[:build]
+
+      last_valid_non_rc_version =
+        if last_valid_non_rc_version && prefix && prefix != "" do
+          String.trim_leading(last_valid_non_rc_version, prefix)
+        else
+          last_valid_non_rc_version
+        end
+
+      new_version =
+        new_version(
+          commits,
+          parsed,
+          rc?,
+          last_valid_non_rc_version,
+          opts
+        )
+
+      if versions_equal?(new_version, parsed) && build == parsed.build do
+        raise """
+        No changes should result in a new release version.
+
+        Options:
+
+        * If no fixes or features were added, then perhaps you don't need to release.
+        * If a fix or feature commit was not correctly annotated, you could alter your git
+          history to fix it and run this command again, or create an empty commit via
+          `git commit --allow-empty` that contains an appropriate message.
+        * If you don't care and want a new version, you can use `--force-patch` which
+          will update the patch version regardless.
+        * You can add build metadata using `--build` that will signify that something was
+          unique about this build.
+        """
+      end
+
+      unprefixed =
+        new_version
+        |> Map.put(:build, build)
+        |> to_string()
+
+      prefix <> unprefixed
+    end
+  end
+
+  def last_version_greater_than(versions, last_version, prefix) do
+    Enum.find(versions, fn version ->
+      case parse(prefix, version) do
+        {:ok, version} ->
+          Version.compare(version, parse!(prefix, last_version)) == :gt
+
+        _ ->
+          false
+      end
+    end)
+  end
+
+  defp new_version(commits, parsed, rc?, last_valid_non_rc_version, opts) do
+    pre = default_pre_release(rc?, opts[:pre_release])
+
+    last_valid_non_rc_version =
+      last_valid_non_rc_version && Version.parse!(last_valid_non_rc_version)
+
+    new_version =
+      cond do
+        Enum.any?(commits, &Commit.breaking?/1) &&
+            !(rc? && last_valid_non_rc_version &&
+                  last_valid_non_rc_version.major != parsed.major) ->
+          if opts[:no_major] do
+            %{parsed | minor: parsed.minor + 1, patch: 0, pre: pre}
+          else
+            %{parsed | major: parsed.major + 1, minor: 0, patch: 0, pre: pre}
+          end
+
+        Enum.any?(commits, &Commit.feature?/1) &&
+            !(rc? && last_valid_non_rc_version &&
+                  (last_valid_non_rc_version.major != parsed.major ||
+                     last_valid_non_rc_version.minor != parsed.minor)) ->
+          if match?(["rc" <> _ | _], parsed.pre) && !rc? do
+            parsed
+          else
+            %{parsed | minor: parsed.minor + 1, patch: 0, pre: pre}
+          end
+
+        Enum.any?(commits, &Commit.fix?/1) || opts[:force_patch] ->
+          if match?(["rc" <> _], parsed.pre) && rc? do
+            %{parsed | pre: increment_rc!(parsed.pre)}
+          else
+            new_version_patch(parsed, pre, rc?)
+          end
+
+        true ->
+          parsed
+      end
+
+    if match?(["rc" <> _ | _], parsed.pre) && !rc? do
+      %{new_version | pre: List.wrap(opts[:pre_release])}
+    else
+      new_version
+    end
+  end
+
+  defp default_pre_release(true, _pre_release), do: ["rc.0"]
+  defp default_pre_release(_rc?, pre_release), do: List.wrap(pre_release)
+
+  defp new_version_patch(parsed, pre, rc?) do
+    case {parsed, pre, rc?} do
+      {parsed, [], _} ->
+        %{parsed | patch: parsed.patch + 1, pre: []}
+
+      {parsed = %{pre: []}, pre, _} ->
+        %{parsed | patch: parsed.patch + 1, pre: pre}
+
+      {parsed = %{pre: ["rc." <> _]}, pre, nil} ->
+        %{parsed | patch: parsed.patch + 1, pre: pre}
+
+      {parsed = %{pre: ["rc" <> _]}, pre, nil} ->
+        %{parsed | patch: parsed.patch + 1, pre: pre}
+
+      {parsed, _pre, true} ->
+        %{parsed | pre: increment_rc!(parsed.pre)}
+
+      {parsed, pre, _} ->
+        %{parsed | pre: pre}
+    end
+  end
+
+  defp increment_rc!(nil), do: ["rc", "0"]
+  defp increment_rc!([]), do: ["rc", "0"]
+  defp increment_rc!([rc]), do: List.wrap(increment_rc!(rc))
+  defp increment_rc!([rc, int]) when is_integer(int), do: [rc, int + 1]
+
+  defp increment_rc!("rc" <> rc) do
+    case Integer.parse(rc) do
+      {int, ""} ->
+        "rc#{int + 1}"
+
+      :error ->
+        raise "Found an rc version that could not be parsed: rc#{rc}"
+    end
+  end
+
+  defp increment_rc!(rc) do
+    raise "Found an rc version that could not be parsed: #{rc}"
+  end
+
+  defp versions_equal?(left, right) do
+    Version.compare(left, right) == :eq
+  end
+
+  defp parse(_, version = %Version{}), do: {:ok, version}
+  defp parse("", text), do: Version.parse(text)
+
+  defp parse(prefix, text) do
+    if String.starts_with?(text, prefix) do
+      text
+      |> String.trim_leading(prefix)
+      |> Version.parse()
+    else
+      :error
+    end
+  end
+
+  defp parse!(prefix, text) do
+    case parse(prefix, text) do
+      {:ok, parsed} ->
+        parsed
+
+      :error ->
+        raise ArgumentError, "Expected: #{text} to be parseable as a version, but it was not."
+    end
+  end
+end

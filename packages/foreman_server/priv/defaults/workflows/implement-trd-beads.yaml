@@ -1,0 +1,10 @@
+name: implement-trd-beads
+description: Implement a Technical Requirements Document via the Beads-backed ensemble implement-trd-beads skill under Foreman-managed execution.
+phases:
+  - name: implement-trd-beads
+    command: "/skill:ensemble-full-implement-trd-beads {{implementation.trd_path_argument}} --foreman"
+    worktree:
+      enabled: true
+      base: "{{implementation.source_revision}}"
+      branch: foreman/{run_id}/{phase}
+      cleanup: never

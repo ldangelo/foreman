@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "0e84fc5d-97de-404b-9d3f-bea74d8c3417",
+  "title": "Repo: /Users/ldangelo/Development/Fortium/foreman.",
+  "objective": "Repo: /Users/ldangelo/Development/Fortium/foreman.\nTask: recon for PRD/TRD on adding workflow-configured VCS git worktree support.\nReturn concise facts w/ file paths/line anchors: VcsOperation commands/events, VcsAdapter.Default existing funcs, workflow interpreter/catalog phase schema, RunExecutor phase dispatch/cwd handling, test files/fixtures, docs refs. No edits.",
+  "status": "active",
+  "createdAt": "2026-08-12T19:16:08.905Z",
+  "updatedAt": "2026-08-12T19:16:08.919Z",
+  "runs": [],
+  "decisions": [],
+  "artifacts": [],
+  "receipts": [],
+  "cwd": "/Users/ldangelo/Development/Fortium/foreman",
+  "ownerSessionId": "019ff766-b350-7b29-a5e7-7f4b122c4f60"
+}

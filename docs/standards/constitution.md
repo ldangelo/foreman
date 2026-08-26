@@ -152,11 +152,200 @@ foreman/
     TRD/              # Technical Requirements Documents
 ```
 
----
+## 7. Slice: `slices/go-elixir-cqrs`
+
+The rules in this section are binding on all implementation in `slices/go-elixir-cqrs`.
+They supplement Sections 1–6. Violations are rejected at code review.
+
+### Article I — Event Store Append
+
+1. **Only `CommandRouter`** (or a `defp` helper private to `CommandRouter`) may call
+   `EventStore.append` in production code.
+2. No aggregate handler calls `EventStore.append` directly. Handlers return
+   `{:ok, event_spec()}`. `CommandRouter` appends after validation.
+3. An ExUnit architecture test enumerates all allowed `EventStore.append` call sites
+   and fails if any unauthorized module appends.
+
+### Article II — Actor Supervision
+
+1. Every active aggregate (Project, Task, Run) has one supervised GenServer actor
+   registered by aggregate ID (`"project:#{id}"`, `"task:#{id}"`, `"run:#{id}"`).
+2. Actor restart policy is `:permanent`. On restart, the actor must call
+   `Aggregate.load/2` to rehydrate state from its event stream before processing
+   any command.
+3. Commands to a given aggregate are serialized through the actor's mailbox.
+   No two commands to the same aggregate process concurrently.
+4. Actor in-memory state is mutated **only after** `EventStore.append` succeeds —
+   not optimistically before.
+
+### Article III — Command / Query Separation
+
+1. All state mutations are commands. Every command is a `POST /api/commands` routed
+   through `CommandRouter.handle`.
+2. All reads are queries. Queries read from the projection store (read model).
+   No write on the query path.
+3. Workers send commands (not events). Worker completion is a `command_type:
+   "worker.event"` or `command_type: "run.complete"` command. Workers never write
+   to the event store directly.
+
+### Article IV — Go CLI Boundaries
+
+1. The Go CLI sends commands and queries only. It has no direct access to the
+   event store, projection store, or Elixir internal state.
+2. The Go CLI maps every operation to exactly one `POST` (command) or one `GET`
+   (query). No multi-step transaction spanning multiple HTTP calls.
+
+### Article V — Concurrency
+
+1. Every `EventStore.append` uses `expected_stream_version` for optimistic
+   concurrency. Conflicts return `{:error, :wrong_expected_version}`. No partial state
+   is written. The Actor intercepts the conflict and reloads state via
+   `Aggregate.load/2`, re-decides via `handle_command/2`, and retries the append with
+   the new version (bounded at `@max_conflict_retries = 3` in
+   `ForemanServer.Aggregate.Actor`). On retry exhaustion the actor returns the conflict
+   error to the caller; on re-decision rejection (e.g. terminal state) the retry loop
+   terminates without appending — preserving exactly-once semantics.
+2. Every command carries a unique `command_id`. The event store deduplicates
+   by `command_id`.
+3. Out-of-order events are rejected by the aggregate's state machine. The event
+   ordering is part of the aggregate invariant; violating order is a rejected
+   command, not silent state drift.
+
+### Article VI — Crash Behavior
+
+1. Events written before a crash are durable and replayable after restart
+   rehydration.
+2. Events that were in-flight (written by the actor but not yet appended) are
+   absent after restart — confirmed absent, not silently lost.
+3. After restart rehydration, subsequent commands operate on the correct
+   pre-crash state. No phantom post-crash state, no duplicate events.
+
+### Article VII — Greenfield Constraint
+
+1. Implementation files are not copied from the current repo (`main`,
+   `fix/runtime-mode-leak`). Only `packages/foreman_server/lib/foreman_server/aggregates/`
+   is consulted as behavioral reference — no source files transferred.
+2. Decisions documented in `AGENTS.md` and this constitution are binding.
+   Changing any rule requires updating both documents.
+
+### Article VIII — Aggregate State and Command Ingress
+
+1. **Aggregate state MUST be a dedicated `%Aggregate.State{}` struct.** Every aggregate
+   module defines a nested `State` struct (e.g., `defmodule State, do: defstruct [...]`)
+   for its closed field set. Maps are permitted only as nested genuinely dynamic
+   values (e.g., `config`, `phase_status`). All existing aggregates are noncompliant:
+
+   Required migrations (all under `lib/foreman_server/aggregates/`):
+   `Project`, `Run`, `Task`, `Phase`, `Worker`, `OperatorIntervention`, `PlanningFlow`,
+   `Recovery`, `Scheduler`, `ToolCall`, `VcsOperation`, `ArtifactReport`, `Attachment`,
+   `ExternalTrigger`, `ImportMigration`, `InboxThread`, `Integration`.
+2. **Event application MUST use struct-update syntax.** `apply_event` uses
+   `%State{state | field: value}`. Raw `Map.merge(state, payload)` is
+   prohibited — it bypasses the struct's closed-field enforcement. `struct/2`
+   silently ignores unknown keys and MUST NOT be used.
+3. **Every ingress adapter and internal command producer MUST construct a recognized
+   command struct.** REST/GraphQL controllers, worker adapters, and any internal
+   module that produces commands must build explicit command structs from
+   `lib/foreman_server/commands/`. `CommandRouter` MUST reject non-struct payloads.
+   This is migration debt: `CommandRouter` currently accepts `map()`.
+4. **`handle_command` independently enforces domain invariants.** Struct
+   construction does not enforce state preconditions or valid transitions.
+   Field-level validation belongs in `handle_command`.
+
+### Article IX — Typed Domain Events
+
+1. **Closed-domain events are typed structs with enforced fields.** Every authoritative
+   domain event is a module in `lib/foreman_server/events/` with '@enforce_keys' and
+   an explicit '@type t'. An empty `defstruct []` is a missing schema — it provides
+   no field contracts and permits all values to be `nil`.
+   Canonical form:
+   ```elixir
+   defmodule ForemanServer.Events.RunCompleted do
+     @enforce_keys [:run_id, :sequence]
+     @type t :: %__MODULE__{
+       run_id: String.t(),
+       sequence: non_neg_integer(),
+       status: String.t() | nil
+     }
+     @derive Jason.Encoder
+     defstruct [:run_id, :sequence, status: nil]
+   end
+   ```
+
+2. **`%EventData{}` and `%RecordedEvent{}` are persistence envelopes only.** They are
+   the EventStore adapter's serialization wrappers. `EventData.data` / `RecordedEvent.data`
+   holds the serialized domain struct — it is not a domain type itself.
+
+3. **Aggregates pattern-match on typed event structs.** `apply_event` receives the
+   typed struct directly:
+   ```elixir
+   # Correct — typed pattern match
+   def apply_event(state, %RunCompleted{run_id: run_id, sequence: seq}) do
+     %State{state | status: "completed", terminal?: true,
+            run_id: run_id, last_sequence: seq}
+   end
+
+   # Regression — string-keyed switching defeats the type contract
+   def apply_event(state, event) do
+     payload = Aggregate.event_payload(event)
+     case Aggregate.event_type(event) do
+       "RunCompleted" -> %State{state | status: payload["status"], ...}
+     end
+   end
+   ```
+
+4. **`EventCodec.decode!/2` is the replay contract.** The codec reconstructs typed
+   domain structs from deserialized data. The uniform API is `decode!(event_type, data)`:
+   typed structs pass through unchanged; JSON-deserialized maps are validated and rebuilt.
+   Both paths reject a struct whose module does not match the `event_type` string:
+   ```elixir
+     defmodule ForemanServer.EventCodec do
+       # Typed Erlang-term struct — reject mismatched event_type
+       def decode!("RunCompleted", %ForemanServer.Events.RunCompleted{} = event), do: event
+       def decode!("RunStarted",     %ForemanServer.Events.RunStarted{} = event),     do: event
+       # ... one pass-through clause per typed event struct
+     # JSON-deserialized map — string keys from JSON, reject unknown keys
+     def decode!("RunCompleted", data) do
+       allowed = ~w[run_id sequence status]
+       unknown = Map.keys(data) -- allowed
+       (unknown == []) or raise "unknown keys: #{inspect(unknown)}"
+       %ForemanServer.Events.RunCompleted{
+         run_id:   Map.fetch!(data, "run_id"),
+         sequence: Map.fetch!(data, "sequence"),
+         status:   Map.get(data, "status")
+       }
+     end
+
+     def decode!("RunStarted", data) do
+       allowed = ~w[run_id task_id]
+       unknown = Map.keys(data) -- allowed
+       (unknown == []) or raise "unknown keys: #{inspect(unknown)}"
+       %ForemanServer.Events.RunStarted{
+         run_id:  Map.fetch!(data, "run_id"),
+         task_id: Map.fetch!(data, "task_id")
+       }
+     end
+   end
+   ```
+   The aggregate's `apply_event` then pattern-matches the typed struct, not a map.
+
+5. **Maps are for genuinely open nested data only.** The `payload` of a typed event
+   struct may contain a map for open-ended data (e.g., config blobs, heterogeneous
+   metadata). Maps MUST NOT replace the typed event struct itself.
+
+6. **Event structs are defined before the aggregate that emits them.** New domain
+   events are added to `events/` before `handle_command` produces them. No `case`
+   on string event types as a workaround for missing structs.
+
+___
+
 
 ## Changelog
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-27 | Added Article IX: typed domain event structs, EventData/RecordedEvent as persistence envelopes only, EventCodec.decode!/2 replay contract, explicit per-event decoders | Pi Agent |
+| 2026-07-26 | Added Section 7: Slice `slices/go-elixir-cqrs` — supervised actors, sole CommandRouter append, CQRS, Go CLI boundaries, greenfield constraint | Pi Agent |
+| 2026-07-26 | Added Article VIII: aggregate State structs, struct-update syntax in apply_event, command ingress coercion, handle_command domain invariants | Pi Agent |
 | 2026-07-01 | Added event-sourced orchestration invariant: events trigger behavior; projections are read models | Pi Agent |
 | 2026-03-10 | Initial constitution generated | /init-project |

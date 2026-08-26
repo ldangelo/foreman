@@ -1,160 +1,135 @@
 defmodule ForemanServer.VcsAdapter do
-  @moduledoc "Event-owned VCS/worktree adapter boundary for Git and Jujutsu backends."
+  @moduledoc """
+  Behaviour contract for VCS adapters (clone/branch/create_pr/worktree).
+  """
 
-  alias ForemanServer.{EventStore, ProjectionStore}
+  @doc """
+  Implementation callback for cloning a repository.
+  """
+  @callback clone(url :: String.t(), opts :: keyword()) ::
+              {:ok, %{path: String.t()}}
+              | {:error, :not_found | :auth | :invalid | {:transient, term()}}
 
-  @type backend :: :git | :jujutsu
-  @type worktree_result :: {:ok, map()} | {:error, term()}
+  @doc """
+  Implementation callback for creating a branch in `path` named `name`.
+  """
+  @callback branch(path :: String.t(), name :: String.t()) ::
+              {:ok, %{branch: String.t()}}
+              | {:error, :not_found | :auth | :invalid | {:transient, term()}}
 
-  @spec create_worktree(map()) :: worktree_result()
-  def create_worktree(input) when is_map(input) do
-    input = atomize_keys(input)
+  @doc """
+  Implementation callback for creating a pull request.
+  """
+  @callback create_pr(path :: String.t(), opts :: keyword()) ::
+              {:ok, %{url: String.t(), number: non_neg_integer()}}
+              | {:error, :not_found | :auth | :invalid | {:transient, term()}}
 
-    with {:ok, backend} <- backend(Map.get(input, :backend, :git)),
-         {:ok, run_id} <- required_binary(Map.get(input, :run_id), :run_id),
-         {:ok, workspace_id} <-
-           required_binary(Map.get(input, :workspace_id, run_id), :workspace_id),
-         {:ok, project_path} <- required_binary(Map.get(input, :project_path), :project_path),
-         {:ok, base_ref} <- required_binary(Map.get(input, :base_ref, "HEAD"), :base_ref) do
-      branch = Map.get(input, :branch, "foreman/#{run_id}")
+  @doc """
+  Implementation callback for creating a worktree.
 
-      worktree_path =
-        Map.get(input, :worktree_path, Path.join([project_path, ".foreman", "worktrees", run_id]))
+  Required opts (all `Keyword.fetch!/2`): `:operation_id`, `:base`,
+  `:branch` (nil allowed for detached), `:project_id`, `:run_id`,
+  `:phase_id`.
 
-      stale = observe_stale(worktree_path)
-      policy = Map.get(input, :stale_policy, "reuse")
-      effects = stale_effects(stale, policy, backend)
+  Returns the captured git stdout/stderr in the `:output` key on success
+  so callers can correlate with telemetry.
+  """
+  @callback create_worktree(
+              repo_path :: String.t(),
+              worktree_path :: String.t(),
+              opts :: keyword()
+            ) ::
+              {:ok,
+               %{path: String.t(), base: String.t(), branch: String.t() | nil, output: String.t()}}
+              | {:error, term()}
 
-      payload = %{
-        operation_id: Map.get(input, :operation_id, "vcs-#{run_id}"),
-        run_id: run_id,
-        workspace_id: workspace_id,
-        backend: Atom.to_string(backend),
-        project_path: project_path,
-        worktree_path: worktree_path,
-        branch: branch,
-        base_ref: base_ref,
-        revision: Map.get(input, :revision, base_ref),
-        stale: stale,
-        stale_policy: policy,
-        effects: effects,
-        adapter: adapter_details(backend)
-      }
+  @doc """
+  Implementation callback for cleaning a worktree.
 
-      append("WorktreeCreated", payload)
+  Required opts (all `Keyword.fetch!/2`): `:operation_id`, `:repo_path`,
+  `:project_id`, `:run_id`, `:phase_id`. The adapter MUST NOT pass
+  `--force` to `git worktree remove`; a dirty worktree is returned as
+  `{:error, {:git_worktree_clean_failed, _, _}}` for operator inspection.
+
+  The result shape differs by `noop?`:
+    * `noop?: true`  — path was absent, no git invocation, no `output` key.
+    * `noop?: false` — git worktree remove succeeded, `output` carries
+      captured stdout/stderr.
+  """
+  @callback clean_worktree(worktree_path :: String.t(), opts :: keyword()) ::
+              {:ok, %{path: String.t(), cleaned?: true, noop?: false, output: String.t()}}
+              | {:ok, %{path: String.t(), cleaned?: true, noop?: true}}
+              | {:error, term()}
+
+  @non_transient [:auth, :not_found, :invalid]
+
+  @doc """
+  Run a VCS function with retry-on-transient semantics.
+
+  * Retries up to `:max_retries` (default 3) with exponential backoff.
+  * Returns `{:ok, result}` on success.
+  * Returns `{:error, reason}` after exhausting retries for transient failures.
+  * Returns `{:error, reason}` immediately for non-transient errors.
+  """
+  @spec run(
+          module(),
+          :clone | :branch | :create_pr | :create_worktree | :clean_worktree,
+          [term()],
+          keyword()
+        ) ::
+          {:ok, term()} | {:error, term()}
+  def run(module, fun, args, opts \\ []) do
+    max_retries = Keyword.get(opts, :max_retries, 3)
+    base_delay = Keyword.get(opts, :base_delay_ms, 25)
+    fun_ref = build_fun(module, fun)
+
+    run_with_retries(fun_ref, args, max_retries, base_delay, 1)
+  end
+
+  @doc """
+  Classify whether an error reason is transient.
+  """
+  @spec transient?(term()) :: boolean()
+  def transient?({:transient, _}), do: true
+  def transient?(_other), do: false
+
+  @doc """
+  Returns the list of error atoms classified as non-transient.
+  """
+  @spec non_transient_errors() :: [atom()]
+  def non_transient_errors, do: @non_transient
+
+  defp build_fun(module, :clone),
+    do: fn args -> module.clone(Enum.at(args, 0), Enum.at(args, 1) || []) end
+
+  defp build_fun(module, :branch),
+    do: fn args -> module.branch(Enum.at(args, 0), Enum.at(args, 1)) end
+
+  defp build_fun(module, :create_pr),
+    do: fn args -> module.create_pr(Enum.at(args, 0), Enum.at(args, 1) || []) end
+
+  defp build_fun(module, :create_worktree),
+    do: fn args ->
+      module.create_worktree(Enum.at(args, 0), Enum.at(args, 1), Enum.at(args, 2) || [])
+    end
+
+  defp build_fun(module, :clean_worktree),
+    do: fn args ->
+      module.clean_worktree(Enum.at(args, 0), Enum.at(args, 1) || [])
+    end
+
+  defp run_with_retries(fun, args, max, base_delay, attempt) do
+    case fun.(args) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} = err ->
+        if transient?(reason) and attempt < max do
+          Process.sleep((base_delay * :math.pow(2, attempt - 1)) |> trunc())
+          run_with_retries(fun, args, max, base_delay, attempt + 1)
+        else
+          err
+        end
     end
   end
-
-  @spec cleanup_worktree(map()) :: worktree_result()
-  def cleanup_worktree(input) when is_map(input) do
-    input = atomize_keys(input)
-
-    with {:ok, backend} <- backend(Map.get(input, :backend, :git)),
-         {:ok, run_id} <- required_binary(Map.get(input, :run_id), :run_id),
-         {:ok, worktree_path} <- required_binary(Map.get(input, :worktree_path), :worktree_path) do
-      append("WorktreeCleaned", %{
-        operation_id: Map.get(input, :operation_id, "cleanup-#{run_id}"),
-        run_id: run_id,
-        backend: Atom.to_string(backend),
-        worktree_path: worktree_path,
-        effects: [%{action: "remove_worktree", path: worktree_path}],
-        adapter: adapter_details(backend)
-      })
-    end
-  end
-
-  @spec merge_branch(map()) :: worktree_result()
-  def merge_branch(input) when is_map(input) do
-    input = atomize_keys(input)
-
-    with {:ok, backend} <- backend(Map.get(input, :backend, :git)),
-         {:ok, run_id} <- required_binary(Map.get(input, :run_id), :run_id),
-         {:ok, branch} <- required_binary(Map.get(input, :branch), :branch),
-         {:ok, target} <- required_binary(Map.get(input, :target, "main"), :target) do
-      append("VcsMergeRequested", %{
-        operation_id: Map.get(input, :operation_id, "merge-#{run_id}"),
-        run_id: run_id,
-        backend: Atom.to_string(backend),
-        branch: branch,
-        target: target,
-        effects: [%{action: merge_action(backend), branch: branch, target: target}],
-        adapter: adapter_details(backend)
-      })
-    end
-  end
-
-  @spec adapters() :: [map()]
-  def adapters do
-    [adapter_details(:git), adapter_details(:jujutsu)]
-  end
-
-  defp append(event_type, payload) do
-    with {:ok, event} <-
-           EventStore.append(%{
-             stream_id: "vcs:#{payload.run_id}",
-             event_type: event_type,
-             payload: Map.put(payload, :observed_at, DateTime.utc_now()),
-             metadata: %{
-               correlation_id: payload.run_id,
-               idempotency_key: "#{event_type}:#{payload.operation_id}"
-             }
-           }) do
-      {:ok, %{event: event, projection: ProjectionStore.snapshot(), result: payload}}
-    end
-  end
-
-  defp observe_stale(worktree_path) do
-    if File.exists?(worktree_path),
-      do: %{exists: true, path: worktree_path},
-      else: %{exists: false}
-  end
-
-  defp stale_effects(%{exists: false}, _policy, _backend), do: [%{action: "create_worktree"}]
-
-  defp stale_effects(%{exists: true, path: path}, "clean", _backend),
-    do: [%{action: "remove_stale_worktree", path: path}, %{action: "create_worktree"}]
-
-  defp stale_effects(%{exists: true, path: path}, "rebase", backend),
-    do: [%{action: "reuse_worktree", path: path}, %{action: rebase_action(backend)}]
-
-  defp stale_effects(%{exists: true, path: path}, _policy, _backend),
-    do: [%{action: "reuse_worktree", path: path}]
-
-  defp backend(:git), do: {:ok, :git}
-  defp backend(:jujutsu), do: {:ok, :jujutsu}
-  defp backend("git"), do: {:ok, :git}
-  defp backend("jujutsu"), do: {:ok, :jujutsu}
-  defp backend("jj"), do: {:ok, :jujutsu}
-  defp backend(value), do: {:error, {:unsupported_vcs_backend, value}}
-
-  defp adapter_details(:git),
-    do: %{
-      backend: "git",
-      commands: %{worktree: "git worktree", rebase: "git rebase", merge: "git merge"}
-    }
-
-  defp adapter_details(:jujutsu),
-    do: %{
-      backend: "jujutsu",
-      commands: %{worktree: "jj workspace", rebase: "jj rebase", merge: "jj git push"}
-    }
-
-  defp rebase_action(:git), do: "git_rebase"
-  defp rebase_action(:jujutsu), do: "jj_rebase"
-  defp merge_action(:git), do: "git_merge"
-  defp merge_action(:jujutsu), do: "jj_bookmark_merge"
-
-  defp required_binary(value, _key) when is_binary(value) and value != "", do: {:ok, value}
-  defp required_binary(_value, key), do: {:error, {:missing_or_invalid, key}}
-
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {key, value} when is_binary(key) -> {String.to_atom(key), atomize_value(value)}
-      {key, value} -> {key, atomize_value(value)}
-    end)
-  end
-
-  defp atomize_value(value) when is_map(value), do: atomize_keys(value)
-  defp atomize_value(value) when is_list(value), do: Enum.map(value, &atomize_value/1)
-  defp atomize_value(value), do: value
 end

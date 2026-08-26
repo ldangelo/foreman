@@ -1,1753 +1,1744 @@
 defmodule ForemanServer.ProjectionStore do
-  @moduledoc "CQRS read models rebuilt from the durable event log."
+  @moduledoc """
+  In-memory projection read model for domain queries.
+
+  Maintains projected state for projects, runs, and PR associations
+  by applying confirmed events synchronously after each successful
+  append.
+
+  ## Startup
+
+  On `init/1`, rebuilds the entire read model by replaying all events from the
+  event log via `read_all_streams_forward`. This ensures the projection is always
+  consistent with the event store at startup.
+
+  ## Command path
+
+  After `CommandRouter.append_events` succeeds, it calls
+  `ProjectionStore.apply_events(events)` before sending `append_ok` to the actor.
+  This keeps the projection synchronous with the command path — no eventual consistency.
+
+  ## Query
+
+  `project/1` returns the projected state for a given project_id.
+  `run/1` returns the projected state for a given run_id.
+  `pr_association/1` returns the current PR association for a given run_id.
+  """
 
   use GenServer
 
-  alias ForemanServer.ProjectionStore.Postgres
+  alias EventStore.{EventData, RecordedEvent}
+  alias ForemanServer.{EventCodec, EventStore}
 
-  @terminal_run_statuses MapSet.new(["completed", "failed", "blocked", "merged"])
-  @terminal_task_to_run_status %{
-    "blocked" => "blocked",
-    "closed" => "completed",
-    "conflict" => "failed",
-    "failed" => "failed",
-    "merged" => "merged",
-    "stuck" => "failed"
-  }
-  @irreversible_task_statuses MapSet.new(["closed", "merged"])
-  @task_statuses MapSet.new([
-                   "backlog",
-                   "ready",
-                   "approved",
-                   "in_progress",
-                   "in-progress",
-                   "review",
-                   "merged",
-                   "closed",
-                   "conflict",
-                   "failed",
-                   "stuck",
-                   "blocked",
-                   "cooldown"
-                 ])
+  @active_run_statuses ["awaiting_worker", "in_progress"]
 
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  @spec start_link(term()) :: GenServer.on_start()
+  def start_link(init_arg) do
+    GenServer.start_link(__MODULE__, init_arg, name: __MODULE__)
   end
 
-  @spec apply_event(map()) :: :ok
-  def apply_event(event) when is_map(event) do
-    GenServer.call(__MODULE__, {:apply_event, event})
-  end
-
-  @spec rebuild([map()], timeout()) :: {:ok, map()} | {:error, term()}
-  def rebuild(events, timeout) when is_list(events) do
-    # Give the outer GenServer.call a small cushion over the internal
-    # Task.yield timeout. At the deadline, both fire near-simultaneously;
-    # the cushion lets the handler's internal nil branch fire first and
-    # reply with {:error, :rebuild_timeout} so the caller gets a clean
-    # structured error rather than a GenServer.call :exit timeout. For
-    # non-integer timeouts (e.g. :infinity) no cushion is added.
-    call_timeout = with_timeout_cushion(timeout)
-    GenServer.call(__MODULE__, {:rebuild, events, timeout}, call_timeout)
-  end
-
-  # Backward-compatible 1-arg wrapper. New code should call rebuild/2 with an
-  # explicit finite timeout. This wrapper exists so the existing tests and
-  # internal callers (handle_call(:rebuild_projections, ...)) keep working
-  # during the transition; new callers should pass a timeout.
-  @spec rebuild([map()]) :: {:ok, map()} | {:error, term()}
-  def rebuild(events) when is_list(events) do
-    rebuild(events, ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms())
-  end
-
-  @spec snapshot() :: map()
-  def snapshot do
-    GenServer.call(__MODULE__, :snapshot)
-  end
-
+  @doc "Return the projected state for a project, or nil if not found."
   @spec project(String.t()) :: map() | nil
-  def project(project_id) when is_binary(project_id) do
+  def project(project_id) do
     GenServer.call(__MODULE__, {:project, project_id})
   end
 
-  @spec project_list() :: [map()]
-  def project_list do
-    GenServer.call(__MODULE__, :project_list)
+  @doc "Return the active run ids."
+  @spec active_runs() :: [String.t()]
+  def active_runs do
+    GenServer.call(__MODULE__, :active_runs)
   end
 
-  @spec task(String.t()) :: map() | nil
-  def task(task_id) when is_binary(task_id) do
-    GenServer.call(__MODULE__, {:task, task_id})
+  @doc """
+  Canonical list of run statuses that count as "actively dispatching" —
+  i.e. holding a project slot and not yet terminal. Reuse this for any
+  check that wants to know whether a run is still in flight.
+
+  Currently `"awaiting_worker"` (admitted but no worker attached yet)
+  and `"in_progress"` (worker attached and acknowledged). Adding a new
+  pre-terminal state? Add it here and only here.
+  """
+  @spec active_run_statuses() :: [String.t()]
+  def active_run_statuses, do: @active_run_statuses
+
+  @doc "Return active runs whose last activity is older than the threshold."
+  @spec stuck_runs(non_neg_integer(), integer() | nil) :: [String.t()]
+  def stuck_runs(threshold_ms, now_ms \\ nil)
+      when is_integer(threshold_ms) and threshold_ms >= 0 do
+    GenServer.call(__MODULE__, {:stuck_runs, threshold_ms, normalize_now_ms_fun(now_ms)})
   end
 
-  @spec task_list() :: [map()]
-  def task_list do
-    GenServer.call(__MODULE__, :task_list)
+  @doc """
+  Apply a list of confirmed events to the projection.
+
+  Called by CommandRouter after a successful append, before replying to the actor.
+  """
+  @spec apply_events([EventData.t() | RecordedEvent.t() | map()]) :: :ok
+  def apply_events(events) do
+    GenServer.call(__MODULE__, {:apply_events, events, resolve_now_ms_fun()})
   end
 
-  @spec status_counts() :: map()
-  def status_counts do
-    GenServer.call(__MODULE__, :status_counts)
+  @doc """
+  Rebuild the entire projection from the committed event log.
+
+  Leaves the current projection state untouched if the rebuild read fails.
+  """
+  @spec rebuild([EventData.t() | RecordedEvent.t() | map()]) :: :ok | {:error, term()}
+  def rebuild(recovered_events) when is_list(recovered_events) do
+    GenServer.call(__MODULE__, {:rebuild, recovered_events, resolve_now_ms_fun()})
   end
 
-  @spec dispatchable_tasks() :: [map()]
-  def dispatchable_tasks do
-    GenServer.call(__MODULE__, :dispatchable_tasks)
-  end
-
-  @impl true
-  def init(_opts) do
-    {:ok, empty_projection()}
-  end
-
-  @impl true
-  def handle_call({:apply_event, event}, _from, projection) do
-    updated = reduce_event(projection, event, :live)
-    persist_changes(projection, updated, event)
-    {:reply, :ok, updated}
-  end
-
-  def handle_call({:rebuild, events, timeout}, _from, projection) do
-    # Run the rebuild + persist on a linked task so we can enforce an
-    # internal deadline matching the caller's timeout. GenServer.call/3's
-    # timeout only bounds the caller; without this, a slow rebuild would
-    # still block subsequent requests even after the caller gives up.
-    # Task.yield returns {:ok, task_result}, {:exit, reason} on completed,
-    # or nil on timeout; Task.shutdown brutally kills the linked task on
-    # timeout so the GenServer stays responsive. The case arms unwrap the
-    # inner {:ok, _} | {:error, _} returned by do_rebuild/1 and only set
-    # the GenServer state to the new projection on success; errors keep
-    # the prior projection.
-    task = Task.async(fn -> do_rebuild(events) end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, rebuilt}} ->
-        {:reply, {:ok, rebuilt}, rebuilt}
-
-      {:ok, {:error, reason}} ->
-        {:reply, {:error, reason}, projection}
-
-      {:exit, reason} ->
-        {:reply, {:error, {:rebuild_crashed, reason}}, projection}
-
-      nil ->
-        {:reply, {:error, :rebuild_timeout}, projection}
-    end
-  end
-
-  defp do_rebuild(events) do
-    rebuilt = Enum.reduce(events, empty_projection(), &reduce_event(&2, &1, :replay))
-
-    case persist_all(rebuilt) do
-      :ok -> {:ok, rebuilt}
-      {:ok, _result} -> {:ok, rebuilt}
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:unexpected_persist_result, other}}
-    end
-  end
-
-  # Give the outer GenServer.call a small cushion over the internal
-  # Task.yield timeout. At the deadline, both fire near-simultaneously;
-  # the cushion lets the handler's internal nil branch fire first and
-  # reply with {:error, :rebuild_timeout} so the caller gets a clean
-  # structured error rather than a GenServer.call :exit timeout. For
-  # non-integer timeouts (e.g. :infinity) no cushion is added.
-  defp with_timeout_cushion(timeout) when is_integer(timeout) and timeout > 0, do: timeout + 1_000
-  defp with_timeout_cushion(timeout), do: timeout
-
-  def handle_call(:snapshot, _from, projection) do
-    {:reply, projection, projection}
-  end
-
-  def handle_call({:project, project_id}, _from, projection) do
-    project =
-      if Postgres.enabled?(),
-        do: Postgres.project(project_id),
-        else: get_in(projection, [:projects, project_id])
-
-    {:reply, project, projection}
-  end
-
-  def handle_call(:project_list, _from, projection) do
-    projects =
-      if Postgres.enabled?() do
-        Postgres.project_list()
-      else
-        projection.projects
-        |> Map.values()
-        |> Enum.sort_by(& &1.project_id)
-      end
-
-    {:reply, projects, projection}
-  end
-
-  def handle_call({:task, task_id}, _from, projection) do
-    task =
-      if Postgres.enabled?(),
-        do: Postgres.task(task_id),
-        else: get_in(projection, [:tasks, task_id])
-
-    {:reply, task, projection}
-  end
-
-  def handle_call(:task_list, _from, projection) do
-    tasks =
-      if Postgres.enabled?() do
-        Postgres.task_list()
-      else
-        projection.tasks
-        |> Map.values()
-        |> Enum.sort_by(& &1.task_id)
-      end
-
-    {:reply, tasks, projection}
-  end
-
-  def handle_call(:status_counts, _from, projection) do
-    {:reply, projection.status_counts, projection}
-  end
-
-  def handle_call(:dispatchable_tasks, _from, projection) do
-    tasks =
-      projection.tasks
-      |> Map.values()
-      |> Enum.filter(&dispatchable?(&1, projection.tasks))
-      |> Enum.sort_by(& &1.task_id)
-
-    {:reply, tasks, projection}
-  end
-
-  @spec board(String.t()) :: map()
-  def board(project_id) do
-    GenServer.call(__MODULE__, {:board, project_id})
-  end
-
-  @impl true
-  def handle_call({:board, project_id}, _from, projection) do
-    result =
-      if Postgres.enabled?() do
-        {tasks_map, runs_map} = Postgres.board_data(project_id)
-        build_board_from_maps(tasks_map, runs_map, project_id)
-      else
-        projection
-        |> build_board(project_id)
-      end
-      |> normalize_board_output()
-
-    {:reply, result, projection}
-  end
-
-  defp persist_changes(old_projection, new_projection, event) do
-    if Postgres.enabled?(), do: Postgres.persist_changes(old_projection, new_projection, event)
-  end
-
-  defp persist_all(projection) do
-    if Postgres.enabled?() do
-      Postgres.replace_all(projection)
-    else
-      :ok
-    end
-  end
-
-  defp empty_projection do
-    %{
-      commands: %{},
-      projects: %{},
-      tasks: %{},
-      runs: %{},
-      scheduler_skips: %{},
-      worker_sequences: %{},
-      worker_heartbeats: %{},
-      recovery_events: [],
-      worktrees: %{},
-      vcs_operations: %{},
-      pr_gates: %{},
-      merge_failures: %{},
-      inbox_messages: %{},
-      inbox_by_run: %{},
-      inbox_updates: [],
-      integration_commands: %{},
-      integration_dedupe: %{},
-      logs_by_run: %{},
-      attach_requests: %{},
-      interactive_recovery: %{},
-      planning_flows: %{},
-      planning_traceability: %{},
-      migration_imports: %{},
-      migration_records: %{},
-      authorization_audits: [],
-      status_counts: %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0},
-      checkpoint: %{last_event_id: nil, last_stream_version: 0, updated_at: nil},
-      last_sequence: 0
-    }
-  end
-
-  defp reduce_event(projection, event, mode) do
-    projection
-    |> apply_domain_event(normalize_event(event), mode)
-    |> update_checkpoint(event)
-    |> recompute_status_counts()
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "CommandAccepted",
-           payload: %{command_id: command_id} = payload
-         },
-         _mode
-       ) do
-    put_in(projection, [:commands, command_id], payload)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "ProjectRegistered",
-           payload: %{project_id: project_id} = payload
-         },
-         _mode
-       ) do
-    project = %{
-      project_id: project_id,
-      path: Map.fetch!(payload, :path),
-      status: Map.get(payload, :status, "active"),
-      default_branch: Map.get(payload, :default_branch, "main"),
-      config: Map.get(payload, :config, %{}),
-      health: Map.get(payload, :health, %{ok: true}),
-      updated_at: Map.get(payload, :updated_at)
-    }
-
-    put_in(projection, [:projects, project_id], project)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "ProjectUpdated",
-           payload: %{project_id: project_id} = payload
-         },
-         _mode
-       ) do
-    update_in(projection, [:projects, project_id], fn
-      nil ->
-        nil
-
-      project ->
-        config =
-          project
-          |> Map.get(:config, %{})
-          |> Map.merge(Map.get(payload, :config, %{}))
-          |> maybe_put(:name, Map.get(payload, :name))
-
-        project
-        |> maybe_put(:status, Map.get(payload, :status))
-        |> maybe_put(:default_branch, Map.get(payload, :default_branch))
-        |> maybe_put(:health, Map.get(payload, :health))
-        |> Map.put(:config, config)
-        |> Map.put(:updated_at, Map.get(payload, :updated_at))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "ProjectArchived",
-           payload: %{project_id: project_id} = payload
-         },
-         _mode
-       ) do
-    update_in(projection, [:projects, project_id], fn
-      nil ->
-        nil
-
-      project ->
-        project
-        |> Map.put(:status, "archived")
-        |> Map.put(:archived_at, Map.get(payload, :updated_at))
-        |> Map.put(:updated_at, Map.get(payload, :updated_at))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "TaskCreated",
-           payload: %{task_id: task_id} = payload
-         },
-         _mode
-       ) do
-    task =
-      %{
-        task_id: task_id,
-        title: Map.get(payload, :title, task_id),
-        status: Map.get(payload, :status, "open"),
-        updated_at: Map.get(payload, :updated_at)
-      }
-      |> maybe_put(:project_id, Map.get(payload, :project_id))
-      |> maybe_put(:description, Map.get(payload, :description))
-      |> maybe_put(:priority, Map.get(payload, :priority))
-      |> maybe_put(:dependencies, Map.get(payload, :dependencies))
-      |> maybe_put(:source, Map.get(payload, :source))
-      |> maybe_put(:external_id, Map.get(payload, :external_id))
-      |> maybe_put(:external_link, Map.get(payload, :external_link))
-      |> maybe_put(:dedupe_key, Map.get(payload, :dedupe_key))
-      |> maybe_put(:task_type, Map.get(payload, :task_type))
-      |> maybe_put(:integration_event_type, Map.get(payload, :integration_event_type))
-      |> maybe_put(:planning_run_id, Map.get(payload, :planning_run_id))
-      |> maybe_put(:planning_kind, Map.get(payload, :planning_kind))
-      |> maybe_put(:planning_phase_id, Map.get(payload, :planning_phase_id))
-      |> maybe_put(:trace_event_id, Map.get(payload, :trace_event_id))
-
-    put_in(projection, [:tasks, task_id], task)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "TaskUpdated",
-           payload: %{task_id: task_id} = payload
-         } = event,
-         _mode
-       ) do
-    existing = empty_task(task_id)
-    existing = get_in(projection, [:tasks, task_id]) || existing
-
-    updates =
-      payload
-      |> keep_only_task_status_values()
-      |> preserve_irreversible_task_status(existing)
-      |> clear_failure_fields_for_active_status()
-
-    task = Map.merge(existing, updates)
-    now = Map.get(event, :occurred_at) || DateTime.utc_now()
-
-    projection
-    |> put_worker_sequence(payload)
-    |> put_in([:tasks, task_id], task)
-    |> maybe_terminalize_run_from_task(task, payload, now)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "TaskAnnotated",
-           payload: %{task_id: task_id} = payload
-         },
-         _mode
-       ) do
-    existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
-
-    annotation = %{
-      body: Map.fetch!(payload, :body),
-      author: Map.get(payload, :author),
-      created_at: Map.get(payload, :created_at)
-    }
-
-    task =
-      existing
-      |> Map.update(:annotations, [annotation], &(&1 ++ [annotation]))
-      |> Map.put(:updated_at, annotation.created_at)
-
-    put_in(projection, [:tasks, task_id], task)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "TaskDependencyAdded",
-           payload: %{task_id: task_id, depends_on: depends_on} = payload
-         },
-         _mode
-       ) do
-    existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
-
-    task =
-      existing
-      |> Map.update(:dependencies, [depends_on], fn deps -> Enum.uniq(deps ++ [depends_on]) end)
-      |> Map.put(:updated_at, Map.get(payload, :updated_at))
-
-    put_in(projection, [:tasks, task_id], task)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "RunStarted", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
-         _mode
-       ) do
-    now = occurred_at || DateTime.utc_now()
-
-    run =
-      %{
-        run_id: run_id,
-        task_id: Map.get(payload, :task_id),
-        status: "in_progress",
-        phase_order: Map.get(payload, :phase_order, []),
-        current_phase: Map.get(payload, :current_phase),
-        phase_status: %{},
-        worker_status: %{},
-        retry_history: [],
-        created_at: now,
-        started_at: now,
-        updated_at: now
-      }
-      |> Map.merge(payload)
-      |> Map.put_new(:status, "in_progress")
-
-    put_in(projection, [:runs, run_id], run)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "RunUpdated", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
-         _mode
-       ) do
-    now = occurred_at || DateTime.utc_now()
-
-    update_run(projection, run_id, fn run ->
-      run
-      |> Map.merge(payload)
-      |> Map.put(:updated_at, now)
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "PrUpdated", payload: %{run_id: run_id} = payload},
-         _mode
-       ) do
-    update_run(projection, run_id, fn run ->
-      run
-      |> Map.merge(payload)
-      |> Map.put(:pr_url, Map.get(payload, :pr_url))
-      |> Map.put(:pr_state, Map.get(payload, :pr_state, Map.get(run, :pr_state, "draft")))
-      |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
-      |> Map.put(:commit_sha, Map.get(payload, :head_sha))
-      |> Map.put(:base_branch, Map.get(payload, :base_branch))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "PrReady", payload: %{run_id: run_id} = payload},
-         _mode
-       ) do
-    update_run(projection, run_id, fn run ->
-      run
-      |> Map.merge(payload)
-      |> Map.put(:pr_url, Map.get(payload, :pr_url))
-      |> Map.put(:pr_state, "open")
-      |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
-      |> Map.put(:commit_sha, Map.get(payload, :head_sha))
-      |> Map.put(:base_branch, Map.get(payload, :base_branch))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PrMerged",
-           payload: %{run_id: run_id, task_id: _task_id, pr_url: _pr_url} = payload
-         } = event,
-         _mode
-       ) do
-    now = Map.get(event, :occurred_at) || DateTime.utc_now()
-
-    projection
-    |> update_run(run_id, fn run ->
-      run
-      |> Map.merge(payload)
-      |> Map.put(:pr_url, Map.get(payload, :pr_url, Map.get(run, :pr_url)))
-      |> Map.put(:pr_state, "merged")
-      |> Map.put(:status, "merged")
-      |> Map.put(:completed_at, Map.get(payload, :merged_at, Map.get(payload, :completed_at)))
-    end)
-    |> maybe_update_task_from_run_terminal(payload, "merged", now)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "PrRetargeted", payload: %{run_id: run_id} = payload},
-         _mode
-       ) do
-    update_run(projection, run_id, fn run ->
-      run
-      |> Map.merge(payload)
-      |> Map.put(:pr_url, Map.get(payload, :pr_url))
-      |> Map.put(:pr_head_sha, Map.get(payload, :head_sha))
-      |> Map.put(:commit_sha, Map.get(payload, :head_sha))
-      |> Map.put(:base_branch, Map.get(payload, :new_base_branch))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "PrReset", payload: %{run_id: run_id} = payload},
-         _mode
-       ) do
-    update_run(projection, run_id, fn run ->
-      run
-      |> Map.merge(payload)
-      |> Map.put(:pr_url, Map.get(payload, :pr_url, Map.get(run, :pr_url)))
-      |> Map.put(:pr_state, "closed")
-    end)
-  end
-
-  defp apply_domain_event(projection, %{type: "RunDeleted", payload: %{run_id: run_id}}, _mode) do
-    update_in(projection, [:runs], &Map.delete(&1 || %{}, run_id))
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "CliEventLogged", payload: %{run_id: run_id} = payload},
-         _mode
-       )
-       when is_binary(run_id) and run_id != "" do
-    projection
-    |> put_log_entry("CliEventLogged", payload)
-    |> update_run(run_id, fn run ->
-      cost_usd = Map.get(payload, :costUsd, 0) || 0
-      turns = Map.get(payload, :turns, 0) || 0
-
-      run
-      |> Map.update(:costUsd, cost_usd, &(&1 + cost_usd))
-      |> Map.update(:turns, turns, &(&1 + turns))
-    end)
-  end
-
-  defp apply_domain_event(projection, %{type: "CliEventLogged"}, _mode), do: projection
-
-  defp apply_domain_event(
-         projection,
-         %{type: "RunCompleted", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
-         _mode
-       ) do
-    now = occurred_at || DateTime.utc_now()
-
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run_status(run_id, "completed")
-    |> update_run(run_id, fn run ->
-      started_at = Map.get(run, :started_at) || now
-      total_duration_ms = duration_ms(started_at, now)
-
-      run
-      |> put_terminal_phase_status(payload, "completed")
-      |> Map.put(:current_phase, nil)
-      |> put_terminal_worker_status(payload, "completed")
-      |> Map.put(:updated_at, now)
-      |> Map.put(:completed_at, now)
-      |> Map.put(:totalDurationMs, total_duration_ms)
-    end)
-    |> maybe_update_task_from_run_terminal(payload, "completed", now)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "RunFailed", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
-         _mode
-       ) do
-    now = occurred_at || DateTime.utc_now()
-
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run_status(run_id, "failed")
-    |> update_run(run_id, fn run ->
-      started_at = Map.get(run, :started_at) || now
-      total_duration_ms = duration_ms(started_at, now)
-
-      run
-      |> put_terminal_current_phase(payload)
-      |> put_terminal_phase_status(payload, "failed")
-      |> put_terminal_worker_status(payload, "failed")
-      |> Map.put(
-        :retry_history,
-        Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
-      )
-      |> Map.put(:updated_at, now)
-      |> Map.put(:failed_at, now)
-      |> Map.put(:totalDurationMs, total_duration_ms)
-    end)
-    |> maybe_update_task_from_run_terminal(payload, "failed", now)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "RunBlocked", payload: %{run_id: run_id} = payload, occurred_at: occurred_at},
-         _mode
-       ) do
-    now = occurred_at || DateTime.utc_now()
-
-    projection
-    |> update_run(run_id, fn run ->
-      run
-      |> Map.put(:status, "blocked")
-      |> Map.put(:updated_at, now)
-    end)
-    |> maybe_update_task_from_run_terminal(payload, "blocked", now)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PhaseStarted",
-           payload: %{run_id: run_id, phase_id: phase_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run(run_id, fn run ->
-      if terminal_run?(run) do
-        run
-      else
-        run
-        |> Map.put(:current_phase, phase_id)
-        |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "in_progress"))
-      end
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PhaseCompleted",
-           payload: %{run_id: run_id, phase_id: phase_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run(run_id, fn run ->
-      run
-      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "completed"))
-      |> maybe_complete_worker(payload)
-      |> Map.put(
-        :artifact_paths,
-        Map.get(payload, :artifact_paths, Map.get(run, :artifact_paths, []))
-      )
-      |> Map.put(:report_paths, Map.get(payload, :report_paths, Map.get(run, :report_paths, [])))
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: type,
-           payload: %{run_id: run_id, phase_id: phase_id} = payload
-         },
-         _mode
-       )
-       when type in ["PhaseFailed", "PhaseTimedOut"] do
-    status = if type == "PhaseTimedOut", do: "timed_out", else: "failed"
-
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run(run_id, fn run ->
-      run
-      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, status))
-      |> Map.put(
-        :retry_history,
-        Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
-      )
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PhaseRetried",
-           payload: %{run_id: run_id, phase_id: phase_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run(run_id, fn run ->
-      run
-      |> Map.put(:current_phase, phase_id)
-      |> update_in([:phase_status], &Map.put(&1 || %{}, phase_id, "retrying"))
-      |> Map.put(
-        :retry_history,
-        Map.get(payload, :retry_history, Map.get(run, :retry_history, []))
-      )
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "WorkerStatusChanged",
-           payload: %{run_id: run_id, worker_id: worker_id, status: status}
-         },
-         _mode
-       ) do
-    update_run(projection, run_id, fn run ->
-      put_active_worker_status(run, worker_id, status)
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "WorkerStarted",
-           payload: %{run_id: run_id, worker_id: worker_id, phase_id: phase_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> update_run(run_id, fn run ->
-      if terminal_run?(run) do
-        run
-      else
-        run
-        |> put_active_worker_status(worker_id, "running")
-        |> Map.put(:current_phase, phase_id)
-        |> Map.put(:adapter, Map.get(payload, :adapter))
-        |> Map.put(:artifact_paths, Map.get(payload, :artifact_paths, []))
-      end
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "WorkerHeartbeat",
-           payload: %{run_id: run_id, worker_id: worker_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> put_in([:worker_heartbeats, "#{run_id}:#{worker_id}"], payload)
-    |> update_run(run_id, fn run ->
-      put_active_worker_status(run, worker_id, "heartbeat")
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "ToolCallFinished",
-           payload: %{run_id: run_id, worker_id: worker_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_worker_sequence(payload)
-    |> put_log_entry("ToolCallFinished", payload)
-    |> update_run(run_id, fn run ->
-      run
-      |> update_in([:tool_events], &((&1 || []) ++ [payload]))
-      |> put_active_worker_status(worker_id, "running")
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: type,
-           payload: %{run_id: run_id, worker_id: worker_id} = payload
-         },
-         _mode
-       )
-       when type in ["WorkerStdout", "WorkerStderr", "AssistantMessage"] do
-    projection
-    |> put_worker_sequence(payload)
-    |> put_log_entry(type, payload)
-    |> update_run(run_id, fn run ->
-      put_active_worker_status(run, worker_id, "running")
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "SchedulerTaskSkipped",
-           payload: %{task_id: task_id} = payload
-         },
-         _mode
-       ) do
-    put_in(projection, [:scheduler_skips, task_id], payload)
-  end
-
-  defp apply_domain_event(projection, %{type: type, payload: payload}, _mode)
-       when type in [
-              "WorkerFailureSimulated",
-              "WorkerRecoveryRequired",
-              "ExternalWorkerObserved",
-              "WorkerReattached",
-              "WorkerRestarted",
-              "NeedsOperator"
-            ] do
-    update_in(
-      projection,
-      [:recovery_events],
-      &((&1 || []) ++ [Map.put(payload, :event_type, type)])
+  @doc """
+  Rebuild one project's projection from its committed aggregate stream.
+
+  Leaves the current projection state untouched if the stream read fails.
+  """
+  @spec rebuild_project(String.t(), [EventData.t() | RecordedEvent.t() | map()]) ::
+          :ok | {:error, term()}
+  def rebuild_project(project_id, recovered_events)
+      when is_binary(project_id) and project_id != "" and is_list(recovered_events) do
+    GenServer.call(
+      __MODULE__,
+      {:rebuild_project, project_id, recovered_events, resolve_now_ms_fun()}
     )
   end
 
-  defp apply_domain_event(
-         projection,
-         %{type: type, payload: %{run_id: run_id} = payload},
-         _mode
-       )
-       when type in ["AttachRequested", "AttachUnsupported"] do
-    put_in(projection, [:attach_requests, run_id], Map.put(payload, :event_type, type))
+  @spec subscribe() :: :ok
+  def subscribe do
+    GenServer.call(__MODULE__, :subscribe)
   end
 
-  defp apply_domain_event(
-         projection,
-         %{type: type, payload: %{run_id: run_id, phase_id: phase_id} = payload},
-         _mode
-       )
-       when type in ["HumanInterruptionRecorded", "InteractiveRecoveryResumed"] do
-    projection
-    |> update_in([:interactive_recovery, run_id], fn events ->
-      (events || []) ++ [Map.put(payload, :event_type, type)]
-    end)
-    |> update_run(run_id, fn run ->
-      run
-      |> put_in([:phase_status, phase_id], Map.get(payload, :status))
-      |> Map.put(:recovery_next_action, Map.get(payload, :next_action))
-    end)
+  @doc "Return the projected state for a task, or nil if not found."
+  @spec task_projection(String.t()) :: map() | nil
+  def task_projection(task_id) when is_binary(task_id) and task_id != "" do
+    GenServer.call(__MODULE__, {:task_projection, task_id})
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "WorktreeCreated",
-           payload: %{run_id: run_id} = payload
-         },
-         _mode
-       ) do
-    projection = put_in(projection, [:worktrees, run_id], payload)
+  @doc """
+  Return the projected task that owns the given bead id (`:external_id`), or nil.
 
-    case Map.get(payload, :operation_id) do
-      operation_id when is_binary(operation_id) ->
-        put_in(
-          projection,
-          [:vcs_operations, operation_id],
-          Map.put(payload, :event_type, "WorktreeCreated")
-        )
+  Used by the Beads watcher dedupe path: before dispatching
+  `task.create`, the watcher looks up the existing task by its
+  `external_id` to decide between `[:watcher, :reconciled]`
+  (already imported) and `[:watcher, :imported]` (new).
+  """
+  @spec get_task(keyword()) :: map() | nil
+  def get_task(opts) when is_list(opts) do
+    case opts do
+      [external_id: external_id] when is_binary(external_id) and external_id != "" ->
+        GenServer.call(__MODULE__, {:get_task_by_external_id, external_id})
 
       _ ->
-        projection
+        raise ArgumentError,
+              "ProjectionStore.get_task/1 expects [external_id: binary]; got #{inspect(opts)}"
     end
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "WorktreeCleaned",
-           payload: %{run_id: run_id} = payload
-         },
-         _mode
-       ) do
-    projection = update_in(projection, [:worktrees], &Map.delete(&1 || %{}, run_id))
+  @doc """
+  Return every task projection that is currently bound to `run_id`.
 
-    case Map.get(payload, :operation_id) do
-      operation_id when is_binary(operation_id) ->
-        put_in(
-          projection,
-          [:vcs_operations, operation_id],
-          Map.put(payload, :event_type, "WorktreeCleaned")
-        )
+  Used by the run-cancellation fanout path so the dispatcher can
+  emit a `task.run_terminated` for each affected task. Tasks whose
+  previous run already had a terminal acknowledgement are filtered
+  out — the operator path is idempotent and a stale re-fire MUST NOT
+  rewrite `acknowledged_run_id` against the same run twice.
+  """
+  @spec tasks_by_run_id(String.t()) :: [map()]
+  def tasks_by_run_id(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:tasks_by_run_id, run_id})
+  end
 
-      _ ->
-        projection
+  @doc "Return every projected task. Used by boot reconciliation to scan run orphans."
+  @spec list_tasks() :: [map()]
+  def list_tasks do
+    GenServer.call(__MODULE__, :list_tasks)
+  end
+
+  @doc "Return the projected state for a run, or nil if not found."
+  @spec run(String.t()) :: map() | nil
+  def run(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:run, run_id})
+  end
+
+  @doc "Return the projected state for a phase, or nil if not found."
+  @spec phase_projection(String.t()) :: map() | nil
+  def phase_projection(phase_id) when is_binary(phase_id) and phase_id != "" do
+    GenServer.call(__MODULE__, {:phase_projection, phase_id})
+  end
+
+  @doc "Return the ordered phase projections for a run."
+  @spec phases_for_run(String.t()) :: [map()]
+  def phases_for_run(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:phases_for_run, run_id})
+  end
+
+  @doc "Return the PR association for a run_id, or :not_found."
+  @spec pr_association(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def pr_association(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:pr_association, run_id})
+  end
+
+  @doc "Return the projected state for a project, or nil if not found."
+  @spec project_projection(String.t()) :: map() | nil
+  def project_projection(project_id) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:project_projection, project_id})
+  end
+
+  @doc "Return every projected project."
+  @spec list_projects() :: [map()]
+  def list_projects do
+    GenServer.call(__MODULE__, :list_projects)
+  end
+
+  @doc "Return projects with reserved active run ids for reconciler enumeration only."
+  @spec list_projects_with_active_runs() :: [{String.t(), [String.t()]}]
+  def list_projects_with_active_runs do
+    GenServer.call(__MODULE__, :list_projects_with_active_runs)
+  end
+
+  @doc "Return every projected run, optionally filtered by status, project_id, and limit."
+  @spec list_runs(keyword()) :: [map()]
+  def list_runs(opts \\ []) when is_list(opts) do
+    GenServer.call(__MODULE__, {:list_runs, opts})
+  end
+
+  @doc "Return every projected scheduler intent."
+  @spec list_scheduler_intents() :: [map()]
+  def list_scheduler_intents do
+    GenServer.call(__MODULE__, :list_scheduler_intents)
+  end
+
+  @doc "Return the current run-slot queue status: capacity, running run ids, and waiting run ids in FIFO order."
+  @spec queue_status() :: %{
+          capacity: non_neg_integer(),
+          running: [String.t()],
+          waiting: [String.t()]
+        }
+  def queue_status do
+    GenServer.call(__MODULE__, :queue_status)
+  end
+
+  @doc "Return the projected state for a work, or nil if not found."
+  @spec work_projection(String.t()) :: map() | nil
+  def work_projection(work_id) when is_binary(work_id) and work_id != "" do
+    GenServer.call(__MODULE__, {:work_projection, work_id})
+  end
+
+  @doc "Return every projected work."
+  @spec list_work() :: [map()]
+  def list_work do
+    GenServer.call(__MODULE__, :list_work)
+  end
+
+  @doc "Return the queue position for a submitted work, or {:error, :not_in_queue}."
+  @spec queue_position(String.t()) :: {:ok, pos_integer()} | {:error, :not_in_queue}
+  def queue_position(work_id) when is_binary(work_id) and work_id != "" do
+    GenServer.call(__MODULE__, {:queue_position, work_id})
+  end
+
+  @doc """
+  Return the projected worktree for an `operation_id` (the deterministic
+  correlation id `"wt-<run_id>-<phase_id>"`), or nil if not found.
+  """
+  @spec worktree(String.t()) :: map() | nil
+  def worktree(operation_id) when is_binary(operation_id) do
+    GenServer.call(__MODULE__, {:worktree, operation_id})
+  end
+
+  @doc """
+  Return every projected worktree for a given run, sorted by operation_id.
+  """
+  @spec worktrees_for_run(String.t()) :: [map()]
+  def worktrees_for_run(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:worktrees_for_run, run_id})
+  end
+
+  @doc """
+  Return the projected worktree for a given `(project_id, run_id, phase_id)`
+  tuple, or nil if not found. Mirrors the deterministic `operation_id`
+  derivation used by the worktree aggregate.
+  """
+  @spec worktree_for_phase(String.t(), String.t(), String.t()) :: map() | nil
+  def worktree_for_phase(project_id, run_id, phase_id)
+      when is_binary(project_id) and is_binary(run_id) and is_binary(phase_id) do
+    operation_id = "wt-" <> run_id <> "-" <> phase_id
+    GenServer.call(__MODULE__, {:worktree, operation_id})
+  end
+
+  @doc """
+  Return every projected worktree whose final status is `"created"` —
+  i.e. a `WorktreeCreated` event was replayed but no matching
+  `WorktreeCleaned` event followed. BootReconciliation uses this
+  list to drive cleanup of orphans after a restart.
+  """
+  @spec list_unresolved_worktrees() :: [map()]
+  def list_unresolved_worktrees do
+    GenServer.call(__MODULE__, :list_unresolved_worktrees)
+  end
+
+  @doc """
+  Return the projected worktree create orphan for an `operation_id`, or
+  nil if not found. BootReconciliation surfaces these for operator
+  recovery when in-process compensation failed.
+  """
+  @spec worktree_create_orphan(String.t()) :: map() | nil
+  def worktree_create_orphan(operation_id) when is_binary(operation_id) do
+    GenServer.call(__MODULE__, {:worktree_create_orphan, operation_id})
+  end
+
+  @doc """
+  Return every projected worktree create orphan, sorted by operation_id.
+  Used by `BootReconciliation` to surface durables whose create
+  compensation failed.
+  """
+  @spec list_worktree_create_orphans() :: [map()]
+  def list_worktree_create_orphans do
+    GenServer.call(__MODULE__, :list_worktree_create_orphans)
+  end
+
+  # -------------------------------------------------------------------------
+
+  @impl true
+  def init(init_arg) do
+    {:ok, rebuild_from_event_log(init_now_ms_fun(init_arg))}
+  end
+
+  @impl true
+  def handle_call({:project, project_id}, _from, state) do
+    {:reply, Map.get(state.projects, project_id), state}
+  end
+
+  @impl true
+  def handle_call({:run, run_id}, _from, state) do
+    {:reply, Map.get(state.runs, run_id), state}
+  end
+
+  @impl true
+  def handle_call(:active_runs, _from, state) do
+    {:reply, active_run_ids(state), state}
+  end
+
+  @impl true
+  def handle_call({:stuck_runs, threshold_ms, now_ms_fun}, _from, state) do
+    now_ms = now_ms_fun.()
+
+    reply =
+      state
+      |> active_run_ids()
+      |> Enum.filter(fn run_id ->
+        case Map.get(state.runs, run_id) do
+          %{last_event_at_ms: last_event_at_ms} when is_integer(last_event_at_ms) ->
+            last_event_at_ms + threshold_ms <= now_ms
+
+          _ ->
+            false
+        end
+      end)
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:apply_events, events, now_ms_fun}, _from, state) do
+    new_state =
+      Enum.reduce(events, state, fn event, acc -> apply_event(acc, event, now_ms_fun) end)
+
+    new_state = broadcast_events(new_state, events)
+    {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call({:rebuild, recovered_events, now_ms_fun}, _from, state) do
+    case rebuild_state_from_event_log(now_ms_fun) do
+      {:ok, rebuilt_state} ->
+        new_state =
+          rebuilt_state
+          |> Map.put(:subscribers, state.subscribers)
+          |> broadcast_events(recovered_events)
+
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "VcsMergeRequested",
-           payload: payload
-         },
-         _mode
-       ) do
-    put_in(
-      projection,
-      [:vcs_operations, payload.operation_id],
-      Map.put(payload, :event_type, "VcsMergeRequested")
-    )
+  @impl true
+  def handle_call(
+        {:rebuild_project, project_id, recovered_events, now_ms_fun},
+        _from,
+        state
+      ) do
+    case rebuild_project_state(project_id, now_ms_fun) do
+      {:ok, rebuilt_project_state} ->
+        projects =
+          replace_project_entry(
+            state.projects,
+            rebuilt_project_state.projects,
+            project_id
+          )
+
+        project_active_runs =
+          replace_project_entry(
+            state.project_active_runs,
+            rebuilt_project_state.project_active_runs,
+            project_id
+          )
+
+        new_state =
+          state
+          |> Map.put(:projects, projects)
+          |> Map.put(:project_active_runs, project_active_runs)
+          |> broadcast_events(recovered_events)
+
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PrGateObserved",
-           payload: %{pr_id: pr_id} = payload
-         },
-         _mode
-       ) do
-    put_in(projection, [:pr_gates, pr_id], payload)
+  @impl true
+  def handle_call(:subscribe, {pid, _ref}, state) do
+    Process.put(:projection_subscribers, Map.put(state.subscribers, pid, true))
+    Process.monitor(pid)
+    {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, true)}}
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PrMerged",
-           payload: %{pr_id: pr_id} = payload
-         },
-         _mode
-       ) do
-    put_in(projection, [:pr_gates, pr_id], Map.put(payload, :state, "merged"))
+  @impl true
+  def handle_call(:queue_status, _from, state) do
+    %{capacity: capacity, holders: holders, waiters: waiters} = state.run_slots
+
+    reply = %{
+      capacity: capacity,
+      running: Map.keys(holders),
+      waiting: Enum.map(waiters, & &1.run_id)
+    }
+
+    {:reply, reply, state}
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: type,
-           payload: %{pr_id: pr_id} = payload
-         },
-         _mode
-       )
-       when type in ["MergeFailed", "MergeBlocked"] do
-    projection
-    |> put_in([:merge_failures, pr_id], Map.put(payload, :event_type, type))
-    |> put_in([:pr_gates, pr_id], Map.put(payload, :state, "failed"))
+  @impl true
+  def handle_call({:work_projection, work_id}, _from, state) do
+    {:reply, Map.get(state.works, work_id), state}
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "InboxMessageAppended",
-           payload: %{message_id: message_id, run_id: run_id} = payload
-         },
-         mode
-       ) do
-    message = Map.put(payload, :event_type, "InboxMessageAppended")
-    maybe_notify_inbox_watchers(mode, run_id, message)
-
-    projection
-    |> put_in([:inbox_messages, message_id], message)
-    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [message_id]) end)
-    |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
+  @impl true
+  def handle_call(:list_work, _from, state) do
+    {:reply, Map.values(state.works), state}
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "InboxDeliveryUpdated",
-           payload: %{message_id: message_id, run_id: run_id} = payload
-         },
-         mode
-       ) do
-    existing =
-      get_in(projection, [:inbox_messages, message_id]) ||
-        %{message_id: message_id, run_id: run_id}
-
-    message = existing |> Map.merge(payload) |> Map.put(:event_type, "InboxDeliveryUpdated")
-    maybe_notify_inbox_watchers(mode, run_id, message)
-
-    projection
-    |> put_in([:inbox_messages, message_id], message)
-    |> update_in([:inbox_by_run, run_id], fn ids -> Enum.uniq((ids || []) ++ [message_id]) end)
-    |> update_in([:inbox_updates], &((&1 || []) ++ [message]))
+  @impl true
+  def handle_call(:list_scheduler_intents, _from, state) do
+    {:reply, Map.values(state.scheduler_intents), state}
   end
 
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "IntegrationCommandIngested",
-           payload: %{dedupe_key: dedupe_key} = payload
-         },
-         _mode
-       ) do
-    record = Map.put(payload, :event_type, "IntegrationCommandIngested")
+  def handle_call({:queue_position, work_id}, _from, state) do
+    reply =
+      case Map.get(state.works, work_id) do
+        %{run_id: run_id} when is_binary(run_id) ->
+          %{waiters: waiters} = state.run_slots
+          waiting = Enum.map(waiters, & &1.run_id)
 
-    projection
-    |> put_in([:integration_commands, dedupe_key], record)
-    |> put_in([:integration_dedupe, dedupe_key], record)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "PlanningFlowStarted", payload: %{run_id: run_id} = payload},
-         _mode
-       ) do
-    put_in(projection, [:planning_flows, run_id], Map.put(payload, :status, "in_progress"))
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "PlanningTraceLinked",
-           payload: %{traceability_key: key, run_id: run_id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_in([:planning_traceability, key], payload)
-    |> update_in([:planning_flows, run_id, :traceability_keys], &Enum.uniq((&1 || []) ++ [key]))
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "PlanningFlowCompleted", payload: %{run_id: run_id} = payload},
-         _mode
-       ) do
-    projection
-    |> update_in([:planning_flows, run_id], &Map.merge(&1 || %{}, payload))
-    |> put_in([:planning_flows, run_id, :status], "completed")
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "MigrationImportStarted", payload: %{migration_id: migration_id} = payload},
-         _mode
-       ) do
-    put_in(
-      projection,
-      [:migration_imports, migration_id],
-      Map.put(payload, :status, "in_progress")
-    )
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{
-           type: "MigrationRecordImported",
-           payload: %{migration_id: migration_id, record_type: type, record_id: id} = payload
-         },
-         _mode
-       ) do
-    projection
-    |> put_in([:migration_records, "#{migration_id}:#{type}:#{id}"], payload)
-    |> update_in([:migration_imports, migration_id], fn import ->
-      import = import || %{migration_id: migration_id, status: "in_progress"}
-      counts = Map.update(Map.get(import, :record_counts, %{}), type, 1, &(&1 + 1))
-      Map.put(import, :record_counts, counts)
-    end)
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{type: "MigrationImportCompleted", payload: %{migration_id: migration_id} = payload},
-         _mode
-       ) do
-    projection
-    |> update_in([:migration_imports, migration_id], &Map.merge(&1 || %{}, payload))
-    |> put_in([:migration_imports, migration_id, :status], "completed")
-  end
-
-  defp apply_domain_event(projection, %{type: type, payload: payload}, _mode)
-       when type in ["AuthorizationChecked", "AuditRecorded"] do
-    update_in(
-      projection,
-      [:authorization_audits],
-      &((&1 || []) ++ [Map.put(payload, :event_type, type)])
-    )
-  end
-
-  defp apply_domain_event(
-         projection,
-         %{payload: %{run_id: run_id, worker_id: worker_id, sequence: sequence} = payload},
-         _mode
-       )
-       when is_binary(run_id) and is_binary(worker_id) and is_integer(sequence) do
-    put_worker_sequence(projection, payload)
-  end
-
-  defp apply_domain_event(projection, _event, _mode), do: projection
-
-  defp terminal_run?(%{status: status}) when is_binary(status) do
-    MapSet.member?(@terminal_run_statuses, status)
-  end
-
-  defp terminal_run?(_run), do: false
-
-  defp terminal_run_status_for_task_status(status) when is_binary(status) do
-    Map.get(@terminal_task_to_run_status, status)
-  end
-
-  defp terminal_run_status_for_task_status(_status), do: nil
-
-  defp maybe_terminalize_run_from_task(projection, task, payload, now) do
-    task_status = Map.get(task, :status)
-    run_status = terminal_run_status_for_task_status(task_status)
-    run_id = payload_value(payload, :run_id) || Map.get(task, :run_id)
-
-    case {run_status, run_id} do
-      {status, run_id} when is_binary(status) and is_binary(run_id) and run_id != "" ->
-        update_run(projection, run_id, fn run ->
-          if terminal_run?(run) do
-            run
+          if run_id in waiting do
+            position = Enum.find_index(waiting, &(&1 == run_id)) + 1
+            {:ok, position}
           else
-            run
-            |> Map.put(:status, status)
-            |> put_terminal_current_phase(payload)
-            |> put_terminal_phase_status(payload, status)
-            |> put_terminal_worker_status(payload, status)
-            |> Map.put(:updated_at, now)
-            |> maybe_put(:completed_at, if(status in ["completed", "merged"], do: now, else: nil))
-            |> maybe_put(:failed_at, if(status == "failed", do: now, else: nil))
+            {:error, :not_in_queue}
           end
-        end)
 
-      _ ->
-        projection
+        _ ->
+          {:error, :not_in_queue}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+  end
+
+  defp broadcast_events(state, events) do
+    for event <- events,
+        pid <- Map.keys(state.subscribers) do
+      send(pid, {:projection_event, event})
+    end
+
+    state
+  end
+
+  @impl true
+  def handle_call({:pr_association, run_id}, _from, state) do
+    case Map.get(state.pr_associations, run_id) do
+      nil -> {:reply, {:error, :not_found}, state}
+      assoc -> {:reply, {:ok, assoc}, state}
     end
   end
 
-  defp put_active_worker_status(run, worker_id, status)
-       when is_binary(worker_id) and worker_id != "" do
-    if terminal_run?(run) do
-      run
+  @impl true
+  def handle_call({:project_projection, project_id}, _from, state) do
+    {:reply, Map.get(state.projects, project_id), state}
+  end
+
+  @impl true
+  def handle_call(:list_projects, _from, state) do
+    {:reply, Map.values(state.projects), state}
+  end
+
+  @impl true
+  def handle_call(:list_projects_with_active_runs, _from, state) do
+    reply =
+      state
+      |> Map.get(:project_active_runs, %{})
+      |> Enum.reduce([], fn
+        {project_id, run_ids}, acc when is_binary(project_id) and run_ids != [] ->
+          [{project_id, Enum.sort(run_ids)} | acc]
+
+        _, acc ->
+          acc
+      end)
+      |> Enum.sort_by(fn {project_id, _run_ids} -> project_id end)
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:list_runs, opts}, _from, state) do
+    runs =
+      state.runs
+      |> Map.values()
+      |> filter_runs(opts)
+      |> Enum.sort_by(fn run -> {get(run, :last_event_at_ms, 0), get(run, :run_id, "")} end, :desc)
+      |> limit_runs(Keyword.get(opts, :limit))
+
+    {:reply, runs, state}
+  end
+
+  @impl true
+  def handle_call({:get_task_by_external_id, external_id}, _from, state) do
+    task =
+      Enum.find_value(state.tasks, fn {_task_id, task} ->
+        if get(task, :external_id) == external_id, do: task, else: nil
+      end)
+
+    {:reply, task, state}
+  end
+
+  @impl true
+  def handle_call({:task_projection, task_id}, _from, state) do
+    {:reply, Map.get(state.tasks, task_id), state}
+  end
+
+  @impl true
+  def handle_call({:tasks_by_run_id, run_id}, _from, state) do
+    tasks =
+      state.tasks
+      |> Map.values()
+      |> Enum.filter(fn task ->
+        get(task, :run_id) == run_id and
+          get(task, :acknowledged_run_id) != run_id
+      end)
+      |> Enum.sort_by(fn task -> get(task, :task_id, "") end)
+
+    {:reply, tasks, state}
+  end
+
+  @impl true
+  def handle_call(:list_tasks, _from, state) do
+    tasks =
+      state.tasks
+      |> Map.values()
+      |> Enum.sort_by(fn task -> get(task, :task_id, "") end)
+
+    {:reply, tasks, state}
+  end
+
+  @impl true
+  def handle_call({:phase_projection, phase_id}, _from, state) do
+    {:reply, Map.get(state.phases, phase_id), state}
+  end
+
+  @impl true
+  def handle_call({:phases_for_run, run_id}, _from, state) do
+    phases =
+      state.phases
+      |> Map.values()
+      |> Enum.filter(fn phase -> get(phase, :run_id) == run_id end)
+      |> Enum.sort_by(fn phase -> get(phase, :index, 0) end)
+
+    {:reply, phases, state}
+  end
+
+  @impl true
+  def handle_call({:worktree, operation_id}, _from, state) do
+    {:reply, Map.get(state.worktrees, operation_id), state}
+  end
+
+  @impl true
+  def handle_call({:worktrees_for_run, run_id}, _from, state) do
+    worktrees =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> get(wt, :run_id) == run_id end)
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    {:reply, worktrees, state}
+  end
+
+  @impl true
+  def handle_call(:list_unresolved_worktrees, _from, state) do
+    unresolved =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> get(wt, :status) == "created" end)
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    {:reply, unresolved, state}
+  end
+
+  @impl true
+  def handle_call({:worktree_create_orphan, operation_id}, _from, state) do
+    {:reply, Map.get(state.worktree_create_orphans, operation_id), state}
+  end
+
+  @impl true
+  def handle_call(:list_worktree_create_orphans, _from, state) do
+    orphans =
+      state.worktree_create_orphans
+      |> Map.values()
+      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+
+    {:reply, orphans, state}
+  end
+
+  # -------------------------------------------------------------------------
+  # Projection logic
+  # -------------------------------------------------------------------------
+
+  defp rebuild_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
+    case rebuild_state_from_event_log(now_ms_fun) do
+      {:ok, rebuilt_state} -> rebuilt_state
+      {:error, _reason} -> initial_state()
+    end
+  end
+
+  defp rebuild_state_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
+    case EventStore.read_all_streams_forward(0, 99_999_999) do
+      {:ok, events} ->
+        {:ok,
+         Enum.reduce(events, initial_state(), fn event, acc ->
+           apply_event(acc, event, now_ms_fun)
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp rebuild_project_state(project_id, now_ms_fun)
+       when is_binary(project_id) and is_function(now_ms_fun, 0) do
+    case EventStore.read_stream_forward("project:#{project_id}", 0, 99_999_999) do
+      {:ok, events} ->
+        {:ok,
+         Enum.reduce(events, initial_state(), fn event, acc ->
+           apply_event(acc, event, now_ms_fun)
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replace_project_entry(current, rebuilt, project_id) do
+    case Map.fetch(rebuilt, project_id) do
+      {:ok, value} -> Map.put(current, project_id, value)
+      :error -> Map.delete(current, project_id)
+    end
+  end
+
+  defp initial_state do
+    %{
+      projects: %{},
+      runs: %{},
+      tasks: %{},
+      phases: %{},
+      pr_associations: %{},
+      scheduler_intents: %{},
+      subscribers: %{},
+      project_active_runs: %{},
+      worktrees: %{},
+      worktree_create_orphans: %{},
+      run_slots: %{capacity: 0, holders: %{}, waiters: []},
+      works: %{}
+    }
+  end
+
+  defp apply_event(state, %RecordedEvent{} = recorded, now_ms_fun) do
+    payload =
+      recorded.data
+      |> to_payload_map()
+      |> with_recorded_projection_metadata(recorded, now_ms_fun)
+
+    apply_event_by_type(state, recorded.event_type, payload)
+  end
+
+  defp apply_event(state, %EventData{} = event_data, now_ms_fun) do
+    payload =
+      event_data.data
+      |> to_payload_map()
+      |> with_event_at_ms(now_ms_fun.())
+
+    apply_event_by_type(state, event_data.event_type, payload)
+  end
+
+  defp apply_event(state, %{event_type: type, payload: payload}, now_ms_fun) do
+    apply_event_by_type(
+      state,
+      type,
+      payload |> to_payload_map() |> with_event_at_ms(now_ms_fun.())
+    )
+  end
+
+  defp apply_event(state, event, now_ms_fun) when is_map(event) do
+    type = Map.get(event, :event_type) || Map.get(event, "event_type")
+
+    payload =
+      Map.get(event, :data) ||
+        Map.get(event, "data") ||
+        Map.get(event, :payload) ||
+        Map.get(event, "payload") ||
+        event
+
+    apply_event_by_type(
+      state,
+      type,
+      payload |> to_payload_map() |> with_event_at_ms(now_ms_fun.())
+    )
+  end
+
+  defp apply_event_by_type(state, "ProjectRegistered", payload) do
+    project_id = get(payload, :project_id)
+    path = get(payload, :path)
+
+    if valid_id?(project_id) do
+      put_state(
+        state,
+        Map.put(state.projects, project_id, project_projection(payload, path)),
+        state.runs
+      )
     else
-      update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+      state
     end
   end
 
-  defp put_active_worker_status(run, _worker_id, _status), do: run
+  defp apply_event_by_type(state, "ProjectUpdated", payload) do
+    project_id = get(payload, :project_id)
 
-  defp put_terminal_worker_status(run, payload, status) do
-    case payload_value(payload, :worker_id) do
-      worker_id when is_binary(worker_id) and worker_id != "" ->
-        update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, status))
+    if valid_id?(project_id) do
+      project =
+        state.projects
+        |> Map.get(project_id, project_projection(payload, nil))
+        |> maybe_put(:path, get(payload, :path))
+        |> maybe_put(:status, get(payload, :status))
+        |> maybe_put(:default_branch, get(payload, :default_branch))
+        |> maybe_put(:health, get(payload, :health))
+        |> maybe_put(:name, get(payload, :name))
+        |> maybe_put(:task_provider, get(payload, :task_provider))
+        |> put_project_config(get(payload, :config, %{}))
+        |> put_project_projection_metadata(payload)
 
-      _ ->
-        update_in(run, [:worker_status], fn worker_status ->
-          worker_status
-          |> Kernel.||(%{})
-          |> Map.new(fn {worker_id, worker_status} ->
-            if active_worker_status?(worker_status),
-              do: {worker_id, status},
-              else: {worker_id, worker_status}
-          end)
-        end)
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      state
     end
   end
 
-  defp active_worker_status?(status) when is_binary(status) do
-    status in ["running", "heartbeat", "active", "started", "in_progress"]
-  end
+  defp apply_event_by_type(state, "ProjectArchived", payload) do
+    project_id = get(payload, :project_id)
 
-  defp active_worker_status?(_status), do: false
+    if valid_id?(project_id) do
+      project =
+        state.projects
+        |> Map.get(project_id, %{status: "archived", archived?: true})
+        |> Map.put(:status, "archived")
+        |> Map.put(:archived?, true)
+        |> put_project_projection_metadata(payload)
 
-  defp put_terminal_current_phase(run, payload) do
-    case payload_value(payload, :phase_id) || Map.get(run, :current_phase) do
-      phase_id when is_binary(phase_id) and phase_id != "" ->
-        Map.put(run, :current_phase, phase_id)
-
-      _ ->
-        run
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      state
     end
   end
 
-  defp put_terminal_phase_status(run, payload, status) do
-    case payload_value(payload, :phase_id) || Map.get(run, :current_phase) do
-      phase_id when is_binary(phase_id) and phase_id != "" ->
-        update_in(run, [:phase_status], &Map.put(&1 || %{}, phase_id, status))
+  defp apply_event_by_type(state, "ProjectReactivated", payload) do
+    project_id = get(payload, :project_id)
 
-      _ ->
-        run
+    if valid_id?(project_id) do
+      project =
+        state.projects
+        |> Map.get(project_id, %{status: "active", archived?: false})
+        |> Map.put(:status, "active")
+        |> Map.put(:archived?, false)
+        |> put_project_projection_metadata(payload)
+
+      put_state(state, Map.put(state.projects, project_id, project), state.runs)
+    else
+      state
     end
   end
 
-  defp payload_value(payload, key) when is_map(payload) and is_atom(key) do
-    Map.get(payload, key, Map.get(payload, Atom.to_string(key)))
+  defp apply_event_by_type(state, "ProjectRunReserved", payload) do
+    project_id = get(payload, :project_id)
+    run_id = get(payload, :run_id)
+
+    if valid_id?(project_id) and valid_id?(run_id) do
+      active_runs =
+        state
+        |> Map.get(:project_active_runs, %{})
+        |> Map.update(project_id, [run_id], &add_project_run_id(&1, run_id))
+
+      Map.put(state, :project_active_runs, active_runs)
+    else
+      state
+    end
   end
 
-  defp maybe_complete_worker(run, %{worker_id: worker_id})
-       when is_binary(worker_id) and worker_id != "" do
-    update_in(run, [:worker_status], &Map.put(&1 || %{}, worker_id, "completed"))
+  defp apply_event_by_type(state, "ProjectRunReservationReleased", payload) do
+    project_id = get(payload, :project_id)
+    run_id = get(payload, :run_id)
+
+    if valid_id?(project_id) and valid_id?(run_id) do
+      active_runs =
+        state
+        |> Map.get(:project_active_runs, %{})
+        |> remove_project_run_id(project_id, run_id)
+
+      Map.put(state, :project_active_runs, active_runs)
+    else
+      state
+    end
   end
 
-  defp maybe_complete_worker(run, _payload), do: run
+  defp apply_event_by_type(state, "RunStarted", payload) do
+    case decode_for_projection("RunStarted", payload) do
+      %ForemanServer.Events.RunStarted{run_id: run_id} = event ->
+        if valid_id?(run_id) do
+          event_at_ms = payload_event_at_ms(payload)
 
-  defp update_run_status(projection, run_id, status) do
-    update_run(projection, run_id, &Map.put(&1, :status, status))
+          run = %{
+            run_id: run_id,
+            task_id: event.task_id,
+            project_id: event.project_id,
+            workflow_name: event.workflow_name,
+            workflow_digest: event.workflow_digest,
+            workflow_snapshot: event.workflow_snapshot,
+            phase_ids: [],
+            last_sequence: event.sequence,
+            status: "awaiting_worker",
+            terminal?: false,
+            started_at_ms: event_at_ms,
+            last_event_at_ms: event_at_ms,
+            failure_reason: nil
+          }
+
+          put_state(state, state.projects, Map.put(state.runs, run_id, run))
+        else
+          state
+        end
+    end
   end
 
-  defp update_run(projection, run_id, fun) do
-    existing =
-      get_in(projection, [:runs, run_id]) ||
-        %{
+  defp apply_event_by_type(state, "RunUpdated", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      maybe_put(run, :task_id, get(payload, :task_id))
+    end)
+  end
+
+  defp apply_event_by_type(state, "RunCompleted", payload) do
+    apply_terminal_run_event(state, payload, "completed")
+  end
+
+  defp apply_event_by_type(state, "RunFailed", payload) do
+    apply_terminal_run_event(state, payload, "failed")
+  end
+
+  defp apply_event_by_type(state, "RunBlocked", payload) do
+    apply_terminal_run_event(state, payload, "blocked")
+  end
+
+  defp apply_event_by_type(state, "RunDeleted", payload) do
+    apply_terminal_run_event(state, payload, "deleted")
+  end
+
+  defp apply_event_by_type(state, "RunReset", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      project_id = get(payload, :project_id)
+
+      state
+      |> Map.update(:project_active_runs, %{}, fn active_runs ->
+        if valid_id?(project_id) do
+          remove_project_run_id(active_runs, project_id, run_id)
+        else
+          active_runs
+        end
+      end)
+      |> put_state(state.projects, Map.delete(state.runs, run_id))
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunFlaggedStuck", payload) do
+    apply_terminal_run_event(state, payload, "stuck")
+  end
+
+  defp apply_event_by_type(state, "RunCancelled", payload) do
+    apply_terminal_run_event(state, payload, "cancelled")
+  end
+
+  defp apply_event_by_type(state, "PhaseStarted", payload) do
+    case decode_for_projection("PhaseStarted", payload) do
+      %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event
+      when not is_nil(phase_id) and phase_id != "" and not is_nil(run_id) and run_id != "" ->
+        phase = %{
+          phase_id: phase_id,
           run_id: run_id,
+          index: event.index,
+          name: event.name,
+          attempt: event.attempt,
           status: "in_progress",
-          phase_order: [],
-          current_phase: nil,
-          phase_status: %{},
-          worker_status: %{},
-          retry_history: []
+          artifact_template: event.artifact_template,
+          artifact: nil,
+          failure_reason: nil,
+          last_sequence: event.sequence,
+          started_at_ms: payload_event_at_ms(payload),
+          last_event_at_ms: payload_event_at_ms(payload)
         }
 
-    put_in(projection, [:runs, run_id], fun.(existing))
-  end
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
+        |> append_phase_id_to_run(run_id, phase_id)
 
-  defp maybe_update_task_from_run_terminal(
-         projection,
-         payload,
-         status,
-         fallback_updated_at
-       )
-       when is_map(payload) do
-    task_id = terminal_task_id(projection, payload)
-
-    if is_binary(task_id) and task_id != "" do
-      existing = get_in(projection, [:tasks, task_id]) || empty_task(task_id)
-
-      task =
-        existing
-        |> Map.put(:status, status)
-        |> Map.put(:run_id, Map.get(payload, :run_id, Map.get(existing, :run_id)))
-        |> maybe_put(
-          :updated_at,
-          Map.get(
-            payload,
-            :updated_at,
-            Map.get(
-              payload,
-              :merged_at,
-              Map.get(payload, :completed_at, Map.get(payload, :failed_at, fallback_updated_at))
-            )
-          )
-        )
-        |> maybe_put(
-          :failure_reason,
-          Map.get(payload, :reason, Map.get(payload, :failure_reason))
-        )
-
-      put_in(projection, [:tasks, task_id], task)
-    else
-      projection
+      _ ->
+        touch_run_for_payload(state, payload)
     end
   end
 
-  defp maybe_update_task_from_run_terminal(projection, _payload, _status, _fallback_updated_at),
-    do: projection
+  defp append_phase_id_to_run(state, run_id, phase_id) do
+    case Map.get(state.runs, run_id) do
+      nil ->
+        state
 
-  defp terminal_task_id(_projection, %{task_id: task_id}) when is_binary(task_id), do: task_id
+      run ->
+        existing = Map.get(run, :phase_ids, [])
 
-  defp terminal_task_id(projection, %{run_id: run_id}) when is_binary(run_id),
-    do: get_in(projection, [:runs, run_id, :task_id])
-
-  defp terminal_task_id(_projection, _payload), do: nil
-
-  defp update_checkpoint(projection, event) do
-    checkpoint = %{
-      last_event_id: Map.get(event, :event_id),
-      last_stream_version: Map.get(event, :stream_version, Map.get(event, :sequence, 0)),
-      updated_at: DateTime.utc_now()
-    }
-
-    projection
-    |> Map.put(:checkpoint, checkpoint)
-    |> Map.put(:last_sequence, checkpoint.last_stream_version)
+        if phase_id in existing do
+          state
+        else
+          updated = %{run | phase_ids: existing ++ [phase_id]}
+          %{state | runs: Map.put(state.runs, run_id, updated)}
+        end
+    end
   end
 
-  defp recompute_status_counts(projection) do
-    counts = %{active: 0, in_progress: 0, failed: 0, blocked: 0, completed: 0}
+  defp apply_event_by_type(state, "PhaseCompleted", payload) do
+    case decode_for_projection("PhaseCompleted", payload) do
+      %ForemanServer.Events.PhaseCompleted{phase_id: phase_id} = event
+      when not is_nil(phase_id) and phase_id != "" ->
+        phase =
+          state.phases
+          |> Map.get(phase_id, %{})
+          |> Map.put(:status, "completed")
+          |> Map.put(:artifact, %{
+            path: event.artifact_path,
+            sha256: event.artifact_sha256,
+            bytes: event.artifact_bytes
+          })
+          |> Map.put(:last_sequence, event.sequence)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
 
-    status_counts =
-      Enum.reduce(projection.runs, counts, fn {_run_id, run}, acc ->
-        status = Map.get(run, :status, "in_progress")
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
 
-        acc
-        |> increment_run_status(status)
-        |> maybe_increment_active(status)
-      end)
-
-    Map.put(projection, :status_counts, status_counts)
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
   end
 
-  defp increment_run_status(counts, "in_progress"),
-    do: Map.update!(counts, :in_progress, &(&1 + 1))
+  defp apply_event_by_type(state, "PhaseFailed", payload) do
+    case decode_for_projection("PhaseFailed", payload) do
+      %ForemanServer.Events.PhaseFailed{phase_id: phase_id} = event
+      when not is_nil(phase_id) and phase_id != "" ->
+        phase =
+          state.phases
+          |> Map.get(phase_id, %{})
+          |> Map.put(:status, "failed")
+          |> Map.put(:failure_reason, event.reason)
+          |> Map.put(:last_sequence, event.sequence)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
 
-  defp increment_run_status(counts, "failed"), do: Map.update!(counts, :failed, &(&1 + 1))
-  defp increment_run_status(counts, "blocked"), do: Map.update!(counts, :blocked, &(&1 + 1))
-  defp increment_run_status(counts, "completed"), do: Map.update!(counts, :completed, &(&1 + 1))
-  defp increment_run_status(counts, _status), do: counts
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update!(:phases, &Map.put(&1, phase_id, phase))
 
-  defp maybe_increment_active(counts, status) do
-    if MapSet.member?(@terminal_run_statuses, status),
-      do: counts,
-      else: Map.update!(counts, :active, &(&1 + 1))
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
   end
 
-  defp dispatchable?(%{status: status} = task, tasks) when status in ["ready", "approved"] do
-    task
-    |> Map.get(:dependencies, [])
-    |> Enum.all?(fn dependency_id ->
-      match?(%{status: "closed"}, Map.get(tasks, dependency_id))
+  defp apply_event_by_type(state, "PhaseTimedOut", payload) do
+    touch_run_for_payload(state, payload)
+  end
+
+  defp apply_event_by_type(state, "PhaseRetried", payload) do
+    touch_run_for_payload(state, payload)
+  end
+
+  defp apply_event_by_type(state, "TaskCreated", payload) do
+    case decode_for_projection("TaskCreated", payload) do
+      %ForemanServer.Events.TaskCreated{task_id: task_id} = event ->
+        task = %{
+          task_id: task_id,
+          external_id: event.external_id,
+          project_id: event.project_id,
+          title: event.title,
+          description: event.description,
+          priority: event.priority,
+          status: event.status,
+          task_type: event.task_type,
+          workflow_type: event.workflow_type,
+          trd_path: event.trd_path,
+          approval_id: nil,
+          approved_by: nil,
+          approved_at: nil,
+          run_id: nil,
+          workflow_snapshot: nil,
+          failure_reason: nil,
+          created_at_ms: payload_event_at_ms(payload),
+          last_event_at_ms: payload_event_at_ms(payload)
+        }
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskUpdated", payload) do
+    case decode_for_projection("TaskUpdated", payload) do
+      %ForemanServer.Events.TaskUpdated{task_id: task_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> maybe_put(:status, event.status)
+          |> maybe_put(:priority, event.priority)
+          |> maybe_put(:title, event.title)
+          |> maybe_put(:description, event.description)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskApproved", payload) do
+    case decode_for_projection("TaskApproved", payload) do
+      %ForemanServer.Events.TaskApproved{task_id: task_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "ready")
+          |> Map.put(:approval_id, event.approval_id)
+          |> Map.put(:approved_by, event.approved_by)
+          |> Map.put(:approved_at, event.approved_at)
+          |> Map.put(:run_id, event.run_id)
+          |> Map.put(:workflow_snapshot, event.workflow_snapshot)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskDispatched", payload) do
+    case decode_for_projection("TaskDispatched", payload) do
+      %ForemanServer.Events.TaskDispatched{task_id: task_id} ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "in_progress")
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskExecutionCompleted", payload) do
+    case decode_for_projection("TaskExecutionCompleted", payload) do
+      %ForemanServer.Events.TaskExecutionCompleted{task_id: task_id} ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "closed")
+          |> Map.put(:failure_reason, nil)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskExecutionFailed", payload) do
+    case decode_for_projection("TaskExecutionFailed", payload) do
+      %ForemanServer.Events.TaskExecutionFailed{task_id: task_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "failed")
+          |> Map.put(:failure_reason, event.reason)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskRunTerminated", payload) do
+    case decode_for_projection("TaskRunTerminated", payload) do
+      %ForemanServer.Events.TaskRunTerminated{task_id: task_id, run_id: run_id} = event ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:acknowledged_run_id, run_id)
+          |> Map.put(:run_terminal_reason, event.reason)
+          |> Map.put(:run_terminal_at, event.acknowledged_at)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "TaskRetried", payload) do
+    case decode_for_projection("TaskRetried", payload) do
+      %ForemanServer.Events.TaskRetried{task_id: task_id} ->
+        task =
+          state.tasks
+          |> Map.get(task_id, %{})
+          |> Map.put(:status, "open")
+          |> Map.put(:approval_id, nil)
+          |> Map.put(:approved_by, nil)
+          |> Map.put(:approved_at, nil)
+          |> Map.put(:run_id, nil)
+          |> Map.put(:workflow_snapshot, nil)
+          |> Map.put(:acknowledged_run_id, nil)
+          |> Map.put(:failure_reason, nil)
+          |> Map.put(:run_terminal_reason, nil)
+          |> Map.put(:run_terminal_at, nil)
+          |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+
+        %{state | tasks: Map.put(state.tasks, task_id, task)}
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkerStarted", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      case run do
+        %{status: "awaiting_worker"} -> %{run | status: "in_progress"}
+        run -> run
+      end
     end)
   end
 
-  defp dispatchable?(_task, _tasks), do: false
-
-  defp empty_task(task_id) do
-    %{task_id: task_id, title: task_id, status: "open", updated_at: nil}
+  defp apply_event_by_type(state, "WorkerHeartbeat", payload) do
+    touch_run_for_payload(state, payload)
   end
 
-  defp keep_only_task_status_values(%{status: nil} = updates), do: Map.delete(updates, :status)
-
-  defp keep_only_task_status_values(%{status: status} = updates) when is_binary(status) do
-    if MapSet.member?(@task_statuses, status), do: updates, else: Map.delete(updates, :status)
+  defp apply_event_by_type(state, "WorkerExited", payload) do
+    touch_run_for_payload(state, payload)
   end
 
-  defp keep_only_task_status_values(updates), do: updates
+  defp apply_event_by_type(state, "WorkerUnresponsive", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      worker_id = get(payload, :worker_id)
+      sequence = get(payload, :sequence)
 
-  defp preserve_irreversible_task_status(%{status: status} = updates, %{status: existing_status})
-       when is_binary(status) and is_binary(existing_status) do
-    if MapSet.member?(@irreversible_task_statuses, existing_status) and
-         not MapSet.member?(@irreversible_task_statuses, status) do
-      Map.delete(updates, :status)
+      workers =
+        Map.put(
+          Map.get(run, :workers, %{}),
+          worker_id,
+          %{status: "unresponsive", sequence: sequence}
+        )
+
+      run
+      |> Map.put(:status, "needs_recovery")
+      |> Map.put(:needs_recovery, true)
+      |> Map.put(:workers, workers)
+    end)
+  end
+
+  defp apply_event_by_type(state, "WorkerRecoveryRequired", payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      Map.put(run, :recovery_observation_at_ms, payload_event_at_ms(payload))
+    end)
+  end
+
+  defp apply_event_by_type(state, "PrAssociated", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      association = %{
+        run_id: run_id,
+        pr_url: get(payload, :pr_url),
+        pr_number: get(payload, :pr_number),
+        associated_at: get(payload, :associated_at)
+      }
+
+      put_state(state, state.projects, state.runs)
+      |> Map.put(:pr_associations, Map.put(state.pr_associations, run_id, association))
     else
-      updates
+      state
     end
   end
 
-  defp preserve_irreversible_task_status(updates, _existing), do: updates
+  defp apply_event_by_type(state, "ScheduledFireRecorded", payload) do
+    intent_id = get(payload, :intent_id)
 
-  defp clear_failure_fields_for_active_status(%{status: status} = updates)
-       when status in ["ready", "approved", "in_progress", "in-progress"] do
-    updates
-    |> Map.put(:failure_reason, nil)
-    |> Map.put(:failure_output, nil)
-  end
+    if valid_id?(intent_id) do
+      intent = %{
+        intent_id: intent_id,
+        status: "recorded",
+        recorded_at: payload_event_at_ms(payload),
+        run_id: get(payload, :run_id),
+        task_id: get(payload, :task_id),
+        scheduled_at: get(payload, :scheduled_at),
+        scheduled_for: get(payload, :scheduled_for),
+        payload: get(payload, :payload, %{})
+      }
 
-  defp clear_failure_fields_for_active_status(updates), do: updates
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, []), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp put_worker_sequence(projection, %{run_id: run_id, worker_id: worker_id, sequence: sequence})
-       when is_integer(sequence) do
-    put_in(projection, [:worker_sequences, "#{run_id}:#{worker_id}"], sequence)
-  end
-
-  defp put_worker_sequence(projection, _payload), do: projection
-
-  defp put_log_entry(projection, type, %{run_id: run_id} = payload) do
-    entry = Map.put(payload, :event_type, type)
-    update_in(projection, [:logs_by_run, run_id], &((&1 || []) ++ [entry]))
-  end
-
-  defp maybe_notify_inbox_watchers(:live, run_id, message),
-    do: notify_inbox_watchers(run_id, message)
-
-  defp maybe_notify_inbox_watchers(:replay, _run_id, _message), do: :ok
-
-  defp notify_inbox_watchers(run_id, message) do
-    if Process.whereis(ForemanServer.InboxRegistry) do
-      Registry.dispatch(ForemanServer.InboxRegistry, run_id, fn entries ->
-        for {pid, _value} <- entries do
-          send(pid, {:inbox_update, run_id, message})
-        end
-      end)
+      put_state(state, state.projects, state.runs)
+      |> Map.put(:scheduler_intents, Map.put(state.scheduler_intents, intent_id, intent))
+    else
+      state
     end
   end
 
-  defp normalize_event(%ForemanServer.Event{} = event) do
-    %{type: event.event_type, payload: event.payload, occurred_at: event.occurred_at}
+  defp apply_event_by_type(state, "ScheduledFireConfirmed", payload) do
+    update_intent(state, payload, "confirmed")
   end
 
-  defp normalize_event(%{event_type: event_type, payload: payload} = event) do
-    %{type: event_type, payload: payload, occurred_at: Map.get(event, :occurred_at)}
+  defp apply_event_by_type(state, "ScheduledFireSkipped", payload) do
+    update_intent(state, payload, "skipped")
   end
 
-  defp normalize_event(%{type: type, payload: payload} = event) do
-    %{type: type, payload: payload, occurred_at: Map.get(event, :occurred_at)}
+  defp apply_event_by_type(state, "SchedulerIntentStale", payload) do
+    update_intent(state, payload, "stale")
   end
 
-  # ── datetime helpers ───────────────────────────────────────────────────
-
-  defp duration_ms(from, to) do
-    from = coerce_datetime(from)
-    to = coerce_datetime(to)
-
-    cond do
-      match?(%DateTime{}, from) && match?(%DateTime{}, to) ->
-        DateTime.diff(to, from, :millisecond)
-
-      match?(%NaiveDateTime{}, from) && match?(%NaiveDateTime{}, to) ->
-        NaiveDateTime.diff(to, from, :millisecond)
-
-      true ->
-        0
-    end
+  defp apply_event_by_type(state, "ToolCallFinished", payload) do
+    touch_run_for_payload(state, payload)
   end
 
-  defp coerce_datetime(%DateTime{} = dt), do: dt
+  defp apply_event_by_type(state, "WorktreeCreated", payload) do
+    case decode_for_projection("WorktreeCreated", payload) do
+      %ForemanServer.Events.WorktreeCreated{} = event
+      when not is_nil(event.operation_id) and event.operation_id != "" ->
+        entry = %{
+          operation_id: event.operation_id,
+          project_id: event.project_id,
+          run_id: event.run_id,
+          phase_id: event.phase_id,
+          status: "created",
+          repo_path: event.repo_path,
+          worktree_path: event.worktree_path,
+          branch: event.branch,
+          base_ref: event.base_ref,
+          cleanup: event.cleanup,
+          last_event_at_ms: payload_event_at_ms(payload)
+        }
 
-  defp coerce_datetime(%NaiveDateTime{} = ndt) do
-    case DateTime.from_naive(ndt, "Etc/UTC") do
-      {:ok, dt} -> dt
-      _ -> ndt
-    end
-  end
-
-  defp coerce_datetime(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, dt, _} ->
-        dt
+        state
+        |> Map.update!(:worktrees, &Map.put(&1, event.operation_id, entry))
+        |> touch_run_for_payload(payload)
 
       _ ->
-        case NaiveDateTime.from_iso8601(value) do
-          {:ok, ndt} -> coerce_datetime(ndt)
-          _ -> nil
-        end
+        touch_run_for_payload(state, payload)
     end
   end
 
-  defp coerce_datetime(_), do: nil
+  defp apply_event_by_type(state, "WorktreeCleaned", payload) do
+    case decode_for_projection("WorktreeCleaned", payload) do
+      %ForemanServer.Events.WorktreeCleaned{} = event
+      when not is_nil(event.operation_id) and event.operation_id != "" ->
+        existing = Map.get(state.worktrees, event.operation_id, %{})
 
-  # ─── Board grouping ───────────────────────────────────────────────────────────
-
-  @active_run_statuses MapSet.new([
-                         "running",
-                         "queued",
-                         "pending",
-                         "in_progress",
-                         "retrying",
-                         "cooldown"
-                       ])
-  # (used when Postgres is the backing store and GenServer state may be cold)
-  defp build_board_from_maps(tasks_map, runs_map, project_id) do
-    tasks =
-      tasks_map
-      |> Map.values()
-      |> Enum.filter(fn task ->
-        Map.get(task, :project_id) == project_id
-      end)
-
-    task_ids = MapSet.new(Enum.map(tasks, & &1.task_id))
-
-    runs =
-      runs_map
-      |> Map.values()
-      |> Enum.filter(fn run ->
-        task_id = Map.get(run, :task_id)
-        MapSet.member?(task_ids, task_id)
-      end)
-      |> Enum.sort_by(&{Map.get(&1, :task_id), Map.get(&1, :run_id)})
-
-    # Build task_id -> active run mapping
-    run_by_task =
-      Enum.reduce(runs, %{}, fn run, acc ->
-        task_id = Map.get(run, :task_id)
-
-        case Map.get(acc, task_id) do
-          nil ->
-            Map.put(acc, task_id, run)
-
-          existing ->
-            existing_updated = Map.get(existing, :updated_at, "") || ""
-            run_updated = Map.get(run, :updated_at, "") || ""
-
-            if run_updated > existing_updated,
-              do: Map.put(acc, task_id, run),
-              else: acc
-        end
-      end)
-
-    # Board columns are task-lifecycle read models. The task projection's
-    # `status` is the only source for column membership; run/PR state may be
-    # rendered on a card, but it must not move the card between columns.
-    {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
-      Enum.reduce(tasks, {[], [], [], [], []}, fn task, acc ->
-        {in_prog, blocked, done, backlog, ready} = acc
-        task_id = Map.get(task, :task_id)
-        run = Map.get(run_by_task, task_id)
-        entry = {task, run, run_group(run)}
-
-        case board_column_for_task(task) do
-          :in_progress -> {[entry | in_prog], blocked, done, backlog, ready}
-          :blocked -> {in_prog, [entry | blocked], done, backlog, ready}
-          :done -> {in_prog, blocked, [entry | done], backlog, ready}
-          :ready -> {in_prog, blocked, done, backlog, [entry | ready]}
-          :backlog -> {in_prog, blocked, done, [entry | backlog], ready}
-        end
-      end)
-
-    %{
-      in_progress: Enum.reverse(in_progress_tasks),
-      blocked: Enum.reverse(blocked_tasks),
-      done: Enum.reverse(done_tasks),
-      backlog: Enum.reverse(backlog_tasks),
-      ready: Enum.reverse(ready_tasks)
-    }
-  end
-
-  defp build_board(projection, project_id) do
-    # Filter tasks by project
-    tasks =
-      projection.tasks
-      |> Map.values()
-      |> Enum.filter(fn task ->
-        Map.get(task, :project_id) == project_id
-      end)
-
-    task_ids = MapSet.new(Enum.map(tasks, & &1.task_id))
-
-    # Filter runs to those belonging to project's tasks
-    runs =
-      projection.runs
-      |> Map.values()
-      |> Enum.filter(fn run ->
-        task_id = Map.get(run, :task_id)
-        MapSet.member?(task_ids, task_id)
-      end)
-      |> Enum.sort_by(&{Map.get(&1, :task_id), Map.get(&1, :run_id)})
-
-    # Build task_id -> active run mapping
-    run_by_task =
-      Enum.reduce(runs, %{}, fn run, acc ->
-        task_id = Map.get(run, :task_id)
-        # Prefer the most recently updated run for each task
-        case Map.get(acc, task_id) do
-          nil ->
-            Map.put(acc, task_id, run)
-
-          existing ->
-            existing_updated = Map.get(existing, :updated_at, "") || ""
-            run_updated = Map.get(run, :updated_at, "") || ""
-
-            if run_updated > existing_updated,
-              do: Map.put(acc, task_id, run),
-              else: acc
-        end
-      end)
-
-    # Board columns are task-lifecycle read models. The task projection's
-    # `status` is the only source for column membership; run/PR state may be
-    # rendered on a card, but it must not move the card between columns.
-    {in_progress_tasks, blocked_tasks, done_tasks, backlog_tasks, ready_tasks} =
-      Enum.reduce(tasks, {[], [], [], [], []}, fn task, acc ->
-        {in_prog, blocked, done, backlog, ready} = acc
-        task_id = Map.get(task, :task_id)
-        run = Map.get(run_by_task, task_id)
-        entry = {task, run, run_group(run)}
-
-        case board_column_for_task(task) do
-          :in_progress -> {[entry | in_prog], blocked, done, backlog, ready}
-          :blocked -> {in_prog, [entry | blocked], done, backlog, ready}
-          :done -> {in_prog, blocked, [entry | done], backlog, ready}
-          :ready -> {in_prog, blocked, done, backlog, [entry | ready]}
-          :backlog -> {in_prog, blocked, done, [entry | backlog], ready}
-        end
-      end)
-
-    %{
-      in_progress: Enum.reverse(in_progress_tasks),
-      blocked: Enum.reverse(blocked_tasks),
-      done: Enum.reverse(done_tasks),
-      backlog: Enum.reverse(backlog_tasks),
-      ready: Enum.reverse(ready_tasks)
-    }
-  end
-
-  defp normalize_board_output(board) do
-    # Visible lifecycle status uses the same source as column membership:
-    # task.status only. Run/PR fields remain display metadata.
-    transform = fn
-      _col, {task, nil, group} ->
-        visible_status = board_status_for_task(task)
-
-        task
-        |> Map.take([:task_id, :title, :priority, :task_type, :updated_at])
-        |> Map.merge(%{group: group, type: "task", status: visible_status})
-
-      _col, {task, run, group} ->
-        run_status = Map.get(run, :status, "")
-
-        run_attention =
-          case {Map.get(run, :failure_reason, ""), Map.get(run, :attention, "")} do
-            {fr, _} when fr != "" -> fr
-            {"", att} -> att
-            _ -> ""
-          end
-
-        visible_status = board_status_for_task(task)
-        pr_state = Map.get(run, :pr_state, "")
-
-        # Needs attention: failed run status OR explicit attention flag,
-        # unless the visible status is already terminal (`done` or
-        # `blocked` per user directive: "merged or blocked isn't Needs
-        # Attention"). Attention still fires for genuinely failing
-        # active runs (`in_progress` lifecycle state).
-        needs_attention =
-          visible_status not in ["done", "blocked"] and
-            (run_status in ["failed", "fail", "stuck", "conflict", "test-failed"] ||
-               run_attention != "")
-
-        base =
-          task
-          |> Map.take([:task_id, :title, :priority, :task_type, :updated_at])
-          |> Map.merge(%{
-            group: group,
-            type: if(needs_attention, do: "attention", else: "run"),
-            status: visible_status,
-            run_id: Map.get(run, :run_id),
-            current_phase: Map.get(run, :current_phase),
-            pr_state: pr_state
+        merged =
+          Map.merge(existing, %{
+            operation_id: event.operation_id,
+            project_id: event.project_id || existing[:project_id],
+            run_id: event.run_id || existing[:run_id],
+            phase_id: event.phase_id || existing[:phase_id],
+            status: "cleaned",
+            repo_path: event.repo_path || existing[:repo_path],
+            worktree_path: event.worktree_path || existing[:worktree_path],
+            cleanup_observed: event.cleanup_observed,
+            last_event_at_ms: payload_event_at_ms(payload)
           })
 
-        if run_attention != "",
-          do: Map.put(base, :attention, run_attention),
-          else: base
+        state
+        |> Map.update!(:worktrees, &Map.put(&1, event.operation_id, merged))
+        |> touch_run_for_payload(payload)
+
+      _ ->
+        touch_run_for_payload(state, payload)
     end
+  end
 
-    columns =
-      [:backlog, :ready, :in_progress, :blocked, :done]
-      |> Enum.map(fn col ->
-        items =
-          (board[col] || [])
-          |> Enum.map(fn item -> transform.(col, item) end)
-          |> Enum.sort_by(&{Map.get(&1, :group) == "RUNNING", Map.get(&1, :updated_at)}, :desc)
+  defp apply_event_by_type(state, "WorktreeCreateOrphanRecorded", payload) do
+    case decode_for_projection("WorktreeCreateOrphanRecorded", payload) do
+      %ForemanServer.Events.WorktreeCreateOrphanRecorded{} = event
+      when not is_nil(event.operation_id) and event.operation_id != "" ->
+        entry = %{
+          operation_id: event.operation_id,
+          project_id: event.project_id,
+          run_id: event.run_id,
+          phase_id: event.phase_id,
+          worktree_path: event.worktree_path,
+          repo_path: event.repo_path,
+          reason: event.reason,
+          last_event_at_ms: payload_event_at_ms(payload)
+        }
 
-        {col, items}
+        state
+        |> Map.update!(:worktree_create_orphans, &Map.put(&1, event.operation_id, entry))
+        |> touch_run_for_payload(payload)
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
+  end
+
+  defp apply_event_by_type(state, "WorktreeCreateOrphanResolved", payload) do
+    case decode_for_projection("WorktreeCreateOrphanResolved", payload) do
+      %ForemanServer.Events.WorktreeCreateOrphanResolved{} = event
+      when not is_nil(event.operation_id) and event.operation_id != "" ->
+        state
+        |> Map.update!(:worktree_create_orphans, &Map.delete(&1, event.operation_id))
+        |> touch_run_for_payload(payload)
+
+      _ ->
+        touch_run_for_payload(state, payload)
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # RunSlot events — folded into state.run_slots
+  # -------------------------------------------------------------------------
+
+  defp apply_event_by_type(state, "RunSlotAcquired", payload) do
+    run_id = get(payload, :run_id)
+    capacity = get(payload, :capacity)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        %{slots | capacity: capacity, holders: Map.put(slots.holders, run_id, :held)}
       end)
-      |> Map.new()
-
-    counts =
-      columns
-      |> Enum.map(fn {col, items} -> {col, length(items)} end)
-      |> Map.new()
-
-    Map.merge(columns, %{counts: counts})
-  end
-
-  defp normalized_task_status(task) do
-    task
-    |> Map.get(:status, "")
-    |> to_string()
-    |> String.trim()
-    |> String.downcase()
-  end
-
-  defp board_status_for_task(task) do
-    ForemanServer.BoardItemStateMachine.task_status_to_board_status(normalized_task_status(task)) ||
-      "backlog"
-  end
-
-  defp board_column_for_task(task) do
-    case board_status_for_task(task) do
-      "in-progress" -> :in_progress
-      "blocked" -> :blocked
-      "done" -> :done
-      "ready" -> :ready
-      _ -> :backlog
+    else
+      state
     end
   end
 
-  defp run_group(nil), do: "RECENT"
+  defp apply_event_by_type(state, "RunSlotQueued", payload) do
+    run_id = get(payload, :run_id)
+    position = get(payload, :position)
+    enqueued_at_ms = get(payload, :enqueued_at_ms)
 
-  defp run_group(run) do
-    run_status =
-      run
-      |> Map.get(:status, "")
-      |> to_string()
-      |> String.downcase()
-      |> String.trim()
-
-    if MapSet.member?(@active_run_statuses, run_status), do: "RUNNING", else: "RECENT"
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        waiter = %{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms}
+        %{slots | waiters: slots.waiters ++ [waiter]}
+      end)
+    else
+      state
+    end
   end
+
+  defp apply_event_by_type(state, "RunSlotReleased", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        %{slots | holders: Map.delete(slots.holders, run_id)}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunSlotTransferred", payload) do
+    released_run_id = get(payload, :released_run_id)
+    acquired_run_id = get(payload, :acquired_run_id)
+
+    if valid_id?(released_run_id) and valid_id?(acquired_run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        new_holders =
+          slots.holders
+          |> Map.delete(released_run_id)
+          |> Map.put(acquired_run_id, :held)
+
+        # Remove the promoted waiter
+        new_waiters = Enum.reject(slots.waiters, &(&1.run_id == acquired_run_id))
+
+        %{slots | holders: new_holders, waiters: new_waiters}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "RunSlotWaiterRemoved", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
+      end)
+    else
+      state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkSubmitted", payload) do
+    case decode_for_projection("WorkSubmitted", payload) do
+      %ForemanServer.Events.WorkSubmitted{
+        work_id: work_id,
+        project_id: project_id,
+        run_id: run_id,
+        submission_id: submission_id,
+        backend: backend
+      } = event
+      when not is_nil(work_id) and work_id != "" ->
+        work = %{
+          work_id: work_id,
+          status: :submitted,
+          project_id: project_id,
+          run_id: run_id,
+          submission_id: submission_id,
+          queue_position: nil,
+          backend: backend
+        }
+
+        Map.update!(state, :works, &Map.put(&1, work_id, work))
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkCancelled", payload) do
+    case decode_for_projection("WorkCancelled", payload) do
+      %ForemanServer.Events.WorkCancelled{work_id: work_id}
+      when not is_nil(work_id) and work_id != "" ->
+        Map.update!(state, :works, fn works ->
+          case Map.get(works, work_id) do
+            nil -> works
+            existing -> Map.put(works, work_id, %{existing | status: :cancelled})
+          end
+        end)
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkExecutionCompleted", payload) do
+    case decode_for_projection("WorkExecutionCompleted", payload) do
+      %ForemanServer.Events.WorkExecutionCompleted{work_id: work_id}
+      when not is_nil(work_id) and work_id != "" ->
+        Map.update!(state, :works, fn works ->
+          case Map.get(works, work_id) do
+            nil -> works
+            existing -> Map.put(works, work_id, %{existing | status: :succeeded})
+          end
+        end)
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, "WorkExecutionFailed", payload) do
+    case decode_for_projection("WorkExecutionFailed", payload) do
+      %ForemanServer.Events.WorkExecutionFailed{work_id: work_id}
+      when not is_nil(work_id) and work_id != "" ->
+        Map.update!(state, :works, fn works ->
+          case Map.get(works, work_id) do
+            nil -> works
+            existing -> Map.put(works, work_id, %{existing | status: :failed})
+          end
+        end)
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_event_by_type(state, _type, _payload), do: state
+
+  defp update_intent(state, payload, status) do
+    intent_id = get(payload, :intent_id)
+
+    if valid_id?(intent_id) do
+      existing = Map.get(state.scheduler_intents, intent_id, %{})
+      merged = Map.merge(existing, %{status: status, intent_id: intent_id})
+
+      put_state(state, state.projects, state.runs)
+      |> Map.put(:scheduler_intents, Map.put(state.scheduler_intents, intent_id, merged))
+    else
+      state
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # Helpers
+  # -------------------------------------------------------------------------
+
+  defp project_projection(payload, path) do
+    %{
+      project_id: get(payload, :project_id),
+      path: path,
+      status: get(payload, :status, "active"),
+      archived?: false,
+      default_branch: get(payload, :default_branch, "main"),
+      config: get(payload, :config, %{}),
+      task_provider: get(payload, :task_provider),
+      health: get(payload, :health, %{ok: true}),
+      name: get(payload, :name)
+    }
+    |> put_project_projection_metadata(payload)
+  end
+
+  defp put_project_projection_metadata(project, payload)
+       when is_map(project) and is_map(payload) do
+    project
+    |> maybe_put(:version, get(payload, :_projection_stream_version))
+    |> put_registered_projection_timestamp(get(payload, :_projection_recorded_at))
+  end
+
+  defp put_registered_projection_timestamp(project, recorded_at) when is_binary(recorded_at) do
+    if is_binary(Map.get(project, :registered_at)) do
+      project
+    else
+      project
+      |> Map.put(:registered, recorded_at)
+      |> Map.put(:registered_at, recorded_at)
+    end
+  end
+
+  defp put_registered_projection_timestamp(project, _recorded_at), do: project
+
+  defp put_project_config(project, config) do
+    Map.put(project, :config, shallow_merge(get(project, :config, %{}), config))
+  end
+
+  defp shallow_merge(left, right) when is_map(left) and is_map(right) do
+    Enum.reduce(right, left, fn {key, value}, acc -> Map.put(acc, key, value) end)
+  end
+
+  defp shallow_merge(_left, right) when is_map(right), do: right
+  defp shallow_merge(left, _right), do: left
+
+  defp add_project_run_id(run_ids, run_id) when is_list(run_ids) do
+    if run_id in run_ids, do: run_ids, else: [run_id | run_ids]
+  end
+
+  defp remove_project_run_id(active_runs, project_id, run_id) when is_map(active_runs) do
+    case Map.get(active_runs, project_id, []) |> Enum.reject(&(&1 == run_id)) do
+      [] -> Map.delete(active_runs, project_id)
+      remaining -> Map.put(active_runs, project_id, remaining)
+    end
+  end
+
+  defp apply_terminal_run_event(state, payload, status) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      run
+      |> maybe_put(:task_id, get(payload, :task_id))
+      |> maybe_put(:failure_reason, get(payload, :reason))
+      |> Map.update(:last_sequence, get(payload, :sequence), & &1)
+      |> Map.put(:status, status)
+      |> Map.put(:terminal?, true)
+    end)
+  end
+
+  defp touch_run_for_payload(state, payload) do
+    update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
+      run
+    end)
+  end
+
+  defp update_run_projection(state, run_id, event_at_ms, updater) when is_function(updater, 1) do
+    if valid_id?(run_id) do
+      run =
+        state.runs
+        |> Map.get(run_id, base_run_projection(run_id, event_at_ms))
+        |> updater.()
+        |> Map.put(:run_id, run_id)
+        |> Map.put(:last_event_at_ms, event_at_ms)
+
+      put_state(state, state.projects, Map.put(state.runs, run_id, run))
+    else
+      state
+    end
+  end
+
+  defp base_run_projection(run_id, now_ms) do
+    %{
+      run_id: run_id,
+      status: "awaiting_worker",
+      task_id: nil,
+      project_id: nil,
+      workflow_name: nil,
+      workflow_digest: nil,
+      workflow_snapshot: nil,
+      phase_ids: [],
+      last_sequence: nil,
+      started_at_ms: now_ms,
+      last_event_at_ms: now_ms,
+      terminal?: false,
+      failure_reason: nil
+    }
+  end
+
+  defp filter_runs(runs, opts) do
+    status = Keyword.get(opts, :status)
+    project_id = Keyword.get(opts, :project_id)
+
+    Enum.filter(runs, fn run ->
+      status_match? = is_nil(status) or status == "" or get(run, :status) == status
+      project_match? = is_nil(project_id) or project_id == "" or get(run, :project_id) == project_id
+      status_match? and project_match?
+    end)
+  end
+
+  defp limit_runs(runs, nil), do: runs
+  defp limit_runs(runs, limit) when is_integer(limit) and limit > 0, do: Enum.take(runs, limit)
+  defp limit_runs(runs, _limit), do: runs
+
+  defp active_run_ids(state) do
+    state.runs
+    |> Enum.reduce([], fn
+      {run_id, %{status: status}}, acc when status in @active_run_statuses -> [run_id | acc]
+      _, acc -> acc
+    end)
+    |> Enum.sort()
+  end
+
+  defp put_state(state, projects, runs) do
+    %{
+      state
+      | projects: projects,
+        runs: runs
+    }
+  end
+
+  defp recorded_event_at_ms(%RecordedEvent{created_at: %DateTime{} = created_at}, _now_ms_fun) do
+    DateTime.to_unix(created_at, :millisecond)
+  end
+
+  defp recorded_event_at_ms(_recorded, now_ms_fun) do
+    now_ms_fun.()
+  end
+
+  defp payload_event_at_ms(payload) do
+    get(payload, :_projection_event_at_ms, resolve_now_ms_fun().())
+  end
+
+  defp with_event_at_ms(payload, event_at_ms) when is_map(payload) do
+    Map.put(payload, :_projection_event_at_ms, event_at_ms)
+  end
+
+  # The EventCodec enforces a closed set of fields per typed event struct.
+  # `_projection_event_at_ms` is a projection-private timestamp we attach
+  # in `with_event_at_ms/2` so `payload_event_at_ms/1` can read it without
+  # coupling handlers to metadata storage. Strip it before decoding so
+  # typed-event validation does not reject the private key.
+  defp decode_for_projection(event_type, payload)
+       when is_binary(event_type) and is_map(payload) do
+    EventCodec.decode!(event_type, drop_projection_meta(payload))
+  end
+
+  defp with_recorded_projection_metadata(payload, %RecordedEvent{} = recorded, now_ms_fun) do
+    payload
+    |> with_event_at_ms(recorded_event_at_ms(recorded, now_ms_fun))
+    |> Map.put(:_projection_stream_version, recorded.stream_version)
+    |> maybe_put(:_projection_recorded_at, recorded_event_timestamp(recorded))
+  end
+
+  defp recorded_event_timestamp(%RecordedEvent{created_at: %DateTime{} = created_at}) do
+    DateTime.to_iso8601(created_at)
+  end
+
+  defp recorded_event_timestamp(%RecordedEvent{created_at: created_at})
+       when is_binary(created_at) do
+    created_at
+  end
+
+  defp recorded_event_timestamp(_recorded), do: nil
+
+  defp drop_projection_meta(payload) do
+    payload
+    |> Map.delete(:_projection_event_at_ms)
+    |> Map.delete("_projection_event_at_ms")
+    |> Map.delete(:_projection_stream_version)
+    |> Map.delete("_projection_stream_version")
+    |> Map.delete(:_projection_recorded_at)
+    |> Map.delete("_projection_recorded_at")
+  end
+
+  defp to_payload_map(%{} = payload) do
+    if Map.has_key?(payload, :__struct__) do
+      Map.from_struct(payload)
+    else
+      payload
+    end
+  end
+
+  defp init_now_ms_fun(init_arg) when is_list(init_arg) do
+    case Keyword.get(init_arg, :now_ms) do
+      now_ms_fun when is_function(now_ms_fun, 0) -> now_ms_fun
+      _ -> resolve_now_ms_fun()
+    end
+  end
+
+  defp init_now_ms_fun(_init_arg), do: resolve_now_ms_fun()
+
+  defp normalize_now_ms_fun(nil), do: resolve_now_ms_fun()
+
+  defp normalize_now_ms_fun(now_ms) when is_integer(now_ms), do: fn -> now_ms end
+  defp normalize_now_ms_fun(now_ms_fun) when is_function(now_ms_fun, 0), do: now_ms_fun
+
+  defp resolve_now_ms_fun do
+    case Process.get(:projection_store_now_ms) do
+      now_ms_fun when is_function(now_ms_fun, 0) ->
+        now_ms_fun
+
+      _ ->
+        case Application.get_env(:foreman_server, :projection_store_now_ms) do
+          now_ms_fun when is_function(now_ms_fun, 0) -> now_ms_fun
+          _ -> fn -> System.system_time(:millisecond) end
+        end
+    end
+  end
+
+  defp valid_id?(value) when is_binary(value), do: value != ""
+  defp valid_id?(_value), do: false
+
+  defp maybe_put(project, _key, nil), do: project
+  defp maybe_put(project, key, value), do: Map.put(project, key, value)
+
+  defp get(%{} = m, k), do: get(m, k, nil)
+
+  defp get(%{} = m, k, default) when is_atom(k) do
+    Map.get(m, k, Map.get(m, Atom.to_string(k), default))
+  end
+
+  defp get(%{} = m, k, default), do: Map.get(m, k, default)
 end
