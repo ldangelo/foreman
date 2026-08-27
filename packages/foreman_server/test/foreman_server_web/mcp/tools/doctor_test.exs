@@ -2,6 +2,7 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
   alias ForemanServerWeb.MCP.Tools.Doctor
   alias Jido.Harness.{Adapter, AdapterSpec, Capabilities, ProviderStatus}
 
@@ -120,8 +121,7 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
 
     assert Tools.call_tool("foreman_doctor", %{strict: true}) ==
              {:error,
-              %{
-                code: "PROVIDER_MISSING",
+                %ToolError{                code: "PROVIDER_MISSING",
                 message: "One or more required providers are unavailable"
               }}
   end

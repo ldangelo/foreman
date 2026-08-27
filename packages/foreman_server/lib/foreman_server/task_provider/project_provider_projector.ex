@@ -19,6 +19,7 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   alias EventStore.{EventData, RecordedEvent}
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor
   alias ForemanServer.TaskProviders.BeadsWatcherSupervisor
 
@@ -243,17 +244,24 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
 
   defp preflight_provider(_provider_module, _config), do: :ok
 
+  # Total over the documented `preflight_database/2` contract
+  # (`:ok | {:error, ProviderError.t()}`) and nothing else.
+  #
+  # This previously mapped a bare `:error` AND an `_other` catch-all to `:ok`,
+  # so an out-of-contract return — including an outright failure — was reported
+  # as a successful preflight and the project was registered against a database
+  # that had never been verified. An unexpected shape now raises.
   defp normalize_preflight(:ok), do: :ok
-  defp normalize_preflight(:error), do: :ok
 
-  defp normalize_preflight({:error, %{code: "DATABASE_NOT_FOUND"}}),
+  defp normalize_preflight({:error, %ProviderError{code: "DATABASE_NOT_FOUND"}}),
     do: {:error, :database_not_found}
 
-  defp normalize_preflight({:error, %{code: code}}) when is_binary(code),
-    do: {:error, :preflight_failed}
+  defp normalize_preflight({:error, %ProviderError{}}), do: {:error, :preflight_failed}
 
-  defp normalize_preflight({:error, _reason}), do: {:error, :preflight_failed}
-  defp normalize_preflight(_other), do: :ok
+  defp normalize_preflight(other) do
+    raise ArgumentError,
+          "preflight_database/2 must return :ok | {:error, %ProviderError{}}; got #{inspect(other)}"
+  end
 
   defp resolve_provider_module(provider_module) when is_atom(provider_module) do
     cond do

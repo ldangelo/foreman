@@ -378,4 +378,69 @@ defmodule ForemanServer.EventCodecTest do
       assert decoded.worktree_path == "/tmp/wt"
     end
   end
+
+  describe "registry derivation" do
+    # The registry and the enforced-key lookup are derived from
+    # lib/foreman_server/events/ at compile time. These tests pin that
+    # contract: two hand-maintained maps previously drifted, leaving 15 of 66
+    # event structs unregistered and undecodable.
+
+    @events_dir Path.expand("../../lib/foreman_server/events", __DIR__)
+
+    test "every event struct on disk is registered" do
+      on_disk =
+        @events_dir
+        |> Path.join("**/*.ex")
+        |> Path.wildcard()
+        |> Enum.map(&File.read!/1)
+        |> Enum.filter(&String.contains?(&1, "defstruct"))
+        |> Enum.flat_map(fn body ->
+          ~r/defmodule\s+ForemanServer\.Events\.([A-Za-z0-9_]+)\s+do/
+          |> Regex.scan(body)
+          |> Enum.map(fn [_, short] -> short end)
+        end)
+        |> MapSet.new()
+
+      registered = MapSet.new(EventCodec.registered())
+
+      assert MapSet.difference(on_disk, registered) |> MapSet.to_list() == [],
+             "event structs exist on disk but are not registered"
+
+      assert MapSet.difference(registered, on_disk) |> MapSet.to_list() == [],
+             "registered event types have no struct on disk"
+    end
+
+    test "every registered event type resolves to a loadable struct module" do
+      broken =
+        EventCodec.registered()
+        |> Enum.reject(fn type ->
+          module = Module.concat(ForemanServer.Events, type)
+          Code.ensure_loaded?(module) and function_exported?(module, :__struct__, 0)
+        end)
+
+      assert broken == [], "registered types with no loadable struct: #{inspect(broken)}"
+    end
+
+    test "enforced keys are derived per module, not shared or empty" do
+      # RunCompleted enforces :project_id; a derivation bug that returned []
+      # for every module would silently accept an incomplete event.
+      assert_raise ArgumentError,
+                   ~r/missing enforced keys: \[:project_id\]/,
+                   fn -> EventCodec.decode!("RunCompleted", %{"run_id" => "r", "sequence" => 1}) end
+    end
+
+    test "previously-unregistered event types now decode" do
+      # These 15 had structs but no registry entry.
+      assert %ForemanServer.Events.ProjectArchived{project_id: "p1"} =
+               EventCodec.decode!("ProjectArchived", %{"project_id" => "p1"})
+
+      for type <- ~w(ProjectRegistered ProjectUpdated PrAssociated MergeGatePending
+                     MergeGateApproved RunAlreadyCompleted RunRecoveryEvent
+                     ScheduledFireRecorded ScheduledFireConfirmed ScheduledFireSkipped
+                     SchedulerIntentStale VcsOperationStarted VcsOperationCompleted
+                     VcsOperationFailed) do
+        assert type in EventCodec.registered(), "#{type} must be registered"
+      end
+    end
+  end
 end

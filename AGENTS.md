@@ -73,7 +73,142 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-Workflow note: PR/merge behavior is controlled by phase-level `checkpointPr: true` on mutating phases plus explicit `create-pr`, `pr-wait`, and `merge` phases. Do not add top-level workflow `merge:` or `pr:` tags.
+Workflow note — PR behavior (corrected 2026-08-26): this file previously said
+PR/merge is controlled by phase-level `checkpointPr: true` plus explicit
+`create-pr`, `pr-wait`, and `merge` phases. **None of those exist.** Grepping
+`checkpointPr`, `checkpoint_pr`, `create-pr`, `pr-wait` across
+`packages/foreman_server` and `packages/foreman_cli` returns zero matches; the
+interpreter and validator recognise no such phase kinds. Do not author them.
+
+The real mechanism is `ForemanServer.Workflow.AutoPR.maybe_create_pr/4`, called
+from `RunExecutor.finalize_run/1` after the task provider confirms completion.
+It requires the final phase artifact to contain a handoff marker
+(`FOREMAN_COMPLETE=true` plus `FOREMAN_BRANCH=<branch>`) and then shells out to
+`gh pr create`.
+
+**Known gap — PRs cannot currently land.** Nothing emits that marker: the only
+references to `FOREMAN_COMPLETE` in the repository are inside `auto_pr.ex`
+itself, so `maybe_create_pr/4` always returns `:noop`, logged at `info`, while
+the run reports success. `AutoPR` also has no test coverage, and the worktree
+branch it would need is phase-local (`run_single_phase/3` binds
+`worktree_record` and cleans it up in an `after` block), so it is not available
+at finalize time. Closing this needs a deliberate design decision about whether
+the skill or Foreman owns PR creation — Foreman already knows the branch it
+created (`foreman/<run_id>/<phase>`) and recorded it on `WorktreeCreated`, so
+deriving the handoff from run state is strictly more robust than depending on an
+agent to print three exact lines.
+
+## 5. Typed Boundaries, Loud Failures
+
+**Make the compiler catch it. If it can't, fail loudly. Never degrade to a plausible-looking success.**
+
+Six stacked MCP defects shipped undetected because every one of them failed
+quietly — a permissive catch-all turned each into either a successful-looking
+response or a misleading "unknown tool". These rules exist to prevent that
+class, not just that instance.
+
+### 5.1 Typed returns — no bare maps as result or error payloads
+
+A function's failure payload MUST be a struct with `@enforce_keys` and
+`@type t`, never an anonymous map:
+
+```elixir
+# WRONG — a typo'd or renamed key silently stops matching downstream.
+{:error, %{code: "NOT_FOUND", message: "Run not found"}}
+
+# RIGHT
+{:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+```
+
+Maps stay legitimate for genuinely open nested data (event payloads, config
+blobs, `phase_status`). They are not acceptable as the contract itself. This is
+the same rule already enforced for aggregate state (see **Aggregate State
+Design**) and domain events (see **Typed Event Structs**) — it applies to every
+internal API boundary.
+
+### 5.2 Result handling MUST be total, with no permissive fallback
+
+Match exactly the documented return shapes and nothing else. A catch-all that
+wraps an unrecognized value into a success response is prohibited:
+
+```elixir
+# WRONG — an unmatched error is reported to the caller as a SUCCESS.
+defp wrap(other, frame) do
+  {:reply, %Response{content: [text(inspect(other))], isError: false}, frame}
+end
+
+# RIGHT — total over the contract; anything else raises FunctionClauseError.
+defp wrap({:ok, data}, frame), do: {:reply, ..., frame}
+defp wrap({:error, %ToolError{} = e}, frame), do: {:error, ..., frame}
+```
+
+A crash beats a lie. `rescue`/`catch` around a call you do not understand, or
+an `_ -> :ok` fallback, converts a defect into corrupt state.
+
+### 5.3 Distinguish "absent" from "malformed"
+
+One catch-all serving both is a debugging tax. Give each cause its own code:
+
+| Cause | Response |
+| --- | --- |
+| Unknown name / id | `METHOD_NOT_FOUND` / `NOT_FOUND` |
+| Known name, missing required argument | `INVALID_PARAMS`, naming the argument |
+| Known name, wrong key type (caller bypassed the boundary) | **raise** — programming error |
+
+`foreman_queue_status` was advertised for its entire life with no
+implementation, and every call returned `METHOD_NOT_FOUND — Unknown tool`,
+indistinguishable from a client typo.
+
+### 5.4 Typed parameters — one key convention, normalized once
+
+Pick one key convention per boundary (atoms internally), convert at the single
+entry point, and never pattern-match both:
+
+```elixir
+# WRONG — invites permanent drift; one of the two clauses is always dead.
+backend = Map.get(args, :backend) || Map.get(args, "backend")
+
+# RIGHT — the transport normalized schema-declared keys already.
+backend = Map.get(args, :backend)
+```
+
+Only convert keys the schema declares, so caller input can never mint atoms.
+A string key arriving past that boundary is a programming error: raise.
+
+### 5.5 Prefer compile-time enforcement over runtime discovery
+
+When a registry and its implementations must agree, **generate the dispatch
+from the registry** so disagreement cannot compile:
+
+```elixir
+for schema <- @tools do
+  impl = :"tool_#{schema.name}"
+  def call_tool(unquote(schema.name), args), do: unquote(impl)(args)
+end
+```
+
+A missing implementation is now `undefined function tool_foreman_queue_status/1`
+at compile time instead of a runtime "unknown tool". Apply the same reasoning to
+workflow phases, event codecs, provider callbacks, and CLI subcommands: derive
+one side from the other rather than maintaining two hand-written lists.
+
+### 5.6 Verify third-party contracts against dep source, and pin them with a test
+
+Every MCP defect was an assumption about `anubis_mcp` that the library
+contradicted (`handler: nil` required for dispatch; `validate_input: nil`
+silently discards arguments; `Anubis.Server.Response` ≠ `Anubis.MCP.Response`;
+`Frame.get_assign/2` does not exist; auth lives at `frame.context`, not
+`frame.transport_context`). Read `deps/<lib>/lib/**` and confirm before coding,
+then add a test asserting the invariant so an upgrade cannot silently break it.
+
+### 5.7 Never duplicate a boundary across transports or adapters
+
+`ForemanServer.MCP` and `ForemanServer.MCP.Stdio` were ~85% byte-identical, so
+three defects existed twice and the stdio copy was missed on the first fix.
+Put the shared behavior in one module (`ForemanServer.MCP.Dispatch`) and let
+each variant implement only its genuine difference. When two implementations
+must behave identically, add a test that exercises **both** through the same
+assertions.
 
 ---
 
@@ -480,11 +615,10 @@ MUST NOT be used.
 `worker_status`, `config`, or `retry_history` — where the shape is genuinely
 open or comes from heterogeneous event payloads — may remain maps.
 
-**Required migrations (all under `lib/foreman_server/aggregates/`):**
-`Project`, `Run`, `Task`, `Phase`, `Worker`, `OperatorIntervention`, `PlanningFlow`,
-`Recovery`, `Scheduler`, `ToolCall`, `VcsOperation`, `ArtifactReport`, `Attachment`,
-`ExternalTrigger`, `ImportMigration`, `InboxThread`, `Integration`.
-All must be migrated to `%State{}` structs with `%State{state | ...}` updates.
+**Status: complete.** Every aggregate under `lib/foreman_server/aggregates/`
+declares its own `State` struct and updates it with `%State{state | ...}`. This
+is now a standing rule for new aggregates, not outstanding migration work — do
+not add an aggregate whose state is a plain map.
 
 **Enforcement rules:**
 
@@ -553,6 +687,14 @@ All authoritative state transitions are domain events persisted in `foreman_even
 Every event is emitted by an aggregate `handle_command/2` function routed through
 `CommandRouter` — no module emits events directly.
 
+**Source of truth: `lib/foreman_server/events/`.** `ForemanServer.EventCodec`
+derives its registry from that directory at compile time, so
+`EventCodec.registered/0` always lists every event. The table below is a
+**curated subset** for orientation, not an inventory — it is deliberately not
+exhaustive (there are currently 66 event structs). Do not treat a missing row
+as "this event does not exist", and do not try to keep the table in one-to-one
+sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
+
 | Event | Emitted by | Effects |
 | --- | --- | --- |
 | `ProjectRegistered` | `Project.handle_command/2` | Creates project projection |
@@ -620,6 +762,32 @@ deserialized data with uniform API `decode!(event_type, data)`: typed structs pa
 JSON maps are validated and rebuilt. Both paths reject a struct whose module does not
 match the `event_type` string. Maps are reserved for genuinely open nested data inside
 the event. They MUST NOT replace the typed event struct itself.
+
+**Registration is automatic — never hand-maintained.** `EventCodec` builds both
+its `event_type → module` registry and its enforced-key lookup at compile time
+by scanning `lib/foreman_server/events/`. Adding a struct file registers the
+event; deleting the file removes it. Each source is an `@external_resource`, and
+`__mix_recompile__?/0` forces a rebuild when a file is added or removed, so the
+registry can never go stale.
+
+Adding a new event is therefore one file and no registry edits:
+
+```elixir
+defmodule ForemanServer.Events.ThingHappened do
+  @enforce_keys [:run_id]
+  @type t :: %__MODULE__{run_id: String.t(), detail: String.t() | nil}
+  @derive Jason.Encoder
+  defstruct [:run_id, detail: nil]
+end
+```
+
+This replaced two parallel hand-written maps that had already drifted: 15 of 66
+event structs — `ProjectRegistered`, `ProjectUpdated`, `ProjectArchived`,
+`PrAssociated`, `MergeGate*`, `ScheduledFire*`, `SchedulerIntentStale`,
+`RunAlreadyCompleted`, `RunRecoveryEvent`, and all three `VcsOperation*` — were
+present on disk but absent from the registry, so decoding them raised
+"unregistered event_type" even though the struct existed and was documented.
+Do not reintroduce a second list.
 
 ---
 

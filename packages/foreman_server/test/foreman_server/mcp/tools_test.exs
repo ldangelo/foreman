@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
   alias ForemanServer.ProjectionStore
 
   setup do
@@ -53,7 +54,10 @@ defmodule ForemanServer.MCP.ToolsTest do
                "foreman_workflow_delete",
                "foreman_prompt_put",
                "foreman_prompt_get",
-               "foreman_doctor"
+               "foreman_doctor",
+               "foreman_run_get_logs",
+               "foreman_run_get_events",
+               "foreman_run_get_activity"
              ]
 
       Enum.each(tools, fn tool ->
@@ -81,7 +85,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       replace_state(%{works: %{}})
 
       assert Tools.call_tool("foreman_work_get", %{work_id: "nonexistent"}) ==
-               {:error, %{code: "NOT_FOUND", message: "Work not found"}}
+               {:error, %ToolError{code: "NOT_FOUND", message: "Work not found"}}
     end
   end
 
@@ -97,7 +101,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       replace_state(%{runs: %{}})
 
       assert Tools.call_tool("foreman_run_get", %{run_id: "nonexistent"}) ==
-               {:error, %{code: "NOT_FOUND", message: "Run not found"}}
+               {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
     end
   end
 
@@ -131,14 +135,36 @@ defmodule ForemanServer.MCP.ToolsTest do
       replace_state(%{projects: %{}})
 
       assert Tools.call_tool("foreman_project_get", %{project_id: "nonexistent"}) ==
-               {:error, %{code: "NOT_FOUND", message: "Project not found"}}
+               {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
     end
   end
 
-  describe "unknown tool" do
-    test "returns METHOD_NOT_FOUND" do
+  describe "dispatch error taxonomy" do
+    # A single catch-all used to report all three of these as
+    # METHOD_NOT_FOUND "Unknown tool", which made argument-shape bugs
+    # extremely expensive to diagnose. They are now distinct.
+    #
+    # Note there is no test for "advertised tool with no implementation":
+    # `call_tool/2` is generated from `@tools`, so that case cannot compile.
+
+    test "an unknown tool name is METHOD_NOT_FOUND" do
       assert Tools.call_tool("unknown_tool", %{}) ==
-               {:error, %{code: "METHOD_NOT_FOUND", message: "Unknown tool: unknown_tool"}}
+               {:error,
+                %ToolError{code: "METHOD_NOT_FOUND", message: "Unknown tool: unknown_tool"}}
+    end
+
+    test "a known tool missing a required argument is INVALID_PARAMS, naming the key" do
+      assert {:error, %ToolError{code: "INVALID_PARAMS", message: message}} =
+               Tools.call_tool("foreman_run_get", %{})
+
+      assert message =~ "foreman_run_get"
+      assert message =~ "run_id"
+    end
+
+    test "string-keyed arguments raise rather than masquerading as an unknown tool" do
+      assert_raise ArgumentError, ~r/string-keyed arguments/, fn ->
+        Tools.call_tool("foreman_run_get", %{"run_id" => "r-1"})
+      end
     end
   end
 end

@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
   alias ForemanServer.CommandGateway
   alias ForemanServer.AgentRuntime.{AdapterCatalog, BackendAdapter}
 
@@ -85,7 +86,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       result = Tools.call_tool("foreman_work_submit", params)
 
       assert result ==
-               {:error, %{code: "DOMAIN_ERROR", message: "{:work_not_found, \"work-123\"}"}}
+               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:work_not_found, \"work-123\"}"}}
     end
 
     test "maps invalid_envelope errors to MCP tool errors" do
@@ -103,7 +104,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       result = Tools.call_tool("foreman_work_submit", params)
 
       assert result ==
-               {:error, %{code: "DOMAIN_ERROR", message: "{:invalid_envelope, :missing_work_id}"}}
+               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:invalid_envelope, :missing_work_id}"}}
     end
   end
 
@@ -134,7 +135,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
       result = Tools.call_tool("foreman_work_cancel", params)
 
       assert result ==
-               {:error, %{code: "DOMAIN_ERROR", message: "{:work_not_cancellable, \"work-789\"}"}}
+               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:work_not_cancellable, \"work-789\"}"}}
     end
 
     test "maps command_not_allowed errors to MCP tool errors" do
@@ -148,7 +149,7 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
 
       assert result ==
                {:error,
-                %{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"work.cancel\"}"}}
+                %ToolError{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"work.cancel\"}"}}
     end
   end
 end

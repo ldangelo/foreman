@@ -1,131 +1,185 @@
 defmodule ForemanServer.Workflow.AutoPR do
   @moduledoc """
-  Reads FOREMAN_BRANCH / FOREMAN_SHA / FOREMAN_COMPLETE from a skill
-  output artifact and creates a GitHub PR via the `gh` CLI.
+  Opens a GitHub PR for a finished run via the `gh` CLI.
 
-  Called from RunExecutor.finalize_run/1 after the task provider completes
-  and before dispatching run.complete, so the PR is created while the
-  run record is still open.
+  Called from `RunExecutor.finalize_run/1` after the task provider confirms
+  completion and before dispatching `run.complete`, so the PR is created while
+  the run record is still open.
 
-  The handoff variables are printed as plain text lines by the skill's
-  final phase output step:
+  ## The head branch comes from run state, not from agent output
+
+  This previously required the final phase artifact to contain three exact
+  lines printed by the skill:
 
       FOREMAN_BRANCH=<current-branch>
       FOREMAN_SHA=<git-revision>
       FOREMAN_COMPLETE=true
 
-  The PR title defaults to "feat(run): <run_id>" and the body references
-  the run and artifact path.
+  Nothing ever emitted them — the only references to `FOREMAN_COMPLETE` in the
+  repository were inside this module — so `maybe_create_pr/1` always returned
+  `:noop` at `info` level while the run reported success. A PR could not land
+  from any workflow, and nothing surfaced that.
+
+  Foreman already knows the branch: it creates it (`foreman/<run_id>/<phase>`)
+  and records it on `WorktreeCreated`. `RunExecutor` now retains it as
+  `state.last_worktree`, so the head branch is derived from run state and a PR
+  no longer depends on an agent formatting output correctly.
+
+  A `FOREMAN_BRANCH=` marker in the artifact is still honoured as an explicit
+  override for skills that manage their own branch.
+
+  ## Whether to open a PR is decided by commits, not a marker
+
+  `maybe_create_pr/1` opens a PR when the head branch has at least one commit
+  that the base branch does not. No commits means there is genuinely nothing to
+  propose, which is the only legitimate `:noop`. Every other outcome —
+  unresolvable branch, failed `git` probe, failed `gh pr create` — is returned
+  as `{:error, reason}` so the caller can surface it instead of completing the
+  run as if a PR had been created.
   """
 
   require Logger
 
-  # gh subcommand args — System.cmd("gh", cmd, opts) prepends "gh" automatically.
+  # System.cmd/3 prepends the executable, so these are subcommand args only.
   @gh_args ~w[pr create]
   @branch_regex ~r/FOREMAN_BRANCH=(\S+)/
-  @sha_regex ~r/FOREMAN_SHA=(\S+)/
-  @complete_regex ~r/FOREMAN_COMPLETE=true/
 
-  @type handoff :: %{branch: String.t(), sha: String.t()}
+  @type context :: %{
+          required(:run_id) => String.t(),
+          required(:base_branch) => String.t(),
+          optional(:artifact_path) => String.t() | nil,
+          optional(:head_branch) => String.t() | nil,
+          optional(:cwd) => String.t() | nil
+        }
+
+  @type result :: {:ok, String.t()} | :noop | {:error, term()}
 
   @doc """
-  Returns `:noop` if `artifact_path` is nil or missing the FOREMAN_COMPLETE
-  marker. Returns `{:ok, pr_url}` on success or `{:error, term}` on failure.
+  Opens a PR for the run described by `context`.
 
-  `cwd` is passed as the working directory for the `gh` invocation so it
-  resolves the correct remote and branch context. Defaults to nil (inherits
-  the beam daemon's working directory).
+  Returns `{:ok, pr_url}`, `:noop` when the head branch has no commits beyond
+  the base, or `{:error, reason}`.
   """
-  @spec maybe_create_pr(String.t(), String.t() | nil, String.t(), String.t() | nil) ::
-          :noop | {:ok, String.t()} | {:error, term()}
-  def maybe_create_pr(run_id, artifact_path, base_branch, cwd \\ nil)
+  @spec maybe_create_pr(context()) :: result()
+  def maybe_create_pr(%{run_id: run_id, base_branch: base_branch} = context)
+      when is_binary(run_id) and is_binary(base_branch) and base_branch != "" do
+    cwd = Map.get(context, :cwd)
 
-  def maybe_create_pr(run_id, nil, _base_branch, _cwd) do
-    Logger.info("AutoPR.run_id=#{run_id} skipped: no artifact_path")
-    :noop
+    with {:ok, head_branch} <- resolve_head_branch(context),
+         {:ok, ahead} <- commits_ahead(base_branch, head_branch, cwd) do
+      if ahead > 0 do
+        open_pr(run_id, base_branch, head_branch, Map.get(context, :artifact_path), cwd)
+      else
+        Logger.info(
+          "AutoPR.run_id=#{run_id} noop: #{head_branch} has no commits beyond #{base_branch}"
+        )
+
+        :noop
+      end
+    end
   end
 
-  def maybe_create_pr(run_id, artifact_path, base_branch, cwd) do
-    with {:ok, content} <- read_artifact(artifact_path),
-         {:ok, handoff} <- parse_handoff(content),
-         :ok <- validate_handoff(handoff) do
-      do_create_pr(run_id, handoff, base_branch, artifact_path, cwd)
-    else
-      {:error, :no_handoff} ->
-        Logger.info("AutoPR.run_id=#{run_id} skipped: no FOREMAN_COMPLETE marker")
-        :noop
+  def maybe_create_pr(context) do
+    {:error, {:invalid_context, context}}
+  end
+
+  @doc """
+  Extracts an explicit `FOREMAN_BRANCH=` override from skill output.
+
+  Returns `nil` when the artifact declares no branch, in which case the caller
+  falls back to the Foreman-derived branch.
+  """
+  @spec branch_override(String.t()) :: String.t() | nil
+  def branch_override(content) when is_binary(content) do
+    case Regex.run(@branch_regex, content, capture: :all_but_first) do
+      [branch | _] -> String.trim(branch)
+      nil -> nil
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Internal
+  # ------------------------------------------------------------------
+
+  # Artifact override wins; otherwise use the branch Foreman created.
+  defp resolve_head_branch(context) do
+    override =
+      case read_artifact(Map.get(context, :artifact_path)) do
+        {:ok, content} -> branch_override(content)
+        :skip -> nil
+      end
+
+    case override || Map.get(context, :head_branch) do
+      branch when is_binary(branch) and branch != "" ->
+        {:ok, branch}
+
+      _ ->
+        {:error, :no_head_branch}
+    end
+  end
+
+  defp read_artifact(nil), do: :skip
+
+  defp read_artifact(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        {:ok, content}
 
       {:error, reason} ->
-        Logger.warning("AutoPR.run_id=#{run_id} parse error: #{inspect(reason)}")
-        {:error, reason}
+        # Absent artifacts are normal: the head branch comes from run state.
+        Logger.debug("AutoPR could not read artifact #{path}: #{inspect(reason)}")
+        :skip
     end
   end
 
-  # -------------------------------------------------------------------
-  # Internal
+  defp commits_ahead(base_branch, head_branch, cwd) do
+    args = ["rev-list", "--count", base_branch <> ".." <> head_branch]
+    opts = [stderr_to_stdout: true]
+    opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
-  defp read_artifact(path) do
-    case File.read(path) do
-      {:ok, _} = ok -> ok
-      {:error, reason} = error ->
-        Logger.info("AutoPR could not read artifact #{path}: #{inspect(reason)}")
-        error
+    case System.cmd("git", args, opts) do
+      {output, 0} ->
+        case Integer.parse(String.trim(output)) do
+          {count, _} -> {:ok, count}
+          :error -> {:error, {:unparsable_rev_list, output}}
+        end
+
+      {output, exit_code} ->
+        {:error, {:rev_list_failed, exit_code, String.trim(output)}}
     end
   end
 
-  @doc "Extract handoff fields from skill output text."
-  @spec parse_handoff(String.t()) :: {:ok, handoff()} | {:error, :no_handoff}
-  def parse_handoff(content) when is_binary(content) do
-    branch = first_capture(@branch_regex, content)
-    sha = first_capture(@sha_regex, content)
-    complete? = Regex.match?(@complete_regex, content)
-
-    if complete? do
-      {:ok, %{branch: branch || "", sha: sha || ""}}
-    else
-      {:error, :no_handoff}
-    end
-  end
-
-  defp first_capture(regex, content) do
-    case Regex.run(regex, content, capture: :all_but_first) do
-      nil -> nil
-      list -> List.first(list)
-    end
-  end
-
-  defp validate_handoff(%{branch: branch}) when branch != "", do: :ok
-  defp validate_handoff(handoff), do: {:error, {:invalid_handoff, handoff}}
-
-  defp do_create_pr(run_id, handoff, base_branch, artifact_path, cwd) do
+  defp open_pr(run_id, base_branch, head_branch, artifact_path, cwd) do
     title = "feat(run): #{run_id}"
-    body = "Foreman run `#{run_id}` complete.\n\nArtifact: #{artifact_path}\n"
+
+    body =
+      "Foreman run `#{run_id}` complete.\n" <>
+        if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "")
 
     cmd =
       @gh_args ++
-        ["--base", base_branch, "--head", handoff.branch, "--title", title, "--body", body]
+        ["--base", base_branch, "--head", head_branch, "--title", title, "--body", body]
 
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
     Logger.info(
-      "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{handoff.branch}" <>
+      "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{head_branch}" <>
         if(cwd, do: " (cwd=#{cwd})", else: "")
     )
 
     case System.cmd("gh", cmd, opts) do
       {output, 0} ->
-        pr_url = pr_url_from_output(output) || output
+        pr_url = pr_url_from_output(output) || String.trim(output)
         Logger.info("AutoPR.run_id=#{run_id} PR created: #{pr_url}")
         {:ok, pr_url}
 
-      {output, exit} ->
-        Logger.error("AutoPR.run_id=#{run_id} gh pr create failed (#{exit}): #{output}")
-        {:error, {:gh_pr_create_failed, exit, output}}
+      {output, exit_code} ->
+        Logger.error("AutoPR.run_id=#{run_id} gh pr create failed (#{exit_code}): #{output}")
+        {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
     end
   end
 
-  # gh prints the PR URL on stdout on success
   defp pr_url_from_output(output) do
     case Regex.run(~r"https://github\.com/[^\s]+", output) do
       [url | _] -> String.trim(url)

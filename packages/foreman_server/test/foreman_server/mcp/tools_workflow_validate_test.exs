@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
 
   describe "foreman_workflow_validate" do
     test "returns valid: true for a well-formed manifest YAML string" do
@@ -13,7 +14,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
           prompt: Hello {{input.name}}
       """
 
-      assert Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml}) ==
+      assert Tools.call_tool("foreman_workflow_validate", %{manifest: yaml}) ==
                {:ok, %{valid: true}}
     end
 
@@ -24,7 +25,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
         "phases" => [%{"name" => "plan", "prompt" => "Hello"}]
       }
 
-      assert Tools.call_tool("foreman_workflow_validate", %{"manifest" => manifest}) ==
+      assert Tools.call_tool("foreman_workflow_validate", %{manifest: manifest}) ==
                {:ok, %{valid: true}}
     end
 
@@ -33,9 +34,9 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
       description: Missing name and phases
       """
 
-      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+      result = Tools.call_tool("foreman_workflow_validate", %{manifest: yaml})
 
-      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+      assert match?({:error, %ToolError{code: "INVALID_MANIFEST"}}, result)
     end
 
     test "returns INVALID_MANIFEST for phase missing name" do
@@ -45,27 +46,30 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
         - prompt: step without name
       """
 
-      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+      result = Tools.call_tool("foreman_workflow_validate", %{manifest: yaml})
 
-      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+      assert match?({:error, %ToolError{code: "INVALID_MANIFEST"}}, result)
     end
 
     test "returns INVALID_PARAMS when manifest is missing" do
-      assert Tools.call_tool("foreman_workflow_validate", %{}) ==
-               {:error,
-                %{
-                  code: "INVALID_PARAMS",
-                  message: "Expected manifest as a YAML string or map"
-                }}
+      # A wholly absent required argument is now caught at the dispatch
+      # boundary, which names the missing key. The tool body still reports
+      # "Expected manifest as a YAML string or map" for a manifest that is
+      # present but of the wrong type (see the rejection tests below).
+      assert {:error, %ToolError{code: "INVALID_PARAMS", message: message}} =
+               Tools.call_tool("foreman_workflow_validate", %{})
+
+      assert message =~ "missing required arguments"
+      assert message =~ "manifest"
     end
   end
 
   describe "foreman_workflow_validate (rejection conditions)" do
     test "returns INVALID_PARAMS for non-string non-map manifest" do
       # Lists are not accepted as manifests
-      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => ["not", "valid"]})
+      result = Tools.call_tool("foreman_workflow_validate", %{manifest: ["not", "valid"]})
 
-      assert match?({:error, %{code: "INVALID_PARAMS"}}, result)
+      assert match?({:error, %ToolError{code: "INVALID_PARAMS"}}, result)
     end
 
     test "rejects phase that is not a map" do
@@ -75,9 +79,9 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
         - just a string
       """
 
-      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+      result = Tools.call_tool("foreman_workflow_validate", %{manifest: yaml})
 
-      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+      assert match?({:error, %ToolError{code: "INVALID_MANIFEST"}}, result)
     end
 
     test "rejects phase with empty name" do
@@ -88,9 +92,9 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
           prompt: step
       """
 
-      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+      result = Tools.call_tool("foreman_workflow_validate", %{manifest: yaml})
 
-      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+      assert match?({:error, %ToolError{code: "INVALID_MANIFEST"}}, result)
     end
 
     test "rejects phases that is not a list" do
@@ -99,9 +103,9 @@ defmodule ForemanServer.MCP.ToolsWorkflowValidateTest do
       phases: not-a-list
       """
 
-      result = Tools.call_tool("foreman_workflow_validate", %{"manifest" => yaml})
+      result = Tools.call_tool("foreman_workflow_validate", %{manifest: yaml})
 
-      assert match?({:error, %{code: "INVALID_MANIFEST"}}, result)
+      assert match?({:error, %ToolError{code: "INVALID_MANIFEST"}}, result)
     end
   end
 end

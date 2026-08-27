@@ -3,10 +3,11 @@ defmodule ForemanServer.MCP do
   Anubis MCP server for Foreman — HTTP transport variant.
 
   Mounted by `ForemanServerWeb.MCPRouter` at `/mcp` via the Streamable HTTP
-  transport.  Tools are defined in `ForemanServer.MCP.Tools` (a plain module
-  with `call_tool/2` callbacks) and manually registered as `Anubis.Server.Component.Tool`
-  structs so the anubis framework can discover them without requiring
-  `use Anubis.Server.Component` on that module.
+  transport. All tool wiring — component building, the auth/policy gate, and
+  result wrapping — lives in `ForemanServer.MCP.Dispatch` and is shared with
+  the stdio transport. This module owns only what is genuinely
+  HTTP-specific: the child spec and how the bearer token is recovered from
+  the connection.
   """
 
   use Anubis.Server,
@@ -17,12 +18,8 @@ defmodule ForemanServer.MCP do
       validator: {ForemanServer.MCP.Auth, []}
     ]
 
-  alias ForemanServer.MCP.Auth
-  alias ForemanServer.MCP.Policy
-  alias ForemanServer.MCP.Tools
-  alias Anubis.MCP.Error
-  alias Anubis.MCP.Response
-  alias Anubis.Server.Component.Tool
+  alias ForemanServer.MCP.Dispatch
+  alias Anubis.Server.Context
 
   # -------------------------------------------------------------------
   # Tool discovery — runtime filter via Policy.list_tools/1 so write
@@ -30,46 +27,19 @@ defmodule ForemanServer.MCP do
   # -------------------------------------------------------------------
 
   @impl true
-  def __components__(:tool) do
-    all_schemas = Tools.list_tools()
-    authorized_schemas = Policy.list_tools(all_schemas)
+  def __components__(:tool), do: Dispatch.components()
 
-    Enum.map(authorized_schemas, fn schema ->
-      %Tool{
-        name: schema.name,
-        title: schema[:title],
-        description: schema.description,
-        input_schema: schema.inputSchema,
-        handler: Tools
-      }
-    end)
-  end
   # -------------------------------------------------------------------
   # Supervision / child spec
   # -------------------------------------------------------------------
 
   @doc "Returns a child spec for the HTTP MCP server (streamable HTTP transport)."
   def child_spec(opts \\ []) do
-    mcp = Application.get_env(:foreman_server, :mcp, [])
-
-    opts =
-      case Keyword.get(mcp, :allow_insecure_local, false) do
-        true ->
-          # Peri requires resource + authorization_servers when validator present
-          # Skip authorization config entirely when insecure (dev only)
-          opts
-            |> Keyword.delete(:authorization)
-            |> Keyword.put_new(:transport, :streamable_http)
-
-        _ ->
-          opts
-            |> Keyword.put_new(:transport, :streamable_http)
-            |> Keyword.put_new(:authorization, authorization_config())
-      end
-
     %{
       id: __MODULE__,
-      start: {Anubis.Server.Supervisor, :start_link, [__MODULE__, opts]},
+      start:
+        {Anubis.Server.Supervisor, :start_link,
+         [__MODULE__, Dispatch.transport_opts(opts, :streamable_http)]},
       type: :supervisor,
       restart: :permanent
     }
@@ -88,91 +58,36 @@ defmodule ForemanServer.MCP do
   # -------------------------------------------------------------------
 
   @doc """
-  For the HTTP transport, the bearer token was already verified by the
-  `ForemanServer.MCP.Auth` Plug before the session starts.  This callback
-  provides a second verification checkpoint by checking that
-  `transport_context.auth` is present (JWT claims were set by the Plug).
+  The `ForemanServer.MCP.Auth` Plug has already allowed-or-halted the request
+  before the session starts. It does not assign claims, so `transport_context`
+  usually carries none; `handle_tool_call/3` re-verifies regardless.
   """
   @impl Anubis.Server
-  def init(_client_info, frame) do
-    # HTTP: auth claims were set by the Plug after validating the bearer token.
-    # Verify they're present (belt-and-suspenders double-check).
-    case frame do
-      %{transport_context: %{auth: claims}} when is_map(claims) and map_size(claims) > 0 ->
-        # Token was verified by Plug; store marker in assigns for handle_tool_call
-        verified_frame = Anubis.Server.Frame.assign(frame, :auth_verified, true)
-        {:ok, verified_frame}
-
-      _ ->
-        # No auth claims — either stdio (which uses init_meta) or a bug.
-        # Let handle_tool_call deal with it.
-        {:ok, frame}
-    end
-  end
+  def init(_client_info, frame), do: {:ok, frame}
 
   @doc """
-  Handles a tool call for the HTTP transport.
-
-  Auth was verified at the Plug level before the session started.  This
-  callback re-verifies as a belt-and-suspenders measure using the stored
-  auth claims (or raw token if available), then checks the write-gate policy
-  before delegating to `ForemanServer.MCP.Tools.call_tool/2`.
+  Handles a tool call for the HTTP transport by recovering the bearer token
+  from the connection and delegating to the shared dispatcher.
   """
   @impl Anubis.Server
   def handle_tool_call(name, arguments, frame) do
-    # Belt-and-suspenders auth re-verification.
-    # For HTTP: we re-verify using the claims from transport_context.auth.
-    # The raw token is in claims["token"] if the Plug stored it there.
-    auth_ok =
-      case frame do
-        %{transport_context: %{auth: %{"token" => token}}} when is_binary(token) ->
-          Auth.verify_request(token, name, arguments) == :ok
-
-        %{transport_context: %{auth: claims}} when is_map(claims) ->
-          # Claims present but no raw token — the Plug already verified.
-          # Mark as OK since Plug would have rejected before session started.
-          true
-
-        _ ->
-          false
-      end
-
-    if auth_ok do
-      # Policy gate: refuse writes when allow_workflow_writes is disabled
-      if Policy.authorized?(name) do
-        Tools.call_tool(name, arguments)
-        |> wrap_tool_result(name, frame)
-      else
-        {:error, %Error{code: "POLICY_REFUSED", message: "Tool #{name} is not permitted"}, frame}
-      end
-    else
-      {:error, %Error{code: "UNAUTHORIZED", message: "Authentication required"}, frame}
-    end
+    Dispatch.call(name, arguments, bearer_token(frame), frame)
   end
 
   # -------------------------------------------------------------------
   # Private
   # -------------------------------------------------------------------
 
-  defp authorization_config do
-    [validator: {Auth, []}]
+
+  # The only genuinely HTTP-specific piece of tool handling: where the token
+  # lives. Anubis puts the request headers on `frame.context.headers`
+  # (downcased) — there is no `frame.transport_context`, so the previous
+  # match on `%{transport_context: %{auth: ...}}` could never succeed and the
+  # token was always dropped. `Dispatch.call/4` fails closed on `nil`,
+  # honouring `allow_insecure_local` exactly as the Plug does.
+  defp bearer_token(%{context: %Context{headers: headers}}) when is_map(headers) do
+    headers |> Map.get("authorization") |> Dispatch.strip_bearer()
   end
 
-  defp wrap_tool_result({:ok, data}, _name, frame) do
-    content = [%{"type" => "text", "text" => Jason.encode!(data)}]
-
-    {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},
-     frame}
-  end
-
-  defp wrap_tool_result({:error, %{code: code, message: message}}, _name, frame) do
-    {:error, %Error{code: code, message: message}, frame}
-  end
-
-  defp wrap_tool_result(other, _name, frame) do
-    content = [%{"type" => "text", "text" => inspect(other)}]
-
-    {:reply, %Response{result: %{"content" => content, "isError" => false}, id: "tool_result"},
-     frame}
-  end
+  defp bearer_token(_frame), do: nil
 end

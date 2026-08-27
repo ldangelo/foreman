@@ -56,6 +56,25 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCodeMapFactoryTest do
     end)
   end
 
+  # The rule forbids *constructing* a ProviderError outside the factory. A
+  # `%ProviderError{}` in pattern position is a match, not a construction, and
+  # matching the struct is exactly what we want callers to do instead of
+  # matching a shape-compatible bare map. Prune pattern subtrees before
+  # looking for literals: function heads, `->` clause patterns (which covers
+  # `case`/`with`/`fn`), and the left side of `=`.
+  defp collect_provider_error_literals({form, meta, [_head, body]}, acc)
+       when form in [:def, :defp, :defmacro, :defmacrop] do
+    {{form, meta, [nil, body]}, acc}
+  end
+
+  defp collect_provider_error_literals({:->, meta, [_patterns, body]}, acc) do
+    {{:->, meta, [nil, body]}, acc}
+  end
+
+  defp collect_provider_error_literals({:=, meta, [_lhs, rhs]}, acc) do
+    {{:=, meta, [nil, rhs]}, acc}
+  end
+
   defp collect_provider_error_literals(node, acc) do
     if provider_error_struct_literal?(node) do
       {node, [line_of(node) | acc]}

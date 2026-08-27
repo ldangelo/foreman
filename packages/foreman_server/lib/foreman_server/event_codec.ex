@@ -1,12 +1,30 @@
 defmodule ForemanServer.EventCodec do
   @moduledoc """
-  Strict event reconstruction codec for typed events used by the Worker
-  aggregate and the Overwatch Tracker.
+  Strict event reconstruction codec for typed domain events.
 
-  `decode!/2` is the sole entry point. It maps an `event_type` (String.t)
-  to a registered struct module via `@registry` and rebuilds the struct
-  from the persisted data map. There is **no permissive fallback**: any
-  unregistered event_type raises `ArgumentError`.
+  `decode!/2` is the sole entry point. It maps an `event_type` (`String.t()`)
+  to its struct module and rebuilds the struct from persisted data. There is
+  **no permissive fallback**: an unregistered event_type raises
+  `ArgumentError`.
+
+  ## The registry is derived, never hand-maintained
+
+  `@registry` is built at compile time by scanning
+  `lib/foreman_server/events/` for modules that declare a `defstruct`. Adding
+  an event struct registers it automatically; there is no second list to keep
+  in sync and therefore no drift to detect.
+
+  This replaced two hand-written maps (`@registry` and an
+  `@enforce_keys_registry`) that had already drifted: 15 of 66 event structs —
+  including `ProjectRegistered`, `ProjectUpdated`, `ProjectArchived`,
+  `PrAssociated`, and the whole `VcsOperation*` family — existed on disk but
+  were absent from the registry, so decoding them raised "unregistered
+  event_type" despite the struct being present and documented. Enforced keys
+  are no longer tracked separately either: `struct!/2` already enforces
+  `@enforce_keys`, so the second map bought nothing but a drift surface.
+
+  Each event source file is registered as an `@external_resource`, so adding
+  or removing one recompiles this module.
 
   ## Decoding rules
 
@@ -17,216 +35,68 @@ defmodule ForemanServer.EventCodec do
       the declared struct fields and looking each up by atom-or-string key
       in the input map. Missing enforced fields raise. Unknown input keys
       raise. Arbitrary input is never atomized.
-
-  Scope: Worker aggregate + Overwatch lifecycle events. Other aggregates
-  continue using `ForemanServer.Aggregate.event_type/1` /
-  `event_payload/1` against persisted map data.
   """
 
-  alias ForemanServer.Events.{
-    AssistantMessage,
-    BeadsDbLeaseAcquired,
-    BeadsDbLeaseReleased,
-    BeadsDbLeaseTransferred,
-    BeadsDbLeaseWaiterRegistered,
-    BeadsDbLeaseWaiterRemoved,
-    PhaseBlocked,
-    PhaseCompleted,
-    PhaseFailed,
-    PhaseStarted,
-    ProjectRunReservationReleased,
-    ProjectRunReserved,
-    RunBlocked,
-    RunCancelled,
-    RunCompleted,
-    RunFailed,
-    RunFlaggedStuck,
-    RunPaused,
-    RunSlotAcquired,
-    RunSlotQueued,
-    RunSlotReleased,
-    RunSlotTransferred,
-    RunSlotWaiterRemoved,
-    RunStarted,
-    ProjectRunReservationReleased,
-    ProjectRunReserved,
-    RunBlocked,
-    RunCancelled,
-    RunCompleted,
-    RunFailed,
-    RunFlaggedStuck,
-    RunPaused,
-    RunStarted,
-    TaskAnnotated,
-    TaskApproved,
-    TaskCreated,
-    TaskDependencyAdded,
-    TaskDispatched,
-    TaskExecutionCompleted,
-    TaskBlocked,
-    TaskExecutionFailed,
-    TaskRetried,
-    TaskRunTerminated,
-    TaskUpdated,
-    ToolCallFinished,
-    WorkerCrashed,
-    WorkerExited,
-    WorkerHeartbeat,
-    WorkerStarted,
-    WorkerStderr,
-    WorkerStdout,
-    WorkerUnresponsive,
-    WorktreeCreated,
-    WorktreeCleaned,
-    WorktreeCreateOrphanRecorded,
-    WorktreeCreateOrphanResolved,
-    WorkSubmitted,
-    WorkCancelled,
-    WorkExecutionCompleted,
-    WorkExecutionFailed
-  }
+  # ------------------------------------------------------------------
+  # Compile-time registry derivation
+  # ------------------------------------------------------------------
 
-  @registry %{
-    "BeadsDbLeaseAcquired" => BeadsDbLeaseAcquired,
-    "BeadsDbLeaseReleased" => BeadsDbLeaseReleased,
-    "BeadsDbLeaseWaiterRegistered" => BeadsDbLeaseWaiterRegistered,
-    "BeadsDbLeaseWaiterRemoved" => BeadsDbLeaseWaiterRemoved,
-    "BeadsDbLeaseTransferred" => BeadsDbLeaseTransferred,
-    "WorkerStarted" => WorkerStarted,
-    "WorkerHeartbeat" => WorkerHeartbeat,
-    "WorkerUnresponsive" => WorkerUnresponsive,
-    "WorkerExited" => WorkerExited,
-    "WorkerCrashed" => WorkerCrashed,
-    "WorkerStdout" => WorkerStdout,
-    "WorkerStderr" => WorkerStderr,
-    "ToolCallFinished" => ToolCallFinished,
-    "AssistantMessage" => AssistantMessage,
-    "RunStarted" => RunStarted,
-    "ProjectRunReserved" => ProjectRunReserved,
-    "ProjectRunReservationReleased" => ProjectRunReservationReleased,
-    "RunCompleted" => RunCompleted,
-    "RunFailed" => RunFailed,
-    "RunBlocked" => RunBlocked,
-    "RunFlaggedStuck" => RunFlaggedStuck,
-    "RunPaused" => RunPaused,
-    "RunCancelled" => RunCancelled,
-    "RunSlotAcquired" => RunSlotAcquired,
-    "RunSlotQueued" => RunSlotQueued,
-    "RunSlotReleased" => RunSlotReleased,
-    "RunSlotTransferred" => RunSlotTransferred,
-    "RunSlotWaiterRemoved" => RunSlotWaiterRemoved,
-    "PhaseStarted" => PhaseStarted,
-    "PhaseCompleted" => PhaseCompleted,
-    "PhaseFailed" => PhaseFailed,
-    "TaskCreated" => TaskCreated,
-    "TaskUpdated" => TaskUpdated,
-    "TaskAnnotated" => TaskAnnotated,
-    "TaskDependencyAdded" => TaskDependencyAdded,
-    "TaskApproved" => TaskApproved,
-    "TaskDispatched" => TaskDispatched,
-    "TaskExecutionCompleted" => TaskExecutionCompleted,
-    "TaskExecutionFailed" => TaskExecutionFailed,
-    "TaskBlocked" => TaskBlocked,
-    "TaskRunTerminated" => TaskRunTerminated,
-    "TaskRetried" => TaskRetried,
-    "WorkSubmitted" => WorkSubmitted,
-    "WorkCancelled" => WorkCancelled,
-    "WorkExecutionCompleted" => WorkExecutionCompleted,
-    "WorkExecutionFailed" => WorkExecutionFailed,
-    "WorktreeCreated" => WorktreeCreated,
-    "WorktreeCleaned" => WorktreeCleaned,
-    "WorktreeCreateOrphanRecorded" => WorktreeCreateOrphanRecorded,
-    "WorktreeCreateOrphanResolved" => WorktreeCreateOrphanResolved,
-    "PhaseBlocked" => PhaseBlocked
-  }
+  @events_glob Path.join([__DIR__, "events", "**", "*.ex"])
 
-  # Parallel registry of @enforce_keys per event module. `Module.get_attribute/2`
-  # is compile-time only, so the enforced fields are registered here for
-  # runtime validation. Update both `@registry` and `@enforce_keys_registry`
-  @enforce_keys_registry %{
-    BeadsDbLeaseAcquired => [:db_path, :run_id, :task_id, :acquired_at_ms],
-    BeadsDbLeaseReleased => [:db_path, :run_id, :released_at_ms, :reason],
-    BeadsDbLeaseTransferred => [
-      :db_path,
-      :released_run_id,
-      :released_at_ms,
-      :reason,
-      :acquired_run_id,
-      :acquired_task_id,
-      :acquired_at_ms,
-      :enqueued_at_ms
-    ],
-    BeadsDbLeaseWaiterRegistered => [:db_path, :run_id, :task_id, :enqueued_at_ms],
-    BeadsDbLeaseWaiterRemoved => [:db_path, :run_id, :removed_at_ms, :reason],
-    WorkerStarted => [:worker_id, :run_id, :session_id, :adapter, :prompt_path],
-    WorkerHeartbeat => [:worker_id, :run_id],
-    WorkerUnresponsive => [:worker_id, :run_id],
-    WorkerExited => [:worker_id],
-    WorkerCrashed => [:worker_id, :run_id],
-    WorkerStdout => [:worker_id, :run_id],
-    WorkerStderr => [:worker_id, :run_id],
-    ToolCallFinished => [:worker_id, :run_id],
-    AssistantMessage => [:worker_id, :run_id],
-    # workflow_snapshot and started_at_ms were added in a later version;
-    # older events predate both, so only the original 3 fields are enforced.
-    RunStarted => [:run_id, :task_id, :project_id],
-    ProjectRunReserved => [:project_id, :run_id, :sequence, :command_id, :run_start_payload],
-    ProjectRunReservationReleased => [:project_id, :run_id, :sequence],
-    RunCompleted => [:run_id, :project_id, :sequence],
-    RunFailed => [:run_id, :project_id, :sequence],
-    RunBlocked => [:run_id, :project_id],
-    RunFlaggedStuck => [:run_id, :project_id, :flagged_at],
-    RunCancelled => [:run_id, :project_id],
-    RunPaused => [:run_id],
-    PhaseStarted => [:phase_id, :run_id, :index, :name, :attempt, :artifact_template],
-    PhaseCompleted => [
-      :phase_id,
-      :run_id,
-      :index,
-      :artifact_path,
-      :artifact_sha256,
-      :artifact_bytes
-    ],
-    PhaseBlocked => [:phase_id, :run_id, :index, :reason],
-    PhaseFailed => [:run_id, :phase_id, :index, :reason],
-    TaskCreated => [:task_id, :project_id, :title, :status, :task_type],
-    TaskUpdated => [:task_id],
-    TaskAnnotated => [:task_id, :body, :author],
-    TaskDependencyAdded => [:task_id, :depends_on],
-    TaskApproved => [
-      :task_id,
-      :approval_id,
-      :approved_by,
-      :approved_at,
-      :run_id,
-      :workflow_snapshot
-    ],
-    TaskDispatched => [:task_id, :run_id, :approval_id],
-    TaskExecutionCompleted => [:task_id, :run_id],
-    TaskExecutionFailed => [:task_id, :run_id, :reason],
-    TaskBlocked => [:task_id, :reason],
-    TaskRunTerminated => [:task_id, :run_id],
-    TaskRetried => [:task_id, :previous_run_id],
-    WorktreeCreated => [:operation_id, :project_id, :run_id, :phase_id],
-    WorktreeCleaned => [:operation_id, :project_id, :run_id, :phase_id],
-    WorktreeCreateOrphanRecorded => [
-      :operation_id,
-      :project_id,
-      :run_id,
-      :phase_id,
-      :worktree_path
-    ],
-    WorktreeCreateOrphanResolved => [:operation_id, :project_id, :run_id, :phase_id],
-    WorkSubmitted => [:work_id, :project_id, :run_id, :submission_id, :workflow_snapshot],
-    WorkCancelled => [:work_id],
-    WorkExecutionCompleted => [:work_id, :run_id],
-    WorkExecutionFailed => [:work_id, :run_id],
-    RunSlotAcquired => [:run_id, :capacity, :acquired_at_ms],
-    RunSlotQueued => [:run_id, :position, :enqueued_at_ms],
-    RunSlotReleased => [:run_id],
-    RunSlotTransferred => [:released_run_id, :acquired_run_id, :acquired_at_ms],
-    RunSlotWaiterRemoved => [:run_id]
-  }
+  @event_sources @events_glob |> Path.wildcard() |> Enum.sort()
+
+  for source <- @event_sources do
+    @external_resource source
+  end
+
+  # `@external_resource` only forces a recompile when a file already in the
+  # list changes. A brand-new event source is not in that list, so without
+  # this hook `mix compile` would leave the derived registry stale and the new
+  # event would silently fail to decode. `__mix_recompile__?/0` is Mix's
+  # supported escape hatch for compile-time state derived from a glob.
+  @event_sources_fingerprint :erlang.md5(Enum.join(@event_sources, "\n"))
+
+  @doc false
+  def __mix_recompile__? do
+    current = @events_glob |> Path.wildcard() |> Enum.sort()
+    :erlang.md5(Enum.join(current, "\n")) != @event_sources_fingerprint
+  end
+
+  # Each event source yields {event_type, module, enforce_keys}. Both the
+  # type->module registry and the enforced-key lookup come from this single
+  # scan, so neither can drift from the structs on disk.
+  @event_specs (@event_sources
+                |> Enum.map(&File.read!/1)
+                |> Enum.filter(&String.contains?(&1, "defstruct"))
+                |> Enum.flat_map(fn body ->
+                  enforce_keys =
+                    case Regex.run(~r/@enforce_keys\s*\[([^\]]*)\]/, body) do
+                      [_full, inner] ->
+                        ~r/:([a-z_][A-Za-z0-9_]*[?!]?)/
+                        |> Regex.scan(inner)
+                        |> Enum.map(fn [_, key] -> String.to_atom(key) end)
+
+                      nil ->
+                        []
+                    end
+
+                  ~r/defmodule\s+ForemanServer\.Events\.([A-Za-z0-9_]+)\s+do/
+                  |> Regex.scan(body)
+                  |> Enum.map(fn [_full, short_name] ->
+                    {short_name, Module.concat(ForemanServer.Events, short_name), enforce_keys}
+                  end)
+                end))
+
+  @registry Map.new(@event_specs, fn {type, module, _keys} -> {type, module} end)
+
+  @enforce_keys_registry Map.new(@event_specs, fn {_type, module, keys} -> {module, keys} end)
+
+  if map_size(@registry) == 0 do
+    raise CompileError,
+      description:
+        "ForemanServer.EventCodec derived an empty event registry from " <>
+          "#{@events_glob}. The glob or the events directory layout changed."
+  end
 
   @type event_type :: String.t()
   @type data :: map()
@@ -283,7 +153,8 @@ defmodule ForemanServer.EventCodec do
       :error ->
         raise ArgumentError,
               "ForemanServer.EventCodec: unregistered event_type #{inspect(event_type)}. " <>
-                "Register it in @registry and add the typed struct under ForemanServer.Events."
+                "The registry is derived from lib/foreman_server/events/ at compile time, " <>
+                "so add a module ForemanServer.Events.#{event_type} declaring a defstruct."
     end
   end
 

@@ -60,5 +60,8 @@ config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
 config :foreman_server, :mcp,
   enabled: true,
   mount: "/mcp",
-  allow_workflow_writes: false,
+  # Enables the write tools (foreman_work_submit / work_cancel / workflow_put /
+  # workflow_delete / prompt_put). Required to dispatch work through MCP; the
+  # gate stays off in config.exs and test.exs.
+  allow_workflow_writes: true,
   allow_insecure_local: true

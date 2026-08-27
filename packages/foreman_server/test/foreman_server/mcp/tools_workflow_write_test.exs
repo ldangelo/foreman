@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
 
   # NOTE: Tests in this file are designed for --no-start runs.
   # Tests requiring the Catalog GenServer are in tools_workflow_write_integration_test.exs
@@ -23,7 +24,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
       try do
         manifest = %{"name" => "test", "phases" => []}
 
-        assert {:error, %{code: "POLICY_REFUSED"}} =
+        assert {:error, %ToolError{code: "POLICY_REFUSED"}} =
                  Tools.call_tool("foreman_workflow_put", %{
                    name: "test",
                    manifest: manifest
@@ -41,7 +42,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
       Application.put_env(:foreman_server, :mcp, Keyword.put(prev, :allow_workflow_writes, false))
 
       try do
-        assert {:error, %{code: "POLICY_REFUSED"}} =
+        assert {:error, %ToolError{code: "POLICY_REFUSED"}} =
                  Tools.call_tool("foreman_workflow_delete", %{name: "test"})
       after
         Application.put_env(:foreman_server, :mcp, prev)
@@ -59,7 +60,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
                manifest: manifest
              }) ==
                {:error,
-                %{
+                %ToolError{
                   code: "NAME_STEM_MISMATCH",
                   message: "Manifest name 'other-name' does not match filename stem 'my-workflow'"
                 }}
@@ -74,7 +75,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
       # case-match structure in the tool (error branch does not call write_manifest).
       invalid_manifest = %{"name" => "test"}
 
-      assert {:error, %{code: "INVALID_MANIFEST"}} =
+      assert {:error, %ToolError{code: "INVALID_MANIFEST"}} =
                Tools.call_tool("foreman_workflow_put", %{
                  name: "test",
                  manifest: invalid_manifest
@@ -91,7 +92,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
                manifest: manifest
              }) ==
                {:error,
-                %{
+                %ToolError{
                   code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
@@ -105,7 +106,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
                manifest: manifest
              }) ==
                {:error,
-                %{
+                %ToolError{
                   code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
@@ -116,7 +117,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
     test "returns INVALID_FILENAME for path traversal attempt" do
       assert Tools.call_tool("foreman_workflow_delete", %{name: "../etc/passwd"}) ==
                {:error,
-                %{
+                %ToolError{
                   code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
@@ -125,7 +126,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowWriteTest do
     test "returns INVALID_FILENAME for backslash path attempt" do
       assert Tools.call_tool("foreman_workflow_delete", %{name: "subdir\\test.yaml"}) ==
                {:error,
-                %{
+                %ToolError{
                   code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
