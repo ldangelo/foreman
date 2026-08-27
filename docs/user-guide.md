@@ -169,7 +169,9 @@ Read endpoints are projection-only:
 - `GET /api/work/{id}` returns the work projection directly, or
   `{error: "work_not_found"}` with `404`.
 - `GET /api/runs/{id}` returns `{run: ...}` with stringified keys, or
-  `{error: "run_not_found", run_id: "..."}` with `404`.
+  `{error: "run_not_found", run_id: "..."}` with `404`. Every projected run
+  carries `pr_url` — the URL of the PR the run opened, or `null` when Foreman
+  recorded none. `GET /api/runs` carries the same field on each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`, and
   `GET /api/queue` expose corresponding projections.
 
@@ -224,15 +226,19 @@ Current CLI contract:
 - `--work-id` is optional; the CLI generates `work-<random>` when omitted.
 - `--backend` is optional. The CLI accepts `pi`, `claude`, `codex`, and
   `opencode`; it omits the field when the value is the default `pi`.
-- `--base-branch <branch>` is optional and forthcoming per
+- `--base-branch <branch>` is optional and half-consumed per
   [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md).
-  The CLI accepts and forwards the flag inside the `work.submit`
-  envelope but the server does not yet consume it. When the server-side
-  change ships, the default parent branch for a new task will become the
-  operator's current checkout HEAD (replacing the historical `"main"`
-  fallback), and `--base-branch` will pin the task to an explicit branch.
-  Use `gh pr edit <n> --base <branch>` to retarget a PR created before
-  the server-side change ships.
+  The default parent branch is now the operator's checkout, not `"main"`:
+  `RunExecutor` records `git symbolic-ref --short HEAD` of the project
+  checkout when the run's first phase starts, and AutoPR opens the PR against
+  that branch — a run started from a feature branch proposes onto that feature
+  branch. A detached checkout resolves to no branch at all, which is a logged
+  error and no PR rather than a fallback. The flag itself is still
+  protocol-level capture only: the CLI forwards it inside the `work.submit`
+  envelope and the server does not consume it, so it cannot yet pin a task to
+  a branch other than the checkout it was started from. Use
+  `gh pr edit <n> --base <branch>` to retarget a PR that needs a different
+  base.
 
 Important backend caveat: `--backend` is read-model metadata for `work.submit`,
 not a runtime execution switch. `Work.Submission` builds the workflow snapshot

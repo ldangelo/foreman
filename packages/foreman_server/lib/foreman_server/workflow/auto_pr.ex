@@ -36,6 +36,26 @@ defmodule ForemanServer.Workflow.AutoPR do
   unresolvable branch, failed `git` probe, failed `gh pr create` — is returned
   as `{:error, reason}` so the caller can surface it instead of completing the
   run as if a PR had been created.
+
+  ## The base branch is the branch the run was cut from
+
+  `base_branch` is required and is never defaulted here. `RunExecutor` records
+  it when the run's first phase starts, from the symbolic ref `HEAD` points at
+  in the project checkout — the same checkout this module runs `git` and `gh`
+  in — and returns `{:auto_pr_base_branch_unresolved, reason}` instead of
+  calling `maybe_create_pr/1` when it cannot name that branch.
+
+  It used to arrive as `plan_context["base_branch"]` with a `"main"` fallback,
+  and nothing ever wrote that key, so every run targeted `main`.
+  run-776527010ea5d3568b742adbd25ab872 was cut from `feat/mcp-run-details` and
+  opened PR #420 against `main`: the diff carried an entire unrelated session of
+  commits rather than the two documents the run produced.
+
+  The `commits_ahead/3` gate is measured against that same base, so it counts
+  only what the run added on top of its own starting point. Against the default
+  branch it also counted every commit the run's base branch already carried,
+  which is how a run that produced nothing could still look like it had work to
+  propose.
   """
 
   require Logger
@@ -58,7 +78,8 @@ defmodule ForemanServer.Workflow.AutoPR do
   Opens a PR for the run described by `context`.
 
   Returns `{:ok, pr_url}`, `:noop` when the head branch has no commits beyond
-  the base, or `{:error, reason}`.
+  the base, or `{:error, reason}`. `base_branch` must be the branch the run's
+  work was cut from; it is not defaulted.
   """
   @spec maybe_create_pr(context()) :: result()
   def maybe_create_pr(%{run_id: run_id, base_branch: base_branch} = context)

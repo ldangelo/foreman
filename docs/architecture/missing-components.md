@@ -267,7 +267,7 @@ has not been tested via HTTP.
 **What must work:**
 - After `run.complete`, the system monitors a GitHub PR URL
 - `PrMonitor` watches PR state (opened, merged, closed, conflict)
-- `PrCreated` event records the PR URL on the run
+- `PrAssociated` event records the PR URL on the run — implemented: `PrAssociation.handle_command/2` emits it, `RunExecutor.finalize_run/1` appends it after AutoPR opens the PR, and `ProjectionStore` projects `pr_url` onto the run (there is no `PrCreated` event; this line previously named one)
 - `PrMerged` / `PrClosed` events update run status accordingly
 - Go CLI can set the PR URL on a run; can query PR status
 

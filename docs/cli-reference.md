@@ -242,16 +242,18 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
   `{:error, :backend_not_found}`. Defaults to `:jido_harness` when
   the JidoHarnessAdapter is in the runtime's adapter list; falls back
   to the first available adapter in the list otherwise.
-- `--base-branch <branch>` (optional, forthcoming per
+- `--base-branch <branch>` (optional, half-consumed per
   [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md))
-  — parent branch for the new task's worktree and PR. **Protocol-level
-  capture only in this release**: the CLI accepts and forwards the flag
-  inside the `work.submit` envelope, but the server does not yet consume
-  it. The forthcoming behavior: when omitted, the server will resolve the
-  parent from the operator's current checkout HEAD (replacing the
-  historical `"main"` fallback); when supplied, that value wins. Use
-  `gh pr edit <n> --base <branch>` to retarget any PR created before the
-  server-side change ships.
+  — parent branch for the new task's worktree and PR. **The default now
+  resolves server-side from the operator's checkout**: `RunExecutor` records
+  `git symbolic-ref --short HEAD` of the project checkout when the run's first
+  phase starts, and `AutoPR` opens the PR against that branch, replacing the
+  historical `"main"` fallback. A detached checkout resolves to no branch,
+  which is `{:auto_pr_base_branch_unresolved, reason}` at `error` and no PR.
+  **The flag itself remains protocol-level capture only**: the CLI accepts and
+  forwards it inside the `work.submit` envelope, but nothing server-side reads
+  it, so an explicit value cannot yet override the checkout. Use
+  `gh pr edit <n> --base <branch>` to retarget a PR onto a different base.
 
 Example:
 
