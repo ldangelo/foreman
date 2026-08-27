@@ -153,14 +153,32 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   end
 
   defp fetch_database_path!(%{database_path: database_path}) when is_binary(database_path),
-    do: database_path
+    do: resolve_database_leaf(database_path)
 
   defp fetch_database_path!(%{"database_path" => database_path}) when is_binary(database_path),
-    do: database_path
+    do: resolve_database_leaf(database_path)
 
   defp fetch_database_path!(project_config) do
     raise ArgumentError,
           "expected project_config with binary :database_path, got: #{inspect(project_config)}"
+  end
+
+  # `br` requires the database FILE, and rejects a directory with
+  # CONFIG_ERROR "expected a regular file, not a symlink or special file"
+  # (exit 7). Operators naturally register the `.beads` directory, which made
+  # every provider call fail while `foreman_project_list` still reported
+  # health.ok — so accept a directory and append the conventional leaf.
+  #
+  # This is the single funnel for every `--db` argument the runner emits, so
+  # normalizing here fixes all callbacks at once rather than per call site.
+  @database_leaf "beads.db"
+
+  defp resolve_database_leaf(database_path) do
+    if File.dir?(database_path) do
+      Path.join(database_path, @database_leaf)
+    else
+      database_path
+    end
   end
 
   defp build_action_argv(:version, payload) do
