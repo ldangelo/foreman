@@ -7,6 +7,9 @@ defmodule ForemanServer.Agents.JidoAiRunnerTest do
 
   use ExUnit.Case, async: true
 
+  @moduletag :integration
+  
+
   alias ForemanServer.Agents.JidoAiRunner
 
   test "unknown strategy returns :unknown_strategy error" do

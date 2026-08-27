@@ -160,6 +160,24 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:run, run_id})
   end
 
+  @doc "Return all events for a run."
+  @spec run_events(String.t()) :: [map()]
+  def run_events(run_id) do
+    GenServer.call(__MODULE__, {:run_events, run_id})
+  end
+
+  @doc "Return activity (heartbeats) for a run."
+  @spec run_activity(String.t()) :: [map()]
+  def run_activity(run_id) do
+    GenServer.call(__MODULE__, {:run_activity, run_id})
+  end
+
+  @doc "Return logs for a run."
+  @spec run_logs(String.t()) :: [map()]
+  def run_logs(run_id) do
+    GenServer.call(__MODULE__, {:run_logs, run_id})
+  end
+
   @doc "Return the projected state for a phase, or nil if not found."
   @spec phase_projection(String.t()) :: map() | nil
   def phase_projection(phase_id) when is_binary(phase_id) and phase_id != "" do
@@ -311,6 +329,24 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:run, run_id}, _from, state) do
     {:reply, Map.get(state.runs, run_id), state}
+    end
+  @impl true
+  def handle_call({:run_events, run_id}, _from, state) do
+    events = case EventStore.read_stream_forward("run:#{run_id}", 0, 99_999_999) do
+      {:ok, evts} -> evts
+      {:error, _} -> []
+    end
+    {:reply, events, state}
+  end
+
+  @impl true
+  def handle_call({:run_activity, run_id}, _from, state) do
+    {:reply, [], state}
+  end
+
+  @impl true
+  def handle_call({:run_logs, run_id}, _from, state) do
+    {:reply, [], state}
   end
 
   @impl true

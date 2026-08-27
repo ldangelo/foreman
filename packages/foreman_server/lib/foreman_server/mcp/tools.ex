@@ -227,6 +227,42 @@ defmodule ForemanServer.MCP.Tools do
   }
 
 
+
+  @schema_foreman_run_get_logs %{
+    name: "foreman_run_get_logs",
+    description: "Return all logs for a run.",
+    inputSchema: %{
+      type: "object",
+      required: ["run_id"],
+      properties: %{
+        "run_id" => %{"type": "string", "description": "The run_id."}
+      }
+    }
+  }
+
+  @schema_foreman_run_get_events %{
+    name: "foreman_run_get_events",
+    description: "Return all events for a run.",
+    inputSchema: %{
+      type: "object",
+      required: ["run_id"],
+      properties: %{
+        "run_id" => %{"type": "string", "description": "The run_id."}
+      }
+    }
+  }
+
+  @schema_foreman_run_get_activity %{
+    name: "foreman_run_get_activity",
+    description: "Return activity (heartbeats) for a run.",
+    inputSchema: %{
+      type: "object",
+      required: ["run_id"],
+      properties: %{
+        "run_id" => %{"type": "string", "description": "The run_id."}
+      }
+    }
+  }
   @tools [
     @schema_foreman_work_get,
     @schema_foreman_run_get,
@@ -242,7 +278,10 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_workflow_delete,
     @schema_foreman_prompt_put,
     @schema_foreman_prompt_get,
-    @schema_foreman_doctor
+    @schema_foreman_doctor,
+    @schema_foreman_run_get_logs,
+    @schema_foreman_run_get_events,
+    @schema_foreman_run_get_activity,
   ]
 
   def list_tools, do: @tools
@@ -265,12 +304,30 @@ defmodule ForemanServer.MCP.Tools do
     if result, do: {:ok, result}, else: {:error, %{code: "NOT_FOUND", message: "Run not found"}}
   end
 
-  def call_tool("foreman_queue_status", %{}) do
+  def call_tool("foreman_run_get_logs", %{run_id: run_id}) do
     start_us = System.monotonic_time(:microsecond)
-    result = ProjectionStore.queue_status()
+    result = ForemanServer.ProjectionStore.run_logs(run_id)
     duration_us = System.monotonic_time(:microsecond) - start_us
-    Telemetry.mcp_tool_call(duration_us, "foreman_queue_status", :ok)
+    Telemetry.mcp_tool_call(duration_us, "foreman_run_get_logs", :ok)
     {:ok, result}
+  end
+
+
+
+  def call_tool("foreman_run_get_events", %{run_id: run_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.ProjectionStore.run_events(run_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    Telemetry.mcp_tool_call(duration_us, "foreman_run_get_events", :ok)
+    {:ok, result}
+  end
+  def call_tool("foreman_run_get_activity", %{run_id: run_id}) do
+    start_us = System.monotonic_time(:microsecond)
+    result = ForemanServer.ProjectionStore.run_activity(run_id)
+    duration_us = System.monotonic_time(:microsecond) - start_us
+    outcome = if result, do: :ok, else: :not_found
+    Telemetry.mcp_tool_call(duration_us, "foreman_run_get_activity", outcome)
+    if result, do: {:ok, result}, else: {:error, %{code: "NOT_FOUND", message: "Activity not found"}}
   end
 
   def call_tool("foreman_project_list", %{}) do
