@@ -411,18 +411,18 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       [phase_spec] = state.phase_specs
 
       # Verify command is preserved verbatim
-      assert phase_spec["command"] =~
+      assert phase_spec[:command] =~
                "ensemble-full-implement-trd",
              "phase_spec command should include ensemble-full-implement-trd skill"
 
-      assert phase_spec["command"] =~ "--foreman",
+      assert phase_spec[:command] =~ "--foreman",
              "phase_spec command should include --foreman flag"
 
       # Verify worktree config is correctly preserved
-      worktree = phase_spec["worktree"]
-      assert worktree["base"] == "abc123",
+      worktree = phase_spec[:worktree]
+      assert worktree[:base] == "abc123",
              "worktree.base should be the concrete source revision"
-      assert worktree["branch"] == "foreman/{run_id}/{phase}",
+      assert worktree[:branch] == "foreman/{run_id}/{phase}",
              "worktree.branch should retain runtime placeholders"
 
       # Verify initial state: no phases completed yet
@@ -673,13 +673,13 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       [phase_spec] = state.phase_specs
 
       # Verify skill name and --foreman flag
-      assert phase_spec["command"] =~ "ensemble-fix-issue",
+      assert phase_spec[:command] =~ "ensemble-fix-issue",
              "phase_spec command should include ensemble-fix-issue skill"
-      assert phase_spec["command"] =~ "--foreman",
+      assert phase_spec[:command] =~ "--foreman",
              "phase_spec command should include --foreman flag"
 
       # Verify no worktree (fix workflow has no worktree by design)
-      refute Map.has_key?(phase_spec, "worktree"),
+      assert phase_spec[:worktree] == nil,
              "fix workflow phase_spec should not have a worktree"
 
       # Verify initial state

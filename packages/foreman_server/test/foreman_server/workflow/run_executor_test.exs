@@ -2326,10 +2326,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       assert {:ok, state} = RunExecutor.init({"run-persisted", projection})
       assert length(state.phase_specs) == 1
-      [%{"name" => "implement", "command" => cmd, "worktree" => worktree}] = state.phase_specs
+
+      [%{name: "implement", command: cmd, worktree: worktree, action: :command}] =
+        state.phase_specs
+
       assert cmd == "/skill:ensemble-full-implement --foreman \"docs/TRD/x.md\""
-      assert worktree["base"] == "abc123"
-      assert worktree["branch"] == "foreman/{run_id}/{phase}"
+      assert worktree[:base] == "abc123"
+      assert worktree[:branch] == "foreman/{run_id}/{phase}"
     end
 
     test "falls back to phase_specs == [] when workflow_snapshot is missing or malformed" do
