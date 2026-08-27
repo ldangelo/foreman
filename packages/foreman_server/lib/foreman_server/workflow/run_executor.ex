@@ -38,6 +38,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Overwatch
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.AutoPR
+  alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
@@ -125,16 +126,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # `ProjectionStore` builds after deserializing the `TaskApproved`
   # event payload. The outer map uses atom keys (`:workflow_snapshot`,
   # `:run_id`, …) but the inner `workflow_snapshot` value carries
-  # JSON-decoded string keys only. Match the dual-key shape so phases
-  # are never silently dropped — the previous atom-only pattern match
-  # fell through to `[]` whenever the projection arrived via the
-  # persisted/JSON-decoded path.
+  # JSON-decoded string keys only, because the resolved phase is frozen onto a
+  # domain event and round-trips through JSON.
+  #
+  # Accept either convention here and normalize once, so every downstream read
+  # is a plain atom lookup (AGENTS.md §5.4). Previously each consumer
+  # compensated with `Map.get(spec, :k) || Map.get(spec, "k")`.
   defp extract_phase_specs(task) do
     snapshot =
       Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
 
     case Map.get(snapshot, :phases) || Map.get(snapshot, "phases") do
-      phases when is_list(phases) -> phases
+      phases when is_list(phases) -> PhaseSpec.normalize_all(phases)
       _ -> []
     end
   end
@@ -407,7 +410,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       run_id: state.run_id,
       phase_id: phase_id,
       index: phase_index,
-      name: Map.get(phase_spec, :name) || Map.get(phase_spec, "name"),
+      name: Map.get(phase_spec, :name),
       attempt: 1,
       artifact_template:
         Map.get(phase_spec, :artifact_template) ||
@@ -670,7 +673,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
 
     defp phase_template(phase_spec) do
-      Map.get(phase_spec, :artifact_template) || Map.get(phase_spec, "artifact_template")
+      Map.get(phase_spec, :artifact_template)
     end
 
     defp expand(path, state) do
@@ -896,7 +899,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp read_phase_prompt(state, phase_spec, index, context) do
     content =
-      case Map.get(phase_spec, :prompt_path) || Map.get(phase_spec, "prompt_path") do
+      case Map.get(phase_spec, :prompt_path) do
         nil ->
           "Run phase #{phase_spec_name(phase_spec)}"
 
@@ -1084,7 +1087,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     base
     |> Map.merge(state.plan_context || %{})
-    |> Map.merge(Map.get(phase_spec, :context) || Map.get(phase_spec, "context") || %{})
+    |> Map.merge(Map.get(phase_spec, :context) || %{})
     |> override_working_directory(worktree_record)
   end
 
@@ -1178,7 +1181,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp worktree_block(phase_spec) do
-    case Map.get(phase_spec, :worktree) || Map.get(phase_spec, "worktree") do
+    case Map.get(phase_spec, :worktree) do
       block when is_map(block) -> block
       _ -> nil
     end
@@ -1403,7 +1406,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp valid_hex?(_), do: false
 
   defp assert_base_matches(worktree, source_revision, project_root) do
-    case Map.get(worktree, :base) || Map.get(worktree, "base") do
+    case Map.get(worktree, :base) do
       nil ->
         :ok
 
@@ -1482,7 +1485,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp worktree_path_for(project_id, run_id, slug, worktree) do
-    template = Map.get(worktree, :path) || Map.get(worktree, "path") || slug
+    template = Map.get(worktree, :path) || slug
     rendered = render_worktree_template(template, %{run_id: run_id}, slug)
     Path.join([worktree_base_root(), project_id, run_id, rendered])
   end
@@ -1492,11 +1495,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp branch_template(worktree) do
-    Map.get(worktree, :branch) || Map.get(worktree, "branch") || "foreman/{run_id}/{phase}"
+    Map.get(worktree, :branch) || "foreman/{run_id}/{phase}"
   end
 
   defp worktree_cleanup(worktree) do
-    case Map.get(worktree, :cleanup) || Map.get(worktree, "cleanup") do
+    case Map.get(worktree, :cleanup) do
       "never" -> :never
       _ -> :always
     end
@@ -1796,11 +1799,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp phase_spec_name(phase_spec) do
-    Map.get(phase_spec, :name) || Map.get(phase_spec, "name") || ""
+    Map.get(phase_spec, :name) || ""
   end
 
   defp phase_number(phase_spec, index) do
-    case Map.get(phase_spec, :index) || Map.get(phase_spec, "index") do
+    case Map.get(phase_spec, :index) do
       value when is_integer(value) and value >= 1 -> value
       _ -> index + 1
     end
