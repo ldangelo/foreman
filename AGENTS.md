@@ -6,6 +6,8 @@ Every fix or feature must consider documentation before finalization. Update `CL
 
 Runtime prompt/workflow safety: after editing bundled source workflows or prompts, run `foreman init --force`. Dispatch paths (`foreman run`, `foreman run --watch`, and direct worker startup) fail fast when installed runtime prompts/workflows are stale.
 
+Verify a CLI command against the Go source or a fresh `go build ./cmd/foreman`, never against whichever `./foreman` binary happens to be on disk. The checked-in root binary is a build artifact and goes stale, so a real command reads as nonexistent: `foreman init --force` is registered at `packages/foreman_cli/cmd/foreman/main.go:94` and covered by `init_test.go`, yet the stale root binary's help omits it entirely and `./foreman init` answers `unknown command "init"`. Do not document a command as missing, or replace it with a substitute, on that evidence — believing a stale artifact over the source is the same error as the `FOREMAN_ARTIFACT_PATH` claim in section 4.
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
@@ -108,20 +110,55 @@ is strictly more robust than depending on an agent to print exact lines.
 
 **Artifact path is a two-repo contract.** `ArtifactTemplate` expects the phase
 artifact at `<artifact_base>/<run_id>/phase-<index>.md` when the phase declares
-no `artifact:`. A `command:` phase never receives Foreman's rendered prompt (the
-command string replaces it in `execute_agent/4`), so there is no in-prompt
-channel for that path; agents used to write to a convention they inferred
-(`docs/reports/<project>-<task-id>/IMPLEMENT_REPORT.md`) while
-`ArtifactTemplate.describe/1` read the computed path, so no dispatched run ever
-recorded an artifact.
+no `artifact:`. `RunExecutor.foreman_env/3` exports that computed path as
+`FOREMAN_ARTIFACT_PATH` on both its non-worktree and worktree clauses
+(`run_executor.ex:1647` and `:1653`). The consumer is the `--foreman` path of
+the ensemble command YAMLs (`Sunstone/ensemble`,
+`packages/development/commands/*.yaml`), which write the phase report to that
+exact path in addition to any repo-local report. Absent the variable, ensemble
+behavior is unchanged, so the two repos deploy in either order.
 
-`RunExecutor.foreman_env/3` now exports the computed path as
-`FOREMAN_ARTIFACT_PATH` on both the worktree and non-worktree paths. The
-consumer is the `--foreman` path of the ensemble command YAMLs
-(`Sunstone/ensemble`, `packages/development/commands/*.yaml`), which write the
-phase report to that exact path in addition to any repo-local report. Absent
-the variable, ensemble behavior is unchanged, so the two repos deploy in either
-order.
+**That export was dead from the day it was written until c739e8c9, and this
+file claimed it worked the entire time.** `Overwatch.start_phase/2` forwarded
+the computed env map to the adapter as `:env_map`, but
+`Overwatch.Adapters.JidoHarnessWorker.init/1` read only
+`:provider`/`:prompt`/`:driver_opts`/`:result_recipient`, never `:env_map`, and
+`run_agent/3` called `Driver.run(provider, prompt, driver_opts)`. Nothing past
+Overwatch read the map, so NO variable Foreman exported ever reached a
+dispatched agent: `FOREMAN_ARTIFACT_PATH`, `FOREMAN_RUN_ID`, `BEADS_DB`,
+`TRD_SCOPE`, `FOREMAN_WORKTREE*`, and every project-configured
+`WorkerEnvironment` variable were all unset at the agent. c739e8c9 added the
+missing hop: `init/1` folds `:env_map` into `driver_opts` as `env:` (overlay),
+and a non-map raises rather than degrading to no env
+(`jido_harness_worker.ex:90-105`).
+
+**`JidoHarnessWorker.init/1` is the single hop every phase env var depends on.**
+When a variable "is exported but has no effect", read that function FIRST. An
+export in `foreman_env/3` proves only that Foreman computed the value; it is not
+evidence that any agent received it.
+
+The corrected consequence: no dispatched run had ever recorded an artifact, and
+the cause was this dropped env map — not agents ignoring the contract. The
+previous version of this passage instead blamed an inferred agent convention
+(`docs/reports/<project>-<task-id>/IMPLEMENT_REPORT.md`) for the missing
+artifacts. That was wrong, and because the claim lived here it was re-derived as
+established fact and drove repeated misdiagnosis of agent behavior across a
+whole session. The decisive evidence is the agent's own probe from inside the
+dispatched process: run-d6cdefe69706087e6bce5b1a10b95384's pi transcript runs
+`test -n "$FOREMAN_PRD_PATH" && … || echo 'FOREMAN_PRD_PATH unset/empty'` at msg
+#45 and gets `unset/empty` back at msg #47.
+
+**A `command:` phase has no in-prompt channel at all.** `dispatch_agent/5`
+substitutes the rendered command string for the rendered prompt
+(`run_executor.ex:470-477`); `request.prompt` survives only as the fallback for
+a command that renders to nil, so for any real command phase it is discarded.
+Anything such a phase must know — the artifact path, and the task subject
+itself — therefore travels by env or does not travel. With neither, the agent
+reconstructs a subject from repository reconnaissance: three live runs
+dispatched with three different descriptions all produced a PRD about the same
+unrelated "curated ensemble workflows" topic, because that is what greps of this
+repo return. This is why `assert_plan_subject/3` refuses to dispatch any
+discovery-gated phase whose env carries no `FOREMAN_TASK_TITLE`.
 
 **Planning documents are DISCOVERED, not mandated.** Foreman does not tell a
 plan agent what to name its PRD or TRD and does not gate on a name it computed.
@@ -178,20 +215,12 @@ run-3da49f9ed1ae01f932092b31335b5623), each with a different task description
 and each producing a PRD about the same unrelated subject. Two independent
 causes, and neither was "the agent disobeyed":
 
-1. **The variable was never delivered.** `Overwatch.start_phase/2` forwards the
-   env map to the adapter as `:env_map`, but
-   `Overwatch.Adapters.JidoHarnessWorker.init/1` read only
-   `:provider`/`:prompt`/`:driver_opts`/`:result_recipient` and `run_agent/3`
-   called `Driver.run(provider, prompt, driver_opts)`. Nothing past Overwatch
-   ever read `:env_map`, so every `FOREMAN_*` export was unset at the agent —
-   `FOREMAN_ARTIFACT_PATH` included, for its whole life. Proof is the agent's
-   own probe inside the dispatched process: run-d6cdefe6's pi transcript msg
-   #45 runs `test -n "$FOREMAN_PRD_PATH" && … || echo 'FOREMAN_PRD_PATH
-   unset/empty'` and msg #47 returns `unset/empty`. `JidoHarnessWorker.init/1`
-   now folds `:env_map` into `driver_opts` as `env:`.
+1. **The variable was never delivered.** The dropped `:env_map` documented
+   above: until c739e8c9 no `FOREMAN_*` export reached any agent, so the gate
+   required a path the agent could not read.
 2. **The subject was never delivered either.** With no title or description in
    env and none in the prompt (a `command:` phase's prompt is literally the
-   command string), the agent reconstructed a topic from repository
+   command string, see above), the agent reconstructed a topic from repository
    reconnaissance — the same transcript greps the repo for
    `curated|ensemble|workflow dispatch` by msg #8. The filename gate was
    catching that by accident. Discovery would not, so `foreman_env/3` now
@@ -209,11 +238,77 @@ recycling the name for "read here" would leave two contradictory meanings in
 circulation. Its consumers are `create-trd.yaml` and `create-trd-foreman.yaml`,
 which STOP when it is set and missing rather than falling back.
 
-Known gap, not yet fixed: `plan.yaml` declares no `worktree:` block, so each
-phase gets the default-on worktree and `cleanup_phase_worktree/4` removes it
-and force-deletes its branch. Phase 1's PRD therefore does not survive into
-phase 2's checkout. The STOP-on-missing rule above makes that surface as a loud
-phase-2 failure naming the absent path instead of a silently mis-sourced TRD.
+`plan.yaml` declares no `worktree:` block, so each phase gets the default-on
+worktree. `create_default_worktree/3` resolves that worktree's base through
+`phase_lineage_base_ref/2` (`run_executor.ex:1391`, called at `:1307`): the base
+is the PREVIOUS phase's branch tip, taken from the `state.last_worktree` that
+`remember_worktree/2` already retains for AutoPR, and it falls back to `HEAD`
+only when there is no predecessor — the first phase of a run. A predecessor
+branch that will not resolve fails
+`{:phase_lineage_branch_unresolvable, branch, reason}` (`:1402`) rather than
+degrading to `HEAD`, because a silent fall back to the base branch is precisely
+the "plausible-looking success" that produces a phase 2 built on the wrong tree.
+That is the mechanism, verified in code.
+
+Keep three tiers of proof distinct here, because collapsing them in either
+direction is how this section's worst errors were made. **Proven by code:** the
+base selection above. **Proven by test against real git, no filesystem or git
+mocks:** the artifact reaches the next phase's checkout, and the next phase's
+discovery gate scopes to its own document. `run_executor_test.exs` drives the
+real `RunExecutor` through a two-phase default-worktree run: phase 2's own
+scripted agent calls `File.regular?` on phase 1's committed PRD from inside
+phase 2's worktree (`:1151`) and the test asserts it true (`:1197`), asserts
+phase 2's `FOREMAN_SOURCE_REVISION` is phase 1's branch tip and refutes it being
+the run base (`:1194-1195`), and asserts phase 1's worktree directory is gone
+while its branch tip survives (`:1204-1205`).
+`run_executor_phase_lineage_test.exs:121-128` pins the subtlest part, which is
+exactly where a silent regression would hide: against the chained base,
+`discover_document(wt2, "docs/TRD", lineage)` returns the TRD while
+`discover_document(wt2, "docs/PRD", lineage)` returns
+`{:planning_document_absent, …}` — the inherited PRD correctly does NOT read as
+new in phase 2 — yet against the RUN's base the same PRD call returns `{:ok,
+prd}`. That contrast is the proof that `base_ref` must chain along with the
+checkout or the gate mis-reports. **Not proven:** a live end-to-end plan run. No
+dispatch has executed since the fix.
+
+Do not collapse those tiers. Reading "proven by code" as "works in production"
+is the `FOREMAN_ARTIFACT_PATH` error one paragraph above — computation proven,
+delivery assumed. Reading "proven by test against real git" as "unproven" is the
+same loss of information in the opposite direction. The STOP-on-missing rule
+above is what keeps a failure here loud, naming the absent path instead of
+producing a silently mis-sourced TRD.
+
+An earlier version of this paragraph claimed `cleanup_phase_worktree/4`
+"force-deletes its branch". **That was wrong when it was written, not merely
+stale**, and the rest of the paragraph should be read with that in mind.
+`cleanup_phase_worktree/4` (`run_executor.ex:1659`) reclaims disk only, via
+`Worktree.clean/1` -> `VcsAdapter.Default.clean_worktree/2`, whose entire git
+surface is `git worktree remove` (`default.ex:193`) followed by
+`git worktree prune` (`:199`) — no ref is written or deleted anywhere in it.
+`delete_branch/1` is private to `worktree.ex` (`:269`, `:281`) and its
+only caller is `Worktree.clean_for_run/1` (`:228`), which `Dispatcher` invokes
+solely on `RunDeleted` (`dispatcher.ex:163`) — after the run is already
+terminated. Empirically, too: phase 1's branch from the failed
+run-d75304aca144c15409087ed744e2a7dc is still at `b9c93aa7` and still carries
+`docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md` — the one document new
+against that run's base `df20a77e` — long after the run's cleanup ran. Disk is
+reclaimed at each phase boundary; the branch is not.
+
+That distinction matters for anyone deciding whether cleanup is safe to change:
+branch retention is a PRE-EXISTING invariant, not something the lineage change
+introduced. The lineage merely started depending on it. The real defect was
+purely base selection — phase 1's branch was always there to chain onto, and
+`create_default_worktree/3` was simply resolving `HEAD` instead of it. So a
+future change that makes phase cleanup delete branches would silently break the
+lineage, and nothing in `cleanup_phase_worktree/4` would look wrong at the call
+site.
+
+How that error was made is worth more than the correction: the claim came from
+the function's NAME and its presence in the cleanup path, never from its call
+graph. It then travelled into a design question posed to the user as though it
+were established. Before asserting that a function does something destructive,
+read its callers — same class as concluding from a stale binary's surface
+instead of the source (see Documentation Discipline).
 
 When changing that contract, change both sides. A Foreman-side export with no
 consumer is dead plumbing — an earlier attempt at exactly this was reverted for
@@ -324,6 +419,20 @@ A missing implementation is now `undefined function tool_foreman_queue_status/1`
 at compile time instead of a runtime "unknown tool". Apply the same reasoning to
 workflow phases, event codecs, provider callbacks, and CLI subcommands: derive
 one side from the other rather than maintaining two hand-written lists.
+
+**A compile warning about an undefined module or function is a defect report,
+not noise.** `run_executor.ex` was missing
+`alias ForemanServer.Workflow.StepSequencer`, so
+`StepSequencer.propagate_terminal/2` resolved to a non-existent top-level
+module. Every multi-phase run — `plan.yaml` included —
+crashed the executor on the phase 1 -> phase 2 transition instead of advancing,
+which means `create-trd` had never once executed. The compiler emitted the
+warning on every build for the entire life of the bug and nothing failed on it,
+so the crash was repeatedly re-diagnosed as a workflow or agent problem. The
+alias now carries a comment saying exactly this (`run_executor.ex:43-47`).
+Treat `undefined module`, `undefined function`, and unused-alias warnings as
+build failures to be read, not scrolled past: this section's whole point is that
+the compiler already knew.
 
 ### 5.6 Verify third-party contracts against dep source, and pin them with a test
 
