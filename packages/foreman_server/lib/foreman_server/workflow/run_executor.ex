@@ -468,7 +468,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       prompt_path = materialize_prompt(state, phase_index, prompt)
       provider = JidoHarness.request_provider(request)
       cwd = working_directory_for(state, worktree_record)
-      env = foreman_env(state, worktree_record)
+      env = foreman_env(state, worktree_record, artifact_path_for(state, phase_spec, index))
       remaining_ms = max(deadline_ms - System.system_time(:millisecond), 1_000)
 
       # Overwatch.build_launch_env assembles the env map from project_id +
@@ -1579,9 +1579,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # export so the common non-worktree path can still bind to the
   # executor-owned shell lifecycle. Worktree-managed phases add the
   # remaining Foreman worktree markers below.
-  defp foreman_env(state, nil), do: maybe_put_shell_session_env(%{}, state)
+  # A `command:` phase never receives Foreman's rendered prompt — the command
+  # string replaces it (see execute_agent/4) — so Foreman has no in-prompt
+  # channel to tell the agent where it will look for the artifact. Agents wrote
+  # to a convention they inferred while `ArtifactTemplate.describe/1` read the
+  # path Foreman computed, so no run ever recorded an artifact. Export it.
+  #
+  # Consumed by the ensemble commands' `--foreman` path (Sunstone/ensemble,
+  # `packages/development/commands/*.yaml`): when set, the phase report is
+  # written to this exact path in addition to any repo-local report.
+  defp artifact_path_for(state, phase_spec, index) do
+    __MODULE__.ArtifactTemplate.path(state, phase_spec, prompt_phase_index(phase_spec, index))
+  end
 
-  defp foreman_env(state, worktree_record) do
+  defp foreman_env(state, nil, artifact_path) do
+    %{"FOREMAN_ARTIFACT_PATH" => artifact_path}
+    |> maybe_put_shell_session_env(state)
+  end
+
+  defp foreman_env(state, worktree_record, artifact_path) do
     plan_context = state.plan_context || %{}
     implementation_key = worktree_record.implementation_key || ""
 
@@ -1594,7 +1610,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_WORKTREE_PATH" => worktree_record.worktree_path,
         "FOREMAN_EXPECTED_BRANCH" => worktree_record.branch,
         "FOREMAN_SOURCE_REVISION" => worktree_record.base_ref,
-        "FOREMAN_IMPLEMENTATION_KEY" => implementation_key
+        "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
+        "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
       |> maybe_put_shell_session_env(state)
 
