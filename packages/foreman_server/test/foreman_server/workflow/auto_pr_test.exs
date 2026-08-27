@@ -94,10 +94,12 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         cwd: ctx.repo
       }
 
-      # Commits exist, so AutoPR proceeds to `gh pr create`. There is no GitHub
-      # remote for this temp repo, so gh fails — the point is that it got past
-      # the decision and did NOT silently noop, which is what used to happen.
-      assert {:error, {:gh_pr_create_failed, _exit, _output}} = AutoPR.maybe_create_pr(context)
+      # Commits exist, so AutoPR publishes the branch and then runs
+      # `gh pr create`. This temp repo has no remote, so the push fails first.
+      # The contract under test is that it got past the decision and surfaced
+      # an error rather than silently no-opping, which is what used to happen.
+      assert {:error, reason} = AutoPR.maybe_create_pr(context)
+      assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
     end
 
     test "a missing artifact does not prevent a PR", ctx do
