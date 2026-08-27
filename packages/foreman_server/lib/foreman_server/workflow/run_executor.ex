@@ -832,7 +832,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
           base_branch: plan_base_branch(state),
           artifact_path: completion_artifact_path(state),
           head_branch: get_in(state, [:last_worktree, :branch]),
-          cwd: working_directory(state.task)
+          cwd: vcs_working_directory(state)
         }
 
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
@@ -1108,6 +1108,39 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case Map.get(task, :working_directory) do
       dir when is_binary(dir) and dir != "" -> dir
       _ -> System.fetch_env!("HOME")
+    end
+  end
+
+  # Working directory for git/gh at finalize time.
+  #
+  # `working_directory/1` falls back to $HOME when the task carries no
+  # directory, which is the case for `work.submit` runs (they have no task).
+  # $HOME is not a git repository, so AutoPR failed with
+  # "fatal: not a git repository" — a plausible-looking default that is wrong
+  # for every VCS operation.
+  #
+  # Resolution order: the frozen plan context (task-approved runs), then the
+  # registered project's own path (work.submit runs, whose PlanContext.build
+  # returns :not_applicable and therefore carries no project_root), then the
+  # task directory.
+  defp vcs_working_directory(state) do
+    case state.plan_context do
+      %{"project_root" => root} when is_binary(root) and root != "" ->
+        root
+
+      _ ->
+        project_path(state) || working_directory(state.task)
+    end
+  end
+
+  defp project_path(state) do
+    with id when is_binary(id) and id != "" <- project_id(state),
+         %{} = projection <- ProjectionStore.project_projection(id),
+         path when is_binary(path) and path != "" <-
+           Map.get(projection, :path) || Map.get(projection, "path") do
+      path
+    else
+      _ -> nil
     end
   end
 

@@ -68,7 +68,9 @@ defmodule ForemanServer.Workflow.AutoPR do
     with {:ok, head_branch} <- resolve_head_branch(context),
          {:ok, ahead} <- commits_ahead(base_branch, head_branch, cwd) do
       if ahead > 0 do
-        open_pr(run_id, base_branch, head_branch, Map.get(context, :artifact_path), cwd)
+        with :ok <- push_head(run_id, head_branch, cwd) do
+          open_pr(run_id, base_branch, head_branch, Map.get(context, :artifact_path), cwd)
+        end
       else
         Logger.info(
           "AutoPR.run_id=#{run_id} noop: #{head_branch} has no commits beyond #{base_branch}"
@@ -146,6 +148,25 @@ defmodule ForemanServer.Workflow.AutoPR do
 
       {output, exit_code} ->
         {:error, {:rev_list_failed, exit_code, String.trim(output)}}
+    end
+  end
+
+  # GitHub cannot open a PR from a branch it has never seen: `gh pr create`
+  # fails with "Head ref must be a branch" / "No commits between ...". Foreman
+  # creates the run branch locally in a worktree, so it must be published
+  # first.
+  defp push_head(run_id, head_branch, cwd) do
+    opts = [stderr_to_stdout: true]
+    opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
+
+    Logger.info("AutoPR.run_id=#{run_id} git push -u origin #{head_branch}")
+
+    case System.cmd("git", ["push", "-u", "origin", head_branch], opts) do
+      {_output, 0} ->
+        :ok
+
+      {output, exit_code} ->
+        {:error, {:git_push_failed, exit_code, String.trim(output)}}
     end
   end
 

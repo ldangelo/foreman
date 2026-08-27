@@ -160,20 +160,25 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:run, run_id})
   end
 
-  @doc "Return all events for a run."
-  @spec run_events(String.t()) :: [map()]
+  @doc """
+  Return all events for a run as serializable maps.
+
+  `{:ok, []}` for a run with no stream. `{:error, reason}` on a store failure —
+  never an empty list standing in for an error.
+  """
+  @spec run_events(String.t()) :: {:ok, [map()]} | {:error, term()}
   def run_events(run_id) do
     GenServer.call(__MODULE__, {:run_events, run_id})
   end
 
-  @doc "Return activity (heartbeats) for a run."
-  @spec run_activity(String.t()) :: [map()]
+  @doc "Return activity (heartbeats) for a run. Not yet implemented."
+  @spec run_activity(String.t()) :: {:ok, [map()]} | {:error, term()}
   def run_activity(run_id) do
     GenServer.call(__MODULE__, {:run_activity, run_id})
   end
 
-  @doc "Return logs for a run."
-  @spec run_logs(String.t()) :: [map()]
+  @doc "Return logs for a run. Not yet implemented."
+  @spec run_logs(String.t()) :: {:ok, [map()]} | {:error, term()}
   def run_logs(run_id) do
     GenServer.call(__MODULE__, {:run_logs, run_id})
   end
@@ -329,24 +334,35 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:run, run_id}, _from, state) do
     {:reply, Map.get(state.runs, run_id), state}
-    end
+  end
+
   @impl true
   def handle_call({:run_events, run_id}, _from, state) do
-    events = case EventStore.read_stream_forward("run:#{run_id}", 0, 99_999_999) do
-      {:ok, evts} -> evts
-      {:error, _} -> []
-    end
-    {:reply, events, state}
+    # `%EventStore.RecordedEvent{}` has no Jason.Encoder, so returning the
+    # structs raised Protocol.UndefinedError as soon as a run actually had
+    # events — the tool only ever looked correct because its test covered the
+    # empty case. Project each event onto a serializable map.
+    reply =
+      case EventStore.read_stream_forward("run:#{run_id}", 0, 99_999_999) do
+        {:ok, events} -> {:ok, Enum.map(events, &recorded_event_to_map/1)}
+        {:error, :stream_not_found} -> {:ok, []}
+        {:error, reason} -> {:error, reason}
+      end
+
+    {:reply, reply, state}
   end
 
   @impl true
-  def handle_call({:run_activity, run_id}, _from, state) do
-    {:reply, [], state}
+  def handle_call({:run_activity, _run_id}, _from, state) do
+    # Not implemented. Returning [] here reported "this run has no activity",
+    # which is indistinguishable from a real empty result and exactly the
+    # silent failure AGENTS.md §5.2 prohibits.
+    {:reply, {:error, :not_implemented}, state}
   end
 
   @impl true
-  def handle_call({:run_logs, run_id}, _from, state) do
-    {:reply, [], state}
+  def handle_call({:run_logs, _run_id}, _from, state) do
+    {:reply, {:error, :not_implemented}, state}
   end
 
   @impl true
@@ -1728,6 +1744,25 @@ defmodule ForemanServer.ProjectionStore do
     |> Map.delete(:_projection_recorded_at)
     |> Map.delete("_projection_recorded_at")
   end
+
+  # `%EventStore.RecordedEvent{}` derives no Jason.Encoder, so it cannot cross
+  # the MCP boundary. Project it onto the fields a caller inspecting a run
+  # actually needs.
+  defp recorded_event_to_map(%RecordedEvent{} = event) do
+    %{
+      event_number: event.event_number,
+      event_id: event.event_id,
+      stream_uuid: event.stream_uuid,
+      stream_version: event.stream_version,
+      event_type: event.event_type,
+      created_at: encode_timestamp(event.created_at),
+      data: event.data
+    }
+  end
+
+  defp encode_timestamp(%DateTime{} = at), do: DateTime.to_iso8601(at)
+  defp encode_timestamp(at) when is_binary(at), do: at
+  defp encode_timestamp(_), do: nil
 
   defp to_payload_map(%{} = payload) do
     if Map.has_key?(payload, :__struct__) do

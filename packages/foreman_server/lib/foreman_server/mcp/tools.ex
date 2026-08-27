@@ -379,29 +379,40 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   defp tool_foreman_run_get_logs(%{run_id: run_id}) do
-    start_us = System.monotonic_time(:microsecond)
-    result = ForemanServer.ProjectionStore.run_logs(run_id)
-    duration_us = System.monotonic_time(:microsecond) - start_us
-    Telemetry.mcp_tool_call(duration_us, "foreman_run_get_logs", :ok)
-    {:ok, result}
+    run_detail("foreman_run_get_logs", fn -> ProjectionStore.run_logs(run_id) end)
   end
-
-
 
   defp tool_foreman_run_get_events(%{run_id: run_id}) do
-    start_us = System.monotonic_time(:microsecond)
-    result = ForemanServer.ProjectionStore.run_events(run_id)
-    duration_us = System.monotonic_time(:microsecond) - start_us
-    Telemetry.mcp_tool_call(duration_us, "foreman_run_get_events", :ok)
-    {:ok, result}
+    run_detail("foreman_run_get_events", fn -> ProjectionStore.run_events(run_id) end)
   end
+
   defp tool_foreman_run_get_activity(%{run_id: run_id}) do
+    run_detail("foreman_run_get_activity", fn -> ProjectionStore.run_activity(run_id) end)
+  end
+
+  # ProjectionStore run-detail reads return {:ok, data} | {:error, reason}.
+  # Wrapping the raw return in {:ok, ...} would report `{:error, :not_implemented}`
+  # to the client as a successful result — the same defect fixed one layer down.
+  defp run_detail(tool_name, fun) when is_binary(tool_name) and is_function(fun, 0) do
     start_us = System.monotonic_time(:microsecond)
-    result = ForemanServer.ProjectionStore.run_activity(run_id)
+    result = fun.()
     duration_us = System.monotonic_time(:microsecond) - start_us
-    outcome = if result, do: :ok, else: :not_found
-    Telemetry.mcp_tool_call(duration_us, "foreman_run_get_activity", outcome)
-    if result, do: {:ok, result}, else: {:error, %ToolError{code: "NOT_FOUND", message: "Activity not found"}}
+
+    case result do
+      {:ok, data} ->
+        Telemetry.mcp_tool_call(duration_us, tool_name, :ok)
+        {:ok, data}
+
+      {:error, :not_implemented} ->
+        Telemetry.mcp_tool_call(duration_us, tool_name, :error)
+
+        {:error,
+         %ToolError{code: "NOT_IMPLEMENTED", message: "#{tool_name} is not implemented yet"}}
+
+      {:error, reason} ->
+        Telemetry.mcp_tool_call(duration_us, tool_name, :error)
+        {:error, %ToolError{code: "RUN_DETAIL_FAILED", message: inspect(reason)}}
+    end
   end
 
   defp tool_foreman_queue_status(%{}) do
