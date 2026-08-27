@@ -118,6 +118,15 @@ Foreman exports the expected path (e.g. `FOREMAN_ARTIFACT_PATH`) and the skills
 read it, or Foreman accepts the skills' convention. Do not "fix" this on the
 Foreman side alone; unconsumed plumbing does not reconcile it.
 
+Prompt rendering itself is NOT the problem, despite what
+`docs/reports/foreman-foreman-dispatch-fix-verify-rdrq/IMPLEMENT_REPORT.md`
+claims. `prompt_renderer_test.exs` renders the bundled `implement.md` with
+`artifact_path` in the assigns and passes. That report's agent was on a
+`command:` phase, so it never received a Foreman prompt at all; it read the
+checked-in template at `priv/defaults/workflows/prompts/implement.md`, which
+legitimately contains an unrendered `{{artifact_path}}` because it is the
+source template. Do not re-chase it as a rendering defect.
+
 ## 5. Typed Boundaries, Loud Failures
 
 **Make the compiler catch it. If it can't, fail loudly. Never degrade to a plausible-looking success.**
