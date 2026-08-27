@@ -123,23 +123,77 @@ phase report to that exact path in addition to any repo-local report. Absent
 the variable, ensemble behavior is unchanged, so the two repos deploy in either
 order.
 
-**Planning document paths are the same contract.** The `plan` workflow's
-phases gate on `requiredFile: planning.prd_path` / `planning.trd_path`, and
-they are `command:` phases, so the same "no in-prompt channel" applies:
-run-3da49f9ed1ae01f932092b31335b5623 failed with
-`{:required_file_missing, "planning.prd_path", …}` because the agent invented
-its own filename. `foreman_env/3` now also exports `FOREMAN_PRD_PATH` and
-`FOREMAN_TRD_PATH` (absent, never blank, for non-plan runs). Consumers are
-`create-prd.yaml`, `create-trd.yaml`, and `create-trd-foreman.yaml`, which
-write the document to that exact path in addition to the repo-local copy.
+**Planning documents are DISCOVERED, not mandated.** Foreman does not tell a
+plan agent what to name its PRD or TRD and does not gate on a name it computed.
+`RunExecutor.enforce_required_file/4` routes `requiredFile: planning.prd_path` /
+`planning.trd_path` to `PlanContext.discover_document/2`, which runs
+`git status --porcelain -z --untracked-files=all -- docs/PRD` (or `docs/TRD`) in
+the phase's working directory and takes the untracked-or-added entries as the
+documents this phase produced. The invariant that makes this deterministic is
+one the pipeline already enforces — the tree is clean when a phase starts, a
+dirty worktree HALTs — so it is not a heuristic: no newest-mtime, no name
+matching. Renames and edits of tracked documents are not candidates; the gate
+proves a NEW document exists. Each outcome is its own error (AGENTS.md 5.3):
+one candidate captures, `:planning_document_absent` means the agent produced
+nothing, `:planning_document_ambiguous` names every candidate rather than
+picking one, `:planning_document_scan_failed` means git could not read the
+directory at all.
 
-`PlanContext` therefore emits `planning.prd_path`/`trd_path` **relative**
-(`docs/PRD/PRD-<year>-<correlation_id>-<slug>.md`); `RunExecutor` joins them
-onto the phase's working directory — the phase worktree when it has one,
-otherwise the project root — in one place, `resolve_phase_path/3`, which the
-`requiredFile` gate and the env export both call. Do not reintroduce a second
-computation: rooting them at the project root at build time was the second
-half of that failure, because the agent's cwd is the worktree.
+`PlanContext.capture_document/3` writes the captured relative path into the
+run's plan context under the same key, so `create-trd` reads the PRD the
+`create-prd` agent actually wrote. `RunExecutor` joins it onto the phase cwd in
+one place, `resolve_phase_path/3` — do not reintroduce a second computation;
+rooting planning paths at the project root at build time was half of an earlier
+failure, because the agent's cwd is the worktree. Capturing the PRD also
+re-keys `planning.correlation_id` off the captured filename: PRD<->TRD pairing
+rides on that id, and the run-derived one belongs to a document that was never
+written. A filename carrying no id drops the key rather than keeping a
+plausible-looking wrong answer.
+
+Why the mandate was abandoned: `foreman_env/3` used to export
+`FOREMAN_PRD_PATH`/`FOREMAN_TRD_PATH` and the gate required that exact file.
+It failed in three consecutive live runs
+(run-d6cdefe69706087e6bce5b1a10b95384, run-dda353905d237cfd2557a706dd930bdd,
+run-3da49f9ed1ae01f932092b31335b5623), each with a different task description
+and each producing a PRD about the same unrelated subject. Two independent
+causes, and neither was "the agent disobeyed":
+
+1. **The variable was never delivered.** `Overwatch.start_phase/2` forwards the
+   env map to the adapter as `:env_map`, but
+   `Overwatch.Adapters.JidoHarnessWorker.init/1` read only
+   `:provider`/`:prompt`/`:driver_opts`/`:result_recipient` and `run_agent/3`
+   called `Driver.run(provider, prompt, driver_opts)`. Nothing past Overwatch
+   ever read `:env_map`, so every `FOREMAN_*` export was unset at the agent —
+   `FOREMAN_ARTIFACT_PATH` included, for its whole life. Proof is the agent's
+   own probe inside the dispatched process: run-d6cdefe6's pi transcript msg
+   #45 runs `test -n "$FOREMAN_PRD_PATH" && … || echo 'FOREMAN_PRD_PATH
+   unset/empty'` and msg #47 returns `unset/empty`. `JidoHarnessWorker.init/1`
+   now folds `:env_map` into `driver_opts` as `env:`.
+2. **The subject was never delivered either.** With no title or description in
+   env and none in the prompt (a `command:` phase's prompt is literally the
+   command string), the agent reconstructed a topic from repository
+   reconnaissance — the same transcript greps the repo for
+   `curated|ensemble|workflow dispatch` by msg #8. The filename gate was
+   catching that by accident. Discovery would not, so `foreman_env/3` now
+   exports `FOREMAN_TASK_TITLE`/`FOREMAN_TASK_DESCRIPTION` and
+   `assert_plan_subject/3` refuses to dispatch any discovery-gated phase whose
+   env carries no `FOREMAN_TASK_TITLE`, failing `{:plan_subject_missing, …}`
+   before a worker starts. Accepting whatever an uninformed agent wrote is the
+   plausible-looking success this file exists to forbid.
+
+`FOREMAN_SOURCE_PRD_PATH` carries the captured PRD forward as an INPUT: absent
+on the phase that produces it, present for every phase after, so `create-trd`
+consumes a named document instead of globbing `docs/PRD`. It is deliberately
+not the old name — `FOREMAN_PRD_PATH` meant "write here", it is deleted, and
+recycling the name for "read here" would leave two contradictory meanings in
+circulation. Its consumers are `create-trd.yaml` and `create-trd-foreman.yaml`,
+which STOP when it is set and missing rather than falling back.
+
+Known gap, not yet fixed: `plan.yaml` declares no `worktree:` block, so each
+phase gets the default-on worktree and `cleanup_phase_worktree/4` removes it
+and force-deletes its branch. Phase 1's PRD therefore does not survive into
+phase 2's checkout. The STOP-on-missing rule above makes that surface as a loud
+phase-2 failure naming the absent path instead of a silently mis-sourced TRD.
 
 When changing that contract, change both sides. A Foreman-side export with no
 consumer is dead plumbing — an earlier attempt at exactly this was reverted for

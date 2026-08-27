@@ -39,6 +39,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhaseSpec
+  alias ForemanServer.Workflow.PlanContext
+  # Without this alias `StepSequencer.propagate_terminal/2` resolves to a
+  # non-existent top-level module and every multi-phase run — `plan.yaml`
+  # included — crashed the executor on the phase 1 -> phase 2 transition
+  # instead of advancing. Compile emitted the warning; nothing failed on it.
+  alias ForemanServer.Workflow.StepSequencer
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
@@ -368,7 +374,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, output} <- execute_agent(state, phase_spec, index, worktree_record),
          {:ok, artifact_path} <-
            __MODULE__.ArtifactTemplate.write(state, phase_spec, phase_index, output),
-         {:ok, _required_file} <-
+         # `enforce_required_file/4` returns the state carrying whatever the
+         # gate captured, so a discovered planning document survives into the
+         # next phase's context.
+         {:ok, state} <-
            enforce_required_file(state, phase_spec, phase_index, worktree_record),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
@@ -428,6 +437,37 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp execute_agent(state, phase_spec, index, worktree_record) do
     phase_index = phase_number(phase_spec, index)
+
+    case assert_plan_subject(state, phase_spec, phase_index) do
+      :ok -> dispatch_agent(state, phase_spec, index, phase_index, worktree_record)
+      {:error, _} = err -> err
+    end
+  end
+
+  # A phase whose output is DISCOVERED rather than named must have been told
+  # what to write about, or discovery captures a document on whatever
+  # subject the agent inferred from the repository and the run reports
+  # success for an irrelevant deliverable. Three consecutive live runs
+  # (run-d6cdefe6…, run-dda35390…, run-3da49f9e…) produced a PRD about the
+  # same unrelated topic from three different task descriptions, which the
+  # old filename gate caught only by accident.
+  #
+  # The check is on `plan_subject_env/1` — the single expression that puts
+  # `FOREMAN_TASK_TITLE` into the dispatched env — so "asserted" and
+  # "delivered" are the same value, not two computations that can drift. It
+  # runs before the heartbeat lease so a subject-less phase never launches a
+  # worker at all.
+  defp assert_plan_subject(state, phase_spec, phase_index) do
+    key = Map.get(phase_spec, :required_file)
+
+    cond do
+      PlanContext.document_dir(key) == nil -> :ok
+      Map.has_key?(plan_subject_env(state), "FOREMAN_TASK_TITLE") -> :ok
+      true -> {:error, {:plan_subject_missing, phase_index, key}}
+    end
+  end
+
+  defp dispatch_agent(state, phase_spec, index, phase_index, worktree_record) do
     request = build_request(state, phase_spec, phase_index, worktree_record)
 
     prompt =
@@ -1606,7 +1646,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp foreman_env(state, nil, artifact_path) do
     %{"FOREMAN_ARTIFACT_PATH" => artifact_path}
-    |> put_planning_path_env(state, nil)
+    |> put_plan_env(state, nil)
     |> maybe_put_shell_session_env(state)
   end
 
@@ -1626,7 +1666,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
-      |> put_planning_path_env(state, worktree_record)
+      |> put_plan_env(state, worktree_record)
       |> maybe_put_shell_session_env(state)
 
     case beads_db_path(plan_context) do
@@ -1656,35 +1696,59 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # The same two-repo contract as `FOREMAN_ARTIFACT_PATH` above, for the
-  # `plan` workflow's documents. A `command:` phase gets no rendered prompt,
-  # so without these the agent invents its own filename under its own cwd
-  # and the `requiredFile` gate fails on a document that was in fact written
-  # correctly (run-3da49f9ed1ae01f932092b31335b5623). The exported value is
-  # produced by `resolve_phase_path/3` — the very expression
-  # `enforce_required_file/4` checks — so exported and checked paths are one
-  # string by construction rather than two computations that can drift.
+  # The subject of the dispatched task, and the document a previous phase
+  # produced. A `command:` phase gets no rendered prompt — the prompt is
+  # literally the command string — so env is the only channel Foreman has
+  # to a `command:` agent.
   #
-  # Consumed by the ensemble `create-prd` / `create-trd` commands' `--foreman`
-  # path. Runs with no planning context (every non-plan workflow) export
-  # neither variable — absent, never blank — so ensemble behaviour there is
-  # unchanged and the two repos deploy in either order.
-  defp put_planning_path_env(env, state, worktree_record) do
-    planning = Map.get(state.plan_context || %{}, "planning") || %{}
+  # `FOREMAN_TASK_TITLE` / `FOREMAN_TASK_DESCRIPTION` are the authoritative
+  # subject. Without them a plan agent has nothing to plan and infers a
+  # topic from repository contents, which is how three consecutive runs all
+  # produced a PRD about the same unrelated subject. `plan_subject_env/1`
+  # is what `assert_plan_subject/3` checks before dispatch.
+  #
+  # `FOREMAN_SOURCE_PRD_PATH` is an INPUT: the PRD an earlier phase actually
+  # wrote, discovered by `enforce_required_file/4` and threaded through the
+  # plan context. It is absent on the phase that produces the PRD and
+  # present for every phase after it, so `create-trd` consumes a named
+  # document instead of guessing which file under `docs/PRD` is the one.
+  # Deliberately NOT named `FOREMAN_PRD_PATH`: that variable meant "write
+  # here", it is deleted, and reusing the name for "read here" would leave
+  # two contradictory meanings in circulation.
+  #
+  # Every key is omitted when its value is missing or empty — absent, never
+  # blank — so a non-plan run exports none of them.
+  defp put_plan_env(env, state, worktree_record) do
+    env
+    |> Map.merge(plan_subject_env(state))
+    |> put_source_prd_path(state, worktree_record)
+  end
+
+  defp plan_subject_env(state) do
+    task = Map.get(state.plan_context || %{}, "task") || %{}
 
     Enum.reduce(
-      [{"FOREMAN_PRD_PATH", "prd_path"}, {"FOREMAN_TRD_PATH", "trd_path"}],
-      env,
+      [{"FOREMAN_TASK_TITLE", "title"}, {"FOREMAN_TASK_DESCRIPTION", "description"}],
+      %{},
       fn {var, key}, acc ->
-        case Map.get(planning, key) do
-          path when is_binary(path) and path != "" ->
-            Map.put(acc, var, resolve_phase_path(path, state, worktree_record))
-
-          _ ->
-            acc
+        case Map.get(task, key) do
+          value when is_binary(value) and value != "" -> Map.put(acc, var, value)
+          _ -> acc
         end
       end
     )
+  end
+
+  defp put_source_prd_path(env, state, worktree_record) do
+    planning = Map.get(state.plan_context || %{}, "planning") || %{}
+
+    case Map.get(planning, "prd_path") do
+      path when is_binary(path) and path != "" ->
+        Map.put(env, "FOREMAN_SOURCE_PRD_PATH", resolve_phase_path(path, state, worktree_record))
+
+      _ ->
+        env
+    end
   end
 
   defp maybe_put_shell_session_env(env, state) do
@@ -2360,31 +2424,74 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # Post-agent gate. Returns the run state, updated with whatever the phase
+  # captured, so a discovered planning document reaches the next phase.
+  #
+  # Two kinds of gate share the `requiredFile` key:
+  #
+  #   * A planning document (`planning.prd_path`, `planning.trd_path`) is
+  #     DISCOVERED. Foreman does not name the file and does not require the
+  #     agent to reproduce a name — that contract failed in three
+  #     consecutive live runs. `PlanContext.discover_document/2` asks git
+  #     what new document appeared, and the answer is captured into the
+  #     plan context under the same key.
+  #   * Every other key still names a context value that must resolve to an
+  #     existing file (the frozen ImplementationContext's `trd_path`, which
+  #     Foreman validated at approval and the agent only reads).
   defp enforce_required_file(state, phase_spec, phase_index, worktree_record) do
     case Map.get(phase_spec, :required_file) do
       nil ->
-        {:ok, :no_gate}
+        {:ok, state}
 
       "" ->
         {:error, {:required_file_blank, phase_index}}
 
       key when is_binary(key) ->
-        case resolve_context_key(state, key, phase_index) do
-          {:ok, path} ->
-            absolute_path = resolve_phase_path(path, state, worktree_record)
-
-            if is_binary(absolute_path) and File.regular?(absolute_path) do
-              {:ok, absolute_path}
-            else
-              {:error, {:required_file_missing, key, absolute_path}}
-            end
-
-          {:error, reason} ->
-            {:error, reason}
+        case PlanContext.document_dir(key) do
+          nil -> enforce_context_file(state, key, phase_index, worktree_record)
+          docs_dir -> capture_planning_document(state, key, docs_dir, worktree_record)
         end
 
       _ ->
         {:error, {:required_file_invalid, phase_index}}
+    end
+  end
+
+  defp enforce_context_file(state, key, phase_index, worktree_record) do
+    case resolve_context_key(state, key, phase_index) do
+      {:ok, path} ->
+        absolute_path = resolve_phase_path(path, state, worktree_record)
+
+        if File.regular?(absolute_path) do
+          {:ok, state}
+        else
+          {:error, {:required_file_missing, key, absolute_path}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The captured path is threaded into the run's own plan context, which is
+  # what `context_for/2` and `base_context/4` hand the NEXT phase — so
+  # `create-trd` reads the PRD the `create-prd` agent actually wrote rather
+  # than one Foreman invented. Discovery failures propagate verbatim; each
+  # cause has its own tuple (see `PlanContext.discover_document/2`).
+  defp capture_planning_document(state, key, docs_dir, worktree_record) do
+    working_directory = working_directory_for(state, worktree_record)
+
+    case PlanContext.discover_document(working_directory, docs_dir) do
+      {:ok, relative_path} ->
+        {:ok,
+         %{
+           state
+           | plan_context:
+               PlanContext.capture_document(state.plan_context || %{}, key, relative_path)
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -2395,11 +2502,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # agent actually had access to, not the daemon's cwd. Absolute paths (the
   # frozen ImplementationContext can carry one) pass through.
   #
-  # `put_planning_path_env/3` exports its result as
-  # `FOREMAN_PRD_PATH`/`FOREMAN_TRD_PATH`, so the path the agent is told to
-  # write is this same expression applied to the same context value the gate
-  # reads. Keep it that way: two parallel computations of "where the document
-  # goes" is the defect this replaced.
+  # A discovered planning document is stored relative for the same reason:
+  # git reports it relative to the repository root, and only the consuming
+  # phase knows which checkout it is looking at.
   defp resolve_phase_path(path, state, worktree_record) when is_binary(path) do
     if Path.type(path) == :absolute do
       path

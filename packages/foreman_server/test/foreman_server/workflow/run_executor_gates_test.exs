@@ -80,12 +80,14 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
                  run_id: @run_id
                })
 
-      assert is_binary(ctx["planning"]["prd_path"])
-      assert is_binary(ctx["planning"]["trd_path"])
-      assert String.ends_with?(ctx["planning"]["prd_path"], ".md")
-      assert String.ends_with?(ctx["planning"]["trd_path"], ".md")
+      # No document paths. Foreman names neither document; the planning
+      # block only carries the naming inputs, and the paths appear once
+      # `capture_document/3` records what a phase actually produced.
+      refute Map.has_key?(ctx["planning"], "prd_path")
+      refute Map.has_key?(ctx["planning"], "trd_path")
       assert ctx["planning"]["correlation_id"] == "bad71b75"
       assert ctx["planning"]["document_year"] == 2026
+      assert ctx["planning"]["slug"] == "implement-mcp-run-detail-tools-run-logs-and-run"
       assert ctx["working_directory"] == System.tmp_dir!()
 
       # The `task` block still reports the issue tracker's own type.
@@ -103,8 +105,8 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
                  run_id: @run_id
                })
 
-      assert is_binary(ctx["planning"]["prd_path"])
-      assert is_binary(ctx["planning"]["trd_path"])
+      assert ctx["planning"]["correlation_id"] == "bad71b75"
+      refute Map.has_key?(ctx["planning"], "prd_path")
     end
 
     test "a non-plan workflow stays :not_applicable with the project registered", %{
@@ -184,6 +186,174 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
       assert traverse(%{"a" => "not-a-map"}, "a.b") ==
                {:error, {:required_file_unknown_key, "a"}}
     end
+  end
+
+  describe "PlanContext.document_dir/1" do
+    test "maps only the two planning gates" do
+      assert PlanContext.document_dir("planning.prd_path") == "docs/PRD"
+      assert PlanContext.document_dir("planning.trd_path") == "docs/TRD"
+    end
+
+    # Every other `requiredFile` key keeps resolving through the context,
+    # so a nil here is what routes `trd_path` to the existing-file check.
+    test "nil for any other key" do
+      assert PlanContext.document_dir("trd_path") == nil
+      assert PlanContext.document_dir("planning.slug") == nil
+      assert PlanContext.document_dir(nil) == nil
+    end
+  end
+
+  describe "PlanContext.discover_document/2" do
+    setup do
+      repo = Path.join(System.tmp_dir!(), "discover-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(repo, "docs/PRD"))
+      git!(repo, ["init", "--initial-branch=main"])
+      git!(repo, ["config", "user.email", "d@test"])
+      git!(repo, ["config", "user.name", "Discover Test"])
+      File.write!(Path.join(repo, "README.md"), "seed")
+      git!(repo, ["add", "."])
+      git!(repo, ["commit", "--no-gpg-sign", "-m", "seed"])
+
+      on_exit(fn -> File.rm_rf(repo) end)
+      %{repo: repo}
+    end
+
+    test "one new document is captured whatever the agent named it", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md")
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:ok, "docs/PRD/PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md"}
+    end
+
+    test "a staged-but-uncommitted document still counts", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-staged.md")
+      git!(repo, ["add", "docs/PRD"])
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:ok, "docs/PRD/PRD-2026-aaaaaaaa-staged.md"}
+    end
+
+    test "a name needing shell quoting survives intact", %{repo: repo} do
+      write!(repo, ~s(docs/PRD/PRD-2026-aaaaaaaa-a "quoted" name.md))
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:ok, ~s(docs/PRD/PRD-2026-aaaaaaaa-a "quoted" name.md)}
+    end
+
+    test "nothing produced is its own error", %{repo: repo} do
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:error, {:planning_document_absent, "docs/PRD", repo}}
+    end
+
+    test "several produced is a distinct error naming every candidate", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-bbbbbbbb-second.md")
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-first.md")
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:error,
+                {:planning_document_ambiguous, "docs/PRD",
+                 ["docs/PRD/PRD-2026-aaaaaaaa-first.md", "docs/PRD/PRD-2026-bbbbbbbb-second.md"]}}
+    end
+
+    test "edits to a tracked document are not a new document", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md")
+      git!(repo, ["add", "docs/PRD"])
+      git!(repo, ["commit", "--no-gpg-sign", "-m", "existing prd"])
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "rewritten")
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:error, {:planning_document_absent, "docs/PRD", repo}}
+    end
+
+    test "a rename is not a new document, and does not swallow the real one", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md")
+      git!(repo, ["add", "docs/PRD"])
+      git!(repo, ["commit", "--no-gpg-sign", "-m", "existing prd"])
+      git!(repo, ["mv", "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "docs/PRD/renamed.md"])
+      write!(repo, "docs/PRD/PRD-2026-bbbbbbbb-fresh.md")
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:ok, "docs/PRD/PRD-2026-bbbbbbbb-fresh.md"}
+    end
+
+    test "documents outside the gate's directory are ignored", %{repo: repo} do
+      write!(repo, "docs/TRD/TRD-2026-aaaaaaaa-other.md")
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-mine.md")
+
+      assert PlanContext.discover_document(repo, "docs/PRD") ==
+               {:ok, "docs/PRD/PRD-2026-aaaaaaaa-mine.md"}
+    end
+
+    test "a directory git cannot read is neither absent nor ambiguous" do
+      not_a_repo = Path.join(System.tmp_dir!(), "no-repo-#{System.unique_integer([:positive])}")
+
+      assert {:error, {:planning_document_scan_failed, ^not_a_repo, status, output}} =
+               PlanContext.discover_document(not_a_repo, "docs/PRD")
+
+      assert status != 0
+      assert output =~ "fatal"
+    end
+  end
+
+  describe "PlanContext.capture_document/3" do
+    test "the captured PRD becomes planning.prd_path" do
+      captured =
+        PlanContext.capture_document(
+          %{"planning" => %{"slug" => "s"}},
+          "planning.prd_path",
+          "docs/PRD/PRD-2026-c57dc188-curated.md"
+        )
+
+      assert captured["planning"]["prd_path"] == "docs/PRD/PRD-2026-c57dc188-curated.md"
+      assert captured["planning"]["slug"] == "s"
+    end
+
+    # Pairing rides on the correlation id in the filename. The run-derived
+    # id belongs to a PRD that was never written, so it must not survive.
+    test "the captured PRD re-keys the correlation id off its own filename" do
+      captured =
+        PlanContext.capture_document(
+          %{"planning" => %{"correlation_id" => "d6cdefe6"}},
+          "planning.prd_path",
+          "docs/PRD/PRD-2026-c57dc188-curated.md"
+        )
+
+      assert captured["planning"]["correlation_id"] == "c57dc188"
+    end
+
+    test "a PRD name carrying no correlation id drops the run-derived one" do
+      captured =
+        PlanContext.capture_document(
+          %{"planning" => %{"correlation_id" => "d6cdefe6"}},
+          "planning.prd_path",
+          "docs/PRD/product-requirements.md"
+        )
+
+      refute Map.has_key?(captured["planning"], "correlation_id")
+    end
+
+    test "capturing the TRD records the path and leaves the pairing key alone" do
+      captured =
+        PlanContext.capture_document(
+          %{"planning" => %{"correlation_id" => "c57dc188"}},
+          "planning.trd_path",
+          "docs/TRD/TRD-2026-99999999-whatever.md"
+        )
+
+      assert captured["planning"]["trd_path"] == "docs/TRD/TRD-2026-99999999-whatever.md"
+      assert captured["planning"]["correlation_id"] == "c57dc188"
+    end
+  end
+
+  defp git!(repo, args) do
+    {_output, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+    :ok
+  end
+
+  defp write!(repo, relative, body \\ "document body") do
+    target = Path.join(repo, relative)
+    File.mkdir_p!(Path.dirname(target))
+    File.write!(target, body)
   end
 
   defp traverse(ctx, key) when is_binary(key) do

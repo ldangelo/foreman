@@ -201,24 +201,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         end)
       end
 
-      # A compliant ensemble consumer writes its document to the exact
-      # absolute path Foreman exported (`FOREMAN_PRD_PATH` /
-      # `FOREMAN_TRD_PATH`) rather than to a path it derived itself. Mirror
-      # that: every env var named in `write_env_paths` is materialized
-      # verbatim, so a `requiredFile` gate that resolves to any other string
-      # than the export fails the phase.
       env = Keyword.get(state, :env_map) || %{}
-
-      Enum.each(Map.get(context, "write_env_paths") || [], fn var ->
-        case Map.get(env, var) do
-          path when is_binary(path) and path != "" ->
-            File.mkdir_p!(Path.dirname(path))
-            File.write!(path, "document materialized by TestWorkerAdapter at #{var}")
-
-          _ ->
-            :ok
-        end
-      end)
 
       script_key = Map.fetch!(context, "script_key")
 
@@ -326,7 +309,16 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     :ok
   end
 
-  test "command: phase forwards slash command at byte zero and requiredFile gate fails when the file is missing" do
+  test "plan gate captures the document the agent invented and threads it to the next phase" do
+    # Regression for run-d6cdefe69706087e6bce5b1a10b95384 and its two
+    # predecessors. Foreman computed
+    # `PRD-2026-d6cdefe6-implement-durable-run-log-store-for-foreman-run.md`
+    # and the agent wrote
+    # `PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md`. Foreman no
+    # longer names the file: the gate asks git which new document appeared
+    # under `docs/PRD`, captures that, and hands it to `create-trd`. The
+    # adapter here writes ONLY the invented name, so the phase can complete
+    # only if nothing checks a Foreman-computed one.
     expect_schema_boot_fetches()
     start_supervised!(JsonSchemaCache)
 
@@ -340,236 +332,10 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    repo_dir = init_plan_repo!(project_id)
 
-    workflow_snapshot = %{
-      run_id: run_id,
-      workflow_name: "plan",
-      workflow_digest: "test-digest",
-      phases: [
-        %{
-          name: :create_prd,
-          action: :command,
-          command: "/skill:ensemble-full-create-prd --foreman",
-          required_file: "planning.prd_path",
-          index: 1,
-          phase_id: Identity.phase_id(run_id, 1),
-          artifact_template: %{
-            path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])
-          },
-          context: %{"script_key" => script_key},
-          # Non-worktree test: project path is a plain System.tmp_dir!()
-          # directory, not a git repo. Opt out of the TRD-2026 default-on
-          # worktree (see run_executor.ex maybe_create_worktree/3).
-          worktree: %{enabled: false}
-        }
-      ]
-    }
-
-    LifecycleStore.put(script_key, %{test_pid: test_pid})
-
-    seed_plan_project_task_and_run!(
-      project_id,
-      task_id,
-      run_id,
-      workflow_snapshot,
-      database_path
-    )
-
-    # PlanContext requires an existing project directory. System.tmp_dir!() is
-    # always present, so the seeded project's path is a real directory.
-    expect(BrRunnerMock, :cmd, 1, fn request, runner_project_config, opts ->
-      assert request == {:update, %{flags: ["--claim", task_id]}}
-      assert opts == [timeout_ms: 30_000]
-
-      assert (Map.get(runner_project_config, :database_path) ||
-                Map.get(runner_project_config, "database_path")) == database_path
-
-      send(test_pid, {:runner_cmd, :claim, request})
-
-      {:ok,
-       %{
-         stdout:
-           Jason.encode!(%{
-             "id" => task_id,
-             "title" => "Plan #{task_id}",
-             "status" => "in_progress",
-             "priority" => 2,
-             "dependencies" => [],
-             "assignee" => "foreman-runner",
-             "description" => "Plan task description",
-             "notes" => nil,
-             "design" => nil,
-             "labels" => ["workflow", "in_progress"],
-             "metadata" => %{"provider_id" => "beads", "source" => "br update"}
-           }),
-         stderr: "",
-         exit_code: 0
-       }}
-    end)
-
-    expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, opts ->
-      assert opts == [timeout_ms: 30_000]
-      send(test_pid, {:runner_cmd, :reopen, request})
-
-      {:ok,
-       %{
-         stdout:
-           Jason.encode!(%{
-             "id" => task_id,
-             "title" => "Plan #{task_id}",
-             "status" => "open",
-             "priority" => 2,
-             "dependencies" => [],
-             "assignee" => nil,
-             "description" => "Plan task description",
-             "notes" => nil,
-             "design" => nil,
-             "labels" => ["workflow", "open"],
-             "metadata" => %{"provider_id" => "beads", "source" => "br reopen"}
-           }),
-         stderr: "",
-         exit_code: 0
-       }}
-    end)
-
-    task = ProjectionStore.task_projection(task_id)
-
-    run_pid =
-      start_supervised!(%{
-        id: {RunExecutor, run_id},
-        start: {RunExecutor, :start_link, [run_id, task]},
-        restart: :transient,
-        shutdown: 5_000,
-        type: :worker
-      })
-
-    assert is_pid(run_pid)
-
-    # Adapter must receive the slash command at byte zero.
-    assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
-    assert is_binary(prompt)
-
-    assert String.starts_with?(prompt, "/skill:ensemble-full-create-prd"),
-           "expected prompt to begin with the slash command, got: #{inspect(String.slice(prompt, 0, 80))}"
-
-    # PlanContext fields flowed through base_context into the adapter context.
-    assert context["run_id"] == run_id
-    assert context["task_id"] == task_id
-    assert is_binary(context["working_directory"]) and context["working_directory"] != ""
-    assert is_map(context["planning"])
-    assert is_binary(context["planning"]["prd_path"])
-    assert is_binary(context["planning"]["trd_path"])
-    assert is_binary(context["planning"]["slug"])
-    assert is_integer(context["planning"]["document_year"])
-
-    # The resolved requiredFile path is the planning.prd_path context value,
-    # joined onto the phase's working directory — the planning paths
-    # themselves are project-relative.
-    expected_path = context["planning"]["prd_path"]
-    assert String.ends_with?(expected_path, ".md")
-    assert Path.type(expected_path) == :relative
-
-    # A `command:` phase never receives Foreman's rendered prompt, so these
-    # env vars are the only channel telling the agent where the planning
-    # documents must go. This phase opted out of the worktree, so they root
-    # at the project root the plan context resolved.
-    assert_receive {:adapter_env, env}, @poll_timeout_ms
-    exported_prd = Map.fetch!(env, "FOREMAN_PRD_PATH")
-    exported_trd = Map.fetch!(env, "FOREMAN_TRD_PATH")
-    assert Path.type(exported_prd) == :absolute
-
-    assert exported_prd ==
-             Path.join(context["working_directory"], context["planning"]["prd_path"])
-
-    assert exported_trd ==
-             Path.join(context["working_directory"], context["planning"]["trd_path"])
-
-    phase_id = Identity.phase_id(run_id, 1)
-
-    {:ok, failed_phase} =
-      poll_until(
-        fn ->
-          case ProjectionStore.phase_projection(phase_id) do
-            %{status: "failed"} = phase -> {:ok, phase}
-            other -> {:error, other}
-          end
-        end,
-        "phase failed"
-      )
-
-    assert failed_phase.status == "failed"
-
-    failure_reason =
-      Map.get(failed_phase, :failure_reason) || Map.get(failed_phase, "failure_reason")
-
-    assert is_binary(failure_reason)
-    assert failure_reason =~ "required_file_missing"
-    assert failure_reason =~ "planning.prd_path"
-
-    # Exported == checked: the absolute path the gate reports missing is
-    # byte-identical to the one the agent was handed. Drift between those two
-    # is the entire defect this guards.
-    assert failure_reason =~ exported_prd
-
-    # Wait for the RUN (not just the phase) to reach its terminal state.
-    # Dispatcher.handle_run_terminated/3 reacts to the run's own failure
-    # event asynchronously (releasing the run_slots holder); without this
-    # the test can finish and on_exit's kill_and_restart_dispatcher can
-    # kill Dispatcher mid-dispatch, crashing it and leaving BrRunnerMock
-    # under-invoked.
-    assert {:ok, %{status: "failed"}} =
-             poll_until(
-               fn ->
-                 case ProjectionStore.run(run_id) do
-                   %{status: "failed"} = run -> {:ok, run}
-                   other -> {:error, other}
-                 end
-               end,
-               "run failed"
-             )
-  end
-
-  test "plan phase in a worktree exports FOREMAN_PRD_PATH the requiredFile gate accepts verbatim" do
-    # Regression for run-3da49f9ed1ae01f932092b31335b5623. `plan.yaml`
-    # declares no `worktree:` block, so every plan phase gets the default-on
-    # worktree and the agent's cwd is that worktree — never the registered
-    # checkout. Two independent mismatches failed that run: the agent was
-    # never told the expected filename (a `command:` phase gets no rendered
-    # prompt), and the gate resolved `planning.prd_path` against the main
-    # checkout while the agent wrote inside the worktree. Here the adapter
-    # writes ONLY to the exported `FOREMAN_PRD_PATH`, exactly as the
-    # ensemble command's `--foreman` path does, so the phase can only
-    # complete if the exported and checked paths are the same string.
-    expect_schema_boot_fetches()
-    start_supervised!(JsonSchemaCache)
-
-    test_pid = self()
-    project_id = unique_id("project")
-    task_id = unique_id("task")
-
-    run_id =
-      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
-
-    script_key = unique_id("script")
-    database_path = unique_database_path(script_key)
-    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-
-    # The default-on worktree runs `git worktree add` against the project's
-    # registered path, so it must be a real repo with a commit at HEAD.
-    repo_dir = Path.join(System.tmp_dir!(), "foreman-plan-#{System.unique_integer([:positive])}")
-    File.rm_rf!(repo_dir)
-    File.mkdir_p!(repo_dir)
-    run_git!(["-C", repo_dir, "init", "--initial-branch=main"])
-    run_git!(["-C", repo_dir, "config", "user.email", "plan@test"])
-    run_git!(["-C", repo_dir, "config", "user.name", "Plan Test"])
-    File.write!(Path.join(repo_dir, "README.md"), "seed")
-    run_git!(["-C", repo_dir, "add", "."])
-    run_git!(["-C", repo_dir, "commit", "--no-gpg-sign", "-m", "seed"])
-
-    on_exit(fn ->
-      File.rm_rf(repo_dir)
-      File.rm_rf(Path.join([System.user_home!(), ".foreman/worktrees", project_id]))
-    end)
+    invented_prd = "docs/PRD/PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md"
+    invented_trd = "docs/TRD/TRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md"
 
     workflow_snapshot = %{
       run_id: run_id,
@@ -587,13 +353,27 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
             path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])
           },
           # No `worktree:` block — mirrors plan.yaml, so the executor
-          # provisions the default-on worktree.
-          context: %{"script_key" => script_key, "write_env_paths" => ["FOREMAN_PRD_PATH"]}
+          # provisions the default-on worktree and the agent's cwd is that
+          # worktree, never the registered checkout.
+          context: %{"script_key" => "#{script_key}-1", "write_paths" => [invented_prd]}
+        },
+        %{
+          name: :create_trd,
+          action: :command,
+          command: "/skill:ensemble-full-create-trd-foreman --foreman",
+          required_file: "planning.trd_path",
+          index: 2,
+          phase_id: Identity.phase_id(run_id, 2),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-create_trd.md"])
+          },
+          context: %{"script_key" => "#{script_key}-2", "write_paths" => [invented_trd]}
         }
       ]
     }
 
-    LifecycleStore.put(script_key, %{test_pid: test_pid})
+    LifecycleStore.put("#{script_key}-1", %{test_pid: test_pid})
+    LifecycleStore.put("#{script_key}-2", %{test_pid: test_pid})
 
     seed_plan_project_task_and_run!(
       project_id,
@@ -629,54 +409,189 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     assert is_pid(run_pid)
 
-    assert_receive {:adapter_execute, _prompt, context}, @poll_timeout_ms
-    assert_receive {:adapter_env, env}, @poll_timeout_ms
+    # ---- phase 1: create-prd -------------------------------------------
+    assert_receive {:adapter_execute, _prompt, prd_context}, @poll_timeout_ms
+    assert_receive {:adapter_env, prd_env}, @poll_timeout_ms
 
-    worktree_path = env["FOREMAN_WORKTREE_PATH"]
-    assert is_binary(worktree_path) and worktree_path != ""
-    assert File.dir?(worktree_path)
-    assert context["working_directory"] == worktree_path
+    prd_worktree = prd_env["FOREMAN_WORKTREE_PATH"]
+    assert is_binary(prd_worktree) and prd_worktree != ""
+    assert prd_context["working_directory"] == prd_worktree
 
-    # Rooted at the worktree, not the registered checkout.
-    exported_prd = Map.fetch!(env, "FOREMAN_PRD_PATH")
-    exported_trd = Map.fetch!(env, "FOREMAN_TRD_PATH")
-    assert exported_prd == Path.join(worktree_path, context["planning"]["prd_path"])
-    assert exported_trd == Path.join(worktree_path, context["planning"]["trd_path"])
-    refute String.starts_with?(exported_prd, repo_dir <> "/")
+    # Nothing names a document that does not exist yet.
+    refute Map.has_key?(prd_context["planning"], "prd_path")
+    refute Map.has_key?(prd_context["planning"], "trd_path")
 
-    # The slug/year/correlation_id derivation is unchanged by the rebasing.
-    assert context["planning"]["correlation_id"] == binary_part(run_id, 4, 8)
+    # The mandate is gone. Not renamed, not relocated — gone.
+    refute Map.has_key?(prd_env, "FOREMAN_PRD_PATH")
+    refute Map.has_key?(prd_env, "FOREMAN_TRD_PATH")
 
-    assert Path.basename(exported_prd) ==
-             "PRD-#{context["planning"]["document_year"]}-" <>
-               "#{context["planning"]["correlation_id"]}-#{context["planning"]["slug"]}.md"
+    # The subject IS delivered: discovery may only accept whatever the agent
+    # produced if Foreman provably told the agent what to produce.
+    assert prd_env["FOREMAN_TASK_TITLE"] == "Plan #{task_id}"
+    assert prd_env["FOREMAN_TASK_DESCRIPTION"] == "Plan task description for #{task_id}"
 
-    # The adapter wrote that exact path and nothing else, so a completed
-    # phase is proof the gate checked the same string.
-    assert File.regular?(exported_prd)
+    # Nothing has been captured yet, so there is no source PRD to consume.
+    refute Map.has_key?(prd_env, "FOREMAN_SOURCE_PRD_PATH")
 
-    phase_id = Identity.phase_id(run_id, 1)
+    assert File.regular?(Path.join(prd_worktree, invented_prd))
 
-    {:ok, completed_phase} =
-      poll_until(
-        fn ->
-          case ProjectionStore.phase_projection(phase_id) do
-            %{status: "completed"} = phase -> {:ok, phase}
-            other -> {:error, other}
-          end
-        end,
-        "phase completed"
-      )
+    # ---- phase 2: create-trd -------------------------------------------
+    assert_receive {:adapter_execute, _trd_prompt, trd_context}, @poll_timeout_ms
+    assert_receive {:adapter_env, trd_env}, @poll_timeout_ms
 
-    assert completed_phase.status == "completed"
+    # The captured path — the invented one — is what the next phase reads as
+    # `planning.prd_path`.
+    assert trd_context["planning"]["prd_path"] == invented_prd
 
-    failure_reason =
-      (Map.get(completed_phase, :failure_reason) || Map.get(completed_phase, "failure_reason"))
-      |> to_string()
+    trd_worktree = trd_env["FOREMAN_WORKTREE_PATH"]
+    assert trd_env["FOREMAN_SOURCE_PRD_PATH"] == Path.join(trd_worktree, invented_prd)
+    refute Map.has_key?(trd_env, "FOREMAN_PRD_PATH")
 
-    refute failure_reason =~ "required_file_missing"
+    # Pairing follows the document that exists, not the run. The run-derived
+    # id never reaches the TRD phase.
+    assert trd_context["planning"]["correlation_id"] == "c57dc188"
+    refute trd_context["planning"]["correlation_id"] == binary_part(run_id, 4, 8)
+
+    for index <- [1, 2] do
+      phase_id = Identity.phase_id(run_id, index)
+
+      {:ok, phase} =
+        poll_until(
+          fn ->
+            case ProjectionStore.phase_projection(phase_id) do
+              %{status: "completed"} = phase -> {:ok, phase}
+              other -> {:error, other}
+            end
+          end,
+          "phase #{index} completed"
+        )
+
+      assert phase.status == "completed"
+    end
 
     assert_receive {:runner_cmd, :close}, @poll_timeout_ms
+  end
+
+  test "plan gate fails loudly when the agent produced no document" do
+    # Zero candidates is its own cause with its own error (AGENTS.md 5.3):
+    # "the agent wrote nothing" must never read like "the agent wrote
+    # something Foreman could not name".
+    %{run_id: run_id, phase_id: phase_id} = run_plan_capture_phase!(write_paths: [])
+
+    failure_reason = await_phase_failure!(phase_id)
+
+    assert failure_reason =~ "planning_document_absent"
+    assert failure_reason =~ "docs/PRD"
+    refute failure_reason =~ "planning_document_ambiguous"
+
+    await_run_failure!(run_id)
+  end
+
+  test "plan gate fails loudly and names the candidates when the agent produced several" do
+    # More than one new document means Foreman cannot know which one is the
+    # deliverable. Picking one (newest mtime, first alphabetically) would be
+    # a coin flip reported as success, so the gate refuses and names them.
+    first = "docs/PRD/PRD-2026-aaaaaaaa-first-draft.md"
+    second = "docs/PRD/PRD-2026-bbbbbbbb-second-draft.md"
+
+    %{run_id: run_id, phase_id: phase_id} = run_plan_capture_phase!(write_paths: [first, second])
+
+    failure_reason = await_phase_failure!(phase_id)
+
+    assert failure_reason =~ "planning_document_ambiguous"
+    assert failure_reason =~ first
+    assert failure_reason =~ second
+
+    await_run_failure!(run_id)
+  end
+
+  test "a discovery-gated phase never dispatches an agent that was not told the subject" do
+    # The failure discovery would otherwise hide: three live runs produced a
+    # PRD on the same unrelated topic from three different task
+    # descriptions. Capturing whatever the agent wrote turns that into a
+    # GREEN run holding an irrelevant document. A phase whose output is
+    # discovered rather than named must therefore carry the subject, or it
+    # does not launch at all.
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    # A non-plan workflow carries no planning context, so no task subject
+    # reaches the env — yet this manifest gates on a discovered document.
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "feature",
+      workflow_digest: "test-digest",
+      phases: [
+        %{
+          name: :create_prd,
+          action: :command,
+          command: "/skill:ensemble-full-create-prd --foreman",
+          required_file: "planning.prd_path",
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])
+          },
+          context: %{"script_key" => script_key},
+          worktree: %{enabled: false}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, _opts ->
+      send(test_pid, {:runner_cmd, :claim})
+      claim_payload_json(task_id)
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _cfg, _opts ->
+      send(test_pid, {:runner_cmd, :reopen, request})
+      claim_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :transient,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+
+    failure_reason = await_phase_failure!(Identity.phase_id(run_id, 1))
+
+    assert failure_reason =~ "plan_subject_missing"
+    assert failure_reason =~ "planning.prd_path"
+
+    # The worker was never launched: no agent ran, so there was nothing to
+    # discover in the first place.
+    refute_received {:adapter_execute, _, _}
+
+    await_run_failure!(run_id)
   end
 
   test "command: phase forwarded for feature task when requiredFile resolves through flat implementation context" do
@@ -820,12 +735,12 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     assert context["trd_path"] == trd_path
 
-    # Non-plan run: no planning context, so the planning path variables are
-    # absent rather than blank (AGENTS.md 5.3), leaving ensemble's own
-    # derivation untouched.
+    # Non-plan run: no planning context, so no plan variable is exported at
+    # all — absent rather than blank (AGENTS.md 5.3).
     assert_receive {:adapter_env, env}, @poll_timeout_ms
-    refute Map.has_key?(env, "FOREMAN_PRD_PATH")
-    refute Map.has_key?(env, "FOREMAN_TRD_PATH")
+    refute Map.has_key?(env, "FOREMAN_TASK_TITLE")
+    refute Map.has_key?(env, "FOREMAN_TASK_DESCRIPTION")
+    refute Map.has_key?(env, "FOREMAN_SOURCE_PRD_PATH")
 
     phase_id = Identity.phase_id(run_id, 1)
 
@@ -974,11 +889,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert File.regular?(Path.join(working_directory, relative_trd))
 
     # Non-plan run, this time with an active worktree: still no planning
-    # context, so still neither variable.
+    # context, so still no plan variables.
     assert_receive {:adapter_env, env}, @poll_timeout_ms
     assert env["FOREMAN_WORKTREE_PATH"] == working_directory
-    refute Map.has_key?(env, "FOREMAN_PRD_PATH")
-    refute Map.has_key?(env, "FOREMAN_TRD_PATH")
+    refute Map.has_key?(env, "FOREMAN_TASK_TITLE")
+    refute Map.has_key?(env, "FOREMAN_SOURCE_PRD_PATH")
 
     phase_id = Identity.phase_id(run_id, 1)
 
@@ -1267,6 +1182,145 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
   defp unique_database_path(script_key) do
     Path.join(System.tmp_dir!(), "#{script_key}.db")
+  end
+
+  # A real repo with a commit at HEAD: the default-on worktree runs
+  # `git worktree add` against the project's registered path, and the
+  # discovery gate runs `git status` inside the worktree it produces.
+  defp init_plan_repo!(project_id) do
+    repo_dir = Path.join(System.tmp_dir!(), "foreman-plan-#{System.unique_integer([:positive])}")
+    File.rm_rf!(repo_dir)
+    File.mkdir_p!(repo_dir)
+    run_git!(["-C", repo_dir, "init", "--initial-branch=main"])
+    run_git!(["-C", repo_dir, "config", "user.email", "plan@test"])
+    run_git!(["-C", repo_dir, "config", "user.name", "Plan Test"])
+    File.write!(Path.join(repo_dir, "README.md"), "seed")
+    run_git!(["-C", repo_dir, "add", "."])
+    run_git!(["-C", repo_dir, "commit", "--no-gpg-sign", "-m", "seed"])
+
+    on_exit(fn ->
+      File.rm_rf(repo_dir)
+      File.rm_rf(Path.join([System.user_home!(), ".foreman/worktrees", project_id]))
+    end)
+
+    repo_dir
+  end
+
+  # Drive one plan phase gated on `planning.prd_path` whose agent writes
+  # exactly `write_paths` inside its worktree, and return the ids needed to
+  # assert on the outcome. The phase's fate is entirely decided by how many
+  # new documents appear under `docs/PRD`.
+  defp run_plan_capture_phase!(write_paths: write_paths) do
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    repo_dir = init_plan_repo!(project_id)
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "plan",
+      workflow_digest: "test-digest",
+      phases: [
+        %{
+          name: :create_prd,
+          action: :command,
+          command: "/skill:ensemble-full-create-prd --foreman",
+          required_file: "planning.prd_path",
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])
+          },
+          context: %{"script_key" => script_key, "write_paths" => write_paths}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_plan_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path,
+      repo_dir
+    )
+
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", task_id]}}, _cfg, _opts ->
+      send(test_pid, {:runner_cmd, :claim})
+      claim_payload_json(task_id)
+    end)
+
+    expect(BrRunnerMock, :cmd, 1, fn request, _cfg, _opts ->
+      send(test_pid, {:runner_cmd, :reopen, request})
+      claim_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+    assert_receive {:adapter_execute, _prompt, _context}, @poll_timeout_ms
+
+    %{run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
+  end
+
+  defp await_phase_failure!(phase_id) do
+    {:ok, failed_phase} =
+      poll_until(
+        fn ->
+          case ProjectionStore.phase_projection(phase_id) do
+            %{status: "failed"} = phase -> {:ok, phase}
+            other -> {:error, other}
+          end
+        end,
+        "phase failed"
+      )
+
+    reason = Map.get(failed_phase, :failure_reason) || Map.get(failed_phase, "failure_reason")
+    assert is_binary(reason)
+    reason
+  end
+
+  # Wait for the RUN (not just the phase) to reach its terminal state, then
+  # for the provider reopen the terminal dispatch triggers.
+  # Dispatcher.handle_run_terminated/3 and the provider call both react to
+  # the run's own failure event asynchronously; without both waits the test
+  # can finish first, and on_exit's kill_and_restart_dispatcher then kills
+  # Dispatcher mid-dispatch, leaving BrRunnerMock under-invoked and failing
+  # verification on a race rather than on behaviour.
+  defp await_run_failure!(run_id) do
+    assert {:ok, %{status: "failed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "failed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run failed"
+             )
+
+    assert_receive {:runner_cmd, :reopen, _request}, @poll_timeout_ms
   end
 
   defp seed_plan_project_task_and_run!(

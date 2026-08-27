@@ -52,7 +52,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     run_id = Keyword.fetch!(opts, :run_id)
     provider = Keyword.fetch!(opts, :provider)
     prompt = Keyword.fetch!(opts, :prompt)
-    driver_opts = Keyword.get(opts, :driver_opts, [])
+    driver_opts = put_env(Keyword.get(opts, :driver_opts, []), opts)
     interval = Keyword.get(opts, :heartbeat_interval_ms, @default_heartbeat_interval_ms)
     result_recipient = Keyword.get(opts, :result_recipient)
 
@@ -68,6 +68,40 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     }
 
     {:ok, state}
+  end
+
+  # `Overwatch.start_phase/2` computes the worker's env map and forwards it
+  # to the adapter as `:env_map` (see `overwatch.ex:124`); every
+  # `FOREMAN_*` export RunExecutor produces in `foreman_env/3` arrives here
+  # and nowhere else. Until this hop existed the map was read by nothing:
+  # `FOREMAN_ARTIFACT_PATH`, `FOREMAN_PRD_PATH`, `FOREMAN_TRD_PATH`,
+  # `BEADS_DB` and `TRD_SCOPE` were all unset at the agent, which is why
+  # run-d6cdefe69706087e6bce5b1a10b95384 reported `FOREMAN_PRD_PATH:
+  # unset/empty` while obeying the contract that names it.
+  #
+  # `Jido.Harness.Run.Request` accepts `env` (`%{String.t() => term()}`)
+  # with `env_mode` defaulting to `:overlay`, threaded through the pi
+  # adapter and `Process.Spec` to erlexec, so these keys overlay the
+  # ambient environment rather than replacing it.
+  #
+  # Absent and empty are both "nothing to inject". A non-map means a
+  # caller bypassed the `Overwatch` boundary — a programming error, so it
+  # raises rather than launching an agent with a silently dropped env.
+  defp put_env(driver_opts, opts) do
+    case Keyword.get(opts, :env_map) do
+      nil ->
+        driver_opts
+
+      env when is_map(env) and map_size(env) == 0 ->
+        driver_opts
+
+      env when is_map(env) ->
+        Keyword.put(driver_opts, :env, env)
+
+      other ->
+        raise ArgumentError,
+              "JidoHarnessWorker expects :env_map to be a map, got: #{inspect(other)}"
+    end
   end
 
   @impl true
