@@ -93,3 +93,10 @@ config :foreman_server, :jido_vfs,
 # (e.g. OtelSpanEmitterIntegrationTest) flip the tracer back to
 # :otel_tracer_default via Application.put_env/3.
 config :opentelemetry, :tracer, :otel_tracer_noop
+
+# MCP server disabled in test env (MCPSupervisorTest asserts get_env returns config)
+config :foreman_server, :mcp,
+  enabled: false,
+  mount: "/mcp",
+  allow_workflow_writes: false,
+  allow_insecure_local: false

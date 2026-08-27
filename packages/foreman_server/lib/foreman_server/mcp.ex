@@ -50,10 +50,22 @@ defmodule ForemanServer.MCP do
 
   @doc "Returns a child spec for the HTTP MCP server (streamable HTTP transport)."
   def child_spec(opts \\ []) do
+    mcp = Application.get_env(:foreman_server, :mcp, [])
+
     opts =
-      opts
-      |> Keyword.put_new(:transport, :streamable_http)
-      |> Keyword.put_new(:authorization, authorization_config())
+      case Keyword.get(mcp, :allow_insecure_local, false) do
+        true ->
+          # Peri requires resource + authorization_servers when validator present
+          # Skip authorization config entirely when insecure (dev only)
+          opts
+            |> Keyword.delete(:authorization)
+            |> Keyword.put_new(:transport, :streamable_http)
+
+        _ ->
+          opts
+            |> Keyword.put_new(:transport, :streamable_http)
+            |> Keyword.put_new(:authorization, authorization_config())
+      end
 
     %{
       id: __MODULE__,

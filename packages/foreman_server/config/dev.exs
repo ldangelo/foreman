@@ -55,3 +55,10 @@ config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url:
     System.get_env("JIDO_CHECKPOINT_DATABASE_URL",
       "postgres://postgres:postgres@localhost:55432/foreman_dev")
+
+# TRD-036: MCP server (dev only)
+config :foreman_server, :mcp,
+  enabled: true,
+  mount: "/mcp",
+  allow_workflow_writes: false,
+  allow_insecure_local: true
