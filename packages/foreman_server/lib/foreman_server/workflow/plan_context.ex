@@ -10,7 +10,7 @@ defmodule ForemanServer.Workflow.PlanContext do
   The planning block carries NO document paths up front. Foreman does not
   tell the agent what to name its PRD or TRD and does not gate on a name it
   computed: `planning.prd_path` and `planning.trd_path` appear only once
-  `discover_document/2` has found the document a phase actually wrote, and
+  `discover_document/3` has found the document a phase actually wrote, and
   `capture_document/3` has recorded it. Presence therefore means "produced",
   never "expected". Captured paths are relative to the phase's working
   directory — the phase worktree when it has one, otherwise
@@ -103,52 +103,65 @@ defmodule ForemanServer.Workflow.PlanContext do
   Discover the document the phase's agent just produced under `docs_dir`,
   returned relative to `working_directory`.
 
-  The pipeline already guarantees a clean tree when a phase starts (a dirty
-  worktree HALTs the run), so every untracked or newly added file under
-  `docs_dir` was written by this phase. That invariant — not a timestamp,
-  not a filename pattern — is what makes the discovery deterministic.
-  Modifications and renames of tracked documents are deliberately not
-  candidates: the gate exists to prove a NEW document was produced.
+  An agent may leave the document it wrote uncommitted or commit it — the
+  ensemble skills commit — and both mean "this phase produced it". The
+  phase worktree is created at `base_ref`, so the documents new in the
+  phase are the union of
+
+    * paths added in commits since `base_ref`, and
+    * paths still untracked or added in the working tree,
+
+  deduplicated, so a document that was committed and then touched again is
+  one document rather than a spurious ambiguity. The pipeline already
+  guarantees a clean tree when a phase starts (a dirty worktree HALTs the
+  run), so nothing in that union predates the phase. That invariant — not a
+  timestamp, not a filename pattern — is what makes the discovery
+  deterministic. Edits and renames of documents that already existed at
+  `base_ref` are deliberately not candidates: the gate exists to prove a
+  NEW document was produced.
 
   Each outcome is its own error so "the agent wrote nothing" can never be
-  confused with "the agent wrote several things" or with "this directory is
-  not a git repository":
+  confused with "the agent wrote several things", with "this directory is
+  not a git repository", or with "Foreman does not know where the phase
+  started":
 
     * `{:planning_document_absent, docs_dir, working_directory}`
     * `{:planning_document_ambiguous, docs_dir, candidates}` — names them
     * `{:planning_document_scan_failed, working_directory, status, output}`
+    * `{:planning_document_base_unknown, docs_dir, working_directory}`
+
+  A `base_ref` Foreman cannot supply is NOT "absent". Without it the
+  committed half of the union is unreadable, and scanning only the working
+  tree would go on reporting a committed document as nothing produced —
+  the exact defect this union fixes
+  (run-9ff0f0ffc7e5845265d0cdcf8eb0ac2d failed
+  `{:planning_document_absent, "docs/PRD", …}` seconds after its agent
+  committed the PRD).
   """
-  @spec discover_document(Path.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def discover_document(working_directory, docs_dir)
-      when is_binary(working_directory) and is_binary(docs_dir) do
-    args = [
-      "-C",
-      working_directory,
-      "status",
-      "--porcelain",
-      "-z",
-      "--untracked-files=all",
-      "--",
-      docs_dir
-    ]
+  @spec discover_document(Path.t(), String.t(), String.t() | nil) ::
+          {:ok, String.t()} | {:error, term()}
+  def discover_document(working_directory, docs_dir, base_ref)
+      when is_binary(working_directory) and is_binary(docs_dir) and is_binary(base_ref) and
+             base_ref != "" do
+    with {:ok, committed} <- committed_paths(working_directory, docs_dir, base_ref),
+         {:ok, uncommitted} <- working_tree_paths(working_directory, docs_dir) do
+      case Enum.uniq(committed ++ uncommitted) do
+        [path] ->
+          {:ok, path}
 
-    case System.cmd("git", args, stderr_to_stdout: true) do
-      {output, 0} ->
-        case output |> String.split(<<0>>, trim: true) |> new_paths() do
-          [path] ->
-            {:ok, path}
+        [] ->
+          {:error, {:planning_document_absent, docs_dir, working_directory}}
 
-          [] ->
-            {:error, {:planning_document_absent, docs_dir, working_directory}}
-
-          candidates ->
-            {:error, {:planning_document_ambiguous, docs_dir, Enum.sort(candidates)}}
-        end
-
-      {output, status} ->
-        {:error,
-         {:planning_document_scan_failed, working_directory, status, String.trim(output)}}
+        candidates ->
+          {:error, {:planning_document_ambiguous, docs_dir, Enum.sort(candidates)}}
+      end
     end
+  end
+
+  def discover_document(working_directory, docs_dir, base_ref)
+      when is_binary(working_directory) and is_binary(docs_dir) and
+             (is_nil(base_ref) or base_ref == "") do
+    {:error, {:planning_document_base_unknown, docs_dir, working_directory}}
   end
 
   @doc """
@@ -175,6 +188,65 @@ defmodule ForemanServer.Workflow.PlanContext do
   end
 
   ## Private
+
+  # Documents the agent COMMITTED. The phase worktree is created at
+  # `base_ref`, so `--diff-filter=A` between it and `HEAD` is exactly "a
+  # path this phase added": an edit to a document that already existed
+  # reports M and a rename of one reports R, neither of which the gate
+  # counts. `--find-renames` asks for that rename pairing explicitly
+  # instead of inheriting the operator's `diff.renames`, under which a
+  # renamed pre-existing document would otherwise surface as an addition.
+  # `-z` emits the paths verbatim, so a name carrying a quote or a newline
+  # arrives intact rather than git-quoted. The two revisions are separate
+  # argv entries so a malformed `base_ref` fails as an unreadable revision
+  # instead of being concatenated into some other range.
+  defp committed_paths(working_directory, docs_dir, base_ref) do
+    args = [
+      "-C",
+      working_directory,
+      "diff",
+      "--name-only",
+      "-z",
+      "--diff-filter=A",
+      "--find-renames",
+      base_ref,
+      "HEAD",
+      "--",
+      docs_dir
+    ]
+
+    with {:ok, output} <- git_scan(working_directory, args) do
+      {:ok, String.split(output, <<0>>, trim: true)}
+    end
+  end
+
+  # Documents the agent left in the working tree, committing nothing.
+  defp working_tree_paths(working_directory, docs_dir) do
+    args = [
+      "-C",
+      working_directory,
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      docs_dir
+    ]
+
+    with {:ok, output} <- git_scan(working_directory, args) do
+      {:ok, output |> String.split(<<0>>, trim: true) |> new_paths()}
+    end
+  end
+
+  defp git_scan(working_directory, args) do
+    case System.cmd("git", args, stderr_to_stdout: true) do
+      {output, 0} ->
+        {:ok, output}
+
+      {output, status} ->
+        {:error, {:planning_document_scan_failed, working_directory, status, String.trim(output)}}
+    end
+  end
 
   # `git status --porcelain -z` emits one NUL-terminated `XY <path>` field
   # per entry, and follows a rename/copy entry with a second field carrying
@@ -266,7 +338,7 @@ defmodule ForemanServer.Workflow.PlanContext do
          "task" => task_block,
          # No `prd_path`/`trd_path`: nothing here names a document that
          # does not exist yet. `capture_document/3` adds each one after
-         # `discover_document/2` proves the phase produced it.
+         # `discover_document/3` proves the phase produced it.
          "planning" => %{
            "document_year" => document_year,
            "correlation_id" => correlation_id,

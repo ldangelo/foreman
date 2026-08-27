@@ -199,6 +199,14 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
           File.mkdir_p!(Path.dirname(target))
           File.write!(target, "gate file materialized by TestWorkerAdapter")
         end)
+
+        # The ensemble skills COMMIT what they write, so a real phase agent
+        # routinely leaves nothing in the working tree for the gate to find.
+        # `commit?` makes this adapter behave that way.
+        if Map.get(context, "commit?") do
+          git!(working_directory, ["add", "-A", "--", "docs"])
+          git!(working_directory, ["commit", "--no-gpg-sign", "-m", "phase output"])
+        end
       end
 
       env = Keyword.get(state, :env_map) || %{}
@@ -211,6 +219,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       end
 
       {:ok, "artifact body"}
+    end
+
+    defp git!(cwd, args) do
+      {_output, 0} = System.cmd("git", ["-C", cwd | args], stderr_to_stdout: true)
+      :ok
     end
   end
 
@@ -309,16 +322,23 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     :ok
   end
 
-  test "plan gate captures the document the agent invented and threads it to the next phase" do
+  test "plan gate captures the document the agent invented and committed, and threads it on" do
     # Regression for run-d6cdefe69706087e6bce5b1a10b95384 and its two
     # predecessors. Foreman computed
     # `PRD-2026-d6cdefe6-implement-durable-run-log-store-for-foreman-run.md`
     # and the agent wrote
     # `PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md`. Foreman no
-    # longer names the file: the gate asks git which new document appeared
-    # under `docs/PRD`, captures that, and hands it to `create-trd`. The
-    # adapter here writes ONLY the invented name, so the phase can complete
-    # only if nothing checks a Foreman-computed one.
+    # longer names the file: the gate asks git which document is new in the
+    # phase, captures that, and hands it to `create-trd`. The adapter here
+    # writes ONLY the invented name, so the phase can complete only if
+    # nothing checks a Foreman-computed one.
+    #
+    # And regression for run-9ff0f0ffc7e5845265d0cdcf8eb0ac2d: phase 1
+    # COMMITS its PRD the way the ensemble skills do, which a working-tree
+    # scan could not see — the run failed
+    # `{:planning_document_absent, "docs/PRD", …}` seconds after the
+    # document was committed. Phase 2 leaves its TRD uncommitted, so both
+    # halves of the union are exercised in one dispatch.
     expect_schema_boot_fetches()
     start_supervised!(JsonSchemaCache)
 
@@ -355,7 +375,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
           # No `worktree:` block — mirrors plan.yaml, so the executor
           # provisions the default-on worktree and the agent's cwd is that
           # worktree, never the registered checkout.
-          context: %{"script_key" => "#{script_key}-1", "write_paths" => [invented_prd]}
+          context: %{
+            "script_key" => "#{script_key}-1",
+            "write_paths" => [invented_prd],
+            "commit?" => true
+          }
         },
         %{
           name: :create_trd,
@@ -435,6 +459,14 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     assert File.regular?(Path.join(prd_worktree, invented_prd))
 
+    # COMMITTED, not merely written: the working tree the old gate scanned
+    # is clean here, which is exactly what run-9ff0f0ffc7e5845265d0cdcf8eb0ac2d
+    # looked like when it failed `:planning_document_absent`.
+    assert {"", 0} =
+             System.cmd("git", ["-C", prd_worktree, "status", "--porcelain"],
+               stderr_to_stdout: true
+             )
+
     # ---- phase 2: create-trd -------------------------------------------
     assert_receive {:adapter_execute, _trd_prompt, trd_context}, @poll_timeout_ms
     assert_receive {:adapter_env, trd_env}, @poll_timeout_ms
@@ -470,6 +502,42 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end
 
     assert_receive {:runner_cmd, :close}, @poll_timeout_ms
+  end
+
+  test "plan gate captures a document the agent left uncommitted" do
+    # The other half of the union: an agent that writes its document and
+    # commits nothing. The gate has to accept that too, so neither habit
+    # decides whether the phase passes.
+    %{run_id: run_id, phase_id: phase_id} =
+      run_plan_capture_phase!(
+        write_paths: ["docs/PRD/PRD-2026-96266fc0-left-in-the-working-tree.md"]
+      )
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.phase_projection(phase_id) do
+                   %{status: "completed"} = phase -> {:ok, phase}
+                   other -> {:error, other}
+                 end
+               end,
+               "phase completed"
+             )
+
+    assert {:ok, %{status: "completed"}} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.run(run_id) do
+                   %{status: "completed"} = run -> {:ok, run}
+                   other -> {:error, other}
+                 end
+               end,
+               "run completed"
+             )
+
+    # Same wait as `await_run_failure!/1`: the provider call the terminal
+    # dispatch triggers must land before on_exit kills the dispatcher.
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
   test "plan gate fails loudly when the agent produced no document" do
@@ -565,7 +633,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end)
 
     expect(BrRunnerMock, :cmd, 1, fn request, _cfg, _opts ->
-      send(test_pid, {:runner_cmd, :reopen, request})
+      send(test_pid, {:runner_cmd, :terminal, request})
       claim_payload_json(task_id)
     end)
 
@@ -1262,9 +1330,17 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       claim_payload_json(task_id)
     end)
 
+    # The terminal provider call depends on the gate's verdict: a failed
+    # phase reopens the task, a passed one closes it. Each shape gets the
+    # payload its adapter contract expects, so a run whose gate passed
+    # reaches "completed" instead of a provider contract mismatch.
     expect(BrRunnerMock, :cmd, 1, fn request, _cfg, _opts ->
-      send(test_pid, {:runner_cmd, :reopen, request})
-      claim_payload_json(task_id)
+      send(test_pid, {:runner_cmd, :terminal, request})
+
+      case request do
+        {:close, _payload} -> close_payload_json(task_id)
+        _other -> claim_payload_json(task_id)
+      end
     end)
 
     task = ProjectionStore.task_projection(task_id)
@@ -1320,7 +1396,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
                "run failed"
              )
 
-    assert_receive {:runner_cmd, :reopen, _request}, @poll_timeout_ms
+    assert_receive {:runner_cmd, :terminal, _request}, @poll_timeout_ms
   end
 
   defp seed_plan_project_task_and_run!(
