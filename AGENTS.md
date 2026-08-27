@@ -75,28 +75,48 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 Workflow note — PR behavior (corrected 2026-08-26): this file previously said
 PR/merge is controlled by phase-level `checkpointPr: true` plus explicit
-`create-pr`, `pr-wait`, and `merge` phases. **None of those exist.** Grepping
-`checkpointPr`, `checkpoint_pr`, `create-pr`, `pr-wait` across
-`packages/foreman_server` and `packages/foreman_cli` returns zero matches; the
-interpreter and validator recognise no such phase kinds. Do not author them.
+`create-pr`, `pr-wait`, and `merge` phases. **This codebase implements none of
+that.** No module reads `checkpointPr`, and nothing dispatches a `builtin: true`
+phase — zero matches across `packages/foreman_server` and `packages/foreman_cli`.
 
-The real mechanism is `ForemanServer.Workflow.AutoPR.maybe_create_pr/4`, called
+That syntax *does* appear in stale workflows sitting in the installed runtime
+catalog (`~/.foreman/workflows/`: `default.yaml`, `feature.yaml`, `task.yaml`,
+`epic.yaml`, `bug.yaml`), left over from an earlier implementation. They are not
+executable here: `Workflow.Validator.validate_phase/2` requires every phase to
+declare `command`, `prompt`, or `bash`, and those `builtin: true` phases declare
+none, so loading one fails with `{:missing_phase_action, index}`. Presence in
+that directory is not evidence a mechanism works — the supported set is
+`packages/foreman_server/priv/defaults/workflows/`. Do not author `builtin`,
+`checkpointPr`, `create-pr`, `pr-wait`, or `merge` phases, and do not dispatch
+those stale workflows.
+
+The real mechanism is `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called
 from `RunExecutor.finalize_run/1` after the task provider confirms completion.
-It requires the final phase artifact to contain a handoff marker
-(`FOREMAN_COMPLETE=true` plus `FOREMAN_BRANCH=<branch>`) and then shells out to
-`gh pr create`.
+It derives the PR from run state rather than from agent output: the head branch
+comes from `state.last_worktree.branch` (retained by
+`RunExecutor.remember_worktree/2`), the decision is gated on
+`git rev-list --count base..head > 0`, the branch is published with
+`git push -u origin <head>`, and only then does it shell out to `gh pr create`.
+A `FOREMAN_BRANCH=<branch>` marker in the final artifact is still honoured as
+an override. Failures log at `error`.
 
-**Known gap — PRs cannot currently land.** Nothing emits that marker: the only
-references to `FOREMAN_COMPLETE` in the repository are inside `auto_pr.ex`
-itself, so `maybe_create_pr/4` always returns `:noop`, logged at `info`, while
-the run reports success. `AutoPR` also has no test coverage, and the worktree
-branch it would need is phase-local (`run_single_phase/3` binds
-`worktree_record` and cleans it up in an `after` block), so it is not available
-at finalize time. Closing this needs a deliberate design decision about whether
-the skill or Foreman owns PR creation — Foreman already knows the branch it
-created (`foreman/<run_id>/<phase>`) and recorded it on `WorktreeCreated`, so
-deriving the handoff from run state is strictly more robust than depending on an
-agent to print three exact lines.
+This replaced a design that **could never land a PR**: it required a
+`FOREMAN_COMPLETE=true` handoff marker that nothing in the repository emitted,
+so `maybe_create_pr` always returned `:noop` at `info` level while the run
+reported success, with zero test coverage. Deriving the handoff from run state
+is strictly more robust than depending on an agent to print exact lines.
+
+**Known gap — artifact path convention is unreconciled.** `ArtifactTemplate`
+expects the phase artifact at `<artifact_base>/<run_id>/phase-<index>.md` when
+the phase declares no `artifact:`. A `command:` phase never receives Foreman's
+rendered prompt (the command string replaces it), so Foreman has no channel to
+tell the agent that path, and the ensemble skills write to their own convention
+(`docs/reports/<project>-<task-id>/IMPLEMENT_REPORT.md`) instead. The two sides
+are independent, so `ArtifactTemplate.describe/1` finds nothing. Closing this
+requires a decision plus a companion change in the ensemble skill repo — either
+Foreman exports the expected path (e.g. `FOREMAN_ARTIFACT_PATH`) and the skills
+read it, or Foreman accepts the skills' convention. Do not "fix" this on the
+Foreman side alone; unconsumed plumbing does not reconcile it.
 
 ## 5. Typed Boundaries, Loud Failures
 
