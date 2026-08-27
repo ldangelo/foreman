@@ -5,8 +5,9 @@ defmodule ForemanServer.Events.WorkerStdout do
           worker_id: String.t(),
           run_id: String.t(),
           sequence: non_neg_integer() | nil,
-          line: String.t() | nil
+          line: String.t() | nil,
+          timestamp: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:worker_id, :run_id, :sequence, :line]
+  defstruct [:worker_id, :run_id, :sequence, :line, :timestamp]
 end
