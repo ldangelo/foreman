@@ -391,8 +391,10 @@ defmodule ForemanServer.MCP.Tools do
   end
 
   # ProjectionStore run-detail reads return {:ok, data} | {:error, reason}.
-  # Wrapping the raw return in {:ok, ...} would report `{:error, :not_implemented}`
-  # to the client as a successful result — the same defect fixed one layer down.
+  # Wrapping the raw return in {:ok, ...} would report `{:error, reason}` to the
+  # client as a successful result — the same defect fixed one layer down. Each
+  # documented reason gets its own code so "no such run" is never confused with
+  # "this run has no data" (AGENTS.md §5.3).
   defp run_detail(tool_name, fun) when is_binary(tool_name) and is_function(fun, 0) do
     start_us = System.monotonic_time(:microsecond)
     result = fun.()
@@ -403,11 +405,29 @@ defmodule ForemanServer.MCP.Tools do
         Telemetry.mcp_tool_call(duration_us, tool_name, :ok)
         {:ok, data}
 
-      {:error, :not_implemented} ->
+      {:error, :run_not_found} ->
+        Telemetry.mcp_tool_call(duration_us, tool_name, :not_found)
+        {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+
+      # Not "this run produced no output" — Foreman has nowhere to read run
+      # output from. Naming the missing producer keeps the caller from reading
+      # an empty list as evidence about the run.
+      {:error, :no_log_store} ->
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)
 
         {:error,
-         %ToolError{code: "NOT_IMPLEMENTED", message: "#{tool_name} is not implemented yet"}}
+         %ToolError{
+           code: "UNAVAILABLE",
+           message:
+             "#{tool_name} has no data source: Foreman persists no run logs. " <>
+               "The durable channel exists (WorkerStdout/WorkerStderr events on " <>
+               "worker:<run_id>:<worker_id> streams) but has no producer — nothing " <>
+               "under lib/ calls WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...), " <>
+               "and Logger output is console-only and not keyed by run_id. " <>
+               "Missing prerequisite: a worker stdout/stderr producer. " <>
+               "Use foreman_run_get_activity for worker liveness and " <>
+               "foreman_run_get_events for the run's event history."
+         }}
 
       {:error, reason} ->
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)

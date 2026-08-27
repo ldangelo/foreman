@@ -11,39 +11,60 @@ defmodule ForemanServer.Workflow.PlanContext do
   `approved_at`). User-supplied content (title, description) is treated as
   requirements content only — never as a path separator or command name.
 
-  Returns `{:ok, context_map}` for `plan` tasks whose project projection
-  exposes a non-empty existing directory. Returns `{:error, reason}` for
-  missing or invalid inputs so the caller can fail the run before the
-  first phase. Returns `{:not_applicable, %{}}` for non-plan tasks so
-  callers preserve current fallback behaviour.
+  Applicability is decided by the workflow the run executes, not by the
+  issue tracker's `task_type`: `plan` is not a legal Beads issue type
+  (`task|bug|feature|epic|chore|docs|question`), so a beads-backed plan run
+  necessarily carries a domain type such as `"feature"` while its
+  `workflow_type` — or its frozen snapshot's workflow name — says `plan`.
+
+  Returns `{:ok, context_map}` for plan-workflow runs whose project
+  projection exposes a non-empty existing directory. Returns
+  `{:error, reason}` for missing or invalid inputs so the caller can fail
+  the run before the first phase. Returns `{:not_applicable, %{}}` for every
+  other workflow so callers preserve current fallback behaviour.
   """
 
   alias ForemanServer.ProjectionStore
 
+  # `plan` is the only bundled manifest whose phases gate on the `planning`
+  # block (`priv/defaults/workflows/plan.yaml`: `requiredFile:
+  # planning.prd_path` and `planning.trd_path`).
+  @plan_workflow "plan"
+
   @doc """
-  Build the planning context for `task_projection`. Non-plan tasks return
-  `{:not_applicable, %{}}` so callers can short-circuit cleanly.
+  Build the planning context for `task_projection`. Runs that do not execute
+  the `plan` workflow return `{:not_applicable, %{}}` so callers can
+  short-circuit cleanly.
   """
   @spec build(map()) ::
           {:ok, map()} | {:not_applicable, %{}} | {:error, term()}
   def build(task_projection) when is_map(task_projection) do
-    case task_type(task_projection) do
-      "plan" -> build_plan_context(task_projection)
-      _other -> {:not_applicable, %{}}
+    if plan_workflow?(task_projection) do
+      build_plan_context(task_projection)
+    else
+      {:not_applicable, %{}}
     end
   end
 
   def build(_), do: {:not_applicable, %{}}
 
   @doc """
-  Return `true` when the task projection is a `plan` task. Exposed so
+  Return `true` when the run described by `task_projection` executes the
+  `plan` workflow, and therefore needs a `planning` block. Exposed so
   executors can decide whether to require a project path before phase 0.
-  """
-  @spec plan_task?(map()) :: boolean()
-  def plan_task?(task_projection) when is_map(task_projection),
-    do: task_type(task_projection) == "plan"
 
-  def plan_task?(_), do: false
+  Legacy tasks registered with `task_type: "plan"` — the shape
+  `Approval.prepare/2` still resolves the plan manifest from when no
+  `workflow_type` is present — keep matching, but the workflow check alone
+  is sufficient.
+  """
+  @spec plan_workflow?(map()) :: boolean()
+  def plan_workflow?(task_projection) when is_map(task_projection) do
+    workflow_name(task_projection) == @plan_workflow or
+      task_type(task_projection) == @plan_workflow
+  end
+
+  def plan_workflow?(_), do: false
 
   ## Private
 
@@ -51,6 +72,48 @@ defmodule ForemanServer.Workflow.PlanContext do
     Map.get(task_projection, :task_type) || Map.get(task_projection, "task_type") ||
       Map.get(task_projection, :type) || Map.get(task_projection, "type") || ""
   end
+
+  # Which workflow the run executes. Three carriers, in descending order of
+  # authority:
+  #
+  #   1. `workflow_snapshot.workflow_name` — the manifest name frozen at
+  #      approval by `Approval.resolve_workflow_snapshot/2`.
+  #   2. `workflow_snapshot.workflow` — the same value in the `work.submit`
+  #      snapshot built by `Work.Submission.build_snapshot/4`.
+  #   3. `workflow_type` / `workflow_name` on the projection itself — the
+  #      registration-time selector (`TaskCreated.workflow_type`) that
+  #      `Approval.prepare/2` resolves the manifest from, and the only
+  #      carrier present before approval freezes a snapshot.
+  #
+  # The snapshot round-trips through JSON on its domain event, so its keys
+  # arrive as strings while the projection around it uses atoms; both are
+  # read for the same reason `task_type/1` reads both. Non-binary values are
+  # skipped instead of short-circuiting the chain, so a malformed carrier
+  # cannot hide a well-formed one below it.
+  defp workflow_name(task_projection) do
+    snapshot = workflow_snapshot(task_projection)
+
+    workflow_binary(Map.get(snapshot, :workflow_name)) ||
+      workflow_binary(Map.get(snapshot, "workflow_name")) ||
+      workflow_binary(Map.get(snapshot, :workflow)) ||
+      workflow_binary(Map.get(snapshot, "workflow")) ||
+      workflow_binary(Map.get(task_projection, :workflow_type)) ||
+      workflow_binary(Map.get(task_projection, "workflow_type")) ||
+      workflow_binary(Map.get(task_projection, :workflow_name)) ||
+      workflow_binary(Map.get(task_projection, "workflow_name")) ||
+      ""
+  end
+
+  defp workflow_snapshot(task_projection) do
+    case Map.get(task_projection, :workflow_snapshot) ||
+           Map.get(task_projection, "workflow_snapshot") do
+      %{} = snapshot -> snapshot
+      _ -> %{}
+    end
+  end
+
+  defp workflow_binary(value) when is_binary(value), do: value
+  defp workflow_binary(_), do: nil
 
   defp build_plan_context(task_projection) do
     with {:ok, project} <- fetch_project(task_projection),

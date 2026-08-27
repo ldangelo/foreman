@@ -21,6 +21,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
 
   @valid_task_types [:task, :bug, :feature, :epic, :chore, :docs, :question]
 
+  @coordination_status_schema_version "br.coordination.v1"
+
   @impl true
   def name, do: :beads
 
@@ -262,6 +264,23 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   end
 
   defp parse_coordination_issue_container(payload, argv) when is_map(payload) do
+    case fetch_payload_value(payload, :schema_version) do
+      nil ->
+        parse_coordination_legacy_container(payload, argv)
+
+      @coordination_status_schema_version ->
+        parse_coordination_claims_envelope(payload, argv)
+
+      other ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status schema_version #{inspect(other)} is unsupported; expected #{inspect(@coordination_status_schema_version)}.",
+           argv
+         )}
+    end
+  end
+
+  defp parse_coordination_legacy_container(payload, argv) when is_map(payload) do
     case fetch_payload_value(payload, :issues) do
       issues when is_list(issues) ->
         parse_coordination_issue_list(issues, argv)
@@ -279,6 +298,96 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
            argv
          )}
     end
+  end
+
+  defp parse_coordination_claims_envelope(payload, argv) when is_map(payload) do
+    case fetch_payload_value(payload, :claims) do
+      claims when is_list(claims) ->
+        parse_coordination_claim_list(claims, argv)
+
+      nil ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status #{@coordination_status_schema_version} payload is missing the :claims array.",
+           argv
+         )}
+
+      _other ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status field :claims must be a JSON array.",
+           argv
+         )}
+    end
+  end
+
+  defp parse_coordination_claim_list(claims, argv) when is_list(claims) do
+    claims
+    |> Enum.reduce_while({:ok, []}, fn claim, {:ok, issues} ->
+      case parse_coordination_claim(claim, argv) do
+        {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
+        {:error, provider_error} -> {:halt, {:error, provider_error}}
+      end
+    end)
+    |> case do
+      {:ok, issues} -> {:ok, Enum.reverse(issues)}
+      error -> error
+    end
+  end
+
+  defp parse_coordination_claim(claim, argv) when is_map(claim) do
+    case fetch_payload_value(claim, :issue) do
+      issue_payload when is_map(issue_payload) ->
+        with {:ok, issue} <- parse_coordination_issue_payload(issue_payload, argv),
+             {:ok, counts} <- parse_coordination_claim_counts(issue_payload, argv) do
+          {:ok, %Issue{issue | metadata: Map.merge(issue.metadata, counts)}}
+        end
+
+      nil ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status claim entries must include an :issue object.",
+           argv
+         )}
+
+      _other ->
+        {:error,
+         build_coordination_status_contract_error(
+           "Beads coordination status claim field :issue must be a JSON object.",
+           argv
+         )}
+    end
+  end
+
+  defp parse_coordination_claim(_claim, argv) do
+    {:error,
+     build_coordination_status_contract_error(
+       "Beads coordination status claim entries must be JSON objects.",
+       argv
+     )}
+  end
+
+  # `br.coordination.v1` reports dependency/dependent cardinality only and never
+  # the linked ids, so the counts are preserved under `metadata` instead of being
+  # silently flattened into the empty `dependencies`/`dependents` lists.
+  defp parse_coordination_claim_counts(issue_payload, argv) when is_map(issue_payload) do
+    Enum.reduce_while([:dependency_count, :dependent_count], {:ok, %{}}, fn key, {:ok, counts} ->
+      case fetch_payload_value(issue_payload, key) do
+        nil ->
+          {:cont, {:ok, counts}}
+
+        value when is_integer(value) and value >= 0 ->
+          {:cont, {:ok, Map.put(counts, to_string(key), value)}}
+
+        _other ->
+          {:halt,
+           {:error,
+            build_coordination_status_contract_error(
+              "Beads coordination status field #{inspect(key)} must be a non-negative integer.",
+              argv
+            )}}
+      end
+    end)
   end
 
   defp parse_coordination_issue_list(payloads, argv) when is_list(payloads) do
