@@ -1,15 +1,20 @@
 defmodule ForemanServer.Workflow.PlanContext do
   @moduledoc """
-  Deterministic planning-context derivation for `plan` workflow tasks.
+  Deterministic planning-context derivation for `plan` workflow tasks, and
+  discovery of the documents those phases produce.
 
   Computes the immutable `task` and `planning` blocks for the Foreman
   `# Context (JSON)` payload, plus the absolute project `working_directory`
   under which generated documents are written.
 
-  `planning.prd_path` and `planning.trd_path` are project-relative
-  (`docs/PRD/PRD-<year>-<correlation_id>-<slug>.md`). The phase's working
+  The planning block carries NO document paths up front. Foreman does not
+  tell the agent what to name its PRD or TRD and does not gate on a name it
+  computed: `planning.prd_path` and `planning.trd_path` appear only once
+  `discover_document/2` has found the document a phase actually wrote, and
+  `capture_document/3` has recorded it. Presence therefore means "produced",
+  never "expected". Captured paths are relative to the phase's working
   directory — the phase worktree when it has one, otherwise
-  `working_directory` — is joined on by `RunExecutor` at dispatch time.
+  `working_directory` — which `RunExecutor` joins on in one place.
 
   All fields are derived from authoritative, server-owned data
   (`task_projection`, `project_projection`, `run_id`, frozen
@@ -35,6 +40,20 @@ defmodule ForemanServer.Workflow.PlanContext do
   # block (`priv/defaults/workflows/plan.yaml`: `requiredFile:
   # planning.prd_path` and `planning.trd_path`).
   @plan_workflow "plan"
+
+  # The two planning gates, and the directory each one discovers its
+  # document in. Foreman used to compute the filename and require the agent
+  # to reproduce it; that contract failed in three consecutive live runs
+  # (run-d6cdefe69706087e6bce5b1a10b95384,
+  # run-dda353905d237cfd2557a706dd930bdd,
+  # run-3da49f9ed1ae01f932092b31335b5623). Agents are non-deterministic, so
+  # the gate now asserts a shape Foreman can verify from git — "exactly one
+  # new document under this directory" — instead of a string the agent has
+  # to echo back.
+  @document_dirs %{
+    "planning.prd_path" => Path.join("docs", "PRD"),
+    "planning.trd_path" => Path.join("docs", "TRD")
+  }
 
   @doc """
   Build the planning context for `task_projection`. Runs that do not execute
@@ -71,7 +90,121 @@ defmodule ForemanServer.Workflow.PlanContext do
 
   def plan_workflow?(_), do: false
 
+  @doc """
+  The directory a planning `requiredFile` gate discovers its document in,
+  or `nil` when `key` is not a planning gate — every other `requiredFile`
+  key still names a context value the executor resolves and checks.
+  """
+  @spec document_dir(term()) :: String.t() | nil
+  def document_dir(key) when is_binary(key), do: Map.get(@document_dirs, key)
+  def document_dir(_), do: nil
+
+  @doc """
+  Discover the document the phase's agent just produced under `docs_dir`,
+  returned relative to `working_directory`.
+
+  The pipeline already guarantees a clean tree when a phase starts (a dirty
+  worktree HALTs the run), so every untracked or newly added file under
+  `docs_dir` was written by this phase. That invariant — not a timestamp,
+  not a filename pattern — is what makes the discovery deterministic.
+  Modifications and renames of tracked documents are deliberately not
+  candidates: the gate exists to prove a NEW document was produced.
+
+  Each outcome is its own error so "the agent wrote nothing" can never be
+  confused with "the agent wrote several things" or with "this directory is
+  not a git repository":
+
+    * `{:planning_document_absent, docs_dir, working_directory}`
+    * `{:planning_document_ambiguous, docs_dir, candidates}` — names them
+    * `{:planning_document_scan_failed, working_directory, status, output}`
+  """
+  @spec discover_document(Path.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def discover_document(working_directory, docs_dir)
+      when is_binary(working_directory) and is_binary(docs_dir) do
+    args = [
+      "-C",
+      working_directory,
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      docs_dir
+    ]
+
+    case System.cmd("git", args, stderr_to_stdout: true) do
+      {output, 0} ->
+        case output |> String.split(<<0>>, trim: true) |> new_paths() do
+          [path] ->
+            {:ok, path}
+
+          [] ->
+            {:error, {:planning_document_absent, docs_dir, working_directory}}
+
+          candidates ->
+            {:error, {:planning_document_ambiguous, docs_dir, Enum.sort(candidates)}}
+        end
+
+      {output, status} ->
+        {:error,
+         {:planning_document_scan_failed, working_directory, status, String.trim(output)}}
+    end
+  end
+
+  @doc """
+  Record the document a phase produced, so the next phase reads the real
+  path under `key` rather than one Foreman guessed. `plan.yaml`'s
+  `create-trd` phase consumes the captured `planning.prd_path`.
+
+  Capturing the PRD also re-keys `planning.correlation_id` onto the
+  document that exists. PRD<->TRD pairing rides on the id embedded in the
+  filename, and the agent mints its own, so the run-derived id would pair
+  the TRD with a PRD that was never written. A captured filename carrying
+  no id leaves nothing to pair on, so the stale id is dropped rather than
+  kept as a plausible-looking wrong answer.
+  """
+  @spec capture_document(map(), String.t(), String.t()) :: map()
+  def capture_document(plan_context, "planning." <> field, relative_path)
+      when is_map(plan_context) and is_binary(relative_path) do
+    planning =
+      (Map.get(plan_context, "planning") || %{})
+      |> Map.put(field, relative_path)
+      |> adopt_correlation_id(field, relative_path)
+
+    Map.put(plan_context, "planning", planning)
+  end
+
   ## Private
+
+  # `git status --porcelain -z` emits one NUL-terminated `XY <path>` field
+  # per entry, and follows a rename/copy entry with a second field carrying
+  # the origin path. `-z` is what keeps a path containing a quote or a
+  # newline from arriving mangled. Untracked (`?`) and added (`A`) are the
+  # new documents; a rename is a move of one that already existed, so it is
+  # skipped along with the extra field it drags behind it.
+  defp new_paths([]), do: []
+
+  defp new_paths([<<x::binary-size(1), _y::binary-size(1), " ", path::binary>> | rest]) do
+    cond do
+      x in ["R", "C"] -> new_paths(Enum.drop(rest, 1))
+      x in ["?", "A"] -> [path | new_paths(rest)]
+      true -> new_paths(rest)
+    end
+  end
+
+  defp new_paths([_unparsable | rest]), do: new_paths(rest)
+
+  # Only the PRD re-keys the pair; the TRD is the document being paired to
+  # it. A basename that does not carry an id yields no pairing key at all,
+  # which is the honest answer — the run-derived id is not it.
+  defp adopt_correlation_id(planning, "prd_path", relative_path) do
+    case Regex.run(~r/^PRD-\d{4}-([0-9A-Za-z]+)-/, Path.basename(relative_path)) do
+      [_match, correlation_id] -> Map.put(planning, "correlation_id", correlation_id)
+      nil -> Map.delete(planning, "correlation_id")
+    end
+  end
+
+  defp adopt_correlation_id(planning, _field, _relative_path), do: planning
 
   defp task_type(task_projection) do
     Map.get(task_projection, :task_type) || Map.get(task_projection, "task_type") ||
@@ -131,12 +264,13 @@ defmodule ForemanServer.Workflow.PlanContext do
        %{
          "working_directory" => project_path,
          "task" => task_block,
+         # No `prd_path`/`trd_path`: nothing here names a document that
+         # does not exist yet. `capture_document/3` adds each one after
+         # `discover_document/2` proves the phase produced it.
          "planning" => %{
            "document_year" => document_year,
            "correlation_id" => correlation_id,
-           "slug" => slug,
-           "prd_path" => prd_path(slug, document_year, correlation_id),
-           "trd_path" => trd_path(slug, document_year, correlation_id)
+           "slug" => slug
          }
        }}
     end
@@ -236,24 +370,6 @@ defmodule ForemanServer.Workflow.PlanContext do
            "description" => description
          }}
     end
-  end
-
-  # Planning document paths are RELATIVE to the phase's working directory,
-  # never rooted here. A plan phase runs in a per-phase worktree, so the
-  # absolute location is only knowable at dispatch time: joining the
-  # project root here produced a path under the main checkout while the
-  # agent wrote inside the worktree, and the `requiredFile` gate then
-  # failed on a document the agent had written correctly. `RunExecutor`
-  # joins these onto the phase cwd in exactly one place
-  # (`resolve_phase_path/3`), which is also the value it exports as
-  # `FOREMAN_PRD_PATH`/`FOREMAN_TRD_PATH` — one expression, so the path
-  # the agent is told to write and the path Foreman checks cannot drift.
-  defp prd_path(slug, year, correlation_id) do
-    Path.join(["docs", "PRD", "PRD-#{year}-#{correlation_id}-#{slug}.md"])
-  end
-
-  defp trd_path(slug, year, correlation_id) do
-    Path.join(["docs", "TRD", "TRD-#{year}-#{correlation_id}-#{slug}.md"])
   end
 
   ## Field accessors (atom/string tolerant)
