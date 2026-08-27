@@ -1100,7 +1100,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Map.put(context, "working_directory", path)
   end
 
-  defp working_directory_for(state, nil), do: working_directory(state.task)
+  # The phase's working directory: the worktree when the phase provisioned
+  # one, otherwise the project root the frozen plan context resolved. Plan
+  # runs already advertise that root to the agent in the phase context JSON
+  # (`base_context/4` merges `plan_context` over the base), so the cwd the
+  # agent is launched in — and every path resolved against it — must agree
+  # with it. `working_directory/1` alone answers $HOME here: no projection
+  # populates `task.working_directory`.
+  defp working_directory_for(state, nil) do
+    case state.plan_context do
+      %{"working_directory" => dir} when is_binary(dir) and dir != "" -> dir
+      _ -> working_directory(state.task)
+    end
+  end
 
   defp working_directory_for(_state, %{worktree_path: path}) when is_binary(path) and path != "",
     do: path
@@ -1594,6 +1606,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp foreman_env(state, nil, artifact_path) do
     %{"FOREMAN_ARTIFACT_PATH" => artifact_path}
+    |> put_planning_path_env(state, nil)
     |> maybe_put_shell_session_env(state)
   end
 
@@ -1613,6 +1626,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         "FOREMAN_IMPLEMENTATION_KEY" => implementation_key,
         "FOREMAN_ARTIFACT_PATH" => artifact_path
       }
+      |> put_planning_path_env(state, worktree_record)
       |> maybe_put_shell_session_env(state)
 
     case beads_db_path(plan_context) do
@@ -1640,6 +1654,37 @@ defmodule ForemanServer.Workflow.RunExecutor do
                     "(beads_db_path=#{inspect(path)}, trd_scope=#{inspect(other)})"
         end
     end
+  end
+
+  # The same two-repo contract as `FOREMAN_ARTIFACT_PATH` above, for the
+  # `plan` workflow's documents. A `command:` phase gets no rendered prompt,
+  # so without these the agent invents its own filename under its own cwd
+  # and the `requiredFile` gate fails on a document that was in fact written
+  # correctly (run-3da49f9ed1ae01f932092b31335b5623). The exported value is
+  # produced by `resolve_phase_path/3` — the very expression
+  # `enforce_required_file/4` checks — so exported and checked paths are one
+  # string by construction rather than two computations that can drift.
+  #
+  # Consumed by the ensemble `create-prd` / `create-trd` commands' `--foreman`
+  # path. Runs with no planning context (every non-plan workflow) export
+  # neither variable — absent, never blank — so ensemble behaviour there is
+  # unchanged and the two repos deploy in either order.
+  defp put_planning_path_env(env, state, worktree_record) do
+    planning = Map.get(state.plan_context || %{}, "planning") || %{}
+
+    Enum.reduce(
+      [{"FOREMAN_PRD_PATH", "prd_path"}, {"FOREMAN_TRD_PATH", "trd_path"}],
+      env,
+      fn {var, key}, acc ->
+        case Map.get(planning, key) do
+          path when is_binary(path) and path != "" ->
+            Map.put(acc, var, resolve_phase_path(path, state, worktree_record))
+
+          _ ->
+            acc
+        end
+      end
+    )
   end
 
   defp maybe_put_shell_session_env(env, state) do
@@ -2326,7 +2371,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       key when is_binary(key) ->
         case resolve_context_key(state, key, phase_index) do
           {:ok, path} ->
-            absolute_path = resolve_gate_path(path, state, worktree_record)
+            absolute_path = resolve_phase_path(path, state, worktree_record)
 
             if is_binary(absolute_path) and File.regular?(absolute_path) do
               {:ok, absolute_path}
@@ -2343,12 +2388,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # `requiredFile` paths live in the same working directory the agent
-  # executed in: the phase worktree when one is active, otherwise the
-  # project's working directory. Relative paths resolve against that
-  # root so `File.regular?/1` checks the file the agent actually had
-  # access to, not the daemon's cwd. Absolute paths pass through.
-  defp resolve_gate_path(path, state, worktree_record) when is_binary(path) do
+  # The ONE rule that turns a context path into an absolute one: paths live
+  # in the same working directory the agent executed in — the phase worktree
+  # when one is active, otherwise the project's working directory. Relative
+  # paths resolve against that root so `File.regular?/1` checks the file the
+  # agent actually had access to, not the daemon's cwd. Absolute paths (the
+  # frozen ImplementationContext can carry one) pass through.
+  #
+  # `put_planning_path_env/3` exports its result as
+  # `FOREMAN_PRD_PATH`/`FOREMAN_TRD_PATH`, so the path the agent is told to
+  # write is this same expression applied to the same context value the gate
+  # reads. Keep it that way: two parallel computations of "where the document
+  # goes" is the defect this replaced.
+  defp resolve_phase_path(path, state, worktree_record) when is_binary(path) do
     if Path.type(path) == :absolute do
       path
     else
