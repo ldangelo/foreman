@@ -1,9 +1,11 @@
 defmodule ForemanServer.MCP.ToolsTest do
   use ExUnit.Case, async: false
 
+  alias EventStore.EventData
   alias ForemanServer.MCP.Tools
   alias ForemanServer.MCP.ToolError
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.EventStore, as: Store
 
   setup do
     # Capture current state to restore on exit
@@ -175,7 +177,10 @@ defmodule ForemanServer.MCP.ToolsTest do
     # test covered a run with an empty stream.
     #
     # `run_activity/1` and `run_logs/1` returned [], reporting "no data" for an
-    # unimplemented feature — indistinguishable from a real empty result.
+    # unimplemented feature — indistinguishable from a real empty result. They
+    # are implemented now: activity reads the `worker:<run_id>:<worker_id>`
+    # streams the run stream never carries, and logs fail loudly because no
+    # producer writes run output anywhere.
 
     test "events for a run are serializable maps, not RecordedEvent structs" do
       assert {:ok, events} = Tools.call_tool("foreman_run_get_events", %{run_id: "no-such-run"})
@@ -186,12 +191,104 @@ defmodule ForemanServer.MCP.ToolsTest do
       assert {:ok, _} = Jason.encode(events)
     end
 
-    test "unimplemented run details report NOT_IMPLEMENTED, not an empty result" do
+    test "activity surfaces worker heartbeats the run stream never carries" do
+      run_id = unique_run_id()
+      worker_id = "wkr-#{System.unique_integer([:positive])}"
+
+      seed_worker_stream(run_id, worker_id, [
+        {"WorkerStarted",
+         %{
+           worker_id: worker_id,
+           run_id: run_id,
+           sequence: 0,
+           session_id: "sess-1",
+           adapter: "ForemanServer.Overwatch.Adapters.HeartbeatWorker",
+           prompt_path: "/tmp/prompt.md"
+         }},
+        {"WorkerHeartbeat", %{worker_id: worker_id, run_id: run_id, sequence: 1}},
+        {"WorkerHeartbeat", %{worker_id: worker_id, run_id: run_id, sequence: 2}}
+      ])
+
+      replace_state(%{runs: %{run_id => %{run_id: run_id, status: "in_progress"}}})
+
+      # The reason this tool has to exist: the run stream carries no worker
+      # events, so a live worker is invisible through foreman_run_get_events.
+      assert {:ok, []} = Tools.call_tool("foreman_run_get_events", %{run_id: run_id})
+
+      assert {:ok, [activity]} = Tools.call_tool("foreman_run_get_activity", %{run_id: run_id})
+
+      assert activity.worker_id == worker_id
+      assert activity.event_count == 3
+      assert activity.heartbeat_count == 2
+      assert activity.last_sequence == 2
+      assert activity.last_event_type == "WorkerHeartbeat"
+      assert is_binary(activity.last_heartbeat_at)
+      assert activity.last_event_at == activity.last_heartbeat_at
+
+      # The MCP transport JSON-encodes every tool result.
+      assert {:ok, _} = Jason.encode([activity])
+    end
+
+    test "activity for a known run with no worker stream is an empty list" do
+      run_id = unique_run_id()
+      replace_state(%{runs: %{run_id => %{run_id: run_id, status: "awaiting_worker"}}})
+
+      assert {:ok, []} = Tools.call_tool("foreman_run_get_activity", %{run_id: run_id})
+    end
+
+    test "activity for an unknown run is NOT_FOUND, not an empty list" do
+      assert {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}} =
+               Tools.call_tool("foreman_run_get_activity", %{run_id: "no-such-run"})
+    end
+
+    test "logs name the missing producer rather than reporting a silent run" do
+      run_id = unique_run_id()
+      replace_state(%{runs: %{run_id => %{run_id: run_id, status: "in_progress"}}})
+
+      assert {:error, %ToolError{code: "UNAVAILABLE", message: message}} =
+               Tools.call_tool("foreman_run_get_logs", %{run_id: run_id})
+
+      assert message =~ "WorkerStdout"
+      assert message =~ "no producer"
+      assert message =~ "Missing prerequisite"
+    end
+
+    test "logs for an unknown run are NOT_FOUND" do
+      assert {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}} =
+               Tools.call_tool("foreman_run_get_logs", %{run_id: "no-such-run"})
+    end
+
+    test "run-detail tools missing run_id are INVALID_PARAMS, naming the key" do
       for tool <- ["foreman_run_get_logs", "foreman_run_get_activity"] do
-        assert {:error, %ToolError{code: "NOT_IMPLEMENTED"}} =
-                 Tools.call_tool(tool, %{run_id: "any-run"}),
-               "#{tool} must not report an empty list for an unimplemented feature"
+        assert {:error, %ToolError{code: "INVALID_PARAMS", message: message}} =
+                 Tools.call_tool(tool, %{})
+
+        assert message =~ tool
+        assert message =~ "run_id"
       end
     end
+  end
+
+  # Worker events are appended to `worker:<run_id>:<worker_id>`, never to
+  # `run:<run_id>` — the whole reason foreman_run_get_events cannot show them.
+  defp seed_worker_stream(run_id, worker_id, events) do
+    stream_uuid = "worker:#{run_id}:#{worker_id}"
+
+    :ok =
+      Store.append_to_stream(
+        stream_uuid,
+        0,
+        Enum.map(events, fn {event_type, payload} ->
+          %EventData{event_type: event_type, data: payload, metadata: %{}}
+        end)
+      )
+
+    on_exit(fn -> Store.delete_stream(stream_uuid, :any_version, :hard) end)
+
+    stream_uuid
+  end
+
+  defp unique_run_id do
+    "run-#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
   end
 end

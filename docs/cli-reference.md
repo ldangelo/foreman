@@ -871,6 +871,14 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_work_get`, `foreman_run_get`, `foreman_run_get_logs`,
 `foreman_run_get_events`, `foreman_run_get_activity`.
 
+`foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
+events are appended to `worker:<run_id>:<worker_id>` streams instead, so use
+`foreman_run_get_activity` for per-worker heartbeat counts, last sequence, and
+last-heartbeat timestamps. `foreman_run_get_logs` returns `UNAVAILABLE`:
+Foreman persists no run output, because the `WorkerStdout` / `WorkerStderr`
+events it would read have no producer. Both return `NOT_FOUND` for an unknown
+run id.
+
 Write tools (`foreman_work_submit`, `foreman_work_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.

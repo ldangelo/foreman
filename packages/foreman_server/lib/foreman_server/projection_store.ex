@@ -27,7 +27,8 @@ defmodule ForemanServer.ProjectionStore do
 
   use GenServer
 
-  alias EventStore.{EventData, RecordedEvent}
+  alias EventStore.{EventData, Page, RecordedEvent}
+  alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
 
   @active_run_statuses ["awaiting_worker", "in_progress"]
@@ -171,14 +172,40 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:run_events, run_id})
   end
 
-  @doc "Return activity (heartbeats) for a run. Not yet implemented."
-  @spec run_activity(String.t()) :: {:ok, [map()]} | {:error, term()}
+  @doc """
+  Return per-worker activity for a run, summarized from its
+  `worker:<run_id>:<worker_id>` event streams.
+
+  Worker liveness events are appended to those streams, never to
+  `run:<run_id>`, so `run_events/1` does not surface them: a live run shows a
+  single `RunStarted` event on its run stream while its worker stream grows a
+  `WorkerHeartbeat` every few seconds. This read is therefore the only way to
+  judge worker liveness without reading the server console.
+
+  `{:ok, []}` for a known run whose workers have emitted nothing yet.
+  `{:error, :run_not_found}` for an unknown run — never an empty list standing
+  in for an absent run.
+  """
+  @spec run_activity(String.t()) :: {:ok, [map()]} | {:error, :run_not_found | term()}
   def run_activity(run_id) do
     GenServer.call(__MODULE__, {:run_activity, run_id})
   end
 
-  @doc "Return logs for a run. Not yet implemented."
-  @spec run_logs(String.t()) :: {:ok, [map()]} | {:error, term()}
+  @doc """
+  Always `{:error, :no_log_store}` for a known run: Foreman persists no run
+  logs.
+
+  The durable channel exists — `WorkerStdout` / `WorkerStderr` events on
+  `worker:<run_id>:<worker_id>` streams — but nothing produces it. No module
+  under `lib/` calls `WorkerProtocol.emit(:worker_stdout, …)` or
+  `emit(:worker_stderr, …)`; production emits only `:worker_started`,
+  `:heartbeat`, and `:worker_exited`. `Logger` output goes to the console and
+  is not keyed by run. Reporting `{:ok, []}` here would claim the run produced
+  no output, which is a lie about a channel that was never wired.
+
+  `{:error, :run_not_found}` for an unknown run.
+  """
+  @spec run_logs(String.t()) :: {:error, :no_log_store | :run_not_found}
   def run_logs(run_id) do
     GenServer.call(__MODULE__, {:run_logs, run_id})
   end
@@ -353,16 +380,27 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
-  def handle_call({:run_activity, _run_id}, _from, state) do
-    # Not implemented. Returning [] here reported "this run has no activity",
-    # which is indistinguishable from a real empty result and exactly the
-    # silent failure AGENTS.md §5.2 prohibits.
-    {:reply, {:error, :not_implemented}, state}
+  def handle_call({:run_activity, run_id}, _from, state) do
+    reply =
+      case Map.get(state.runs, run_id) do
+        nil -> {:error, :run_not_found}
+        _run -> worker_activity_for_run(run_id)
+      end
+
+    {:reply, reply, state}
   end
 
   @impl true
-  def handle_call({:run_logs, _run_id}, _from, state) do
-    {:reply, {:error, :not_implemented}, state}
+  def handle_call({:run_logs, run_id}, _from, state) do
+    # `:no_log_store` is "there is nowhere for logs to come from", not "this
+    # run produced none". See run_logs/1 for the missing producer.
+    reply =
+      case Map.get(state.runs, run_id) do
+        nil -> {:error, :run_not_found}
+        _run -> {:error, :no_log_store}
+      end
+
+    {:reply, reply, state}
   end
 
   @impl true
@@ -1759,6 +1797,85 @@ defmodule ForemanServer.ProjectionStore do
       data: event.data
     }
   end
+
+  # Worker events live on one `worker:<run_id>:<worker_id>` stream per worker,
+  # so the worker set for a run is discovered from the stream table: the run
+  # projection only records a worker once it goes unresponsive, and the run
+  # stream never carries worker events at all.
+  defp worker_activity_for_run(run_id) do
+    prefix = "worker:#{run_id}:"
+
+    with {:ok, stream_uuids} <- worker_stream_uuids(prefix, 1, []) do
+      stream_uuids
+      |> Enum.sort()
+      |> Enum.reduce_while({:ok, []}, fn stream_uuid, {:ok, acc} ->
+        case EventStore.read_stream_forward(stream_uuid, 0, 99_999_999) do
+          {:ok, events} ->
+            {:cont, {:ok, [worker_activity(stream_uuid, prefix, events) | acc]}}
+
+          # A stream listed a moment ago can be hard-deleted before we read it.
+          {:error, :stream_not_found} ->
+            {:cont, {:ok, acc}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, activity} -> {:ok, Enum.reverse(activity)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  # `paginate_streams(search: term)` matches `%term%`, so the prefix is
+  # re-checked here: a substring hit elsewhere in a stream id is not a worker
+  # stream for this run. Sorting by `stream_uuid` keeps paging stable.
+  defp worker_stream_uuids(prefix, page_number, acc) do
+    opts = [search: prefix, page_number: page_number, page_size: 100, sort_by: :stream_uuid]
+
+    case EventStore.paginate_streams(opts) do
+      {:ok, %Page{entries: entries, total_pages: total_pages}} ->
+        acc =
+          Enum.reduce(entries, acc, fn %StreamInfo{stream_uuid: stream_uuid}, uuids ->
+            if String.starts_with?(stream_uuid, prefix), do: [stream_uuid | uuids], else: uuids
+          end)
+
+        if page_number >= total_pages do
+          {:ok, acc}
+        else
+          worker_stream_uuids(prefix, page_number + 1, acc)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp worker_activity(stream_uuid, prefix, events) do
+    heartbeats = Enum.filter(events, &(&1.event_type == "WorkerHeartbeat"))
+
+    %{
+      worker_id: String.replace_prefix(stream_uuid, prefix, ""),
+      event_count: length(events),
+      heartbeat_count: length(heartbeats),
+      last_sequence: last_worker_sequence(events),
+      last_event_type: last_worker_event_type(events),
+      last_event_at: last_worker_event_at(events),
+      last_heartbeat_at: last_worker_event_at(heartbeats)
+    }
+  end
+
+  defp last_worker_event_type([]), do: nil
+  defp last_worker_event_type(events), do: List.last(events).event_type
+
+  defp last_worker_event_at([]), do: nil
+  defp last_worker_event_at(events), do: encode_timestamp(List.last(events).created_at)
+
+  # `Overwatch.Tracker` allocates a strictly increasing sequence per worker
+  # event, so the last event on the stream carries the highest one.
+  defp last_worker_sequence([]), do: nil
+  defp last_worker_sequence(events), do: get(List.last(events).data, :sequence)
 
   defp encode_timestamp(%DateTime{} = at), do: DateTime.to_iso8601(at)
   defp encode_timestamp(at) when is_binary(at), do: at

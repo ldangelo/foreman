@@ -1085,10 +1085,15 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     approval_id = unique_id("approval")
 
+    # Beads rejects task_type "plan" with INVALID_ISSUE_TYPE (it accepts
+    # task|bug|feature|epic|chore|docs|question), so a real plan run on a
+    # beads-backed project always carries a domain issue type plus
+    # workflow_type: "plan". PlanContext gates on the workflow, not the type.
     dispatch_system!("task.create", "task:#{task_id}", %{
       task_id: task_id,
       project_id: project_id,
-      task_type: "plan",
+      task_type: "feature",
+      workflow_type: "plan",
       external_id: task_id,
       title: "Plan #{task_id}",
       description: "Plan task description for #{task_id}"
