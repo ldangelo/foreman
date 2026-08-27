@@ -40,7 +40,7 @@ Foreman uses bundled Pi skills for specialized tasks:
 | `foreman-pipeline-diagnosis` | Stuck run debugging |
 | `foreman-safe-recovery` | Run/worktree cleanup decisions |
 
-Phase prompts live in `src/defaults/prompts/` and are installed to runtime paths by `foreman init --force`.
+Phase prompts live in `packages/foreman_server/priv/defaults/workflows/prompts/` and are installed to runtime paths by `foreman init --force`. (The old `src/defaults/prompts/` path belonged to the removed Node CLI and no longer exists.)
 
 ### MCP/Foreman Tool Integration
 

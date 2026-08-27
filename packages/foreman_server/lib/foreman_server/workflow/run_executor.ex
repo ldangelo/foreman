@@ -1295,16 +1295,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # Default-on worktree for manifests without an explicit worktree block.
   # Enforces the PRD contract (git isolation per dispatch) without requiring
   # plan_context — derives project_root from the project projection's
-  # registered path and resolves `base_ref` from `HEAD` (the current branch
-  # tip). Skips TRD-specific assertions (base match against frozen
-  # source_revision, implementation_key, trd_scope) because work-request and
-  # non-plan flows don't have those values. The worktree is still pinned to
-  # the current branch tip and cleaned up on terminal phases.
+  # registered path and resolves `base_ref` through
+  # `phase_lineage_base_ref/2`. Skips TRD-specific assertions (base match
+  # against frozen source_revision, implementation_key, trd_scope) because
+  # work-request and non-plan flows don't have those values. The worktree is
+  # still pinned to a single commit and cleaned up on terminal phases.
   defp create_default_worktree(state, phase_spec, phase_index) do
     with {:ok, project_id} <- fetch_project_id(state),
          {:ok, project_root} <- default_project_root(project_id, state),
          :ok <- assert_git_repo(project_root),
-         {:ok, base_ref} <- resolve_revision(project_root, "HEAD"),
+         {:ok, base_ref} <- phase_lineage_base_ref(state, project_root),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          slug = phase_slug(phase_spec),
          operation_id = "wt-default-" <> state.run_id <> "-" <> phase_id,
@@ -1344,6 +1344,63 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, _} = err ->
           err
       end
+    end
+  end
+
+  # Phase lineage: a phase's worktree is cut from the PREVIOUS phase's
+  # branch, not re-cut from the base branch. Committed artifacts then flow
+  # forward — phase 2 of `plan.yaml` starts from a checkout that already
+  # contains phase 1's PRD — and the last phase's branch accumulates the
+  # whole pipeline, which is the branch `AutoPR.maybe_create_pr/1` opens the
+  # PR from (`state.last_worktree.branch`).
+  #
+  # Lineage rides on the `state.last_worktree` that `remember_worktree/2`
+  # already retains for AutoPR; no new event and no new run state. The first
+  # phase of a run has no predecessor and cuts from the current branch tip
+  # (HEAD), so single-phase runs resolve exactly as before.
+  #
+  # The predecessor's branch outlives its worktree, which is what makes this
+  # sound: `cleanup_phase_worktree/4` -> `Worktree.clean/1` runs
+  # `git worktree remove` + `git worktree prune` (see
+  # `VcsAdapter.Default.clean_worktree/2`) and never touches refs. Branch
+  # deletion lives in `Worktree.clean_for_run/1`, reachable only from
+  # `RunDeleted` (`Dispatcher`), i.e. after the run is terminated. Disk is
+  # reclaimed at each phase boundary; the lineage is not.
+  #
+  # Returning `base_ref` as the predecessor's tip is also what keeps the
+  # discovery gate honest: `capture_planning_document/4` diffs
+  # `<base_ref>..HEAD` for documents NEW IN THE PHASE, so phase 1's PRD is
+  # correctly not a candidate in phase 2 and `docs/TRD` sees only the TRD.
+  # Leaving `base_ref` at the run's base while chaining the checkout would
+  # report the inherited PRD as newly added.
+  #
+  # A recorded predecessor whose branch git cannot resolve is a hard failure
+  # (AGENTS.md 5.2/5.3). Falling back to HEAD would hand the phase a
+  # checkout missing its input document and let the run produce a
+  # plausible-looking wrong artifact — the exact failure this chaining
+  # removes. `last_worktree` is written only by `remember_worktree/2`, which
+  # always stores a binary `:branch`, so any other shape is a programming
+  # error and raises rather than being absorbed.
+  #
+  # Phases with an explicit `worktree:` block go through
+  # `create_phase_worktree/4` and stay pinned to the frozen
+  # `source_revision` (TRD Decisions 3/5, exported as
+  # `FOREMAN_SOURCE_REVISION`). Every bundled workflow that declares the
+  # block — `implement-trd.yaml`, `implement-trd-beads.yaml` — is
+  # single-phase, so chaining would be unreachable there anyway.
+  defp phase_lineage_base_ref(state, project_root) do
+    case Map.get(state, :last_worktree) do
+      nil ->
+        resolve_revision(project_root, "HEAD")
+
+      %{branch: branch} when is_binary(branch) and branch != "" ->
+        case resolve_revision(project_root, branch) do
+          {:ok, sha} ->
+            {:ok, sha}
+
+          {:error, reason} ->
+            {:error, {:phase_lineage_branch_unresolvable, branch, reason}}
+        end
     end
   end
 
@@ -1864,6 +1921,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __unbind_vfs_for_test__(run_id), do: unbind_vfs(run_id)
+
+  @doc false
+  def __phase_lineage_base_ref_for_test__(state, project_root),
+    do: phase_lineage_base_ref(state, project_root)
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads
   # issue id `foreman-zuk0`), use that — adapters translate it directly

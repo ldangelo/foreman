@@ -1099,6 +1099,113 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   end
 
   # --------------------------------------------------------------------
+  # Phase lineage (run-d75304aca144c15409087ed744e2a7dc)
+  # A multi-phase run must chain each phase's worktree onto the PREVIOUS
+  # phase's branch. Cut from the base branch instead, phase 2 of plan.yaml
+  # never sees phase 1's committed PRD and `docs/TRD` discovery fails with
+  # {:planning_document_absent, "docs/TRD", ...}. Default-on worktrees (no
+  # `worktree:` block) — the shape every bundled multi-phase workflow has.
+  # --------------------------------------------------------------------
+
+  test "phase 2's default worktree is cut from phase 1's branch and inherits its commit" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project-lineage")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    key1 = unique_id("wt-lineage-1")
+    key2 = unique_id("wt-lineage-2")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    run_base = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+
+    wt1 = default_worktree_path(project_id, run_id, "create-prd")
+    wt2 = default_worktree_path(project_id, run_id, "create-trd")
+    prd = "docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md"
+
+    # Phase 1 behaves like a real create-prd agent: it COMMITS its document
+    # inside its own worktree. That commit is what has to reach phase 2.
+    LifecycleStore.put(key1, %{
+      test_pid: test_pid,
+      after_execute: [
+        fn ->
+          File.mkdir_p!(Path.join(wt1, "docs/PRD"))
+          File.write!(Path.join(wt1, prd), "requirements")
+          run_git!(["-C", wt1, "add", "-A", "--", "docs"])
+          run_git!(["-C", wt1, "commit", "--no-gpg-sign", "-m", "prd", "--quiet"])
+          :ok
+        end
+      ]
+    })
+
+    # Phase 2 reports whether the inherited PRD is actually on disk in its
+    # own checkout; its worktree is torn down before the test resumes.
+    LifecycleStore.put(key2, %{
+      test_pid: test_pid,
+      after_execute: [
+        fn ->
+          send(test_pid, {:phase2_sees_prd, File.regular?(Path.join(wt2, prd))})
+          :ok
+        end
+      ]
+    })
+
+    workflow_snapshot = %{
+      phases: [
+        default_worktree_phase("create-prd", key1, artifact_dir),
+        default_worktree_phase("create-trd", key2, artifact_dir)
+      ]
+    }
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path),
+      nil,
+      repo_path
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(task_id)
+
+    start_run_executor!(run_id, task_id)
+
+    # Phase 1: no predecessor, so it still cuts from the branch tip.
+    assert {:adapter_execute, "Run phase create-prd", _} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env1} = receive_message(@poll_timeout_ms)
+    assert env1["FOREMAN_SOURCE_REVISION"] == run_base
+    assert env1["FOREMAN_WORKTREE_PATH"] == wt1
+
+    # Phase 2: chained. `FOREMAN_SOURCE_REVISION` is `worktree_record.base_ref`,
+    # the same value `capture_planning_document/4` diffs against, so asserting
+    # it pins the discovery base as well as the checkout base.
+    assert {:adapter_execute, "Run phase create-trd", _} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env2} = receive_message(@poll_timeout_ms)
+    assert env2["FOREMAN_WORKTREE_PATH"] == wt2
+
+    phase1_tip = branch_tip!(repo_path, "foreman/#{run_id}/create-prd")
+
+    assert env2["FOREMAN_SOURCE_REVISION"] == phase1_tip
+    refute env2["FOREMAN_SOURCE_REVISION"] == run_base
+
+    assert_received {:phase2_sees_prd, true}
+
+    poll_run_completion!(run_id)
+
+    # Phase 1's branch outlives its worktree: cleanup runs
+    # `git worktree remove` + `prune` and never deletes the ref, which is
+    # what makes the lineage available at all.
+    refute File.dir?(wt1)
+    assert branch_tip!(repo_path, "foreman/#{run_id}/create-prd") == phase1_tip
+  end
+
+  # --------------------------------------------------------------------
   # Beads-managed TRD_SCOPE contract (TRD-2026-3d41f677 Decision 10)
   # When `beads_database_path` is frozen in plan_context, the executor MUST
   # export BEADS_DB + TRD_SCOPE alongside the FOREMAN_* keys; if the trd
@@ -1395,6 +1502,28 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
   defp current_head_sha!(repo_path) do
     run_git!(["-C", repo_path, "rev-parse", "HEAD"]) |> String.trim()
+  end
+
+  defp branch_tip!(repo_path, branch) do
+    run_git!(["-C", repo_path, "rev-parse", "--verify", branch]) |> String.trim()
+  end
+
+  # Mirrors `RunExecutor.default_worktree_path_for/3`: default-on worktrees
+  # use the phase slug as the leaf directory, so the path is derivable from
+  # the run id alone and a test can drive the agent's own checkout.
+  defp default_worktree_path(project_id, run_id, slug) do
+    Path.join([System.user_home!(), ".foreman/worktrees", project_id, run_id, slug])
+  end
+
+  # A phase with NO `worktree:` key: the default-on shape every bundled
+  # multi-phase workflow (plan.yaml, prd.yaml, trd.yaml) has.
+  defp default_worktree_phase(name, script_key, artifact_dir) do
+    phase_spec(script_key, artifact_dir)
+    |> Map.delete(:worktree)
+    |> Map.put(:name, name)
+    |> Map.put(:artifact_template, %{
+      path: Path.join([artifact_dir, "{run_id}-#{name}.md"])
+    })
   end
 
   defp worktree_root_prefix do
@@ -1849,11 +1978,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end
   end
 
-  defp seed_project!(project_id, task_provider) do
+  defp seed_project!(project_id, task_provider, path \\ System.tmp_dir!()) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,
       name: "RunExecutor #{project_id}",
-      path: System.tmp_dir!(),
+      path: path,
       task_provider: task_provider
     })
   end
@@ -1864,9 +1993,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
          run_id,
          workflow_snapshot,
          task_provider,
-         external_id \\ nil
+         external_id \\ nil,
+         project_path \\ System.tmp_dir!()
        ) do
-    seed_project!(project_id, task_provider)
+    seed_project!(project_id, task_provider, project_path)
     approval_id = unique_id("approval")
 
     create_payload = %{
