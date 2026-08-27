@@ -114,14 +114,19 @@ defmodule ForemanServer.Agents.SignalDirectivePublisher do
   defp resolve_bus(:default), do: production_bus_name()
   defp resolve_bus(other), do: other
 
-  # Record the directive in the queue, returning its generated id.
-  # Silently ignores if the DirectiveQueue GenServer is not running.
+  # Record the directive in the queue, returning its generated id, or nil when
+  # the queue is not running (callers already guard on `is_binary(directive_id)`).
+  #
+  # This MUST be `catch :exit`, not `rescue`: a `GenServer.call` to an
+  # unregistered name *exits*, it does not raise. The previous `rescue _ -> nil`
+  # therefore never fired for the case it documented, and `publish/3` crashed
+  # instead of degrading. A genuine exception still propagates — only a missing
+  # queue process is tolerated.
   defp record_in_queue(agent_id, payload) do
     case DirectiveQueue.enqueue(agent_id, payload) do
       {:ok, id} -> id
     end
-  rescue
-    _ ->
-      nil
+  catch
+    :exit, _ -> nil
   end
 end

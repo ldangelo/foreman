@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
   alias ForemanServer.ProjectionStore
 
   setup do
@@ -77,7 +78,7 @@ defmodule ForemanServer.MCP.ToolsWorkflowTest do
       try do
         assert Tools.call_tool("foreman_workflow_get", %{name: "nonexistent-workflow"}) ==
                  {:error,
-                  %{code: "NOT_FOUND", message: "Workflow not found: nonexistent-workflow"}}
+                  %ToolError{code: "NOT_FOUND", message: "Workflow not found: nonexistent-workflow"}}
       after
         :meck.unload(ForemanServer.Workflow.Catalog)
       end

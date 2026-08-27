@@ -802,27 +802,81 @@ foreman issue link bd-123 --pr 456  # Link PR to issue
 
 ## MCP Server
 
-### `foreman mcp`
+There is **no `foreman mcp` subcommand**. The Go CLI does not implement one.
+The MCP server is part of the Elixir application and is reached one of two
+ways.
 
-Run the Foreman MCP server for agent/tool integrations. Use stdio for local MCP clients that spawn Foreman directly, or HTTP for long-running local/remote clients.
+### HTTP transport (recommended)
 
-```bash
-foreman mcp --transport stdio
-foreman mcp --transport http --host 127.0.0.1 --port 4777
-foreman mcp --transport http --host 0.0.0.0 --mcp-auth-token "$FOREMAN_MCP_AUTH_TOKEN"
-foreman mcp --transport http --server-url http://foreman.internal:4766
+The MCP server runs as a supervised child of `ForemanServer.Application`
+(`ForemanServer.MCP`) and is mounted by `ForemanServerWeb.MCPRouter` on the
+existing Phoenix endpoint. When the server is running, MCP is already
+available — nothing extra to start:
+
+```
+http://127.0.0.1:4766/mcp
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--transport <stdio\|http>` | `stdio` | MCP transport |
-| `--host <host>` | `127.0.0.1` | HTTP bind host |
-| `--port <port>` | `4777` | HTTP bind port |
-| `--server-url <url>` | local Elixir URL | Elixir backend URL for remote Foreman |
-| `--mcp-auth-token <token>` | unset | Require bearer token for HTTP MCP requests |
-| `--no-auto-start` | — | Do not auto-start the local Elixir server |
+It is gated on config, enabled by default in `dev`:
 
-Initial tools include one-call smoke status, health, scheduler status/tick, projects, tasks, approvals, task reset, run summaries plus per-run inspection, inbox, lifecycle events, and debug timelines. Most MCP reads/writes go through the Elixir backend; `foreman.tasks.reset` intentionally runs the local CLI reset flow so it can clean local worktrees, branches, and log/report artifacts. `foreman.projects.list` returns the same normalized project fields as `foreman project list --json` and hides archived projects unless a status filter is provided. `foreman.runs.list` returns only run id, date, and status; `foreman.runs.inspect` returns one run's full payload by run id. The project-local Pi extension exposes common slash commands (`/foreman-smoke`, `/foreman-tasks`, `/foreman-task`, `/foreman-approve`, `/foreman-runs`, `/foreman-inbox`, `/foreman-events`, `/foreman-scheduler`, `/foreman-tick`) backed by these tools. See [MCP Server](./mcp-server.md) for design and future remote-use cases.
+```elixir
+config :foreman_server, :mcp,
+  enabled: true,
+  mount: "/mcp",
+  allow_workflow_writes: false,
+  allow_insecure_local: true
+```
+
+| Key | Default (dev) | Description |
+|--------|--------|-------------|
+| `enabled` | `true` | Start the MCP server child |
+| `mount` | `/mcp` | Path on the Phoenix endpoint |
+| `allow_workflow_writes` | `false` | Advertise and permit write tools |
+| `allow_insecure_local` | `true` | Accept requests with no bearer token |
+
+With `allow_insecure_local: false`, requests must send
+`Authorization: Bearer <token>` matching `:foreman_server, :api_bearer_token`.
+
+Client config for a Streamable HTTP MCP client (Oh My Pi shown; see
+`docs/mcp-config.md` upstream for the schema):
+
+```json
+{
+  "mcpServers": {
+    "foreman": { "type": "http", "url": "http://127.0.0.1:4766/mcp" }
+  }
+}
+```
+
+### stdio transport
+
+For MCP clients that spawn the server as a child process:
+
+```bash
+cd packages/foreman_server && mix foreman.mcp.stdio
+```
+
+stdout carries JSON-RPC frames only; diagnostics go to stderr. The token is
+read from the `initialize` request's `_meta.authorization` field
+(`"Bearer <token>"`).
+
+This starts a second copy of the application, so prefer the HTTP transport
+when a Foreman server is already running.
+
+### Tools
+
+Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
+`foreman_project_list`, `foreman_project_get`, `foreman_workflow_list`,
+`foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
+`foreman_work_get`, `foreman_run_get`, `foreman_run_get_logs`,
+`foreman_run_get_events`, `foreman_run_get_activity`.
+
+Write tools (`foreman_work_submit`, `foreman_work_cancel`,
+`foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
+unadvertised and refused unless `allow_workflow_writes: true`.
+
+Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets and
+behavior cannot diverge.
 
 ---
 

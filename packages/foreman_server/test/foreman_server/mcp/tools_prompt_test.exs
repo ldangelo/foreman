@@ -2,6 +2,7 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.MCP.Tools
+  alias ForemanServer.MCP.ToolError
 
   setup do
     prev = Application.get_env(:foreman_server, :mcp, [])
@@ -16,19 +17,17 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
 
   describe "foreman_prompt_get (file validation only)" do
     test "returns INVALID_FILENAME for path traversal attempt" do
-      assert Tools.call_tool("foreman_prompt_get", %{"name" => "../etc/passwd"}) ==
+      assert Tools.call_tool("foreman_prompt_get", %{name: "../etc/passwd"}) ==
                {:error,
-                %{
-                  code: "INVALID_FILENAME",
+                %ToolError{                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end
 
     test "returns INVALID_FILENAME for backslash path attempt" do
-      assert Tools.call_tool("foreman_prompt_get", %{"name" => "subdir\\test.md"}) ==
+      assert Tools.call_tool("foreman_prompt_get", %{name: "subdir\\test.md"}) ==
                {:error,
-                %{
-                  code: "INVALID_FILENAME",
+                %ToolError{                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end
@@ -37,24 +36,22 @@ defmodule ForemanServer.MCP.ToolsPromptTest do
   describe "foreman_prompt_put (file validation only)" do
     test "returns INVALID_FILENAME for path traversal attempt" do
       assert Tools.call_tool("foreman_prompt_put", %{
-               "name" => "../etc/passwd",
-               "content" => "# Test"
+               name: "../etc/passwd",
+               content: "# Test"
              }) ==
                {:error,
-                %{
-                  code: "INVALID_FILENAME",
+                %ToolError{                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end
 
     test "returns INVALID_FILENAME for backslash path attempt" do
       assert Tools.call_tool("foreman_prompt_put", %{
-               "name" => "subdir\\test.md",
-               "content" => "# Test"
+               name: "subdir\\test.md",
+               content: "# Test"
              }) ==
                {:error,
-                %{
-                  code: "INVALID_FILENAME",
+                %ToolError{                  code: "INVALID_FILENAME",
                   message: "Path separators and '..' are not allowed"
                 }}
     end

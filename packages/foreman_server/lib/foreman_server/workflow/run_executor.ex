@@ -315,6 +315,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, _} <- validate_phase_action(phase_spec, phase_index),
          {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
          {:ok, worktree_record} <- maybe_create_worktree(state, phase_spec, phase_index) do
+      # Retain the branch this phase wrote to so `finalize_run/1` can open a PR
+      # from run state. `worktree_record` is otherwise phase-local (it is
+      # cleaned up in the `after` below), which left AutoPR with no head branch
+      # and no way to create a PR.
+      state = remember_worktree(state, worktree_record)
+
       try do
         run_phase_body(state, phase_spec, index, phase_index, worktree_record)
       after
@@ -328,6 +334,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
         end
     end
   end
+
+  # Records the most recent worktree so finalize_run/1 can derive the PR head
+  # branch from Foreman's own state rather than depending on the agent printing
+  # a FOREMAN_BRANCH marker into its artifact.
+  defp remember_worktree(state, %{branch: branch} = record) when is_binary(branch) do
+    Map.put(state, :last_worktree, %{
+      branch: branch,
+      base_ref: Map.get(record, :base_ref),
+      worktree_path: Map.get(record, :worktree_path)
+    })
+  end
+
+  defp remember_worktree(state, _record), do: state
 
   defp run_phase_body(state, phase_spec, index, phase_index, worktree_record) do
     case execute_with_worktree(state, phase_spec, index, phase_index, worktree_record) do
@@ -807,23 +826,32 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case maybe_complete_task(state) do
       :ok ->
         # Run auto-PR only after the task provider has confirmed completion.
-        # gh must run from the worktree/repo root so it resolves the correct remote.
-        artifact_path = completion_artifact_path(state)
-        cwd = working_directory(state.task)
-        base_branch = plan_base_branch(state)
+        # gh must run from the repo root so it resolves the correct remote.
+        context = %{
+          run_id: state.run_id,
+          base_branch: plan_base_branch(state),
+          artifact_path: completion_artifact_path(state),
+          head_branch: get_in(state, [:last_worktree, :branch]),
+          cwd: working_directory(state.task)
+        }
 
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        case AutoPR.maybe_create_pr(state.run_id, artifact_path, base_branch, cwd) do
+        case AutoPR.maybe_create_pr(context) do
           :noop ->
-            Logger.info("RunExecutor #{state.run_id} finalize_run: no auto-pr marker found")
+            Logger.info(
+              "RunExecutor #{state.run_id} finalize_run: no auto-pr (branch has no new commits)"
+            )
 
           {:ok, pr_url} ->
             Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
 
           {:error, reason} ->
-            Logger.warning(
-              "RunExecutor #{state.run_id} finalize_run: auto-pr failed: #{inspect(reason)}"
+            # The run produced commits but no PR. Logging at warning previously
+            # let this pass as a clean completion; surface it at error level so
+            # the failure is attributable to the run.
+            Logger.error(
+              "RunExecutor #{state.run_id} finalize_run: auto-pr FAILED: #{inspect(reason)}"
             )
         end
 
