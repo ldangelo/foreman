@@ -36,6 +36,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.RunExecutorLiveness
   alias ForemanServer.Identity
   alias ForemanServer.Overwatch
+  alias ForemanServer.PrAssociate
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhaseSpec
@@ -320,6 +321,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp run_single_phase(state, phase_spec, index) do
     phase_index = phase_number(phase_spec, index)
+    # Read the checkout's branch before the first phase can move anything, so
+    # `finalize_run/1` knows which branch the run's work was cut from.
+    state = remember_run_base_branch(state)
 
     with {:ok, _} <- validate_phase_action(phase_spec, phase_index),
          {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
@@ -356,6 +360,56 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp remember_worktree(state, _record), do: state
+
+  # The PR base branch is the branch the run's work was cut from, recorded once
+  # when the FIRST phase starts and never re-read.
+  #
+  # It is read from `vcs_working_directory/1` — the checkout AutoPR later runs
+  # `git rev-list`, `git push`, and `gh pr create` in, so `--base` is
+  # interpreted against the same repository the name came from — at the same
+  # moment `phase_lineage_base_ref/2` resolves phase 1's `base_ref` from `HEAD`
+  # of that checkout. Branch name and base commit therefore describe one state
+  # of the repository.
+  #
+  # Resolving it at finalize time instead would answer "whichever branch the
+  # operator has checked out now", which is not what the run was cut from. And
+  # phase 1's `base_ref` cannot answer it alone: it is a commit SHA, while
+  # `gh pr create --base` takes a branch name.
+  #
+  # Latched on key presence rather than phase index, because the value is a
+  # run-level fact and later phases must not re-read a checkout the operator
+  # may have switched. It deliberately does not hang off `remember_worktree/2`:
+  # a phase declaring `worktree: enabled: false` provisions no worktree, yet
+  # such a run can still land a PR through the `FOREMAN_BRANCH` override.
+  defp remember_run_base_branch(state) do
+    if Map.has_key?(state, :run_base_branch) do
+      state
+    else
+      Map.put(state, :run_base_branch, checkout_branch(vcs_working_directory(state)))
+    end
+  end
+
+  # `git symbolic-ref --quiet --short HEAD` names the checked-out branch and
+  # exits non-zero on a detached HEAD. `rev-parse --abbrev-ref HEAD` would
+  # instead print the literal `HEAD` there, which `gh pr create --base` accepts
+  # as a ref name — a wrong PR target that reads as a resolved answer.
+  defp checkout_branch(repo_path) do
+    args = ["-C", repo_path, "symbolic-ref", "--quiet", "--short", "HEAD"]
+
+    case System.cmd("git", args, stderr_to_stdout: true) do
+      {output, 0} ->
+        {:ok, String.trim(output)}
+
+      {output, _code} ->
+        # `--quiet` prints nothing when HEAD is simply not a symbolic ref, so
+        # empty output is a detached checkout and anything else is git's own
+        # complaint (directory missing, not a repository).
+        case String.trim(output) do
+          "" -> {:error, {:checkout_branch_unresolvable, repo_path, :detached_head}}
+          detail -> {:error, {:checkout_branch_unresolvable, repo_path, detail}}
+        end
+    end
+  end
 
   defp run_phase_body(state, phase_spec, index, phase_index, worktree_record) do
     case execute_with_worktree(state, phase_spec, index, phase_index, worktree_record) do
@@ -866,19 +920,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     case maybe_complete_task(state) do
       :ok ->
-        # Run auto-PR only after the task provider has confirmed completion.
-        # gh must run from the repo root so it resolves the correct remote.
-        context = %{
-          run_id: state.run_id,
-          base_branch: plan_base_branch(state),
-          artifact_path: completion_artifact_path(state),
-          head_branch: get_in(state, [:last_worktree, :branch]),
-          cwd: vcs_working_directory(state)
-        }
-
         Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        case AutoPR.maybe_create_pr(context) do
+        case auto_pr(state) do
           :noop ->
             Logger.info(
               "RunExecutor #{state.run_id} finalize_run: no auto-pr (branch has no new commits)"
@@ -886,6 +930,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
           {:ok, pr_url} ->
             Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
+            record_pr_association(state.run_id, pr_url)
 
           {:error, reason} ->
             # The run produced commits but no PR. Logging at warning previously
@@ -920,10 +965,74 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # Derive the PR base branch from plan_context["base_branch"], falling back to "main".
-  defp plan_base_branch(state) do
-    branch = Map.get(state.plan_context || %{}, "base_branch")
-    if is_binary(branch) and branch != "", do: branch, else: "main"
+  # AutoPR's `{:ok, pr_url}` used to be logged and dropped here, so a PR could
+  # exist on GitHub while every read model denied it:
+  # run-776527010ea5d3568b742adbd25ab872 opened
+  # https://github.com/ldangelo/foreman/pull/420, yet its run stream held
+  # exactly RunStarted then RunCompleted and `GET /api/runs/<id>` reported no
+  # PR at all. Appending `PrAssociated` is the only thing that puts the URL on
+  # the run projection (see `ProjectionStore`'s "PrAssociated" clause).
+  #
+  # A store failure cannot be repaired from here and must not fail the run: the
+  # PR is already open and the work did succeed. The event log is the only
+  # durable channel for the URL, so when appending fails the URL survives in
+  # this log line alone — hence `error`, with the URL spelled out so an
+  # operator can re-associate it by hand.
+  defp record_pr_association(run_id, pr_url) do
+    case PrAssociate.store(run_id, pr_url) do
+      {:ok, ^run_id} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "RunExecutor #{run_id} finalize_run: PR #{pr_url} created but NOT recorded " <>
+            "on the run read model: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # Auto-PR for a finished run. The base branch is resolved BEFORE anything is
+  # pushed: with no base there is no defensible PR to open.
+  #
+  # `gh` must run from the repo root so it resolves the correct remote — which
+  # is also the checkout `run_base_branch/1` took the base branch name from.
+  defp auto_pr(state) do
+    case run_base_branch(state) do
+      {:ok, base_branch} ->
+        AutoPR.maybe_create_pr(%{
+          run_id: state.run_id,
+          base_branch: base_branch,
+          artifact_path: completion_artifact_path(state),
+          head_branch: get_in(state, [:last_worktree, :branch]),
+          cwd: vcs_working_directory(state)
+        })
+
+      {:error, reason} ->
+        {:error, {:auto_pr_base_branch_unresolved, reason}}
+    end
+  end
+
+  # The branch a PR must target, or the typed reason Foreman cannot name it.
+  #
+  # This used to read `plan_context["base_branch"]` and fall back to `"main"`.
+  # Nothing writes that key: `PlanContext.build/1` does not produce it, and the
+  # `base_branch` argument `work.submit` accepts is captured at the protocol
+  # level only (`Mcp.Tools`) and projected into nothing the executor reads. So
+  # every run targeted `main`. run-776527010ea5d3568b742adbd25ab872 was cut from
+  # `feat/mcp-run-details` and opened PR #420 against `main`, whose diff was an
+  # entire unrelated session of commits instead of the two documents the run
+  # produced. The default is what made that wrong answer look plausible
+  # (AGENTS.md 5.2), so there is no longer one.
+  #
+  # `:run_base_branch_unrecorded` is the ABSENT case — no phase ever started, so
+  # nothing read the checkout — kept distinct from the malformed case
+  # `checkout_branch/1` reports (AGENTS.md 5.3).
+  defp run_base_branch(state) do
+    case Map.get(state, :run_base_branch) do
+      {:ok, branch} -> {:ok, branch}
+      {:error, _reason} = err -> err
+      nil -> {:error, {:run_base_branch_unrecorded, state.run_id}}
+    end
   end
 
   defp build_request(state, phase_spec, index, worktree_record) do
@@ -1925,6 +2034,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def __phase_lineage_base_ref_for_test__(state, project_root),
     do: phase_lineage_base_ref(state, project_root)
+
+  @doc false
+  def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)
+
+  @doc false
+  def __run_base_branch_for_test__(state), do: run_base_branch(state)
+
   # Provider-facing identifier for the task. When the task projection
   # carries an `external_id` (the provider's identifier, e.g. the Beads
   # issue id `foreman-zuk0`), use that — adapters translate it directly

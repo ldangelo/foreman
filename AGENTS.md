@@ -108,6 +108,43 @@ so `maybe_create_pr` always returned `:noop` at `info` level while the run
 reported success, with zero test coverage. Deriving the handoff from run state
 is strictly more robust than depending on an agent to print exact lines.
 
+**The PR base is the branch the run's work was cut from, and there is no
+default.** `RunExecutor.remember_run_base_branch/1` records it once, when the
+run's FIRST phase starts, as `git symbolic-ref --quiet --short HEAD` of
+`vcs_working_directory/1` — the same checkout AutoPR later runs `git rev-list`,
+`git push`, and `gh pr create` in, read at the same moment
+`phase_lineage_base_ref/2` resolves phase 1's `base_ref` from `HEAD` of that
+checkout, so branch name and base commit describe one repository state. It is
+latched on key presence, so an operator switching branches mid-run cannot
+retarget the PR, and it does not hang off `remember_worktree/2` — a phase
+declaring `worktree: enabled: false` provisions no worktree yet can still land
+a PR through the `FOREMAN_BRANCH` override. `symbolic-ref` is deliberate:
+`rev-parse --abbrev-ref HEAD` prints the literal `HEAD` on a detached checkout,
+which `gh pr create --base` would accept as a ref name.
+
+`plan_base_branch/1` used to answer this by reading
+`plan_context["base_branch"]` and falling back to `"main"`. **Nothing writes
+that key** — `PlanContext.build/1` does not produce it, and the `base_branch`
+`work.submit` accepts is captured at the protocol level only — so every run
+targeted `main`. The first `plan` run to complete end-to-end,
+run-776527010ea5d3568b742adbd25ab872, was cut from `feat/mcp-run-details` and
+opened PR #420 against `main`: the diff carried an entire unrelated session of
+commits instead of the two documents the run produced. An undeterminable base is
+now `{:auto_pr_base_branch_unresolved, reason}` and no PR, never a guess —
+`{:run_base_branch_unrecorded, run_id}` for absent (no phase started) and
+`{:checkout_branch_unresolvable, path, :detached_head | detail}` for malformed
+(AGENTS.md 5.3). The `rev-list` gate reads that same base, so it now counts only
+the commits the run added on top of its own starting point; against the default
+branch it also counted everything the run's base branch already carried, which
+is how a run that produced nothing could still look like it had work to propose.
+
+This is the "registered checkout HEAD" tier of
+`docs/TRD/TRD-2026-80ba0665-branch-parent-resolution.md`, reached without its
+`PlanContext`/`Dispatcher` plumbing: resolving in `PlanContext.build/1` as that
+TRD proposes would leave `work.submit` runs — whose `build/1` returns
+`:not_applicable`, so they carry no plan context at all — with no base. An
+explicit `--base-branch` override is still NOT consumed server-side.
+
 **Artifact path is a two-repo contract.** `ArtifactTemplate` expects the phase
 artifact at `<artifact_base>/<run_id>/phase-<index>.md` when the phase declares
 no `artifact:`. `RunExecutor.foreman_env/3` exports that computed path as
@@ -959,7 +996,7 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `WorktreeCleaned` | `Run.handle_command/2` | Worktree cleaned |
 | `WorktreeCreateOrphanRecorded` | `Run.handle_command/2` | Records orphan worktree at creation |
 | `WorktreeCreateOrphanResolved` | `Run.handle_command/2` | Resolves orphan worktree |
-| `PrCreated` | `Run.handle_command/2` | Records PR URL |
+| `PrAssociated` | `PrAssociation.handle_command/2` | Records the PR URL on the run projection and in the `pr_associations` map |
 | `PrMerged` | `Run.handle_command/2` | Marks run merged |
 | `PhaseStarted` | `Phase.handle_command/2` | Updates run phase |
 | `PhaseCompleted` | `Phase.handle_command/2` | Updates run phase |

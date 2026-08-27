@@ -139,4 +139,62 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                AutoPR.maybe_create_pr(%{run_id: "run-7", base_branch: ""})
     end
   end
+
+  describe "the base branch decides what the PR would contain" do
+    # PR #420 opened with `--base=main` while the run had been cut from
+    # `feat/mcp-run-details`, so its diff was an entire unrelated session of
+    # commits. `commits_ahead/3` reads the same base `gh pr create` does, so
+    # under the default branch a run that produced nothing still looks like it
+    # has work to propose.
+    test "a head level with its feature-branch base is a noop, though ahead of main", ctx do
+      %{repo: repo, git: git} = ctx
+      {_, 0} = git.(["checkout", "-b", "feat/mcp-run-details"])
+      File.write!(Path.join(repo, "unrelated.txt"), "another session's commit\n")
+      {_, 0} = git.(["add", "."])
+      {_, 0} = git.(["commit", "-m", "unrelated session work"])
+      # The run's branch is cut from the feature branch and adds nothing to it.
+      {_, 0} = git.(["branch", "foreman/run-8/create-prd"])
+
+      assert AutoPR.maybe_create_pr(%{
+               run_id: "run-8",
+               base_branch: "feat/mcp-run-details",
+               head_branch: "foreman/run-8/create-prd",
+               cwd: repo
+             }) == :noop
+
+      # The same head against the default branch is one commit "ahead", and
+      # every line of that commit belongs to the unrelated session. That is #420.
+      assert {:error, reason} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-8",
+                 base_branch: "main",
+                 head_branch: "foreman/run-8/create-prd",
+                 cwd: repo
+               })
+
+      assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+    end
+
+    test "a head with a commit beyond its feature-branch base proceeds", ctx do
+      %{repo: repo, git: git} = ctx
+      {_, 0} = git.(["checkout", "-b", "feat/mcp-run-details"])
+      File.write!(Path.join(repo, "unrelated.txt"), "another session's commit\n")
+      {_, 0} = git.(["add", "."])
+      {_, 0} = git.(["commit", "-m", "unrelated session work"])
+      {_, 0} = git.(["checkout", "-b", "foreman/run-9/create-prd"])
+      File.write!(Path.join(repo, "prd.md"), "the run's document\n")
+      {_, 0} = git.(["add", "."])
+      {_, 0} = git.(["commit", "-m", "PRD"])
+
+      assert {:error, reason} =
+               AutoPR.maybe_create_pr(%{
+                 run_id: "run-9",
+                 base_branch: "feat/mcp-run-details",
+                 head_branch: "foreman/run-9/create-prd",
+                 cwd: repo
+               })
+
+      assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+    end
+  end
 end

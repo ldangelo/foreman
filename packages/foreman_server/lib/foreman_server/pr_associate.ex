@@ -12,15 +12,14 @@ defmodule ForemanServer.PrAssociate do
     * `store/2` — dispatch the `pr.associate` command. Returns
       `{:ok, pr_association_id}` on success.
     * `lookup/1` — read the current association for a run from
-      `ProjectionStore`. Returns `{:ok, %PrAssociated{}}` or
-      `{:error, :not_found}`.
+      `ProjectionStore`. Returns `{:ok, %{run_id:, pr_url:, pr_number:,
+      associated_at:}}` or `{:error, :not_found}`.
 
   PR URL parsing extracts a `pr_number` (e.g. `https://github.com/o/r/pull/42`
   -> 42) which is stored on the event.
   """
 
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Events.PrAssociated
 
   require Logger
 
@@ -56,11 +55,13 @@ defmodule ForemanServer.PrAssociate do
   def store(_, _), do: {:error, :invalid_arguments}
 
   @doc """
-  Look up the current PR association for `run_id` from
-  `ProjectionStore`. Returns `{:ok, %PrAssociated{}}` or
+  Look up the current PR association for `run_id` from `ProjectionStore`.
+
+  Returns `{:ok, association}` — a plain projection map, not a
+  `%PrAssociated{}`; the projection store never builds the struct — or
   `{:error, :not_found}`.
   """
-  @spec lookup(String.t()) :: {:ok, PrAssociated.t()} | {:error, :not_found}
+  @spec lookup(String.t()) :: {:ok, map()} | {:error, :not_found}
   def lookup(run_id) when is_binary(run_id) do
     ForemanServer.ProjectionStore.pr_association(run_id)
   end

@@ -155,7 +155,14 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_tasks)
   end
 
-  @doc "Return the projected state for a run, or nil if not found."
+  @doc """
+  Return the projected state for a run, or nil if not found.
+
+  `pr_url` is always present on a projected run: a string once a `PrAssociated`
+  event has been applied, `nil` when Foreman has recorded no PR for the run. A
+  `PrAssociated` event carrying no usable URL raises rather than projecting
+  `nil`, so an explicit `nil` never stands in for a lost association.
+  """
   @spec run(String.t()) :: map() | nil
   def run(run_id) when is_binary(run_id) and run_id != "" do
     GenServer.call(__MODULE__, {:run, run_id})
@@ -929,7 +936,8 @@ defmodule ForemanServer.ProjectionStore do
             terminal?: false,
             started_at_ms: event_at_ms,
             last_event_at_ms: event_at_ms,
-            failure_reason: nil
+            failure_reason: nil,
+            pr_url: nil
           }
 
           put_state(state, state.projects, Map.put(state.runs, run_id, run))
@@ -1271,21 +1279,36 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # `PrAssociated` lands on BOTH the association map and the run projection.
+  # It previously wrote only the association map, so `run/1` — and therefore
+  # `GET /api/runs/:id` and `GET /api/runs` — carried no PR field at all: the
+  # run that opened https://github.com/ldangelo/foreman/pull/420 read exactly
+  # like a run that opened nothing.
   defp apply_event_by_type(state, "PrAssociated", payload) do
-    run_id = get(payload, :run_id)
+    case decode_for_projection("PrAssociated", payload) do
+      %ForemanServer.Events.PrAssociated{run_id: run_id, pr_url: pr_url} = event
+      when is_binary(run_id) and run_id != "" and is_binary(pr_url) and pr_url != "" ->
+        association = %{
+          run_id: run_id,
+          pr_url: pr_url,
+          pr_number: event.pr_number,
+          associated_at: event.associated_at
+        }
 
-    if valid_id?(run_id) do
-      association = %{
-        run_id: run_id,
-        pr_url: get(payload, :pr_url),
-        pr_number: get(payload, :pr_number),
-        associated_at: get(payload, :associated_at)
-      }
+        state
+        |> update_run_projection(run_id, payload_event_at_ms(payload), fn run ->
+          Map.put(run, :pr_url, pr_url)
+        end)
+        |> Map.update!(:pr_associations, &Map.put(&1, run_id, association))
 
-      put_state(state, state.projects, state.runs)
-      |> Map.put(:pr_associations, Map.put(state.pr_associations, run_id, association))
-    else
-      state
+      # AGENTS.md 5.3: a blank run_id or pr_url is malformed, not absent.
+      # Projecting it would leave `pr_url: nil` on the run, indistinguishable
+      # from "this run opened no PR". `PrAssociation.handle_command/2` rejects
+      # both on the write path, so reaching here means the aggregate was
+      # bypassed.
+      %ForemanServer.Events.PrAssociated{} = event ->
+        raise ArgumentError,
+              "ProjectionStore: PrAssociated with unusable run_id/pr_url: #{inspect(event)}"
     end
   end
 
@@ -1693,7 +1716,8 @@ defmodule ForemanServer.ProjectionStore do
       started_at_ms: now_ms,
       last_event_at_ms: now_ms,
       terminal?: false,
-      failure_reason: nil
+      failure_reason: nil,
+      pr_url: nil
     }
   end
 

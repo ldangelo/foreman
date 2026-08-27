@@ -122,7 +122,7 @@ defmodule ForemanServer.MCP.Tools do
         },
         base_branch: %{
           type: "string",
-          description: "Parent branch for the new task's worktree and PR. Captured at the protocol level only — server-side consumption (PlanContext derivation, plan_base_branch resolution, AutoPR target) is forthcoming per TRD-2026-80ba0665. When omitted the key is absent from the work.submit envelope."
+          description: "Parent branch for the new task's worktree and PR. Captured at the protocol level only: nothing server-side reads it, so an explicit value cannot yet override the resolved base. The PR base is resolved independently by RunExecutor from the project checkout's HEAD branch when the run's first phase starts (AGENTS.md section 4); explicit override remains forthcoming per TRD-2026-80ba0665. When omitted the key is absent from the work.submit envelope."
         }
       },
       required: ["work_id", "project_id", "workflow", "prompt"]
