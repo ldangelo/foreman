@@ -123,6 +123,24 @@ phase report to that exact path in addition to any repo-local report. Absent
 the variable, ensemble behavior is unchanged, so the two repos deploy in either
 order.
 
+**Planning document paths are the same contract.** The `plan` workflow's
+phases gate on `requiredFile: planning.prd_path` / `planning.trd_path`, and
+they are `command:` phases, so the same "no in-prompt channel" applies:
+run-3da49f9ed1ae01f932092b31335b5623 failed with
+`{:required_file_missing, "planning.prd_path", …}` because the agent invented
+its own filename. `foreman_env/3` now also exports `FOREMAN_PRD_PATH` and
+`FOREMAN_TRD_PATH` (absent, never blank, for non-plan runs). Consumers are
+`create-prd.yaml`, `create-trd.yaml`, and `create-trd-foreman.yaml`, which
+write the document to that exact path in addition to the repo-local copy.
+
+`PlanContext` therefore emits `planning.prd_path`/`trd_path` **relative**
+(`docs/PRD/PRD-<year>-<correlation_id>-<slug>.md`); `RunExecutor` joins them
+onto the phase's working directory — the phase worktree when it has one,
+otherwise the project root — in one place, `resolve_phase_path/3`, which the
+`requiredFile` gate and the env export both call. Do not reintroduce a second
+computation: rooting them at the project root at build time was the second
+half of that failure, because the agent's cwd is the worktree.
+
 When changing that contract, change both sides. A Foreman-side export with no
 consumer is dead plumbing — an earlier attempt at exactly this was reverted for
 that reason. Note also that only a command YAML's `mission.summary` is emitted

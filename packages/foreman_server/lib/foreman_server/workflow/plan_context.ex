@@ -6,6 +6,11 @@ defmodule ForemanServer.Workflow.PlanContext do
   `# Context (JSON)` payload, plus the absolute project `working_directory`
   under which generated documents are written.
 
+  `planning.prd_path` and `planning.trd_path` are project-relative
+  (`docs/PRD/PRD-<year>-<correlation_id>-<slug>.md`). The phase's working
+  directory — the phase worktree when it has one, otherwise
+  `working_directory` — is joined on by `RunExecutor` at dispatch time.
+
   All fields are derived from authoritative, server-owned data
   (`task_projection`, `project_projection`, `run_id`, frozen
   `approved_at`). User-supplied content (title, description) is treated as
@@ -130,8 +135,8 @@ defmodule ForemanServer.Workflow.PlanContext do
            "document_year" => document_year,
            "correlation_id" => correlation_id,
            "slug" => slug,
-           "prd_path" => prd_path(project_path, slug, document_year, correlation_id),
-           "trd_path" => trd_path(project_path, slug, document_year, correlation_id)
+           "prd_path" => prd_path(slug, document_year, correlation_id),
+           "trd_path" => trd_path(slug, document_year, correlation_id)
          }
        }}
     end
@@ -233,12 +238,22 @@ defmodule ForemanServer.Workflow.PlanContext do
     end
   end
 
-  defp prd_path(project_path, slug, year, correlation_id) do
-    Path.join([project_path, "docs", "PRD", "PRD-#{year}-#{correlation_id}-#{slug}.md"])
+  # Planning document paths are RELATIVE to the phase's working directory,
+  # never rooted here. A plan phase runs in a per-phase worktree, so the
+  # absolute location is only knowable at dispatch time: joining the
+  # project root here produced a path under the main checkout while the
+  # agent wrote inside the worktree, and the `requiredFile` gate then
+  # failed on a document the agent had written correctly. `RunExecutor`
+  # joins these onto the phase cwd in exactly one place
+  # (`resolve_phase_path/3`), which is also the value it exports as
+  # `FOREMAN_PRD_PATH`/`FOREMAN_TRD_PATH` — one expression, so the path
+  # the agent is told to write and the path Foreman checks cannot drift.
+  defp prd_path(slug, year, correlation_id) do
+    Path.join(["docs", "PRD", "PRD-#{year}-#{correlation_id}-#{slug}.md"])
   end
 
-  defp trd_path(project_path, slug, year, correlation_id) do
-    Path.join([project_path, "docs", "TRD", "TRD-#{year}-#{correlation_id}-#{slug}.md"])
+  defp trd_path(slug, year, correlation_id) do
+    Path.join(["docs", "TRD", "TRD-#{year}-#{correlation_id}-#{slug}.md"])
   end
 
   ## Field accessors (atom/string tolerant)
