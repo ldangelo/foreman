@@ -106,17 +106,29 @@ so `maybe_create_pr` always returned `:noop` at `info` level while the run
 reported success, with zero test coverage. Deriving the handoff from run state
 is strictly more robust than depending on an agent to print exact lines.
 
-**Known gap — artifact path convention is unreconciled.** `ArtifactTemplate`
-expects the phase artifact at `<artifact_base>/<run_id>/phase-<index>.md` when
-the phase declares no `artifact:`. A `command:` phase never receives Foreman's
-rendered prompt (the command string replaces it), so Foreman has no channel to
-tell the agent that path, and the ensemble skills write to their own convention
-(`docs/reports/<project>-<task-id>/IMPLEMENT_REPORT.md`) instead. The two sides
-are independent, so `ArtifactTemplate.describe/1` finds nothing. Closing this
-requires a decision plus a companion change in the ensemble skill repo — either
-Foreman exports the expected path (e.g. `FOREMAN_ARTIFACT_PATH`) and the skills
-read it, or Foreman accepts the skills' convention. Do not "fix" this on the
-Foreman side alone; unconsumed plumbing does not reconcile it.
+**Artifact path is a two-repo contract.** `ArtifactTemplate` expects the phase
+artifact at `<artifact_base>/<run_id>/phase-<index>.md` when the phase declares
+no `artifact:`. A `command:` phase never receives Foreman's rendered prompt (the
+command string replaces it in `execute_agent/4`), so there is no in-prompt
+channel for that path; agents used to write to a convention they inferred
+(`docs/reports/<project>-<task-id>/IMPLEMENT_REPORT.md`) while
+`ArtifactTemplate.describe/1` read the computed path, so no dispatched run ever
+recorded an artifact.
+
+`RunExecutor.foreman_env/3` now exports the computed path as
+`FOREMAN_ARTIFACT_PATH` on both the worktree and non-worktree paths. The
+consumer is the `--foreman` path of the ensemble command YAMLs
+(`Sunstone/ensemble`, `packages/development/commands/*.yaml`), which write the
+phase report to that exact path in addition to any repo-local report. Absent
+the variable, ensemble behavior is unchanged, so the two repos deploy in either
+order.
+
+When changing that contract, change both sides. A Foreman-side export with no
+consumer is dead plumbing — an earlier attempt at exactly this was reverted for
+that reason. Note also that only a command YAML's `mission.summary` is emitted
+by *every* ensemble generator: `constraints` and `parameters[].description` are
+dropped by the codex generator, so a rule authored only there is invisible to a
+codex-backed agent.
 
 Prompt rendering itself is NOT the problem, despite what
 `docs/reports/foreman-foreman-dispatch-fix-verify-rdrq/IMPLEMENT_REPORT.md`
