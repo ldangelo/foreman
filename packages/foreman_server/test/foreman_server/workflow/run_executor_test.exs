@@ -978,6 +978,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert env["FOREMAN_SOURCE_REVISION"] == source_revision
     assert env["FOREMAN_IMPLEMENTATION_KEY"] == implementation_key
 
+    # A command: phase never sees Foreman's rendered prompt, so this env var is
+    # the only channel telling the agent where Foreman will look for the
+    # artifact. Consumed by the ensemble commands' --foreman path; without it
+    # agents wrote to an inferred convention and describe/1 found nothing.
+    assert env["FOREMAN_ARTIFACT_PATH"] =~ run_id
+    assert String.ends_with?(env["FOREMAN_ARTIFACT_PATH"], ".md")
+
     worktree_path = env["FOREMAN_WORKTREE_PATH"]
     assert String.starts_with?(worktree_path, worktree_root_prefix())
     assert File.dir?(worktree_path)
