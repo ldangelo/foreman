@@ -203,7 +203,7 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
     end
   end
 
-  describe "PlanContext.discover_document/2" do
+  describe "PlanContext.discover_document/3" do
     setup do
       repo = Path.join(System.tmp_dir!(), "discover-#{System.unique_integer([:positive])}")
       File.mkdir_p!(Path.join(repo, "docs/PRD"))
@@ -215,72 +215,155 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
       git!(repo, ["commit", "--no-gpg-sign", "-m", "seed"])
 
       on_exit(fn -> File.rm_rf(repo) end)
-      %{repo: repo}
+
+      # The phase's checkout is created at this commit, so it is the base
+      # discovery diffs against — the value `worktree_record.base_ref`
+      # carries at runtime.
+      %{repo: repo, base: head!(repo)}
     end
 
-    test "one new document is captured whatever the agent named it", %{repo: repo} do
+    test "one new document is captured whatever the agent named it", %{repo: repo, base: base} do
       write!(repo, "docs/PRD/PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md")
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
                {:ok, "docs/PRD/PRD-2026-c57dc188-curated-ensemble-workflow-dispatch.md"}
     end
 
-    test "a staged-but-uncommitted document still counts", %{repo: repo} do
+    test "a staged-but-uncommitted document still counts", %{repo: repo, base: base} do
       write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-staged.md")
       git!(repo, ["add", "docs/PRD"])
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
                {:ok, "docs/PRD/PRD-2026-aaaaaaaa-staged.md"}
     end
 
-    test "a name needing shell quoting survives intact", %{repo: repo} do
-      write!(repo, ~s(docs/PRD/PRD-2026-aaaaaaaa-a "quoted" name.md))
+    # Regression for run-9ff0f0ffc7e5845265d0cdcf8eb0ac2d: the agent wrote
+    # the PRD, committed it, and the gate — which scanned only the working
+    # tree — failed the run with `:planning_document_absent` while the
+    # document sat in the phase's own history. Committing is what the
+    # ensemble skills do, so this is the normal path.
+    test "a document the agent committed is captured", %{repo: repo, base: base} do
+      write!(repo, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md")
+      commit!(repo, "prd")
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
-               {:ok, ~s(docs/PRD/PRD-2026-aaaaaaaa-a "quoted" name.md)}
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
+               {:ok, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md"}
     end
 
-    test "nothing produced is its own error", %{repo: repo} do
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
-               {:error, {:planning_document_absent, "docs/PRD", repo}}
+    test "a document committed and then edited again is one document", %{repo: repo, base: base} do
+      write!(repo, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md")
+      commit!(repo, "prd")
+      write!(repo, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md", "revised body")
+
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
+               {:ok, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md"}
     end
 
-    test "several produced is a distinct error naming every candidate", %{repo: repo} do
-      write!(repo, "docs/PRD/PRD-2026-bbbbbbbb-second.md")
+    # Both halves of the union can name the same path: dropping the index
+    # entry for a committed document leaves it added-since-base AND
+    # untracked. One document must stay one candidate, or the gate reports
+    # a document it discovered twice as ambiguous.
+    test "a document both scans report counts once", %{repo: repo, base: base} do
+      write!(repo, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md")
+      commit!(repo, "prd")
+      git!(repo, ["rm", "--cached", "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md"])
+
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
+               {:ok, "docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md"}
+    end
+
+    test "one committed and one uncommitted document are two candidates", %{
+      repo: repo,
+      base: base
+    } do
       write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-first.md")
+      commit!(repo, "first")
+      write!(repo, "docs/PRD/PRD-2026-bbbbbbbb-second.md")
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
                {:error,
                 {:planning_document_ambiguous, "docs/PRD",
                  ["docs/PRD/PRD-2026-aaaaaaaa-first.md", "docs/PRD/PRD-2026-bbbbbbbb-second.md"]}}
     end
 
-    test "edits to a tracked document are not a new document", %{repo: repo} do
+    test "a name needing shell quoting survives both scans intact", %{repo: repo, base: base} do
+      name = ~s(docs/PRD/PRD-2026-aaaaaaaa-a "quoted" name.md)
+      write!(repo, name)
+
+      assert PlanContext.discover_document(repo, "docs/PRD", base) == {:ok, name}
+
+      commit!(repo, "quoted prd")
+
+      assert PlanContext.discover_document(repo, "docs/PRD", base) == {:ok, name}
+    end
+
+    test "nothing produced is its own error", %{repo: repo, base: base} do
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
+               {:error, {:planning_document_absent, "docs/PRD", repo}}
+    end
+
+    test "several produced is a distinct error naming every candidate", %{repo: repo, base: base} do
+      write!(repo, "docs/PRD/PRD-2026-bbbbbbbb-second.md")
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-first.md")
+
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
+               {:error,
+                {:planning_document_ambiguous, "docs/PRD",
+                 ["docs/PRD/PRD-2026-aaaaaaaa-first.md", "docs/PRD/PRD-2026-bbbbbbbb-second.md"]}}
+    end
+
+    test "edits to a document that predates the phase are not a new document", %{repo: repo} do
       write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md")
-      git!(repo, ["add", "docs/PRD"])
-      git!(repo, ["commit", "--no-gpg-sign", "-m", "existing prd"])
+      commit!(repo, "existing prd")
+      phase_base = head!(repo)
       write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "rewritten")
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
+      assert PlanContext.discover_document(repo, "docs/PRD", phase_base) ==
+               {:error, {:planning_document_absent, "docs/PRD", repo}}
+    end
+
+    test "committed edits to a document that predates the phase are not new either", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md")
+      commit!(repo, "existing prd")
+      phase_base = head!(repo)
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "rewritten")
+      commit!(repo, "revise existing prd")
+
+      assert PlanContext.discover_document(repo, "docs/PRD", phase_base) ==
                {:error, {:planning_document_absent, "docs/PRD", repo}}
     end
 
     test "a rename is not a new document, and does not swallow the real one", %{repo: repo} do
       write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md")
-      git!(repo, ["add", "docs/PRD"])
-      git!(repo, ["commit", "--no-gpg-sign", "-m", "existing prd"])
+      commit!(repo, "existing prd")
+      phase_base = head!(repo)
       git!(repo, ["mv", "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "docs/PRD/renamed.md"])
       write!(repo, "docs/PRD/PRD-2026-bbbbbbbb-fresh.md")
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
+      assert PlanContext.discover_document(repo, "docs/PRD", phase_base) ==
                {:ok, "docs/PRD/PRD-2026-bbbbbbbb-fresh.md"}
     end
 
-    test "documents outside the gate's directory are ignored", %{repo: repo} do
+    # `--find-renames` is explicit for this case: under an operator's
+    # `diff.renames=false`, a committed rename would otherwise arrive as an
+    # addition and the gate would capture a document that is not new.
+    test "a committed rename is not a new document", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "a document long enough to pair")
+      commit!(repo, "existing prd")
+      phase_base = head!(repo)
+      git!(repo, ["mv", "docs/PRD/PRD-2026-aaaaaaaa-existing.md", "docs/PRD/renamed.md"])
+      commit!(repo, "rename existing prd")
+
+      assert PlanContext.discover_document(repo, "docs/PRD", phase_base) ==
+               {:error, {:planning_document_absent, "docs/PRD", repo}}
+    end
+
+    test "documents outside the gate's directory are ignored", %{repo: repo, base: base} do
       write!(repo, "docs/TRD/TRD-2026-aaaaaaaa-other.md")
       write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-mine.md")
+      commit!(repo, "both")
 
-      assert PlanContext.discover_document(repo, "docs/PRD") ==
+      assert PlanContext.discover_document(repo, "docs/PRD", base) ==
                {:ok, "docs/PRD/PRD-2026-aaaaaaaa-mine.md"}
     end
 
@@ -288,10 +371,35 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
       not_a_repo = Path.join(System.tmp_dir!(), "no-repo-#{System.unique_integer([:positive])}")
 
       assert {:error, {:planning_document_scan_failed, ^not_a_repo, status, output}} =
-               PlanContext.discover_document(not_a_repo, "docs/PRD")
+               PlanContext.discover_document(not_a_repo, "docs/PRD", String.duplicate("a", 40))
 
       assert status != 0
       assert output =~ "fatal"
+    end
+
+    # A base Foreman supplied but git cannot resolve is git failing to read
+    # the phase's history, not the agent producing nothing.
+    test "a base git cannot resolve is a scan failure, not absent", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-mine.md")
+
+      assert {:error, {:planning_document_scan_failed, ^repo, status, output}} =
+               PlanContext.discover_document(repo, "docs/PRD", String.duplicate("d", 40))
+
+      assert status != 0
+      assert output =~ "fatal"
+    end
+
+    # Without a base the committed half of the union cannot be read at all.
+    # Falling back to the working tree is what let a committed PRD read as
+    # "the agent wrote nothing", so a missing base is its own loud failure.
+    test "a base Foreman could not determine is its own error", %{repo: repo} do
+      write!(repo, "docs/PRD/PRD-2026-aaaaaaaa-mine.md")
+
+      assert PlanContext.discover_document(repo, "docs/PRD", nil) ==
+               {:error, {:planning_document_base_unknown, "docs/PRD", repo}}
+
+      assert PlanContext.discover_document(repo, "docs/PRD", "") ==
+               {:error, {:planning_document_base_unknown, "docs/PRD", repo}}
     end
   end
 
@@ -348,6 +456,18 @@ defmodule ForemanServer.Workflow.RunExecutorGatesTest do
   defp git!(repo, args) do
     {_output, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
     :ok
+  end
+
+  # What `worktree_record.base_ref` carries: the commit the phase's
+  # checkout was created at.
+  defp head!(repo) do
+    {sha, 0} = System.cmd("git", ["-C", repo, "rev-parse", "HEAD"], stderr_to_stdout: true)
+    String.trim(sha)
+  end
+
+  defp commit!(repo, message) do
+    git!(repo, ["add", "-A", "--", "docs"])
+    git!(repo, ["commit", "--no-gpg-sign", "-m", message])
   end
 
   defp write!(repo, relative, body \\ "document body") do

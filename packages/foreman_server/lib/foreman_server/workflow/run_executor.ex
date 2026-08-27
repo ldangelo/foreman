@@ -2432,9 +2432,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   #   * A planning document (`planning.prd_path`, `planning.trd_path`) is
   #     DISCOVERED. Foreman does not name the file and does not require the
   #     agent to reproduce a name — that contract failed in three
-  #     consecutive live runs. `PlanContext.discover_document/2` asks git
-  #     what new document appeared, and the answer is captured into the
-  #     plan context under the same key.
+  #     consecutive live runs. `PlanContext.discover_document/3` asks git
+  #     what new document appeared since the phase's base commit, and the
+  #     answer is captured into the plan context under the same key.
   #   * Every other key still names a context value that must resolve to an
   #     existing file (the frozen ImplementationContext's `trd_path`, which
   #     Foreman validated at approval and the agent only reads).
@@ -2477,11 +2477,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # what `context_for/2` and `base_context/4` hand the NEXT phase — so
   # `create-trd` reads the PRD the `create-prd` agent actually wrote rather
   # than one Foreman invented. Discovery failures propagate verbatim; each
-  # cause has its own tuple (see `PlanContext.discover_document/2`).
+  # cause has its own tuple (see `PlanContext.discover_document/3`).
   defp capture_planning_document(state, key, docs_dir, worktree_record) do
     working_directory = working_directory_for(state, worktree_record)
+    base_ref = phase_base_ref(worktree_record)
 
-    case PlanContext.discover_document(working_directory, docs_dir) do
+    case PlanContext.discover_document(working_directory, docs_dir, base_ref) do
       {:ok, relative_path} ->
         {:ok,
          %{
@@ -2494,6 +2495,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:error, reason}
     end
   end
+
+  # The commit the phase's checkout was created at. Discovery needs it
+  # because an agent that COMMITS its document leaves nothing in the
+  # working tree to scan; `base_ref..HEAD` is where that document is.
+  # `Worktree.create/1` pins the worktree to this revision and both
+  # `create_phase_worktree/4` and `create_default_worktree/3` carry it back
+  # on the record, so no new event is needed. A phase that ran with no
+  # worktree has no recorded base: nil travels through to
+  # `:planning_document_base_unknown` rather than silently degrading the
+  # gate to a working-tree-only scan that cannot see a committed document.
+  defp phase_base_ref(%{base_ref: base_ref}) when is_binary(base_ref) and base_ref != "",
+    do: base_ref
+
+  defp phase_base_ref(_), do: nil
 
   # The ONE rule that turns a context path into an absolute one: paths live
   # in the same working directory the agent executed in — the phase worktree

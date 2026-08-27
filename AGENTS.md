@@ -126,18 +126,38 @@ order.
 **Planning documents are DISCOVERED, not mandated.** Foreman does not tell a
 plan agent what to name its PRD or TRD and does not gate on a name it computed.
 `RunExecutor.enforce_required_file/4` routes `requiredFile: planning.prd_path` /
-`planning.trd_path` to `PlanContext.discover_document/2`, which runs
-`git status --porcelain -z --untracked-files=all -- docs/PRD` (or `docs/TRD`) in
-the phase's working directory and takes the untracked-or-added entries as the
-documents this phase produced. The invariant that makes this deterministic is
-one the pipeline already enforces — the tree is clean when a phase starts, a
-dirty worktree HALTs — so it is not a heuristic: no newest-mtime, no name
-matching. Renames and edits of tracked documents are not candidates; the gate
-proves a NEW document exists. Each outcome is its own error (AGENTS.md 5.3):
-one candidate captures, `:planning_document_absent` means the agent produced
-nothing, `:planning_document_ambiguous` names every candidate rather than
-picking one, `:planning_document_scan_failed` means git could not read the
-directory at all.
+`planning.trd_path` to `PlanContext.discover_document/3`, which takes the
+documents NEW IN THE PHASE as the union of two scans in the phase's working
+directory, deduplicated:
+
+1. `git diff --name-only -z --diff-filter=A --find-renames <base_ref> HEAD --
+   docs/PRD` — what the agent COMMITTED. `--find-renames` is explicit so an
+   operator's `diff.renames=false` cannot turn a committed rename into an
+   apparent addition.
+2. `git status --porcelain -z --untracked-files=all -- docs/PRD` — what the
+   agent left untracked or added in the working tree.
+
+`base_ref` is the commit the phase's checkout was created at:
+`Worktree.create/1` pins the worktree to it and both
+`create_phase_worktree/4` and `create_default_worktree/3` carry it back on the
+worktree record, so `capture_planning_document/4` reads it from run state with
+no new event. The invariant that makes this deterministic is one the pipeline
+already enforces — the tree is clean when a phase starts, a dirty worktree
+HALTs — so it is not a heuristic: no newest-mtime, no name matching. Renames
+and edits of documents that already existed at `base_ref` are not candidates;
+the gate proves a NEW document exists. Each outcome is its own error (AGENTS.md
+5.3): one candidate captures, `:planning_document_absent` means the agent
+produced nothing, `:planning_document_ambiguous` names every candidate rather
+than picking one, `:planning_document_scan_failed` means git could not read the
+directory or the base at all, and `:planning_document_base_unknown` means
+Foreman has no base for the phase (a phase configured with
+`worktree: enabled: false`) — never a silent fall back to the working-tree scan.
+
+The committed half is not an edge case: it is what the ensemble skills do. The
+working-tree-only gate failed run-9ff0f0ffc7e5845265d0cdcf8eb0ac2d with
+`{:planning_document_absent, "docs/PRD", …}` 30 seconds after polling had seen
+`?? docs/PRD/PRD-2026-96266fc0-durable-run-log-store.md` — the agent had
+committed it, so the scan saw a clean tree and reported "produced nothing".
 
 `PlanContext.capture_document/3` writes the captured relative path into the
 run's plan context under the same key, so `create-trd` reads the PRD the
