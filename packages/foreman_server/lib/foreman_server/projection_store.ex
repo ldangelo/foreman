@@ -199,20 +199,25 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @doc """
-  Always `{:error, :no_log_store}` for a known run: Foreman persists no run
-  logs.
+  Return projected durable stdout/stderr for a known run.
 
-  The durable channel exists — `WorkerStdout` / `WorkerStderr` events on
-  `worker:<run_id>:<worker_id>` streams — but nothing produces it. No module
-  under `lib/` calls `WorkerProtocol.emit(:worker_stdout, …)` or
-  `emit(:worker_stderr, …)`; production emits only `:worker_started`,
-  `:heartbeat`, and `:worker_exited`. `Logger` output goes to the console and
-  is not keyed by run. Reporting `{:ok, []}` here would claim the run produced
-  no output, which is a lie about a channel that was never wired.
-
-  `{:error, :run_not_found}` for an unknown run.
+  Logs are materialized from `WorkerStdout` / `WorkerStderr` events on
+  `worker:<run_id>:<worker_id>` streams. Unknown runs return
+  `{:error, :run_not_found}`; known runs with no worker output return a
+  successful empty result. The default read is a deterministic latest-500 tail.
   """
-  @spec run_logs(String.t()) :: {:error, :no_log_store | :run_not_found}
+  @spec run_logs(String.t()) ::
+          {:ok,
+           %{
+             run_id: String.t(),
+             entries: [map()],
+             count: non_neg_integer(),
+             limit: pos_integer(),
+             truncated: boolean(),
+             omitted_entries: non_neg_integer(),
+             omitted_bytes: non_neg_integer()
+           }}
+          | {:error, :run_not_found | :log_store_unavailable | {:log_store_failed, term()}}
   def run_logs(run_id) do
     GenServer.call(__MODULE__, {:run_logs, run_id})
   end
@@ -399,12 +404,10 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def handle_call({:run_logs, run_id}, _from, state) do
-    # `:no_log_store` is "there is nowhere for logs to come from", not "this
-    # run produced none". See run_logs/1 for the missing producer.
     reply =
       case Map.get(state.runs, run_id) do
         nil -> {:error, :run_not_found}
-        _run -> {:error, :no_log_store}
+        _run -> run_logs_result(state, run_id)
       end
 
     {:reply, reply, state}
@@ -606,7 +609,10 @@ defmodule ForemanServer.ProjectionStore do
       state.runs
       |> Map.values()
       |> filter_runs(opts)
-      |> Enum.sort_by(fn run -> {get(run, :last_event_at_ms, 0), get(run, :run_id, "")} end, :desc)
+      |> Enum.sort_by(
+        fn run -> {get(run, :last_event_at_ms, 0), get(run, :run_id, "")} end,
+        :desc
+      )
       |> limit_runs(Keyword.get(opts, :limit))
 
     {:reply, runs, state}
@@ -761,6 +767,7 @@ defmodule ForemanServer.ProjectionStore do
       tasks: %{},
       phases: %{},
       pr_associations: %{},
+      run_logs: %{},
       scheduler_intents: %{},
       subscribers: %{},
       project_active_runs: %{},
@@ -1256,6 +1263,14 @@ defmodule ForemanServer.ProjectionStore do
     touch_run_for_payload(state, payload)
   end
 
+  defp apply_event_by_type(state, "WorkerStdout", payload) do
+    project_worker_log(state, payload, "stdout")
+  end
+
+  defp apply_event_by_type(state, "WorkerStderr", payload) do
+    project_worker_log(state, payload, "stderr")
+  end
+
   defp apply_event_by_type(state, "WorkerUnresponsive", payload) do
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       worker_id = get(payload, :worker_id)
@@ -1729,7 +1744,10 @@ defmodule ForemanServer.ProjectionStore do
 
     Enum.filter(runs, fn run ->
       status_match? = is_nil(status) or status == "" or get(run, :status) == status
-      project_match? = is_nil(project_id) or project_id == "" or get(run, :project_id) == project_id
+
+      project_match? =
+        is_nil(project_id) or project_id == "" or get(run, :project_id) == project_id
+
       status_match? and project_match?
     end)
   end
@@ -1753,6 +1771,90 @@ defmodule ForemanServer.ProjectionStore do
       | projects: projects,
         runs: runs
     }
+  end
+
+  @run_logs_default_limit 500
+  @run_logs_max_limit 5_000
+
+  defp project_worker_log(state, payload, channel) when channel in ["stdout", "stderr"] do
+    case decode_for_projection(worker_log_event_type(channel), payload) do
+      %{run_id: run_id, worker_id: worker_id, sequence: sequence, line: line} = event
+      when is_binary(run_id) and run_id != "" and is_binary(worker_id) and worker_id != "" ->
+        entry = %{
+          worker_id: worker_id,
+          channel: channel,
+          sequence: sequence,
+          timestamp: event.timestamp || get(payload, :_projection_recorded_at),
+          content: line || "",
+          stream_id: "worker:#{run_id}:#{worker_id}",
+          event_number: get(payload, :_projection_event_number),
+          stream_version: get(payload, :_projection_stream_version)
+        }
+
+        log_state =
+          state
+          |> Map.get(:run_logs, %{})
+          |> Map.get(run_id, empty_run_log_state())
+          |> put_log_entry(entry)
+
+        state
+        |> touch_run_for_payload(payload)
+        |> Map.update(:run_logs, %{run_id => log_state}, &Map.put(&1, run_id, log_state))
+
+      _ ->
+        state
+    end
+  end
+
+  defp worker_log_event_type("stdout"), do: "WorkerStdout"
+  defp worker_log_event_type("stderr"), do: "WorkerStderr"
+
+  defp empty_run_log_state do
+    %{entries: [], omitted_entries: 0, omitted_bytes: 0}
+  end
+
+  defp put_log_entry(log_state, entry) do
+    entries = [entry | Map.get(log_state, :entries, [])]
+    overflow = max(length(entries) - @run_logs_max_limit, 0)
+    kept = Enum.take(entries, @run_logs_max_limit)
+
+    omitted_bytes =
+      entries |> Enum.drop(@run_logs_max_limit) |> Enum.map(&byte_size(&1.content)) |> Enum.sum()
+
+    log_state
+    |> Map.put(:entries, kept)
+    |> Map.update(:omitted_entries, overflow, &(&1 + overflow))
+    |> Map.update(:omitted_bytes, omitted_bytes, &(&1 + omitted_bytes))
+  end
+
+  defp run_logs_result(state, run_id) do
+    log_state = state |> Map.get(:run_logs, %{}) |> Map.get(run_id, empty_run_log_state())
+
+    entries =
+      log_state.entries
+      |> Enum.reverse()
+      |> Enum.sort_by(&log_sort_key/1)
+
+    total = length(entries)
+    tail = Enum.take(entries, -@run_logs_default_limit)
+    tail_omitted = max(total - length(tail), 0)
+
+    {:ok,
+     %{
+       run_id: run_id,
+       entries: tail,
+       count: length(tail),
+       limit: @run_logs_default_limit,
+       truncated: tail_omitted > 0 or log_state.omitted_entries > 0,
+       omitted_entries: log_state.omitted_entries + tail_omitted,
+       omitted_bytes: log_state.omitted_bytes,
+       max_limit: @run_logs_max_limit
+     }}
+  end
+
+  defp log_sort_key(entry) do
+    {entry.event_number || 0, entry.timestamp || "", entry.worker_id, entry.sequence || 0,
+     entry.channel}
   end
 
   defp recorded_event_at_ms(%RecordedEvent{created_at: %DateTime{} = created_at}, _now_ms_fun) do
@@ -1785,6 +1887,7 @@ defmodule ForemanServer.ProjectionStore do
     payload
     |> with_event_at_ms(recorded_event_at_ms(recorded, now_ms_fun))
     |> Map.put(:_projection_stream_version, recorded.stream_version)
+    |> Map.put(:_projection_event_number, recorded.event_number)
     |> maybe_put(:_projection_recorded_at, recorded_event_timestamp(recorded))
   end
 
@@ -1805,6 +1908,8 @@ defmodule ForemanServer.ProjectionStore do
     |> Map.delete("_projection_event_at_ms")
     |> Map.delete(:_projection_stream_version)
     |> Map.delete("_projection_stream_version")
+    |> Map.delete(:_projection_event_number)
+    |> Map.delete("_projection_event_number")
     |> Map.delete(:_projection_recorded_at)
     |> Map.delete("_projection_recorded_at")
   end

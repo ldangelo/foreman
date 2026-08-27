@@ -496,3 +496,13 @@ register separate lease streams.
   `test/foreman_server/workflow/br_bv_lease_concurrency_test.exs`
   verifies the admission contract; cross-process discipline against
   external writers is a separate, operator-owned concern.
+
+## 19. Durable worker run logs
+
+`foreman_run_get_logs` is backed by `ProjectionStore`, not console `Logger`
+output or ad hoc files. Production worker output must enter the system only as
+`WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...)` events on
+`worker:<run_id>:<worker_id>` streams. The projection returns empty success for
+known runs with no captured output, `:run_not_found` for unknown runs, and typed
+store/projection failures; never substitute `{:ok, []}` for an unavailable log
+source. Redact and control-character-normalize output before event persistence.

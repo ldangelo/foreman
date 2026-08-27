@@ -25,6 +25,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       tasks: %{},
       phases: %{},
       pr_associations: %{},
+      run_logs: %{},
       scheduler_intents: %{},
       subscribers: %{},
       project_active_runs: %{},
@@ -241,16 +242,18 @@ defmodule ForemanServer.MCP.ToolsTest do
                Tools.call_tool("foreman_run_get_activity", %{run_id: "no-such-run"})
     end
 
-    test "logs name the missing producer rather than reporting a silent run" do
+    test "logs for a known run with no worker output are an empty success" do
       run_id = unique_run_id()
       replace_state(%{runs: %{run_id => %{run_id: run_id, status: "in_progress"}}})
 
-      assert {:error, %ToolError{code: "UNAVAILABLE", message: message}} =
-               Tools.call_tool("foreman_run_get_logs", %{run_id: run_id})
-
-      assert message =~ "WorkerStdout"
-      assert message =~ "no producer"
-      assert message =~ "Missing prerequisite"
+      assert {:ok,
+              %{
+                run_id: ^run_id,
+                entries: [],
+                count: 0,
+                limit: 500,
+                truncated: false
+              }} = Tools.call_tool("foreman_run_get_logs", %{run_id: run_id})
     end
 
     test "logs for an unknown run are NOT_FOUND" do

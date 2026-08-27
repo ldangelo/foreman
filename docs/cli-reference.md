@@ -307,7 +307,7 @@ The cockpit status view renders ordered phase nodes, retry arrows, current failu
 
 ### `foreman logs`
 
-Show run logs with structured rendering. When the Elixir backend is available, entries are rendered as timestamped, color-coded lines with stream, type, and phase labels. Falls back to raw log file parsing when the backend is unavailable.
+Show run logs with structured rendering. When the Elixir backend is available, worker stdout/stderr is read from durable `WorkerStdout` / `WorkerStderr` event projections and rendered as timestamped, color-coded lines with stream, type, and phase labels. Known runs with no captured output render as empty; unknown runs report not found. Falls back to raw log file parsing when the backend is unavailable.
 
 ```bash
 foreman logs bd-abc1              # Show structured log entries
@@ -882,12 +882,13 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_run_get_events`, `foreman_run_get_activity`.
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
-events are appended to `worker:<run_id>:<worker_id>` streams instead, so use
-`foreman_run_get_activity` for per-worker heartbeat counts, last sequence, and
-last-heartbeat timestamps. `foreman_run_get_logs` returns `UNAVAILABLE`:
-Foreman persists no run output, because the `WorkerStdout` / `WorkerStderr`
-events it would read have no producer. Both return `NOT_FOUND` for an unknown
-run id.
+and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams
+instead, so use `foreman_run_get_activity` for per-worker heartbeat counts,
+last sequence, and last-heartbeat timestamps. `foreman_run_get_logs` reads the
+bounded worker log projection: known runs with no captured output return an
+empty success, unknown runs return `NOT_FOUND`, and projection/store failures
+return typed errors instead of empty success. The default log response is the
+latest 500 entries; the in-memory projection retains up to 5,000 entries.
 
 Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are

@@ -285,4 +285,99 @@ defmodule ForemanServer.ProjectionStoreTest do
       assert [] = ProjectionStore.tasks_by_run_id("run-nothing")
     end
   end
+
+  describe "run_logs/1" do
+    test "returns not_found for unknown run and empty success for known run without output" do
+      assert {:error, :run_not_found} = ProjectionStore.run_logs("missing-run")
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "RunStarted",
+                   payload: %{run_id: "run-empty", project_id: "project-1"}
+                 }
+               ])
+
+      assert {:ok,
+              %{
+                run_id: "run-empty",
+                entries: [],
+                count: 0,
+                limit: 500,
+                truncated: false,
+                omitted_entries: 0,
+                omitted_bytes: 0
+              }} = ProjectionStore.run_logs("run-empty")
+    end
+
+    test "projects WorkerStdout and WorkerStderr as ordered durable log entries" do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "RunStarted",
+                   payload: %{run_id: "run-logs", project_id: "project-1"}
+                 },
+                 %{
+                   event_type: "WorkerStdout",
+                   payload: %{
+                     run_id: "run-logs",
+                     worker_id: "worker-b",
+                     sequence: 2,
+                     line: "out two",
+                     timestamp: "2026-08-27T00:00:02Z"
+                   }
+                 },
+                 %{
+                   event_type: "WorkerStderr",
+                   payload: %{
+                     run_id: "run-logs",
+                     worker_id: "worker-a",
+                     sequence: 1,
+                     line: "err one",
+                     timestamp: "2026-08-27T00:00:01Z"
+                   }
+                 }
+               ])
+
+      assert {:ok, result} = ProjectionStore.run_logs("run-logs")
+      assert result.count == 2
+      assert result.truncated == false
+
+      assert [first, second] = result.entries
+      assert first.channel == "stderr"
+      assert first.content == "err one"
+      assert first.worker_id == "worker-a"
+      assert first.stream_id == "worker:run-logs:worker-a"
+      assert first.sequence == 1
+
+      assert second.channel == "stdout"
+      assert second.content == "out two"
+      assert second.worker_id == "worker-b"
+    end
+
+    test "keeps the latest 500 log entries with truncation metadata" do
+      events =
+        [%{event_type: "RunStarted", payload: %{run_id: "run-tail", project_id: "project-1"}}] ++
+          for n <- 1..505 do
+            %{
+              event_type: "WorkerStdout",
+              payload: %{
+                run_id: "run-tail",
+                worker_id: "worker-1",
+                sequence: n,
+                line: "line-#{n}",
+                timestamp: "2026-08-27T00:00:00Z"
+              }
+            }
+          end
+
+      assert :ok = ProjectionStore.apply_events(events)
+      assert {:ok, result} = ProjectionStore.run_logs("run-tail")
+      assert result.count == 500
+      assert result.truncated == true
+      assert result.omitted_entries == 5
+      assert hd(result.entries).content == "line-6"
+      assert List.last(result.entries).content == "line-505"
+    end
+  end
 end

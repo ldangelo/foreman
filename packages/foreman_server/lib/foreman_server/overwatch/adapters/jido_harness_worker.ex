@@ -38,7 +38,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
-  alias ForemanServer.Overwatch.WorkerProtocol
+  alias ForemanServer.Overwatch.{WorkerLogPolicy, WorkerProtocol}
 
   @default_heartbeat_interval_ms 5_000
 
@@ -65,7 +65,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       driver_opts: driver_opts,
       interval: interval,
       result_recipient: result_recipient,
-      activated?: false
+      activated?: false,
+      log_counters: WorkerLogPolicy.initial_counters()
     }
 
     {:ok, state}
@@ -121,8 +122,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
     task =
       Task.async(fn ->
-        result = run_agent(state.provider, state.prompt, state.driver_opts)
-        send(parent_pid, {:agent_done, result})
+        {result, log_events} = run_agent(state.provider, state.prompt, state.driver_opts)
+        send(parent_pid, {:agent_done, result, log_events})
       end)
 
     Process.monitor(task.pid)
@@ -136,7 +137,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     {:noreply, state}
   end
 
-  def handle_info({:agent_done, result}, state) do
+  def handle_info({:agent_done, result, log_events}, state) do
+    state = emit_worker_logs(state, log_events)
     _ = WorkerProtocol.emit(:worker_exited, %{worker_id: state.worker_id, run_id: state.run_id})
 
     if state.result_recipient do
@@ -184,23 +186,26 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   # site that reads it, shared with the non-Overwatch adapter so the two
   # cannot drift.
   @spec run_agent(atom(), String.t(), keyword()) ::
-          {:ok, String.t()} | ErrorCodes.code()
+          {{:ok, String.t()} | ErrorCodes.code(), [map()]}
   defp run_agent(provider, prompt, driver_opts) do
     case Driver.run(provider, prompt, driver_opts) do
       {:ok, %Jido.Harness.RunResult{} = run_result} ->
-        normalize_result(run_result)
+        {normalize_result(run_result), log_events(run_result)}
 
       {:ok, detached} when is_map(detached) ->
         run_id = detached[:run_id] || detached["run_id"]
         timeout = Keyword.get(driver_opts, :await_timeout, :infinity)
 
         case Driver.await(run_id, timeout) do
-          {:ok, %Jido.Harness.RunResult{} = run_result} -> normalize_result(run_result)
-          {:error, reason} -> JidoHarnessAdapter.normalize_raw_error(reason)
+          {:ok, %Jido.Harness.RunResult{} = run_result} ->
+            {normalize_result(run_result), log_events(run_result)}
+
+          {:error, reason} ->
+            {JidoHarnessAdapter.normalize_raw_error(reason), []}
         end
 
       {:error, reason} ->
-        JidoHarnessAdapter.normalize_raw_error(reason)
+        {JidoHarnessAdapter.normalize_raw_error(reason), []}
     end
   end
 
@@ -211,5 +216,63 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       {:ok, text, _metadata} -> {:ok, text}
       {:error, _} = err -> err
     end
+  end
+
+  defp log_events(%Jido.Harness.RunResult{events: events}) when is_list(events) do
+    events
+    |> Enum.flat_map(&event_to_log/1)
+  end
+
+  defp log_events(_run_result), do: []
+
+  defp event_to_log(%Jido.Harness.Event{type: type, payload: payload, timestamp: timestamp})
+       when type in [:output_text_delta, :output_text_final, :command_output_delta] and
+              is_map(payload) do
+    case payload_text(payload) do
+      nil -> []
+      text -> [%{channel: payload_channel(type, payload), data: text, timestamp: timestamp}]
+    end
+  end
+
+  defp event_to_log(_event), do: []
+
+  defp payload_text(payload) do
+    get_payload(payload, "text") || get_payload(payload, "content") ||
+      get_payload(payload, "data")
+  end
+
+  defp payload_channel(:command_output_delta, payload) do
+    case get_payload(payload, "stream") || get_payload(payload, "channel") do
+      value when value in [:stderr, "stderr"] -> :worker_stderr
+      _ -> :worker_stdout
+    end
+  end
+
+  defp payload_channel(_type, _payload), do: :worker_stdout
+
+  defp get_payload(payload, key) do
+    Map.get(payload, key) || Map.get(payload, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> Map.get(payload, key)
+  end
+
+  defp emit_worker_logs(state, log_events) do
+    Enum.reduce(log_events, state, fn log_event, acc ->
+      case WorkerLogPolicy.normalize(log_event.data, acc.log_counters) do
+        {:emit, line, counters} ->
+          _ =
+            WorkerProtocol.emit(log_event.channel, %{
+              worker_id: acc.worker_id,
+              run_id: acc.run_id,
+              line: line,
+              timestamp: log_event.timestamp
+            })
+
+          %{acc | log_counters: counters}
+
+        {:drop, _metadata} ->
+          acc
+      end
+    end)
   end
 end

@@ -26,7 +26,9 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
 
   @spec normalize(term(), counters(), keyword()) :: decision()
   def normalize(data, counters \\ initial_counters(), opts \\ []) when is_map(counters) do
-    line = data |> stringify() |> redact(Keyword.get(opts, :secrets, [])) |> escape_control_chars()
+    line =
+      data |> stringify() |> redact(Keyword.get(opts, :secrets, [])) |> escape_control_chars()
+
     bytes = byte_size(line)
     limits = default_limits()
     max_lines = Keyword.get(opts, :max_lines, limits.max_lines)
@@ -45,8 +47,14 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
     line
     |> redact_configured_secrets(secrets)
     |> String.replace(~r/(?i)(bearer\s+)[A-Za-z0-9._~+\/-]+=*/, "\\1" <> @redacted)
-    |> String.replace(~r/(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+/, "\\1" <> @redacted)
-    |> String.replace(~r/-----BEGIN [^-]+PRIVATE KEY-----.*?-----END [^-]+PRIVATE KEY-----/s, @redacted)
+    |> String.replace(
+      ~r/(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+/,
+      "\\1" <> @redacted
+    )
+    |> String.replace(
+      ~r/-----BEGIN [^-]+PRIVATE KEY-----.*?-----END [^-]+PRIVATE KEY-----/s,
+      @redacted
+    )
   end
 
   @spec escape_control_chars(String.t()) :: String.t()
@@ -64,8 +72,11 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
 
   defp redact_configured_secrets(line, secrets) do
     Enum.reduce(List.wrap(secrets), line, fn
-      secret, acc when is_binary(secret) and secret != "" -> String.replace(acc, secret, @redacted)
-      _secret, acc -> acc
+      secret, acc when is_binary(secret) and secret != "" ->
+        String.replace(acc, secret, @redacted)
+
+      _secret, acc ->
+        acc
     end)
   end
 end

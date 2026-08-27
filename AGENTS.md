@@ -1364,3 +1364,10 @@ br sync --flush-only                  # Export DB to JSONL after Beads mutations
 `br` never commits or pushes. Follow this repository's own git instructions before staging, committing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
 
 <!-- end-bv-agent-instructions -->
+
+## Durable Run Logs
+
+`foreman_run_get_logs` is backed by worker events and `ProjectionStore`.
+Only `WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...)` may produce
+persistent run log entries. Do not copy ordinary server `Logger` output into run
+logs, and do not return empty success for an unknown run or failed log source.

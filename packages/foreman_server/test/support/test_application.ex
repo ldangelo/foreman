@@ -33,6 +33,7 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
     :sys.replace_state(ForemanServer.ProjectionStore, fn state ->
       empty_initial_state(opts, state)
     end)
+
     :ok
   end
 
@@ -60,6 +61,7 @@ defmodule ForemanServer.TestSupport.ProjectionStoreReset do
       tasks: %{},
       phases: %{},
       pr_associations: %{},
+      run_logs: %{},
       scheduler_intents: %{},
       subscribers: subscribers,
       project_active_runs: %{},
