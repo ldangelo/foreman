@@ -1,144 +1,177 @@
 # Foreman User Guide
 
-This guide explains how to use Foreman day to day. For exact flags and command syntax, see the [CLI Reference](./cli-reference.md).
+This guide explains how to use Foreman day to day. For exact flags and
+command syntax, see the [CLI Reference](./cli-reference.md).
 
 ## Overview
 
-Foreman is a multi-agent coding orchestrator that manages AI engineering work through isolated git worktrees with a PostgreSQL-backed event store and scheduler.
+Foreman orchestrates AI coding agents against a repository through
+isolated git worktrees, with an event-sourced Elixir/Phoenix backend as
+the single source of truth. It has two runtime pieces:
 
-### Architecture
+| Component | Technology | Role |
+|-----------|------------|------|
+| `foreman` CLI | Go | Thin HTTP client: posts commands to `/api/commands`, reads projections from `/api/*`. Holds no state of its own. |
+| Foreman server (`foreman_server`) | Elixir/OTP + Phoenix | Owns everything: event store, CQRS aggregates, projections, the scheduler, worktree/VCS operations, agent dispatch, PR reconciliation, MCP server. |
 
-Foreman has three runtime layers:
+There is no separate Node CLI or Node worker process. Agents run
+**in-process** inside the Elixir server via `ForemanServer.AgentRuntime`
+and the vendored `Jido.Harness` package (see
+[Agent runtime and Jido Harness](#7-agent-runtime-and-jido-harness)
+below).
 
-| Layer | Technology | Role |
-|-------|------------|------|
-| Node CLI | TypeScript/Node | Operator commands, VCS/worktree operations, Pi SDK worker bridge |
-| Elixir Server | Elixir/OTP | Event store, task scheduler, projections, overwatch, PR reconciliation |
-| Node/Pi Workers | TypeScript + Pi SDK | Agent execution, phase prompts, tool calls |
+**Event sourcing:** every state transition is a domain event appended to
+`foreman_events`. Projections (task/run/project/queue read models) are
+rebuilt from that log and are what `GET /api/*` endpoints and `foreman
+project|task|run get|list` read.
 
-**Event sourcing:** The Elixir backend uses domain events as the source of truth. Projections and read models (status displays, log summaries) are derived views updated after events are observed.
+### Task and run lifecycle, at a glance
 
-**Worker bridge:** Worker/Pi SDK tool calls and assistant messages emit ordered worker events before being mirrored into raw logs. Phase reports emit structured report events so Elixir Overwatch can send compact next-phase Agent Mail steering without depending on report filenames.
+```text
+task.create ──▶ task.approve ──▶ (RunAdmission) ──▶ run dispatched
+   open           ready                                in_progress
+                                                            │
+                                          TaskExecutionCompleted/Failed
+                                                            │
+                                                      closed | failed
+```
 
-### Core Workflows
+A task can be tracker-backed (a Beads/TaskProvider issue drives its
+approval and completion callbacks) or **ad-hoc** — a task carrying only a
+free-text `prompt`, with no tracker issue at all. Both go through the
+same `task.create` → `task.approve` path; see
+[Ad-hoc task dispatch](#3-ad-hoc-task-dispatch-unified-with-the-task-path).
 
-1. **Task Lifecycle:** Task created → enters ready queue → dispatched to worktree → pipeline phases run → finalized → PR created/merged
-2. **Dispatch Flow:** `foreman run` sends scheduler tick to Elixir → ready tasks claimed by capacity → workers launched in git worktrees
-3. **Pipeline Phases:** Explorer → Developer → cicd-developer/cr-developer/merge-resolver (on failure) → QA → Reviewer → Documentation → Finalize → create-pr → pr-wait → merge
-4. **Retry Pattern:** Verdict phase FAIL reports (`QA_REPORT.md`, `REVIEW.md`, etc.) route through `retryWith`; phase failures match `retryWithByReason` patterns for specialized recovery. QA must reserve `agent-error` for infrastructure failures that prevent writing a report.
+Once a run is admitted, its workflow's phases run in the order the
+workflow YAML defines. Bundled workflow manifests live in
+`packages/foreman_server/priv/defaults/workflows/*.yaml`:
+`assess`, `discover`, `fix`, `implement`, `implement-trd`,
+`implement-trd-beads`, `plan`, `prd`, `release`, `trd`, `verify`. A
+workflow name is a server-side manifest selector, validated by
+`Catalog.load/1` at dispatch time — there is no client-side allowlist.
+PR creation is not phase-driven; see
+[AutoPR](#pr-creation-and-merge-reconciliation) below.
 
-### Skills and Prompts
-
-Foreman uses bundled Pi skills for specialized tasks:
-
-| Skill | Purpose |
-|-------|---------|
-| `foreman-workflow-pipeline` | Workflow YAML, phase behavior, PR gates |
-| `foreman-elixir-backend` | Event store, scheduler, projections |
-| `foreman-vcs-backend` | Git/worktree operations |
-| `foreman-doc-gate` | Documentation requirements |
-| `foreman-pipeline-diagnosis` | Stuck run debugging |
-| `foreman-safe-recovery` | Run/worktree cleanup decisions |
-
-Phase prompts live in `packages/foreman_server/priv/defaults/workflows/prompts/` and are installed to runtime paths by `foreman init --force`. (The old `src/defaults/prompts/` path belonged to the removed Node CLI and no longer exists.)
-
-### MCP/Foreman Tool Integration
-
-Foreman exposes MCP tools for integrated task management:
-
-**Read tools:** `foreman.projects.list`, `foreman.tasks.list`, `foreman.tasks.show`, `foreman.runs.summary`, `foreman.inbox.read`, `foreman.lifecycle.events`
-
-**Write tools:** `foreman.tasks.create`, `foreman.tasks.reset`, `foreman.tasks.approve`, `foreman.tasks.block`, `foreman.inbox.send`
-
-Pi slash commands available in agent sessions: `/task`, `/reset`, `/approve`, `/block`
-
-### Backend Boundaries
-
-| Capability | Owner |
-|------------|-------|
-| Task CRUD, status | Elixir backend (source of truth) |
-| Dispatch, capacity, scheduling | Elixir scheduler |
-| Git worktree, branches | Node CLI |
-| Agent prompts, tool execution | Pi SDK / Node worker |
-| Phase reports, logs | Worker → Elixir events |
-| PR creation, merge | Node CLI + Elixir reconciliation |
-
-## What Foreman Does
-
-Foreman runs AI engineering work through a managed pipeline:
-
-1. Tasks enter the native PostgreSQL-backed task store.
-2. `foreman run` dispatches ready tasks to isolated git worktrees.
-3. Workflow phases run in order: exploration, implementation, verification, review, documentation, finalization, PR wait, and merge where configured.
-4. Foreman records progress, phase reports, logs, mail, and merge status. In the Elixir backend, domain events are the source of truth and trigger scheduler/watch behavior; projections/read views, including status/log displays, are read models used for display and decisions after events are observed. Worker/Pi SDK tool calls and assistant messages are emitted as ordered worker events before being mirrored into raw logs. Phase reports also emit structured report events so Elixir Overwatch can send compact next-phase Agent Mail steering without depending on report filenames. Elixir overwatch records tool requests/approvals/denials and sends phase-targeted Agent Mail steering nudges when a worker drifts from policy. Polling-only phases (`pr-wait`, `merge`, and `refinery`) are exempt from stale-heartbeat nudges because they can wait on external systems without assistant or tool activity.
-5. Completed work is finalized and merged through the configured workflow.
-
-Use Foreman when you want multiple AI agents working safely on one repository without sharing a dirty working tree.
+Each run executes in its own git worktree, isolating one agent's edits
+from your main checkout and from every other concurrent run.
 
 ## Local Development Environment
 
-In this repository, `direnv allow` loads Devbox, sources `.env`, and starts the checked-in Docker Compose stack when you enter the directory. Foreman uses `DATABASE_URL` from `.env` or the process environment. The compose stack's fresh/default Foreman Postgres endpoint is `127.0.0.1:55432/foreman`, while Hindsight uses the separate `hindsight` database inside the same container.
-
-Useful commands:
+`direnv allow` loads Devbox and sources `.env` on entering the
+repository. The real script catalog (see `devbox.json`; do not trust an
+older list you've seen elsewhere):
 
 ```bash
-devbox run dev:up          # start shared Postgres + Hindsight
-devbox run db:up           # start only Postgres
-devbox run hindsight:logs  # tail Hindsight logs
+# ONE-TIME:
+devbox run setup            # copy .env, install mix deps
+
+# DAILY:
+devbox run up                # bring up the Langfuse/otel stack
+devbox run server            # start the Phoenix server (foreground)
+devbox run iex                # start with iex for interactivity
+devbox run ps                 # show service status
+devbox run logs                # tail otel-collector logs
+devbox run logs:stack          # tail litellm-langfuse stack logs
+
+# DATABASE:
+devbox run db:migrate
+devbox run db:reset
+devbox run db:console
+
+# TESTING:
+devbox run test               # all tests
+devbox run test:unit          # everything except :langfuse-tagged
+devbox run test:langfuse       # only the OTel+Langfuse e2e path
+
+devbox run info                # command + status summary
+devbox run env:list             # current env vars + endpoints
 ```
 
-Set `FOREMAN_DIRENV_AUTO_COMPOSE=0` before entering the repository to opt out of automatic container startup. Hindsight serves its API at <http://localhost:8888> and control plane at <http://localhost:9999>.
+The dev Phoenix server listens on `http://127.0.0.1:4766`
+(`packages/foreman_server/config/dev.exs`). The Go CLI defaults to
+`http://127.0.0.1:4000` — set `FOREMAN_API_URL` to point it at the dev
+server:
+
+```bash
+export FOREMAN_API_URL=http://127.0.0.1:4766
+foreman project list
+```
+
+### Authentication
+
+- Set `FOREMAN_API_TOKEN` (CLI) and the server's
+  `:foreman_server, :api_bearer_token` config to require
+  `Authorization: Bearer <token>` on every `/api/*` request.
+- `/api/*` also accepts `?token=<token>` for narrow tooling.
+- When the server has no token configured (the local dev default),
+  authentication is bypassed entirely.
 
 ## Core Concepts
 
 ### Projects
 
-A project is a repository registered with Foreman. `foreman init` creates the local `.foreman/` config assets and registers the project with the Elixir backend; the CLI does not apply Postgres migrations or connect directly to the database. Commands that act on a project accept `--project <name-or-path>` so you can operate from another directory.
+A project is a repository registered with Foreman. Commands operate on
+one project at a time via `--project-id`/`--project`.
 
-- If the server has `FOREMAN_API_TOKEN`, send
-  `Authorization: Bearer <token>` or set the same token in CLI env.
-- `/api/*` also accepts `?token=<token>` for narrow tooling.
-- When no token is configured, dev auth is bypassed.
-
-Manage registered projects with `foreman project <subcommand>`:
-
-### Create a project
-
-```
-foreman project create \
-  --id project-123 \
-  --path /srv/foreman/project-123 \
-  --task-provider beads
-```
-
-### Get one project
-
-```
+```bash
+foreman project create --id project-123 --path /srv/foreman/project-123 --task-provider beads
 foreman project get project-123
-```
-
-### Update a project
-
-```
 foreman project update --task-provider beads project-123
-```
-
-### Delete a project
-
-```
 foreman project delete project-123
-```
-
-### List projects
-
-```
 foreman project list
+foreman project list --include-archived --format json
 ```
+
+`project delete` soft-deletes (archives) a project and is **rejected**
+while the project has active runs; pass `--force` to print the blocking
+run IDs.
+
+### Tasks
+
+A task is the unit of dispatchable work. It carries a title, optional
+description, a `task_type` (legacy classification field) and/or
+`workflow_type` (the workflow manifest selector), and — for ad-hoc
+work — a free-text `prompt`.
+
+```bash
+foreman task create --project foreman --title "Fix flaky retry" --workflow-type fix
+foreman task approve --id <task-id>
+foreman task get <task-id>
+foreman task retry --id <task-id> --reason "safe to rerun"
+```
+
+`--workflow-type implement-trd` / `implement-trd-beads` require
+`--trd-path <project-relative-path>` — the server's
+`ImplementationContext` needs a committed TRD blob to freeze at approval
+time.
+
+### Runs
+
+A run is one dispatched execution of a task's workflow, in its own
+worktree.
+
+```bash
+foreman run list --project-id foreman --status failed --limit 5
+foreman run get <run-id>
+foreman run cancel --id <run-id> --reason stuck_in_recovery
+foreman run remove --id <run-id>
+foreman run reset --id <run-id>
+```
+
+- `run cancel` marks the run terminal (`cancelled`).
+- `run remove` terminates the run, releases its slot and any per-DB
+  Beads lease, and best-effort cleans the worktree and local branch.
+  Use it when a run is wedged and you want a clean slate.
+- `run reset` clears a **failed or stuck** run's projection state so it
+  can be resubmitted fresh; cancelled or completed runs are rejected
+  with `{:run_not_resettable, "<status>"}`.
 
 ## 2. Operator API surface
 
-All external domain mutations go through `POST /api/commands`. The current
-operator allowlist is:
+All external domain mutations go through `POST /api/commands`. The
+operator allowlist (`ForemanServerWeb.CommandController.@allowed_types`,
+mirrored by `ForemanServer.CommandGateway.@allowed_operator_types`) is
+exactly:
 
 - `project.register`
 - `project.update`
@@ -150,41 +183,53 @@ operator allowlist is:
 - `run.remove`
 - `run.reset`
 
-`ForemanServerWeb.CommandController` derives or verifies `aggregate_id` before
-calling `ForemanServer.CommandGateway`. The expected form is `<prefix>:<id>`
-(`task:<task_id>`, `run:<run_id>`, `project:<project_id>`).
-A mismatched supplied `aggregate_id` is rejected before the aggregate handles
-the command.
+`CommandController` derives or verifies `aggregate_id` before calling
+`CommandGateway`. The expected form is `<prefix>:<id>` (`task:<task_id>`,
+`run:<run_id>`, `project:<project_id>`). A mismatched supplied
+`aggregate_id` is rejected before the aggregate handles the command.
+
+Response shapes:
+
+- Success: `201` with `{"status": "accepted", "result": {...}}`.
+- Refused command type: `403` with `{"error": "command_not_allowed", "type": "..."}`.
+- Malformed envelope: `400` with `{"error": "invalid_envelope", "reason": "..."}`.
+- Optimistic-concurrency conflict: `409` with `{"code": "version_conflict", "current_version": N}`.
+- Project archive blocked by active runs: `409` with `{"code": "project_has_active_runs", "run_ids": [...]}`.
+- Domain rejection: `422` with `{"error": "...", "detail": ...}` or `{"error": "..."}`.
 
 Other ingress paths are separate:
 
-- workflow install/remove: `POST /api/admin/workflows/install` and
-  `POST /api/admin/workflows/remove`
-- webhooks: `/webhooks/*`
-- MCP: `/mcp`
-- dev-only dashboards: `/debug/*` and `/dashboard/*`
+- Workflow install/remove: `POST /api/admin/workflows/install` and
+  `POST /api/admin/workflows/remove`.
+- Webhooks: `/webhooks/external_trigger`, `/webhooks/github`,
+  `/webhooks/operator/ingest`.
+- MCP: `/mcp` (also stdio; see [MCP tool integration](#9-mcp-tool-integration)).
+- Dev-only dashboards: `/debug/*` (dev env only) and `/dashboard/*`
+  (bearer-token guarded, every env).
 
 Read endpoints are projection-only:
 
-- `GET /api/work/{id}` returns the (legacy, read-only) work projection for a
-  historical `work.submit` request, or `{error: "work_not_found"}` with
-  `404`. The `work.*` write ingress was retired in favor of the task path
-  (below); this endpoint remains only so pre-existing work records stay
-  inspectable.
+- `GET /api/work/{id}` returns the (legacy, read-only) work projection
+  for a historical `work.submit` request, or `{error: "work_not_found"}`
+  with `404`. The `work.*` write ingress was retired in favor of the
+  task path (below); this endpoint remains only so pre-existing work
+  records stay inspectable.
 - `GET /api/runs/{id}` returns `{run: ...}` with stringified keys, or
-  `{error: "run_not_found", run_id: "..."}` with `404`. Every projected run
-  carries `pr_url` — the URL of the PR the run opened, or `null` when Foreman
-  recorded none. `GET /api/runs` carries the same field on each listed run.
-- `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`, and
-  `GET /api/queue` expose corresponding projections.
+  `{error: "run_not_found", run_id: "..."}` with `404`. Every projected
+  run carries `pr_url` — the URL of the PR the run opened, or `null`
+  when Foreman recorded none. `GET /api/runs` carries the same field on
+  each listed run.
+- `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
+  and `GET /api/queue` expose corresponding projections.
 
 ## 3. Ad-hoc task dispatch (unified with the task path)
 
-There is a single dispatch ingress: `task.create` (+ `task.approve`). A task
-may carry a `prompt` and skip tracker/Beads issue creation entirely by
-setting `provider_tracked: false`; setting `auto_approve: true` on the same
-`task.create` call immediately approves and dispatches it, so a caller gets
-one-call ad-hoc dispatch without a separate `task.approve` round trip.
+There is a single dispatch ingress: `task.create` (+ `task.approve`). A
+task may carry a `prompt` and skip tracker/Beads issue creation entirely
+by setting `provider_tracked: false`; setting `auto_approve: true` on
+the same `task.create` call immediately approves and dispatches it, so a
+caller gets one-call ad-hoc dispatch without a separate `task.approve`
+round trip.
 
 Example command envelope:
 
@@ -208,24 +253,25 @@ Example command envelope:
 
 Current behavior:
 
-- `task_id` and `project_id` must be non-empty; `project_id` must refer to an
-  existing, non-archived project.
+- `task_id` and `project_id` must be non-empty; `project_id` must refer
+  to an existing, non-archived project.
 - `prompt` is optional; when present it is written into
-  `workflow_snapshot["input"]["prompt"]` at approval time and rendered into
-  any `{{input.prompt}}` / `{{input.prompt_argument}}` command placeholders.
+  `workflow_snapshot["input"]["prompt"]` at approval time and rendered
+  into any `{{input.prompt}}` / `{{input.prompt_argument}}` command
+  placeholders.
 - `provider_tracked` defaults to `true` (matches every pre-existing
   tracker-backed task). Set it to `false` for ad-hoc dispatch: the task
   aggregate skips the synchronous Beads/tracker `create` call at
-  `task.create` time, and `RunExecutor` skips claim/complete/fail callbacks
-  during the run.
-- `auto_approve` is consumed by the gateway only — it is never persisted on
-  `TaskCreated`. On success, `CommandGateway` immediately dispatches the
-  matching `task.approve` (deterministic `command_id`, so a retried
-  `task.create` cannot mint a second approval) and returns *that* result to
-  the caller, so the HTTP response carries `approval_id` and `run_id`
-  alongside `task_id`.
-- HTTP response is `201` with `{status: "accepted", result: ...}`. Treat this
-  as acknowledgement; read `GET /api/tasks/{task_id}` and
+  `task.create` time, and `RunExecutor` skips claim/complete/fail
+  callbacks during the run.
+- `auto_approve` is consumed by the gateway only — it is never
+  persisted on `TaskCreated`. On success, `CommandGateway` immediately
+  dispatches the matching `task.approve` (deterministic `command_id`,
+  so a retried `task.create` cannot mint a second approval) and returns
+  *that* result to the caller, so the HTTP response carries
+  `approval_id` and `run_id` alongside `task_id`.
+- HTTP response is `201` with `{status: "accepted", result: ...}`. Treat
+  this as acknowledgement; read `GET /api/tasks/{task_id}` and
   `GET /api/runs/{run_id}` for the stable projections.
 
 ## 4. CLI work and run commands
@@ -236,81 +282,58 @@ Current behavior:
 foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]
 ```
 
-`foreman run submit` posts a `task.create` envelope with `provider_tracked:
-false` and `auto_approve: true` — the CLI-facing verb is unchanged, but it
-now dispatches through the unified task path rather than a separate
-`work.submit` ingress.
-
-Current CLI contract:
+`foreman run submit` posts a `task.create` envelope with
+`provider_tracked: false` and `auto_approve: true` — this is the CLI's
+ad-hoc dispatch verb, unified onto the task path described above.
 
 - `--workflow` is required. Workflow names are validated server-side by
-  `Catalog.load/1`; there is no client-side allowlist (the previous
-  `prd`/`trd`/`fix` restriction was a CLI-only fiction and has been removed).
+  `Catalog.load/1`; there is no client-side allowlist.
 - `--prompt` is required.
-- `--project-id` is required and must name an existing non-archived project.
-- `--work-id` is optional and now an alias for the minted task ID; the CLI
-  generates `adhoc-<hex>` when omitted (minted client-side so the server's
-  no-id `task.create` flow, which resolves the ID through the task provider,
-  is never triggered for an untracked task).
+- `--project-id` is required and must name an existing non-archived
+  project.
+- `--work-id` is optional and is an alias for the minted task ID; the
+  CLI generates `adhoc-<hex>` when omitted (minted client-side so the
+  server's no-id `task.create` flow, which resolves the ID through the
+  task provider, is never triggered for an untracked task).
 - `--backend` is optional. The CLI accepts `pi`, `claude`, `codex`, and
   `opencode`; it omits the field when the value is the default `pi`.
-- `--base-branch <branch>` is optional and half-consumed per
+  This is a client-side readiness label only — see the caveat below.
+- `--base-branch <branch>` is optional and captured at the protocol
+  level only per
   [TRD-2026-80ba0665](TRD/TRD-2026-80ba0665-branch-parent-resolution.md).
-  The default parent branch is now the operator's checkout, not `"main"`:
+  The default parent branch is the operator's checkout, not `"main"`:
   `RunExecutor` records `git symbolic-ref --short HEAD` of the project
-  checkout when the run's first phase starts, and AutoPR opens the PR against
-  that branch — a run started from a feature branch proposes onto that feature
-  branch. A detached checkout resolves to no branch at all, which is a logged
-  error and no PR rather than a fallback. The flag itself is still
-  protocol-level capture only: the CLI forwards it inside the `task.create`
-  envelope and the server does not consume it, so it cannot yet pin a task to
-  a branch other than the checkout it was started from. Use
-  `gh pr edit <n> --base <branch>` to retarget a PR that needs a different
-  base.
+  checkout when the run's first phase starts, and AutoPR opens the PR
+  against that branch. A detached checkout resolves to no branch at
+  all, which is a logged error and no PR rather than a fallback. Use
+  `gh pr edit <n> --base <branch>` to retarget a PR that needs a
+  different base.
 
-Important backend caveat: `--backend` is a client-side readiness check only,
-not a runtime execution switch — the payload key is dropped by `task.create`
-(the aggregate builds its `TaskCreated` payload explicitly field-by-field and
-ignores unrecognized keys), so it never reaches admission. Current Jido
-Harness execution supports `pi` and `claude` providers only; `codex` and
-`opencode` remain stale CLI-accepted values unless a future provider is
-added.
+Backend caveat: `--backend` is a client-side value only — the payload
+key is dropped by `task.create` (the aggregate builds its `TaskCreated`
+payload explicitly field-by-field and ignores unrecognized keys), so it
+never reaches admission. Current Jido Harness execution supports `pi`
+and `claude` providers only; `codex` and `opencode` remain stale
+CLI-accepted values until (if ever) a provider adapter is added for
+them.
 
-For arbitrary server workflow manifests such as `implement-trd` or
-`implement-trd-beads`, create and approve a task with `--workflow-type`.
-
-### `foreman run get <run-id>`
-
-Fetches `GET /api/runs/{id}` and prints the JSON response.
-
-```text
-foreman run get run-f971378012da4da2fec3ec74dbac325d
-```
-
-### `foreman run cancel --id <run-id> [--reason <reason>]`
-
-Issues `POST /api/commands` with a `run.cancel` envelope. The gateway enforces
-`aggregate_id == "run:<run_id>"`; the Run aggregate emits `RunCancelled`, making
-the run terminal with status `cancelled`.
-
-`--reason` defaults to `operator_cancel`.
-
-```text
-foreman run cancel --id run-f971378012da4da2fec3ec74dbac325d --reason stuck_in_recovery
-```
+For arbitrary server workflow manifests (e.g. `implement-trd`,
+`implement-trd-beads`), use `foreman task create --workflow-type ...`
+followed by `foreman task approve` instead — those need a `--trd-path`,
+which `run submit` does not accept.
 
 ### `foreman task retry --id <task-id> [--reason <text>]`
 
 Use `task.retry` only for a task whose bound run is already terminal.
-`CommandGateway` reads the task projection, verifies the bound run exists,
-checks `terminal? == true`, requires matching `task_id`, then attaches trusted
-terminal attestation fields (`acknowledged_run_id`, `acknowledged_at`,
-`run_terminal_reason`). The Task aggregate then clears run-bound fields and
-returns the task to `open`.
+`CommandGateway` reads the task projection, verifies the bound run
+exists, checks `terminal? == true`, requires matching `task_id`, then
+attaches trusted terminal attestation fields (`acknowledged_run_id`,
+`acknowledged_at`, `run_terminal_reason`). The Task aggregate then
+clears run-bound fields and returns the task to `open`.
 
-The retry is rejected when the task is missing, has no bound run, references a
-missing run projection, references a run bound to another task, or the run is
-not terminal.
+The retry is rejected when the task is missing, has no bound run,
+references a missing run projection, references a run bound to another
+task, or the run is not terminal.
 
 ## 5. Task lifecycle
 
@@ -321,29 +344,29 @@ open -> ready -> in_progress -> closed | failed
 blocked -> ready -> in_progress -> closed | failed
 ```
 
-Operator shorthand sometimes describes the terminal branch as
-`completed/failed`; the exact task read-model success status is `closed`.
-Run projections use `completed`, `failed`, `blocked`, `deleted`, `stuck`, or
-`cancelled` depending on the terminal event.
-
 Lifecycle details:
 
-- `task.create` defaults status to `open`; the aggregate also recognizes
-  `blocked` as a valid non-terminal task status.
-- `task.approve` enriches the operator payload with trusted workflow data and
-  moves an `open` or `blocked` task to `ready`.
+- `task.create` defaults status to `open`; the aggregate also
+  recognizes `blocked` as a valid non-terminal task status.
+- `task.approve` enriches the operator payload with trusted workflow
+  data and moves an `open` or `blocked` task to `ready`.
 - Dispatch requires `ready` plus bound `run_id`/`approval_id`; it emits
   `TaskDispatched`, moving the task to `in_progress`.
-- Terminal execution emits `TaskExecutionCompleted` or `TaskExecutionFailed`.
-  The task projection stores success as `closed` and failure as `failed`.
-- `task.retry` is only for a task still bound to a terminal run, or already
-  `failed` by the terminal invariant. Success clears run-bound fields and
-  returns the task to `open`.
+- Terminal execution emits `TaskExecutionCompleted` or
+  `TaskExecutionFailed`. The task projection stores success as `closed`
+  and failure as `failed`.
+- `task.retry` is only for a task still bound to a terminal run, or
+  already `failed` by the terminal invariant. Success clears run-bound
+  fields and returns the task to `open`.
+
+Run projections use a separate, wider status vocabulary: `completed`,
+`failed`, `blocked`, `deleted`, `stuck`, or `cancelled`, depending on
+the terminal event.
 
 ## 6. Worker runtime and Overwatch
 
-`ForemanServer.Overwatch` is enabled by default outside tests. Command phases
-run through this path:
+`ForemanServer.Overwatch` is enabled by default outside tests. Command
+phases run through this path:
 
 ```text
 RunExecutor -> Overwatch.start_phase/2 -> LaunchWorker -> JidoHarnessWorker
@@ -351,37 +374,33 @@ RunExecutor -> Overwatch.start_phase/2 -> LaunchWorker -> JidoHarnessWorker
 
 Current behavior:
 
-- `RunExecutor` materializes the phase prompt, chooses the Jido Harness provider
-  from the request context, builds the execution cwd/env, and calls
-  `Overwatch.start_phase/2`.
+- `RunExecutor` materializes the phase prompt, chooses the Jido Harness
+  provider from the request context, builds the execution cwd/env, and
+  calls `Overwatch.start_phase/2`.
 - `LaunchWorker` starts the adapter, registers the worker pid with
-  `Overwatch.Tracker`, emits `WorkerStarted` with sequence `0`, then sends the
-  activation handshake.
-- A newly reserved run can be admitted as `awaiting_worker`; `WorkerStarted` is
-  the signal that moves the run to `in_progress`.
-- `JidoHarnessWorker` runs `Jido.Harness` in a supervised task after activation,
-  emits periodic `WorkerHeartbeat`, emits `WorkerExited` on normal completion,
-  forwards normalized `{:ok, text} | {:error, reason}` to `RunExecutor`, then
-  exits normally so the supervisor can clean up.
-- If the harness task crashes before returning a result, the worker emits
-  best-effort `WorkerExited` and forwards `{:error, {:task_crashed, reason}}`.
-- Separate crash paths can emit `WorkerCrashed`; normal Jido metadata is not the
-  operator result.
-- Worker relaunch is crash-only. The `LaunchWorker` child spec is
-  `restart: :transient`, and `LaunchWorker` propagates its worker's exit
-  reason: a worker that finished the phase (`:normal`) or was torn down
-  (`:shutdown`) ends the child, while a crashed worker is relaunched and
-  counted by `Overwatch.CrashLoopDetector`. Under the previous
-  `restart: :permanent` policy the supervisor relaunched a *finished* phase
-  too, starting a second agent process for work that was already over; in
-  run-de055c18749db5e9c702d24950268cf9 that second agent outlived the run's
-  `RunFailed` by 8m42s and overwrote the run's phase artifact.
+  `Overwatch.Tracker`, emits `WorkerStarted` with sequence `0`, then
+  sends the activation handshake.
+- A newly reserved run can be admitted as `awaiting_worker`;
+  `WorkerStarted` is the signal that moves the run to `in_progress`.
+- `JidoHarnessWorker` runs `Jido.Harness` in a supervised task after
+  activation, emits periodic `WorkerHeartbeat`, emits `WorkerExited` on
+  normal completion, forwards normalized `{:ok, text} | {:error,
+  reason}` to `RunExecutor`, then exits normally so the supervisor can
+  clean up.
+- If the harness task crashes before returning a result, the worker
+  emits best-effort `WorkerExited` and forwards `{:error,
+  {:task_crashed, reason}}`.
+- Worker relaunch is crash-only: a worker that finished the phase
+  (`:normal`) or was torn down (`:shutdown`) ends the child, while a
+  crashed worker is relaunched and counted by
+  `Overwatch.CrashLoopDetector`.
 
 ## 7. Agent runtime and Jido Harness
 
 The only bundled runtime adapter is the in-process
-`ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`. The old shell-out
-`PiAdapter` is no longer shipped.
+`ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`. There is no
+shell-out CLI adapter and no separate worker process — agent execution
+happens inside the Elixir server.
 
 Default runtime config:
 
@@ -393,25 +412,24 @@ config :foreman_server, :agent_runtime,
   agent_model: "auto"
 ```
 
-The adapter routes through `ForemanServer.AgentRuntime.JidoHarness` and the
-vendored `Jido.Harness` package. Supported upstream providers are `:pi` and
-`:claude`.
+The adapter routes through `ForemanServer.AgentRuntime.JidoHarness` and
+the vendored `Jido.Harness` package. Supported upstream providers are
+`:pi` and `:claude`.
 
 Provider semantics:
 
-- Requests default to `:pi` unless runtime context sets `provider: :claude`.
+- Requests default to `:pi` unless runtime context sets
+  `provider: :claude`.
 - Unknown providers return `:unsupported_provider`.
-- A selected but unavailable provider returns `:backend_unavailable` without
-  falling back to another provider.
-- `JidoHarnessAdapter.available?/0` checks whether either bundled provider is
-  installed. Automatic routing excludes unavailable adapters before invocation;
-  policy routing can still select a primary candidate and then skip it during
-  invocation if unavailable.
-- Test config deliberately sets `adapters: []`; adapter tests opt in explicitly.
+- A selected but unavailable provider returns `:backend_unavailable`
+  without falling back to another provider.
+- `JidoHarnessAdapter.available?/0` checks whether either bundled
+  provider is installed.
 
-When adding a provider, update code and docs together. Do not document `codex`,
-`opencode`, or `PiAdapter` as runnable backends until the runtime actually
-supports them.
+When adding a provider, update code and docs together — see
+`docs/guides/adding-a-jido-harness-provider.md`. Do not document
+`codex`, `opencode`, or a shell-out adapter as runnable backends until
+the runtime actually supports them.
 
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 
@@ -425,362 +443,149 @@ Defaults and env vars:
 
 - Foreman OTel defaults to `http://localhost:4318` in `config/config.exs`.
 - `devbox run up` starts `ops/otel-collector`, which listens on local
-  `4318`/`4317` and joins the `litellm-langfuse-stack_default` Docker network.
+  `4318`/`4317` and joins the `litellm-langfuse-stack_default` Docker
+  network.
 - The collector forwards traces with `otlphttp/langfuse` to
   `http://langfuse-web:3000/api/public/otel`; the exporter appends
   `/v1/traces`.
 - Langfuse v3 OTLP ingest requires HTTP Basic auth using
-  `LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY`. Bearer auth with only the public
-  key returns `403`.
-- The collector computes `LANGFUSE_BASIC_AUTH` in `ops/otel-collector/entrypoint.sh`.
-- In production, set `OTEL_EXPORTER_OTLP_ENDPOINT` when `http://localhost:4318`
-  is not the target collector/ingest URL. `prod.exs` builds the same Basic auth
-  header for both `:jido_otel` and `:opentelemetry_exporter` when both Langfuse
-  keys are present.
-- LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`; `agent_model:
-  "auto"` maps through `:jido_ai` model aliases to LiteLLM.
+  `LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY`. Bearer auth with only the
+  public key returns `403`.
+- In production, set `OTEL_EXPORTER_OTLP_ENDPOINT` when
+  `http://localhost:4318` is not the target collector/ingest URL.
+- LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`;
+  `agent_model: "auto"` maps through `:jido_ai` model aliases to
+  LiteLLM.
 
-Useful checks:
+## 9. MCP tool integration
 
-```bash
-foreman init --name my-project
-foreman project list
-foreman status --project my-project
-```
+The server exposes an MCP endpoint at `/mcp` (HTTP, recommended) and via
+`mix foreman.mcp.stdio` (stdio, for clients that spawn a child process).
+Both transports share `ForemanServer.MCP.Dispatch`, so their tool sets
+and behavior cannot diverge.
 
-### Tasks
+**Read tools** are always advertised: `foreman_doctor`,
+`foreman_queue_status`, `foreman_project_list`, `foreman_project_get`,
+`foreman_workflow_list`, `foreman_workflow_get`,
+`foreman_workflow_validate`, `foreman_prompt_get`, `foreman_work_get`,
+`foreman_run_get`, `foreman_run_get_logs`, `foreman_run_get_events`,
+`foreman_run_get_activity`.
 
-Tasks represent units of work. They have a type, priority, status, title, and description. The canonical lifecycle vocabulary is `backlog, ready, in-progress, blocked, done` — the same five the Go cockpit (`/api/v1/board`) renders as columns. The legacy CLI board route surfaces the same lifecycle under the aliases `in_progress`, `closed`, and `needs_attention` for backward compatibility; both are equivalent. Workflow phases (`explorer`, `developer`, `qa`, `reviewer`, `finalize`, etc.) are tracked separately from task status, so phase names do not become board columns. When a worker fails, Foreman records an append-only task note with the failed phase and reason so `foreman task show`, `foreman board`, and `foreman watch` can expose actionable context. A terminal blocked run marks its task `blocked` (not as attention); operator-paused work stays in the `blocked` column for triage, not as a needs-attention flag.
+- `foreman_run_get_logs` returns `UNAVAILABLE`: Foreman persists no run
+  output. Use `foreman_run_get_events` (the `run:<run_id>` stream) and
+  `foreman_run_get_activity` (per-worker heartbeat counts, last
+  sequence, last-heartbeat timestamps, read from
+  `worker:<run_id>:<worker_id>` streams) instead.
 
-```bash
-foreman task create --title "Fix flaky retry" --type bug --priority high
-foreman task approve <task-id>
-foreman task show <task-id>
-foreman task list
-```
-**Board column source:** the board uses `task.status` as the only source for lifecycle column membership. Run state, PR state, workflow phase, stale-worker detection, and attention flags remain card metadata; they do not independently move cards between `backlog`, `ready`, `in-progress`, `blocked`, and `done`. Terminal lifecycle events must update `task.status`: for example, a `PrMerged` event records the task as `merged`, which places it in `done`.
+**Write tools** (`foreman_task_create`, `foreman_run_cancel`,
+`foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`)
+are unadvertised and refused unless `allow_workflow_writes: true` is
+set in `:foreman_server, :mcp` config.
 
-**"Needs Attention" semantics:** the cockpit `type="attention"` flag can highlight a card with failing run metadata, but it does not choose the card's column. A task appears in `blocked` only when its task status maps to the blocked lifecycle.
+- `foreman_task_create` creates and dispatches a task in one call:
+  required `project_id`, `prompt`, `workflow`; optional `task_id`,
+  `title`, `backend`. It defaults `provider_tracked: false` and
+  `auto_approve: true`, matching the retired `foreman_work_submit`
+  tool's ergonomics.
+- `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
+  `reason`.
 
-**Epic task dispatch behavior:** Tasks with `type: epic` are handled differently based on child task count:
-- **3+ child tasks:** Spawns one Epic Runner that executes all children sequentially in a single worktree, with one developer→QA cycle per task and a single finalize at the end
-- **1-2 child tasks:** Falls back to single-agent dispatch (standard pipeline)
-- **0 child tasks:** Auto-closes the epic and skips dispatch
+Tool call failures are MCP tool errors carrying the gateway's
+structured reason, never transport-level JSON-RPC errors.
 
-Use `foreman sling trd <path>` to create epics with child tasks from a TRD document.
+## Day-to-day workflow
 
-### Workflows
-
-A workflow is a YAML phase sequence. Bundled workflows live in `src/defaults/workflows/`; installed or project-local workflows live under `.foreman/workflows/` or `~/.foreman/workflows/` depending on setup. Workflows can declare `task_type: <type>` so type-based dispatch is owned by the workflow YAML; duplicate `task_type` declarations fail doctor/startup validation. PR and merge behavior is phase-driven: mutating phases can opt into draft PR checkpoints with `checkpointPr: true`, and final PR gates remain explicit `create-pr`, `pr-wait`, and `merge` phases. Top-level `merge:` and `pr:` tags are rejected.
-
-Important phase reports:
-
-| Phase | Report |
-|-------|--------|
-| Explorer | `EXPLORER_REPORT.md` |
-| Developer/Fix | `DEVELOPER_REPORT.md` |
-| QA | `QA_REPORT.md` |
-| Reviewer | `REVIEW.md` |
-| Documentation | `DOCUMENTATION_REPORT.md` |
-| Finalize | `FINALIZE_VALIDATION.md`, `FINALIZE_REPORT.md` |
-| PR wait | `PR_WAIT_REPORT.md` |
-| Merge | `MERGE_REPORT.md` |
-
-Bundled workflows write these reports under the runtime report directory (`~/.foreman/reports/...` via `{task.projectReportsDir}`), not into the repository worktree. The bundled `bug` workflow starts with an explicit read-only Explorer handoff before the editing phase, uses `Grep`, `Glob`, and targeted `Read` discovery, and omits nested delegation tools from fix/remediation phases. Elixir Overwatch rejects Graphify tools in all phases so discovery stays file-based and avoids slow generated worktree artifacts. After editing bundled source workflows or prompts, run `foreman init --force` so installed runtime copies are refreshed before dispatch. `foreman run`, `foreman run --watch`, and worker startup check for stale installed prompts/workflows and abort before scheduling agents when drift is detected. `foreman doctor` reports installed workflow YAML that has drifted from bundled defaults. See [Workflow YAML Reference](./workflow-yaml-reference.md) for configuration details.
-
-### Bundled Foreman Skills
-
-`foreman init` installs bundled Pi skills from `src/defaults/skills` to `~/.pi/agent/skills/`. Foreman worker sessions load the required skill set even when user Pi skills are sandboxed.
-
-Guidance skills include `foreman-elixir-backend` for server/event/projection work, `foreman-workflow-pipeline` for workflow YAML and phase artifacts, `foreman-worker-pi-sdk` for worker/Pi SDK boundaries, `foreman-pipeline-diagnosis` for stuck or missing-artifact triage, `foreman-safe-recovery` for retry/reset/cleanup decisions, `foreman-vcs-backend` for Git/Jujutsu abstraction work, and `foreman-doc-gate` for documentation decisions. See [Skill Integration](skill-integration.md) for impact and packaging details.
-
-### Worktrees
-
-Each dispatched task runs in its own git worktree. This isolates agent edits from your main checkout and from other agents. Avoid manually editing active worktrees unless you are intentionally intervening.
-
-Scheduler-launched worktrees start from the registered project default branch when configured, then fall back to VCS default-branch detection.
-
-### Elixir Backend Roles
-
-During the TRD-2026-014 migration, Foreman has three runtime responsibilities:
-
-- **Node CLI**: operator-facing commands, server auto-start, bearer-authenticated JSON requests, projection rendering, and legacy alias/deprecation warnings.
-- **Elixir server**: durable command validation, append-only events, rebuildable projections, run/phase actors, scheduler capacity, VCS/PR gates, inbox/debug/attach views, recovery, metrics, and authorization audit events.
-- **Node/Pi workers**: Pi SDK-backed agent execution, worker HTTP protocol starts, ordered event/heartbeat/tool-call/assistant-message/artifact streaming, Foreman-specific typed tools for mail/handoffs/artifacts/validation/blockers/progress/safe commands, authoritative terminal run/task events, and scoped project/run environment metadata. The Elixir launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; raw logs mirror worker events for compatibility/debugging.
-
-For architecture details, deprecated command mappings, and troubleshooting examples, see [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
-
-### Documentation Gate
-
-Foreman workflows include a documentation phase before finalization. The documentation agent checks whether the task changed user behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations. It updates relevant docs or records why no doc update was needed in `DOCUMENTATION_REPORT.md`.
-
-Docs that must be considered for every fix or feature:
-
-- `CLAUDE.md`
-- `AGENTS.md`
-- `README.md`
-- `docs/user-guide.md`
-- `docs/cli-reference.md`
-
-## Day-to-Day Workflow
-
-### 1. Start or Check the Elixir Server
-
-Foreman uses the Elixir backend for shared project state, database access, and scheduling. Node CLI/client code and Node/Pi workers communicate with Elixir over HTTP commands/projections instead of connecting directly to the database. Workers enqueue/report merge readiness; they do not drain database-backed merge queues themselves.
+### 1. Start or check the server
 
 ```bash
-foreman server start
-foreman server doctor        # validates DB/projections/workers/VCS/providers/integrations
-foreman doctor
+devbox run server
 ```
 
-If commands report backend or database issues, run `foreman server doctor` and check [Troubleshooting](./troubleshooting.md). `foreman server status` shows `MIX_ENV`, event store, and project store for the active server.
+If commands fail with a connection error, confirm `FOREMAN_API_URL`
+points at the running server (`http://127.0.0.1:4766` in dev) and that
+`devbox run ps` shows it up.
 
-After cutover, legacy TS delegation is removed and `foreman daemon start|restart` is blocked so the Node scheduler cannot run beside the Elixir scheduler. The Elixir scheduler ticks every 5 seconds, automatically claims dispatchable `ready` tasks within capacity, and launches the Node/Pi worker bridge. `MIX_ENV=test` uses port `14766` by default and refuses user port `4766` or non-temp storage unless the dangerous overrides `FOREMAN_ALLOW_TEST_PORT_COLLISION=1` / `FOREMAN_ALLOW_TEST_PERSISTENT_STORAGE=1` are set.
+### 2. Register the project (once)
 
 ```bash
-foreman server stop
+foreman project create --id my-project --path /path/to/repo --task-provider beads
 ```
 
-The doctor output includes operational metrics: phase duration timers, retry/failure/recovery counters, worker restart counts, and projection lag. `foreman server status` distinguishes the durable event store, persisted/in-memory projection store, and project config store. With `FOREMAN_SERVER_EVENT_STORE_ADAPTER=postgres` and `DATABASE_URL`, project/task/run/inbox read models persist in Postgres projection tables; term mode keeps projections in memory and rebuilds from the term event log. If server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` before calling doctor/metrics endpoints. Run debug views surface the first inconsistent event transition when a status anomaly appears and include timeline payload/file-change fields for Cockpit fallback rendering.
-
-Troubleshooting sequence for Elixir-backed state:
-1. Check whether the expected durable event exists (`RunStarted`, `PhaseCompleted`, `WorkerRestarted`, `AuthorizationChecked`, etc.).
-2. Check projection lag in `foreman server doctor` or `/api/v1/metrics`; rebuild/restart projections if lag does not catch up.
-3. For recovery, read the observation event first (`ExternalWorkerObserved`), then the resolution event (`WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`).
-
-Projection rebuild timeouts: the foreman server's startup calls `EventStore.init/1` which loads all events and rebuilds the four projection tables in a single `Repo.transaction`. The default rebuild timeout is `600_000` ms (10 minutes), covering the observed ~30s rebuild of a 157K-event log while still letting the supervisor recover from a genuinely stalled init/transaction. The shared timeout is resolved by `ForemanServer.RuntimeInfo.projection_rebuild_timeout_ms/0` (env var `FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS` → app config `:projection_rebuild_timeout_ms` → default `600_000`, with strict integer parsing and `> 0` validation). It governs `EventStore.start_link/1` init, `EventStore.rebuild_projections/0` GenServer.call/3 (used by `POST /rebuild_projections`), and `ProjectionStore.Postgres.replace_all/1` Repo.transaction/3. **Set `FOREMAN_SERVER_PROJECTION_REBUILD_TIMEOUT_MS` before starting (or restarting) the server**: the `start_link/1` init timeout is captured when the supervisor spawns the GenServer, so changing the env after the process is running does not affect that path. The HTTP-triggered `rebuild_projections` path and the `Repo.transaction` path read the env at call time, so the next request after an env change picks up the new value without restart. Invalid values (non-integer strings, integers <= 0, or env values with trailing characters like `600000ms`) fall back to the default. Symptoms of the default being too short: the server fails to start with `shutdown: failed to start child: ForemanServer.EventStore` and `connection is closed because of an error, disconnect or timeout` in `projection_store/postgres.ex`.
-
-Security behavior:
-- Worker environments are scoped to the project/run. Explicit project and run secret maps are merged after host environment filtering, and forbidden variables such as `FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, and `DATABASE_*` are stripped.
-- Exposing the Elixir HTTP server beyond loopback requires `FOREMAN_SERVER_AUTH_TOKEN`; clients must send `Authorization: Bearer <token>`.
-- Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events for auditability.
-
-### 2. Plan Larger Work
-
-For larger features, generate planning artifacts before creating implementation tasks. The legacy `foreman plan <description>` pipeline still runs the local PRD → TRD flow. The server-backed planning subcommands send PRD/TRD planning to the local Elixir orchestration server:
+### 3. Create and approve a task
 
 ```bash
-foreman plan prd "Build a planning system" --project my-project --output-dir docs/PRD
-foreman plan trd docs/PRD/PRD-example.md --project my-project --output-dir docs/TRD
+foreman task create --project my-project --title "Add cooldown retry for transient CLI failures" \
+  --description "When a provider reports a transient rate limit, retry after cooldown instead of terminal failure." \
+  --workflow-type fix
+foreman task approve --id <task-id>
 ```
 
-Use `foreman server doctor` first if the Elixir server is not already running. `--project` selects the registered project and `--output-dir` selects where the planning artifact should be written.
-
-### 3. Migrate Legacy State
-
-During the Elixir backend migration, operators can import a prebuilt TypeScript-era migration JSON payload into the Elixir event store. The CLI no longer builds that payload by reading Postgres directly:
+— or dispatch ad-hoc work in one call:
 
 ```bash
-foreman import --to-elixir --file migration.json
-foreman import --to-elixir --from-node --project foreman
+foreman run submit --project-id my-project --workflow fix \
+  --prompt "Add cooldown retry for transient CLI failures"
 ```
 
-The import maps legacy projects, tasks, runs, workflows, inbox messages, and config to durable events/projections so historical runs remain readable. `--from-node` is deprecated because the CLI no longer reads Node/Postgres state directly. After importing, `foreman board --project <name>` reads and mutates task state through Elixir without the Node daemon socket.
+### 4. Monitor
 
 ```bash
-foreman status
+foreman run list --project-id my-project --status in_progress
+foreman run get <run-id>
+foreman task get <task-id>
 ```
 
+Foreman has no TUI/cockpit today — monitoring is projection reads via
+the CLI or `GET /api/*`. For live event/heartbeat detail during a run,
+use the MCP tools `foreman_run_get_events` / `foreman_run_get_activity`,
+or the `/debug/*` LiveView dashboards in a dev environment.
 
-### 4. Create a Task
-
-Write a task with enough context for an agent to execute without guessing.
+### 5. Recover a wedged or failed run
 
 ```bash
-foreman task create \
-  --title "Add cooldown retry for transient CLI review failures" \
-  --type feature \
-  --priority high \
-  --description "When CodeRabbit reports a transient rate limit, schedule retry after cooldown instead of terminal failure."
+foreman run get <run-id>                 # inspect status first
+foreman run reset --id <run-id>          # failed/stuck only; clears projection for resubmission
+foreman run remove --id <run-id>         # terminate + release slot/lease + best-effort cleanup
+foreman task retry --id <task-id>        # only once the bound run is terminal
 ```
 
-Natural-language task generation was removed after the Elixir cutover; create structured tasks with `--title` and `--description`.
+There is no interactive "kill-switch" or phase-resume primitive; a
+stuck run is removed or reset, and the task is retried or recreated.
 
-Good task descriptions include:
+### PR creation and merge reconciliation
 
-- Problem statement
-- Expected behavior
-- Constraints and non-goals
-- Acceptance criteria
-- Known files or commands, if relevant
+PR creation is **not** a workflow phase — bundled workflows declare no
+`create-pr`/`pr-wait`/`merge` phases and there is no `checkpointPr`
+option. `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called from
+`RunExecutor.finalize_run/1`, derives the PR from run state instead: it
+checks `git rev-list --count base..head > 0` against the branch
+recorded when the run's first phase started, publishes with `git push
+-u origin <head>`, and calls `gh pr create`. The server separately
+reconciles PR state in the background: if GitHub reports the PR merged
+or closed, Foreman records that on the run and updates the associated
+task. `POST /webhooks/github` accepts GitHub `pull_request` webhook
+events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`) as a real-time
+optimization; polling remains the fallback.
 
-### 5. Approve the Task
+## Documentation Discipline
 
-Tasks usually start in backlog. Approve when ready for dispatch. Worker prompts receive task title, type, priority, and description from the Elixir backend; Node/Pi workers do not open a direct database pool.
-
-```bash
-foreman task approve <task-id>
-```
-
-### 6. Dispatch Work
-
-```bash
-foreman run --project my-project
-```
-
-Only dependency-unblocked `ready` tasks dispatch. Ready tasks with open blockers stay queued until the blocker closes. The Elixir scheduler uses the same queue and writes dispatch/skip summaries to its events/logs so stalled cycles are diagnosable.
-
-Useful variants:
-
-```bash
-foreman run --dry-run             # Check Elixir server availability without ticking
-foreman run --no-watch            # Tick once and exit
-```
-
-Bundled workflows use a deterministic builtin finalize step: Foreman commits, checks the final diff against Explorer's `Edit First` scope, runs changed-domain validation for Elixir/Go/workflow-prompt files, conditionally rebases/tests when the target moved after QA, pushes `foreman/<task-id>`, retries non-fast-forward branch publication with `--force-with-lease`, and writes finalize reports without asking an LLM to drive git. Optional `FOREMAN_MAX_PIPELINE_*` budgets can stop runaway wall-clock, cost, tool-call, or retry/review loops.
-
-### Scope Expansions contract (developer agent)
-
-When the developer modifies a file outside Explorer's `Edit First` scope, finalize requires a structured per-file entry under `## Scope Expansions` in `DEVELOPER_REPORT.md`. Each entry must be a bullet of the form ``- `path/to/file` — substantive justification``. Mentions in any other section (`## Decisions & Trade-offs`, `## CI Findings Addressed`, prose paragraphs) do NOT count as justification. Placeholders (`TODO`, `TBD`, `n/a`, blank, `-`, `.`) and justifications shorter than 12 characters are rejected. See `src/defaults/prompts/default/developer.md:78,86,116-119` for the developer-side contract.
-
-**Recovering a `scope_guard_failed` finalize**: there is no phase-resume primitive; the supported recovery is `foreman recover <task-id> --reason finalize-conflict --run-id <id>`. Before running it, append the missing `## Scope Expansions` entries to the worktree's `reports/DEVELOPER_REPORT.md` and commit them on the task branch, so the recovery agent sees the corrected report.
-
-### 7. Monitor Progress
-
-```bash
-foreman status
-foreman watch
-foreman board
-foreman logs <run-id>
-foreman attach <run-id>
-```
-
-Use `foreman watch` (or `foreman monitor`) as the canonical live cockpit. From the same full-height TTY session you can move through the task/run selector, inbox timeline, status/workflow flow chart, board context, and detail tabs for logs, reports, and files. `foreman inbox`, `foreman status --live`, and TTY `foreman board` open the same cockpit with different initial views; non-TTY output, `foreman inbox --non-interactive`, `foreman status --json`, `foreman status --watch`, `foreman watch --no-watch` (or `foreman monitor --no-watch`), and filtered/all board paths remain scriptable. The cockpit phase rail follows the selected run or task's workflow phase order and shows per-phase retry counts; for tasks without an active run, phases are derived from the workflow YAML and shown as pending. The status view shows ordered phase nodes, retry arrows, current failure/error text, artifacts, and active phase activity. Use `/` for search, `1/2/3` for active/attention/all scopes, `!`/`p`/`d` for failed/PR/dirty-worktree filters, and `a` or `:` for the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text.
-
-### 8. Triage Failures
-
-Attention is for failed/attention runs; start with artifacts before retrying. Attention is metadata on the card, not the column source. A task appears in `blocked` only when `task.status` maps to the blocked lifecycle (`failed`, `stuck`, `conflict`, `review`, `blocked`, etc.).
-
-Recommended order:
-
-1. Read the latest pipeline report.
-2. Read the failed phase report.
-3. Identify whether the failure is transient, implementation-related, merge-related, or infrastructure-related.
-4. Reset or retry only after the cause is understood.
-
-```bash
-foreman logs <run-id>
-foreman retry <task-id> --dry-run
-foreman retry <task-id> --dispatch
-```
-
-Avoid mass retrying unless failures are known transient and the root cause is external.
-
-### 9. Review and Merge
-
-Merge-capable workflows checkpoint draft PRs after successful mutating phases, then wait for PR checks/review, require zero failed checks, no active CodeRabbit changes-requested review, plus a briefly stable ready state, and merge through explicit `create-pr`, `pr-wait`, and `merge` phases. The final `create-pr` phase refreshes the existing draft and marks it ready instead of creating a second PR. The merge gate is the final PR readiness authority and waits again if GitHub surfaces a late pending check. If PR wait or merge fails, inspect `PR_WAIT_REPORT.md` or `MERGE_REPORT.md`; `PR_WAIT_REPORT.md` includes the latest review state plus blocking CodeRabbit finding path/line/body details when available. Configured workflows route retryable failures to targeted remediation phases: CI/CD check failures to `cicd-developer`, CodeRabbit requested-changes reviews/findings to `cr-developer`, merge conflicts to `merge-resolver`, and unknown failures to `developer`/the workflow fallback. The CI/CD and CodeRabbit remediation prompts start from the cited failure/finding, run the narrowest proving check first, and avoid broad reruns or adjacent cleanup unless needed to resolve that specific gate.
-
-The Elixir server also reconciles recorded GitHub PR state in the background. If GitHub reports a recorded PR as merged, Foreman records the merge metadata on the run and marks the associated task `merged`, matching the refinery post-merge task state. If GitHub reports the PR closed without merge, Foreman records the run PR state as closed and closes the associated task. As a real-time optimization, the server exposes `POST /webhooks/github` for GitHub `pull_request` webhook events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback when the webhook is not configured.
-
-
-```bash
-foreman merge
-foreman pr
-```
-
-## Operating the Board
-
-`foreman board` on a TTY opens the unified cockpit in board view. Use it when you want board context beside inbox and status details. For legacy/scriptable board rendering, use non-TTY output, `--all`, or `--filter`.
-
-The legacy board interaction model still applies when Foreman uses the non-cockpit board path (`--filter`, `--all`, or non-TTY): `h/l` columns, status cycling, `R` ready, close/edit keys, and task creation remain there.
-
-In board mode the pane splits vertically into board cards (top) and tab content (bottom) on every tab (`summary`, `messages`, `events`, `logs`, `reports`, `files`, `pr`, `metrics`). The status bar surfaces the selected task ID with a `▶` marker so you can always tell which task is selected, regardless of the active tab.
-
-Common cockpit keys:
-
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Move within the task/run selector |
-| `i` | Inbox timeline view |
-| `s` | Status/workflow view |
-| `b` | Board context view |
-| `n` | Create new task (TTY form with type/priority dropdowns) |
-| `m` / `e` / `l` / `r` / `f` | Messages, events, logs, reports, files tabs; messages render oldest-first (chronological) with local `mm/dd hh:mm`, sender, receiver, and message columns |
-| `/` | Search tasks, runs, messages, events, and report paths |
-| `1` / `2` / `3` | Active, attention, all scopes |
-| `!` / `p` / `d` | Failed, has PR, dirty worktree filters |
-| `a` / `:` | Action palette; reset asks for `y` confirmation and executes `foreman reset`; other entries print copy/manual commands |
-| `R` in Go cockpit | Reset the selected run; on a selected task card, reset its latest known run when one is available |
-| `q` / `Esc` | Quit |
-
-## Retry and Cleanup Guidance
-
-Use retry and doctor cleanup surgically.
-
-- Use `foreman reset <task-id>` when active work is stale, a closed/completed task should be reopened, or a task must pick up new Foreman runtime behavior; it stops active workers when present, closes any open/draft PR recorded for the task before deleting the remote branch, marks prior active runs failed with the reset reason, removes stale task worktrees, local/origin `foreman/<task>` branches, and prior run logs/reports, clears run linkage, resets the task to ready, and dispatches it again. If GitHub reports the recorded PR was already merged, reset leaves that PR unchanged, preserves prior run artifacts for auditability, continues local branch/worktree cleanup, marks any still-active run completed, marks the task closed, and skips scheduler dispatch. Merged tasks remain terminal.
-- Use `foreman retry <task-id> --dispatch` when the latest failure is safe to rerun.
-- Use `foreman retry <task-id>` for retryable failed/stuck run recovery.
-- Use `foreman doctor --dry-run` to preview cleanup of zombie/stale runs and merged/orphaned worktrees.
-- Use `foreman doctor --fix` for safe cleanup after review, including reinstalling missing/stale prompt and workflow runtime files; it does not replace inspecting valuable in-progress work.
-- Use `foreman abandon <task-or-run-id> --reason "..."` when obsolete work should not land; preview with `--dry-run` and opt into branch deletion with `--delete-branch --force`.
-- Use `foreman abandon --missing-branches --dry-run` to preview bulk cleanup of completed runs whose `foreman/<task>` branch is already gone, then rerun without `--dry-run` to clear repeated merge warnings.
-- Use `foreman clean-state --dry-run` when you want to reset Foreman to a clean operator state by dropping stale/obsolete non-active work; apply with `--force`, and add `--delete-branches`/`--delete-origin-branches` only when branch deletion is intended.
-- Use `foreman run kill-switch <run-id>` when an active run is stuck in a phase (e.g., `pr-wait` waiting for a review that is already terminal-negative, or a developer phase that has not progressed after multiple heartbeats). The kill-switch marks the active phase failed with `retryWith` routing to a recovery phase, stops the worker, and preserves the worktree, PR, reports, and SDK resume token. Default behavior is non-destructive — no explicit destructive flags are needed. The `--route-to` flag must name a workflow phase and can route directly to retry-only phases (e.g., `--route-to cr-developer` when a CodeRabbit review is blocking `pr-wait`). Use `--reset` to also reset the task to backlog. Preview with `--dry-run`. Example: `foreman run kill-switch run-abc123 --route-to qa --reason "developer phase stuck for 30min"`.
-
-Transient failures include provider rate limits, provider overloads (`529 overloaded_error`), temporary network failures, and unavailable external CLIs. Max-turn failures are treated as expensive human-review signals; inspect the diff/log before retrying.
-
-### Direct Task Execution with `foreman run task`
-
-Operator use of `foreman run task` was removed after the Elixir cutover. Use scheduler-backed `foreman run` for ready work or `foreman retry` for retry flows instead.
-
-## Run Maintenance: list, remove, reset
-
-Three new subcommands on the `foreman run` family give operators direct control over the run queue without leaving the terminal.
-
-### `foreman run list`
-
-Fetch `GET /api/runs` and print matching run projections as JSON. Use it before any maintenance operation to find failed or stuck runs.
-
-```text
-foreman run list --project-id foreman --status failed --limit 5
-foreman run get run-f971378012da4da2fec3ec74dbac325d
-```
-
-Filters: `--status <status>`, `--project-id <id>`, `--limit <n>`.
-
-### `foreman run remove --id <run-id>`
-
-Issues `POST /api/commands` with a `run.remove` envelope. The server terminates the run, releases its slot and per-DB Beads lease, and best-effort cleans the projected worktree plus the local branch. Use this when a run is wedged and you want a clean slate.
-
-```text
-foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
-```
-
-### `foreman run reset --id <run-id>`
-
-Issues `POST /api/commands` with a `run.reset` envelope. Only failed or stuck runs can be reset; cancelled or completed runs are rejected with `{:run_not_resettable, "<status>"}`. After a successful reset, the run's projection state is cleared so it can be re-submitted fresh.
-
-```text
-foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
-```
-
-## Documentation Expectations
-
-Every user-visible change should update docs in the same task. Examples:
-
-| Change | Docs to consider |
-|--------|------------------|
-| New command or flag | `docs/cli-reference.md`, `docs/user-guide.md`, `README.md` |
-| Workflow YAML option | `docs/workflow-yaml-reference.md`, `docs/user-guide.md` |
-| Agent behavior/prompt contract | `CLAUDE.md`, `AGENTS.md`, `docs/user-guide.md` |
-| Setup/install behavior | `README.md`, `docs/user-guide.md`, `docs/troubleshooting.md` |
-| Operational failure mode | `docs/user-guide.md`, `docs/troubleshooting.md` |
-
-If no docs need updating, `DOCUMENTATION_REPORT.md` must explain why.
+See `AGENTS.md`'s "Documentation Discipline" section for the mandatory
+pre-completion gate: enumerate externally-visible identifiers a change
+adds/removes/renames, grep them across `CLAUDE.md`, `AGENTS.md`,
+`README.md`, this file, and `docs/cli-reference.md`, and fix or
+explicitly annotate any stale hit. `docs/PRD/*` and `docs/TRD/*` are
+point-in-time design specs, not living docs — leave their historical
+claims as written; add a forward-pointer note instead of rewriting them.
 
 ## Safety Rules
 
 - Keep the controller workspace clean before rerunning important tasks.
-- Commit or patch-export important local changes before reset/cleanup; pushed draft PR checkpoints are safe to keep while local worktrees are removed, but reset closes the old PR before deleting its remote branch unless GitHub reports that PR was already merged.
-- Prefer targeted retries over bulk retries.
-- Inspect reports before changing task state.
-- Do not manually mutate active worktrees unless you intend to take ownership of that run.
-- Keep workflow changes synchronized between bundled defaults and active project overrides when both are in use.
+- Prefer targeted `run reset`/`task retry` over bulk retries.
+- Inspect run/task projections and events before changing state.
+- Do not manually mutate an active run's worktree unless you intend to
+  take ownership of that run.
 
-## Troubleshooting Quick Links
+## Further Reading
 
 - Command syntax: [CLI Reference](./cli-reference.md)
-- Workflow config: [Workflow YAML Reference](./workflow-yaml-reference.md)
-- VCS backends: [VCS Configuration Guide](./guides/vcs-configuration.md)
-- Troubleshooting: [Troubleshooting Guide](./troubleshooting.md)
+- Adding a Jido Harness provider: [docs/guides/adding-a-jido-harness-provider.md](./guides/adding-a-jido-harness-provider.md)
