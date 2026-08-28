@@ -59,10 +59,27 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResultTest do
       assert {:error, :timeout} = RunResult.normalize(result)
     end
 
-    test "defensively returns {:error, :unknown_error} for a :failed run with nil error" do
+    test "reports :failed_without_detail — not :unknown_error — for a :failed run with nil error" do
       result = build_result(status: :failed, error: nil)
 
-      assert RunResult.normalize(result) == {:error, :unknown_error}
+      assert RunResult.normalize(result) == {:error, :failed_without_detail}
+    end
+
+    test "maps a %Jido.Harness.Error{} category through ErrorCodes (:timeout)" do
+      result =
+        build_result(
+          status: :failed,
+          error: Jido.Harness.Error.new(:timeout, "provider timed out", run_id: "r-1")
+        )
+
+      assert RunResult.normalize(result) == {:error, :timeout}
+    end
+
+    test "preserves an unrecognized %Jido.Harness.Error{} category under {:other, category}" do
+      result =
+        build_result(status: :failed, error: Jido.Harness.Error.execution("stub failure"))
+
+      assert RunResult.normalize(result) == {:error, {:other, :execution}}
     end
 
     test "preserves an unrecognized :failed error code under {:other, code}" do
@@ -85,10 +102,27 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.RunResultTest do
       assert {:error, :cancelled} = RunResult.normalize(result)
     end
 
-    test "returns {:error, :unknown_error} for a :cancelled run with nil error" do
+    test "reports :cancelled — not :unknown_error — for a :cancelled run with nil error" do
       result = build_result(status: :cancelled, error: nil)
 
-      assert RunResult.normalize(result) == {:error, :unknown_error}
+      assert RunResult.normalize(result) == {:error, :cancelled}
+    end
+  end
+
+  describe "normalize/1 — forward-compatible statuses" do
+    # `Jido.Harness.RunResult.new!/1` validates `status` against the current
+    # upstream enum, so the struct is built directly to exercise the
+    # defensive clause a future upstream status would hit.
+    test "preserves an unknown non-:completed status under {:other, status}" do
+      result = %Jido.Harness.RunResult{
+        run_id: "r-1",
+        provider: :pi,
+        status: :suspended,
+        text: "",
+        error: nil
+      }
+
+      assert RunResult.normalize(result) == {:error, {:other, :suspended}}
     end
   end
 

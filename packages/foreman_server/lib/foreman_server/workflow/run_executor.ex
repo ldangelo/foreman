@@ -641,21 +641,30 @@ defmodule ForemanServer.Workflow.RunExecutor do
           {:error, :worker_timeout}
       end
 
-    # Remove the finished LaunchWorker so its `restart: :permanent`
-    # DynamicSupervisor child spec (worker_supervisor.ex) doesn't relaunch
-    # it and re-run this already-finished phase — a plain WorkerExited does
-    # NOT seal the Worker aggregate (only WorkerCrashed/RunCompleted/
-    # RunFailed do, see aggregates/worker.ex). `stop_worker/2` internally
-    # blocks on `DynamicSupervisor.terminate_child/2`, which waits for
-    # LaunchWorker's own `terminate/2` to finish; that callback can need to
-    # round-trip through CommandRouter back to THIS run's aggregate actor —
-    # i.e. back to this very process. Calling it synchronously here
-    # deadlocks RunExecutor against itself (confirmed empirically: caused
-    # ~300 cascading suite-wide failures once EventStore subscriptions
-    # started timing out waiting on a stalled RunExecutor mailbox). Run it
-    # in a detached task instead so it can't block this GenServer callback;
-    # `LifecycleStore.claim_execution/1` (test doubles) plus this eventual
-    # cleanup together close the re-launch gap without the deadlock risk.
+    # Remove the LaunchWorker child spec so nothing for this phase can be
+    # relaunched — a plain WorkerExited does NOT seal the Worker aggregate
+    # (only WorkerCrashed/RunCompleted/RunFailed do, see
+    # aggregates/worker.ex), so a crashed worker would otherwise keep
+    # restarting for a phase this process has already finished with.
+    #
+    # This is cleanup, NOT the guard against relaunching a *finished* phase.
+    # It used to be that guard, and it lost: under the old
+    # `restart: :permanent` child spec every worker exit relaunched, and in
+    # run-de055c18749db5e9c702d24950268cf9 the relaunch beat this task by
+    # 56ms and leaked an agent that ran 8m42s past the run's terminal state.
+    # `LaunchWorker` now propagates its worker's exit reason to a
+    # `restart: :transient` child spec, so a finished or torn-down worker
+    # ends its child without depending on this race.
+    #
+    # `stop_worker/2` internally blocks on
+    # `DynamicSupervisor.terminate_child/2`, which waits for LaunchWorker's
+    # shutdown to finish; that can need to round-trip through CommandRouter
+    # back to THIS run's aggregate actor — i.e. back to this very process.
+    # Calling it synchronously here deadlocks RunExecutor against itself
+    # (confirmed empirically: caused ~300 cascading suite-wide failures once
+    # EventStore subscriptions started timing out waiting on a stalled
+    # RunExecutor mailbox). Run it in a detached task instead so it can't
+    # block this GenServer callback.
     Task.start(fn -> Overwatch.WorkerSupervisor.stop_worker(worker_id, run_id) end)
 
     # Drain the DOWN if it hasn't arrived yet, so the process monitor

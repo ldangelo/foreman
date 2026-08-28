@@ -58,12 +58,12 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       end)
     end
 
-    # Overwatch/LaunchWorker restarts a worker's supervised process
-    # `:permanent`ly on ANY exit (see worker_supervisor.ex), and a clean
-    # WorkerExited does not seal the Worker aggregate — only
-    # WorkerCrashed/RunCompleted/RunFailed do (see aggregates/worker.ex).
-    # A finished phase can therefore be re-launched by the supervisor
-    # before the run has fully completed. TestWorkerAdapter uses this to
+    # Overwatch/LaunchWorker relaunches a worker's supervised process only
+    # when it CRASHES (`restart: :transient` plus the exit-reason contract in
+    # launch_worker.ex); a clean WorkerExited does not seal the Worker
+    # aggregate — only WorkerCrashed/RunCompleted/RunFailed do (see
+    # aggregates/worker.ex) — so a crashed worker can still be re-launched
+    # for a phase this test already drove. TestWorkerAdapter uses this to
     # detect a duplicate re-launch and avoid re-driving the script.
     def claim_execution(script_key) do
       Agent.get_and_update(__MODULE__, fn state ->
@@ -157,10 +157,10 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       script_key = Map.fetch!(context, "script_key")
 
       # See LifecycleStore.claim_execution/1: Overwatch/LaunchWorker
-      # restarts this worker :permanently on ANY exit, and a clean
-      # WorkerExited does not seal the Worker aggregate, so the
-      # supervisor can re-launch it for a phase that already delivered
-      # its result. Only the first (winning) launch drives the script
+      # re-launches this worker when it CRASHES, and a clean WorkerExited
+      # does not seal the Worker aggregate, so the supervisor can still
+      # re-launch it for a phase that already delivered its result. Only the
+      # first (winning) launch drives the script
       # and reports a result; a duplicate re-launch finishes the
       # handshake quietly — re-sending {:worker_result, ...} would hit a
       # RunExecutor that already moved past this phase and has no

@@ -148,11 +148,48 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapterTest do
     assert run_request.runtime_timeout_ms == 1_234
   end
 
-  test "execute/2 returns an error for terminal failed runs" do
+  test "execute/2 reports the provider's failure category for terminal failed runs" do
+    # The stub emits `:run_failed`, so the harness worker finalizes with
+    # `%Jido.Harness.Error{category: :execution}`. That category is the only
+    # failure detail the provider gave us and it must reach the caller —
+    # previously it collapsed to `:unknown_error`.
     request = %{prompt: "fail", context: %{provider: :pi}}
 
-    assert {:error, reason} = JidoHarnessAdapter.execute(request, [])
-    assert reason == :unknown_error or match?(%Jido.Harness.Error{}, reason)
+    assert JidoHarnessAdapter.execute(request, []) == {:error, {:other, :execution}}
+  end
+
+  describe "normalize_raw_error/1" do
+    test "maps a recognized atom reason to its declared code" do
+      assert JidoHarnessAdapter.normalize_raw_error(:timeout) == {:error, :timeout}
+      assert JidoHarnessAdapter.normalize_raw_error(:cancelled) == {:error, :cancelled}
+      assert JidoHarnessAdapter.normalize_raw_error(:tool_error) == {:error, :tool_error}
+
+      assert JidoHarnessAdapter.normalize_raw_error(:process_terminated) ==
+               {:error, :process_terminated}
+
+      assert JidoHarnessAdapter.normalize_raw_error(:unsupported_provider) ==
+               {:error, :unsupported_provider}
+    end
+
+    test "preserves an informative atom reason instead of collapsing it" do
+      # `:shutdown` (supervisor terminated the worker) and `:not_found`
+      # (`Jido.Harness.Run.await/2` on a vanished run) are both real reasons
+      # the old pass-through list reported as `:unknown_error`.
+      assert JidoHarnessAdapter.normalize_raw_error(:shutdown) == {:error, {:other, :shutdown}}
+      assert JidoHarnessAdapter.normalize_raw_error(:not_found) == {:error, {:other, :not_found}}
+    end
+
+    test "maps a %Jido.Harness.Error{} reason through its category" do
+      assert JidoHarnessAdapter.normalize_raw_error(Jido.Harness.Error.validation("bad options")) ==
+               {:error, {:other, :validation}}
+    end
+
+    test "reserves :unknown_error for a reason carrying no failure category" do
+      assert JidoHarnessAdapter.normalize_raw_error(nil) == {:error, :unknown_error}
+      assert JidoHarnessAdapter.normalize_raw_error("boom") == {:error, :unknown_error}
+      assert JidoHarnessAdapter.normalize_raw_error({:exit, :killed}) == {:error, :unknown_error}
+      assert JidoHarnessAdapter.normalize_raw_error(%{}) == {:error, :unknown_error}
+    end
   end
 
   test "execute/2 returns {:error, :unsupported_provider} for unknown provider atoms" do

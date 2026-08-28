@@ -339,6 +339,15 @@ Current behavior:
   best-effort `WorkerExited` and forwards `{:error, {:task_crashed, reason}}`.
 - Separate crash paths can emit `WorkerCrashed`; normal Jido metadata is not the
   operator result.
+- Worker relaunch is crash-only. The `LaunchWorker` child spec is
+  `restart: :transient`, and `LaunchWorker` propagates its worker's exit
+  reason: a worker that finished the phase (`:normal`) or was torn down
+  (`:shutdown`) ends the child, while a crashed worker is relaunched and
+  counted by `Overwatch.CrashLoopDetector`. Under the previous
+  `restart: :permanent` policy the supervisor relaunched a *finished* phase
+  too, starting a second agent process for work that was already over; in
+  run-de055c18749db5e9c702d24950268cf9 that second agent outlived the run's
+  `RunFailed` by 8m42s and overwrote the run's phase artifact.
 
 ## 7. Agent runtime and Jido Harness
 

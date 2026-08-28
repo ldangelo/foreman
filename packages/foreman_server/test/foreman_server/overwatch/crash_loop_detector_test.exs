@@ -177,6 +177,30 @@ defmodule ForemanServer.Overwatch.CrashLoopDetectorTest do
       assert status.crashed == []
       assert status.paused == []
     end
+
+    test ":normal is not a crash — no restart attempt is consumed" do
+      # run-de055c18749db5e9c702d24950268cf9: the phase's worker delivered
+      # its result and stopped `:normal`, and the detector logged
+      # "crash retry attempt=1" at warning level for it. A clean exit must
+      # leave the restart budget untouched.
+      %{tracker: tracker, detector: detector} = start_tracker_and_detector()
+      worker_id = uuid()
+      run_id = uuid()
+
+      pid = spawn(fn -> receive do: (:finish -> :ok) end)
+      :ok = Tracker.register(tracker, worker_id, run_id, pid)
+      send(pid, :finish)
+
+      wait_until(fn -> Tracker.pid_for(tracker, worker_id, run_id) == nil end)
+      # The cast is serialized behind the Tracker's own notify, so one
+      # synchronous call to the detector drains it.
+      _ = CrashLoopDetector.status(detector)
+
+      assert CrashLoopDetector.attempt_count(detector) == %{}
+      assert CrashLoopDetector.restart_history(detector) == %{}
+      assert CrashLoopDetector.pending_timers(detector) == %{}
+      assert CrashLoopDetector.status(detector) == %{crashed: [], paused: []}
+    end
   end
 
   describe "sealed state" do

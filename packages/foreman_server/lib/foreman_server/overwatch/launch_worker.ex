@@ -55,6 +55,21 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
       killed.
     * Activation handshake not completed within timeout → exit
       `{:activation_timeout, _}`.
+
+  ## Exit reason contract
+
+  The `WorkerSupervisor` child spec is `restart: :transient`, so
+  LaunchWorker's own exit reason IS the relaunch decision:
+
+    * worker DOWN with `:normal`, `:shutdown`, or `{:shutdown, _}` — the
+      phase delivered its result, or the worker was torn down on purpose
+      → exit `:normal`, child ends, no relaunch.
+    * worker DOWN with any other reason — a real crash → exit
+      `{:worker_crashed, reason}`, child is relaunched and
+      `CrashLoopDetector` counts the restart.
+
+  Every failure mode above is abnormal, so a LaunchWorker that cannot
+  start or activate its worker is relaunched as before.
   """
 
   use GenServer
@@ -227,11 +242,38 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
     {:stop, {:activation_timeout, state.worker_id}, state}
   end
 
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
-    # Worker went DOWN. Tracker already emitted WorkerExited through
-    # its own monitor. LaunchWorker exits so WorkerSupervisor can
-    # decide (e.g., restart).
+  # Worker went DOWN. Tracker already emitted WorkerExited through its own
+  # monitor. LaunchWorker exits with a reason the `restart: :transient`
+  # child spec (worker_supervisor.ex) can act on, because the supervisor
+  # has no other way to tell a finished phase from a crashed one.
+  #
+  # `:normal` is `JidoHarnessWorker`'s exit after it has sent
+  # `{:worker_result, _}` — on the success path AND on the task-crash path,
+  # both of which report to RunExecutor first. `:shutdown` /
+  # `{:shutdown, _}` is a deliberate teardown (`WorkerSupervisor.stop_worker/2`,
+  # operator cancel). Neither may relaunch: run-de055c18749db5e9c702d24950268cf9
+  # relaunched 2.3ms after `RunFailed` under the old `:permanent` policy and
+  # leaked a pi agent that ran 8m42s past the run's terminal state.
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state)
+      when reason in [:normal, :shutdown] do
     {:stop, :normal, state}
+  end
+
+  def handle_info({:DOWN, _ref, :process, _pid, {:shutdown, _}}, state) do
+    {:stop, :normal, state}
+  end
+
+  # Any other reason is a genuine worker crash: exit abnormally so the
+  # `:transient` policy relaunches, exactly as TRD-011 and
+  # `CrashLoopDetector`'s backoff schedule require. The Tracker's own
+  # monitor is what feeds `observe_down/4`, so counting is unaffected.
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, state) do
+    Logger.error(
+      "LaunchWorker: worker crashed for #{state.worker_id}/#{state.run_id}: " <>
+        "#{inspect(reason)}"
+    )
+
+    {:stop, {:worker_crashed, reason}, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

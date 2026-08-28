@@ -25,6 +25,7 @@ defmodule ForemanServer.OverwatchTest do
 
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch
+  alias ForemanServer.Overwatch.LaunchWorker
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.Overwatch.WorkerProtocol
 
@@ -66,6 +67,31 @@ defmodule ForemanServer.OverwatchTest do
     end
   end
 
+  defmodule ExitOnCueAdapter do
+    @moduledoc """
+    Test adapter that completes the activation handshake and then exits
+    with whatever reason the test sends it. Used to pin the LaunchWorker
+    exit-reason contract: a worker that finished (`:normal`) or was torn
+    down (`:shutdown`) must NOT be relaunched, while a crashed worker
+    must be.
+    """
+    use GenServer
+
+    def start_link(args), do: GenServer.start_link(__MODULE__, args)
+
+    @impl true
+    def init(args), do: {:ok, args}
+
+    @impl true
+    def handle_info({:overwatch_activate, _worker_id, _run_id, launcher_pid}, state) do
+      send(launcher_pid, {:overwatch_activated, self()})
+      {:noreply, state}
+    end
+
+    def handle_info({:exit_with, reason}, state), do: {:stop, reason, state}
+    def handle_info(_, state), do: {:noreply, state}
+  end
+
   defp captured_args(worker_id, run_id) do
     Agent.get(:fake_adapter_capture, &Map.get(&1, {run_id, worker_id}))
   end
@@ -85,6 +111,37 @@ defmodule ForemanServer.OverwatchTest do
   end
 
   defp count(events, type), do: Enum.count(events, &(&1.event_type == type))
+
+  defp launch_on_cue(run_id, worker_id) do
+    assert {:ok, launch} =
+             Overwatch.start_phase("phase-#{run_id}",
+               run_id: run_id,
+               worker_id: worker_id,
+               adapter: ExitOnCueAdapter,
+               session_id: uuid(),
+               prompt_path: "/tmp/prompt-#{run_id}.md"
+             )
+
+    # LaunchWorker registers the spawned adapter pid with the Tracker before
+    # it emits WorkerStarted, so by the time start_phase/2 returns it is there.
+    adapter_pid = Tracker.pid_for(worker_id, run_id)
+    assert is_pid(adapter_pid)
+    {launch.launch_pid, adapter_pid}
+  end
+
+  # Poll until `fun` returns a truthy value, or give up. Used instead of a
+  # bare sleep for the "a relaunch DID happen" direction; the "no relaunch"
+  # direction cannot be polled and takes a settle window.
+  defp eventually(fun, attempts \\ 100) do
+    case fun.() do
+      falsy when falsy in [nil, false] and attempts > 0 ->
+        Process.sleep(20)
+        eventually(fun, attempts - 1)
+
+      value ->
+        value
+    end
+  end
 
   describe "start_phase/2" do
     test "returns {:ok, ...} with launch metadata, appends WorkerStarted, accepts heartbeat" do
@@ -248,6 +305,84 @@ defmodule ForemanServer.OverwatchTest do
 
       second_args = captured_args(second_worker_id, run_id)
       assert Keyword.get(second_args, :env_map) == updated_env
+    end
+  end
+
+  describe "LaunchWorker relaunch contract" do
+    # run-de055c18749db5e9c702d24950268cf9: the phase's agent finished at
+    # 22:25:14.782Z, the worker delivered its result, `RunFailed` landed at
+    # 22:25:26.060334Z — and the supervisor relaunched the worker at
+    # 22:25:26.062664Z (`WorkerStarted` sequence 181 on the worker stream),
+    # starting a second pi process that ran another 8m42s against the
+    # already-terminal run and overwrote its phase artifact. Under
+    # `restart: :permanent` the supervisor could not tell a finished phase
+    # from a crashed one, and `RunExecutor`'s detached `stop_worker/2` lost
+    # the race by 56ms.
+    test "a worker that exits normally is NOT relaunched" do
+      start_overwatch()
+      run_id = uuid()
+      worker_id = "wkr-normal-#{:erlang.unique_integer([:positive])}"
+
+      {launch_pid, adapter_pid} = launch_on_cue(run_id, worker_id)
+      ref = Process.monitor(launch_pid)
+
+      send(adapter_pid, {:exit_with, :normal})
+
+      assert_receive {:DOWN, ^ref, :process, ^launch_pid, :normal}, 2_000
+
+      # The supervisor restarts synchronously, so a settle window this wide
+      # would have already registered a second generation.
+      Process.sleep(500)
+
+      assert LaunchWorker.pid_for(worker_id, run_id) == nil
+
+      assert count(read_worker_events(worker_id, run_id), "WorkerStarted") == 1
+    end
+
+    test "a worker torn down with :shutdown is NOT relaunched" do
+      start_overwatch()
+      run_id = uuid()
+      worker_id = "wkr-shutdown-#{:erlang.unique_integer([:positive])}"
+
+      {launch_pid, adapter_pid} = launch_on_cue(run_id, worker_id)
+      ref = Process.monitor(launch_pid)
+
+      send(adapter_pid, {:exit_with, :shutdown})
+
+      assert_receive {:DOWN, ^ref, :process, ^launch_pid, :normal}, 2_000
+
+      Process.sleep(500)
+
+      assert LaunchWorker.pid_for(worker_id, run_id) == nil
+      assert count(read_worker_events(worker_id, run_id), "WorkerStarted") == 1
+    end
+
+    # The other half of the contract: TRD-011 and CrashLoopDetector's backoff
+    # schedule both require that a genuinely crashed worker IS relaunched.
+    test "a worker that crashes IS relaunched" do
+      start_overwatch()
+      run_id = uuid()
+      worker_id = "wkr-crash-#{:erlang.unique_integer([:positive])}"
+
+      {launch_pid, adapter_pid} = launch_on_cue(run_id, worker_id)
+
+      send(adapter_pid, {:exit_with, {:badmatch, :boom}})
+
+      # A new generation registers under the same key with a different pid.
+      relaunched_pid =
+        eventually(fn ->
+          case LaunchWorker.pid_for(worker_id, run_id) do
+            pid when is_pid(pid) and pid != launch_pid -> pid
+            _ -> nil
+          end
+        end)
+
+      assert is_pid(relaunched_pid)
+      assert Process.alive?(relaunched_pid)
+
+      assert eventually(fn ->
+               count(read_worker_events(worker_id, run_id), "WorkerStarted") == 2 || nil
+             end)
     end
   end
 end

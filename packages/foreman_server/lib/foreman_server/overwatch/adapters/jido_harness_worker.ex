@@ -36,7 +36,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   require Logger
 
-  alias ForemanServer.AgentRuntime.JidoHarness.{Driver, RunResult}
+  alias ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
+  alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, RunResult}
   alias ForemanServer.Overwatch.WorkerProtocol
 
   @default_heartbeat_interval_ms 5_000
@@ -174,9 +175,16 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   # Run the agent, handling both sync and detached cases. Normalize to
   # 2-tuple (matches Invocation.run_attempts/5 at invocation.ex:183):
   #
-  #   {:ok, content} | {:error, reason}
+  #   {:ok, content} | {:error, code}
+  #
+  # A raw `Driver` failure reason is a bare atom or a
+  # `%Jido.Harness.Error{}`, neither of which RunExecutor can interpret;
+  # returning it verbatim was how this path reported a failure category it
+  # already had. `JidoHarnessAdapter.normalize_raw_error/1` is the single
+  # site that reads it, shared with the non-Overwatch adapter so the two
+  # cannot drift.
   @spec run_agent(atom(), String.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
+          {:ok, String.t()} | ErrorCodes.code()
   defp run_agent(provider, prompt, driver_opts) do
     case Driver.run(provider, prompt, driver_opts) do
       {:ok, %Jido.Harness.RunResult{} = run_result} ->
@@ -188,11 +196,11 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
         case Driver.await(run_id, timeout) do
           {:ok, %Jido.Harness.RunResult{} = run_result} -> normalize_result(run_result)
-          {:error, _} = err -> err
+          {:error, reason} -> JidoHarnessAdapter.normalize_raw_error(reason)
         end
 
-      {:error, _} = err ->
-        err
+      {:error, reason} ->
+        JidoHarnessAdapter.normalize_raw_error(reason)
     end
   end
 
