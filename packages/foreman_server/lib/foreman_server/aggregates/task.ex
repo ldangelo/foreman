@@ -33,9 +33,11 @@ defmodule ForemanServer.Aggregates.Task do
       :acknowledged_run_id,
       :run_terminal_reason,
       :run_terminal_at,
+      :prompt,
       dependencies: [],
       annotations: [],
-      retry_history: []
+      retry_history: [],
+      provider_tracked: true
     ]
   end
 
@@ -63,9 +65,11 @@ defmodule ForemanServer.Aggregates.Task do
       acknowledged_run_id: nil,
       run_terminal_reason: nil,
       run_terminal_at: nil,
+      prompt: nil,
       dependencies: [],
       annotations: [],
-      retry_history: []
+      retry_history: [],
+      provider_tracked: true
     }
 
   @impl true
@@ -86,7 +90,9 @@ defmodule ForemanServer.Aggregates.Task do
             title: Aggregate.get(payload, :title),
             description: Aggregate.get(payload, :description),
             priority: Aggregate.get(payload, :priority),
-            dependencies: Aggregate.get(payload, :dependencies, [])
+            dependencies: Aggregate.get(payload, :dependencies, []),
+            prompt: Aggregate.get(payload, :prompt),
+            provider_tracked: Aggregate.get(payload, :provider_tracked, true)
         }
 
       "TaskUpdated" ->
@@ -204,7 +210,9 @@ defmodule ForemanServer.Aggregates.Task do
            planning_run_id: Aggregate.get(payload, :planning_run_id),
            planning_kind: Aggregate.get(payload, :planning_kind),
            planning_phase_id: Aggregate.get(payload, :planning_phase_id),
-           trace_event_id: Aggregate.get(payload, :trace_event_id)
+           trace_event_id: Aggregate.get(payload, :trace_event_id),
+           prompt: Aggregate.get(payload, :prompt),
+           provider_tracked: Aggregate.get(payload, :provider_tracked, true)
          }
        }}
     end

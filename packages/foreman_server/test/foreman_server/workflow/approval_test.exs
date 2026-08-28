@@ -93,6 +93,54 @@ defmodule ForemanServer.Workflow.ApprovalTest do
       assert [phase] = prepared.workflow_snapshot.phases
       assert phase.prompt_path == prompt_path
     end
+
+    test "carries a non-empty prompt into workflow_snapshot[\"input\"][\"prompt\"]", %{tmp: tmp} do
+      manifest_path = Path.join(tmp, "demo2.yaml")
+      prompt_path = Path.join(tmp, "prompts/demo2.md")
+
+      File.write!(prompt_path, "do the demo thing")
+
+      File.write!(manifest_path, """
+      name: demo2
+      phases:
+        - name: only
+          prompt: demo2.md
+      """)
+
+      :ok = Catalog.reload()
+
+      assert {:ok, prepared} =
+               Approval.prepare(
+                 %{task_id: "task-100", task_type: "demo2", prompt: "hello world"},
+                 approval_id: "approval-100"
+               )
+
+      assert prepared.workflow_snapshot["input"]["prompt"] == "hello world"
+    end
+
+    test "omits the input key when no prompt is given, byte-identical to today", %{tmp: tmp} do
+      manifest_path = Path.join(tmp, "demo3.yaml")
+      prompt_path = Path.join(tmp, "prompts/demo3.md")
+
+      File.write!(prompt_path, "do the demo thing")
+
+      File.write!(manifest_path, """
+      name: demo3
+      phases:
+        - name: only
+          prompt: demo3.md
+      """)
+
+      :ok = Catalog.reload()
+
+      assert {:ok, prepared} =
+               Approval.prepare(
+                 %{task_id: "task-101", task_type: "demo3"},
+                 approval_id: "approval-101"
+               )
+
+      refute Map.has_key?(prepared.workflow_snapshot, "input")
+    end
   end
 
   describe "plan workflow (command: phases)" do

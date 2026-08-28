@@ -2106,12 +2106,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # An ad-hoc task carries no tracker record, so provider callbacks must not fire.
+  defp provider_tracked?(state) do
+    case Map.get(state.task, :provider_tracked, Map.get(state.task, "provider_tracked", true)) do
+      false -> false
+      _ -> true
+    end
+  end
+
   # For work-sourced runs there is no task to claim — skip the callback entirely.
   defp maybe_claim_task(state) do
     if state.source == :work_request do
       :ok
     else
-      case provider_enabled?(project_id(state)) do
+      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
           claim(project_id(state), provider_task_id(state), task_provider_actor())
           |> to_lifecycle_result()
@@ -2127,7 +2135,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if state.source == :work_request do
       dispatch_work_execution_complete(state)
     else
-      case provider_enabled?(project_id(state)) do
+      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
           case complete(
                  project_id(state),
@@ -2151,7 +2159,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if state.source == :work_request do
       dispatch_work_execution_fail(state, reason)
     else
-      case provider_enabled?(project_id(state)) do
+      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
           failure_reason =
             merge_failure_reason(reason, %{

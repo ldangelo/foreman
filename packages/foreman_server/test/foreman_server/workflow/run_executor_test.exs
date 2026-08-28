@@ -531,6 +531,59 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     assert transitions == [:claim, :close]
   end
 
+  test "provider_tracked: false makes no TaskProvider calls and still reaches task.execution_complete",
+       %{} do
+    start_schema_cache!()
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      project_task_provider(database_path),
+      nil,
+      System.tmp_dir!(),
+      %{provider_tracked: false}
+    )
+
+    register_project!(project_id, database_path)
+
+    # No `expect(BrRunnerMock, :cmd, ...)` is set up: an untracked task
+    # must never call the TaskProvider. Any call would raise "no
+    # expectation defined" and fail this test.
+    assert is_pid(start_run_executor!(run_id, task_id))
+
+    assert {:adapter_execute, "Run phase implement", context} = receive_message()
+    assert context["script_key"] == script_key
+    assert {:adapter_env, env} = receive_message()
+    assert is_binary(env["FOREMAN_SHELL_SESSION_ID"])
+
+    assert %{status: "closed"} =
+             poll_until(
+               fn ->
+                 case ProjectionStore.task_projection(task_id) do
+                   %{status: "closed"} = task -> {:ok, task}
+                   other -> {:error, other}
+                 end
+               end,
+               "task closed"
+             )
+
+    assert count_task_events(task_id, "TaskExecutionCompleted") == 1
+    verify!(BrRunnerMock)
+  end
+
   test "failure path invokes fail on TaskExecutionFailed with deterministic default transition comment",
        %{
          temp_dir: temp_dir
@@ -1994,17 +2047,22 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
          workflow_snapshot,
          task_provider,
          external_id \\ nil,
-         project_path \\ System.tmp_dir!()
+         project_path \\ System.tmp_dir!(),
+         extra_create_payload \\ %{}
        ) do
     seed_project!(project_id, task_provider, project_path)
     approval_id = unique_id("approval")
 
-    create_payload = %{
-      task_id: task_id,
-      project_id: project_id,
-      task_type: "implement",
-      title: "RunExecutor #{task_id}"
-    }
+    create_payload =
+      Map.merge(
+        %{
+          task_id: task_id,
+          project_id: project_id,
+          task_type: "implement",
+          title: "RunExecutor #{task_id}"
+        },
+        extra_create_payload
+      )
 
     create_payload =
       if is_binary(external_id) and external_id != "" do

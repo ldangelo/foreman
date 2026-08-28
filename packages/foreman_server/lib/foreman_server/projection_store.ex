@@ -1111,6 +1111,8 @@ defmodule ForemanServer.ProjectionStore do
           task_type: event.task_type,
           workflow_type: event.workflow_type,
           trd_path: event.trd_path,
+          prompt: event.prompt,
+          provider_tracked: event.provider_tracked,
           approval_id: nil,
           approved_by: nil,
           approved_at: nil,

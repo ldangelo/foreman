@@ -6,8 +6,8 @@ defmodule ForemanServerWeb.CommandController do
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on the operator allowlist
   (`project.register`, `project.update`, `project.archive`, `task.create`,
-  `task.approve`, `task.retry`, `run.cancel`, `run.remove`, `run.reset`,
-  `work.submit`, and `work.cancel`), enriches the payload, and dispatches to
+  `task.approve`, `task.retry`, `run.cancel`, `run.remove`, and `run.reset`),
+  enriches the payload, and dispatches to
   `CommandRouter`.
 
   The `aggregate_id` is derived from the payload (e.g. `task:<task_id>`
@@ -20,7 +20,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset work.submit work.cancel)
+  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -170,8 +170,6 @@ defmodule ForemanServerWeb.CommandController do
   defp aggregate_prefix("run.cancel"), do: "run"
   defp aggregate_prefix("run.remove"), do: "run"
   defp aggregate_prefix("run.reset"), do: "run"
-  defp aggregate_prefix("work.submit"), do: "work"
-  defp aggregate_prefix("work.cancel"), do: "work"
   defp aggregate_prefix(_), do: ""
 
   defp id_field_for("project.register"), do: :project_id
@@ -183,8 +181,6 @@ defmodule ForemanServerWeb.CommandController do
   defp id_field_for("run.cancel"), do: :run_id
   defp id_field_for("run.remove"), do: :run_id
   defp id_field_for("run.reset"), do: :run_id
-  defp id_field_for("work.submit"), do: :work_id
-  defp id_field_for("work.cancel"), do: :work_id
   defp id_field_for(_), do: nil
 
   defp default_command_id do
@@ -218,18 +214,23 @@ defmodule ForemanServerWeb.CommandController do
       is_map(payload) and is_binary(get_value(payload, :task_id)) ->
         task_id = get_value(payload, :task_id)
         external_id = get_value(payload, :external_id)
+        approval_id = get_value(payload, :approval_id)
+        run_id = get_value(payload, :run_id)
         # Surface the Bead ID (payload.external_id) when present so
         # `foreman task create` can print the linked bead on stdout.
         # The Actor hook populates this for any task.create project that
         # has a configured :create provider (e.g. BeadsAdapter) — the
         # Bead ID is set even when the operator issued the command.
         # Operator-issued tasks on projects WITHOUT a :create provider
-        # omit the field entirely.
-        if is_binary(external_id) and external_id != "" do
-          %{task_id: task_id, external_id: external_id}
-        else
-          %{task_id: task_id}
-        end
+        # omit the field entirely. `approval_id`/`run_id` are present on
+        # a `task.approve` result (including the auto_approve chain
+        # dispatched from `task.create`), so a one-call ad-hoc dispatch
+        # gets them on the same response, matching the retired
+        # `work.submit`'s ergonomics.
+        %{task_id: task_id}
+        |> maybe_put_serialized(:external_id, external_id)
+        |> maybe_put_serialized(:approval_id, approval_id)
+        |> maybe_put_serialized(:run_id, run_id)
 
       is_map(payload) and is_binary(get_value(payload, :project_id)) ->
         %{project_id: get_value(payload, :project_id)}
@@ -241,4 +242,9 @@ defmodule ForemanServerWeb.CommandController do
 
   defp serialize({:ok, _events}), do: %{events: 1}
   defp serialize(other), do: %{raw: inspect(other)}
+
+  defp maybe_put_serialized(map, key, value) when is_binary(value) and value != "",
+    do: Map.put(map, key, value)
+
+  defp maybe_put_serialized(map, _key, _value), do: map
 end

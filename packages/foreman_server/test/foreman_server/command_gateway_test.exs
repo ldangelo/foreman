@@ -823,6 +823,34 @@ defmodule ForemanServer.CommandGatewayTest do
                  payload: %{task_id: task_id, approved_by: "operator-1"}
                })
     end
+
+    test "implement-trd-beads task.create with a prompt and no trd_path cannot bypass ImplementationContext",
+         %{project_id: project_id, task_id: task_id} do
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "task",
+                   workflow_type: "implement-trd-beads",
+                   prompt: "do the beads thing",
+                   provider_tracked: false,
+                   priority: 2,
+                   title: "ad-hoc beads task"
+                 }
+               })
+
+      assert {:error, {:implementation_context_failed, _}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("approval"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.approve",
+                 payload: %{task_id: task_id, approved_by: "operator-1"}
+               })
+    end
   end
 
   describe "task.approve strict rendering of phases[*].command and phases[*].worktree.base" do
@@ -2023,6 +2051,110 @@ defmodule ForemanServer.CommandGatewayTest do
                    external_id: "foreman-abc"
                  }
                })
+    end
+
+  end
+  describe "task.create auto_approve" do
+    setup do
+      project_id = unique_id("project")
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "project:#{project_id}",
+                 type: "project.register",
+                 payload: %{project_id: project_id, path: "/tmp/#{project_id}"}
+               })
+
+      %{project_id: project_id}
+    end
+
+    test "dispatches task.approve automatically and returns its result", %{
+      project_id: project_id
+    } do
+      task_id = unique_id("task")
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "implement",
+                   title: "auto approve test",
+                   prompt: "echo hello",
+                   provider_tracked: false,
+                   auto_approve: true
+                 }
+               })
+
+      assert payload["task_id"] == task_id
+      assert is_binary(payload["approval_id"])
+      assert is_binary(payload["run_id"])
+
+      task = ProjectionStore.task_projection(task_id)
+      assert task.status == "ready"
+      assert task.provider_tracked == false
+      assert task.prompt == "echo hello"
+    end
+
+    test "a retried task.create does not mint a second approval", %{project_id: project_id} do
+      task_id = unique_id("task")
+      command_id = unique_id("command")
+
+      payload = %{
+        task_id: task_id,
+        project_id: project_id,
+        task_type: "implement",
+        title: "auto approve retry test",
+        prompt: "echo hello",
+        provider_tracked: false,
+        auto_approve: true
+      }
+
+      assert {:ok, %{"payload" => first_payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: payload
+               })
+
+      assert {:ok, %{"payload" => second_payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: command_id,
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: payload
+               })
+
+      assert first_payload["approval_id"] == second_payload["approval_id"]
+      assert first_payload["run_id"] == second_payload["run_id"]
+    end
+
+    test "does not auto-approve when auto_approve is absent", %{project_id: project_id} do
+      task_id = unique_id("task")
+
+      assert {:ok, %{"payload" => payload}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: unique_id("command"),
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project_id,
+                   task_type: "implement",
+                   title: "no auto approve"
+                 }
+               })
+
+      assert payload["task_id"] == task_id
+      refute Map.has_key?(payload, "approval_id")
+
+      task = ProjectionStore.task_projection(task_id)
+      assert task.status == "open"
     end
   end
 

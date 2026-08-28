@@ -250,11 +250,26 @@ defmodule ForemanServer.Aggregate.Actor do
         emit_watcher_import_skip_telemetry(cmd, external_id)
         {:ok, stage1_event_spec, state}
 
+      provider_tracked?(cmd.payload || %{}) == false ->
+        # An ad-hoc task (`provider_tracked: false` on `task.create`)
+        # carries no tracker record by design — see the
+        # "unify-work-dispatch" plan's "Decisions already fixed" section:
+        # it must create no Beads/tracker issue. Route straight to the
+        # legacy no-op branch, same as "no provider registered".
+        {:ok, stage1_event_spec, state}
+
       project_id = Aggregate.get(cmd.payload || %{}, :project_id) ->
         route_and_enrich(state, cmd, project_id, stage1_event_spec, retries_left)
 
       true ->
         {:ok, stage1_event_spec, state}
+    end
+  end
+
+  defp provider_tracked?(payload) do
+    case Aggregate.get(payload, :provider_tracked, true) do
+      false -> false
+      _ -> true
     end
   end
 

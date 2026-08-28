@@ -7,7 +7,7 @@ defmodule ForemanServer.CommandGateway do
     * `dispatch_operator/2` — public operator commands. Currently allows
       `project.register`, `project.update`, `project.archive`,
       `task.create`, `task.approve`, `task.retry`, `run.cancel`,
-      `run.remove`, `run.reset`, `work.submit`, and `work.cancel`. The command must carry
+      `run.remove`, and `run.reset`. The command must carry
       `command_id`, `type`, and a `payload` map.
       `aggregate_id` is required except for `task.create` in no-id mode
       (where both `aggregate_id` and `payload.task_id` are absent); in that
@@ -42,11 +42,10 @@ defmodule ForemanServer.CommandGateway do
 
   alias ForemanServer.{CommandRouter, ProjectionStore, Telemetry}
   alias ForemanServer.TaskProvider.Registry
-  alias ForemanServer.Work
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
-  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset work.submit work.cancel)
+  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -68,7 +67,10 @@ defmodule ForemanServer.CommandGateway do
          {:ok, prepared} <- prepare_operator_command(normalized),
          :ok <- validate_aggregate_id(prepared),
          {:ok, enriched} <- enrich_operator_command(prepared) do
-      dispatch_and_emit_project_telemetry(enriched, timeout)
+      case dispatch_and_emit_project_telemetry(enriched, timeout) do
+        {:ok, _} = result -> maybe_auto_approve(enriched, result, timeout)
+        other -> other
+      end
     end
   end
 
@@ -307,50 +309,6 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
-  defp validate_aggregate_id(%{type: "work.submit", aggregate_id: aggregate_id, payload: payload}) do
-    work_id = get_value(payload, :work_id) || get_value(payload, "work_id")
-    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
-
-    cond do
-      not is_binary(work_id) or work_id == "" ->
-        {:error, {:invalid_envelope, :missing_work_id}}
-
-      not is_binary(aggregate_id) or aggregate_id == "" ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      aggregate_id != stream_id("work", work_id) ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      is_binary(project_id) and project_id != "" ->
-        case ProjectionStore.project_projection(project_id) do
-          nil -> {:error, {:project_not_found, project_id}}
-          %{archived?: true} -> {:error, {:project_archived, project_id}}
-          _ -> :ok
-        end
-
-      true ->
-        {:error, {:invalid_envelope, :missing_project_id}}
-    end
-  end
-
-  defp validate_aggregate_id(%{type: "work.cancel", aggregate_id: aggregate_id, payload: payload}) do
-    work_id = get_value(payload, :work_id) || get_value(payload, "work_id")
-
-    cond do
-      not is_binary(work_id) or work_id == "" ->
-        {:error, {:invalid_envelope, :missing_work_id}}
-
-      not is_binary(aggregate_id) or aggregate_id == "" ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      aggregate_id != stream_id("work", work_id) ->
-        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
-
-      true ->
-        :ok
-    end
-  end
-
   @reserved_approval_fields ~w(approval_id approved_at run_id workflow_snapshot)a
   defp reserved_approval_field?(payload) do
     Enum.any?(@reserved_approval_fields, fn key ->
@@ -421,6 +379,7 @@ defmodule ForemanServer.CommandGateway do
       payload
       |> maybe_put_from_projection(task_projection, :workflow_type)
       |> maybe_put_from_projection(task_projection, :task_type)
+      |> maybe_put_from_projection(task_projection, :prompt)
 
     with {:ok, prepared} <-
            Approval.prepare(payload_with_type, approval_id: approval_id),
@@ -794,60 +753,9 @@ defmodule ForemanServer.CommandGateway do
     {:ok, %{command | payload: enriched_payload}}
   end
 
-  # Idempotency short-circuit: if the projection already carries this
-  # command_id as its submission_id, the submission was already enriched
-  # with the same deterministic identity and we can return the command
-  # as-is without re-preparing.
-  defp enrich_operator_command(%{type: "work.submit", command_id: command_id} = command) do
-    work_id = get_value(command.payload, :work_id) || get_value(command.payload, "work_id")
-
-    case ProjectionStore.work_projection(work_id) do
-      %{submission_id: ^command_id} ->
-        {:ok, command}
-
-      _ ->
-        with :ok <-
-               validate_not_reserved(command.payload, [
-                 :submission_id,
-                 :run_id,
-                 :workflow_snapshot
-               ]),
-             {:ok, prepared} <-
-               Work.Submission.prepare(%{
-                 work_id: work_id,
-                 project_id:
-                   get_value(command.payload, :project_id) ||
-                     get_value(command.payload, "project_id"),
-                 workflow:
-                   get_value(command.payload, :workflow) ||
-                     get_value(command.payload, "workflow"),
-                 prompt:
-                   get_value(command.payload, :prompt) || get_value(command.payload, "prompt")
-               }) do
-          enriched_payload =
-            command.payload
-            |> Map.put(:submission_id, prepared.submission_id)
-            |> Map.put(:run_id, prepared.run_id)
-            |> Map.put(:workflow_snapshot, prepared.workflow_snapshot)
-
-          {:ok, %{command | payload: enriched_payload}}
-        end
-    end
-  end
 
   defp enrich_operator_command(command), do: {:ok, command}
 
-  # Reject client-supplied reserved fields in a payload.
-  # Returns :ok if none are present, or {:error, {:reserved_fields, [field, ...]}}
-  # listing every reserved field the payload already carries.
-  defp validate_not_reserved(payload, reserved_fields) do
-    violations = Enum.filter(reserved_fields, &Map.has_key?(payload, &1))
-
-    case violations do
-      [] -> :ok
-      _ -> {:error, {:reserved_fields, violations}}
-    end
-  end
 
   defp dispatch_and_emit_project_telemetry(command, timeout) do
     started_at = System.monotonic_time()
@@ -968,6 +876,49 @@ defmodule ForemanServer.CommandGateway do
       if is_nil(v), do: acc, else: Map.put(acc, k, v)
     end)
   end
+
+  # `auto_approve` lets an ad-hoc `task.create` caller dispatch in one
+  # round trip: on a successful create, immediately issue the matching
+  # `task.approve` and return ITS result to the original caller, so the
+  # HTTP response carries `approval_id`/`run_id` the same way `work.submit`
+  # did. The approval command_id is derived from the create command_id so a
+  # retried `task.create` cannot mint a second approval — the existing
+  # idempotent-retry branch in `enrich_operator_command/1` keys on
+  # `approval_id == command_id` and rebuilds instead of re-approving.
+  # `auto_approve` itself is never forwarded past this function: `task.create`
+  # builds its `TaskCreated` payload explicitly field-by-field and ignores it.
+  defp maybe_auto_approve(
+         %{type: "task.create", command_id: command_id, payload: payload},
+         create_result,
+         timeout
+       ) do
+    if truthy?(get_value(payload, :auto_approve)) do
+      task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
+
+      approved_by =
+        case get_value(payload, :approved_by) do
+          value when is_binary(value) and value != "" -> value
+          _ -> "auto_approve"
+        end
+
+      approve_command = %{
+        command_id: "#{command_id}:auto-approve",
+        type: "task.approve",
+        aggregate_id: "task:#{task_id}",
+        payload: %{task_id: task_id, approved_by: approved_by}
+      }
+
+      dispatch_operator(approve_command, timeout)
+    else
+      create_result
+    end
+  end
+
+  defp maybe_auto_approve(_command, result, _timeout), do: result
+
+  defp truthy?(true), do: true
+  defp truthy?("true"), do: true
+  defp truthy?(_), do: false
 
   # Public payload keys (operator commands) must be limited to a known
   # set per type. Atomize only those keys, leave unknown values alone.
