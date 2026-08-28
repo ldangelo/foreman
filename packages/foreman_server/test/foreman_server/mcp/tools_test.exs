@@ -256,6 +256,57 @@ defmodule ForemanServer.MCP.ToolsTest do
               }} = Tools.call_tool("foreman_run_get_logs", %{run_id: run_id})
     end
 
+    # The payloads below carry `"event_type"` because that is exactly what
+    # `Overwatch.Tracker.dispatch_lifecycle/3` persists (`tracker.ex:314-324`).
+    # Decoding one used to raise inside `ProjectionStore.init/1` and take the
+    # whole application down at boot, so this seeding shape is the regression
+    # pin, not incidental detail.
+    test "logs for a known run return captured stdout and stderr entries" do
+      run_id = unique_run_id()
+      replace_state(%{runs: %{run_id => %{run_id: run_id, status: "in_progress"}}})
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "WorkerStdout",
+                   payload: %{
+                     "event_type" => "WorkerStdout",
+                     "run_id" => run_id,
+                     "worker_id" => "wkr-1",
+                     "sequence" => 1,
+                     "line" => "compiling",
+                     "timestamp" => "2026-08-27T00:00:01Z"
+                   }
+                 },
+                 %{
+                   event_type: "WorkerStderr",
+                   payload: %{
+                     "event_type" => "WorkerStderr",
+                     "run_id" => run_id,
+                     "worker_id" => "wkr-1",
+                     "sequence" => 2,
+                     "line" => "warning: deprecated",
+                     "timestamp" => "2026-08-27T00:00:02Z"
+                   }
+                 }
+               ])
+
+      assert {:ok, result} = Tools.call_tool("foreman_run_get_logs", %{run_id: run_id})
+
+      assert result.count == 2
+      assert result.truncated == false
+      assert result.omitted_entries == 0
+
+      assert [%{channel: "stdout", content: "compiling"}, %{channel: "stderr"} = stderr] =
+               result.entries
+
+      assert stderr.content == "warning: deprecated"
+      assert stderr.stream_id == "worker:#{run_id}:wkr-1"
+
+      # The MCP transport JSON-encodes every tool result.
+      assert {:ok, _} = Jason.encode(result)
+    end
+
     test "logs for an unknown run are NOT_FOUND" do
       assert {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}} =
                Tools.call_tool("foreman_run_get_logs", %{run_id: "no-such-run"})

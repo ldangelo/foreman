@@ -30,6 +30,7 @@ defmodule ForemanServer.ProjectionStore do
   alias EventStore.{EventData, Page, RecordedEvent}
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{EventCodec, EventStore}
+  alias ForemanServer.Events.{WorkerStderr, WorkerStdout}
 
   @active_run_statuses ["awaiting_worker", "in_progress"]
 
@@ -205,6 +206,18 @@ defmodule ForemanServer.ProjectionStore do
   `worker:<run_id>:<worker_id>` streams. Unknown runs return
   `{:error, :run_not_found}`; known runs with no worker output return a
   successful empty result. The default read is a deterministic latest-500 tail.
+
+  **Absent is not the same as dropped** (AGENTS.md 5.3). A run whose workers
+  wrote nothing reads `count: 0, truncated: false, omitted_entries: 0`. A run
+  whose output outgrew the resident caps reads `truncated: true` with non-zero
+  `omitted_entries`/`omitted_bytes`, so a partial read can never be mistaken
+  for a complete one. The events themselves stay in the event store either
+  way; this is a bounded read model over them, not the system of record.
+
+  There is no `:log_store_unavailable` / `:log_store_failed` failure: the
+  projection is this GenServer's own state, so for a known run the read always
+  succeeds. Declaring failures that cannot occur would misdescribe the
+  contract.
   """
   @spec run_logs(String.t()) ::
           {:ok,
@@ -215,9 +228,10 @@ defmodule ForemanServer.ProjectionStore do
              limit: pos_integer(),
              truncated: boolean(),
              omitted_entries: non_neg_integer(),
-             omitted_bytes: non_neg_integer()
+             omitted_bytes: non_neg_integer(),
+             max_limit: pos_integer()
            }}
-          | {:error, :run_not_found | :log_store_unavailable | {:log_store_failed, term()}}
+          | {:error, :run_not_found}
   def run_logs(run_id) do
     GenServer.call(__MODULE__, {:run_logs, run_id})
   end
@@ -1264,11 +1278,11 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "WorkerStdout", payload) do
-    project_worker_log(state, payload, "stdout")
+    project_worker_log(state, decode_for_projection("WorkerStdout", payload), payload, "stdout")
   end
 
   defp apply_event_by_type(state, "WorkerStderr", payload) do
-    project_worker_log(state, payload, "stderr")
+    project_worker_log(state, decode_for_projection("WorkerStderr", payload), payload, "stderr")
   end
 
   defp apply_event_by_type(state, "WorkerUnresponsive", payload) do
@@ -1775,67 +1789,117 @@ defmodule ForemanServer.ProjectionStore do
 
   @run_logs_default_limit 500
   @run_logs_max_limit 5_000
+  @run_logs_max_bytes 1_048_576
 
-  defp project_worker_log(state, payload, channel) when channel in ["stdout", "stderr"] do
-    case decode_for_projection(worker_log_event_type(channel), payload) do
-      %{run_id: run_id, worker_id: worker_id, sequence: sequence, line: line} = event
-      when is_binary(run_id) and run_id != "" and is_binary(worker_id) and worker_id != "" ->
-        entry = %{
-          worker_id: worker_id,
-          channel: channel,
-          sequence: sequence,
-          timestamp: event.timestamp || get(payload, :_projection_recorded_at),
-          content: line || "",
-          stream_id: "worker:#{run_id}:#{worker_id}",
-          event_number: get(payload, :_projection_event_number),
-          stream_version: get(payload, :_projection_stream_version)
-        }
-
-        log_state =
-          state
-          |> Map.get(:run_logs, %{})
-          |> Map.get(run_id, empty_run_log_state())
-          |> put_log_entry(entry)
-
-        state
-        |> touch_run_for_payload(payload)
-        |> Map.update(:run_logs, %{run_id => log_state}, &Map.put(&1, run_id, log_state))
-
-      _ ->
-        state
+  # Match the decoded event STRUCT, exactly as `PrAssociated` above does. The
+  # bare `%{run_id: _, worker_id: _, sequence: _, line: _}` map pattern this
+  # replaced matched by shape, so renaming a field on `Events.WorkerStdout`
+  # would have stopped matching and fallen into a `_ -> state` catch-all that
+  # silently discarded the log line — the precise failure mode AGENTS.md 5.1
+  # and 5.5 exist to prevent.
+  #
+  # AGENTS.md 5.3: a blank run_id/worker_id is MALFORMED, not absent. It
+  # cannot be projected (the entry would have no run to belong to and no
+  # stream id), and silently dropping it is indistinguishable from "this
+  # worker wrote nothing" — the same confusion the tool's old
+  # `:no_log_store` reply created. `WorkerProtocol.emit/2` supplies both, so
+  # reaching here means that boundary was bypassed: raise.
+  defp project_worker_log(state, decoded, payload, channel)
+       when channel in ["stdout", "stderr"] do
+    case decoded do
+      %{run_id: run_id, worker_id: worker_id} = event
+      when is_struct(event, WorkerStdout) or is_struct(event, WorkerStderr) ->
+        if is_binary(run_id) and run_id != "" and is_binary(worker_id) and worker_id != "" do
+          project_worker_log_entry(state, event, payload, channel, run_id, worker_id)
+        else
+          raise ArgumentError,
+                "ProjectionStore: #{channel} log event with unusable run_id/worker_id: " <>
+                  inspect(event)
+        end
     end
   end
 
-  defp worker_log_event_type("stdout"), do: "WorkerStdout"
-  defp worker_log_event_type("stderr"), do: "WorkerStderr"
+  defp project_worker_log_entry(state, event, payload, channel, run_id, worker_id) do
+    entry = %{
+      worker_id: worker_id,
+      channel: channel,
+      sequence: event.sequence,
+      timestamp: event.timestamp || get(payload, :_projection_recorded_at),
+      content: event.line || "",
+      stream_id: "worker:#{run_id}:#{worker_id}",
+      event_number: get(payload, :_projection_event_number),
+      stream_version: get(payload, :_projection_stream_version)
+    }
+
+    log_state =
+      state
+      |> Map.get(:run_logs, %{})
+      |> Map.get(run_id, empty_run_log_state())
+      |> put_log_entry(entry)
+
+    state
+    |> touch_run_for_payload(payload)
+    |> Map.update(:run_logs, %{run_id => log_state}, &Map.put(&1, run_id, log_state))
+  end
 
   defp empty_run_log_state do
-    %{entries: [], omitted_entries: 0, omitted_bytes: 0}
+    %{entries: :queue.new(), count: 0, bytes: 0, omitted_entries: 0, omitted_bytes: 0}
   end
 
+  # Append is O(1) and evicts at most as many entries as the caps require.
+  #
+  # The list version of this rebuilt a fresh @run_logs_max_limit-cons-cell
+  # list on EVERY log line (`length/1` + `Enum.take/2` + `Enum.drop/2`), and
+  # this runs inside the single-writer `ProjectionStore` GenServer that also
+  # serves `run/1`, `list_runs/1` and the scheduler's `active_runs/0` — so a
+  # chatty worker charged every other projection read for its output.
+  #
+  # Both caps are needed and they bound different things: `@run_logs_max_limit`
+  # bounds entry count, `@run_logs_max_bytes` bounds RESIDENT MEMORY, which
+  # entry count alone does not (a line has no intrinsic size limit, and a run
+  # may have many workers). This is a memory bound on the read model, distinct
+  # from `WorkerLogPolicy`'s bound on how many events are durably WRITTEN —
+  # different resources, so not a duplicated boundary (AGENTS.md 5.7). Do not
+  # delete one because the other exists. Evictions are always accounted in
+  # `omitted_entries`/`omitted_bytes` so a truncated read can never look
+  # complete.
   defp put_log_entry(log_state, entry) do
-    entries = [entry | Map.get(log_state, :entries, [])]
-    overflow = max(length(entries) - @run_logs_max_limit, 0)
-    kept = Enum.take(entries, @run_logs_max_limit)
-
-    omitted_bytes =
-      entries |> Enum.drop(@run_logs_max_limit) |> Enum.map(&byte_size(&1.content)) |> Enum.sum()
-
     log_state
-    |> Map.put(:entries, kept)
-    |> Map.update(:omitted_entries, overflow, &(&1 + overflow))
-    |> Map.update(:omitted_bytes, omitted_bytes, &(&1 + omitted_bytes))
+    |> Map.update!(:entries, &:queue.in(entry, &1))
+    |> Map.update!(:count, &(&1 + 1))
+    |> Map.update!(:bytes, &(&1 + byte_size(entry.content)))
+    |> evict_over_cap()
   end
+
+  defp evict_over_cap(%{count: count, bytes: bytes} = log_state)
+       when count > @run_logs_max_limit or bytes > @run_logs_max_bytes do
+    {{:value, oldest}, entries} = :queue.out(log_state.entries)
+    size = byte_size(oldest.content)
+
+    evict_over_cap(%{
+      log_state
+      | entries: entries,
+        count: log_state.count - 1,
+        bytes: log_state.bytes - size,
+        omitted_entries: log_state.omitted_entries + 1,
+        omitted_bytes: log_state.omitted_bytes + size
+    })
+  end
+
+  defp evict_over_cap(log_state), do: log_state
 
   defp run_logs_result(state, run_id) do
     log_state = state |> Map.get(:run_logs, %{}) |> Map.get(run_id, empty_run_log_state())
 
+    # `:queue.to_list/1` is already oldest-first (the order events were
+    # applied), and `Enum.sort_by/2` is stable, so this preserves arrival
+    # order and only makes the cross-worker key explicit.
     entries =
       log_state.entries
-      |> Enum.reverse()
+      |> :queue.to_list()
       |> Enum.sort_by(&log_sort_key/1)
 
-    total = length(entries)
+    total = log_state.count
     tail = Enum.take(entries, -@run_logs_default_limit)
     tail_omitted = max(total - length(tail), 0)
 
@@ -1878,6 +1942,23 @@ defmodule ForemanServer.ProjectionStore do
   # in `with_event_at_ms/2` so `payload_event_at_ms/1` can read it without
   # coupling handlers to metadata storage. Strip it before decoding so
   # typed-event validation does not reject the private key.
+  #
+  # `event_type` is stripped for the same reason and it is NOT cosmetic:
+  # `Overwatch.Tracker.dispatch_lifecycle/3` folds `"event_type" => type`
+  # into the payload it persists (`tracker.ex:314-324`), so every worker
+  # lifecycle event on disk carries it, while no struct under
+  # `ForemanServer.Events` declares such a field. `EventCodec.decode!/2`
+  # rejects undeclared keys, so decoding a persisted `WorkerStdout` /
+  # `WorkerStderr` raised `ArgumentError` inside
+  # `rebuild_state_from_event_log/1` — that runs in `init/1`, so the
+  # ProjectionStore failed to start and took the whole application down at
+  # boot for any event store containing a single worker log event. The
+  # handlers that predate this read those payloads with `get/2` instead of
+  # decoding them, which is why nothing had hit it before.
+  #
+  # Strip it HERE, at the one decode boundary, rather than in the worker-log
+  # handler: every future typed handler reading a Tracker-produced payload
+  # would otherwise re-discover the same crash (AGENTS.md 5.7).
   defp decode_for_projection(event_type, payload)
        when is_binary(event_type) and is_map(payload) do
     EventCodec.decode!(event_type, drop_projection_meta(payload))
@@ -1912,6 +1993,8 @@ defmodule ForemanServer.ProjectionStore do
     |> Map.delete("_projection_event_number")
     |> Map.delete(:_projection_recorded_at)
     |> Map.delete("_projection_recorded_at")
+    |> Map.delete(:event_type)
+    |> Map.delete("event_type")
   end
 
   # `%EventStore.RecordedEvent{}` derives no Jason.Encoder, so it cannot cross

@@ -886,9 +886,13 @@ and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams
 instead, so use `foreman_run_get_activity` for per-worker heartbeat counts,
 last sequence, and last-heartbeat timestamps. `foreman_run_get_logs` reads the
 bounded worker log projection: known runs with no captured output return an
-empty success, unknown runs return `NOT_FOUND`, and projection/store failures
-return typed errors instead of empty success. The default log response is the
-latest 500 entries; the in-memory projection retains up to 5,000 entries.
+empty success and unknown runs return `NOT_FOUND`, so "this run wrote nothing"
+is never confused with "no such run". The default response is the latest 500
+entries; the in-memory projection retains up to 5,000 entries or 1 MiB per run,
+whichever binds first, and reports any eviction as `truncated: true` with
+non-zero `omitted_entries` / `omitted_bytes` — a truncated read can never look
+complete. There is no store-unavailable error: the projection is server state,
+so for a known run the read always succeeds.
 
 Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are

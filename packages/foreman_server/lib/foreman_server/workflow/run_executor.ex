@@ -49,6 +49,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
+  alias ForemanServer.WorkerEnvironment
   require Logger
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @type state :: %{
@@ -592,10 +593,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
           await_timeout: remaining_ms,
           cwd: cwd
         ],
+        project_id: project_id(state),
         env_map: env,
         result_recipient: self(),
         activation_timeout_ms: @default_activation_timeout_ms,
-        project_id: project_id(state)
+        secrets: WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
       ]
 
       phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))

@@ -194,7 +194,7 @@ When set, all `/api/*` requests require an `Authorization: Bearer <token>` heade
 
 To run in production without authentication (not recommended), set `allow_insecure_local: true` in the MCP policy config.
 
-`foreman_run_get_logs` reads the Elixir projection of durable worker stdout/stderr events. Known runs with no captured output return an empty result, unknown runs return `NOT_FOUND`, and projection/store failures return typed errors instead of empty success.
+`foreman_run_get_logs` reads the Elixir projection of durable worker stdout/stderr events. Known runs with no captured output return an empty result and unknown runs return `NOT_FOUND`, so "wrote nothing" is never confused with "no such run". The read is bounded (latest 500 of at most 5,000 entries / 1 MiB retained per run) and reports eviction as `truncated: true` with non-zero `omitted_entries`.
 
 ## Build & test
 

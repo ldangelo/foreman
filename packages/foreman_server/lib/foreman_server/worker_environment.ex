@@ -83,4 +83,33 @@ defmodule ForemanServer.WorkerEnvironment do
 
   defp fetch(%{} = data, key, default), do: Map.get(data, key, default)
   defp fetch(_data, _key, default), do: default
+
+  # Matches env var names that conventionally hold secrets, including namespaced forms
+  # (ENCRYPTION_KEY, SIGNING_KEY, MASTER_KEY, GITHUB_TOKEN, OPENAI_API_KEY, etc.)
+  # like OPENAI_API_KEY, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY.
+  # Group 1 captures the value portion (e.g. "TOKEN" in "GITHUB_TOKEN").
+  @secret_key_pattern ~r/(?i)(?:^|_)(?:api[_-]?key|token|password|secret|encryption_key|signing_key|master_key|private[_-]?key|bearer|credential|passphrase|client[_-]?secret|auth[_-]?token|access[_-]?token)(?:_|$)/
+
+  @doc """
+  Extract secret values from an env map for log redaction.
+
+  Values whose keys match the known secret-name pattern are returned as a
+  list.  An empty list is returned when no matching keys are present.
+  """
+  @spec extract_secrets(env_map()) :: [String.t()]
+  def extract_secrets(env) when is_map(env) do
+    env
+    |> Enum.reject(fn {k, _v} -> is_atom(k) end)
+    |> Enum.flat_map(fn
+      {k, v} when is_binary(v) and v != "" ->
+        if k =~ @secret_key_pattern, do: [v], else: []
+
+      _ ->
+        []
+    end)
+  end
+
+  def extract_secrets(_), do: []
+
 end
+

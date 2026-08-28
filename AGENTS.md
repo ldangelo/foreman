@@ -1370,4 +1370,23 @@ br sync --flush-only                  # Export DB to JSONL after Beads mutations
 `foreman_run_get_logs` is backed by worker events and `ProjectionStore`.
 Only `WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...)` may produce
 persistent run log entries. Do not copy ordinary server `Logger` output into run
-logs, and do not return empty success for an unknown run or failed log source.
+logs, and do not return empty success for an unknown run — that is `NOT_FOUND`.
+
+**`Overwatch.Tracker` folds `"event_type"` into the payload it persists, so a
+persisted worker event does NOT round-trip through `EventCodec.decode!/2`.**
+`dispatch_lifecycle/3` builds `%{"event_type" => type, "worker_id" => …,
+"run_id" => …, "sequence" => …}` and merges it over the caller's payload
+(`tracker.ex:314-324`), while no struct under `ForemanServer.Events` declares an
+`event_type` field and the codec rejects undeclared keys. The worker handlers
+that predate durable logs read those payloads with `get/2` and never decode
+them, so nothing had ever hit this. The first typed handler to decode one —
+`WorkerStdout` / `WorkerStderr` — raised `ArgumentError` inside
+`rebuild_state_from_event_log/1`, which runs in `ProjectionStore.init/1`: the
+store failed to start and took the entire application down at boot for any
+event store holding a single worker log event. `decode_for_projection/2` now
+strips `event_type` alongside the `_projection_*` keys, at that one boundary, so
+the next typed handler cannot rediscover it.
+
+The lesson is the one section 5.5 already states: this was not a subtle bug, it
+was an unexecuted one. The implementation was written, committed, and reviewed
+as complete without the application ever being started against it.

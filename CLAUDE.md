@@ -503,6 +503,30 @@ register separate lease streams.
 output or ad hoc files. Production worker output must enter the system only as
 `WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...)` events on
 `worker:<run_id>:<worker_id>` streams. The projection returns empty success for
-known runs with no captured output, `:run_not_found` for unknown runs, and typed
-store/projection failures; never substitute `{:ok, []}` for an unavailable log
-source. Redact and control-character-normalize output before event persistence.
+known runs with no captured output and `:run_not_found` for unknown runs; never
+substitute `{:ok, []}` for an unknown run. There is deliberately no
+store-unavailable failure — the projection is the `ProjectionStore` GenServer's
+own state, so for a known run the read cannot fail, and declaring failures that
+cannot occur misdescribes the contract. Redact and control-character-normalize
+output before event persistence.
+
+**stdout and stderr arrive on different `Jido.Harness` events, and this is the
+one thing to check when a channel comes back empty.** stdout text rides
+`:output_text_delta` / `:output_text_final` / `:command_output_delta` with a
+string-keyed `%{"text" => _}` payload. stderr does NOT: the harness turns
+`ProcessEvent{type: :stderr}` into `Event{type: :provider_event}` carrying
+`%{"stream" => "stderr", "data" => _}` (`adapters/cli_stream.ex:37-38`,
+`session/transports/pi_rpc.ex:138-140`). Selecting only the three text types and
+then looking for a `"stream"` key on them — which is never there — made
+`WorkerStderr` unreachable while every layer above still advertised
+stdout/stderr capture. `jido_harness_worker_log_capture_test.exs` pins both
+shapes against the dep source so an upgrade cannot silently re-empty the
+channel.
+
+**Retention is bounded on two axes, and both are load-bearing.** Entry count
+(5,000/run) does not bound memory, because a log line has no intrinsic size
+limit and a run may have many workers; bytes (1 MiB/run) does. This is a bound
+on the resident READ MODEL and is distinct from `WorkerLogPolicy`'s bound on how
+many events are durably WRITTEN — different resources, not a duplicated
+boundary. Every eviction is accounted in `omitted_entries` / `omitted_bytes`, so
+a truncated read can never present itself as complete.

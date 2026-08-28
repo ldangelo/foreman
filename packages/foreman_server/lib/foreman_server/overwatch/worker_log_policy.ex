@@ -46,6 +46,7 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
   def redact(line, secrets \\ []) when is_binary(line) do
     line
     |> redact_configured_secrets(secrets)
+    |> redact_json_quoted_keys()
     |> String.replace(~r/(?i)(bearer\s+)[A-Za-z0-9._~+\/-]+=*/, "\\1" <> @redacted)
     |> String.replace(
       ~r/(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+/,
@@ -78,5 +79,14 @@ defmodule ForemanServer.Overwatch.WorkerLogPolicy do
       _secret, acc ->
         acc
     end)
+  end
+
+  # Handles JSON-style: {"token": "secret", "api_key": "value"}
+  defp redact_json_quoted_keys(line) do
+    String.replace(
+      line,
+      ~r/(?i)"((?:api[_-]?key|token|password|secret))"\s*:\s*"(?:[^"\\]|\\.)*"/,
+      ~s{"\\1":"[REDACTED]"}
+    )
   end
 end

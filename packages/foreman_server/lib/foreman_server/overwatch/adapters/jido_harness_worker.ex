@@ -66,6 +66,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       interval: interval,
       result_recipient: result_recipient,
       activated?: false,
+      secrets: Keyword.get(opts, :secrets, []),
       log_counters: WorkerLogPolicy.initial_counters()
     }
 
@@ -218,47 +219,68 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     end
   end
 
-  defp log_events(%Jido.Harness.RunResult{events: events}) when is_list(events) do
+  # Map a harness run's event log onto the two durable channels.
+  #
+  # `Jido.Harness.Event` payloads are STRING-KEYED — the struct's own
+  # moduledoc says so (`deps/jido_harness/lib/jido_harness/event.ex:6`) and
+  # every producer builds `%{"text" => text}` (`adapters/pi.ex:316`,
+  # `adapters/json_mapper.ex:51`), which is also how the library's own
+  # consumers read them (`session/event_store.ex:83`). Reading the string key
+  # directly is therefore the contract, not a guess (AGENTS.md 5.4/5.6): the
+  # atom/string dual lookup this replaced was the prohibited "one clause is
+  # always dead" hedge, and it wrapped `String.to_existing_atom/1` in a
+  # `rescue` on top of that.
+  # Public only so `jido_harness_worker_log_capture_test.exs` can pin the
+  # upstream event contract this depends on (AGENTS.md 5.6). Pure function:
+  # RunResult in, channel-tagged log entries out.
+  @doc false
+  @spec log_events(term()) :: [%{channel: atom(), data: String.t(), timestamp: term()}]
+  def log_events(%Jido.Harness.RunResult{events: events}) when is_list(events) do
     events
     |> Enum.flat_map(&event_to_log/1)
   end
 
-  defp log_events(_run_result), do: []
+  def log_events(_run_result), do: []
 
+  # stdout: the CLI mapper turns `ProcessEvent{type: :stdout}` into these
+  # three text-bearing types.
   defp event_to_log(%Jido.Harness.Event{type: type, payload: payload, timestamp: timestamp})
        when type in [:output_text_delta, :output_text_final, :command_output_delta] and
               is_map(payload) do
-    case payload_text(payload) do
-      nil -> []
-      text -> [%{channel: payload_channel(type, payload), data: text, timestamp: timestamp}]
-    end
+    emit_log(:worker_stdout, payload_text(payload), timestamp)
+  end
+
+  # stderr does NOT arrive on `:command_output_delta`. The harness routes
+  # `ProcessEvent{type: :stderr}` to a `:provider_event` carrying
+  # `%{"stream" => "stderr", "data" => data}` — see
+  # `adapters/cli_stream.ex:37-38` and `session/transports/pi_rpc.ex:138-140`.
+  # Matching only the three text types (and then looking for a `"stream"` key
+  # on a payload that is only ever `%{"text" => _}`) made `WorkerStderr`
+  # unreachable: every stderr byte was dropped while the tool, the events and
+  # the docs all advertised stdout/stderr capture.
+  defp event_to_log(%Jido.Harness.Event{
+         type: :provider_event,
+         payload: %{"stream" => "stderr"} = payload,
+         timestamp: timestamp
+       }) do
+    emit_log(:worker_stderr, Map.get(payload, "data"), timestamp)
   end
 
   defp event_to_log(_event), do: []
 
+  defp emit_log(_channel, nil, _timestamp), do: []
+
+  defp emit_log(channel, data, timestamp) do
+    [%{channel: channel, data: data, timestamp: timestamp}]
+  end
+
   defp payload_text(payload) do
-    get_payload(payload, "text") || get_payload(payload, "content") ||
-      get_payload(payload, "data")
-  end
-
-  defp payload_channel(:command_output_delta, payload) do
-    case get_payload(payload, "stream") || get_payload(payload, "channel") do
-      value when value in [:stderr, "stderr"] -> :worker_stderr
-      _ -> :worker_stdout
-    end
-  end
-
-  defp payload_channel(_type, _payload), do: :worker_stdout
-
-  defp get_payload(payload, key) do
-    Map.get(payload, key) || Map.get(payload, String.to_existing_atom(key))
-  rescue
-    ArgumentError -> Map.get(payload, key)
+    Map.get(payload, "text") || Map.get(payload, "content") || Map.get(payload, "data")
   end
 
   defp emit_worker_logs(state, log_events) do
     Enum.reduce(log_events, state, fn log_event, acc ->
-      case WorkerLogPolicy.normalize(log_event.data, acc.log_counters) do
+      case WorkerLogPolicy.normalize(log_event.data, acc.log_counters, secrets: acc.secrets) do
         {:emit, line, counters} ->
           _ =
             WorkerProtocol.emit(log_event.channel, %{
