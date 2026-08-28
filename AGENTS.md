@@ -666,68 +666,62 @@ Tasks go through: `open` → `ready` → `in_progress` → `completed`/`failed`.
 
 #### 1. Create a task
 
-Tasks are created via the API (the `foreman task create` CLI wrapper doesn't support `workflow_type`/`trd_path`):
+`foreman task create` supports `--workflow-type` and `--trd-path` directly
+(`packages/foreman_cli/cmd/foreman/task.go:68-130`); prefer it over raw curl:
 
 ```bash
-FOREMAN_API_URL=http://127.0.0.1:4766
-curl -s -X POST $FOREMAN_API_URL/api/commands \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "task.create",
-    "payload": {
-      "task_id": "<unique-id>",
-      "project_id": "foreman",
-      "title": "<title>",
-      "description": "<description>",
-      "task_type": "task",
-      "workflow_type": "implement-trd-beads",
-      "priority": 2,
-      "trd_path": "docs/TRD/<trd-file>.md"
-    }
-  }'
+FOREMAN_API_URL=http://127.0.0.1:4766 foreman task create \
+  --project foreman \
+  --title "<title>" \
+  --description "<description>" \
+  --task-type task \
+  --workflow-type implement-trd-beads \
+  --trd-path docs/TRD/<trd-file>.md
 ```
 
-**Fields:**
-
-- `task_id`: Required. A unique string identifier for the task.
-- `project_id`: Required. Must be a registered project (e.g., `foreman`).
-- `task_type`: Required. One of: `task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`.
-- `workflow_type`: Optional. Selects the workflow manifest (e.g., `implement-trd-beads`, `implement-trd`, `plan`).
-- `priority`: Optional. Integer 0–4 (default: `nil`). Beads validates this as a Beads priority, so `implement-trd-beads` tasks need `0–4`.
-- `trd_path`: Optional. Path to a tracked git blob. Required for `implement-trd*` workflows. Must be committed before approval.
+**Flags:** `--project` and `--title` are required; `--id` is optional
+(auto-generated via the task provider when omitted). `--workflow-type`
+selects the workflow manifest (e.g. `implement-trd-beads`,
+`implement-trd`, `plan`). `--trd-path` is a project-relative path to a
+tracked git blob, required by the CLI when `--workflow-type` is
+`implement-trd` or `implement-trd-beads`, and must be committed before
+approval. The CLI has no `--priority` flag; set it via a raw
+`POST /api/commands` `task.create` payload (`priority`, integer 0-4) if
+needed — Beads validates it as a Beads priority for
+`implement-trd-beads` tasks.
 
 #### 2. Approve a task
 
 Approval transitions `open` → `ready` and triggers workflow dispatch:
 
 ```bash
-curl -s -X POST $FOREMAN_API_URL/api/commands \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "task.approve",
-    "payload": {
-      "task_id": "<task-id>",
-      "approved_by": "operator"
-    }
-  }'
+foreman task approve --id <task-id> --approved-by operator
 ```
 
-**Prerequisites:**
+**Prerequisites (verified against `aggregates/task.ex` and
+`command_gateway.ex`):**
 
-- The `trd_path` (if specified) must be a committed git blob at `HEAD`.
-- The project must exist and have a valid `task_provider` configuration.
+- The task must exist (`command_gateway.ex`'s `task.approve` clause of
+  `validate_aggregate_id`, 247-273, looks it up via
+  `ProjectionStore.task_projection/1`) and be `open` or `blocked`
+  (`Task.require_approvable/1`, `task.ex:451-454`) — anything else,
+  e.g. already `ready`/`in_progress`, is rejected as
+  `:task_not_approvable`.
+- The `trd_path` (if the task carries one) must be a committed git blob
+  at `HEAD`.
+- Approval does **not** re-check the project's archived status —
+  unlike `task.create` (`command_gateway.ex:236-239`,
+  `task.ex:512-518`), no project-archived check runs on the
+  `task.approve` path. No `task_provider` configuration is required
+  either; that block only matters for provider-tracked (Beads-linked)
+  tasks, and ad-hoc tasks approve without one.
 
 #### 3. Monitor a task
 
 ```bash
-# Get task status
-curl -s $FOREMAN_API_URL/api/tasks/<task-id>
-
-# List all tasks
-curl -s $FOREMAN_API_URL/api/tasks
-
-# Get run status
-curl -s $FOREMAN_API_URL/api/runs/<run-id>
+foreman task get <task-id>
+foreman run get <run-id>
+foreman run list
 ```
 
 Task statuses: `open` (created), `ready` (approved, waiting for dispatch), `in_progress` (running), `completed`, `failed`, `cancelled`.
@@ -735,22 +729,26 @@ Task statuses: `open` (created), `ready` (approved, waiting for dispatch), `in_p
 #### 4. Cancel a task/run
 
 ```bash
-# Via the run
 foreman run cancel --id <run-id> --reason "reason"
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
+foreman task retry --id <task-id> --reason "safe to rerun"  # once the bound run is terminal
 ```
 
 ### Go CLI Commands
 
 ```bash
-foreman task get <id>       # Fetch task projection
-foreman run list            # List run projections
-foreman run get <id>        # Fetch run projection
+foreman task create --project <id> --title <title> [--workflow-type ...] [--trd-path ...]
+foreman task approve --id <task-id> [--approved-by <name>]
+foreman task retry --id <task-id> [--reason <text>]
+foreman task get <id>        # Fetch task projection
+foreman run list             # List run projections
+foreman run get <id>         # Fetch run projection
+foreman run cancel --id <id> --reason <text>
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
-foreman project list        # List projects
-foreman project get <id>    # Fetch project
+foreman project list         # List projects
+foreman project get <id>     # Fetch project
 
 # Workflow install (one-time bootstrap per machine)
 foreman workflow install
@@ -762,9 +760,17 @@ Bundled workflows live in `packages/foreman_server/priv/defaults/workflows/`:
 
 | Workflow | Select via | Description |
 | --- | --- | --- |
-| `implement-trd-beads` | `--workflow-type implement-trd-beads` | Implement a TRD using Beads-backed ensemble skill with Kata/pi agent |
-| `implement-trd` | `--workflow-type implement-trd` | Implement a TRD using the ensemble skill |
-| `plan` | `--workflow-type plan` | Run the plan workflow (create-prd → create-trd) |
+| `assess` | `--workflow-type assess` | Analyze impact, constraints, and risks before implementation begins. |
+| `discover` | `--workflow-type discover` | Scope the request and collect the repository context needed for execution. |
+| `fix` | `--workflow-type fix` | Fix an issue via the ensemble fix workflow. |
+| `implement` | `--workflow-type implement` | Generate and refine the code changes required for the task. |
+| `implement-trd` | `--workflow-type implement-trd` | Implement a TRD using the ensemble skill. |
+| `implement-trd-beads` | `--workflow-type implement-trd-beads` | Implement a TRD using Beads-backed ensemble skill with Kata/pi agent. |
+| `plan` | `--workflow-type plan` | Run the plan workflow (create-prd → create-trd). |
+| `prd` | `--workflow-type prd` | Full ensemble chain: create-prd, refine-prd, create-trd, refine-trd, implement-trd. |
+| `release` | `--workflow-type release` | Finalize outputs, publish deliverables, and complete release steps. |
+| `trd` | `--workflow-type trd` | Create a TRD from a PRD and implement it via the ensemble chain. |
+| `verify` | `--workflow-type verify` | Run validation, testing, and quality checks for the completed work. |
 
 ---
 
@@ -1015,11 +1021,11 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `TaskRetried` | `Task.handle_command/2` | Resets task for retry |
 | `TaskRunTerminated` | `Task.handle_command/2` | Marks task run-level terminal |
 | `TaskDispatched` | `Dispatcher` | Records dispatch on task |
-| `RunReserved` | `Run.handle_command/2` | Implementation key reservation |
+| `ProjectRunReserved` | `Project.handle_command/2` | Implementation key reservation |
 | `RunStarted` | `Run.handle_command/2` | Creates run projection, spawns worker |
 | `RunCancelled` | `Run.handle_command/2` | Marks run cancelled |
-| `RunDeleted` | `Run.handle_command/2` | Marks run removed and triggers cleanup fan-out |
-| `RunReset` | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
+| `RunDeleted`\* | `Run.handle_command/2` | Marks run removed and triggers cleanup fan-out |
+| `RunReset`\* | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
 | `RunCompleted` | `Run.handle_command/2` | Marks run terminal success |
 | `RunFailed` | `Run.handle_command/2` | Marks run terminal failure |
 | `RunFlaggedStuck` | `StuckDetector` | Flags run as stuck |
@@ -1028,25 +1034,41 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `WorktreeCreateOrphanRecorded` | `Run.handle_command/2` | Records orphan worktree at creation |
 | `WorktreeCreateOrphanResolved` | `Run.handle_command/2` | Resolves orphan worktree |
 | `PrAssociated` | `PrAssociation.handle_command/2` | Records the PR URL on the run projection and in the `pr_associations` map |
-| `PrMerged` | `Run.handle_command/2` | Marks run merged |
+| `PrMerged`\* | `Run.handle_command/2` | Aggregate replay only (no `ProjectionStore` handler found) — treat as unverified read-model effect |
 | `PhaseStarted` | `Phase.handle_command/2` | Updates run phase |
 | `PhaseCompleted` | `Phase.handle_command/2` | Updates run phase |
 | `WorkerHeartbeat` | `worker.event` command | Updates worker projection |
-| `ToolCallApproved` | `ToolCall.handle_command/2` | Records tool call decision |
-| `ToolCallDenied` | `ToolCall.handle_command/2` | Records tool call decision |
-| `VcsOperationRecorded` | `VcsOperation.handle_command/2` | Records VCS operation |
+| `ToolCallFinished` | `ToolCall.handle_command/2` | Records the tool-call decision (approve/deny in one event) |
+| `VcsOperationStarted` / `VcsOperationCompleted` / `VcsOperationFailed` | `VcsOperation.handle_command/2` | Records VCS operation lifecycle (three events, not one) |
 | `BeadsDbLeaseAcquired` | `BeadsDbLease.handle_command/2` | Holder takes the per-DB Beads lease |
 | `BeadsDbLeaseReleased` | `BeadsDbLease.handle_command/2` | Holder releases the lease (no waiters) |
 | `BeadsDbLeaseWaiterRegistered` | `BeadsDbLease.handle_command/2` | Runner enqueued behind current holder |
 | `BeadsDbLeaseWaiterRemoved` | `BeadsDbLease.handle_command/2` | Cancel-before-promotion of a waiter |
 | `BeadsDbLeaseTransferred` | `BeadsDbLease.handle_command/2` | Release + head-waiter promotion in one event |
 
+\* `RunDeleted` and `RunReset` (and `PrMerged` above) have no corresponding
+struct file under `lib/foreman_server/events/` — `grep -rn "defmodule.*RunDeleted\|defmodule.*RunReset\|defmodule.*PrMerged" lib/`
+returns nothing. They are emitted as raw `%{event_type: "RunDeleted", ...}`
+maps and consumed by `Run.apply_event/2`'s and `ProjectionStore`'s string-keyed
+`case`/`apply_event_by_type` clauses, not via `EventCodec`. This contradicts
+the "every event is a typed struct" claim directly below — do not assume it
+holds for every row in this table; verify against `lib/foreman_server/events/`
+before relying on it.
+
 #### Typed Event Structs
 
-Every domain event is a typed struct in `lib/foreman_server/events/` with `@enforce_keys`
-and `@type t`. `%EventData{}` / `%RecordedEvent{}` are persistence envelopes only — they
-are not domain types. `EventData.data` / `RecordedEvent.data` holds the serialized domain
-struct; on replay, the struct MUST be reconstructed before `apply_event` pattern-matches it.
+Every domain event *should* be a typed struct in `lib/foreman_server/events/`
+with `@enforce_keys` and `@type t`, decoded via `EventCodec.decode!/2` before
+`apply_event` pattern-matches it — this is the contract for external
+decode/replay paths that go through `EventCodec` (e.g. `ProjectionStore`
+rebuild from a cold projection). It is **not** universally true internally:
+`Aggregate.load/2` (`aggregate.ex:180-193`) calls `module.apply_event(state,
+event)` directly on raw event-store maps with no `EventCodec.decode!` call at
+all, so an aggregate's own `apply_event/2` can — and in `Run`'s case, for
+`RunDeleted`/`RunReset`/`PrMerged`, does — pattern-match untyped `event_type`
+strings that have no registered struct. `%EventData{}` / `%RecordedEvent{}`
+are persistence envelopes only — they are not domain types. `EventData.data`
+/ `RecordedEvent.data` holds the serialized domain struct where one exists.
 
 Canonical event struct (`@derive` before `defstruct`):
 
@@ -1190,7 +1212,10 @@ The Go CLI only:
 
 The `TaskProvider` behaviour (`ForemanServer.TaskProvider`) defines the contract for
 issue tracker adapters. The existing production adapter is `BeadsAdapter` (backed by
-`beads_rust` / `br` CLI). The `KataAdapter` (backed by `kata` CLI) is in progress.
+`beads_rust` / `br` CLI). A second adapter, `KataAdapter` (backed by the
+`kata` CLI), is designed but not yet implemented — no `task_providers/kata_*`
+files exist under `lib/`; see `docs/TRD/TRD-2026-8030852f-foreman-kata-task-provider.md`
+(status: Draft) for the plan.
 
 ### TaskProvider Behaviour Callbacks
 
