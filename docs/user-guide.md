@@ -147,12 +147,12 @@ operator allowlist is:
 - `task.approve`
 - `task.retry`
 - `run.cancel`
-- `work.submit`
-- `work.cancel`
+- `run.remove`
+- `run.reset`
 
 `ForemanServerWeb.CommandController` derives or verifies `aggregate_id` before
 calling `ForemanServer.CommandGateway`. The expected form is `<prefix>:<id>`
-(`task:<task_id>`, `run:<run_id>`, `work:<work_id>`, `project:<project_id>`).
+(`task:<task_id>`, `run:<run_id>`, `project:<project_id>`).
 A mismatched supplied `aggregate_id` is rejected before the aggregate handles
 the command.
 
@@ -166,8 +166,11 @@ Other ingress paths are separate:
 
 Read endpoints are projection-only:
 
-- `GET /api/work/{id}` returns the work projection directly, or
-  `{error: "work_not_found"}` with `404`.
+- `GET /api/work/{id}` returns the (legacy, read-only) work projection for a
+  historical `work.submit` request, or `{error: "work_not_found"}` with
+  `404`. The `work.*` write ingress was retired in favor of the task path
+  (below); this endpoint remains only so pre-existing work records stay
+  inspectable.
 - `GET /api/runs/{id}` returns `{run: ...}` with stringified keys, or
   `{error: "run_not_found", run_id: "..."}` with `404`. Every projected run
   carries `pr_url` — the URL of the PR the run opened, or `null` when Foreman
@@ -175,40 +178,55 @@ Read endpoints are projection-only:
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`, and
   `GET /api/queue` expose corresponding projections.
 
-## 3. Work submission API
+## 3. Ad-hoc task dispatch (unified with the task path)
+
+There is a single dispatch ingress: `task.create` (+ `task.approve`). A task
+may carry a `prompt` and skip tracker/Beads issue creation entirely by
+setting `provider_tracked: false`; setting `auto_approve: true` on the same
+`task.create` call immediately approves and dispatches it, so a caller gets
+one-call ad-hoc dispatch without a separate `task.approve` round trip.
 
 Example command envelope:
 
 ```json
 {
-  "type": "work.submit",
-  "command_id": "op-work-1",
-  "aggregate_id": "work:work-123",
+  "type": "task.create",
+  "command_id": "op-task-1",
+  "aggregate_id": "task:adhoc-abc123",
   "payload": {
-    "work_id": "work-123",
+    "task_id": "adhoc-abc123",
     "project_id": "foreman",
-    "workflow": "fix",
-    "prompt": "Update docs/user-guide.md for issue #410"
+    "task_type": "task",
+    "workflow_type": "fix",
+    "title": "Update docs/user-guide.md for issue #410",
+    "prompt": "Update docs/user-guide.md for issue #410",
+    "provider_tracked": false,
+    "auto_approve": true
   }
 }
 ```
 
 Current behavior:
 
-- `work_id` and `project_id` must be non-empty.
-- `project_id` must refer to an existing, non-archived project.
-- `workflow` and `prompt` must be non-empty strings.
-- `CommandGateway` rejects client-supplied reserved fields:
-  `submission_id`, `run_id`, and `workflow_snapshot`.
-- `ForemanServer.Work.Submission.prepare/1` loads `<workflow>.yaml`, derives
-  `submission_id` and deterministic `run_id`, and freezes the workflow snapshot.
+- `task_id` and `project_id` must be non-empty; `project_id` must refer to an
+  existing, non-archived project.
+- `prompt` is optional; when present it is written into
+  `workflow_snapshot["input"]["prompt"]` at approval time and rendered into
+  any `{{input.prompt}}` / `{{input.prompt_argument}}` command placeholders.
+- `provider_tracked` defaults to `true` (matches every pre-existing
+  tracker-backed task). Set it to `false` for ad-hoc dispatch: the task
+  aggregate skips the synchronous Beads/tracker `create` call at
+  `task.create` time, and `RunExecutor` skips claim/complete/fail callbacks
+  during the run.
+- `auto_approve` is consumed by the gateway only — it is never persisted on
+  `TaskCreated`. On success, `CommandGateway` immediately dispatches the
+  matching `task.approve` (deterministic `command_id`, so a retried
+  `task.create` cannot mint a second approval) and returns *that* result to
+  the caller, so the HTTP response carries `approval_id` and `run_id`
+  alongside `task_id`.
 - HTTP response is `201` with `{status: "accepted", result: ...}`. Treat this
-  as acknowledgement only; read `GET /api/work/{work_id}` for the stable work
-  projection and derived IDs.
-
-The work projection stores `submitted`, `succeeded`, `failed`, or `cancelled`.
-Queue position is currently `nil`; live run admission state is visible through
-run projections and `GET /api/queue`, not the work read model.
+  as acknowledgement; read `GET /api/tasks/{task_id}` and
+  `GET /api/runs/{run_id}` for the stable projections.
 
 ## 4. CLI work and run commands
 
@@ -218,12 +236,22 @@ run projections and `GET /api/queue`, not the work read model.
 foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]
 ```
 
+`foreman run submit` posts a `task.create` envelope with `provider_tracked:
+false` and `auto_approve: true` — the CLI-facing verb is unchanged, but it
+now dispatches through the unified task path rather than a separate
+`work.submit` ingress.
+
 Current CLI contract:
 
-- `--workflow` is required and must be one of `prd`, `trd`, or `fix`.
+- `--workflow` is required. Workflow names are validated server-side by
+  `Catalog.load/1`; there is no client-side allowlist (the previous
+  `prd`/`trd`/`fix` restriction was a CLI-only fiction and has been removed).
 - `--prompt` is required.
 - `--project-id` is required and must name an existing non-archived project.
-- `--work-id` is optional; the CLI generates `work-<random>` when omitted.
+- `--work-id` is optional and now an alias for the minted task ID; the CLI
+  generates `adhoc-<hex>` when omitted (minted client-side so the server's
+  no-id `task.create` flow, which resolves the ID through the task provider,
+  is never triggered for an untracked task).
 - `--backend` is optional. The CLI accepts `pi`, `claude`, `codex`, and
   `opencode`; it omits the field when the value is the default `pi`.
 - `--base-branch <branch>` is optional and half-consumed per
@@ -234,21 +262,21 @@ Current CLI contract:
   that branch — a run started from a feature branch proposes onto that feature
   branch. A detached checkout resolves to no branch at all, which is a logged
   error and no PR rather than a fallback. The flag itself is still
-  protocol-level capture only: the CLI forwards it inside the `work.submit`
+  protocol-level capture only: the CLI forwards it inside the `task.create`
   envelope and the server does not consume it, so it cannot yet pin a task to
   a branch other than the checkout it was started from. Use
   `gh pr edit <n> --base <branch>` to retarget a PR that needs a different
   base.
 
-Important backend caveat: `--backend` is read-model metadata for `work.submit`,
-not a runtime execution switch. `Work.Submission` builds the workflow snapshot
-without `backend`, and `Work.RunPayload.from_work_projection/1` does not pass a
-backend into admission. Current Jido Harness execution supports `pi` and
-`claude` providers only; `codex` and `opencode` remain stale CLI-accepted values
-unless a future provider is added.
+Important backend caveat: `--backend` is a client-side readiness check only,
+not a runtime execution switch — the payload key is dropped by `task.create`
+(the aggregate builds its `TaskCreated` payload explicitly field-by-field and
+ignores unrecognized keys), so it never reaches admission. Current Jido
+Harness execution supports `pi` and `claude` providers only; `codex` and
+`opencode` remain stale CLI-accepted values unless a future provider is
+added.
 
-Use `foreman run submit` for the curated work-request workflows (`prd`, `trd`,
-`fix`). For arbitrary server workflow manifests such as `implement-trd` or
+For arbitrary server workflow manifests such as `implement-trd` or
 `implement-trd-beads`, create and approve a task with `--workflow-type`.
 
 ### `foreman run get <run-id>`

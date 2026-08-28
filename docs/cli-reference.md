@@ -227,10 +227,18 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
 
 ### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`
 
-- `--workflow` (required) — the workflow name to execute.
+Posts a `task.create` envelope (`provider_tracked: false`, `auto_approve:
+true`) rather than a separate `work.submit` ingress — the `work.*` command
+types have been retired; ad-hoc dispatch is unified onto the task path.
+
+- `--workflow` (required) — the workflow name to execute. Validated
+  server-side by `Catalog.load/1`; there is no client-side allowlist.
 - `--prompt` (required) — the input prompt/text for the workflow.
 - `--project-id` (required) — the project ID.
-- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--work-id` (optional) — alias for the task ID. Minted client-side as
+  `adhoc-<hex>` when omitted, so the server's no-id `task.create` flow
+  (which resolves the ID through the task provider) is never triggered for
+  an untracked task.
 - `--backend` (optional) — backend to use. Valid atoms are
   `:jido_harness` (the production default, dispatched via the
   `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
@@ -251,8 +259,8 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
   historical `"main"` fallback. A detached checkout resolves to no branch,
   which is `{:auto_pr_base_branch_unresolved, reason}` at `error` and no PR.
   **The flag itself remains protocol-level capture only**: the CLI accepts and
-  forwards it inside the `work.submit` envelope, but nothing server-side reads
-  it, so an explicit value cannot yet override the checkout. Use
+  forwards it inside the `task.create` envelope, but nothing server-side
+  reads it, so an explicit value cannot yet override the checkout. Use
   `gh pr edit <n> --base <branch>` to retarget a PR onto a different base.
 
 Example:
@@ -881,7 +889,7 @@ Foreman persists no run output, because the `WorkerStdout` / `WorkerStderr`
 events it would read have no producer. Both return `NOT_FOUND` for an unknown
 run id.
 
-Write tools (`foreman_work_submit`, `foreman_work_cancel`,
+Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.
 

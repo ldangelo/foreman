@@ -4,6 +4,33 @@
 
 Every fix or feature must consider documentation before finalization. Update `CLAUDE.md`, `AGENTS.md`, `README.md`, the Foreman User Guide (`docs/user-guide.md`), and the CLI Reference (`docs/cli-reference.md`) when behavior, commands, workflows, prompts, setup, troubleshooting, or operator expectations change. Keep edits surgical; document only real behavior.
 
+**This is a gate, not a suggestion — it blocks calling the task done, same as
+running the tests.** "Consider documentation" was tried and failed: an entire
+work-dispatch unification (new command type, retired command type, renamed
+MCP tools, changed CLI envelope) shipped with all five doc files unedited,
+caught only because the user asked afterward. The fix is mechanical, not a
+reminder to be more careful:
+
+1. Before treating any change as complete, list every externally-visible
+   identifier your diff added, removed, or renamed — command/event types
+   (`"foo.bar"` strings), MCP tool names (`foreman_*`), HTTP routes, CLI
+   flags/verbs, env vars, config keys, workflow/prompt names.
+2. `grep` each removed or renamed identifier across `CLAUDE.md`, `AGENTS.md`,
+   `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`. A hit is a
+   stale reference — fix or explicitly annotate it as historical (see below),
+   never leave it silently wrong.
+3. `grep` each added identifier's *replaced* counterpart (the old name/route
+   it supersedes) the same way, so the replacement gets documented in the
+   same place the old one was.
+4. State which of the five files needed edits and which didn't, and why —
+   "no operator-visible change" is a valid reason; silence is not. This
+   statement is part of the deliverable, not optional narration.
+
+`docs/PRD/*` and `docs/TRD/*` are point-in-time design specs, not living docs —
+leave their historical claims as written even after the code they describe
+changes; a short forward-pointer note (as done elsewhere in this file) is
+the right fix, never rewriting them to match later reality.
+
 Runtime prompt/workflow safety: after editing bundled source workflows or prompts, run `foreman init --force`. Dispatch paths (`foreman run`, `foreman run --watch`, and direct worker startup) fail fast when installed runtime prompts/workflows are stale.
 
 Verify a CLI command against the Go source or a fresh `go build ./cmd/foreman`, never against whichever `./foreman` binary happens to be on disk. The checked-in root binary is a build artifact and goes stale, so a real command reads as nonexistent: `foreman init --force` is registered at `packages/foreman_cli/cmd/foreman/main.go:94` and covered by `init_test.go`, yet the stale root binary's help omits it entirely and `./foreman init` answers `unknown command "init"`. Do not document a command as missing, or replace it with a substitute, on that evidence — believing a stale artifact over the source is the same error as the `FOREMAN_ARTIFACT_PATH` claim in section 4.
@@ -143,7 +170,11 @@ This is the "registered checkout HEAD" tier of
 `PlanContext`/`Dispatcher` plumbing: resolving in `PlanContext.build/1` as that
 TRD proposes would leave `work.submit` runs — whose `build/1` returns
 `:not_applicable`, so they carry no plan context at all — with no base. An
-explicit `--base-branch` override is still NOT consumed server-side.
+explicit `--base-branch` override is still NOT consumed server-side. (The
+`work.*` command ingress described in this passage was retired in favor of
+the unified task path — see "Unify Foreman work dispatch onto the task
+path" — but the `--base-branch` non-consumption caveat carries over
+unchanged to `task.create`.)
 
 **Artifact path is a two-repo contract.** `ArtifactTemplate` expects the phase
 artifact at `<artifact_base>/<run_id>/phase-<index>.md` when the phase declares
