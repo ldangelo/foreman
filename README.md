@@ -54,18 +54,21 @@ with the watcher enabled, inbound Beads appear as Foreman tasks.
   `orphan_backlog` (8 fields: `lines_processed`, `lines_tagged`,
   `lines_untagged`, `lines_malformed`, `lines_retained`,
   `lines_closed`, `lines_age_young`, `lines_no_linked_at`).
-  `foreman doctor task_provider` reads this snapshot via the
-  supervisor's CQRS read boundary — the doctor never triggers a
-  scan itself, and `orphan_backlog` is `nil` until the first scan
-  completes for a registered project.
+  `ForemanServer.CLI.DoctorTaskProvider` reads this snapshot via the
+  supervisor's CQRS read boundary — it never triggers a scan itself,
+  and `orphan_backlog` is `nil` until the first scan completes for a
+  registered project. See §10 in `docs/user-guide.md` for how to
+  invoke it today.
 - **Operator remediation.** `foreman task retry` is the remediation
   path for tasks whose bound run is already terminal (see
-  `docs/user-guide.md` §16).
+  `docs/user-guide.md` §4).
 
 Enablement, the per-project `task_provider` block, the doctor health
-check (`foreman doctor task_provider`), and the orphan janitor's
-opt-in semantics are documented in
-[`docs/user-guide.md`](./docs/user-guide.md) (§11–§12, §16). See
+check, and the orphan janitor's opt-in semantics are documented in
+[`docs/user-guide.md`](./docs/user-guide.md) §10. Note: the doctor
+check (`ForemanServer.CLI.DoctorTaskProvider`) is not yet wired to the
+Go CLI — `foreman doctor task_provider` does not run today; see §10
+for the current invocation path. See
 [`docs/cli-reference.md`](./docs/cli-reference.md) for the CLI surface
 and [`CLAUDE.md`](./CLAUDE.md) §11–§13 for the architectural
 invariants.
@@ -117,10 +120,12 @@ the Beads side and splits Foreman's responsibilities by lifecycle:
 - `RunExecutor` drives claim, complete, and fail transitions during an
   active run.
 - `Workflow.BootReconciliation` drives orphan-reopen on boot.
-- `foreman doctor task_provider` is the operator-facing health check.
+- `ForemanServer.CLI.DoctorTaskProvider` is the health check; it is not
+  yet exposed as a Go CLI subcommand (see §10 below for how to invoke
+  it today).
 
 Enablement, the per-project `task_provider` block, and doctor output are
-documented in the [task-provider enablement guide](./docs/user-guide.md#11-task-provider-enablement).
+documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
 ## Agent runtime (Jido-harness backed)
 
@@ -172,8 +177,8 @@ ForemanServer.AgentRuntime.execute("Summarize this PR", %{pr: 123},
 
 See [`docs/guides/adding-a-jido-harness-provider.md`](./docs/guides/adding-a-jido-harness-provider.md)
 for the operator-facing provider extension flow, and
-[`docs/user-guide.md`](./docs/user-guide.md) §1 for the adapter
-extension workflow.
+[`docs/user-guide.md`](./docs/user-guide.md) §7 for the agent runtime
+and adapter overview.
 
 ## API authentication
 
@@ -233,4 +238,4 @@ To manually trigger the upgrade evaluation:
 bash scripts/trigger-jido-upgrade.sh
 ```
 
-The evaluation logic itself lives in [`scripts/ci/jido-upgrade-evaluation.sh`](./scripts/ci/jido-upgrade-evaluation.sh) (JRM-T004): it runs the full Foreman test suite against the candidate Jido version and reports pass/fail. See [`JIDO_FORKS.md`](./JIDO_FORKS.md) for the pinned fork manifest and [`docs/user-guide.md`](./docs/user-guide.md) §2 for runtime configuration.
+The evaluation logic itself lives in [`scripts/ci/jido-upgrade-evaluation.sh`](./scripts/ci/jido-upgrade-evaluation.sh) (JRM-T004): it runs the full Foreman test suite against the candidate Jido version and reports pass/fail. See [`JIDO_FORKS.md`](./JIDO_FORKS.md) for the pinned fork manifest and [`docs/user-guide.md`](./docs/user-guide.md) §7 for runtime configuration.

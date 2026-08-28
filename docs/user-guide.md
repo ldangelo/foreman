@@ -493,6 +493,41 @@ set in `:foreman_server, :mcp` config.
 Tool call failures are MCP tool errors carrying the gateway's
 structured reason, never transport-level JSON-RPC errors.
 
+## 10. Task-provider (Beads) enablement
+
+A project links to a task tracker by setting a `task_provider` block in
+its project config (`provider:` + `config:`, including
+`database_path` for the Beads JSONL/db). `bv`/`br` remain the only
+writers of that store from outside Foreman; see AGENTS.md's
+"Per-DB Beads lease" section for the write-serialization guarantee
+Foreman itself provides once a run is admitted.
+
+- **Atomic `task.create`.** For a project with a configured `:create`
+  provider, `task.create` mints the Bead and emits `TaskCreated`
+  together (`ForemanServer.Aggregate.Actor`'s four-stage pipeline); the
+  Bead id comes back as `external_id` and `foreman task create` prints
+  it. A project without a `:create` provider takes the no-op path: no
+  Bead, no `external_id`.
+- **Inbound sync.** Set `config :foreman_server, :start_beads_watcher?,
+  true` to run one `BeadsWatcher` per registered project, tailing its
+  JSONL and dispatching `task.create` for Beads Foreman doesn't yet own.
+- **Orphan janitor.** Set `config :foreman_server,
+  :start_beads_orphan_janitor?, true` to run `BeadsOrphanJanitor`,
+  which closes Beads whose matching Foreman task never landed or
+  already terminated, after a grace window.
+- **Health check.** `ForemanServer.CLI.DoctorTaskProvider.run/1`
+  (dispatched via `ForemanServer.CLI.run(["doctor", "task_provider"])`)
+  reports per-project provider health and the janitor's cached
+  `orphan_backlog` counters. It is **not currently wired to the Go
+  CLI** — there is no `doctor` case in
+  `packages/foreman_cli/cmd/foreman/main.go`'s dispatch table, so
+  `foreman doctor task_provider` does not run today despite being
+  referenced elsewhere; invoke the Elixir module directly (e.g. from
+  an `iex -S mix` session) until that wiring exists.
+- **Remediation.** Once a task's bound run is terminal, use `foreman
+  task retry` (§4) — never mutate the provider issue by hand while
+  Foreman still owns it.
+
 ## Day-to-day workflow
 
 ### 1. Start or check the server
