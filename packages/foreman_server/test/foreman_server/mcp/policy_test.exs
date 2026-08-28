@@ -11,12 +11,12 @@ defmodule ForemanServer.MCP.PolicyTest do
 
   describe "tool allowlist" do
     test "tool not in enabled set is refused and absent from tools/list" do
-      refute Policy.authorized?("foreman_work_submit")
-      refute Policy.authorized?("foreman_work_cancel")
+      refute Policy.authorized?("foreman_task_create")
+      refute Policy.authorized?("foreman_run_cancel")
 
       tools = [
-        %{name: "foreman_work_submit", description: "Submit work"},
-        %{name: "foreman_work_cancel", description: "Cancel work"},
+        %{name: "foreman_task_create", description: "Create task"},
+        %{name: "foreman_run_cancel", description: "Cancel run"},
         %{name: "foreman_work_get", description: "Get work"}
       ]
 
@@ -26,7 +26,7 @@ defmodule ForemanServer.MCP.PolicyTest do
 
   describe "dispatch policy boundary" do
     test "dispatch for non-allowlisted command type is refused before CommandGateway" do
-      refute Policy.authorized?("foreman_work_submit")
+      refute Policy.authorized?("foreman_task_create")
     end
   end
 

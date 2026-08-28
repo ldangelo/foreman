@@ -104,41 +104,48 @@ defmodule ForemanServer.MCP.Tools do
       required: ["name"]
     }
   }
-  @schema_foreman_work_submit %{
-    name: "foreman_work_submit",
-    description: "Submit a new work request",
+  @schema_foreman_task_create %{
+    name: "foreman_task_create",
+    description: "Create a task and dispatch it in one call (defaults to untracked + auto-approving, matching the retired foreman_work_submit ergonomics)",
     inputSchema: %{
       type: "object",
       properties: %{
-        work_id: %{type: "string", description: "The work ID"},
         project_id: %{type: "string", description: "The project ID"},
-        workflow: %{type: "string", description: "The workflow name"},
         prompt: %{type: "string", description: "The input prompt"},
+        workflow: %{type: "string", description: "The workflow name"},
+        task_id: %{type: "string", description: "The task ID. Minted automatically when omitted."},
+        title: %{type: "string", description: "The task title. Defaults to the task ID."},
         backend: %{
           type: "string",
           enum: ["jido_harness", "pi", "claude"],
           default: "jido_harness",
-          description: "Backend to use. Defaults to jido_harness (the production default since TRD-2026-4212be7e JHA-T002). The :pi and :claude atoms are routed through the same JidoHarnessAdapter as their upstream Jido.Harness provider names."
+          description: "Backend readiness check performed before dispatch. Defaults to jido_harness (the production default since TRD-2026-4212be7e JHA-T002). The :pi and :claude atoms are routed through the same JidoHarnessAdapter as their upstream Jido.Harness provider names."
         },
-        base_branch: %{
-          type: "string",
-          description: "Parent branch for the new task's worktree and PR. Captured at the protocol level only: nothing server-side reads it, so an explicit value cannot yet override the resolved base. The PR base is resolved independently by RunExecutor from the project checkout's HEAD branch when the run's first phase starts (AGENTS.md section 4); explicit override remains forthcoming per TRD-2026-80ba0665. When omitted the key is absent from the work.submit envelope."
+        provider_tracked: %{
+          type: "boolean",
+          default: false,
+          description: "Whether this task should be claimed/completed/failed against the project's TaskProvider (e.g. a Beads issue). Defaults to false for ad-hoc dispatch."
+        },
+        auto_approve: %{
+          type: "boolean",
+          default: true,
+          description: "Immediately approve and dispatch the task after creation. Defaults to true for one-call dispatch."
         }
       },
-      required: ["work_id", "project_id", "workflow", "prompt"]
+      required: ["project_id", "prompt", "workflow"]
     }
   }
 
-
-  @schema_foreman_work_cancel %{
-    name: "foreman_work_cancel",
-    description: "Cancel a work request",
+  @schema_foreman_run_cancel %{
+    name: "foreman_run_cancel",
+    description: "Cancel a run",
     inputSchema: %{
       type: "object",
       properties: %{
-        work_id: %{type: "string", description: "The work ID"}
+        run_id: %{type: "string", description: "The run ID"},
+        reason: %{type: "string", description: "The cancellation reason"}
       },
-      required: ["work_id"]
+      required: ["run_id"]
     }
   }
 
@@ -273,8 +280,8 @@ defmodule ForemanServer.MCP.Tools do
     @schema_foreman_workflow_list,
     @schema_foreman_workflow_get,
     @schema_foreman_workflow_validate,
-    @schema_foreman_work_submit,
-    @schema_foreman_work_cancel,
+    @schema_foreman_task_create,
+    @schema_foreman_run_cancel,
     @schema_foreman_workflow_put,
     @schema_foreman_workflow_delete,
     @schema_foreman_prompt_put,
@@ -395,6 +402,17 @@ defmodule ForemanServer.MCP.Tools do
   # client as a successful result — the same defect fixed one layer down. Each
   # documented reason gets its own code so "no such run" is never confused with
   # "this run has no data" (AGENTS.md §5.3).
+  #
+  # The trailing `{:error, reason}` clause is not a permissive fallback: it
+  # yields an ERROR to the client, never a success, and `run_events/1` reads
+  # the event store, whose reasons are genuinely open (`{:error, term()}`), so
+  # a total match is not available here.
+  #
+  # There are deliberately no `:log_store_unavailable` / `:log_store_failed`
+  # clauses. `ProjectionStore.run_logs/1` reads that GenServer's own state and
+  # cannot report either, so those clauses were unreachable — handling for an
+  # impossible scenario (AGENTS.md §2) that also advertised a store outage
+  # this tool can never actually observe.
   defp run_detail(tool_name, fun) when is_binary(tool_name) and is_function(fun, 0) do
     start_us = System.monotonic_time(:microsecond)
     result = fun.()
@@ -409,25 +427,6 @@ defmodule ForemanServer.MCP.Tools do
         Telemetry.mcp_tool_call(duration_us, tool_name, :not_found)
         {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
 
-      # Not "this run produced no output" — Foreman has nowhere to read run
-      # output from. Naming the missing producer keeps the caller from reading
-      # an empty list as evidence about the run.
-      {:error, :no_log_store} ->
-        Telemetry.mcp_tool_call(duration_us, tool_name, :error)
-
-        {:error,
-         %ToolError{
-           code: "UNAVAILABLE",
-           message:
-             "#{tool_name} has no data source: Foreman persists no run logs. " <>
-               "The durable channel exists (WorkerStdout/WorkerStderr events on " <>
-               "worker:<run_id>:<worker_id> streams) but has no producer — nothing " <>
-               "under lib/ calls WorkerProtocol.emit(:worker_stdout | :worker_stderr, ...), " <>
-               "and Logger output is console-only and not keyed by run_id. " <>
-               "Missing prerequisite: a worker stdout/stderr producer. " <>
-               "Use foreman_run_get_activity for worker liveness and " <>
-               "foreman_run_get_events for the run's event history."
-         }}
 
       {:error, reason} ->
         Telemetry.mcp_tool_call(duration_us, tool_name, :error)
@@ -585,49 +584,51 @@ defmodule ForemanServer.MCP.Tools do
       end
   end
 
-  defp tool_foreman_work_submit(%{
-        work_id: work_id,
+  defp tool_foreman_task_create(%{
         project_id: project_id,
-        workflow: workflow,
-        prompt: prompt
+        prompt: prompt,
+        workflow: workflow
       } = args) do
     backend = Map.get(args, :backend) || "jido_harness"
-    base_branch = Map.get(args, :base_branch)
 
     with :ok <- check_backend(backend) do
       start_us = System.monotonic_time(:microsecond)
-      command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
 
-      payload = %{
-        work_id: work_id,
-        project_id: project_id,
-        workflow: workflow,
-        prompt: prompt
-      }
-
-      payload =
-        if is_binary(base_branch) and base_branch != "" do
-          Map.put(payload, :base_branch, base_branch)
-        else
-          payload
+      task_id =
+        case Map.get(args, :task_id) do
+          id when is_binary(id) and id != "" -> id
+          _ -> "adhoc-" <> (:crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower))
         end
 
+      command_id = "mcp:#{task_id}:#{System.unique_integer([:positive])}"
+
+      payload = %{
+        task_id: task_id,
+        project_id: project_id,
+        task_type: "task",
+        workflow_type: workflow,
+        prompt: prompt,
+        title: Map.get(args, :title) || task_id,
+        provider_tracked: Map.get(args, :provider_tracked, false),
+        auto_approve: Map.get(args, :auto_approve, true)
+      }
+
       envelope = %{
-        type: "work.submit",
+        type: "task.create",
         command_id: command_id,
-        aggregate_id: "work:#{work_id}",
-        payload: Map.put(payload, :backend, backend)
+        aggregate_id: "task:#{task_id}",
+        payload: payload
       }
 
       case CommandGateway.dispatch_operator(envelope) do
         {:ok, result} ->
           duration_us = System.monotonic_time(:microsecond) - start_us
-          Telemetry.mcp_tool_call(duration_us, "foreman_work_submit", :ok)
+          Telemetry.mcp_tool_call(duration_us, "foreman_task_create", :ok)
           {:ok, result}
 
         {:error, reason} ->
           duration_us = System.monotonic_time(:microsecond) - start_us
-          Telemetry.mcp_tool_call(duration_us, "foreman_work_submit", :error)
+          Telemetry.mcp_tool_call(duration_us, "foreman_task_create", :error)
           {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
       end
     else
@@ -669,28 +670,34 @@ defmodule ForemanServer.MCP.Tools do
         {:error, "unknown backend \"#{backend}\". Must be one of: jido_harness, pi, claude. " <> hint}
     end
   end
-  defp tool_foreman_work_cancel(%{work_id: work_id}) do
+  defp tool_foreman_run_cancel(%{run_id: run_id} = args) do
     start_us = System.monotonic_time(:microsecond)
-    command_id = "mcp:#{work_id}:#{System.unique_integer([:positive])}"
+    command_id = "mcp:#{run_id}:#{System.unique_integer([:positive])}"
+    reason = Map.get(args, :reason)
+
+    payload =
+      if is_binary(reason) and reason != "" do
+        %{run_id: run_id, reason: reason}
+      else
+        %{run_id: run_id}
+      end
 
     envelope = %{
-      type: "work.cancel",
+      type: "run.cancel",
       command_id: command_id,
-      aggregate_id: "work:#{work_id}",
-      payload: %{
-        work_id: work_id
-      }
+      aggregate_id: "run:#{run_id}",
+      payload: payload
     }
 
     case CommandGateway.dispatch_operator(envelope) do
       {:ok, result} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_work_cancel", :ok)
+        Telemetry.mcp_tool_call(duration_us, "foreman_run_cancel", :ok)
         {:ok, result}
 
       {:error, reason} ->
         duration_us = System.monotonic_time(:microsecond) - start_us
-        Telemetry.mcp_tool_call(duration_us, "foreman_work_cancel", :error)
+        Telemetry.mcp_tool_call(duration_us, "foreman_run_cancel", :error)
         {:error, %ToolError{code: "DOMAIN_ERROR", message: inspect(reason)}}
     end
   end

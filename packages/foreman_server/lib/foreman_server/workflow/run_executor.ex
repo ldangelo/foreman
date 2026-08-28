@@ -49,6 +49,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
+  alias ForemanServer.WorkerEnvironment
   require Logger
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @type state :: %{
@@ -592,10 +593,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
           await_timeout: remaining_ms,
           cwd: cwd
         ],
+        project_id: project_id(state),
         env_map: env,
         result_recipient: self(),
         activation_timeout_ms: @default_activation_timeout_ms,
-        project_id: project_id(state)
+        secrets: WorkerEnvironment.extract_secrets(WorkerEnvironment.build_env_map(project_id(state)))
       ]
 
       phase = Map.put(request, :phase_id, Identity.phase_id(state.run_id, phase_index))
@@ -2106,12 +2108,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # An ad-hoc task carries no tracker record, so provider callbacks must not fire.
+  defp provider_tracked?(state) do
+    case Map.get(state.task, :provider_tracked, Map.get(state.task, "provider_tracked", true)) do
+      false -> false
+      _ -> true
+    end
+  end
+
   # For work-sourced runs there is no task to claim — skip the callback entirely.
   defp maybe_claim_task(state) do
     if state.source == :work_request do
       :ok
     else
-      case provider_enabled?(project_id(state)) do
+      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
           claim(project_id(state), provider_task_id(state), task_provider_actor())
           |> to_lifecycle_result()
@@ -2127,7 +2137,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if state.source == :work_request do
       dispatch_work_execution_complete(state)
     else
-      case provider_enabled?(project_id(state)) do
+      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
           case complete(
                  project_id(state),
@@ -2151,7 +2161,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if state.source == :work_request do
       dispatch_work_execution_fail(state, reason)
     else
-      case provider_enabled?(project_id(state)) do
+      case provider_tracked?(state) and provider_enabled?(project_id(state)) do
         true ->
           failure_reason =
             merge_failure_reason(reason, %{

@@ -21,7 +21,9 @@ defmodule ForemanServer.Events.TaskCreated do
           planning_run_id: String.t() | nil,
           planning_kind: String.t() | nil,
           planning_phase_id: String.t() | nil,
-          trace_event_id: String.t() | nil
+          trace_event_id: String.t() | nil,
+          prompt: String.t() | nil,
+          provider_tracked: boolean()
         }
   @derive Jason.Encoder
   defstruct [
@@ -44,6 +46,8 @@ defmodule ForemanServer.Events.TaskCreated do
     :planning_run_id,
     :planning_kind,
     :planning_phase_id,
-    :trace_event_id
+    :trace_event_id,
+    :prompt,
+    provider_tracked: true
   ]
 end

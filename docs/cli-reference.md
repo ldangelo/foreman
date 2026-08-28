@@ -227,10 +227,18 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
 
 ### `foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`
 
-- `--workflow` (required) — the workflow name to execute.
+Posts a `task.create` envelope (`provider_tracked: false`, `auto_approve:
+true`) rather than a separate `work.submit` ingress — the `work.*` command
+types have been retired; ad-hoc dispatch is unified onto the task path.
+
+- `--workflow` (required) — the workflow name to execute. Validated
+  server-side by `Catalog.load/1`; there is no client-side allowlist.
 - `--prompt` (required) — the input prompt/text for the workflow.
 - `--project-id` (required) — the project ID.
-- `--work-id` (optional) — explicit work ID. Auto-generated if omitted.
+- `--work-id` (optional) — alias for the task ID. Minted client-side as
+  `adhoc-<hex>` when omitted, so the server's no-id `task.create` flow
+  (which resolves the ID through the task provider) is never triggered for
+  an untracked task.
 - `--backend` (optional) — backend to use. Valid atoms are
   `:jido_harness` (the production default, dispatched via the
   `JidoHarnessAdapter` to whichever `:jido_harness, :providers`
@@ -251,8 +259,8 @@ foreman run remove --id run-f971378012da4da2fec3ec74dbac325d
   historical `"main"` fallback. A detached checkout resolves to no branch,
   which is `{:auto_pr_base_branch_unresolved, reason}` at `error` and no PR.
   **The flag itself remains protocol-level capture only**: the CLI accepts and
-  forwards it inside the `work.submit` envelope, but nothing server-side reads
-  it, so an explicit value cannot yet override the checkout. Use
+  forwards it inside the `task.create` envelope, but nothing server-side
+  reads it, so an explicit value cannot yet override the checkout. Use
   `gh pr edit <n> --base <branch>` to retarget a PR onto a different base.
 
 Example:
@@ -299,7 +307,7 @@ The cockpit status view renders ordered phase nodes, retry arrows, current failu
 
 ### `foreman logs`
 
-Show run logs with structured rendering. When the Elixir backend is available, entries are rendered as timestamped, color-coded lines with stream, type, and phase labels. Falls back to raw log file parsing when the backend is unavailable.
+Show run logs with structured rendering. When the Elixir backend is available, worker stdout/stderr is read from durable `WorkerStdout` / `WorkerStderr` event projections and rendered as timestamped, color-coded lines with stream, type, and phase labels. Known runs with no captured output render as empty; unknown runs report not found. Falls back to raw log file parsing when the backend is unavailable.
 
 ```bash
 foreman logs bd-abc1              # Show structured log entries
@@ -874,14 +882,19 @@ Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
 `foreman_run_get_events`, `foreman_run_get_activity`.
 
 `foreman_run_get_events` reads the `run:<run_id>` stream only. Worker liveness
-events are appended to `worker:<run_id>:<worker_id>` streams instead, so use
-`foreman_run_get_activity` for per-worker heartbeat counts, last sequence, and
-last-heartbeat timestamps. `foreman_run_get_logs` returns `UNAVAILABLE`:
-Foreman persists no run output, because the `WorkerStdout` / `WorkerStderr`
-events it would read have no producer. Both return `NOT_FOUND` for an unknown
-run id.
+and stdout/stderr events are appended to `worker:<run_id>:<worker_id>` streams
+instead, so use `foreman_run_get_activity` for per-worker heartbeat counts,
+last sequence, and last-heartbeat timestamps. `foreman_run_get_logs` reads the
+bounded worker log projection: known runs with no captured output return an
+empty success and unknown runs return `NOT_FOUND`, so "this run wrote nothing"
+is never confused with "no such run". The default response is the latest 500
+entries; the in-memory projection retains up to 5,000 entries or 1 MiB per run,
+whichever binds first, and reports any eviction as `truncated: true` with
+non-zero `omitted_entries` / `omitted_bytes` — a truncated read can never look
+complete. There is no store-unavailable error: the projection is server state,
+so for a known run the read always succeeds.
 
-Write tools (`foreman_work_submit`, `foreman_work_cancel`,
+Write tools (`foreman_task_create`, `foreman_run_cancel`,
 `foreman_workflow_put`, `foreman_workflow_delete`, `foreman_prompt_put`) are
 unadvertised and refused unless `allow_workflow_writes: true`.
 

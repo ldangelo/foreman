@@ -146,7 +146,8 @@ defmodule ForemanServer.Overwatch do
           :provider,
           :prompt,
           :driver_opts,
-          :result_recipient
+          :result_recipient,
+          :secrets
         ])
       )
 

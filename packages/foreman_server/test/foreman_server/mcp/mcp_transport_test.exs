@@ -171,8 +171,8 @@ defmodule ForemanServer.MCP.TransportTest do
         "foreman_workflow_list",
         "foreman_workflow_get",
         "foreman_workflow_validate",
-        "foreman_work_submit",
-        "foreman_work_cancel",
+        "foreman_task_create",
+        "foreman_run_cancel",
         "foreman_workflow_put",
         "foreman_workflow_delete"
       ]

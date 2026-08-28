@@ -49,6 +49,39 @@ defmodule ForemanServer.WorkerEnvironmentTest do
            }
   end
 
+  test "extract_secrets/1 returns values for known secret key names" do
+    env = %{
+      "OPENAI_API_KEY" => "sk-secret-openai",
+      "GITHUB_TOKEN" => "ghp_secret123",
+      "PASSWORD" => "pass456",
+      "AWS_SECRET_ACCESS_KEY" => "aws-secret-key",
+      "ENCRYPTION_KEY" => "enc-key-xyz",
+      "SIGNING_KEY" => "sign-key-abc",
+      "MASTER_KEY" => "master-key-789",
+      "USERNAME" => "alice",
+      "HOME" => "/Users/alice",
+      "DATABASE_URL" => "postgres://..."
+    }
+
+    secrets = WorkerEnvironment.extract_secrets(env)
+
+    assert "sk-secret-openai" in secrets
+    assert "ghp_secret123" in secrets
+    assert "pass456" in secrets
+    assert "aws-secret-key" in secrets
+    assert "enc-key-xyz" in secrets
+    assert "sign-key-abc" in secrets
+    assert "master-key-789" in secrets
+    refute "alice" in secrets
+    refute "/Users/alice" in secrets
+    refute "postgres://..." in secrets
+  end
+
+  test "extract_secrets/1 returns empty list for env with no secret keys" do
+    env = %{"HOME" => "/tmp", "PATH" => "/bin", "USER" => "bob"}
+    assert WorkerEnvironment.extract_secrets(env) == []
+  end
+
   defp register_project(project_id, env_map) do
     {:ok, _} =
       CommandRouter.dispatch(%{

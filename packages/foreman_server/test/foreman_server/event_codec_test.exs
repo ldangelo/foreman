@@ -95,6 +95,24 @@ defmodule ForemanServer.EventCodecTest do
       result = EventCodec.decode!("WorkerExited", %{worker_id: "w1"})
       assert %WorkerExited{worker_id: "w1", run_id: nil} = result
     end
+    end
+  describe "decode!/2 TaskCreated replay safety" do
+    test "a historical TaskCreated with neither new field decodes tracker-backed" do
+      result =
+        EventCodec.decode!("TaskCreated", %{
+          "task_id" => "t1",
+          "project_id" => "p",
+          "title" => "t",
+          "status" => "open",
+          "task_type" => "task"
+        })
+
+      assert %ForemanServer.Events.TaskCreated{
+               task_id: "t1",
+               provider_tracked: true,
+               prompt: nil
+             } = result
+    end
   end
 
   describe "decode!/2 terminal run events" do

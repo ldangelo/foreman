@@ -41,115 +41,138 @@ defmodule ForemanServer.MCP.ToolsWriteTest do
     :ok
   end
 
-  describe "foreman_work_submit" do
+  describe "foreman_task_create" do
     test "dispatches via CommandGateway with correct envelope" do
       params = %{
-        work_id: "work-123",
+        task_id: "task-123",
         project_id: "proj-456",
         workflow: "default",
         prompt: "Do the thing"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
-        assert envelope.type == "work.submit"
-        assert envelope.aggregate_id == "work:work-123"
+        assert envelope.type == "task.create"
+        assert envelope.aggregate_id == "task:task-123"
 
         assert envelope.payload == %{
-                 work_id: "work-123",
+                 task_id: "task-123",
                  project_id: "proj-456",
-                 workflow: "default",
+                 task_type: "task",
+                 workflow_type: "default",
                  prompt: "Do the thing",
-                 backend: "jido_harness"
+                 title: "task-123",
+                 provider_tracked: false,
+                 auto_approve: true
                }
 
-        {:ok, %{work_id: "work-123", status: "submitted"}}
+        {:ok, %{task_id: "task-123", status: "ready"}}
       end)
 
-      result = Tools.call_tool("foreman_work_submit", params)
+      result = Tools.call_tool("foreman_task_create", params)
 
-      assert result == {:ok, %{work_id: "work-123", status: "submitted"}}
+      assert result == {:ok, %{task_id: "task-123", status: "ready"}}
       assert :meck.called(CommandGateway, :dispatch_operator, :_)
+    end
+
+    test "mints a task_id when none is supplied" do
+      params = %{
+        project_id: "proj-456",
+        workflow: "default",
+        prompt: "Do the thing"
+      }
+
+      :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
+        assert String.starts_with?(envelope.payload.task_id, "adhoc-")
+        assert envelope.aggregate_id == "task:#{envelope.payload.task_id}"
+        {:ok, %{task_id: envelope.payload.task_id, status: "ready"}}
+      end)
+
+      result = Tools.call_tool("foreman_task_create", params)
+
+      assert {:ok, %{task_id: task_id, status: "ready"}} = result
+      assert String.starts_with?(task_id, "adhoc-")
     end
 
     test "maps error tuples to MCP tool errors" do
       params = %{
-        work_id: "work-123",
+        task_id: "task-123",
         project_id: "proj-456",
         workflow: "default",
         prompt: "Do the thing"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
-        {:error, {:work_not_found, "work-123"}}
+        {:error, {:task_not_found, "task-123"}}
       end)
 
-      result = Tools.call_tool("foreman_work_submit", params)
+      result = Tools.call_tool("foreman_task_create", params)
 
       assert result ==
-               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:work_not_found, \"work-123\"}"}}
+               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:task_not_found, \"task-123\"}"}}
     end
 
     test "maps invalid_envelope errors to MCP tool errors" do
       params = %{
-        work_id: "work-123",
+        task_id: "task-123",
         project_id: "proj-456",
         workflow: "default",
         prompt: "Do the thing"
       }
 
       :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
-        {:error, {:invalid_envelope, :missing_work_id}}
+        {:error, {:invalid_envelope, :missing_project_id}}
       end)
 
-      result = Tools.call_tool("foreman_work_submit", params)
+      result = Tools.call_tool("foreman_task_create", params)
 
       assert result ==
-               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:invalid_envelope, :missing_work_id}"}}
+               {:error,
+                %ToolError{code: "DOMAIN_ERROR", message: "{:invalid_envelope, :missing_project_id}"}}
     end
   end
 
-  describe "foreman_work_cancel" do
+  describe "foreman_run_cancel" do
     test "dispatches via CommandGateway with correct envelope" do
-      params = %{work_id: "work-789"}
+      params = %{run_id: "run-789", reason: "operator requested"}
 
       :meck.expect(CommandGateway, :dispatch_operator, fn envelope ->
-        assert envelope.type == "work.cancel"
-        assert envelope.aggregate_id == "work:work-789"
-        assert envelope.payload == %{work_id: "work-789"}
-        {:ok, %{work_id: "work-789", status: "cancelled"}}
+        assert envelope.type == "run.cancel"
+        assert envelope.aggregate_id == "run:run-789"
+        assert envelope.payload == %{run_id: "run-789", reason: "operator requested"}
+        {:ok, %{run_id: "run-789", status: "cancelled"}}
       end)
 
-      result = Tools.call_tool("foreman_work_cancel", params)
+      result = Tools.call_tool("foreman_run_cancel", params)
 
-      assert result == {:ok, %{work_id: "work-789", status: "cancelled"}}
+      assert result == {:ok, %{run_id: "run-789", status: "cancelled"}}
       assert :meck.called(CommandGateway, :dispatch_operator, :_)
     end
 
     test "maps error tuples to MCP tool errors" do
-      params = %{work_id: "work-789"}
+      params = %{run_id: "run-789"}
 
       :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
-        {:error, {:work_not_cancellable, "work-789"}}
+        {:error, {:run_not_found, "run-789"}}
       end)
 
-      result = Tools.call_tool("foreman_work_cancel", params)
+      result = Tools.call_tool("foreman_run_cancel", params)
 
       assert result ==
-               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:work_not_cancellable, \"work-789\"}"}}
+               {:error, %ToolError{code: "DOMAIN_ERROR", message: "{:run_not_found, \"run-789\"}"}}
     end
 
     test "maps command_not_allowed errors to MCP tool errors" do
-      params = %{work_id: "work-789"}
+      params = %{run_id: "run-789"}
 
       :meck.expect(CommandGateway, :dispatch_operator, fn _envelope ->
-        {:error, {:command_not_allowed, "work.cancel"}}
+        {:error, {:command_not_allowed, "run.cancel"}}
       end)
 
-      result = Tools.call_tool("foreman_work_cancel", params)
+      result = Tools.call_tool("foreman_run_cancel", params)
 
       assert result ==
                {:error,
-                %ToolError{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"work.cancel\"}"}}
+                %ToolError{code: "DOMAIN_ERROR", message: "{:command_not_allowed, \"run.cancel\"}"}}
     end
   end
 end

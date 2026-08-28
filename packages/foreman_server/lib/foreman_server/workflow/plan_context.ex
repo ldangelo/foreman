@@ -288,8 +288,9 @@ defmodule ForemanServer.Workflow.PlanContext do
   #
   #   1. `workflow_snapshot.workflow_name` — the manifest name frozen at
   #      approval by `Approval.resolve_workflow_snapshot/2`.
-  #   2. `workflow_snapshot.workflow` — the same value in the `work.submit`
-  #      snapshot built by `Work.Submission.build_snapshot/4`.
+  #   2. `workflow_snapshot.workflow` — the same value in the historical
+  #      `work.submit` snapshot (retained for replay of pre-unification
+  #      `WorkSubmitted` events; the live ingress no longer exists).
   #   3. `workflow_type` / `workflow_name` on the projection itself — the
   #      registration-time selector (`TaskCreated.workflow_type`) that
   #      `Approval.prepare/2` resolves the manifest from, and the only

@@ -95,7 +95,7 @@ defmodule ForemanServer.Workflow.Approval do
 
     case Catalog.load(task_type <> ".yaml") do
       {:ok, workflow} ->
-        snapshot = %{
+        base_snapshot = %{
           run_id: run_id,
           workflow_name: workflow.name,
           manifest_digest: workflow.digest,
@@ -111,10 +111,18 @@ defmodule ForemanServer.Workflow.Approval do
             end)
         }
 
+        snapshot = maybe_put_prompt(base_snapshot, payload[:prompt])
+
         {:ok, workflow.name, workflow.digest, snapshot}
 
       {:error, reason} ->
         {:error, {:workflow_load_failed, task_type, reason}}
     end
   end
+
+  defp maybe_put_prompt(snapshot, prompt) when is_binary(prompt) and prompt != "" do
+    Map.put(snapshot, "input", %{"prompt" => prompt})
+  end
+
+  defp maybe_put_prompt(snapshot, _prompt), do: snapshot
 end
