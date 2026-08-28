@@ -168,7 +168,7 @@ func TestRunRunDispatchesCancel(t *testing.T) {
 
 // TestRunSubmitEnvelopeWithBaseBranch asserts that
 // `foreman run submit --base-branch <branch>` posts the flag verbatim in
-// the work.submit envelope payload. Per TRD-2026-80ba0665 the flag is
+// the task.create envelope payload. Per TRD-2026-80ba0665 the flag is
 // captured at the protocol level only — server-side consumption is
 // forthcoming.
 func TestRunSubmitEnvelopeWithBaseBranch(t *testing.T) {
@@ -196,8 +196,8 @@ func TestRunSubmitEnvelopeWithBaseBranch(t *testing.T) {
 	if err := json.Unmarshal(captured, &env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if env.Type != "work.submit" {
-		t.Fatalf("type: got %q, want work.submit", env.Type)
+	if env.Type != "task.create" {
+		t.Fatalf("type: got %q, want task.create", env.Type)
 	}
 	if env.Payload["base_branch"] != "slices/jido-migration" {
 		t.Fatalf("base_branch: got %v, want slices/jido-migration", env.Payload["base_branch"])
@@ -232,8 +232,8 @@ func TestRunSubmitOmitsBaseBranch(t *testing.T) {
 	if err := json.Unmarshal(captured, &env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if env.Type != "work.submit" {
-		t.Fatalf("type: got %q, want work.submit", env.Type)
+	if env.Type != "task.create" {
+		t.Fatalf("type: got %q, want task.create", env.Type)
 	}
 	if _, present := env.Payload["base_branch"]; present {
 		t.Fatalf("base_branch should be absent, got %v", env.Payload["base_branch"])
@@ -267,8 +267,8 @@ func TestRunSubmitRunDispatch(t *testing.T) {
 	if err := json.Unmarshal(captured, &env); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if env.Type != "work.submit" {
-		t.Fatalf("type: got %q, want work.submit", env.Type)
+	if env.Type != "task.create" {
+		t.Fatalf("type: got %q, want task.create", env.Type)
 	}
 	if env.Payload["base_branch"] != "feat/x" {
 		t.Fatalf("base_branch: got %v, want feat/x", env.Payload["base_branch"])

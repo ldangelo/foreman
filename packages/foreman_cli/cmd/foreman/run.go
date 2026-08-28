@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
 )
@@ -159,8 +160,14 @@ func runReset(c *client.Client, args []string) error {
 
 // runSubmit dispatches `foreman run submit --workflow <name> --prompt <text>
 // --project-id <id> [--work-id <id>] [--backend <backend>] [--base-branch <branch>]`.
-// Posts a work.submit command envelope to /api/commands. Backend is omitted when
-// the default "pi" is used (per TRD-002 AC). Valid workflow names are: prd, trd, fix.
+// Posts a `task.create` command envelope (provider_tracked: false,
+// auto_approve: true) to /api/commands, unifying ad-hoc dispatch onto the
+// task path. `--work-id` survives as an alias for the minted task_id so
+// existing invocations keep working; when omitted, a `task_id` is minted
+// client-side as `adhoc-<hex>` to avoid the server's no-id `task.create`
+// flow, which resolves the id through the task provider and is wrong for
+// an untracked task. Workflow names are validated server-side by
+// `Catalog.load/1`; there is no client-side allowlist.
 //
 // --base-branch is captured at the protocol level only — server-side consumption
 // (PlanContext derivation, plan_base_branch nil fallback, AutoPR skip-when-nil)
@@ -168,7 +175,7 @@ func runReset(c *client.Client, args []string) error {
 // absent from the payload; when supplied, it is forwarded verbatim.
 func runSubmit(c *client.Client, args []string) error {
 	fs := newFlagSet("run submit")
-	workID := fs.String("work-id", "", "Work ID (auto-generated if omitted)")
+	workID := fs.String("work-id", "", "Task ID (auto-generated if omitted)")
 	projectID := fs.String("project-id", "", "Project ID (required)")
 	workflow := fs.String("workflow", "", "Workflow name (required)")
 	prompt := fs.String("prompt", "", "Input prompt (required)")
@@ -186,11 +193,6 @@ func runSubmit(c *client.Client, args []string) error {
 	if *workflow == "" {
 		return usageError(fs, "foreman run submit: --workflow is required")
 	}
-	if !isValidWorkflow(*workflow) {
-		return usageError(fs,
-			"foreman run submit: --workflow must be one of: prd, trd, fix (got %s)",
-			*workflow)
-	}
 	if *prompt == "" {
 		return usageError(fs, "foreman run submit: --prompt is required")
 	}
@@ -200,9 +202,14 @@ func runSubmit(c *client.Client, args []string) error {
 			*backend)
 	}
 
-	wid := *workID
-	if wid == "" {
-		wid = generateID("work")
+	taskID := *workID
+	if taskID == "" {
+		taskID = generateID("adhoc")
+	}
+
+	title := strings.SplitN(*prompt, "\n", 2)[0]
+	if runes := []rune(title); len(runes) > 72 {
+		title = string(runes[:72])
 	}
 
 	// Build payload; omit backend when it's the default "pi" per TRD-002.
@@ -210,10 +217,14 @@ func runSubmit(c *client.Client, args []string) error {
 	// default resolution (operator's current checkout HEAD per
 	// TRD-2026-80ba0665).
 	payload := map[string]any{
-		"work_id":    wid,
-		"project_id": *projectID,
-		"workflow":   *workflow,
-		"prompt":     *prompt,
+		"task_id":          taskID,
+		"project_id":       *projectID,
+		"task_type":        "task",
+		"workflow_type":    *workflow,
+		"prompt":           *prompt,
+		"title":            title,
+		"provider_tracked": false,
+		"auto_approve":     true,
 	}
 	if *backend != "pi" {
 		payload["backend"] = *backend
@@ -222,10 +233,5 @@ func runSubmit(c *client.Client, args []string) error {
 		payload["base_branch"] = *baseBranch
 	}
 
-	return postCommand(c, commandEnvelope{Type: "work.submit", Payload: payload})
-}
-
-// isValidWorkflow returns true for the three curated workflow names.
-func isValidWorkflow(w string) bool {
-	return w == "prd" || w == "trd" || w == "fix"
+	return postCommand(c, commandEnvelope{Type: "task.create", Payload: payload})
 }
