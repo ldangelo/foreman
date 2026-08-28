@@ -1,9 +1,26 @@
 defmodule ForemanServer.Overwatch.WorkerSupervisor do
   @moduledoc """
   `DynamicSupervisor` that hosts `ForemanServer.Overwatch.LaunchWorker`
-  children. `restart: :permanent` and `:one_for_one` strategy per the
-  TRD-011 requirement: every launched worker is critical and must be
-  restarted immediately on exit.
+  children with a `:one_for_one` strategy and `restart: :transient` per
+  the TRD-011 requirement: every launched worker is critical and must be
+  restarted immediately when it *crashes*.
+
+  `:transient` — not `:permanent` — is what expresses that requirement.
+  A LaunchWorker whose worker finished the phase and delivered its
+  result exits `:normal`; one the operator or `RunExecutor` tore down
+  exits `:shutdown`. Under `:permanent` the supervisor relaunched both,
+  spawning a second agent process for a phase that was already over:
+  `RunExecutor.wait_for_worker_result/3` compensates by removing the
+  child spec from a detached task, but that is a race, and it loses.
+  run-de055c18749db5e9c702d24950268cf9 is the proof — `RunFailed`
+  landed at 22:25:26.060334Z, the supervisor relaunched at
+  22:25:26.062664Z (`WorkerStarted` sequence 181 on the worker stream),
+  and the pi process that relaunch started ran another 8m42s against
+  the already-failed run, overwriting its phase artifact at 22:33:57Z.
+  `LaunchWorker` now propagates its worker's exit reason so the two
+  cases are distinguishable: a completed or torn-down worker ends the
+  child, a crashed one is still relaunched and still counted by
+  `CrashLoopDetector`.
 
   Workers register in `ForemanServer.Overwatch.WorkerRegistry` so callers
   can look them up by `(run_id, worker_id)`. The Registry is a sibling
@@ -68,7 +85,7 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
     child_spec = %{
       id: {LaunchWorker, worker_id, run_id},
       start: {LaunchWorker, :start_link, [opts]},
-      restart: :permanent,
+      restart: :transient,
       type: :worker
     }
 
@@ -78,12 +95,12 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
   @doc """
   Authoritatively stop the `LaunchWorker` child for `(worker_id, run_id)`.
   `DynamicSupervisor.terminate_child/2` removes the child from the
-  supervisor's list of children, so the `restart: :permanent` policy
-  does NOT re-introduce a live worker. The bounded Registry poll
-  bridges the gap between the previous child exiting and the next
-  generation registering (the supervisor restarts immediately, so the
-  gap is small but real). Returns `:ok` whether or not a child was
-  eventually found.
+  supervisor's list of children, so not even a crash-exit relaunch can
+  re-introduce a live worker. The bounded Registry poll bridges the gap
+  between the previous child exiting and the next generation
+  registering (a crashed child is restarted immediately, so the gap is
+  small but real). Returns `:ok` whether or not a child was eventually
+  found.
   """
   @spec stop_worker(String.t(), String.t()) :: :ok
   def stop_worker(worker_id, run_id) do

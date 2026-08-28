@@ -19,7 +19,7 @@ defmodule ForemanServer.Overwatch do
       `WorkerExited` events through `ForemanServer.CommandRouter`.
     * `ForemanServer.Overwatch.WorkerSupervisor` — `DynamicSupervisor`
       that hosts `ForemanServer.Overwatch.LaunchWorker` children with
-      `restart: :permanent`, strategy `:one_for_one`.
+      `restart: :transient`, strategy `:one_for_one`.
 
   This is the TRD-011 implementation. It does NOT depend on TRD-012
   (WorkerCrashed); the implementation stays strictly localized to the

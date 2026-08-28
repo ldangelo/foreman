@@ -62,15 +62,26 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   and `RunBlocked` land; blocking first would permanently reject the
   follow-up pause with `{:error, {:run_terminal, "blocked"}}`.
 
-  ## Orphan semantics
+  ## DOWN reason classification
 
-  An "orphan" worker is one whose parent (e.g. the BEAM node or the
-  LaunchWorker owner) is gone. The Tracker signals orphan status via
-  `Process.monitor` DOWN reasons of `:noconnection`, `:shutdown`, or
-  `:exit`. The detector records the orphan observation (telemetry/log)
-  for audit but does NOT emit `WorkerCrashed` or `run.pause` — orphan
-  cleanup is already handled by `Tracker.cleanup_after_down/2` (slot
-  release). All other reasons count toward the threshold.
+  Three outcomes, kept distinct (AGENTS.md 5.3):
+
+    * `:normal` — the worker delivered its result and shut itself down.
+      Not a crash. Recorded at `debug` and nothing else; it MUST NOT
+      consume a restart attempt.
+    * `:noconnection` / `:shutdown` / `:exit` — an "orphan": the parent
+      (BEAM node, LaunchWorker owner) is gone, or the worker was
+      deliberately torn down. Recorded at `info` for audit but the
+      detector emits nothing — orphan cleanup is already handled by
+      `Tracker.cleanup_after_down/2` (slot release).
+    * anything else — a crash, counted toward the threshold.
+
+  The `info` line reads "detector emitted no ..." because it describes
+  THIS module's dispatch, not the worker stream. The stream is written by
+  `WorkerProtocol.emit/2` from `LaunchWorker`, `JidoHarnessWorker`, and
+  the `Tracker`, none of which the detector reads: in
+  run-de055c18749db5e9c702d24950268cf9 that line was logged while the
+  worker stream already held 182 events.
 
   ## Architecture
 
@@ -224,15 +235,22 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   @impl true
   def handle_cast({:observe_down, worker_id, run_id, reason}, state) do
     state =
-      case orphan_reason?(reason) do
-        true ->
-          Logger.info(
-            "Overwatch.CrashLoopDetector: orphan worker #{worker_id}/#{run_id} (reason=#{inspect(reason)}) — no events emitted"
+      cond do
+        completed_reason?(reason) ->
+          Logger.debug(
+            "Overwatch.CrashLoopDetector: worker #{worker_id}/#{run_id} exited normally — not a crash, nothing recorded"
           )
 
           state
 
-        false ->
+        orphan_reason?(reason) ->
+          Logger.info(
+            "Overwatch.CrashLoopDetector: orphan worker #{worker_id}/#{run_id} (reason=#{inspect(reason)}) — detector emitted no WorkerCrashed/run.pause/run.block"
+          )
+
+          state
+
+        true ->
           record_and_maybe_fire(state, worker_id, run_id)
       end
 
@@ -257,7 +275,18 @@ defmodule ForemanServer.Overwatch.CrashLoopDetector do
   # Internals
   # ------------------------------------------------------------------
 
-  # orphan_reason?/1 and record_and_maybe_fire/3 — unchanged
+  # A worker that exited `:normal` delivered its result and shut itself down
+  # (`JidoHarnessWorker.handle_info/2` for `{:agent_done, _}`); it is not a
+  # crash and MUST NOT consume a restart attempt. Counting it logged
+  # "crash retry attempt=1" at warning level on every successfully finished
+  # phase — the first line of run-de055c18749db5e9c702d24950268cf9's failure
+  # report, which read as if the detector had killed a healthy worker.
+  defp completed_reason?(:normal), do: true
+  defp completed_reason?(_), do: false
+
+  # An "orphan" is a worker whose parent is gone or which was deliberately
+  # torn down. Distinct from `:normal` above (AGENTS.md 5.3): the detector
+  # records both without emitting, but they are not the same event.
   defp orphan_reason?(:noconnection), do: true
   defp orphan_reason?(:shutdown), do: true
   defp orphan_reason?(:exit), do: true

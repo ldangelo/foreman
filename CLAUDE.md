@@ -40,6 +40,31 @@ ForemanServer.Application
   invocation is reported to the façade as `{:error, term()}`; sibling
   invocations and the catalog are unaffected (PRD REQ-002).
 
+Overwatch's worker tree layers the same way, with one restart rule that is
+easy to get wrong:
+
+```
+ForemanServer.Overwatch                              (permanent, :one_for_one)
+  ├── ForemanServer.Overwatch.WorkerRegistry
+  ├── ForemanServer.Overwatch.Tracker
+  ├── ForemanServer.Overwatch.CrashLoopDetector
+  └── ForemanServer.Overwatch.WorkerSupervisor       (DynamicSupervisor)
+        └── LaunchWorker                             (transient — one per phase)
+```
+
+- `LaunchWorker` children are **transient**, and `LaunchWorker`'s own exit
+  reason is the relaunch decision: `:normal`/`:shutdown` from its worker
+  (phase finished and reported, or deliberate teardown) exits `:normal` and
+  ends the child, while any other worker exit reason becomes
+  `{:worker_crashed, reason}` so the child relaunches and
+  `CrashLoopDetector` counts the restart.
+- Do **not** make them `:permanent`. `:permanent` cannot express "restart on
+  crash only", so the supervisor relaunched finished phases too, starting a
+  second agent for work that was already over. `RunExecutor`'s detached
+  `WorkerSupervisor.stop_worker/2` is cleanup, not a guard — it is a race,
+  and in run-de055c18749db5e9c702d24950268cf9 it lost by 56ms and the leaked
+  agent ran 8m42s past `RunFailed`, overwriting the run's phase artifact.
+
 ## 3. Errors flow one way
 
 Public `:execute/3` always returns one of:

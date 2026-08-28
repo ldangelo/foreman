@@ -136,17 +136,33 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
     end
   end
 
-  defp normalize_raw_error(reason)
-       when reason in [
-              :tool_error,
-              :process_terminated,
-              :unsupported_provider,
-              :timeout,
-              :cancelled
-            ],
-       do: {:error, reason}
+  @doc """
+  Normalizes a raw `Driver.run/3` or `Driver.await/2` failure reason into a
+  stable `{:error, code}` failure tuple.
 
-  defp normalize_raw_error(reason) do
+  In this position the harness's declared reason shape is a bare atom
+  (`:timeout`, `:not_found`, a supervisor's `:shutdown`, ...) or a
+  `%Jido.Harness.Error{}`. A bare atom therefore carries real information
+  and MUST survive: it is routed through the single
+  `ForemanServer.AgentRuntime.JidoHarness.ErrorCodes` table under the key
+  that table reads, so a recognized atom becomes its declared code and any
+  other atom is preserved as `{:other, atom}`. That replaces the
+  hand-maintained pass-through list that used to live here — a second copy
+  of `ErrorCodes`'s known-code map (AGENTS.md §5.7) whose omission of
+  `:shutdown` and `:not_found` reported both as `:unknown_error`.
+
+  A `%Jido.Harness.Error{}` reason is delegated to the same table, which
+  reads its `:category`.
+
+  `:unknown_error` is now reserved for a reason that is neither an atom nor
+  a `%{code: _}` map, i.e. one that genuinely carries no interpretable
+  failure category (AGENTS.md §5.3).
+  """
+  @spec normalize_raw_error(term()) :: ErrorCodes.code()
+  def normalize_raw_error(reason) when is_atom(reason) and not is_nil(reason),
+    do: ErrorCodes.map(%{code: reason})
+
+  def normalize_raw_error(reason) do
     case ErrorCodes.map(reason) do
       {:error, _} = error -> error
       nil -> {:error, :unknown_error}

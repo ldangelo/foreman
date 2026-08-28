@@ -42,6 +42,20 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.ErrorCodesTest do
     end
   end
 
+  describe "map/1 — %Jido.Harness.Error{}" do
+    test "maps a known category through the known-code table" do
+      assert ErrorCodes.map(Jido.Harness.Error.new(:timeout, "timed out")) == {:error, :timeout}
+
+      assert ErrorCodes.map(Jido.Harness.Error.new(:cancelled, "cancelled by operator")) ==
+               {:error, :cancelled}
+    end
+
+    test "preserves an unrecognized category under {:other, category}" do
+      assert ErrorCodes.map(Jido.Harness.Error.execution("provider reported failure")) ==
+               {:error, {:other, :execution}}
+    end
+  end
+
   describe "map/1 — malformed input" do
     test "returns {:error, :unknown_error} for a non-map term" do
       assert ErrorCodes.map(:something) == {:error, :unknown_error}
