@@ -183,15 +183,50 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       refute Map.has_key?(hd(workflow["phases"]), "worktree")
     end
 
-    test "accepts an empty worktree block (defaults to enabled)" do
+    test "parses a top-level nested mapping into a string-keyed map" do
+      # The workflow-level `worktree:` block only works because the root parser
+      # learned to nest. Previously only `phases:` could introduce a nested
+      # mapping, so `worktree:` parsed as the empty string and its own indented
+      # lines were left unconsumed. Nothing covered that, so pin the parse
+      # result verbatim: the block reaches Catalog/Approval raw and
+      # string-keyed.
       path =
         write_temp_yaml!("""
-        name: wt-default
+        name: wt-toplevel
+        description: workflow-level worktree block
+        worktree:
+          enabled: true
+          base: "{{implementation.source_revision}}"
+          branch: foreman/{run_id}
+          path: workspace
+          cleanup: never
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              base: main
+        """)
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+
+      assert workflow["worktree"] == %{
+               "enabled" => true,
+               "base" => "{{implementation.source_revision}}",
+               "branch" => "foreman/{run_id}",
+               "path" => "workspace",
+               "cleanup" => "never"
+             }
+
+      assert workflow["phases"] == [%{"name" => "only", "command" => "/skill:x"}]
+    end
+
+    test "accepts a partial worktree block (absent keys keep their defaults)" do
+      path =
+        write_temp_yaml!("""
+        name: wt-default
+        worktree:
+          base: main
+        phases:
+          - name: only
+            command: "/skill:x"
         """)
 
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
@@ -201,15 +236,15 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-full
+        worktree:
+          enabled: true
+          base: main
+          branch: feature/x
+          path: implement
+          cleanup: always
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              enabled: true
-              base: main
-              branch: feature/x
-              path: implement
-              cleanup: always
         """)
 
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
@@ -219,11 +254,11 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-disabled
+        worktree:
+          enabled: false
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              enabled: false
         """)
 
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
@@ -233,16 +268,16 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-disabled-abs
+        worktree:
+          enabled: false
+          path: /abs/should/be/rejected
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              enabled: false
-              path: /abs/should/be/rejected
         """)
 
       assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/\"worktree\.path\" must be relative/,
+                   ~r/\"worktree\.path\" must be relative \(absolute paths rejected\)/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
@@ -250,31 +285,37 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-enabled-bad
+        worktree:
+          enabled: maybe
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              enabled: maybe
         """)
 
-      assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/\"worktree.enabled\" must be a boolean/,
-                   fn -> Workflow.Interpreter.load!(path) end
+      error =
+        assert_raise Workflow.MissingRequiredPhaseError,
+                     ~r/\"worktree\.enabled\" must be a boolean/,
+                     fn -> Workflow.Interpreter.load!(path) end
+
+      # The block is validated ONCE at workflow level, so the message must not
+      # blame a phase. It used to be validated per phase and name an index,
+      # which pointed operators at the wrong part of the manifest.
+      refute error.message =~ "phase"
     end
 
     test "rejects blank base" do
       path =
         write_temp_yaml!("""
         name: wt-blank-base
+        worktree:
+          base: ""
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              base: ""
         """)
 
       assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/\"worktree.base\" must be a non-empty string/,
+                   ~r/\"worktree\.base\" must be a non-empty string/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
@@ -282,15 +323,15 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-abs
+        worktree:
+          path: /tmp/abs
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              path: /tmp/abs
         """)
 
       assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/\"worktree.path\" must be relative/,
+                   ~r/\"worktree\.path\" must be relative \(absolute paths rejected\)/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
@@ -298,11 +339,11 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-traverse
+        worktree:
+          path: ../escape
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              path: ../escape
         """)
 
       assert_raise Workflow.MissingRequiredPhaseError,
@@ -314,15 +355,15 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-cleanup
+        worktree:
+          cleanup: sometimes
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              cleanup: sometimes
         """)
 
       assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/\"worktree.cleanup\" must be one of: always, never, on_success/,
+                   ~r/\"worktree\.cleanup\" must be one of: always, never, on_success/,
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
@@ -330,16 +371,36 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       path =
         write_temp_yaml!("""
         name: wt-never
+        worktree:
+          cleanup: never
         phases:
           - name: only
             command: "/skill:x"
-            worktree:
-              cleanup: never
         """)
 
       assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
     end
+
+    test "accepts cleanup: on_success" do
+      # `on_success` is the third legal value and reclaims the worktree only on
+      # a successful finalize. It was schema-legal from the start but the
+      # executor collapsed it into `always`, so nothing asserted the schema
+      # accepted it.
+      path =
+        write_temp_yaml!("""
+        name: wt-on-success
+        worktree:
+          cleanup: on_success
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert workflow["worktree"]["cleanup"] == "on_success"
+    end
   end
+
 
   defp write_temp_yaml!(contents) do
     directory =

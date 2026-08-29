@@ -381,7 +381,6 @@ defmodule ForemanServer.Workflow.Catalog do
             |> Map.put(:models, phase["models"])
             |> Map.put(:max_turns, phase["maxTurns"])
             |> Map.put(:mail, phase["mail"])
-            |> maybe_put_worktree(phase)
 
           action =
             cond do
@@ -400,8 +399,25 @@ defmodule ForemanServer.Workflow.Catalog do
         manifest_path: path
       }
 
+      # The `worktree:` block is carried VERBATIM at the workflow level.
+      #
+      # The catalog used to re-key and default it per phase in its own
+      # `normalize_worktree/1`, which was a third normalizer for one block with
+      # its own disagreeing defaults (`branch: "foreman/{run_id}/{phase}"`,
+      # `cleanup: "always"`) alongside `PhaseSpec` and the executor's own reads.
+      # Normalization now happens once, at the executor boundary
+      # (`WorktreeSpec.normalize/1`, AGENTS.md 5.4), so the catalog must not
+      # inject defaults here: doing so would make "declared nothing"
+      # indistinguishable from "declared the default", and the difference is
+      # load-bearing for `enabled`.
+      base =
+        case Map.get(workflow, "worktree") do
+          block when is_map(block) -> Map.put(base, :worktree, block)
+          _ -> base
+        end
+
       resolved =
-        if any_phase_declares_worktree?(workflow["phases"]) do
+        if Map.has_key?(workflow, "worktree") do
           Map.put(base, :digest, canonical_digest(base))
         else
           Map.put(base, :digest, workflow["digest"])
@@ -413,61 +429,14 @@ defmodule ForemanServer.Workflow.Catalog do
     end
   end
 
-  # Only add the `:worktree` key when the raw phase declared a worktree
-  # block. Legacy manifests (no worktree key) keep the same resolved
-  # phase shape they have always had.
-  defp maybe_put_worktree(resolved_phase, raw_phase) do
-    if Map.has_key?(raw_phase, "worktree") do
-      Map.put(resolved_phase, :worktree, normalize_worktree(raw_phase))
-    else
-      resolved_phase
-    end
-  end
-
-  # Returns the normalized worktree map for a phase, or nil when the phase
-  # does not declare a worktree block. The Interpreter has already enforced
-  # schema rules; this only re-keys and applies defaults.
-  defp normalize_worktree(phase) do
-    case Map.get(phase, "worktree") do
-      nil ->
-        nil
-
-      raw when is_map(raw) ->
-        %{
-          enabled: normalize_worktree_enabled(Map.get(raw, "enabled")),
-          base: normalize_worktree_optional_string(Map.get(raw, "base")),
-          branch: normalize_worktree_branch(Map.get(raw, "branch")),
-          path: normalize_worktree_optional_string(Map.get(raw, "path")),
-          cleanup: normalize_worktree_cleanup(Map.get(raw, "cleanup"))
-        }
-    end
-  end
-
-  defp normalize_worktree_enabled(nil), do: true
-  defp normalize_worktree_enabled(true), do: true
-  defp normalize_worktree_enabled(false), do: false
-  defp normalize_worktree_enabled("true"), do: true
-  defp normalize_worktree_enabled("false"), do: false
-
-  defp normalize_worktree_optional_string(nil), do: nil
-  defp normalize_worktree_optional_string(value) when is_binary(value) and value != "", do: value
-
-  defp normalize_worktree_branch(nil), do: "foreman/{run_id}/{phase}"
-  defp normalize_worktree_branch(value) when is_binary(value) and value != "", do: value
-
-  defp normalize_worktree_cleanup(nil), do: "always"
-  defp normalize_worktree_cleanup("always"), do: "always"
-  defp normalize_worktree_cleanup("never"), do: "never"
-  defp normalize_worktree_cleanup("on_success"), do: "on_success"
-
-  defp any_phase_declares_worktree?(raw_phases) do
-    Enum.any?(raw_phases, fn phase -> Map.has_key?(phase, "worktree") end)
-  end
-
+  # The worktree block is part of the digest: it used to live inside `phases`,
+  # so moving it to the workflow level would otherwise make a change to
+  # `base`/`branch`/`cleanup` invisible to the digest.
   defp canonical_digest(resolved) do
     serialized = %{
       name: resolved.name,
       description: resolved.description,
+      worktree: Map.get(resolved, :worktree),
       phases: resolved.phases
     }
 

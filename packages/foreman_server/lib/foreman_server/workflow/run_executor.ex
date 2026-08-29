@@ -46,6 +46,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # included — crashed the executor on the phase 1 -> phase 2 transition
   # instead of advancing. Compile emitted the warning; nothing failed on it.
   alias ForemanServer.Workflow.StepSequencer
+  alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Workflow.Worktree
@@ -150,6 +151,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # The workflow's `worktree:` block, read from the same frozen
+  # `workflow_snapshot` the phases come from. It is a WORKFLOW-level key beside
+  # `name:` and `phases:` — a run has one worktree, so there is nothing for a
+  # phase to declare about it (see `WorktreeSpec`). `nil` means the workflow
+  # declared no block and every default applies.
+  defp extract_worktree_spec(task) do
+    snapshot =
+      Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+
+    WorktreeSpec.normalize(Map.get(snapshot, :worktree) || Map.get(snapshot, "worktree"))
+  end
+
   @impl true
   def init({run_id, task_projection}) do
     phase_specs = extract_phase_specs(task_projection)
@@ -177,6 +190,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       run_id: run_id,
       task: task_projection,
       phase_specs: phase_specs,
+      worktree_spec: extract_worktree_spec(task_projection),
       current_phase: nil,
       completed: [],
       phase_statuses: %{},
@@ -328,18 +342,23 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     with {:ok, _} <- validate_phase_action(phase_spec, phase_index),
          {:ok, _} <- emit_phase_start(state, phase_spec, phase_index),
-         {:ok, worktree_record} <- maybe_create_worktree(state, phase_spec, phase_index) do
-      # Retain the branch this phase wrote to so `finalize_run/1` can open a PR
-      # from run state. `worktree_record` is otherwise phase-local (it is
-      # cleaned up in the `after` below), which left AutoPR with no head branch
-      # and no way to create a PR.
-      state = remember_worktree(state, worktree_record)
+         {:ok, worktree_record} <- maybe_create_worktree(state, phase_index) do
+      # The run's worktree, and the branch it writes to, are run-level facts:
+      # `remember_run_worktree/2` makes the record reusable by every later phase
+      # and `remember_worktree/2` retains the branch so `finalize_run/1` can
+      # open a PR from run state.
+      #
+      # There is deliberately no per-phase cleanup here. The worktree belongs to
+      # the run, so tearing it down at a phase boundary would destroy the very
+      # checkout the next phase is meant to continue in. Disk is reclaimed once,
+      # by `cleanup_run_worktree/1` in `finalize_run/1`, and by the `RunDeleted`
+      # fan-out (`Worktree.clean_for_run/1`) for runs that end some other way.
+      state =
+        state
+        |> remember_run_worktree(worktree_record)
+        |> remember_worktree(worktree_record)
 
-      try do
-        run_phase_body(state, phase_spec, index, phase_index, worktree_record)
-      after
-        cleanup_phase_worktree(state, phase_spec, phase_index, worktree_record)
-      end
+      run_phase_body(state, phase_spec, index, phase_index, worktree_record)
     else
       {:error, reason} = err ->
         case emit_phase_failure(state, phase_spec, phase_index, reason) do
@@ -361,6 +380,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp remember_worktree(state, _record), do: state
+
+  # Retains the run's worktree record so every later phase reuses the same
+  # checkout instead of provisioning its own. Latched on key presence: the
+  # first worktree-enabled phase provisions, the rest reuse. A phase that opted
+  # out (`enabled: false`, record `nil`) must not clear a worktree an earlier
+  # phase established, so only a real record is stored.
+  defp remember_run_worktree(state, %{worktree_path: path} = record)
+       when is_binary(path) and path != "" do
+    Map.put_new(state, :run_worktree, record)
+  end
+
+  defp remember_run_worktree(state, _record), do: state
 
   # The PR base branch is the branch the run's work was cut from, recorded once
   # when the FIRST phase starts and never re-read.
@@ -434,6 +465,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          # next phase's context.
          {:ok, state} <-
            enforce_required_file(state, phase_spec, phase_index, worktree_record),
+         {:ok, _} <- commit_phase_worktree(state, phase_spec, phase_index, worktree_record),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
          {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
       next_state = %{
@@ -952,6 +984,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
             )
         end
 
+        # After AutoPR, never before: the worktree is the checkout AutoPR pushes
+        # from. Reclaiming it earlier is what the old per-phase `after` clause
+        # did, and it deleted the work before anything could propose it.
+        _ = cleanup_run_worktree(state, :success)
+
         Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
 
         case dispatch_run_complete(state) do
@@ -1318,119 +1355,114 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # ---------------------------------------------------------------------------
-  # Worktree provisioning (TRD Decision 9 + Decisions 3 & 5)
+  # Worktree provisioning — ONE worktree per RUN, declared per WORKFLOW
   # ---------------------------------------------------------------------------
   #
-  # When a phase declares a `worktree` block, RunExecutor provisions the
-  # worktree before invoking the agent and cleans it up after the phase
-  # is terminal. The worktree path is the authoritative cwd for the
-  # agent; the frozen `source_revision` from the ImplementationContext is
-  # the only acceptable `base` ref.
-  # A `worktree` block is recognized when the phase spec carries a
-  # `:worktree` (or "worktree") map. The block is honored when the
-  # `enabled` field is not the literal `false`. Absence or `enabled: false`
-  # both return `nil` so the phase runs unchanged.
-  # The `worktree` block is opt-IN by explicit declaration but the PRD
-  # contract ("Dispatch agents with git isolation: N agents running on N
-  # worktrees, zero conflicts") is opt-OUT: every dispatch must isolate
-  # its writes from the active checkout so the worker cannot race the
-  # operator or other concurrent dispatches. Manifests that omit the
-  # block get a default worktree off the current branch tip (HEAD) with
-  # cleanup: always. Opting OUT is still explicit via `enabled: false`.
-  defp maybe_create_worktree(state, phase_spec, phase_index) do
-    case worktree_block(phase_spec) do
+  # A run gets exactly one worktree, provisioned by its first phase and reused
+  # unchanged by every phase after it. The whole workflow executes in that
+  # single checkout on a single branch, so a later phase sees its predecessors'
+  # files directly rather than inheriting them through a chain of per-phase
+  # branches.
+  #
+  # The declaration is therefore WORKFLOW-level: `state.worktree_spec` comes
+  # from the manifest's top-level `worktree:` key (see `WorktreeSpec`), not from
+  # a phase. `enabled: false` opts the whole workflow out and provisions
+  # nothing.
+  #
+  # This replaced a per-phase design on both axes. Each phase used to create its
+  # own worktree directory and branch, cut from the previous phase's branch tip,
+  # destroyed at the phase boundary — a strictly worse way to express "the
+  # artifacts flow forward", needing the predecessor's branch to outlive its
+  # worktree, leaving N branches per run for AutoPR to pick the last of, and
+  # tearing down state at every boundary that never needed tearing down. And
+  # each phase used to carry its own `worktree:` block, which for a run-scoped
+  # resource meant N declarations could contradict each other while only the
+  # first could be honored.
+  #
+  # Worse, the phase-level block selected between two non-interchangeable
+  # provisioning functions: declaring it routed the run through one that
+  # required an ImplementationContext, so `worktree: {enabled: true}` on a
+  # plan-type workflow did not restate the default — it failed the run. There is
+  # now ONE provisioning path (`create_run_worktree/2`) and the block is legal on
+  # every workflow; whether the frozen `source_revision` pins the base is a
+  # property of the RUN (does it carry an ImplementationContext), never of the
+  # declaration.
+  defp maybe_create_worktree(state, phase_index) do
+    case state.worktree_spec do
       %{enabled: false} ->
         {:ok, nil}
 
+      _ ->
+        ensure_run_worktree(state, phase_index)
+    end
+  end
+
+  # Reuse before create. `state.run_worktree` is written by
+  # `remember_run_worktree/2` when the run's worktree is provisioned and
+  # survives every later phase in the executor's state.
+  defp ensure_run_worktree(state, phase_index) do
+    case Map.get(state, :run_worktree) do
+      %{worktree_path: path} = record when is_binary(path) and path != "" ->
+        reuse_run_worktree(record, path)
+
       nil ->
-        create_default_worktree(state, phase_spec, phase_index)
-
-      worktree when is_map(worktree) ->
-        create_phase_worktree(state, phase_spec, phase_index, worktree)
+        create_run_worktree(state, phase_index)
     end
   end
 
-  defp worktree_block(phase_spec) do
-    case Map.get(phase_spec, :worktree) do
-      block when is_map(block) -> block
-      _ -> nil
-    end
-  end
-
-  defp create_phase_worktree(state, phase_spec, phase_index, worktree) do
-    plan_context = state.plan_context || %{}
-
-    with {:ok, project_root} <- fetch_string(plan_context, "project_root"),
-         {:ok, source_revision} <- fetch_string(plan_context, "source_revision"),
-         :ok <- assert_base_matches(worktree, source_revision, project_root),
-         {:ok, implementation_key} <- fetch_string(plan_context, "implementation_key"),
-         {:ok, project_id} <- fetch_project_id(state),
-         :ok <- assert_trd_scope_prereqs(plan_context, implementation_key),
-         phase_id = Identity.phase_id(state.run_id, phase_index),
-         operation_id = "wt-" <> state.run_id <> "-" <> phase_id,
-         slug = phase_slug(phase_spec),
-         worktree_path = worktree_path_for(project_id, state.run_id, slug, worktree),
-         :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
-         branch = render_worktree_template(branch_template(worktree), state, slug),
-         :ok <- ensure_worktree_parent_dir(worktree_path),
-         trd_scope = compute_trd_scope(plan_context, implementation_key) do
-      Worktree.create(%{
-        operation_id: operation_id,
-        project_id: project_id,
-        run_id: state.run_id,
-        phase_id: phase_id,
-        repo_path: project_root,
-        worktree_path: worktree_path,
-        base_ref: source_revision,
-        branch: branch
-      })
-      |> case do
-        {:ok, ^worktree_path} ->
-          {:ok,
-           %{
-             operation_id: operation_id,
-             worktree_path: worktree_path,
-             branch: branch,
-             base_ref: source_revision,
-             project_root: project_root,
-             project_id: project_id,
-             implementation_key: implementation_key,
-             trd_scope: trd_scope,
-             cleanup: worktree_cleanup(worktree)
-           }}
-
-        {:ok, other_path} ->
-          # Worktree.create guarantees the returned path matches the
-          # requested path; treat drift as a hard failure rather than
-          # passing a mismatched path downstream.
-          _ = other_path
-          {:error, {:worktree_path_drift, worktree_path, other_path}}
-
-        {:error, _} = err ->
-          err
+  # A reused worktree carries one per-phase value: `base_ref`, refreshed to the
+  # shared checkout's current HEAD. That is what keeps the discovery gate
+  # honest across phases — `capture_planning_document/4` diffs
+  # `<base_ref>..HEAD` for documents NEW IN THE PHASE, and `commit_phase_worktree/4`
+  # commits at each phase boundary, so HEAD at phase N's start is exactly
+  # "everything phases 1..N-1 produced". Phase 1's PRD is therefore correctly
+  # not a candidate in phase 2.
+  #
+  # A worktree that has vanished mid-run is a hard failure (AGENTS.md 5.2/5.3):
+  # continuing would run the phase against whatever directory git resolves
+  # instead, and produce a plausible-looking artifact from the wrong tree.
+  defp reuse_run_worktree(record, path) do
+    if File.dir?(path) do
+      case resolve_revision(path, "HEAD") do
+        {:ok, head} -> {:ok, %{record | base_ref: head}}
+        {:error, reason} -> {:error, {:run_worktree_head_unresolvable, path, reason}}
       end
+    else
+      {:error, {:run_worktree_vanished, path}}
     end
   end
 
-  # Default-on worktree for manifests without an explicit worktree block.
-  # Enforces the PRD contract (git isolation per dispatch) without requiring
-  # plan_context — derives project_root from the project projection's
-  # registered path and resolves `base_ref` through
-  # `phase_lineage_base_ref/2`. Skips TRD-specific assertions (base match
-  # against frozen source_revision, implementation_key, trd_scope) because
-  # work-request and non-plan flows don't have those values. The worktree is
-  # still pinned to a single commit and cleaned up on terminal phases.
-  defp create_default_worktree(state, phase_spec, phase_index) do
+  # The single provisioning path. It takes no phase and no phase-level block:
+  # everything declarable comes from `state.worktree_spec` (the workflow's
+  # top-level `worktree:`), and everything derived comes from the run.
+  #
+  # `project_root` and `base_ref` are resolved by whether the RUN carries an
+  # ImplementationContext, not by whether a block was declared:
+  #
+  #   * With one (`implement-trd*`), the root and the base are the frozen
+  #     `project_root`/`source_revision` from plan context, a declared `base:`
+  #     must resolve to that same revision (`assert_base_matches/3`, TRD
+  #     Decisions 3/5), and `implementation_key`/`trd_scope` are carried on the
+  #     record for `TRD_SCOPE`/`BEADS_DB` export.
+  #   * Without one (`plan`, `prd`, `fix`, ad-hoc work), the root is the
+  #     project's registered path and the base is that checkout's `HEAD`. A
+  #     declared `base:` is resolved against the project root and used as-is.
+  #
+  # That split is why the two former functions could be merged: they differed
+  # only in where those two values came from, never in what a manifest was
+  # allowed to say.
+  defp create_run_worktree(state, phase_index) do
+    spec = state.worktree_spec || %{}
+
     with {:ok, project_id} <- fetch_project_id(state),
-         {:ok, project_root} <- default_project_root(project_id, state),
-         :ok <- assert_git_repo(project_root),
-         {:ok, base_ref} <- phase_lineage_base_ref(state, project_root),
+         {:ok, project_root, base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, spec),
+         {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
-         slug = phase_slug(phase_spec),
-         operation_id = "wt-default-" <> state.run_id <> "-" <> phase_id,
-         worktree_path = default_worktree_path_for(project_id, state.run_id, slug),
+         operation_id = "wt-" <> state.run_id,
+         worktree_path = run_worktree_path(project_id, state.run_id, spec),
          :ok <- assert_worktree_path_contained(project_id, state.run_id, worktree_path),
-         branch = "foreman/" <> state.run_id <> "/" <> slug,
+         branch = render_worktree_template(branch_template(spec), state.run_id),
          :ok <- ensure_worktree_parent_dir(worktree_path) do
       Worktree.create(%{
         operation_id: operation_id,
@@ -1452,13 +1484,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
              base_ref: base_ref,
              project_root: project_root,
              project_id: project_id,
-             implementation_key: nil,
-             trd_scope: nil,
-             cleanup: :always
+             implementation_key: implementation_key,
+             trd_scope: trd_scope,
+             cleanup: cleanup
            }}
 
         {:ok, other_path} ->
-          _ = other_path
+          # Worktree.create guarantees the returned path matches the requested
+          # path; treat drift as a hard failure rather than passing a mismatched
+          # path downstream.
           {:error, {:worktree_path_drift, worktree_path, other_path}}
 
         {:error, _} = err ->
@@ -1467,68 +1501,71 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # Phase lineage: a phase's worktree is cut from the PREVIOUS phase's
-  # branch, not re-cut from the base branch. Committed artifacts then flow
-  # forward — phase 2 of `plan.yaml` starts from a checkout that already
-  # contains phase 1's PRD — and the last phase's branch accumulates the
-  # whole pipeline, which is the branch `AutoPR.maybe_create_pr/1` opens the
-  # PR from (`state.last_worktree.branch`).
-  #
-  # Lineage rides on the `state.last_worktree` that `remember_worktree/2`
-  # already retains for AutoPR; no new event and no new run state. The first
-  # phase of a run has no predecessor and cuts from the current branch tip
-  # (HEAD), so single-phase runs resolve exactly as before.
-  #
-  # The predecessor's branch outlives its worktree, which is what makes this
-  # sound: `cleanup_phase_worktree/4` -> `Worktree.clean/1` runs
-  # `git worktree remove` + `git worktree prune` (see
-  # `VcsAdapter.Default.clean_worktree/2`) and never touches refs. Branch
-  # deletion lives in `Worktree.clean_for_run/1`, reachable only from
-  # `RunDeleted` (`Dispatcher`), i.e. after the run is terminated. Disk is
-  # reclaimed at each phase boundary; the lineage is not.
-  #
-  # Returning `base_ref` as the predecessor's tip is also what keeps the
-  # discovery gate honest: `capture_planning_document/4` diffs
-  # `<base_ref>..HEAD` for documents NEW IN THE PHASE, so phase 1's PRD is
-  # correctly not a candidate in phase 2 and `docs/TRD` sees only the TRD.
-  # Leaving `base_ref` at the run's base while chaining the checkout would
-  # report the inherited PRD as newly added.
-  #
-  # A recorded predecessor whose branch git cannot resolve is a hard failure
-  # (AGENTS.md 5.2/5.3). Falling back to HEAD would hand the phase a
-  # checkout missing its input document and let the run produce a
-  # plausible-looking wrong artifact — the exact failure this chaining
-  # removes. `last_worktree` is written only by `remember_worktree/2`, which
-  # always stores a binary `:branch`, so any other shape is a programming
-  # error and raises rather than being absorbed.
-  #
-  # Phases with an explicit `worktree:` block go through
-  # `create_phase_worktree/4` and stay pinned to the frozen
-  # `source_revision` (TRD Decisions 3/5, exported as
-  # `FOREMAN_SOURCE_REVISION`). Every bundled workflow that declares the
-  # block — `implement-trd.yaml`, `implement-trd-beads.yaml` — is
-  # single-phase, so chaining would be unreachable there anyway.
-  defp phase_lineage_base_ref(state, project_root) do
-    case Map.get(state, :last_worktree) do
-      nil ->
-        resolve_revision(project_root, "HEAD")
+  # An ImplementationContext is detected by the presence of the values it
+  # freezes, not by the workflow name, so a run either has all of them or is
+  # treated as having none. A partially-populated plan context is a hard error
+  # rather than a silent fall back to the project checkout, because pinning an
+  # implementation run to `HEAD` instead of its frozen revision is exactly the
+  # plausible-looking wrong answer AGENTS.md 5.2 forbids.
+  defp resolve_run_base(state, spec) do
+    plan_context = state.plan_context || %{}
 
-      %{branch: branch} when is_binary(branch) and branch != "" ->
-        case resolve_revision(project_root, branch) do
-          {:ok, sha} ->
-            {:ok, sha}
+    case fetch_string(plan_context, "source_revision") do
+      {:ok, source_revision} ->
+        with {:ok, project_root} <- fetch_string(plan_context, "project_root"),
+             :ok <- assert_base_matches(spec, source_revision, project_root),
+             {:ok, implementation_key} <- fetch_string(plan_context, "implementation_key"),
+             :ok <- assert_trd_scope_prereqs(plan_context, implementation_key) do
+          {:ok, project_root, source_revision, implementation_key,
+           compute_trd_scope(plan_context, implementation_key)}
+        end
 
-          {:error, reason} ->
-            {:error, {:phase_lineage_branch_unresolvable, branch, reason}}
+      {:error, _} ->
+        with {:ok, project_id} <- fetch_project_id(state),
+             {:ok, project_root} <- default_project_root(project_id, state),
+             :ok <- assert_git_repo(project_root),
+             {:ok, base_ref} <- resolve_declared_base(spec, project_root) do
+          {:ok, project_root, base_ref, nil, nil}
         end
     end
   end
 
-  # Default-on worktrees use the slug as the leaf directory (no template
-  # rendering) so the path is deterministic and trivially auditable from
-  # the run_id alone.
-  defp default_worktree_path_for(project_id, run_id, slug) do
-    Path.join([worktree_base_root(), project_id, run_id, slug])
+  defp resolve_declared_base(spec, project_root) do
+    case Map.get(spec, :base) do
+      declared when is_binary(declared) and declared != "" ->
+        case resolve_revision(project_root, declared) do
+          {:ok, sha} -> {:ok, sha}
+          {:error, reason} -> {:error, {:worktree_base_unresolvable, declared, reason}}
+        end
+
+      _ ->
+        resolve_revision(project_root, "HEAD")
+    end
+  end
+
+  # The run's single worktree lives at one leaf directory under
+  # `~/.foreman/worktrees/<project_id>/<run_id>/`, so the path is deterministic
+  # and trivially auditable from the run_id alone. The workflow may name that
+  # leaf with `worktree: path:`; the default is `workspace`.
+  #
+  # This replaced `default_worktree_path_for/3` and `worktree_path_for/4`, which
+  # appended a per-phase slug because each phase had its own worktree. Along with
+  # them went `phase_lineage_base_ref/2`, which resolved a phase's base by
+  # looking up the PREVIOUS phase's branch tip so committed artifacts would flow
+  # forward. With one worktree per run there is no predecessor to chain from and
+  # nothing to flow between: later phases open the same checkout on the same
+  # branch and read their inputs as ordinary files. The "documents new in THIS
+  # phase" property the chained base existed to preserve is now supplied by
+  # `reuse_run_worktree/2`, which refreshes `base_ref` to the shared checkout's
+  # HEAD at each phase start.
+  defp run_worktree_path(project_id, run_id, spec) do
+    leaf =
+      case Map.get(spec, :path) do
+        path when is_binary(path) and path != "" -> render_worktree_template(path, run_id)
+        _ -> "workspace"
+      end
+
+    Path.join([worktree_base_root(), project_id, run_id, leaf])
   end
 
   # Resolve the project_root for default-on worktrees. Prefers
@@ -1695,49 +1732,78 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp phase_slug(phase_spec) do
-    case phase_spec_name(phase_spec) do
-      nil ->
-        "phase"
-
-      "" ->
-        "phase"
-
-      name when is_atom(name) ->
-        name |> Atom.to_string() |> String.replace(~r/[^A-Za-z0-9_.-]/, "-")
-
-      name when is_binary(name) ->
-        if name == "", do: "phase", else: String.replace(name, ~r/[^A-Za-z0-9_.-]/, "-")
-    end
-  end
-
-  defp worktree_path_for(project_id, run_id, slug, worktree) do
-    template = Map.get(worktree, :path) || slug
-    rendered = render_worktree_template(template, %{run_id: run_id}, slug)
-    Path.join([worktree_base_root(), project_id, run_id, rendered])
-  end
-
   defp worktree_base_root do
     Path.join([System.user_home!(), ".foreman", "worktrees"])
   end
 
-  defp branch_template(worktree) do
-    Map.get(worktree, :branch) || "foreman/{run_id}/{phase}"
-  end
-
-  defp worktree_cleanup(worktree) do
-    case Map.get(worktree, :cleanup) do
-      "never" -> :never
-      _ -> :always
+  # The run's branch. The workflow may name it with `worktree: branch:`; the
+  # default is `foreman/{run_id}`.
+  #
+  # The default used to be `foreman/{run_id}/{phase}` and `{phase}` used to be
+  # substituted, because each phase had its own branch. A run-scoped branch
+  # named after one phase of several is a misnomer, so `{phase}` is no longer a
+  # placeholder — `phase_slug/1` and `worktree_path_for/4` went with it.
+  defp branch_template(spec) do
+    case Map.get(spec, :branch) do
+      branch when is_binary(branch) and branch != "" -> branch
+      _ -> "foreman/{run_id}"
     end
   end
 
-  defp render_worktree_template(template, state, slug) do
-    run_id = Map.get(state, :run_id) || Map.get(state, "run_id") || ""
+  # Whether the run's worktree directory is removed once the run finalizes.
+  # Declared per manifest as `cleanup: always | never` inside a `worktree:`
+  # block.
+  #
+  # The default is `never`. `:always` was too aggressive: it deleted the
+  # checkout at the phase boundary, so a document the agent had written but not
+  # committed vanished before anything could propose it, leaving AutoPR with
+  # zero commits.
+  #
+  # An in-flight attempt at that fix instead read a NEW `:clean_worktree` key
+  # and stopped reading `:cleanup` at all. That silently orphaned the
+  # `cleanup: never` already declared by `implement-trd.yaml` and
+  # `implement-trd-beads.yaml` — the declaration kept parsing, kept appearing in
+  # the manifest, and controlled nothing. It only escaped notice because the new
+  # default happened to agree with it. `:cleanup` is the manifest key; there is
+  # no second spelling (AGENTS.md 5.4).
+  #
+  # `clean_worktree` is NOT a manifest key and never was: it is the
+  # `VcsAdapter` operation name for removing a worktree
+  # (`VcsAdapter.Default.clean_worktree/2`, dispatched from
+  # `Worktree.clean/1`). The in-flight change also added it to
+  # `PhaseSpec.@worktree_fields`, where it normalized a key no module read —
+  # dead plumbing, removed with this fix.
+  #
+  # `on_success` is a real third value, not a synonym for `always`: the
+  # worktree is reclaimed when the run finalizes successfully and RETAINED when
+  # it fails, so a failed run's checkout survives for forensics. The
+  # `Interpreter` has validated it as legal since the block was introduced,
+  # while this function matched only `"never"` and sent everything else —
+  # `on_success` included — to `:always`. A manifest asking to keep the
+  # checkout on failure therefore had it deleted, silently doing the opposite
+  # of what it declared on exactly the path where the evidence mattered.
+  #
+  # An unrecognized value is a hard failure, not a silent fall back to the
+  # default (AGENTS.md 5.2/5.3): `cleanup: allways` must not read as a working
+  # declaration that quietly does the opposite of what it says.
+  defp worktree_cleanup(worktree) do
+    case Map.get(worktree, :cleanup) do
+      nil -> {:ok, :never}
+      "never" -> {:ok, :never}
+      :never -> {:ok, :never}
+      "always" -> {:ok, :always}
+      :always -> {:ok, :always}
+      "on_success" -> {:ok, :on_success}
+      :on_success -> {:ok, :on_success}
+      other -> {:error, {:worktree_cleanup_invalid, other}}
+    end
+  end
 
-    template
-    |> String.replace("{run_id}", run_id)
-    |> String.replace("{phase}", slug)
+  # `{run_id}` is the only placeholder. `{phase}` was dropped with the move to
+  # a workflow-level, run-scoped worktree: it named a per-phase branch and
+  # directory that no longer exist.
+  defp render_worktree_template(template, run_id) when is_binary(run_id) do
+    String.replace(template, "{run_id}", run_id)
   end
 
   # Containment check: the rendered worktree path MUST resolve to a
@@ -1767,26 +1833,147 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # Cleanup runs in the `after` clause of `run_single_phase/3` so any
-  # terminal path (success, agent error, artifact error, enforcement
-  # error) still cleans. `cleanup: never` is honored by short-circuiting.
-  defp cleanup_phase_worktree(_state, _phase_spec, _phase_index, :no_worktree), do: :ok
+  # Commits whatever the phase produced into the run's worktree. Foreman owns
+  # the worktree, so Foreman owns the commit: an agent that writes files without
+  # committing them still leaves the run with a proposable branch, and the next
+  # phase's `base_ref` (the shared checkout's HEAD) advances to exactly what
+  # this phase produced, which is what keeps the discovery gate scoped per
+  # phase.
+  #
+  # A clean tree is `{:ok, :nothing_to_commit}` and creates no commit, so AutoPR
+  # still opens a PR only when there is real work — never a phantom empty commit.
+  #
+  # Every other git failure is `{:error, …}`. The first implementation returned
+  # `{:ok, :skipped_no_worktree}` for a failed `git add`, a missing
+  # `project_root`, a non-zero `git commit`, and an unrecognized exit code
+  # alike, so a phase whose work was never committed completed as a success and
+  # AutoPR silently had nothing to propose — exactly the plausible-looking
+  # success AGENTS.md 5.2 forbids.
+  defp commit_phase_worktree(_state, _phase_spec, _phase_index, :no_worktree),
+    do: {:ok, :no_worktree}
 
-  defp cleanup_phase_worktree(_state, _phase_spec, _phase_index, nil), do: :ok
+  defp commit_phase_worktree(_state, _phase_spec, _phase_index, nil), do: {:ok, :no_worktree}
 
-  defp cleanup_phase_worktree(_state, _phase_spec, _phase_index, %{cleanup: :never}), do: :ok
+  defp commit_phase_worktree(state, _phase_spec, phase_index, %{worktree_path: path})
+       when is_binary(path) and path != "" do
+    commit_dirty_worktree(state, phase_index, path)
+  end
 
-  defp cleanup_phase_worktree(state, phase_spec, phase_index, worktree_record) do
-    phase_id = Identity.phase_id(state.run_id, phase_index)
+  # A worktree record without a usable path is a programming error, not a
+  # condition to absorb: `maybe_create_worktree/3` returns either `nil` or a
+  # record whose `:worktree_path` is a non-empty binary (AGENTS.md 5.3).
+  defp commit_phase_worktree(_state, _phase_spec, phase_index, record) do
+    raise ArgumentError,
+          "phase #{phase_index} worktree record carries no worktree_path: #{inspect(record)}"
+  end
 
+  defp commit_dirty_worktree(state, phase_index, path) do
+    case worktree_dirty?(path) do
+      {:ok, false} ->
+        Logger.info(
+          "RunExecutor #{state.run_id} phase #{phase_index} worktree clean, nothing to commit"
+        )
+
+        {:ok, :nothing_to_commit}
+
+      {:ok, true} ->
+        stage_and_commit(state, phase_index, path)
+
+      {:error, reason} ->
+        {:error, {:phase_commit_status_failed, path, reason}}
+    end
+  end
+
+  # `git status --porcelain` is the decision, not `git commit`'s exit code.
+  # Reading emptiness off `git commit` cannot work: after `git add -A` a clean
+  # tree and a genuine failure both exit 1, and git prints "nothing to commit"
+  # to stdout rather than staying silent — so the earlier "exit 1 with empty
+  # output means clean" test matched the failure case and reported real errors
+  # as a clean tree.
+  #
+  # `--untracked-files=all` so a phase whose only output is a new, never-added
+  # file counts as dirty.
+  defp worktree_dirty?(path) do
+    args = ["-C", path, "status", "--porcelain", "--untracked-files=all"]
+
+    case System.cmd("git", args, stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output) != ""}
+      {output, code} -> {:error, {:git_status_failed, code, String.trim(output)}}
+    end
+  end
+
+  # Foreman commits as itself, with `-c` overrides rather than repository
+  # config, so the commit cannot fail on a checkout with no `user.email` set and
+  # is attributable to the harness rather than to the operator who happens to
+  # own the clone. `--no-verify` because this is Foreman's bookkeeping commit:
+  # a repository pre-commit hook must not be able to fail the phase or rewrite
+  # the agent's output.
+  defp stage_and_commit(state, phase_index, path) do
+    with :ok <- git_ok(["-C", path, "add", "-A"], :git_add_failed),
+         :ok <-
+           git_ok(
+             [
+               "-C",
+               path,
+               "-c",
+               "user.name=Foreman",
+               "-c",
+               "user.email=foreman@localhost",
+               "commit",
+               "--no-verify",
+               "-m",
+               "Foreman run #{state.run_id} phase #{phase_index}"
+             ],
+             :git_commit_failed
+           ) do
+      Logger.info("RunExecutor #{state.run_id} phase #{phase_index} committed worktree #{path}")
+      {:ok, :committed}
+    else
+      {:error, reason} -> {:error, {:phase_commit_failed, path, reason}}
+    end
+  end
+
+  # Exit status is the only success signal. Matching on empty output as well —
+  # as the first implementation did for `git add` — mis-reads a successful
+  # command that emitted a warning (CRLF conversion, embedded repository) as a
+  # failure, and skips the commit.
+  defp git_ok(args, error_tag) do
+    case System.cmd("git", args, stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, code} -> {:error, {error_tag, code, String.trim(output)}}
+    end
+  end
+
+  # The run's worktree is reclaimed once, when the run reaches a terminal state,
+  # and only if the manifest asked for it. The declaration decides which
+  # outcomes reclaim (default `never`):
+  #
+  #   * `never`      — never reclaimed here; `RunDeleted` still fans out to
+  #                    `Worktree.clean_for_run/1`.
+  #   * `always`     — reclaimed on success and on failure.
+  #   * `on_success` — reclaimed on success only, so a failed run's checkout
+  #                    survives for forensics.
+  #
+  # This replaced `cleanup_phase_worktree/4`, which ran in an `after` clause at
+  # every phase boundary. With one worktree per run that is actively wrong: it
+  # would delete the checkout the next phase is about to continue in.
+  defp cleanup_run_worktree(state, outcome) when outcome in [:success, :failure] do
+    case {Map.get(state, :run_worktree), outcome} do
+      {%{cleanup: :always} = record, _} -> do_clean_run_worktree(state, record)
+      {%{cleanup: :on_success} = record, :success} -> do_clean_run_worktree(state, record)
+      _ -> :ok
+    end
+  end
+
+  defp do_clean_run_worktree(state, record) do
     _ = unbind_vfs(state.run_id)
 
     Worktree.clean(%{
-      operation_id: worktree_record.operation_id,
-      project_id: worktree_record.project_id,
+      operation_id: record.operation_id,
+      project_id: record.project_id,
       run_id: state.run_id,
-      phase_id: phase_id,
-      repo_path: worktree_record.project_root
+      phase_id: Identity.phase_id(state.run_id, 1),
+      repo_path: record.project_root
     })
     |> case do
       :ok ->
@@ -1797,7 +1984,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
       {:error, reason} ->
         Logger.warning(
-          "RunExecutor #{state.run_id}/#{phase_id} worktree cleanup reported: #{inspect(reason)}"
+          "RunExecutor #{state.run_id} worktree cleanup reported: #{inspect(reason)}"
         )
 
         :ok
@@ -2042,9 +2229,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def __unbind_vfs_for_test__(run_id), do: unbind_vfs(run_id)
 
+  # `phase_lineage_base_ref/2` and its export are gone: with one worktree per
+  # run there is no predecessor branch to chain a base from. `reuse_run_worktree/2`
+  # supplies the per-phase base from the shared checkout's HEAD instead.
   @doc false
-  def __phase_lineage_base_ref_for_test__(state, project_root),
-    do: phase_lineage_base_ref(state, project_root)
+  def __reuse_run_worktree_for_test__(record, path), do: reuse_run_worktree(record, path)
+
+  @doc false
+  def __commit_phase_worktree_for_test__(state, phase_spec, record),
+    do: commit_phase_worktree(state, phase_spec, 1, record)
+
+  @doc false
+  def __worktree_cleanup_for_test__(worktree), do: worktree_cleanup(worktree)
 
   @doc false
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)
@@ -2358,6 +2554,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # Centralizes the `:stop, :normal` after a `run.fail` dispatch so the
   # five silent-stop paths in this module cannot drop a reason on the floor.
   defp finalize_terminal_and_stop(state, reason) do
+    # `cleanup: always` means always, including the failure path. `on_success`
+    # deliberately retains the checkout here so a failed run can be inspected;
+    # that distinction is the whole reason `on_success` is not a synonym for
+    # `always`.
+    _ = cleanup_run_worktree(state, :failure)
+
     case finalize_terminal_dispatch(state, reason) do
       :ok -> {:stop, :normal, %{state | status: :failed}}
       :retry -> {:noreply, %{state | status: :failed}}

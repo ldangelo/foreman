@@ -386,7 +386,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
@@ -542,7 +542,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
@@ -604,7 +604,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
     artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
     expected_comment = "foreman-run:#{run_id}:#{artifact_path}"
 
@@ -818,7 +818,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     script_key = unique_id("script")
     database_path = unique_database_path(script_key)
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
@@ -1003,13 +1003,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+    phase = phase_spec(script_key, artifact_dir)
 
     seed_project_task_and_run_with_implementation!(
       project_id,
       task_id,
       run_id,
-      %{phases: [phase]},
+      snapshot([phase], %{enabled: true}),
       project_task_provider(database_path),
       %{
         "project_root" => repo_path,
@@ -1046,13 +1046,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     poll_run_completion!(run_id)
   end
 
-  test "default cleanup: always removes the worktree after the phase succeeds" do
+  test "default cleanup: preserves the worktree after the phase succeeds" do
     start_schema_cache!()
     test_pid = self()
     project_id = unique_id("project")
     task_id = unique_id("task")
     run_id = unique_id("run")
-    script_key = unique_id("wt-cleanup-success")
+    script_key = unique_id("wt-cleanup-default")
     database_path = unique_database_path(unique_id("db"))
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
     File.mkdir_p!(artifact_dir)
@@ -1062,13 +1062,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     on_exit_worktree_cleanup(repo_path, project_id, run_id)
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+    phase = phase_spec(script_key, artifact_dir)
 
     seed_project_task_and_run_with_implementation!(
       project_id,
       task_id,
       run_id,
-      %{phases: [phase]},
+      snapshot([phase], %{enabled: true}),
       project_task_provider(database_path),
       %{
         "project_root" => repo_path,
@@ -1090,11 +1090,64 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     poll_run_completion!(run_id)
 
-    # Default `cleanup: always` removes the worktree after completion.
-    # The exact cleanup implementation may not block the test process;
-    # a short bounded wait observes the disk teardown.
-    assert wait_until_cleaned(worktree_path, 500), "worktree #{worktree_path} was not cleaned"
+    # Default: preserve the worktree after completion so AutoPR can inspect it.
+    # A short bounded wait observes the disk is still there.
+    Process.sleep(200)
+    assert File.dir?(worktree_path),
+           "default cleanup must preserve worktree at #{worktree_path}"
   end
+
+
+  test "cleanup: always removes the run's worktree once the run finalizes" do
+    start_schema_cache!()
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+    run_id = unique_id("run")
+    script_key = unique_id("wt-cleanup-always")
+    database_path = unique_database_path(unique_id("db"))
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+    File.mkdir_p!(artifact_dir)
+
+    repo_path = make_bare_minimum_git_repo!(test_pid)
+    source_revision = current_head_sha!(repo_path)
+    on_exit_worktree_cleanup(repo_path, project_id, run_id)
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    phase = phase_spec(script_key, artifact_dir)
+
+    seed_project_task_and_run_with_implementation!(
+      project_id,
+      task_id,
+      run_id,
+      snapshot([phase], %{enabled: true, cleanup: "always"}),
+      project_task_provider(database_path),
+      %{
+        "project_root" => repo_path,
+        "source_revision" => source_revision,
+        "implementation_key" => "k3"
+      }
+    )
+
+    register_project!(project_id, database_path)
+    claim_and_complete_expectations!(task_id)
+
+    start_run_executor!(run_id, task_id)
+
+    assert {:adapter_execute, _prompt, _ctx} = receive_message(@poll_timeout_ms)
+    assert {:adapter_env, env} = receive_message(@poll_timeout_ms)
+
+    worktree_path = env["FOREMAN_WORKTREE_PATH"]
+    assert File.dir?(worktree_path), "worktree exists during phase"
+
+    poll_run_completion!(run_id)
+
+    # Reclaimed at run finalization, not at the phase boundary: the worktree is
+    # the checkout AutoPR pushes from, so cleanup runs after it.
+    assert wait_until_cleaned(worktree_path, 500),
+           "worktree #{worktree_path} was not cleaned despite cleanup: always"
+  end
+
 
   test "cleanup: never preserves the worktree across the phase" do
     start_schema_cache!()
@@ -1112,19 +1165,17 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     on_exit_worktree_cleanup(repo_path, project_id, run_id)
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    phase =
-      phase_spec(script_key, artifact_dir)
-      |> put_worktree(%{
-        enabled: true,
-        branch: "foreman/#{run_id}/implement",
-        cleanup: "never"
-      })
+    phase = phase_spec(script_key, artifact_dir)
 
     seed_project_task_and_run_with_implementation!(
       project_id,
       task_id,
       run_id,
-      %{phases: [phase]},
+      snapshot([phase], %{
+        enabled: true,
+        branch: "foreman/#{run_id}/implement",
+        cleanup: "never"
+      }),
       project_task_provider(database_path),
       %{
         "project_root" => repo_path,
@@ -1152,22 +1203,30 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   end
 
   # --------------------------------------------------------------------
-  # Phase lineage (run-d75304aca144c15409087ed744e2a7dc)
-  # A multi-phase run must chain each phase's worktree onto the PREVIOUS
-  # phase's branch. Cut from the base branch instead, phase 2 of plan.yaml
-  # never sees phase 1's committed PRD and `docs/TRD` discovery fails with
-  # {:planning_document_absent, "docs/TRD", ...}. Default-on worktrees (no
-  # `worktree:` block) — the shape every bundled multi-phase workflow has.
+  # One worktree per RUN (not per phase)
+  # A multi-phase run executes every phase in the SAME checkout on the same
+  # branch, so phase 2 of plan.yaml reads phase 1's PRD as an ordinary file.
+  #
+  # This replaced a per-phase design where each phase got its own worktree
+  # cut from the predecessor's branch tip and destroyed at the phase
+  # boundary. run-d75304aca144c15409087ed744e2a7dc failed under an earlier
+  # version of that design — phase 2 was cut from the base branch, never saw
+  # phase 1's PRD, and `docs/TRD` discovery failed with
+  # {:planning_document_absent, "docs/TRD", ...}. One worktree removes the
+  # class: there is nothing to chain and nothing torn down mid-run.
+  #
+  # Default-on worktrees (no `worktree:` block) — the shape every bundled
+  # multi-phase workflow has.
   # --------------------------------------------------------------------
 
-  test "phase 2's default worktree is cut from phase 1's branch and inherits its commit" do
+  test "every phase of a run executes in the same worktree and Foreman commits each phase" do
     start_schema_cache!()
     test_pid = self()
-    project_id = unique_id("project-lineage")
+    project_id = unique_id("project-single-wt")
     task_id = unique_id("task")
     run_id = unique_id("run")
-    key1 = unique_id("wt-lineage-1")
-    key2 = unique_id("wt-lineage-2")
+    key1 = unique_id("wt-single-1")
+    key2 = unique_id("wt-single-2")
     database_path = unique_database_path(unique_id("db"))
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
     File.mkdir_p!(artifact_dir)
@@ -1176,32 +1235,32 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     run_base = current_head_sha!(repo_path)
     on_exit_worktree_cleanup(repo_path, project_id, run_id)
 
-    wt1 = default_worktree_path(project_id, run_id, "create-prd")
-    wt2 = default_worktree_path(project_id, run_id, "create-trd")
+    workspace = default_worktree_path(project_id, run_id)
+    run_branch = "foreman/#{run_id}"
     prd = "docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md"
 
-    # Phase 1 behaves like a real create-prd agent: it COMMITS its document
-    # inside its own worktree. That commit is what has to reach phase 2.
+    # Phase 1 behaves like a real create-prd agent that writes its document
+    # and does NOT commit. Foreman owns the worktree, so
+    # `commit_phase_worktree/4` is what turns that into a commit — and that
+    # commit is what phase 2's base_ref advances past.
     LifecycleStore.put(key1, %{
       test_pid: test_pid,
       after_execute: [
         fn ->
-          File.mkdir_p!(Path.join(wt1, "docs/PRD"))
-          File.write!(Path.join(wt1, prd), "requirements")
-          run_git!(["-C", wt1, "add", "-A", "--", "docs"])
-          run_git!(["-C", wt1, "commit", "--no-gpg-sign", "-m", "prd", "--quiet"])
+          File.mkdir_p!(Path.join(workspace, "docs/PRD"))
+          File.write!(Path.join(workspace, prd), "requirements")
           :ok
         end
       ]
     })
 
-    # Phase 2 reports whether the inherited PRD is actually on disk in its
-    # own checkout; its worktree is torn down before the test resumes.
+    # Phase 2 reports whether phase 1's PRD is on disk in the checkout it was
+    # handed — the same directory, so it must simply be there.
     LifecycleStore.put(key2, %{
       test_pid: test_pid,
       after_execute: [
         fn ->
-          send(test_pid, {:phase2_sees_prd, File.regular?(Path.join(wt2, prd))})
+          send(test_pid, {:phase2_sees_prd, File.regular?(Path.join(workspace, prd))})
           :ok
         end
       ]
@@ -1229,33 +1288,43 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     start_run_executor!(run_id, task_id)
 
-    # Phase 1: no predecessor, so it still cuts from the branch tip.
+    # Phase 1 provisions the run's worktree, based at the checkout's HEAD.
     assert {:adapter_execute, "Run phase create-prd", _} = receive_message(@poll_timeout_ms)
     assert {:adapter_env, env1} = receive_message(@poll_timeout_ms)
     assert env1["FOREMAN_SOURCE_REVISION"] == run_base
-    assert env1["FOREMAN_WORKTREE_PATH"] == wt1
+    assert env1["FOREMAN_WORKTREE_PATH"] == workspace
 
-    # Phase 2: chained. `FOREMAN_SOURCE_REVISION` is `worktree_record.base_ref`,
+    # Phase 2 reuses it. `FOREMAN_SOURCE_REVISION` is `worktree_record.base_ref`,
     # the same value `capture_planning_document/4` diffs against, so asserting
-    # it pins the discovery base as well as the checkout base.
+    # it pins the discovery base as well as the checkout.
     assert {:adapter_execute, "Run phase create-trd", _} = receive_message(@poll_timeout_ms)
     assert {:adapter_env, env2} = receive_message(@poll_timeout_ms)
-    assert env2["FOREMAN_WORKTREE_PATH"] == wt2
 
-    phase1_tip = branch_tip!(repo_path, "foreman/#{run_id}/create-prd")
+    assert env2["FOREMAN_WORKTREE_PATH"] == workspace,
+           "the whole run must execute in one worktree"
 
-    assert env2["FOREMAN_SOURCE_REVISION"] == phase1_tip
+    assert env2["FOREMAN_EXPECTED_BRANCH"] == env1["FOREMAN_EXPECTED_BRANCH"],
+           "the whole run must execute on one branch"
+
+    phase1_tip = branch_tip!(repo_path, run_branch)
+
+    assert env2["FOREMAN_SOURCE_REVISION"] == phase1_tip,
+           "phase 2's base must advance to phase 1's commit"
+
     refute env2["FOREMAN_SOURCE_REVISION"] == run_base
 
     assert_received {:phase2_sees_prd, true}
 
     poll_run_completion!(run_id)
 
-    # Phase 1's branch outlives its worktree: cleanup runs
-    # `git worktree remove` + `prune` and never deletes the ref, which is
-    # what makes the lineage available at all.
-    refute File.dir?(wt1)
-    assert branch_tip!(repo_path, "foreman/#{run_id}/create-prd") == phase1_tip
+    # The worktree survives the whole run: it is what AutoPR pushes from, and
+    # the default is `cleanup: never`.
+    assert File.dir?(workspace)
+
+    # One branch carries the pipeline, and it carries the document Foreman
+    # committed on the agent's behalf.
+    tracked = run_git!(["-C", repo_path, "ls-tree", "-r", "--name-only", run_branch])
+    assert String.contains?(tracked, prd)
   end
 
   # --------------------------------------------------------------------
@@ -1286,13 +1355,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+    phase = phase_spec(script_key, artifact_dir)
 
     seed_project_task_and_run_with_implementation!(
       project_id,
       task_id,
       run_id,
-      %{phases: [phase]},
+      snapshot([phase], %{enabled: true}),
       project_task_provider(database_path),
       %{
         "trd_path" => "docs/TRD/TRD-2026-beads-managed.md",
@@ -1342,7 +1411,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+    phase = phase_spec(script_key, artifact_dir)
 
     expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
       assert request == {:update, %{flags: ["--claim", task_id]}}
@@ -1397,7 +1466,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       project_id,
       task_id,
       run_id,
-      %{phases: [phase]},
+      snapshot([phase], %{enabled: true}),
       project_task_provider(database_path),
       %{
         "project_root" => repo_path,
@@ -1450,7 +1519,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
     LifecycleStore.put(script_key, %{test_pid: test_pid})
 
-    phase = put_worktree(phase_spec(script_key, artifact_dir), %{enabled: true})
+    phase = phase_spec(script_key, artifact_dir)
 
     expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
       assert request == {:update, %{flags: ["--claim", task_id]}}
@@ -1502,7 +1571,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     end)
 
     snapshot =
-      Map.put(%{phases: [phase]}, "implementation", %{
+      Map.put(snapshot([phase], %{enabled: true}), "implementation", %{
         "project_root" => repo_path,
         "source_revision" => source_revision,
         "implementation_key" => implementation_key,
@@ -1536,8 +1605,16 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     refute_received {:adapter_execute, _, _}
   end
 
-  defp put_worktree(phase, worktree_block) do
-    Map.put(phase, :worktree, worktree_block)
+  # The `worktree:` block is WORKFLOW-level: it sits on the manifest beside
+  # `phases:`, so it belongs on the snapshot, not on a phase. This replaced
+  # `put_worktree/2`, which put it on a phase map back when each phase had its
+  # own worktree.
+  #
+  # Most tests in this file exercise claim/dispatch/complete plumbing against a
+  # plain `System.tmp_dir!()` project path that is not a git repository, so the
+  # default opts out. Tests that want a real worktree pass a block.
+  defp snapshot(phases, worktree \\ %{enabled: false}) do
+    %{phases: phases, worktree: worktree}
   end
 
   defp make_bare_minimum_git_repo!(_test_pid) do
@@ -1561,18 +1638,17 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     run_git!(["-C", repo_path, "rev-parse", "--verify", branch]) |> String.trim()
   end
 
-  # Mirrors `RunExecutor.default_worktree_path_for/3`: default-on worktrees
-  # use the phase slug as the leaf directory, so the path is derivable from
-  # the run id alone and a test can drive the agent's own checkout.
-  defp default_worktree_path(project_id, run_id, slug) do
-    Path.join([System.user_home!(), ".foreman/worktrees", project_id, run_id, slug])
+  # Mirrors `RunExecutor.default_worktree_path_for/2`: the run's single
+  # worktree lives at a fixed leaf, so the path is derivable from the run id
+  # alone and a test can drive the agent's own checkout.
+  defp default_worktree_path(project_id, run_id) do
+    Path.join([System.user_home!(), ".foreman/worktrees", project_id, run_id, "workspace"])
   end
 
   # A phase with NO `worktree:` key: the default-on shape every bundled
   # multi-phase workflow (plan.yaml, prd.yaml, trd.yaml) has.
   defp default_worktree_phase(name, script_key, artifact_dir) do
     phase_spec(script_key, artifact_dir)
-    |> Map.delete(:worktree)
     |> Map.put(:name, name)
     |> Map.put(:artifact_template, %{
       path: Path.join([artifact_dir, "{run_id}-#{name}.md"])
@@ -1860,14 +1936,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     %{
       name: :implement,
       artifact_template: %{path: Path.join([artifact_dir, "{run_id}-{task_id}.md"])},
-      context: %{"script_key" => script_key},
-      # Phases default to a real git-worktree checkout (TRD-2026 default-on
-      # worktrees, see `maybe_create_worktree/3`). Most tests in this file
-      # exercise claim/dispatch/complete plumbing against a plain
-      # `System.tmp_dir!()` project path (not a git repo) and don't care
-      # about worktree provisioning, so opt out explicitly here. Tests that
-      # DO want a real worktree override this via `put_worktree/2`.
-      worktree: %{enabled: false}
+      context: %{"script_key" => script_key}
     }
   end
 
@@ -2183,7 +2252,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("claim-fail-artifacts"))
     File.mkdir_p!(artifact_dir)
 
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
 
     seed_project_task_and_run!(
       project_id,
@@ -2253,7 +2322,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("extid-artifacts"))
     File.mkdir_p!(artifact_dir)
 
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
     artifact_path = Path.join(artifact_dir, "#{run_id}-#{task_id}.md")
 
     seed_project_task_and_run!(
@@ -2361,7 +2430,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     artifact_dir = Path.join(System.tmp_dir!(), unique_id("phase-timeout-artifacts"))
     File.mkdir_p!(artifact_dir)
 
-    workflow_snapshot = %{phases: [phase_spec(script_key, artifact_dir)]}
+    workflow_snapshot = snapshot([phase_spec(script_key, artifact_dir)])
 
     seed_project_task_and_run!(
       project_id,
@@ -2497,19 +2566,21 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         workflow_type: "implement-trd",
         workflow_snapshot: %{
           "workflow_name" => "implement-trd",
+          # WORKFLOW-level, beside "phases" — a run has one worktree, so the
+          # block is not a phase field. It used to be declared per phase.
+          "worktree" => %{
+            "enabled" => true,
+            "base" => "abc123",
+            "branch" => "foreman/{run_id}",
+            "path" => "workspace",
+            "cleanup" => "always"
+          },
           "phases" => [
             %{
               "name" => "implement",
               "command" => "/skill:ensemble-full-implement --foreman \"docs/TRD/x.md\"",
               "index" => 1,
-              "phase_id" => "phase-1",
-              "worktree" => %{
-                "enabled" => true,
-                "base" => "abc123",
-                "branch" => "foreman/{run_id}/{phase}",
-                "path" => "implement-trd",
-                "cleanup" => "always"
-              }
+              "phase_id" => "phase-1"
             }
           ],
           "implementation" => %{
@@ -2522,12 +2593,18 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert {:ok, state} = RunExecutor.init({"run-persisted", projection})
       assert length(state.phase_specs) == 1
 
-      [%{name: "implement", command: cmd, worktree: worktree, action: :command}] =
-        state.phase_specs
+      [%{name: "implement", command: cmd, action: :command} = phase] = state.phase_specs
 
       assert cmd == "/skill:ensemble-full-implement --foreman \"docs/TRD/x.md\""
-      assert worktree[:base] == "abc123"
-      assert worktree[:branch] == "foreman/{run_id}/{phase}"
+      refute Map.has_key?(phase, :worktree)
+
+      assert state.worktree_spec == %{
+               enabled: true,
+               base: "abc123",
+               branch: "foreman/{run_id}",
+               path: "workspace",
+               cleanup: "always"
+             }
     end
 
     test "falls back to phase_specs == [] when workflow_snapshot is missing or malformed" do
@@ -2566,19 +2643,19 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         workflow_type: "implement-trd",
         workflow_snapshot: %{
           workflow_name: "implement-trd",
+          worktree: %{
+            enabled: true,
+            base: "abc123",
+            branch: "foreman/{run_id}",
+            path: "workspace",
+            cleanup: "always"
+          },
           phases: [
             %{
               name: "implement",
               command: "/skill:ensemble-full-implement --foreman \"x.md\"",
               index: 1,
-              phase_id: "phase-1",
-              worktree: %{
-                enabled: true,
-                base: "abc123",
-                branch: "foreman/{run_id}/{phase}",
-                path: "implement-trd",
-                cleanup: "always"
-              }
+              phase_id: "phase-1"
             }
           ]
         }
@@ -2586,6 +2663,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
 
       assert {:ok, state} = RunExecutor.init({"run-atom", projection})
       assert length(state.phase_specs) == 1
+      assert state.worktree_spec[:enabled] == true
     end
 
     test "prompt phases render workflow placeholders before adapter execution", %{
@@ -2606,13 +2684,13 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         workflow_snapshot: %{
           "workflow_name" => "implement",
           "workflow_digest" => "digest-template",
+          "worktree" => %{"enabled" => false},
           "phases" => [
             %{
               "name" => "code-generation",
               "prompt_path" => "/ignored/implement.md",
               "artifact_template" => "{task.projectReportsDir}/IMPLEMENT_REPORT.md",
-              "context" => %{"script_key" => script_key},
-              "worktree" => %{enabled: false}
+              "context" => %{"script_key" => script_key}
             }
           ]
         }
@@ -2674,6 +2752,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
         workflow_type: "implement",
         workflow_snapshot: %{
           "workflow_name" => "implement",
+          "worktree" => %{"enabled" => false},
           "phases" => [
             %{
               "action" => "command",
@@ -2682,8 +2761,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
               "artifact_template" => %{
                 "path" => Path.join([artifact_dir, "{run_id}-{task_id}.md"])
               },
-              "context" => %{"script_key" => script_key},
-              "worktree" => %{enabled: false}
+              "context" => %{"script_key" => script_key}
             }
           ]
         }

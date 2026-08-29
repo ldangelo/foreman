@@ -38,47 +38,28 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     {:context, [:context, "context"]}
   ]
 
-  @worktree_fields [
-    {:enabled, [:enabled, "enabled"]},
-    {:base, [:base, "base"]},
-    {:branch, [:branch, "branch"]},
-    {:path, [:path, "path"]},
-    {:cleanup, [:cleanup, "cleanup"]}
-  ]
-
   @doc """
   Normalize one phase map to canonical atom keys.
 
   `:action` is derived rather than trusted, so it cannot disagree with the
   `command`/`bash`/`prompt` fields it describes.
+
+  A phase has no `worktree:` key. The block is workflow-level — see
+  `ForemanServer.Workflow.WorktreeSpec` — because a run has exactly one worktree
+  for its whole execution, leaving a phase nothing to decide about it. It was
+  read off the phase spec while worktrees were per-phase.
   """
   @spec normalize(map()) :: map()
   def normalize(phase) when is_map(phase) do
     spec = Enum.reduce(@fields, %{}, &put_field(&1, phase, &2))
 
-    spec
-    |> Map.put(:worktree, normalize_worktree(fetch_any(phase, [:worktree, "worktree"])))
-    |> Map.put(:action, derive_action(spec))
+    Map.put(spec, :action, derive_action(spec))
   end
 
   @doc "Normalize a list of phase maps, preserving order."
   @spec normalize_all([map()]) :: [map()]
   def normalize_all(phases) when is_list(phases) do
     Enum.map(phases, &normalize/1)
-  end
-
-  @doc """
-  Normalize a phase `worktree:` block, or `nil` when the phase declares none.
-
-  `nil` is meaningful: it routes the run to the default worktree rather than
-  disabling worktrees, so it must survive normalization distinctly from
-  `%{enabled: false}`.
-  """
-  @spec normalize_worktree(map() | nil) :: map() | nil
-  def normalize_worktree(nil), do: nil
-
-  def normalize_worktree(raw) when is_map(raw) do
-    Enum.reduce(@worktree_fields, %{}, &put_field(&1, raw, &2))
   end
 
   defp put_field({key, sources}, source_map, acc) do

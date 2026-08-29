@@ -111,14 +111,14 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
         """
         name: implement-trd
         description: Implement against a frozen TRD document.
+        worktree:
+          enabled: true
+          base: "{{implementation.source_revision}}"
+          branch: foreman/{run_id}
+          cleanup: always
         phases:
           - name: implement-trd
             command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
-            worktree:
-              enabled: true
-              base: "{{implementation.source_revision}}"
-              branch: foreman/{run_id}/{phase}
-              cleanup: always
         """
       )
 
@@ -336,8 +336,12 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
                  payload: %{task_id: task_id, approved_by: "operator-1"}
                })
 
+      # The block is WORKFLOW-level, beside "phases", so it is read off the
+      # snapshot rather than off a phase.
       phase = hd(payload["workflow_snapshot"]["phases"])
-      worktree = phase["worktree"]
+      refute Map.has_key?(phase, "worktree"), "a phase carries no worktree block"
+
+      worktree = payload["workflow_snapshot"]["worktree"]
 
       # Verify worktree.base is concrete (not a placeholder)
       assert is_binary(worktree["base"]),
@@ -345,8 +349,8 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       refute worktree["base"] =~ "{",
              "worktree.base should not contain placeholders"
 
-      # Verify worktree.branch retains runtime placeholders
-      assert worktree["branch"] == "foreman/{run_id}/{phase}",
+      # `{run_id}` is resolved at provisioning time, not at approval time.
+      assert worktree["branch"] == "foreman/{run_id}",
              "worktree.branch should retain runtime placeholders"
     end
   end
@@ -377,20 +381,21 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       workflow_snapshot = %{
         "run_id" => run_id,
         "workflow_name" => "implement-trd",
+        # WORKFLOW-level, beside "phases".
+        "worktree" => %{
+          "enabled" => true,
+          "base" => "abc123",
+          "branch" => "foreman/{run_id}",
+          "path" => "workspace",
+          "cleanup" => "always"
+        },
         "phases" => [
           %{
             "name" => "implement-trd",
             "action" => "command",
             "command" => "/skill:ensemble-full-implement-trd \"docs/TRD/x.md\" --foreman",
             "index" => 1,
-            "phase_id" => "phase-#{run_id}-1",
-            "worktree" => %{
-              "enabled" => true,
-              "base" => "abc123",
-              "branch" => "foreman/{run_id}/{phase}",
-              "path" => "implement-trd",
-              "cleanup" => "always"
-            }
+            "phase_id" => "phase-#{run_id}-1"
           }
         ]
       }
@@ -418,11 +423,12 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       assert phase_spec[:command] =~ "--foreman",
              "phase_spec command should include --foreman flag"
 
-      # Verify worktree config is correctly preserved
-      worktree = phase_spec[:worktree]
-      assert worktree[:base] == "abc123",
+      # Verify worktree config is correctly preserved, at the run level
+      refute Map.has_key?(phase_spec, :worktree), "a phase carries no worktree block"
+
+      assert state.worktree_spec[:base] == "abc123",
              "worktree.base should be the concrete source revision"
-      assert worktree[:branch] == "foreman/{run_id}/{phase}",
+      assert state.worktree_spec[:branch] == "foreman/{run_id}",
              "worktree.branch should retain runtime placeholders"
 
       # Verify initial state: no phases completed yet
@@ -678,9 +684,13 @@ defmodule ForemanServer.Workflow.ImplementFixCharacterizationTest do
       assert phase_spec[:command] =~ "--foreman",
              "phase_spec command should include --foreman flag"
 
-      # Verify no worktree (fix workflow has no worktree by design)
-      assert phase_spec[:worktree] == nil,
-             "fix workflow phase_spec should not have a worktree"
+      # A phase never carries the block. This test's fixture declares none at
+      # the workflow level either, so `worktree_spec` is nil — meaning "declared
+      # nothing", which is distinct from disabled: every default applies.
+      refute Map.has_key?(phase_spec, :worktree)
+
+      assert state.worktree_spec == nil,
+             "fix fixture declares no workflow-level worktree block"
 
       # Verify initial state
       assert state.completed == [],

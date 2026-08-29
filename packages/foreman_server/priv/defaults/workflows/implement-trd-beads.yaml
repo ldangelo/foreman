@@ -1,10 +1,30 @@
 name: implement-trd-beads
 description: Implement a Technical Requirements Document via the Beads-backed ensemble implement-trd-beads skill under Foreman-managed execution.
+# Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
+# `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
+operator_timeout_ms: 300000
+# The run's worktree. WORKFLOW-level, because a run has exactly one worktree for
+# its whole execution — every phase runs in this checkout on this branch. Each
+# field below is the default stated explicitly; the block is legal on any
+# workflow.
+#
+# `base` pins the checkout to the ImplementationContext's frozen
+# `source_revision` (TRD Decisions 3/5). `assert_base_matches/3` fails the run if
+# it resolves to anything else. Because this workflow also freezes
+# `beads_database_path`, provisioning additionally requires a valid `trd_path`
+# and `implementation_key` and exports `TRD_SCOPE` (`assert_trd_scope_prereqs/2`,
+# `compute_trd_scope/2`).
+#
+# `cleanup: never` is also the default, spelled out because it is the
+# load-bearing choice: the worktree is what AutoPR pushes from, so reclaiming it
+# earlier leaves a finished run with nothing to propose. Reclamation happens
+# once, in `finalize_run/1`, after AutoPR.
+worktree:
+  enabled: true
+  base: "{{implementation.source_revision}}"
+  branch: foreman/{run_id}
+  path: workspace
+  cleanup: never
 phases:
   - name: implement-trd-beads
     command: "/skill:ensemble-full-implement-trd-beads {{implementation.trd_path_argument}} --foreman"
-    worktree:
-      enabled: true
-      base: "{{implementation.source_revision}}"
-      branch: foreman/{run_id}/{phase}
-      cleanup: never

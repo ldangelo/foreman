@@ -1,5 +1,17 @@
 name: fix
 description: Fix an issue via the ensemble fix workflow.
+# Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
+# `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
+operator_timeout_ms: 300000
+# The run's worktree. WORKFLOW-level, because a run has exactly one worktree for
+# its whole execution. Every field is the default stated explicitly. `base` is
+# omitted deliberately: this workflow carries no ImplementationContext, so the
+# base is the project checkout's HEAD at the moment the run's first phase starts.
+worktree:
+  enabled: true
+  branch: foreman/{run_id}
+  path: workspace
+  cleanup: never
 phases:
   - name: fix
     command: "/skill:ensemble-fix-issue --foreman"

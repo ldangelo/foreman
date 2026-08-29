@@ -45,7 +45,7 @@ defmodule ForemanServer.CommandGateway do
   alias ForemanServer.Workflow.Approval
   alias ForemanServer.Workflow.ImplementationContext
 
-  @allowed_operator_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset)
+  @allowed_operator_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry run.cancel run.remove run.reset)
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
 
@@ -189,6 +189,27 @@ defmodule ForemanServer.CommandGateway do
 
   defp validate_aggregate_id(%{
          type: "project.archive",
+         aggregate_id: aggregate_id,
+         payload: payload
+       }) do
+    project_id = get_value(payload, :project_id) || get_value(payload, "project_id")
+
+    cond do
+      not is_binary(project_id) or project_id == "" ->
+        {:error, {:invalid_envelope, :missing_project_id}}
+
+      not is_binary(aggregate_id) or aggregate_id == "" ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      aggregate_id != stream_id("project", project_id) ->
+        {:error, {:invalid_envelope, :aggregate_id_mismatch}}
+
+      true ->
+        :ok
+    end
+  end
+  defp validate_aggregate_id(%{
+         type: "project.reactivate",
          aggregate_id: aggregate_id,
          payload: payload
        }) do
@@ -435,12 +456,15 @@ defmodule ForemanServer.CommandGateway do
 
   # Strict approval rendering per TRD Decision 11.
   #
-  # Materialize the snapshot's `phases[*].command` and
-  # `phases[*].worktree.base` from the frozen implementation context so
-  # the human review surfaces the exact command and base ref that
-  # Foreman will execute. Branch and path retain runtime placeholders
-  # (`{run_id}`, `{phase}`, etc.) until run/phase IDs exist; those
-  # placeholders are resolved at execution time by `RunExecutor`.
+  # Materialize the snapshot's `phases[*].command` and the workflow-level
+  # `worktree.base` from the frozen implementation context so the human review
+  # surfaces the exact command and base ref that Foreman will execute. Branch
+  # and path retain runtime placeholders (`{run_id}`) until run IDs exist; those
+  # are resolved at execution time by `RunExecutor`.
+  #
+  # `worktree.base` moved with the block itself: it used to be rendered per
+  # phase (`phases[*].worktree.base`) because each phase declared its own
+  # worktree. A run has exactly one worktree, so there is one base to freeze.
   #
   # Only the `implement-trd` and `implement-trd-beads` workflows carry
   # the `implementation` overlay. All other workflows pass through
@@ -464,19 +488,24 @@ defmodule ForemanServer.CommandGateway do
     impl = get_value(snapshot, "implementation")
     input = normalize_input_for_render(get_value(snapshot, "input"))
 
-    if is_map(impl) and impl != %{} do
-      phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
-      rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, impl, input) end)
-      put_canonical(snapshot, "phases", :phases, rendered_phases)
-    else
-      if is_map(input) and input != %{} do
-        phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
-        rendered_phases = Enum.map(phases, fn phase -> render_phase(phase, nil, input) end)
-        put_canonical(snapshot, "phases", :phases, rendered_phases)
-      else
+    cond do
+      is_map(impl) and impl != %{} ->
         snapshot
-      end
+        |> render_phases(impl, input)
+        |> render_worktree_base(impl)
+
+      is_map(input) and input != %{} ->
+        render_phases(snapshot, nil, input)
+
+      true ->
+        snapshot
     end
+  end
+
+  defp render_phases(snapshot, impl, input) do
+    phases = get_value(snapshot, "phases") || get_value(snapshot, :phases) || []
+    rendered = Enum.map(phases, fn phase -> render_command(phase, impl, input) end)
+    put_canonical(snapshot, "phases", :phases, rendered)
   end
 
   # Derive `input.prompt_argument` as JSON-encoded `input.prompt` so the
@@ -495,11 +524,6 @@ defmodule ForemanServer.CommandGateway do
 
   defp normalize_input_for_render(input), do: input
 
-  defp render_phase(phase, impl, input) when is_map(phase) do
-    phase
-    |> render_command(impl, input)
-    |> render_worktree_base(impl)
-  end
 
   def render_command(phase, impl, input) do
     template = get_value(phase, "command") || get_value(phase, :command)
@@ -532,14 +556,12 @@ defmodule ForemanServer.CommandGateway do
     end
   end
 
-  defp render_worktree_base(phase, impl) do
-    worktree = get_value(phase, "worktree") || get_value(phase, :worktree)
-
-    case worktree do
+  # Freezes the workflow-level `worktree.base`. The block is read off the
+  # snapshot, beside `phases`.
+  defp render_worktree_base(snapshot, impl) do
+    case get_value(snapshot, "worktree") || get_value(snapshot, :worktree) do
       block when is_map(block) ->
-        base = get_value(block, "base") || get_value(block, :base)
-
-        case base do
+        case get_value(block, "base") || get_value(block, :base) do
           value when is_binary(value) ->
             rendered =
               substitute(
@@ -548,15 +570,15 @@ defmodule ForemanServer.CommandGateway do
                 get_value(impl, "source_revision")
               )
 
-            rendered_worktree = put_canonical(block, "base", :base, rendered)
-            put_canonical(phase, "worktree", :worktree, rendered_worktree)
+            rendered_block = put_canonical(block, "base", :base, rendered)
+            put_canonical(snapshot, "worktree", :worktree, rendered_block)
 
           _ ->
-            phase
+            snapshot
         end
 
       _ ->
-        phase
+        snapshot
     end
   end
 
@@ -622,7 +644,7 @@ defmodule ForemanServer.CommandGateway do
                 command_id: command.command_id,
                 title: get_value(payload, :title),
                 description: get_value(payload, :description),
-                priority: get_value(payload, :priority),
+                priority: get_value(payload, :priority) || 0,
                 task_type: get_value(payload, :task_type) || get_value(payload, :type),
                 dedupe_key:
                   case get_value(payload, :dedupe_key) do
@@ -656,6 +678,7 @@ defmodule ForemanServer.CommandGateway do
       command.payload
       |> Map.put_new(:status, "open")
       |> Map.put_new(:dependencies, [])
+      |> Map.put_new(:priority, 0)
       |> Map.put_new(:source, nil)
       |> Map.put_new(:external_link, nil)
       |> Map.put_new(:dedupe_key, nil)

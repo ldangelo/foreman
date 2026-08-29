@@ -18,9 +18,12 @@ defmodule ForemanServer.Workflow.ManifestWriter do
 
   @required_top_level_keys ["name", "phases"]
 
+  # `:top_level_map` is gone: a top-level mapping is legal now (the
+  # workflow-level `worktree:` block), so nothing emits that detail. A top-level
+  # map nested more than one level deep reports `:deep_nesting`, symmetric with
+  # the phase-property rule.
   @typep error_detail ::
            {:top_level_list
-            | :top_level_map
             | :missing_required
             | :phase_not_map
             | :phase_missing_name
@@ -64,6 +67,13 @@ defmodule ForemanServer.Workflow.ManifestWriter do
   defp blank?(nil), do: true
   defp blank?(_), do: false
 
+  # A top-level map is a supported construct: the workflow-level `worktree:`
+  # block is one. It used to be rejected outright as `{:top_level_map, key}`,
+  # from when the only nested mapping a manifest could carry lived under a
+  # phase — so relocating `worktree:` to the workflow level made every
+  # round-trip through this writer fail. One level of nesting is allowed, the
+  # same depth `Interpreter.parse_root_entries/3` reads back; deeper nesting is
+  # still rejected, matching the phase-property rule.
   defp validate_top_level_structure(manifest) do
     result =
       manifest
@@ -76,7 +86,10 @@ defmodule ForemanServer.Workflow.ManifestWriter do
           {:error, {:unsupported_construct, {:top_level_list, key}}}
 
         {key, value} when is_map(value) ->
-          {:error, {:unsupported_construct, {:top_level_map, key}}}
+          case validate_nested_map(value) do
+            :ok -> false
+            :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
+          end
       end)
 
     {:ok, result}
@@ -125,10 +138,12 @@ defmodule ForemanServer.Workflow.ManifestWriter do
       {_key, value} when is_binary(value) or is_number(value) or is_boolean(value) ->
         false
 
-      {_key, %{} = v} ->
+      {key, %{} = v} ->
         case validate_nested_map(v) do
           :ok -> false
-          :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, _key}}}
+          # Was `_key`, which Elixir binds but warns about when read: the
+          # warning was live for the life of this clause.
+          :deep_nesting -> {:error, {:unsupported_construct, {:deep_nesting, key}}}
         end
 
       {key, value} when is_list(value) ->
@@ -154,6 +169,21 @@ defmodule ForemanServer.Workflow.ManifestWriter do
     lines = []
     lines = append(lines, 0, "name: #{scalar(manifest["name"])}")
     lines = append(lines, 0, "description: #{scalar(manifest["description"] || "")}")
+
+    # Every other top-level key the caller supplied, emitted between
+    # `description:` and `phases:`. Only `name`/`description`/`phases` used to be
+    # emitted at all, so any additional key — `operator_timeout_ms`, and the
+    # workflow-level `worktree:` block — was validated and then SILENTLY DROPPED,
+    # a round-trip that loses data while reporting success (AGENTS.md 5.2).
+    # Sorted so the output is deterministic for digesting and diffing.
+    lines =
+      manifest
+      |> Map.drop(@required_top_level_keys ++ ["description"])
+      |> Enum.sort_by(fn {key, _value} -> key end)
+      |> Enum.reduce(lines, fn {key, value}, acc ->
+        build_top_level(key, value, acc)
+      end)
+
     lines = append(lines, 0, "phases:")
 
     manifest["phases"]
@@ -161,6 +191,24 @@ defmodule ForemanServer.Workflow.ManifestWriter do
       build_phase(phase, acc)
     end)
     |> Enum.join("\n")
+  end
+
+  # Top-level scalars at indent 0; a nested mapping's keys at indent 1 (2
+  # spaces), which is the depth `Interpreter.parse_root_entries/3` reads back.
+  defp build_top_level(key, value, lines) do
+    case value do
+      v when is_binary(v) or is_number(v) or is_boolean(v) ->
+        append(lines, 0, "#{key}: #{scalar(v)}")
+
+      %{} = v ->
+        acc = append(lines, 0, "#{key}:")
+
+        v
+        |> Enum.sort_by(fn {k, _} -> k end)
+        |> Enum.reduce(acc, fn {k, vv}, acc2 ->
+          append(acc2, 1, "#{k}: #{scalar(vv)}")
+        end)
+    end
   end
 
   # Phase entries: `- name: <value>` at indent 1 (2 spaces)

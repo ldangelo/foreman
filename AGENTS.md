@@ -119,11 +119,42 @@ that directory is not evidence a mechanism works — the supported set is
 `checkpointPr`, `create-pr`, `pr-wait`, or `merge` phases, and do not dispatch
 those stale workflows.
 
+**There are no manifest settings for commits, stacked PRs, or per-phase PRs.**
+The workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`)
+is the complete vocabulary this change adds; `Interpreter` and `PhaseSpec`
+contain zero `pr`, `merge`, `checkpoint`, or `commit` keys. Every phase's work
+is committed unconditionally at the phase boundary by
+`RunExecutor.commit_phase_worktree/4`.
+
+Stacked PRs remain an **ensemble-skill** concern, not a Foreman one, and
+`--foreman` deliberately turns them off:
+`PRD-2026-3d41f677` AC-013-1 states that given `--foreman`, the Beads skill
+"skips `git switch`, `git town append`, stacked-PR, and per-phase PR paths",
+and `TRD-2026-48f7b420` describes the Master Task List `### PR N:` headings as
+what the skill uses to stack PRs when it runs standalone.
+`TRD-2026-3d41f677` is explicit: "Do not add top-level workflow `merge:` or
+`pr:` fields."
+
+`auto_pr/1` is still called from exactly ONE place — `finalize_run/1`, once,
+after every phase completes — so a run yields at most one PR, opened from the
+single run branch. `AutoPR.maybe_create_pr/1` takes a fixed context (`run_id`,
+`base_branch`, `head_branch`, `artifact_path`, `cwd`) and derives title and body
+itself; there is no declarable title, body, draft, reviewer, or label. Foreman
+commits with a fixed message, its own author identity, and `--no-verify`; only
+WHETHER a phase commits is declarable, never how. Adding `pr:`/`stacked:` keys
+would create manifest surface that no module reads — the `clean_worktree`
+failure in this document, repeated. If per-phase or stacked PRs are wanted from
+Foreman, the work is a real change to `AutoPR` (which shells `gh pr create`
+unconditionally and only logs the failure when a PR for the branch already
+exists) — not a YAML edit.
+
 The real mechanism is `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called
 from `RunExecutor.finalize_run/1` after the task provider confirms completion.
 It derives the PR from run state rather than from agent output: the head branch
 comes from `state.last_worktree.branch` (retained by
-`RunExecutor.remember_worktree/2`), the decision is gated on
+`RunExecutor.remember_worktree/2`), which since the move to one worktree per run
+is the run's single branch `foreman/<run_id>` rather than the last of N
+per-phase branches. The decision is gated on
 `git rev-list --count base..head > 0`, the branch is published with
 `git push -u origin <head>`, and only then does it shell out to `gh pr create`.
 A `FOREMAN_BRANCH=<branch>` marker in the final artifact is still honoured as
@@ -140,10 +171,10 @@ default.** `RunExecutor.remember_run_base_branch/1` records it once, when the
 run's FIRST phase starts, as `git symbolic-ref --quiet --short HEAD` of
 `vcs_working_directory/1` — the same checkout AutoPR later runs `git rev-list`,
 `git push`, and `gh pr create` in, read at the same moment
-`phase_lineage_base_ref/2` resolves phase 1's `base_ref` from `HEAD` of that
-checkout, so branch name and base commit describe one repository state. It is
-latched on key presence, so an operator switching branches mid-run cannot
-retarget the PR, and it does not hang off `remember_worktree/2` — a phase
+`create_run_worktree/2` resolves the run worktree's `base_ref` from `HEAD` of
+that checkout, so branch name and base commit describe one repository state. It
+is latched on key presence, so an operator switching branches mid-run cannot
+retarget the PR, and it does not hang off `remember_worktree/2` — a workflow
 declaring `worktree: enabled: false` provisions no worktree yet can still land
 a PR through the `FOREMAN_BRANCH` override. `symbolic-ref` is deliberate:
 `rev-parse --abbrev-ref HEAD` prints the literal `HEAD` on a detached checkout,
@@ -242,11 +273,14 @@ directory, deduplicated:
 2. `git status --porcelain -z --untracked-files=all -- docs/PRD` — what the
    agent left untracked or added in the working tree.
 
-`base_ref` is the commit the phase's checkout was created at:
-`Worktree.create/1` pins the worktree to it and both
-`create_phase_worktree/4` and `create_default_worktree/3` carry it back on the
-worktree record, so `capture_planning_document/4` reads it from run state with
-no new event. The invariant that makes this deterministic is one the pipeline
+`base_ref` is the commit the phase's checkout stood at when the phase started.
+On the run's FIRST phase that is where `Worktree.create/1` pinned the worktree,
+carried back on the record by `create_run_worktree/2`; on every later phase it is
+the shared checkout's current `HEAD`, refreshed by `reuse_run_worktree/2` (it
+used to come from the deleted `create_phase_worktree/4` /
+`create_default_worktree/3` pair, one worktree per phase). Either way
+`capture_planning_document/4` reads it from run state with no new event.
+The invariant that makes this deterministic is one the pipeline
 already enforces — the tree is clean when a phase starts, a dirty worktree
 HALTs — so it is not a heuristic: no newest-mtime, no name matching. Renames
 and edits of documents that already existed at `base_ref` are not candidates;
@@ -306,38 +340,159 @@ recycling the name for "read here" would leave two contradictory meanings in
 circulation. Its consumers are `create-trd.yaml` and `create-trd-foreman.yaml`,
 which STOP when it is set and missing rather than falling back.
 
-`plan.yaml` declares no `worktree:` block, so each phase gets the default-on
-worktree. `create_default_worktree/3` resolves that worktree's base through
-`phase_lineage_base_ref/2` (`run_executor.ex:1391`, called at `:1307`): the base
-is the PREVIOUS phase's branch tip, taken from the `state.last_worktree` that
-`remember_worktree/2` already retains for AutoPR, and it falls back to `HEAD`
-only when there is no predecessor — the first phase of a run. A predecessor
-branch that will not resolve fails
-`{:phase_lineage_branch_unresolvable, branch, reason}` (`:1402`) rather than
-degrading to `HEAD`, because a silent fall back to the base branch is precisely
-the "plausible-looking success" that produces a phase 2 built on the wrong tree.
-That is the mechanism, verified in code.
+**A run has exactly ONE worktree, the whole workflow executes in it, and the
+`worktree:` block is declared at the WORKFLOW level.** The block sits at the top
+of the manifest beside `name:` and `phases:`, never on a phase — a run has one
+worktree, so a phase has nothing to decide about it. `WorktreeSpec.normalize/1`
+is the only normalizer; `RunExecutor.extract_worktree_spec/1` reads the block off
+the frozen `workflow_snapshot` into `state.worktree_spec`.
+
+Fields, all optional: `enabled` (default true; `false` opts the whole workflow
+out), `base`, `branch` (default `foreman/{run_id}`), `path` (leaf directory,
+default `workspace`), `cleanup` (default `never`). `{run_id}` is the only
+template placeholder. `{phase}` was dropped with the move: it named a per-phase
+branch and directory that no longer exist.
+
+`create_run_worktree/2` is the single provisioning path. It provisions one
+directory (`~/.foreman/worktrees/<project_id>/<run_id>/workspace`) on one branch
+(`foreman/<run_id>`), and every later phase reuses that record via
+`ensure_run_worktree/2` -> `reuse_run_worktree/2`, reading its predecessors'
+output as ordinary files. `remember_run_worktree/2` latches the record on key
+presence, so the first phase provisions and the rest reuse.
+
+Whether the base is pinned is a property of the RUN, not of the declaration.
+`resolve_run_base/2` detects an ImplementationContext by the presence of the
+values it freezes: with one, `project_root`/`source_revision` come from plan
+context, a declared `base` must resolve to that same revision
+(`assert_base_matches/3`, TRD Decisions 3/5), and
+`implementation_key`/`trd_scope` ride on the record; without one, the root is the
+project's registered path and the base is that checkout's `HEAD`. A
+partially-populated plan context is a hard error, never a silent fall back to
+`HEAD`.
+
+A reused worktree carries exactly one per-phase value: `base_ref`, refreshed to
+the shared checkout's current `HEAD`. That is what keeps the discovery gate
+scoped per phase — `capture_planning_document/4` diffs `<base_ref>..HEAD` for
+documents NEW IN THE PHASE, and `commit_phase_worktree/4` commits at each phase
+boundary, so `HEAD` at phase N's start is exactly what phases 1..N-1 produced.
+Phase 1's PRD therefore correctly does not read as new in phase 2. A worktree
+that has vanished mid-run is `{:run_worktree_vanished, path}` and an
+unresolvable `HEAD` is `{:run_worktree_head_unresolvable, path, reason}` — never
+a silent re-provision, which would run the phase against the wrong tree.
+
+This replaced a per-phase design on both axes, and the second axis is the
+subtler one. Each phase used to create its own worktree and branch, cut from the
+predecessor's branch tip by `phase_lineage_base_ref/2`, destroyed at the phase
+boundary by `cleanup_phase_worktree/4`; both functions are **deleted**. And each
+phase used to carry its own `worktree:` block, which for a run-scoped resource
+meant N declarations could contradict each other while only the first could
+possibly be honored.
+
+Worse, the phase-level block selected between two non-interchangeable
+provisioning functions — declaring it routed the run through
+`create_phase_worktree/4`, which required an ImplementationContext. So
+`worktree: {enabled: true}` on `prd.yaml` or `fix.yaml` did not restate the
+default; it changed the code path and failed provisioning on the first phase.
+An earlier version of this section documented that as a rule to work around
+("only `implement-trd*.yaml` may declare the block") instead of a defect to fix.
+Documenting a trap is not the same as removing it: there is now one provisioning
+path and the block is legal on every workflow. Do not reintroduce
+`phase_lineage_base_ref/2`, `cleanup_phase_worktree/4`, `create_phase_worktree/4`,
+`create_default_worktree/3`, or a phase-level `worktree:` key.
+
+Three normalizers for this one block existed at once: `PhaseSpec`,
+`Catalog.normalize_worktree/1`, and the executor's own reads — and the catalog's
+injected defaults DISAGREED with the executor's (`branch:
+"foreman/{run_id}/{phase}"`, `cleanup: "always"`). `Catalog` now carries the
+block verbatim and injects nothing, precisely so "declared nothing" stays
+distinguishable from "declared the default"; that difference is load-bearing for
+`enabled`. Normalize once, at the executor boundary (AGENTS.md §5.4).
+
+The `Interpreter` validates the block once at workflow level, so its error
+messages no longer carry a phase index. Supporting a top-level `worktree:` also
+required teaching `parse_root_entries/3` that a top-level key with no inline
+value introduces a nested mapping — only `phases:` had been allowed to nest, so
+`worktree:` parsed as the empty string and left its own indented lines
+unconsumed. That surfaced as `no case clause matching` with the whole token list
+inspected into the message, because `parse_root!/2`'s leftover clause matched
+only a SINGLE unparsed line; it now matches with a tail and names the offending
+line.
+
+**Worktree cleanup is run-level, declared as `cleanup: always | never |
+on_success`, default `never`.** `never` never reclaims here; `always` reclaims on
+success and on failure; `on_success` reclaims only on success, so a failed run's
+checkout survives for forensics. `cleanup_run_worktree/2` takes the outcome —
+`finalize_run/1` passes `:success` after AutoPR (the worktree is the checkout
+AutoPR pushes from, so anything earlier deletes the work before it can be
+proposed) and `finalize_terminal_and_stop/2` passes `:failure`. `RunDeleted` still
+fans out to `Worktree.clean_for_run/1` for runs that end another way.
+`worktree_cleanup/1` returns `{:error, {:worktree_cleanup_invalid, other}}` for
+any other value rather than defaulting, so a misspelled `cleanup: allways` cannot
+read as a working declaration.
+
+`on_success` is the sharpest instance of this file's core failure mode. The
+`Interpreter` validated it as legal from the day the block was introduced, and
+`ManifestWriter` round-tripped it with test coverage, while `worktree_cleanup/1`
+matched `"never"` and sent everything else — `on_success` included — to
+`:always`. A manifest asking to KEEP the checkout on failure had it deleted, on
+exactly the path where the evidence mattered. Nothing failed, because the schema
+and the writer agreed with each other and only the consumer disagreed. When a
+validator accepts an enum value, grep for a reader of every variant before
+trusting that the value does anything.
+
+An in-flight attempt at the cleanup fix introduced a second key,
+`clean_worktree`, and stopped reading `:cleanup` entirely. It silently orphaned
+the `cleanup: never` already declared by both `implement-trd*.yaml`, and escaped
+notice only because the new default happened to agree with the orphaned
+declaration. `clean_worktree` is NOT and never was a manifest key — it is the
+`VcsAdapter` operation name for removing a worktree
+(`VcsAdapter.Default.clean_worktree/2`). It was also added to
+`PhaseSpec.@worktree_fields`, where it normalized a key no module read. Both are
+removed.
+
+**Foreman owns the commit.** `commit_phase_worktree/4` stages and commits
+whatever the phase produced, so an agent that writes files without committing
+still leaves the run a proposable branch. Emptiness is decided by
+`git status --porcelain --untracked-files=all`, never by `git commit`'s exit
+code: after `git add -A` a clean tree and a genuine failure both exit 1, and git
+prints "nothing to commit" to stdout rather than staying silent, so the first
+implementation's "exit 1 with empty output means clean" test matched the failure
+case and reported real errors as a clean tree. A clean tree is
+`{:ok, :nothing_to_commit}` and creates no commit, preserving the invariant that
+AutoPR proposes only real work. Every git failure is `{:error, …}`; the first
+implementation returned `{:ok, :skipped_no_worktree}` for a failed `git add`, a
+missing `project_root`, a non-zero `git commit`, and an unrecognized exit code
+alike, so a phase whose work was never committed completed as a success (AGENTS.md
+5.2). The commit uses `-c user.name` / `-c user.email` overrides so it cannot
+fail on a checkout with no identity configured, and `--no-verify` so a repository
+pre-commit hook cannot fail the phase or rewrite the agent's output.
 
 Keep three tiers of proof distinct here, because collapsing them in either
 direction is how this section's worst errors were made. **Proven by code:** the
 base selection above. **Proven by test against real git, no filesystem or git
-mocks:** the artifact reaches the next phase's checkout, and the next phase's
-discovery gate scopes to its own document. `run_executor_test.exs` drives the
-real `RunExecutor` through a two-phase default-worktree run: phase 2's own
-scripted agent calls `File.regular?` on phase 1's committed PRD from inside
-phase 2's worktree (`:1151`) and the test asserts it true (`:1197`), asserts
-phase 2's `FOREMAN_SOURCE_REVISION` is phase 1's branch tip and refutes it being
-the run base (`:1194-1195`), and asserts phase 1's worktree directory is gone
-while its branch tip survives (`:1204-1205`).
-`run_executor_phase_lineage_test.exs:121-128` pins the subtlest part, which is
-exactly where a silent regression would hide: against the chained base,
-`discover_document(wt2, "docs/TRD", lineage)` returns the TRD while
-`discover_document(wt2, "docs/PRD", lineage)` returns
+mocks:** every phase runs in one checkout, and each phase's discovery gate
+scopes to its own document. `run_executor_test.exs` drives the real
+`RunExecutor` through a two-phase default-worktree run: phase 1's scripted agent
+writes a PRD and does NOT commit it, phase 2's agent calls `File.regular?` on it
+from the shared worktree and the test asserts it true, asserts both phases were
+handed the same `FOREMAN_WORKTREE_PATH` and the same
+`FOREMAN_EXPECTED_BRANCH`, asserts phase 2's `FOREMAN_SOURCE_REVISION` advanced
+to the commit Foreman made on phase 1's behalf while refuting it is the run
+base, and asserts the worktree survives run completion with the run branch
+carrying the PRD.
+`run_executor_run_worktree_test.exs` pins the subtlest part, which is exactly
+where a silent regression would hide: against the refreshed base,
+`discover_document(wt, "docs/TRD", phase2.base_ref)` returns the TRD while
+`discover_document(wt, "docs/PRD", phase2.base_ref)` returns
 `{:planning_document_absent, …}` — the inherited PRD correctly does NOT read as
-new in phase 2 — yet against the RUN's base the same PRD call returns `{:ok,
-prd}`. That contrast is the proof that `base_ref` must chain along with the
-checkout or the gate mis-reports. **Not proven:** a live end-to-end plan run. No
-dispatch has executed since the fix.
+new in phase 2 — yet against the RUN's base the same PRD call returns
+`{:ok, prd}`. That contrast is the proof that `base_ref` must advance with the
+shared checkout or the gate mis-reports. The same file pins the commit path
+against real git: a checkout with `user.email`/`user.name` unset still commits,
+an untracked-only file counts as work, a clean tree creates no commit, and a
+directory git cannot read is an `{:error, …}` rather than a skip.
+**Not proven:** a live end-to-end plan run. No dispatch has executed since the
+fix.
 
 Do not collapse those tiers. Reading "proven by code" as "works in production"
 is the `FOREMAN_ARTIFACT_PATH` error one paragraph above — computation proven,
@@ -346,30 +501,27 @@ same loss of information in the opposite direction. The STOP-on-missing rule
 above is what keeps a failure here loud, naming the absent path instead of
 producing a silently mis-sourced TRD.
 
-An earlier version of this paragraph claimed `cleanup_phase_worktree/4`
-"force-deletes its branch". **That was wrong when it was written, not merely
-stale**, and the rest of the paragraph should be read with that in mind.
-`cleanup_phase_worktree/4` (`run_executor.ex:1659`) reclaims disk only, via
-`Worktree.clean/1` -> `VcsAdapter.Default.clean_worktree/2`, whose entire git
-surface is `git worktree remove` (`default.ex:193`) followed by
+`cleanup_phase_worktree/4` is **deleted** — worktree reclamation is now
+run-level (`cleanup_run_worktree/1` from `finalize_run/1`). The paragraphs
+below described its behavior and are kept because the reasoning error they
+record is the transferable part.
+
+An earlier version claimed `cleanup_phase_worktree/4` "force-deletes its
+branch". **That was wrong when it was written, not merely stale.** It reclaimed
+disk only, via `Worktree.clean/1` -> `VcsAdapter.Default.clean_worktree/2`,
+whose entire git surface is `git worktree remove` (`default.ex:193`) followed by
 `git worktree prune` (`:199`) — no ref is written or deleted anywhere in it.
 `delete_branch/1` is private to `worktree.ex` (`:269`, `:281`) and its
 only caller is `Worktree.clean_for_run/1` (`:228`), which `Dispatcher` invokes
 solely on `RunDeleted` (`dispatcher.ex:163`) — after the run is already
-terminated. Empirically, too: phase 1's branch from the failed
-run-d75304aca144c15409087ed744e2a7dc is still at `b9c93aa7` and still carries
-`docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md` — the one document new
-against that run's base `df20a77e` — long after the run's cleanup ran. Disk is
-reclaimed at each phase boundary; the branch is not.
+terminated. That is still true of `clean_worktree/2` today, and it is why
+run-level cleanup reclaims the directory without touching the run branch AutoPR
+has already pushed.
 
-That distinction matters for anyone deciding whether cleanup is safe to change:
-branch retention is a PRE-EXISTING invariant, not something the lineage change
-introduced. The lineage merely started depending on it. The real defect was
-purely base selection — phase 1's branch was always there to chain onto, and
-`create_default_worktree/3` was simply resolving `HEAD` instead of it. So a
-future change that makes phase cleanup delete branches would silently break the
-lineage, and nothing in `cleanup_phase_worktree/4` would look wrong at the call
-site.
+Empirically, too: phase 1's branch from the failed
+run-d75304aca144c15409087ed744e2a7dc is still at `b9c93aa7` and still carries
+`docs/PRD/PRD-2026-6a25501b-durable-run-log-store.md` long after that run's
+cleanup ran.
 
 How that error was made is worth more than the correction: the claim came from
 the function's NAME and its presence in the cleanup path, never from its call
@@ -470,6 +622,45 @@ backend = Map.get(args, :backend)
 
 Only convert keys the schema declares, so caller input can never mint atoms.
 A string key arriving past that boundary is a programming error: raise.
+### 5.4b Normalize parameters — whitelist known keys, drop unknowns
+
+Every caller-facing function that accepts a map parameter MUST normalize its
+input at the entry point before delegating downstream:
+
+1. **Declare the whitelist** of accepted keys (atoms, internally).
+2. **Fold only whitelisted keys** into the canonical output map.
+3. **Never insert `nil`** for an absent key — callers that pattern-match
+   `%{key: "present"}` will crash when `nil` arrives; callers that use
+   `|| fallback` misbehave because `nil || fallback` returns `fallback`
+   but `false || fallback` also returns `fallback` (lost signal).
+
+```elixir
+# WRONG — caller can pass any key; nil-literal keys silently drift.
+def handle(%{key: value}) when is_binary(value), do: ...
+def handle(%{key: nil}), do: ...
+
+# RIGHT — whitelist known keys at the boundary.
+@known_keys [:key, "key"]
+def normalize(raw) do
+  Enum.reduce(@known_keys, %{}, &put_field(&1, raw, &2))
+end
+```
+
+The rule is sound; the example originally attached to it was not. It claimed a
+"YAML-driven `:clean_worktree` key was silently dropped because it wasn't in the
+normalization whitelist". `clean_worktree` is not a YAML key and never was — it
+is the `VcsAdapter` operation name for removing a worktree — and the whitelist
+entry added for it normalized a key no module read.
+
+The real defect of this class, in the same change, was the reverse: the manifest
+key `cleanup:` stayed in the whitelist and kept normalizing correctly, while its
+only consumer (`worktree_cleanup/1`) was rewritten to read a different key. The
+declaration in two bundled workflows kept parsing and controlled nothing. So
+normalization whitelisting is necessary but not sufficient: a key is live only
+when something reads it, and the reader is where a rename has to be checked.
+The second half of the original claim does hold on its own — inserting `nil` for
+an absent key poisons callers written as `value || fallback`, which is why
+`PhaseSpec.put_worktree_field/3` drops absent keys instead.
 
 ### 5.5 Prefer compile-time enforcement over runtime discovery
 
