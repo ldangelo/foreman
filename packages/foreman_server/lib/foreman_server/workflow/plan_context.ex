@@ -112,13 +112,23 @@ defmodule ForemanServer.Workflow.PlanContext do
     * paths still untracked or added in the working tree,
 
   deduplicated, so a document that was committed and then touched again is
-  one document rather than a spurious ambiguity. The pipeline already
-  guarantees a clean tree when a phase starts (a dirty worktree HALTs the
-  run), so nothing in that union predates the phase. That invariant — not a
-  timestamp, not a filename pattern — is what makes the discovery
-  deterministic. Edits and renames of documents that already existed at
-  `base_ref` are deliberately not candidates: the gate exists to prove a
-  NEW document was produced.
+  one document rather than a spurious ambiguity. Nothing in that union
+  predates the phase, but NOT because "a dirty worktree HALTs the run" as
+  this said for as long as it existed — no such halt is implemented anywhere
+  in `lib/`. The real reason is that `RunExecutor.commit_phase_worktree/4`
+  commits each phase's work at the phase boundary, so the tree is clean when
+  the next phase starts. A phase may opt out with `commit: false`, and a
+  previous version of this comment claimed
+  `Interpreter.validate_commit_deferral!/2` made that safe by rejecting at
+  load any manifest reaching a `requiredFile:` phase with work still pending.
+  THAT GUARD NO LONGER EXISTS — it was deleted deliberately, because it made
+  deferral and discovery mutually exclusive and so forbade the batching the
+  `commit:` tag exists to provide. What actually keeps this deterministic is
+  the scope of the union itself: both halves are computed against this phase's
+  own `base_ref`, so a predecessor's deferred work is visible to this phase
+  only when the predecessor's `base_ref` was the same commit. Edits and
+  renames of documents that already existed at `base_ref` are deliberately
+  not candidates: the gate exists to prove a NEW document was produced.
 
   Each outcome is its own error so "the agent wrote nothing" can never be
   confused with "the agent wrote several things", with "this directory is

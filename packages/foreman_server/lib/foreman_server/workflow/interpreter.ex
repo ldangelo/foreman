@@ -6,6 +6,11 @@ defmodule ForemanServer.Workflow.Interpreter do
   @moduledoc """
   Loads workflow YAML files and validates their required phase structure.
   """
+
+  # Shared with `RunExecutor`, deliberately: the loader's refusal and the
+  # executor's run-terminal reporting MUST agree on what "pending" means, and
+  # they can only do that by reading one predicate.
+  alias ForemanServer.Workflow.CommitDeferral
   @required_top_level_keys ~w(name phases)
   @required_phase_keys ~w(name)
   @allowed_phase_actions ~w(prompt command bash)
@@ -40,6 +45,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_required_fields!(workflow, path)
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
+    validate_commits!(workflow, path)
     {:ok, workflow}
   end
 
@@ -397,6 +403,72 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
+  # `commit:` is PHASE-level, and deliberately the opposite shape from
+  # `worktree:`. A run has exactly one worktree, so a phase has nothing to
+  # decide there; but each phase produces its own output, so whether that
+  # output becomes a commit is genuinely a per-phase question. `true` (the
+  # default when the key is absent) commits the phase's work when the phase
+  # completes; `false` DEFERS it, leaving the changes in the worktree for a
+  # later phase to commit, which is how several phases are batched into one
+  # commit.
+  #
+  # Deferral is validated statically because it can silently break two
+  # invariants that the previously-unconditional commit was quietly upholding.
+  # Both are decidable from the manifest alone, so they are rejected at load
+  # rather than discovered as a wrong-looking result at runtime.
+  defp validate_commits!(workflow, path) do
+    phases = Map.get(workflow, "phases")
+
+    phases
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_commit_value!(phase, index, path) end)
+
+    validate_commit_deferral!(phases, path)
+    :ok
+  end
+
+  defp validate_commit_value!(phase, index, path) when is_map(phase) do
+    case Map.get(phase, "commit") do
+      value when value in [nil, true, false] ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"commit\" must be a boolean (true or false)"
+    end
+  end
+
+  defp validate_commit_value!(_phase, _index, _path), do: :ok
+
+  # Reads `CommitDeferral.pending_phase/1` — the same predicate `RunExecutor`
+  # reads — and refuses a manifest whose work no phase will ever commit.
+  # `AutoPR` gates on `git rev-list --count base..head`, which counts commits
+  # only, so uncommitted work is not proposable: the run would otherwise report
+  # success having produced a PR that omits the work, or no PR at all.
+  #
+  # A SECOND refusal used to live here, and deleting it is the point of this
+  # change. It rejected any `requiredFile:` phase reached with work pending, on
+  # the theory that discovery would mis-attribute the predecessor's uncommitted
+  # document to the gated phase. That reasoning described a real hazard but drew
+  # the wrong conclusion: it made deferral and discovery mutually exclusive, so
+  # an operator could not defer the phase immediately before a `requiredFile:`
+  # phase — which is exactly the batching the feature exists to allow, and which
+  # the `plan` and `prd` workflows are shaped to want. The PRD excludes the
+  # mechanism by Non-Goal. Mis-attribution is a property of what discovery
+  # SCOPES, not something a load-time veto on manifest shape can fix.
+  defp validate_commit_deferral!(phases, path) do
+    case CommitDeferral.pending_phase(phases) do
+      nil ->
+        :ok
+
+      pending ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{pending} declares \"commit: false\" but no later phase commits: its work would stay uncommitted, and AutoPR proposes commits only"
+    end
+  end
+
   defp validate_phase_actions!(phase, index, path) do
     actions =
       @allowed_phase_actions
@@ -488,20 +560,34 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
+  # Quotedness decides TYPE, so it has to survive until after casting.
+  #
+  # This previously ran `strip_quotes` and then `cast_scalar`, which destroyed
+  # the only evidence that a value was written as a string: `commit: "false"`
+  # became the binary `"false"` and then the BOOLEAN `false`, silently typed as
+  # a deferral the operator never declared. That is the coercion `commit:`
+  # exists to refuse (PRD REQ-005), and it was invisible because the coerced
+  # value then failed a *different* check — the deferral rule — producing a
+  # confusing error about a phase that never commits.
+  #
+  # Real YAML agrees: a quoted scalar is a string. `"false"` is the three-word
+  # string, not false, and `"8080"` is not the integer. Only a PLAIN scalar is
+  # typed, which is what makes `Interpreter.validate_commit_value!/3` able to
+  # tell a boolean from a string that looks like one.
   defp parse_scalar(value) do
-    value
-    |> strip_quotes()
-    |> cast_scalar()
+    case classify_scalar(value) do
+      {:quoted, inner} -> inner
+      {:plain, plain} -> cast_scalar(plain)
+    end
   end
 
-  defp strip_quotes(value) do
+  defp classify_scalar(value) do
     if String.length(value) >= 2 and
          ((String.starts_with?(value, "\"") and String.ends_with?(value, "\"")) or
             (String.starts_with?(value, "'") and String.ends_with?(value, "'"))) do
-      value
-      |> String.slice(1, String.length(value) - 2)
+      {:quoted, String.slice(value, 1, String.length(value) - 2)}
     else
-      value
+      {:plain, value}
     end
   end
 

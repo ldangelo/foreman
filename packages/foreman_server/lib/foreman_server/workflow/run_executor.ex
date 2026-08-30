@@ -1452,6 +1452,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # "everything phases 1..N-1 produced". Phase 1's PRD is therefore correctly
   # not a candidate in phase 2.
   #
+  # A phase declaring `commit: false` DOES now reach a discovery-gated phase
+  # with its work still pending — the load-time guard that forbade it,
+  # `Interpreter.validate_commit_deferral!/2`'s `requiredFile` clause, was
+  # deleted deliberately, because forbidding it also forbade the phase batching
+  # the `commit:` tag exists to provide. When that happens HEAD has not moved,
+  # so the predecessor's uncommitted document IS a candidate for the successor's
+  # gate. That is a property of discovery's scope, not a manifest defect, and it
+  # is the operator's stated intent: phases that batch into one commit are one
+  # unit of work. Do not re-add a load-time veto here.
+  #
   # A worktree that has vanished mid-run is a hard failure (AGENTS.md 5.2/5.3):
   # continuing would run the phase against whatever directory git resolves
   # instead, and produce a plausible-looking artifact from the wrong tree.
@@ -1888,9 +1898,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp commit_phase_worktree(_state, _phase_spec, _phase_index, nil), do: {:ok, :no_worktree}
 
-  defp commit_phase_worktree(state, _phase_spec, phase_index, %{worktree_path: path})
+  defp commit_phase_worktree(state, phase_spec, phase_index, %{worktree_path: path})
        when is_binary(path) and path != "" do
-    commit_dirty_worktree(state, phase_index, path)
+    if phase_commits?(phase_spec) do
+      commit_dirty_worktree(state, phase_index, path)
+    else
+      # `commit: false` — the phase's work stays in the worktree for a later
+      # phase to commit. Nothing is inspected and nothing is staged.
+      #
+      # `Interpreter.validate_commit_deferral!/2` still proves at load that a
+      # later phase commits, so the work is not stranded. It no longer proves
+      # anything about discovery gates: the `requiredFile` clause that made
+      # deferral and discovery mutually exclusive was deleted, since it forbade
+      # the phase batching this tag exists to provide.
+      Logger.info(
+        "RunExecutor #{state.run_id} phase #{phase_index} declares commit: false, deferring"
+      )
+
+      {:ok, :commit_deferred}
+    end
   end
 
   # A worktree record without a usable path is a programming error, not a
@@ -1900,6 +1926,32 @@ defmodule ForemanServer.Workflow.RunExecutor do
     raise ArgumentError,
           "phase #{phase_index} worktree record carries no worktree_path: #{inspect(record)}"
   end
+
+  # Absent defaults to committing. That preserves the behavior from when the
+  # commit was unconditional, and it keeps the two invariants deferral can
+  # break (per-phase discovery scoping, AutoPR's commits-only gate) intact for
+  # every manifest that says nothing — including the seven bundled workflows
+  # that declare no `commit:` at all. Only an explicit `false` defers.
+  #
+  # A non-boolean cannot arrive here: `Interpreter.validate_commit_value!/3`
+  # rejects it at load. This is a total match over `true | false | nil` rather
+  # than a truthiness test so a value that somehow bypassed that boundary
+  # raises instead of being silently coerced (AGENTS.md 5.2).
+  defp phase_commits?(phase_spec) do
+    case Map.get(phase_spec, :commit) do
+      nil -> true
+      true -> true
+      false -> false
+    end
+  end
+
+  @doc false
+  # Test-only. `phase_commits?/1` is the single place the absent-means-commit
+  # default lives, and it reads the ATOM `:commit` on a NORMALIZED PhaseSpec —
+  # not the string-keyed manifest map. A test that hands it a raw parsed phase
+  # gets `nil` for every input and passes vacuously, so the export exists to
+  # make callers go through `PhaseSpec.normalize/1` as production does.
+  def __phase_commits_for_test__(phase_spec), do: phase_commits?(phase_spec)
 
   defp commit_dirty_worktree(state, phase_index, path) do
     case worktree_dirty?(path) do

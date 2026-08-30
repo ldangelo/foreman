@@ -643,8 +643,11 @@ optimization; polling remains the fallback.
 `finalize_run/1`, after every phase has completed, and it opens the PR from the
 run's single branch — `foreman/<run-id>` unless the workflow's `worktree.branch`
 says otherwise. There is no per-phase PR and no stacked
-PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, `checkpointPr`, or
-`commit:` setting, and the PR is opened once, at run finalization.
+PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, or `checkpointPr`
+setting, and the PR title and body are derived by `AutoPR` rather than
+declared. A phase-level `commit:` boolean does exist (see below), but it
+controls only whether a phase commits — never how, and never how many PRs a
+run opens.
 
 Stacked PRs belong to the ensemble skills, not to Foreman, and `--foreman`
 switches them off on purpose — under `--foreman` the Beads skill skips
@@ -658,6 +661,41 @@ agent that writes files without committing still leaves a proposable branch. The
 message (`Foreman run <run-id> phase <n>`) and author are fixed, the commit skips
 repository pre-commit hooks, and a phase that produced nothing creates no commit
 — so AutoPR still proposes only real work.
+
+A phase controls **whether** it commits, with a phase-level `commit:` boolean —
+never how. Unlike `worktree:`, which is workflow-level because a run has only
+one worktree, each phase produces its own output, so this is genuinely a
+per-phase question:
+
+```yaml
+phases:
+  - name: create-prd
+    command: "/skill:ensemble-full-create-prd --foreman"
+    commit: true          # commit this phase's work when it completes (default)
+  - name: refine-prd
+    command: "/skill:ensemble-full-refine-prd --foreman"
+    commit: false         # defer: a later phase's commit absorbs it
+  - name: create-trd
+    command: "/skill:ensemble-full-create-trd --foreman"
+    commit: true          # commits refine-prd's work together with its own
+```
+
+Omitting `commit:` means `true`, so the seven bundled workflows that declare
+nothing keep committing every phase. Use `commit: false` to batch consecutive
+phases into one reviewable commit.
+
+Two deferrals are **rejected when the workflow loads**, not at run time, because
+each would produce a confidently wrong result:
+
+- A phase declaring `commit: false` before a phase declaring `requiredFile:`,
+  with no committing phase in between. The document-discovery gate looks at both
+  committed and uncommitted files, so it would capture the earlier phase's
+  document and report it as the later phase's own work.
+- A phase declaring `commit: false` that no later phase commits. Its work would
+  stay uncommitted, and PR creation counts commits only — the run would report
+  success with nothing to review.
+
+Both errors name the offending phase indices and say which rule was broken.
 
 ## Documentation Discipline
 

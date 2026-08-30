@@ -18,6 +18,7 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     :artifact_template,
     :bash,
     :command,
+    :commit,
     :context,
     :index,
     :mail,
@@ -69,10 +70,47 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
   end
 
   describe "canonical output shape" do
-    test "every canonical key is present even when the phase declares almost nothing" do
-      spec = PhaseSpec.normalize(%{"name" => "bare"})
+    test "every canonical key is present when the phase declares all of them" do
+      # This is the drop-detection property the moduledoc describes: a field
+      # missing from `@fields` would be absent here even though the phase
+      # declared it, and every consumer's read would silently return nil.
+      #
+      # It used to be asserted against a phase declaring almost NOTHING, which
+      # only worked because `put_field/3` stored `nil` for absent keys — so the
+      # test passed without ever proving a DECLARED field survives. Declaring
+      # everything tests the thing the moduledoc actually cares about.
+      declared = %{
+        "name" => "full",
+        "prompt" => "p",
+        "prompt_path" => "pp",
+        "artifact" => "a",
+        "command" => "/skill:c",
+        "bash" => "b",
+        "requiredFile" => "planning.prd_path",
+        "index" => 3,
+        "models" => ["m"],
+        "maxTurns" => 9,
+        "mail" => %{"to" => "x"},
+        "context" => %{"k" => "v"},
+        "commit" => false
+      }
+
+      spec = PhaseSpec.normalize(declared)
 
       assert Enum.sort(Map.keys(spec)) == @canonical_keys
+    end
+
+    test "a bare phase omits undeclared keys rather than storing nil" do
+      # AGENTS.md 5.4b: an absent key is dropped, never backfilled with nil.
+      # `commit:` is why it matters — nil would be a third state beside the two
+      # an operator can write, making "declared nothing" and "declared the
+      # default" indistinguishable to `Map.has_key?/2`.
+      spec = PhaseSpec.normalize(%{"name" => "bare"})
+
+      assert Enum.sort(Map.keys(spec)) == [:action, :name]
+      refute Map.has_key?(spec, :commit)
+      # Map.get/2 readers are unaffected: an omitted key still reads as nil.
+      assert Map.get(spec, :commit) == nil
     end
 
     test "no string keys survive normalization" do

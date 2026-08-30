@@ -24,6 +24,15 @@ worktree:
   branch: foreman/{run_id}
   path: workspace
   cleanup: never
+# `commit:` is PHASE-level, unlike `worktree:` above: a run has one worktree so a
+# phase has nothing to decide there, but each phase produces its own output, so
+# whether that output becomes a commit is a per-phase question. `true` commits
+# the phase's work when the phase completes; absent defaults to `true`.
+#
+# This workflow has a single phase, so `false` could not be honored here and is
+# rejected at load: with no later phase to absorb the deferred work it would
+# stay uncommitted, and AutoPR proposes commits only.
 phases:
   - name: implement-trd
     command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
+    commit: true
