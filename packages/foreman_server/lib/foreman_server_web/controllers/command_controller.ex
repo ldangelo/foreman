@@ -5,8 +5,9 @@ defmodule ForemanServerWeb.CommandController do
   `POST /api/commands` is the **sole** external mutation surface. The
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on the operator allowlist
-  (`project.register`, `project.update`, `project.archive`, `task.create`,
-  `task.approve`, `task.retry`, `run.cancel`, `run.remove`, and `run.reset`),
+  (`project.register`, `project.update`, `project.archive`,
+  `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
+  `run.cancel`, `run.remove`, and `run.reset`),
   enriches the payload, and dispatches to
   `CommandRouter`.
 

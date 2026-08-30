@@ -183,6 +183,48 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       refute Map.has_key?(hd(workflow["phases"]), "worktree")
     end
 
+    test "refuses a relocated phase-level worktree block instead of dropping it" do
+      # `worktree:` moved from phase level to workflow level. `PhaseSpec` drops
+      # keys it does not know, so this manifest used to parse and silently lose
+      # the opt-out — then take the DEFAULT-ON worktree path, inverting an
+      # explicit refusal to provision into provisioning. A relocated key is
+      # malformed, not unknown, so it gets its own loud error (AGENTS.md 5.3).
+      path =
+        write_temp_yaml!("""
+        name: legacy-phase-worktree
+        description: pre-move manifest
+        phases:
+          - name: only
+            command: "/skill:x"
+            worktree:
+              enabled: false
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 1 declares a phase-level \"worktree\" block/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "a blank top-level key stays a blank scalar and still fails validation" do
+      # Teaching the root parser to nest made EVERY valueless top-level key
+      # nest, so `name:` parsed as `%{}`. `missing_or_blank?/1` answers true for
+      # `""` but false for `%{}`, so a blank required key passed validation and
+      # `name: %{}` propagated into the frozen workflow_snapshot. Nest only when
+      # an indented child actually follows.
+      path =
+        write_temp_yaml!("""
+        name:
+        description: blank name
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/must define top-level keys \"name\" and \"phases\"/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
     test "parses a top-level nested mapping into a string-keyed map" do
       # The workflow-level `worktree:` block only works because the root parser
       # learned to nest. Previously only `phases:` could introduce a nested

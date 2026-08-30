@@ -38,6 +38,7 @@ defmodule ForemanServer.Workflow.Interpreter do
       |> parse_yaml!(path)
 
     validate_required_fields!(workflow, path)
+    validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
     {:ok, workflow}
   end
@@ -102,8 +103,18 @@ defmodule ForemanServer.Workflow.Interpreter do
       # clause above then crashed on. Mirrors `parse_phase_properties/3`, one
       # indent level shallower.
       {key, ""} ->
-        {nested_map, remaining} = parse_nested_map(rest, %{}, 2, path)
-        parse_root_entries(remaining, Map.put(acc, key, nested_map), path)
+        case parse_nested_map(rest, %{}, 2, path) do
+          # No indented child line followed, so the key carried a BLANK SCALAR,
+          # not a nested mapping. Keep `""` — `missing_or_blank?/1` answers true
+          # for `""` but false for `%{}`, so nesting unconditionally let a blank
+          # required key such as `name:` pass `validate_required_fields!/2` and
+          # propagate `name: %{}` into the frozen workflow_snapshot.
+          {empty, remaining} when map_size(empty) == 0 ->
+            parse_root_entries(remaining, Map.put(acc, key, ""), path)
+
+          {nested_map, remaining} ->
+            parse_root_entries(remaining, Map.put(acc, key, nested_map), path)
+        end
 
       {key, value} ->
         parse_root_entries(rest, Map.put(acc, key, parse_scalar(value)), path)
@@ -243,6 +254,31 @@ defmodule ForemanServer.Workflow.Interpreter do
   # The `worktree:` block is WORKFLOW-level, so it is validated once against the
   # manifest rather than once per phase. Error messages therefore no longer
   # carry a phase index or phase name.
+  # A phase-level `worktree:` block is REFUSED, not dropped. `worktree:` moved
+  # from phase level to workflow level in this change, and `PhaseSpec.normalize/1`
+  # drops keys it does not know — so a manifest carrying the old
+  # `phases[*].worktree.enabled: false` would parse, lose the opt-out, and then
+  # get the default-on worktree: an explicit refusal to provision silently
+  # inverted into provisioning, which fails outright on a non-git project path.
+  # AGENTS.md 5.4b's drop rule is for UNKNOWN keys; a relocated key is malformed,
+  # not unknown, so 5.3 applies and it gets its own loud error.
+  defp validate_no_phase_worktree!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index(1)
+    |> Enum.each(fn {phase, index} ->
+      if is_map(phase) and Map.has_key?(phase, "worktree") do
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} declares a phase-level " <>
+              "\"worktree\" block; a run has ONE worktree, so `worktree:` is now " <>
+              "declared once at the workflow level — move it there"
+      end
+    end)
+
+    :ok
+  end
+
   defp validate_worktree!(workflow, path) do
     case Map.get(workflow, "worktree") do
       nil ->

@@ -503,7 +503,7 @@ above is what keeps a failure here loud, naming the absent path instead of
 producing a silently mis-sourced TRD.
 
 `cleanup_phase_worktree/4` is **deleted** — worktree reclamation is now
-run-level (`cleanup_run_worktree/1` from `finalize_run/1`). The paragraphs
+run-level (`cleanup_run_worktree/2` from `finalize_run/1`). The paragraphs
 below described its behavior and are kept because the reasoning error they
 record is the transferable part.
 

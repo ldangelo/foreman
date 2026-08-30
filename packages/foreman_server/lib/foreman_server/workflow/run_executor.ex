@@ -307,11 +307,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
             Logger.warning("Previous phase #{completed_index} blocked; halting sequence")
             next_state = %{state | completed: completed, status: :blocked}
             emit_phase_blocked(state, next_index, "blocked by previous phase")
+            # A halt is terminal for the worktree even though it dispatches no
+            # terminal command here. Cleanup used to happen at every phase
+            # boundary, so a halt still reclaimed disk; now that it is
+            # run-terminal, these two branches are the only run endings that
+            # reach neither `finalize_run/1` nor `finalize_terminal_and_stop/2`,
+            # and `cleanup: always` would silently not apply to them.
+            _ = cleanup_run_worktree(next_state, :failure)
             {:noreply, next_state}
 
           {:halt, :failed} ->
             Logger.warning("Previous phase #{completed_index} failed; halting sequence")
-            {:noreply, %{state | completed: completed, status: :failed}}
+            next_state = %{state | completed: completed, status: :failed}
+            _ = cleanup_run_worktree(next_state, :failure)
+            {:noreply, next_state}
 
           {:cont, _} ->
             # Proceed to next phase
