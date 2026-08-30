@@ -118,9 +118,10 @@ defmodule ForemanServer.Workflow.PlanContext do
   in `lib/`. The real reason is that `RunExecutor.commit_phase_worktree/4`
   commits each phase's work at the phase boundary, so the tree is clean when
   the next phase starts. A phase may opt out with `commit: false`, and a
-  previous version of this comment claimed
-  `Interpreter.validate_commit_deferral!/2` made that safe by rejecting at
-  load any manifest reaching a `requiredFile:` phase with work still pending.
+  previous version of this comment claimed a `requiredFile` clause in
+  `Interpreter.validate_commit_deferral!/2` (that function is now
+  `validate_commit_cleanup!/3`) made that safe by rejecting at load any
+  manifest reaching a `requiredFile:` phase with work still pending.
   THAT GUARD NO LONGER EXISTS — it was deleted deliberately, because it made
   deferral and discovery mutually exclusive and so forbade the batching the
   `commit:` tag exists to provide. What actually keeps this deterministic is

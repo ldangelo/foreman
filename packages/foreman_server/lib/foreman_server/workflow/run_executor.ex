@@ -38,6 +38,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Overwatch
   alias ForemanServer.PrAssociate
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
@@ -1454,7 +1455,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   #
   # A phase declaring `commit: false` DOES now reach a discovery-gated phase
   # with its work still pending — the load-time guard that forbade it,
-  # `Interpreter.validate_commit_deferral!/2`'s `requiredFile` clause, was
+  # `Interpreter.validate_commit_deferral!/2`'s `requiredFile` clause (that
+  # function is now `validate_commit_cleanup!/3`, and carries no such clause), was
   # deleted deliberately, because forbidding it also forbade the phase batching
   # the `commit:` tag exists to provide. When that happens HEAD has not moved,
   # so the predecessor's uncommitted document IS a candidate for the successor's
@@ -1906,11 +1908,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       # `commit: false` — the phase's work stays in the worktree for a later
       # phase to commit. Nothing is inspected and nothing is staged.
       #
-      # `Interpreter.validate_commit_deferral!/2` still proves at load that a
-      # later phase commits, so the work is not stranded. It no longer proves
-      # anything about discovery gates: the `requiredFile` clause that made
-      # deferral and discovery mutually exclusive was deleted, since it forbade
-      # the phase batching this tag exists to provide.
+      # Load-time validation no longer proves a later phase commits. That claim
+      # was true of the unconditional refusal this replaced, and is now FALSE:
+      # `Interpreter.validate_commit_cleanup!/3` refuses only the manifest whose
+      # deferred work would be DESTROYED by `cleanup: always`/`on_success`. Under
+      # `cleanup: never` the work may legitimately be stranded in the retained
+      # worktree, which is what `warn_uncommitted_work/1` reports at run
+      # terminal. Nor does load time prove anything about discovery gates: the
+      # `requiredFile` clause that made deferral and discovery mutually exclusive
+      # was deleted, since it forbade the batching this tag exists to provide.
       Logger.info(
         "RunExecutor #{state.run_id} phase #{phase_index} declares commit: false, deferring"
       )
@@ -2044,10 +2050,63 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # every phase boundary. With one worktree per run that is actively wrong: it
   # would delete the checkout the next phase is about to continue in.
   defp cleanup_run_worktree(state, outcome) when outcome in [:success, :failure] do
+    warn_uncommitted_work(state)
+
     case {Map.get(state, :run_worktree), outcome} do
       {%{cleanup: :always} = record, _} -> do_clean_run_worktree(state, record)
       {%{cleanup: :on_success} = record, :success} -> do_clean_run_worktree(state, record)
       _ -> :ok
+    end
+  end
+
+  # REQ-006. `Interpreter` refuses a manifest whose deferred work would be
+  # DESTROYED by cleanup, because that is unsatisfiable; a manifest that merely
+  # leaves work uncommitted in a retained worktree is legitimate and loads. The
+  # consequence, though, is invisible: `AutoPR` gates on
+  # `git rev-list --count base..head`, which counts commits only, so the run
+  # reports success and simply produces no PR. Without this line the operator
+  # has an absent PR and nothing anywhere attributing it.
+  #
+  # This replaced a LOAD-TIME raise on the same condition. The raise could not
+  # distinguish "authored a review-staging workflow" from "made a mistake", so
+  # it forbade the former outright. Warning here is strictly more informative
+  # as well as more permissive: it fires against a real run, naming the phase.
+  #
+  # Emitted before cleanup and on every terminal path — including a run that
+  # failed before reaching any committing phase, which is the case an
+  # end-of-pipeline check would miss entirely, since the later committing phase
+  # that would have absorbed the work never ran. That means the predicate reads
+  # the phases that actually EXECUTED, not the whole manifest.
+  defp warn_uncommitted_work(state) do
+    executed = executed_phase_specs(state)
+
+    case CommitDeferral.pending_phase_spec(executed) do
+      nil ->
+        :ok
+
+      pending ->
+        Logger.warning(
+          "RunExecutor #{state.run_id} left work uncommitted: phase #{pending} " <>
+            "(#{phase_spec_name(Enum.at(executed, pending))}) declared \"commit: false\" and no " <>
+            "later phase that ran committed it. The changes remain in the run's worktree; " <>
+            "AutoPR proposes commits only, so this run has no PR to show for that work."
+        )
+    end
+  end
+
+  # Only the phases that RAN. A run that fails at phase 1 of 3 must be judged on
+  # phase 1 alone: the manifest's later committing phase is not a defence for
+  # work that was never absorbed because execution stopped first.
+  #
+  # `completed` holds phase INDICES, so the count of executed phases is the
+  # highest index reached plus one — not `length/1`, which would undercount if
+  # an index were ever recorded out of order.
+  defp executed_phase_specs(state) do
+    specs = Map.get(state, :phase_specs) || []
+
+    case Map.get(state, :completed) || [] do
+      [] -> []
+      completed -> Enum.take(specs, Enum.max(completed) + 1)
     end
   end
 
@@ -2327,6 +2386,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __worktree_cleanup_for_test__(worktree), do: worktree_cleanup(worktree)
+
+  @doc false
+  def __warn_uncommitted_work_for_test__(state), do: warn_uncommitted_work(state)
 
   @doc false
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)

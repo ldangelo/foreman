@@ -567,15 +567,24 @@ defmodule ForemanServer.Workflow.InterpreterTest do
       workflow["phases"]
     end
 
-    test "rejects deferred work that no later phase commits" do
-      # AutoPR gates on `git rev-list --count base..head`, which counts commits
-      # only, so work left uncommitted at the last phase is unproposable — the
-      # run would report success having produced nothing to review.
+    test "accepts deferred work that no later phase commits, under the default cleanup" do
+      # This test previously asserted the OPPOSITE: any never-committed deferral
+      # was refused at load, on the grounds that AutoPR gates on
+      # `git rev-list --count base..head` and so cannot propose uncommitted work.
+      # That consequence is real, but it is not a reason to refuse the manifest —
+      # it conflated an operator mistake with a workflow that deliberately stages
+      # changes in a retained worktree for human review, and made the latter
+      # inexpressible.
+      #
+      # The refusal now fires only when cleanup would DESTROY the deferred work
+      # (see CommitCleanupValidationTest); when the worktree is retained, the
+      # run-terminal warning in CommitWarningTest makes the absent PR
+      # attributable instead. Absent `cleanup:` is `never`, so this manifest is
+      # the retained case.
       path = commit_manifest([{"a", "    commit: false\n"}])
 
-      assert_raise Workflow.MissingRequiredPhaseError,
-                   ~r/phase 0 declares \"commit: false\" but no later phase commits/,
-                   fn -> Workflow.Interpreter.load!(path) end
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert workflow["phases"] |> hd() |> Map.get("commit") == false
     end
 
     test "accepts a requiredFile phase reached with work still pending" do

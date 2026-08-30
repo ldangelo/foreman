@@ -131,30 +131,58 @@ workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
 is the complete declarable vocabulary; `Interpreter` and `PhaseSpec` still
 contain zero `pr`, `merge`, or `checkpoint` keys.
 
-**Deferral is rejected at LOAD time in the two cases where it would silently
-corrupt a result, because the unconditional commit was quietly upholding two
-invariants nobody had written down.** Both are decidable from the manifest
-alone, so `Interpreter.validate_commit_deferral!/2` folds the phases carrying
-"is work pending from an earlier phase?" and raises rather than letting the run
-discover it:
+**Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
+alone makes unsatisfiable — and warned about at run terminal in the case whose
+consequence is merely invisible.** `Interpreter.validate_commit_cleanup!/3`
+refuses a manifest whose work no phase will ever commit when
+`worktree.cleanup` is `always` or `on_success`: both modes delete the run's
+worktree, so the deferred changes are destroyed with no branch and nothing for
+`AutoPR` to propose. Absent `cleanup:` is `never`, matching
+`RunExecutor.worktree_cleanup/1` — reading it as `always` would refuse nearly
+every deferring manifest, since most declare no `worktree:` block at all.
 
-1. **A `requiredFile:` phase reached with work pending.**
+Under `cleanup: never` the same manifest LOADS, and `RunExecutor`'s
+`warn_uncommitted_work/1` logs at run terminal instead, naming the deferring
+phase. It reads the phases that actually EXECUTED, not the manifest, so a run
+that fails before the absorbing phase still warns — an end-of-manifest check
+would see a committing phase that never ran and report no problem.
+
+**This passage previously described TWO load-time refusals; both claims are
+now wrong, and the way they were wrong is the point.**
+
+1. **A `requiredFile:` phase reached with work pending** was refused because
    `PlanContext.discover_document/3` unions "committed since `base_ref`" with
-   "uncommitted in the working tree", and `reuse_run_worktree/2` refreshes each
-   phase's `base_ref` to the checkout's HEAD. A predecessor that did not commit
-   leaves HEAD unmoved, so its files are still uncommitted and the successor's
-   gate captures them as ITS OWN new document — the gate PASSES while
-   attributing one phase's document to another. This is the single sharpest
-   interaction in the feature and the reason deferral is not merely a logging
-   change.
-2. **Work still pending after the last phase.** `AutoPR` gates on
-   `git rev-list --count base..head`, which counts commits only. Uncommitted
-   work is not proposable, so the run would report success having produced a PR
-   that omits it, or no PR at all.
+   "uncommitted in the working tree", so a non-committing predecessor's files
+   read as the successor's own new document — the gate passes while attributing
+   one phase's document to another. That hazard is REAL and still exists. The
+   refusal was the wrong response to it: it made deferral and discovery mutually
+   exclusive, so the phase immediately before a gated phase could never defer —
+   exactly the batching the tag exists to provide, and the shape `plan` and
+   `prd` want. Mis-attribution is a property of what discovery SCOPES; a
+   load-time veto on manifest shape cannot fix it, and the PRD excludes the
+   mechanism by Non-Goal.
+2. **Work still pending after the last phase** was refused unconditionally.
+   `AutoPR` genuinely counts commits only, so such a run produces no PR — but
+   that is a reason to make the absence attributable, not to forbid the
+   manifest. The unconditional raise could not distinguish an operator mistake
+   from a workflow that deliberately stages changes in a retained worktree for
+   human review, and so made the latter inexpressible.
 
-The pending flag CLEARS on a committing phase rather than latching, so
-`false → true → requiredFile` is valid and is covered by its own test; a
-latching implementation would reject that legitimate manifest.
+The general rule both corrections express is the PRD's design principle:
+**refuse what cannot be honoured, warn where the consequence would merely be
+invisible.** Do not re-add a load-time veto on a manifest that a retained
+worktree makes perfectly satisfiable.
+
+`CommitDeferral.pending_phase/1` (manifest string keys) and
+`pending_phase_spec/1` (normalized `PhaseSpec` atom keys) are two entry points
+over one shared fold. That is deliberate, not duplication: the loader and the
+executor genuinely hold different shapes, and a
+`Map.get(m, :commit) || Map.get(m, "commit")` hedge would leave neither
+boundary owning the convention (§5.4). The shared fold is what guarantees the
+refusal and the warning cannot disagree about what "pending" means. The pending
+flag CLEARS on a committing phase rather than latching, so
+`false → true → requiredFile` is valid; among consecutive deferrals it reports
+the EARLIEST index, because the operator needs where the uncommitted run begins.
 
 `RunExecutor.phase_commits?/1` matches `true | false | nil` totally rather than
 testing truthiness, so a value that somehow bypassed

@@ -412,10 +412,10 @@ defmodule ForemanServer.Workflow.Interpreter do
   # later phase to commit, which is how several phases are batched into one
   # commit.
   #
-  # Deferral is validated statically because it can silently break two
-  # invariants that the previously-unconditional commit was quietly upholding.
-  # Both are decidable from the manifest alone, so they are rejected at load
-  # rather than discovered as a wrong-looking result at runtime.
+  # Deferral is validated statically only where the manifest ALONE makes the
+  # declaration unsatisfiable. Whether never-committed work is a defect depends
+  # on `worktree.cleanup`, which is workflow-level, so the two must be read
+  # together — see `validate_commit_cleanup!/3`.
   defp validate_commits!(workflow, path) do
     phases = Map.get(workflow, "phases")
 
@@ -423,7 +423,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     |> Enum.with_index()
     |> Enum.each(fn {phase, index} -> validate_commit_value!(phase, index, path) end)
 
-    validate_commit_deferral!(phases, path)
+    validate_commit_cleanup!(phases, Map.get(workflow, "worktree"), path)
     :ok
   end
 
@@ -441,33 +441,52 @@ defmodule ForemanServer.Workflow.Interpreter do
 
   defp validate_commit_value!(_phase, _index, _path), do: :ok
 
-  # Reads `CommitDeferral.pending_phase/1` — the same predicate `RunExecutor`
-  # reads — and refuses a manifest whose work no phase will ever commit.
-  # `AutoPR` gates on `git rev-list --count base..head`, which counts commits
-  # only, so uncommitted work is not proposable: the run would otherwise report
-  # success having produced a PR that omits the work, or no PR at all.
+  # Refuses only the combination the manifest cannot honour: work that no phase
+  # will ever commit, in a worktree that will be DELETED. `cleanup: always` and
+  # `on_success` both reclaim the checkout, so the deferred changes are
+  # destroyed — there is no later run, no branch, and nothing for `AutoPR` to
+  # propose. Nothing at runtime can rescue that, and the failure it produces
+  # without this check is an unattributable `git worktree remove` error or a
+  # silently empty PR, so it is refused at load naming both halves of the
+  # contradiction.
   #
-  # A SECOND refusal used to live here, and deleting it is the point of this
-  # change. It rejected any `requiredFile:` phase reached with work pending, on
-  # the theory that discovery would mis-attribute the predecessor's uncommitted
-  # document to the gated phase. That reasoning described a real hazard but drew
-  # the wrong conclusion: it made deferral and discovery mutually exclusive, so
-  # an operator could not defer the phase immediately before a `requiredFile:`
-  # phase — which is exactly the batching the feature exists to allow, and which
-  # the `plan` and `prd` workflows are shaped to want. The PRD excludes the
-  # mechanism by Non-Goal. Mis-attribution is a property of what discovery
-  # SCOPES, not something a load-time veto on manifest shape can fix.
-  defp validate_commit_deferral!(phases, path) do
-    case CommitDeferral.pending_phase(phases) do
-      nil ->
-        :ok
+  # With `cleanup: never` (the default) the same manifest is LEGITIMATE: the
+  # work survives in the worktree on disk, where an operator can inspect or
+  # commit it by hand. That is a coherent thing to author — a workflow that
+  # stages changes for human review — so it loads, and REQ-006's run-terminal
+  # warning makes the absent PR attributable instead.
+  #
+  # This replaced an UNCONDITIONAL raise on any never-committed deferral, which
+  # conflated the two cases: it refused the legitimate `cleanup: never` manifest
+  # along with the impossible one, and so made "defer for review" inexpressible.
+  # The satisfiability test is the PRD's design principle — refuse what cannot
+  # be honoured, warn where the consequence would merely be invisible.
+  #
+  # `worktree: enabled: false` is not a case here: no worktree is created, so
+  # `commit:` is inert (REQ-003) and there is nothing to delete.
+  defp validate_commit_cleanup!(phases, worktree, path) do
+    pending = CommitDeferral.pending_phase(phases)
+    cleanup = cleanup_mode(worktree)
 
-      pending ->
-        raise Workflow.MissingRequiredPhaseError,
-          message:
-            "workflow template #{path} phase #{pending} declares \"commit: false\" but no later phase commits: its work would stay uncommitted, and AutoPR proposes commits only"
+    if is_integer(pending) and cleanup in ["always", "on_success"] and worktree_enabled?(worktree) do
+      raise Workflow.MissingRequiredPhaseError,
+        message:
+          "workflow template #{path} phase #{pending} declares \"commit: false\" but no later phase commits, and \"worktree.cleanup\" is \"#{cleanup}\": the deferred work would be destroyed when the run's worktree is reclaimed. Commit it in a later phase, or declare \"cleanup: never\" to keep the worktree for inspection."
     end
+
+    :ok
   end
+
+  # Absent `cleanup:` is `never` — the same default `RunExecutor.worktree_cleanup/1`
+  # applies. Reading it as `always` here would refuse every deferring manifest
+  # that declares no `worktree:` block at all, which is most of them.
+  defp cleanup_mode(worktree) when is_map(worktree), do: Map.get(worktree, "cleanup") || "never"
+  defp cleanup_mode(_worktree), do: "never"
+
+  defp worktree_enabled?(worktree) when is_map(worktree),
+    do: Map.get(worktree, "enabled") != false
+
+  defp worktree_enabled?(_worktree), do: true
 
   defp validate_phase_actions!(phase, index, path) do
     actions =

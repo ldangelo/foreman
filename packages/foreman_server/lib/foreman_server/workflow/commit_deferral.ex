@@ -47,11 +47,30 @@ defmodule ForemanServer.Workflow.CommitDeferral do
       0
   """
   @spec pending_phase(list()) :: non_neg_integer() | nil
-  def pending_phase(phases) when is_list(phases) do
+  def pending_phase(phases) when is_list(phases), do: fold_pending(phases, &deferred?/1)
+  def pending_phase(_other), do: nil
+
+  @doc """
+  The same predicate over NORMALIZED `PhaseSpec` maps, which carry the atom key
+  `:commit` rather than the manifest's `"commit"`.
+
+  Two entry points rather than one function reading both keys: the two shapes
+  are two different boundaries — `Interpreter` reads a manifest it just parsed,
+  `RunExecutor` reads specs normalized from a JSON-round-tripped snapshot — and
+  a `Map.get(m, :commit) || Map.get(m, "commit")` hedge would leave neither
+  boundary owning the convention (AGENTS.md §5.4). Here each caller names the
+  shape it actually holds, and the shared fold guarantees they cannot disagree
+  about what "pending" MEANS, which is the property that matters.
+  """
+  @spec pending_phase_spec(list()) :: non_neg_integer() | nil
+  def pending_phase_spec(specs) when is_list(specs), do: fold_pending(specs, &spec_deferred?/1)
+  def pending_phase_spec(_other), do: nil
+
+  defp fold_pending(phases, deferred?) do
     phases
     |> Enum.with_index()
     |> Enum.reduce(nil, fn {phase, index}, pending ->
-      if deferred?(phase) do
+      if deferred?.(phase) do
         # `pending || index` latches the FIRST index of an uncommitted run, so a
         # second consecutive deferral does not overwrite where the run started.
         pending || index
@@ -60,8 +79,6 @@ defmodule ForemanServer.Workflow.CommitDeferral do
       end
     end)
   end
-
-  def pending_phase(_other), do: nil
 
   @doc """
   Whether a phase defers its work.
@@ -73,4 +90,10 @@ defmodule ForemanServer.Workflow.CommitDeferral do
   @spec deferred?(term()) :: boolean()
   def deferred?(phase) when is_map(phase), do: Map.get(phase, "commit") == false
   def deferred?(_phase), do: false
+
+  # The normalized counterpart. `PhaseSpec.normalize/1` OMITS an absent key
+  # rather than storing `nil`, so `Map.get/2` returning `nil` here means the
+  # phase declared nothing — which commits.
+  defp spec_deferred?(spec) when is_map(spec), do: Map.get(spec, :commit) == false
+  defp spec_deferred?(_spec), do: false
 end
