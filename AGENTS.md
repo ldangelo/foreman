@@ -960,7 +960,7 @@ foreman task approve --id <task-id> --approved-by operator
 `command_gateway.ex`):**
 
 - The task must exist (`command_gateway.ex`'s `task.approve` clause of
-  `validate_aggregate_id`, 247-273, looks it up via
+  `validate_aggregate_id/1` looks it up via
   `ProjectionStore.task_projection/1`) and be `open` or `blocked`
   (`Task.require_approvable/1`, `task.ex:451-454`) — anything else,
   e.g. already `ready`/`in_progress`, is rejected as
