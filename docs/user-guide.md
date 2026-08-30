@@ -53,13 +53,15 @@ PR creation is not phase-driven; see
 [AutoPR](#pr-creation-and-merge-reconciliation) below.
 
 Each run executes in **one** git worktree, isolating one agent's edits from your
-main checkout and from every other concurrent run. The worktree is provisioned
-by the run's first phase at
+main checkout and from every other concurrent run. Unless the workflow says
+otherwise, the worktree is provisioned by the run's first phase at
 `~/.foreman/worktrees/<project-id>/<run-id>/workspace` on branch
-`foreman/<run-id>`, and every subsequent phase of the same run executes in that
-same checkout — so a later phase reads an earlier phase's documents as ordinary
-files. Foreman commits whatever each phase produced at the phase boundary, so
-the run branch accumulates the whole pipeline and is what AutoPR proposes.
+`foreman/<run-id>` — both are defaults, and a `worktree:` block may change the
+path and branch or switch provisioning off entirely (see below). Every
+subsequent phase of the same run executes in that same checkout — so a later
+phase reads an earlier phase's documents as ordinary files. Foreman commits
+whatever each phase produced at the phase boundary, so the run branch
+accumulates the whole pipeline and is what AutoPR proposes.
 
 The worktree is configured by a **workflow-level** `worktree:` block, declared at
 the top of the manifest beside `name:` and `phases:` — not on a phase. A run has
@@ -74,7 +76,7 @@ worktree:
   cleanup: never           # never | always | on_success
 phases:
   - name: create-prd
-    command: "..."
+    command: "/skill:create-prd"
 ```
 
 `cleanup` decides when the directory is reclaimed: `never` (the default) keeps

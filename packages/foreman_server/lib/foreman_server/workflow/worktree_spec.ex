@@ -78,7 +78,21 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
     Enum.reduce(@fields, %{}, &put_field(&1, raw, &2))
   end
 
-  def normalize(_other), do: nil
+  # A non-map declaration is MALFORMED, not absent, and the two must not share a
+  # return value: `nil` means "declared nothing, all defaults apply", so mapping
+  # `worktree: "yes"` onto it silently provisions the default-ON worktree for a
+  # manifest nobody could read. That is the absent-vs-malformed conflation
+  # AGENTS.md 5.3 forbids, and it contradicts this module's own reason for
+  # existing — `fetch_any/2` above goes out of its way to distinguish "absent"
+  # from "present and falsy".
+  #
+  # `Interpreter.validate_worktree!/2` already rejects a non-map at load, so
+  # reaching here with one means the value bypassed that boundary: a programming
+  # error, which 5.3 says to raise on rather than encode as a return value.
+  def normalize(other) do
+    raise ArgumentError,
+          "worktree declaration must be a mapping or absent, got: #{inspect(other)}"
+  end
 
   defp put_field({key, sources}, source_map, acc) do
     case fetch_any(source_map, sources) do

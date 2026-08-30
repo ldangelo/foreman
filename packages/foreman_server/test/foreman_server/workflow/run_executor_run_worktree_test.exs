@@ -99,6 +99,19 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
       assert RunExecutor.__worktree_cleanup_for_test__(%{cleanup: :always}) == {:ok, :always}
     end
 
+    # `on_success` was missing from this table, and its absence is not cosmetic:
+    # the function once matched only "never" and sent everything else to
+    # `:always`, so a manifest asking to KEEP a failed run's checkout for
+    # forensics had it deleted — the exact inversion `on_success` exists to
+    # prevent. A regression restoring that mapping passed the suite above.
+    test "on_success is a third mode, never an alias for always" do
+      assert RunExecutor.__worktree_cleanup_for_test__(%{cleanup: "on_success"}) ==
+               {:ok, :on_success}
+
+      assert RunExecutor.__worktree_cleanup_for_test__(%{cleanup: :on_success}) ==
+               {:ok, :on_success}
+    end
+
     # A misspelled declaration must not read as a working one that quietly does
     # the opposite (AGENTS.md 5.2/5.3).
     test "an unrecognized value is rejected, not defaulted" do

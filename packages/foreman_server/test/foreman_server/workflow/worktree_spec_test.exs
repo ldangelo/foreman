@@ -14,9 +14,19 @@ defmodule ForemanServer.Workflow.WorktreeSpecTest do
       assert WorktreeSpec.normalize(nil) == nil
     end
 
-    test "a non-map declaration normalizes to nil rather than raising" do
-      assert WorktreeSpec.normalize("yes") == nil
-      assert WorktreeSpec.normalize(42) == nil
+    # This test previously asserted the OPPOSITE — that a non-map "normalizes to
+    # nil rather than raising" — which pinned a silent-default bug as if it were
+    # the contract. `nil` means "declared nothing, all defaults apply", so a
+    # malformed declaration became the default-ON worktree. Malformed is not
+    # absent (AGENTS.md 5.3), and this module exists to keep those apart.
+    test "a non-map declaration raises instead of collapsing to absent" do
+      assert_raise ArgumentError, ~r/must be a mapping or absent/, fn ->
+        WorktreeSpec.normalize("yes")
+      end
+
+      assert_raise ArgumentError, ~r/must be a mapping or absent/, fn ->
+        WorktreeSpec.normalize(42)
+      end
     end
 
     test "a string-keyed (replayed) block normalizes to atom keys" do

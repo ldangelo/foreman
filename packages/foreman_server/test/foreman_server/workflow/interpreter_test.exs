@@ -225,6 +225,27 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                    fn -> Workflow.Interpreter.load!(path) end
     end
 
+    test "refuses an unrecognized worktree key instead of dropping it" do
+      # `WorktreeSpec.normalize/1` keeps only recognized keys, so a misspelling
+      # used to validate, get dropped, and hand the executor a spec saying
+      # nothing — provisioning the DEFAULT-ON worktree for a manifest that
+      # plainly asked for none. A typo must not be a silent behavior change.
+      path =
+        write_temp_yaml!("""
+        name: typo
+        description: misspelled key
+        worktree:
+          enabeld: false
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/unrecognized key \"enabeld\"/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
     test "parses a top-level nested mapping into a string-keyed map" do
       # The workflow-level `worktree:` block only works because the root parser
       # learned to nest. Previously only `phases:` could introduce a nested

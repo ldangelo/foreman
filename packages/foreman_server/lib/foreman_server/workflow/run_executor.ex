@@ -244,6 +244,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
                 )
 
                 finalize_terminal_and_stop(state, {:initialization_failed, reason})
+
+              # The phase provisioned a worktree and then failed. Finalize with
+              # THAT state, not the pre-phase one, or `cleanup_run_worktree/2`
+              # cannot see the checkout it is supposed to reclaim.
+              {:error, reason, phase_state} ->
+                Logger.error(
+                  "RunExecutor #{state.run_id} start_phase_at_index(0) failed: #{inspect(reason)}"
+                )
+
+                finalize_terminal_and_stop(phase_state, {:initialization_failed, reason})
             end
 
           {:error, reason} ->
@@ -260,7 +270,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case start_phase_at_index(state, index) do
       {:ok, next_state} -> {:noreply, next_state}
       {:noop, next_state} -> {:noreply, next_state}
-      {:error, reason} -> finalize_terminal_and_stop(state, {:phase_start_failed, index, reason})
+      {:error, reason} ->
+        finalize_terminal_and_stop(state, {:phase_start_failed, index, reason})
+
+      # Worktree-bearing state from a failed phase — see `run_single_phase/3`.
+      {:error, reason, phase_state} ->
+        finalize_terminal_and_stop(phase_state, {:phase_start_failed, index, reason})
     end
   end
 
@@ -360,14 +375,24 @@ defmodule ForemanServer.Workflow.RunExecutor do
       # There is deliberately no per-phase cleanup here. The worktree belongs to
       # the run, so tearing it down at a phase boundary would destroy the very
       # checkout the next phase is meant to continue in. Disk is reclaimed once,
-      # by `cleanup_run_worktree/1` in `finalize_run/1`, and by the `RunDeleted`
+      # by `cleanup_run_worktree/2` in `finalize_run/1`, and by the `RunDeleted`
       # fan-out (`Worktree.clean_for_run/1`) for runs that end some other way.
       state =
         state
         |> remember_run_worktree(worktree_record)
         |> remember_worktree(worktree_record)
 
-      run_phase_body(state, phase_spec, index, phase_index, worktree_record)
+      # The worktree record lives ONLY in this local `state` until the phase
+      # succeeds and `run_phase_body/5` hands it back. A failing phase body used
+      # to return a bare `{:error, reason}`, so the callers in `handle_info/2`
+      # fell back to their PRE-phase state and `cleanup_run_worktree/2` looked
+      # for a `:run_worktree` that state had never seen — leaving the checkout on
+      # disk for a run that declared `cleanup: always`. Carry the state out with
+      # the error so the declared policy applies to the failure path too.
+      case run_phase_body(state, phase_spec, index, phase_index, worktree_record) do
+        {:error, reason} -> {:error, reason, state}
+        other -> other
+      end
     else
       {:error, reason} = err ->
         case emit_phase_failure(state, phase_spec, phase_index, reason) do

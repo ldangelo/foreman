@@ -1638,9 +1638,11 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     run_git!(["-C", repo_path, "rev-parse", "--verify", branch]) |> String.trim()
   end
 
-  # Mirrors `RunExecutor.default_worktree_path_for/2`: the run's single
-  # worktree lives at a fixed leaf, so the path is derivable from the run id
-  # alone and a test can drive the agent's own checkout.
+  # Mirrors `RunExecutor.run_worktree_path/3`: the run's single worktree lives at
+  # a fixed leaf, so the path is derivable from the run id alone and a test can
+  # drive the agent's own checkout. (Named for `default_worktree_path_for/3`,
+  # which this change DELETED along with `worktree_path_for/4` — a reader
+  # following the old name lands on nothing.)
   defp default_worktree_path(project_id, run_id) do
     Path.join([System.user_home!(), ".foreman/worktrees", project_id, run_id, "workspace"])
   end

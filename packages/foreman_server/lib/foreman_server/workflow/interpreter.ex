@@ -293,7 +293,28 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
+  # The five keys `WorktreeSpec.@fields` reads. Anything else is refused rather
+  # than ignored: `WorktreeSpec.normalize/1` keeps only recognized keys, so a
+  # misspelling like `enabeld: false` would validate, get dropped in
+  # normalization, and hand the executor a spec that says nothing — provisioning
+  # the DEFAULT-ON worktree for a manifest that plainly asked for no worktree.
+  # A typo must not be a silent behavior change (AGENTS.md 5.2).
+  @worktree_keys ~w(enabled base branch path cleanup)
+
   defp validate_worktree_map!(path, worktree) do
+    case Map.keys(worktree) -- @worktree_keys do
+      [] ->
+        :ok
+
+      unknown ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} \"worktree\" has unrecognized " <>
+              "#{if length(unknown) == 1, do: "key", else: "keys"} " <>
+              "#{Enum.map_join(Enum.sort(unknown), ", ", &inspect/1)}; " <>
+              "supported: #{Enum.join(@worktree_keys, ", ")}"
+    end
+
     case Map.get(worktree, "enabled") do
       value when value in [nil, true, false, "true", "false"] ->
         :ok

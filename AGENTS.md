@@ -172,8 +172,9 @@ default.** `RunExecutor.remember_run_base_branch/1` records it once, when the
 run's FIRST phase starts, as `git symbolic-ref --quiet --short HEAD` of
 `vcs_working_directory/1` — the same checkout AutoPR later runs `git rev-list`,
 `git push`, and `gh pr create` in, read at the same moment
-`create_run_worktree/2` resolves the run worktree's `base_ref` from `HEAD` of
-that checkout, so branch name and base commit describe one repository state. It
+`resolve_run_base/2` reads that same checkout's `HEAD` to give the run worktree
+its `base_ref` (the worktree is PINNED to that commit; it does not supply it),
+so branch name and base commit describe one repository state. It
 is latched on key presence, so an operator switching branches mid-run cannot
 retarget the PR, and it does not hang off `remember_worktree/2` — a workflow
 declaring `worktree: enabled: false` provisions no worktree yet can still land
@@ -623,6 +624,7 @@ backend = Map.get(args, :backend)
 
 Only convert keys the schema declares, so caller input can never mint atoms.
 A string key arriving past that boundary is a programming error: raise.
+
 ### 5.4b Normalize parameters — whitelist known keys, drop unknowns
 
 Every caller-facing function that accepts a map parameter MUST normalize its
