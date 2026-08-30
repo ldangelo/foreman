@@ -987,6 +987,26 @@ foreman task approve --id <task-id> --approved-by operator
   `command_id` downstream, so there is no second event to prevent. The
   guard governs NEW approvals only.
 
+  The `dependencies` value itself must be a list. `task.create` refuses a
+  present non-list as `{:invalid_envelope, :invalid_dependencies}`; absence
+  is still fine, since absent and malformed are different (§5.3). A
+  malformed value already in the store from before that validation existed
+  refuses the APPROVAL as `{:task_dependencies_malformed, value}` rather
+  than raising in the read model: `ProjectionStore.init/1` rebuilds
+  projections from the event log, so raising would turn one bad historical
+  event into an application boot failure — the `WorkerStdout` failure in
+  "Durable Run Logs" below, repeated.
+
+  This mattered concretely. The read model first carried the field as
+  `event.dependencies || []`, which is the shape §5.4b names explicitly:
+  `false || []` yields `[]` exactly as `nil || []` does. A `task.create`
+  carrying `dependencies: false` returned `{:ok, ...}`, stored `false` on
+  the event, projected `[]`, and approved and dispatched with no dependency
+  check at all — the same inertness this guard closes, re-entered through
+  malformed input. Verified by probe before and after, not reasoned about.
+  The projection now PRESERVES a non-list so the guard can refuse it;
+  flattening bad data into a valid-looking default is what caused this.
+
   This check did not exist until it was added deliberately, and the way
   it was missing is instructive. `task.create` accepted `dependencies`
   (`task.ex:93`), `CommandGateway` defaulted it (the `task.create` clause

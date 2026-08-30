@@ -253,6 +253,17 @@ defmodule ForemanServer.CommandGateway do
       aggregate_id != stream_id("task", task_id) ->
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
+      # A non-list `dependencies` is refused at the boundary rather than
+      # normalized, because every downstream default turns it into "no
+      # dependencies" — the read model used `|| []`, which per AGENTS.md §5.4b
+      # collapses `false` and `nil` alike and loses the signal. A task created
+      # with `dependencies: false` then approved and dispatched with no checks
+      # at all, which is precisely the inertness the guard exists to close,
+      # re-entered through malformed input. Absent stays absent; anything
+      # present must be a list (§5.3: absent and malformed are different).
+      not valid_dependencies?(get_value(payload, :dependencies)) ->
+        {:error, {:invalid_envelope, :invalid_dependencies}}
+
       is_binary(project_id) and project_id != "" ->
         case ProjectionStore.project_projection(project_id) do
           nil -> {:error, {:project_not_found, project_id}}
@@ -328,12 +339,34 @@ defmodule ForemanServer.CommandGateway do
     if Map.get(task, :approval_id) == Map.get(command, :command_id) do
       :ok
     else
-      case unsatisfied_dependencies(Map.get(task, :dependencies) || []) do
-        [] -> :ok
-        unsatisfied -> {:error, {:task_dependencies_unsatisfied, unsatisfied}}
+      case Map.get(task, :dependencies) do
+        nil ->
+          :ok
+
+        dependency_ids when is_list(dependency_ids) ->
+          case unsatisfied_dependencies(dependency_ids) do
+            [] -> :ok
+            unsatisfied -> {:error, {:task_dependencies_unsatisfied, unsatisfied}}
+          end
+
+        malformed ->
+          # `task.create` now refuses a non-list, but events written before that
+          # validation existed are already in the store, and a read model cannot
+          # raise on replay — `ProjectionStore.init/1` rebuilds from the event
+          # log, so raising here would turn one bad historical event into a boot
+          # failure for the whole application (the `WorkerStdout` lesson in
+          # AGENTS.md, Durable Run Logs). Refusing the APPROVAL instead keeps the
+          # blast radius at the one task and still cannot dispatch unchecked.
+          {:error, {:task_dependencies_malformed, malformed}}
       end
     end
   end
+
+  # Absent is a valid declaration; present-but-not-a-list is not. Deliberately
+  # not `is_list(x) or is_nil(x)` folded into a default — see the §5.4b note at
+  # the `task.create` clause on why `|| []` is the wrong shape here.
+  defp valid_dependencies?(nil), do: true
+  defp valid_dependencies?(value), do: is_list(value)
 
   # Each unsatisfied dependency is reported with WHY, because "absent" and
   # "present but unfinished" need different operator actions (AGENTS.md §5.3):

@@ -82,6 +82,66 @@ defmodule ForemanServer.TaskDependencyGuardTest do
 
       assert %{dependencies: []} = ProjectionStore.task_projection("dep-none")
     end
+
+    test "a non-list value is PRESERVED, never flattened to the empty list" do
+      # The bug this replaced: `event.dependencies || []` returned `[]` for
+      # `false` exactly as it did for `nil` (AGENTS.md §5.4b), so a malformed
+      # declaration reached the guard as "no dependencies" and approval
+      # dispatched with no checks whatsoever.
+      seed_task("dep-malformed", "open", dependencies: false)
+
+      assert %{dependencies: false} = ProjectionStore.task_projection("dep-malformed")
+    end
+  end
+
+  describe "a non-list dependencies value" do
+    test "is refused by task.create at the envelope boundary" do
+      assert {:error, {:invalid_envelope, :invalid_dependencies}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-bad-deps-#{System.unique_integer([:positive])}",
+                 aggregate_id: "task:dep-bad-create",
+                 type: "task.create",
+                 payload: %{
+                   task_id: "dep-bad-create",
+                   project_id: "project-dep",
+                   title: "bad",
+                   task_type: "task",
+                   dependencies: false
+                 }
+               })
+    end
+
+    test "an absent declaration is still accepted, since absent is not malformed" do
+      # The validation must reject only a PRESENT non-list. Rejecting absence
+      # would break every task ever created, which is nearly all of them.
+      refute match?(
+               {:error, {:invalid_envelope, :invalid_dependencies}},
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cid-no-deps-#{System.unique_integer([:positive])}",
+                 aggregate_id: "task:dep-absent-create",
+                 type: "task.create",
+                 payload: %{
+                   task_id: "dep-absent-create",
+                   project_id: "project-dep",
+                   title: "fine",
+                   task_type: "task"
+                 }
+               })
+             )
+    end
+
+    test "refuses the approval when it is already in the store from a historical event" do
+      # `task.create` now rejects these, but events written before that
+      # validation existed keep theirs. The read model cannot raise on replay —
+      # `ProjectionStore.init/1` rebuilds from the event log, so one bad
+      # historical event would become an application boot failure (the
+      # WorkerStdout lesson). The approval refuses instead, containing the blast
+      # radius to the one task while still refusing to dispatch unchecked.
+      seed_task("dep-waiter-malformed", "open", dependencies: false)
+
+      assert {:error, {:task_dependencies_malformed, false}} =
+               approve("dep-waiter-malformed")
+    end
   end
 
   describe "approval is refused while a dependency is unfinished" do

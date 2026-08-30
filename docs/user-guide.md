@@ -373,6 +373,13 @@ An idempotent approval retry — re-sending the same `command_id` for an approva
 that already committed — bypasses the check entirely, so a dependency that has
 since been reopened cannot turn a succeeded approval into a reported failure.
 
+The value must be a list. Since it is settable only through a raw JSON payload
+(see below), `task.create` refuses a present non-list up front as
+`{:invalid_envelope, :invalid_dependencies}` — omitting the field is still fine.
+A malformed value stored before that validation existed refuses the approval as
+`{:task_dependencies_malformed, value}` rather than being silently read as "no
+dependencies".
+
 This is a guard, not a scheduler. Nothing dispatches the task automatically when
 its last dependency closes — re-run `foreman task approve` yourself. There is
 also no ordering or cycle detection.
