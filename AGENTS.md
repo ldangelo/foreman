@@ -682,7 +682,8 @@ dispatch returns `{:error, {:command_not_allowed, "inbox.send"}}`),
 `CommandRouter.aggregate_module_for/1` has no `"inbox:"` clause, no module
 referenced it, no event struct existed for either event, `ProjectionStore` had
 no handler, and no HTTP route or MCP tool exposed a read path. Its only
-reference repo-wide was its own `defmodule` line.
+reference in any source file was its own `defmodule` line — prose in
+`docs/cli-reference.md` named it, which is exactly how it survived.
 
 It has been deleted rather than wired: wiring it is a feature — allowlist entry,
 router clause, event structs, projection handler, read surface, retention — and
