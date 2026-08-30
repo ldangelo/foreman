@@ -24,8 +24,18 @@ defmodule ForemanServer.Workflow.CommitWarningTest do
     %{run_id: "run-warn", phase_specs: specs, completed: completed, run_worktree: nil}
   end
 
+  # `refute_warned/2` rather than `assert capture_log(...) == ""`. In an async
+  # case `capture_log/1` also captures lines emitted by tests running
+  # concurrently in other modules, so an emptiness assertion passes or fails on
+  # unrelated timing — it failed exactly once here on a line from another suite.
+  # Asserting the ABSENCE OF THIS WARNING is both what the contract says and
+  # immune to that bleed.
   defp warn(specs, completed) do
     capture_log(fn -> RunExecutor.__warn_uncommitted_work_for_test__(state(specs, completed)) end)
+  end
+
+  defp refute_warned(specs, completed) do
+    refute warn(specs, completed) =~ "left work uncommitted"
   end
 
   defp temp_yaml!(body) do
@@ -109,12 +119,11 @@ defmodule ForemanServer.Workflow.CommitWarningTest do
       # ignore it.
       log = warn([%{name: "draft", commit: false}, %{name: "final", commit: true}], [0, 1])
 
-      assert log == ""
+      refute log =~ "left work uncommitted"
     end
 
     test "is silent for a run whose phases all commit" do
-      log = warn([%{name: "a", commit: true}, %{name: "b"}], [0, 1])
-      assert log == ""
+      refute_warned([%{name: "a", commit: true}, %{name: "b"}], [0, 1])
     end
   end
 
@@ -136,20 +145,25 @@ defmodule ForemanServer.Workflow.CommitWarningTest do
 
     test "is silent for a run that failed before any phase completed" do
       # Nothing executed, so nothing was deferred. A warning would be false.
-      assert warn([%{name: "draft", commit: false}], []) == ""
+      refute_warned([%{name: "draft", commit: false}], [])
     end
 
     test "is silent when the failure came after the absorbing phase ran" do
       specs = [%{name: "draft", commit: false}, %{name: "final", commit: true}, %{name: "extra"}]
 
-      assert warn(specs, [0, 1]) == ""
+      refute_warned(specs, [0, 1])
     end
   end
 
   describe "totality" do
     test "a run carrying no phase specs does not raise" do
-      assert warn([], []) == ""
-      assert capture_log(fn -> RunExecutor.__warn_uncommitted_work_for_test__(%{run_id: "r"}) end)
+      refute_warned([], [])
+
+      # A state with no :phase_specs key at all — the shape a run reaching
+      # terminal before initialization would carry.
+      assert capture_log(fn ->
+               RunExecutor.__warn_uncommitted_work_for_test__(%{run_id: "r"})
+             end) =~ ""
     end
   end
 end

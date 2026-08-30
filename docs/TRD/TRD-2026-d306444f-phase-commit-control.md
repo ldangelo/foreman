@@ -274,6 +274,37 @@ left uncommitted, without consulting server-wide logs. The messages carry
 structured `phase_index` and `deferred_from` fields, so the planned
 Telegram/Slack channel can deliver them without this feature changing.
 
+> **DROPPED, not deferred (note added after PRs 1 and 2 shipped; the tasks below
+> are left as written).** Every task in this PR rests on `inbox.send` being a
+> working command. It is not. `ForemanServer.Aggregates.InboxThread` handles it
+> and applies `InboxMessageAppended`, but `CommandRouter.aggregate_module_for/1`
+> (`command_router.ex:571-588`) has no `"inbox:"` clause and no catch-all, so the
+> dispatch raises `FunctionClauseError`; there are zero callers in `lib/` or
+> `test/`; `ProjectionStore` has no `InboxMessageAppended` handler; and nothing
+> in `router.ex` or `mcp/tools.ex` exposes a per-run inbox. So neither the write
+> half of TRD-011 nor the read half of AC-012-1 is reachable, and the 7.5h
+> estimate below priced neither the routing clause, the projection, nor a read
+> surface.
+>
+> The gap is tracked as `foreman-q5bm`, whose first question is whether to wire
+> the aggregate or delete it — a decision about dormant infrastructure, not about
+> this feature. Wiring it here would have made a dormant aggregate load-bearing
+> as a side effect of a Should/value-3 requirement.
+>
+> Two alternatives were considered and rejected. Routing the notices into the
+> durable run-log store is readable per run, but `AGENTS.md` forbids it: only
+> `WorkerProtocol.emit(:worker_stdout | :worker_stderr, …)` may produce run log
+> entries, and copying server `Logger` output there is named as prohibited.
+> Emitting structured telemetry instead would satisfy AC-007-3's structured
+> fields and give the planned channel an attach point, but not AC-007-1/2's
+> "operator reads that run's inbox" — so it would be a different requirement
+> wearing REQ-007's name.
+>
+> REQ-006's durable warning ships in PR 2 and is unaffected, which is what
+> AC-006 and AC-012-3 were separated to guarantee: the log warning does not
+> depend on the inbox existing. PRs 1 and 2 deliver REQ-001 through REQ-006,
+> REQ-008 and REQ-009 — the feature is functionally complete.
+
 - [ ] **TRD-011**: Emit a per-phase deferral notice via `inbox.send` when a phase completes with `commit: false`, naming the phase [satisfies REQ-007] [depends: TRD-009] (2.5h)
   - Validates PRD ACs: AC-007-1
   - Implementation AC:
