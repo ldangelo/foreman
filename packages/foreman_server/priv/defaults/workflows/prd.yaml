@@ -27,10 +27,19 @@ worktree:
 # `true`.
 #
 # Every phase here commits, so each document lands as its own reviewable commit
-# on the run branch. Deferral is not free: `commit: false` is rejected at load
-# if a `requiredFile:` phase would run with the work still pending (the
-# discovery gate would capture the predecessor's document as the successor's
-# own) or if no later phase commits at all (AutoPR proposes commits only).
+# on the run branch. Deferral is refused at load in exactly one case: the
+# manifest's LAST phase defers AND the worktree `cleanup:` is `always` or
+# `on_success`, because reclaiming the checkout would destroy work no phase ever
+# committed. Deferring under `cleanup: never` (as configured above) is
+# supported — the work survives in the worktree for a human to inspect, and
+# `RunExecutor` warns at run end that it was left uncommitted.
+#
+# Two earlier refusals are gone and should not be re-derived from older
+# comments: `commit: false` before a `requiredFile:` phase is allowed (that gate
+# discovers documents by git status against the phase's base, so a predecessor's
+# uncommitted work is correctly not seen as the successor's own), and a manifest
+# where no phase commits at all is allowed (AutoPR proposes nothing, which is a
+# legitimate stage-for-review outcome rather than an error).
 phases:
   - name: create-prd
     command: "/skill:ensemble-full-create-prd --foreman"

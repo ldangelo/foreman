@@ -46,9 +46,17 @@ defmodule ForemanServer.Workflow.CommitDeferral do
       iex> pending_phase([%{"commit" => false}, %{"commit" => false}])
       0
   """
+  # No catch-all clause, deliberately. A non-list has no answer to "which phase
+  # left work pending", and returning `nil` would report the SAFE answer — no
+  # deferral — for input this module cannot read. That answer suppresses the
+  # uncommitted-work warning and the unsatisfiable-cleanup refusal both, so the
+  # one shape that must never be guessed would be guessed silently. Both callers
+  # hold a validated list of maps (`Interpreter` a manifest it just parsed,
+  # `RunExecutor` specs from `executed_phase_specs/1`), so anything else is a
+  # programming error and `FunctionClauseError` is the correct outcome
+  # (AGENTS.md §5.2: a crash beats a lie).
   @spec pending_phase(list()) :: non_neg_integer() | nil
   def pending_phase(phases) when is_list(phases), do: fold_pending(phases, &deferred?/1)
-  def pending_phase(_other), do: nil
 
   @doc """
   The same predicate over NORMALIZED `PhaseSpec` maps, which carry the atom key
@@ -64,7 +72,6 @@ defmodule ForemanServer.Workflow.CommitDeferral do
   """
   @spec pending_phase_spec(list()) :: non_neg_integer() | nil
   def pending_phase_spec(specs) when is_list(specs), do: fold_pending(specs, &spec_deferred?/1)
-  def pending_phase_spec(_other), do: nil
 
   defp fold_pending(phases, deferred?) do
     phases
@@ -86,14 +93,16 @@ defmodule ForemanServer.Workflow.CommitDeferral do
   Only a literal boolean `false` defers. An ABSENT `commit:` key commits, and is
   deliberately not the same thing as `commit: false` — `Interpreter` refuses any
   other value at load, so a non-boolean never reaches here.
+
+  A non-map phase raises rather than answering `false`, for the reason given on
+  `pending_phase/1`: "this phase commits" is not a safe default to invent for an
+  entry that cannot be read.
   """
-  @spec deferred?(term()) :: boolean()
+  @spec deferred?(map()) :: boolean()
   def deferred?(phase) when is_map(phase), do: Map.get(phase, "commit") == false
-  def deferred?(_phase), do: false
 
   # The normalized counterpart. `PhaseSpec.normalize/1` OMITS an absent key
   # rather than storing `nil`, so `Map.get/2` returning `nil` here means the
   # phase declared nothing — which commits.
   defp spec_deferred?(spec) when is_map(spec), do: Map.get(spec, :commit) == false
-  defp spec_deferred?(_spec), do: false
 end
