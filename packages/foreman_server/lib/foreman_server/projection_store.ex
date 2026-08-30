@@ -1133,6 +1133,12 @@ defmodule ForemanServer.ProjectionStore do
           workflow_type: event.workflow_type,
           trd_path: event.trd_path,
           prompt: event.prompt,
+          # Carried because `CommandGateway` gates `task.approve` on it. Until
+          # this line existed the field was accepted by `task.create`, stored on
+          # the aggregate, and written onto `TaskCreated` — then dropped here, so
+          # no cross-task reader could see it and dependencies had no effect on
+          # anything.
+          dependencies: event.dependencies || [],
           provider_tracked: event.provider_tracked,
           approval_id: nil,
           approved_by: nil,

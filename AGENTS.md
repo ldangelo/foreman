@@ -967,6 +967,39 @@ foreman task approve --id <task-id> --approved-by operator
   `:task_not_approvable`.
 - The `trd_path` (if the task carries one) must be a committed git blob
   at `HEAD`.
+- Every task id in the task's `dependencies` list must be a task whose
+  status is `closed` (`CommandGateway.require_dependencies_satisfied/1`).
+  Anything else is rejected as
+  `{:task_dependencies_unsatisfied, [{id, reason}]}`, listing EVERY
+  unsatisfied dependency in declaration order with its reason — a status
+  string, `:not_found` for an id with no task, or `:malformed` for a
+  non-binary id. Note `failed` does NOT satisfy: it is terminal but did
+  not produce the work the dependent task needs.
+
+  This check did not exist until it was added deliberately, and the way
+  it was missing is instructive. `task.create` accepted `dependencies`
+  (`task.ex:93`), `CommandGateway` defaulted it (`command_gateway.ex:680`),
+  the aggregate stored it (`task.ex:37,69`) and `TaskCreated` carried it
+  (`task_created.ex:37`) — but `Task.require_dispatchable/1`
+  (`task.ex:461-470`) reads only `status`, `run_id` and `approval_id`, and
+  `ProjectionStore`'s `TaskCreated` handler dropped the field entirely. So
+  the whole path existed except the read, and a task declaring
+  dependencies dispatched immediately regardless of them. Do not treat the
+  presence of a field on a command, an aggregate and an event as evidence
+  that anything consumes it — the same lesson as `FOREMAN_ARTIFACT_PATH`
+  and `foreman_queue_status`.
+
+  It is a GUARD, not a dependency DAG: no ordering, no cycle detection,
+  and no automatic dispatch when the last dependency closes. The operator
+  re-approves. It lives in `CommandGateway` rather than the aggregate
+  because it is inherently cross-aggregate — `Task` can see only its own
+  state — and `ProjectionStore` is the read model built for that, which
+  the `task.create` clause already uses for `project_projection/1`.
+  Relatedly, `Task.apply_event/2` has a `TaskDependencyAdded` clause
+  (`task.ex:150`) that NOTHING emits: only eight `task.*` commands are
+  handled and none produces that event, so dependencies can be set at
+  creation and never afterwards. Left in place rather than deleted, but do
+  not read it as a working mutation path.
 - Approval does **not** re-check the project's archived status —
   unlike `task.create` (`command_gateway.ex:236-239`,
   `task.ex:512-518`), no project-archived check runs on the

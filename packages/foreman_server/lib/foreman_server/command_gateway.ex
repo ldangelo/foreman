@@ -288,9 +288,59 @@ defmodule ForemanServer.CommandGateway do
       true ->
         case ProjectionStore.task_projection(task_id) do
           nil -> {:error, {:task_not_found, task_id}}
-          _ -> :ok
+          task -> require_dependencies_satisfied(task)
         end
     end
+  end
+
+  # Approval is the transition that triggers dispatch, so it is the only place a
+  # declared dependency can still change the outcome. `task.create` accepted
+  # `dependencies`, the aggregate stored them, and `TaskCreated` carried them —
+  # but `Task.require_dispatchable/1` reads only `status`, `run_id` and
+  # `approval_id`, so a task declaring dependencies dispatched immediately
+  # regardless of whether any of them had finished. The field was inert for its
+  # entire life while reading as a working feature.
+  #
+  # The guard lives here rather than in the aggregate because it is inherently
+  # cross-aggregate: `Task` can only see its OWN state, and asking it about other
+  # tasks would either break the aggregate boundary or require replaying foreign
+  # streams. `ProjectionStore` is the read model built for exactly this, and the
+  # `task.create` clause above already reads `project_projection/1` the same way.
+  #
+  # Deliberately NOT a dependency DAG: no ordering, no cycle detection, no
+  # automatic dispatch when the last dependency closes. This refuses an approval
+  # that cannot honour its own declaration, and nothing more. An operator
+  # re-approves once the dependencies are closed.
+  defp require_dependencies_satisfied(task) do
+    case unsatisfied_dependencies(Map.get(task, :dependencies) || []) do
+      [] -> :ok
+      unsatisfied -> {:error, {:task_dependencies_unsatisfied, unsatisfied}}
+    end
+  end
+
+  # Each unsatisfied dependency is reported with WHY, because "absent" and
+  # "present but unfinished" need different operator actions (AGENTS.md §5.3):
+  # a missing id is a typo or a task never created, while `in_progress` just
+  # means wait. `closed` is the only success status — `failed` is terminal but
+  # did not produce the work this task depends on, so approving on it would
+  # dispatch against a dependency that never delivered.
+  defp unsatisfied_dependencies(dependency_ids) do
+    dependency_ids
+    |> Enum.reduce([], fn dependency_id, acc ->
+      # A malformed id is reported, never skipped. Dropping it would make
+      # `dependencies: [nil]` approve as though nothing were declared — the same
+      # silent-inertness class this whole guard exists to close.
+      if is_binary(dependency_id) and dependency_id != "" do
+        case ProjectionStore.task_projection(dependency_id) do
+          nil -> [{dependency_id, :not_found} | acc]
+          %{status: "closed"} -> acc
+          %{status: status} -> [{dependency_id, status} | acc]
+        end
+      else
+        [{dependency_id, :malformed} | acc]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   defp validate_aggregate_id(%{type: "task.retry", aggregate_id: aggregate_id, payload: payload}) do
