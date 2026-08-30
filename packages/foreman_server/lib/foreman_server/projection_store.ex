@@ -1133,6 +1133,24 @@ defmodule ForemanServer.ProjectionStore do
           workflow_type: event.workflow_type,
           trd_path: event.trd_path,
           prompt: event.prompt,
+          # Carried because `CommandGateway` gates `task.approve` on it. Until
+          # this line existed the field was accepted by `task.create`, stored on
+          # the aggregate, and written onto `TaskCreated` — then dropped here, so
+          # no cross-task reader could see it and dependencies had no effect on
+          # anything.
+          #
+          # `event.dependencies || []` was wrong and is exactly the shape
+          # AGENTS.md §5.4b names: `false || []` returns `[]` just as `nil || []`
+          # does, so a malformed value arrived here as "no dependencies" and the
+          # approval guard waved it through. Verified before fixing — a
+          # `task.create` carrying `dependencies: false` returned `{:ok, ...}`,
+          # the event stored `false`, and this projection reported `[]`.
+          # `task.create` now refuses a non-list, but historical events keep
+          # theirs, so the malformed value is PRESERVED here rather than
+          # flattened; the guard refuses that approval by its own clause. A read
+          # model must not raise on replay (`ProjectionStore.init/1` rebuilds
+          # from the event log), and must not launder bad data either.
+          dependencies: normalize_dependencies(event.dependencies),
           provider_tracked: event.provider_tracked,
           approval_id: nil,
           approved_by: nil,
@@ -2111,6 +2129,14 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp init_now_ms_fun(_init_arg), do: resolve_now_ms_fun()
+
+  # An ABSENT declaration reads as the empty list, because "declared nothing"
+  # and "declared an empty list" mean the same thing to the approval guard. A
+  # non-list is passed through UNCHANGED so the guard can refuse it: collapsing
+  # it to `[]` here is the bug this replaced, and it read as "no dependencies".
+  defp normalize_dependencies(nil), do: []
+  defp normalize_dependencies(dependency_ids) when is_list(dependency_ids), do: dependency_ids
+  defp normalize_dependencies(malformed), do: malformed
 
   defp normalize_now_ms_fun(nil), do: resolve_now_ms_fun()
 

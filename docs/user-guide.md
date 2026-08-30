@@ -359,6 +359,40 @@ For arbitrary server workflow manifests (e.g. `implement-trd`,
 followed by `foreman task approve` instead — those need a `--trd-path`,
 which `run submit` does not accept.
 
+### Task dependencies at approval
+
+A task may carry a `dependencies` list of other task ids. `foreman task approve`
+refuses while any of them is not `closed`, reporting
+`{:task_dependencies_unsatisfied, [{id, reason}]}` with **every** unsatisfied
+dependency in declaration order — a status string, `:not_found` for an id with no
+task, or `:malformed` for a non-string id or an empty string. `failed` does not
+satisfy: the dependency is finished but did not produce the work the dependent
+task needs.
+
+An idempotent approval retry — re-sending the same `command_id` for an approval
+that already committed — bypasses the check entirely, so a dependency that has
+since been reopened cannot turn a succeeded approval into a reported failure.
+
+The value must be a list. Since it is settable only through a raw JSON payload
+(see below), `task.create` refuses a present non-list up front as
+`{:invalid_envelope, :invalid_dependencies}` — omitting the field is still fine.
+A malformed value stored before that validation existed refuses the approval as
+`{:task_dependencies_malformed, value}` rather than being silently read as "no
+dependencies".
+
+This is a guard, not a scheduler. Nothing dispatches the task automatically when
+its last dependency closes — re-run `foreman task approve` yourself. There is
+also no ordering or cycle detection.
+
+The Go CLI has no `--dependencies` flag, so the field is settable only through a
+raw `POST /api/commands` `task.create` payload, the same as `priority`. And
+dependencies can only be set at creation: no `task.*` command adds one to an
+existing task.
+
+Before this guard existed the list was accepted, stored, and written onto
+`TaskCreated` while nothing read it, so a task with unmet dependencies
+dispatched immediately.
+
 ### `foreman task retry --id <task-id> [--reason <text>]`
 
 Use `task.retry` only for a task whose bound run is already terminal.

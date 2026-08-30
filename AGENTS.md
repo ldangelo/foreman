@@ -960,13 +960,78 @@ foreman task approve --id <task-id> --approved-by operator
 `command_gateway.ex`):**
 
 - The task must exist (`command_gateway.ex`'s `task.approve` clause of
-  `validate_aggregate_id`, 247-273, looks it up via
+  `validate_aggregate_id/1` looks it up via
   `ProjectionStore.task_projection/1`) and be `open` or `blocked`
   (`Task.require_approvable/1`, `task.ex:451-454`) — anything else,
   e.g. already `ready`/`in_progress`, is rejected as
   `:task_not_approvable`.
 - The `trd_path` (if the task carries one) must be a committed git blob
   at `HEAD`.
+- Every task id in the task's `dependencies` list must be a task whose
+  status is `closed` (`CommandGateway.require_dependencies_satisfied/2`).
+  Anything else is rejected as
+  `{:task_dependencies_unsatisfied, [{id, reason}]}`, listing EVERY
+  unsatisfied dependency in declaration order with its reason — a status
+  string, `:not_found` for an id with no task, or `:malformed` for a
+  non-binary id **or an empty string**. Note `failed` does NOT satisfy: it
+  is terminal but did not produce the work the dependent task needs.
+
+  An idempotent approval retry is exempt: when the task projection already
+  records `approval_id == command_id`, the guard returns `:ok` without
+  reading dependencies at all. The module docstring promises a re-sent
+  command succeeds "even if the assets have since changed", and a
+  dependency's status is such an asset — approve while it is `closed`, let
+  `task.retry` return it to `open`, re-send the original command, and a
+  guard that judged the retry would report a failure that never happened.
+  The approval is already committed and the dispatch is deduplicated by
+  `command_id` downstream, so there is no second event to prevent. The
+  guard governs NEW approvals only.
+
+  The `dependencies` value itself must be a list. `task.create` refuses a
+  present non-list as `{:invalid_envelope, :invalid_dependencies}`; absence
+  is still fine, since absent and malformed are different (§5.3). A
+  malformed value already in the store from before that validation existed
+  refuses the APPROVAL as `{:task_dependencies_malformed, value}` rather
+  than raising in the read model: `ProjectionStore.init/1` rebuilds
+  projections from the event log, so raising would turn one bad historical
+  event into an application boot failure — the `WorkerStdout` failure in
+  "Durable Run Logs" below, repeated.
+
+  This mattered concretely. The read model first carried the field as
+  `event.dependencies || []`, which is the shape §5.4b names explicitly:
+  `false || []` yields `[]` exactly as `nil || []` does. A `task.create`
+  carrying `dependencies: false` returned `{:ok, ...}`, stored `false` on
+  the event, projected `[]`, and approved and dispatched with no dependency
+  check at all — the same inertness this guard closes, re-entered through
+  malformed input. Verified by probe before and after, not reasoned about.
+  The projection now PRESERVES a non-list so the guard can refuse it;
+  flattening bad data into a valid-looking default is what caused this.
+
+  This check did not exist until it was added deliberately, and the way
+  it was missing is instructive. `task.create` accepted `dependencies`
+  (`task.ex:93`), `CommandGateway` defaulted it (the `task.create` clause
+  of `enrich_operator_command/1`),
+  the aggregate stored it (`task.ex:37,69`) and `TaskCreated` carried it
+  (`task_created.ex:37`) — but `Task.require_dispatchable/1`
+  (`task.ex:461-470`) reads only `status`, `run_id` and `approval_id`, and
+  `ProjectionStore`'s `TaskCreated` handler dropped the field entirely. So
+  the whole path existed except the read, and a task declaring
+  dependencies dispatched immediately regardless of them. Do not treat the
+  presence of a field on a command, an aggregate and an event as evidence
+  that anything consumes it — the same lesson as `FOREMAN_ARTIFACT_PATH`
+  and `foreman_queue_status`.
+
+  It is a GUARD, not a dependency DAG: no ordering, no cycle detection,
+  and no automatic dispatch when the last dependency closes. The operator
+  re-approves. It lives in `CommandGateway` rather than the aggregate
+  because it is inherently cross-aggregate — `Task` can see only its own
+  state — and `ProjectionStore` is the read model built for that, which
+  the `task.create` clause already uses for `project_projection/1`.
+  Relatedly, `Task.apply_event/2` has a `TaskDependencyAdded` clause
+  (`task.ex:150`) that NOTHING emits: only eight `task.*` commands are
+  handled and none produces that event, so dependencies can be set at
+  creation and never afterwards. Left in place rather than deleted, but do
+  not read it as a working mutation path.
 - Approval does **not** re-check the project's archived status —
   unlike `task.create` (`command_gateway.ex:236-239`,
   `task.ex:512-518`), no project-archived check runs on the

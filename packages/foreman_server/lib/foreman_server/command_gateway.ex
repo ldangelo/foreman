@@ -253,6 +253,17 @@ defmodule ForemanServer.CommandGateway do
       aggregate_id != stream_id("task", task_id) ->
         {:error, {:invalid_envelope, :aggregate_id_mismatch}}
 
+      # A non-list `dependencies` is refused at the boundary rather than
+      # normalized, because every downstream default turns it into "no
+      # dependencies" — the read model used `|| []`, which per AGENTS.md §5.4b
+      # collapses `false` and `nil` alike and loses the signal. A task created
+      # with `dependencies: false` then approved and dispatched with no checks
+      # at all, which is precisely the inertness the guard exists to close,
+      # re-entered through malformed input. Absent stays absent; anything
+      # present must be a list (§5.3: absent and malformed are different).
+      not valid_dependencies?(get_value(payload, :dependencies)) ->
+        {:error, {:invalid_envelope, :invalid_dependencies}}
+
       is_binary(project_id) and project_id != "" ->
         case ProjectionStore.project_projection(project_id) do
           nil -> {:error, {:project_not_found, project_id}}
@@ -269,7 +280,7 @@ defmodule ForemanServer.CommandGateway do
          type: "task.approve",
          aggregate_id: aggregate_id,
          payload: payload
-       }) do
+       } = command) do
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
 
     cond do
@@ -288,9 +299,98 @@ defmodule ForemanServer.CommandGateway do
       true ->
         case ProjectionStore.task_projection(task_id) do
           nil -> {:error, {:task_not_found, task_id}}
-          _ -> :ok
+          task -> require_dependencies_satisfied(task, command)
         end
     end
+  end
+
+  # Approval is the transition that triggers dispatch, so it is the only place a
+  # declared dependency can still change the outcome. `task.create` accepted
+  # `dependencies`, the aggregate stored them, and `TaskCreated` carried them —
+  # but `Task.require_dispatchable/1` reads only `status`, `run_id` and
+  # `approval_id`, so a task declaring dependencies dispatched immediately
+  # regardless of whether any of them had finished. The field was inert for its
+  # entire life while reading as a working feature.
+  #
+  # The guard lives here rather than in the aggregate because it is inherently
+  # cross-aggregate: `Task` can only see its OWN state, and asking it about other
+  # tasks would either break the aggregate boundary or require replaying foreign
+  # streams. `ProjectionStore` is the read model built for exactly this, and the
+  # `task.create` clause above already reads `project_projection/1` the same way.
+  #
+  # Deliberately NOT a dependency DAG: no ordering, no cycle detection, no
+  # automatic dispatch when the last dependency closes. This refuses an approval
+  # that cannot honour its own declaration, and nothing more. An operator
+  # re-approves once the dependencies are closed.
+  #
+  # An idempotent approval RETRY bypasses the guard entirely. The module
+  # docstring promises a re-sent `command_id` succeeds "even if the assets have
+  # since changed", and `enrich_operator_command/1` honours that by rebuilding
+  # the original payload from the projection when `approval_id == command_id`.
+  # A dependency's status is one of those assets: approve while a dependency is
+  # `closed`, let it be `task.retry`'d back to `open`, then re-send the original
+  # command after a network failure, and a guard that ran first would answer
+  # `:task_dependencies_unsatisfied` where the operator had already been told
+  # the approval succeeded. Validating here cannot re-decide a committed
+  # approval — the dispatch is deduplicated by `command_id` downstream and
+  # emits no second event — so refusing would report a failure that did not
+  # happen. The guard governs NEW approvals only.
+  defp require_dependencies_satisfied(task, command) do
+    if Map.get(task, :approval_id) == Map.get(command, :command_id) do
+      :ok
+    else
+      case Map.get(task, :dependencies) do
+        nil ->
+          :ok
+
+        dependency_ids when is_list(dependency_ids) ->
+          case unsatisfied_dependencies(dependency_ids) do
+            [] -> :ok
+            unsatisfied -> {:error, {:task_dependencies_unsatisfied, unsatisfied}}
+          end
+
+        malformed ->
+          # `task.create` now refuses a non-list, but events written before that
+          # validation existed are already in the store, and a read model cannot
+          # raise on replay — `ProjectionStore.init/1` rebuilds from the event
+          # log, so raising here would turn one bad historical event into a boot
+          # failure for the whole application (the `WorkerStdout` lesson in
+          # AGENTS.md, Durable Run Logs). Refusing the APPROVAL instead keeps the
+          # blast radius at the one task and still cannot dispatch unchecked.
+          {:error, {:task_dependencies_malformed, malformed}}
+      end
+    end
+  end
+
+  # Absent is a valid declaration; present-but-not-a-list is not. Deliberately
+  # not `is_list(x) or is_nil(x)` folded into a default — see the §5.4b note at
+  # the `task.create` clause on why `|| []` is the wrong shape here.
+  defp valid_dependencies?(nil), do: true
+  defp valid_dependencies?(value), do: is_list(value)
+
+  # Each unsatisfied dependency is reported with WHY, because "absent" and
+  # "present but unfinished" need different operator actions (AGENTS.md §5.3):
+  # a missing id is a typo or a task never created, while `in_progress` just
+  # means wait. `closed` is the only success status — `failed` is terminal but
+  # did not produce the work this task depends on, so approving on it would
+  # dispatch against a dependency that never delivered.
+  defp unsatisfied_dependencies(dependency_ids) do
+    dependency_ids
+    |> Enum.reduce([], fn dependency_id, acc ->
+      # A malformed id is reported, never skipped. Dropping it would make
+      # `dependencies: [nil]` approve as though nothing were declared — the same
+      # silent-inertness class this whole guard exists to close.
+      if is_binary(dependency_id) and dependency_id != "" do
+        case ProjectionStore.task_projection(dependency_id) do
+          nil -> [{dependency_id, :not_found} | acc]
+          %{status: "closed"} -> acc
+          %{status: status} -> [{dependency_id, status} | acc]
+        end
+      else
+        [{dependency_id, :malformed} | acc]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   defp validate_aggregate_id(%{type: "task.retry", aggregate_id: aggregate_id, payload: payload}) do
