@@ -40,7 +40,9 @@ defmodule ForemanServer.Workflow.WorktreeSpec do
     * `path` — leaf directory name under
       `~/.foreman/worktrees/<project_id>/<run_id>/`. `{run_id}` is substituted.
       Default `workspace`.
-    * `cleanup` — `always` | `never`. Default `never`; validated by
+    * `cleanup` — `never` | `always` | `on_success`. Default `never`.
+      `on_success` retains the worktree of a failed run so it can be inspected,
+      which is the reason the mode exists. Validated by
       `RunExecutor.worktree_cleanup/1`, which rejects any other value rather
       than defaulting.
 

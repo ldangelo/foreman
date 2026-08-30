@@ -140,8 +140,9 @@ after every phase completes — so a run yields at most one PR, opened from the
 single run branch. `AutoPR.maybe_create_pr/1` takes a fixed context (`run_id`,
 `base_branch`, `head_branch`, `artifact_path`, `cwd`) and derives title and body
 itself; there is no declarable title, body, draft, reviewer, or label. Foreman
-commits with a fixed message, its own author identity, and `--no-verify`; only
-WHETHER a phase commits is declarable, never how. Adding `pr:`/`stacked:` keys
+commits with a fixed message, its own author identity, and `--no-verify`, and
+none of that is declarable — nor is WHETHER a phase commits at all, since every
+phase commits unconditionally. Adding `pr:`/`stacked:` keys
 would create manifest surface that no module reads — the `clean_worktree`
 failure in this document, repeated. If per-phase or stacked PRs are wanted from
 Foreman, the work is a real change to `AutoPR` (which shells `gh pr create`
