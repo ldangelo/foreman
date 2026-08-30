@@ -365,8 +365,13 @@ A task may carry a `dependencies` list of other task ids. `foreman task approve`
 refuses while any of them is not `closed`, reporting
 `{:task_dependencies_unsatisfied, [{id, reason}]}` with **every** unsatisfied
 dependency in declaration order — a status string, `:not_found` for an id with no
-task, or `:malformed` for a non-string id. `failed` does not satisfy: the
-dependency is finished but did not produce the work the dependent task needs.
+task, or `:malformed` for a non-string id or an empty string. `failed` does not
+satisfy: the dependency is finished but did not produce the work the dependent
+task needs.
+
+An idempotent approval retry — re-sending the same `command_id` for an approval
+that already committed — bypasses the check entirely, so a dependency that has
+since been reopened cannot turn a succeeded approval into a reported failure.
 
 This is a guard, not a scheduler. Nothing dispatches the task automatically when
 its last dependency closes — re-run `foreman task approve` yourself. There is

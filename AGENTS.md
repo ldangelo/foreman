@@ -968,17 +968,29 @@ foreman task approve --id <task-id> --approved-by operator
 - The `trd_path` (if the task carries one) must be a committed git blob
   at `HEAD`.
 - Every task id in the task's `dependencies` list must be a task whose
-  status is `closed` (`CommandGateway.require_dependencies_satisfied/1`).
+  status is `closed` (`CommandGateway.require_dependencies_satisfied/2`).
   Anything else is rejected as
   `{:task_dependencies_unsatisfied, [{id, reason}]}`, listing EVERY
   unsatisfied dependency in declaration order with its reason — a status
   string, `:not_found` for an id with no task, or `:malformed` for a
-  non-binary id. Note `failed` does NOT satisfy: it is terminal but did
-  not produce the work the dependent task needs.
+  non-binary id **or an empty string**. Note `failed` does NOT satisfy: it
+  is terminal but did not produce the work the dependent task needs.
+
+  An idempotent approval retry is exempt: when the task projection already
+  records `approval_id == command_id`, the guard returns `:ok` without
+  reading dependencies at all. The module docstring promises a re-sent
+  command succeeds "even if the assets have since changed", and a
+  dependency's status is such an asset — approve while it is `closed`, let
+  `task.retry` return it to `open`, re-send the original command, and a
+  guard that judged the retry would report a failure that never happened.
+  The approval is already committed and the dispatch is deduplicated by
+  `command_id` downstream, so there is no second event to prevent. The
+  guard governs NEW approvals only.
 
   This check did not exist until it was added deliberately, and the way
   it was missing is instructive. `task.create` accepted `dependencies`
-  (`task.ex:93`), `CommandGateway` defaulted it (`command_gateway.ex:680`),
+  (`task.ex:93`), `CommandGateway` defaulted it (the `task.create` clause
+  of `enrich_operator_command/1`),
   the aggregate stored it (`task.ex:37,69`) and `TaskCreated` carried it
   (`task_created.ex:37`) — but `Task.require_dispatchable/1`
   (`task.ex:461-470`) reads only `status`, `run_id` and `approval_id`, and

@@ -156,11 +156,25 @@ defmodule ForemanServer.TaskDependencyGuardTest do
   end
 
   describe "approval proceeds when the declaration is satisfiable" do
+    # These assert the EXACT error from the stage AFTER the guard, not merely
+    # the absence of a dependency error. `refute match?({:error,
+    # {:task_dependencies_unsatisfied, _}}, ...)` would also pass if approval
+    # broke for some unrelated reason, which is the failure mode worth pinning:
+    # the guard must let satisfiable work THROUGH, not just decline to be the
+    # thing that stopped it.
+    #
+    # `{:ok, _}` is unreachable in this fixture and asserting it would be
+    # wrong: `seed_task/3` writes directly to the projection store, so the task
+    # has no event stream and no workflow snapshot. Approval therefore reaches
+    # workflow loading and stops there. That error IS the proof of passage —
+    # it originates strictly downstream of `validate_aggregate_id/1`.
+    @past_the_guard {:error, {:workflow_load_failed, "task", {:workflow_not_loaded, "task.yaml"}}}
+
     test "a closed dependency does not block approval" do
       seed_task("dep-done", "closed")
       seed_task("dep-waiter-8", "open", dependencies: ["dep-done"])
 
-      refute match?({:error, {:task_dependencies_unsatisfied, _}}, approve("dep-waiter-8"))
+      assert @past_the_guard = approve("dep-waiter-8")
     end
 
     test "all-closed dependencies do not block approval" do
@@ -168,7 +182,7 @@ defmodule ForemanServer.TaskDependencyGuardTest do
       seed_task("dep-c2", "closed")
       seed_task("dep-waiter-9", "open", dependencies: ["dep-c1", "dep-c2"])
 
-      refute match?({:error, {:task_dependencies_unsatisfied, _}}, approve("dep-waiter-9"))
+      assert @past_the_guard = approve("dep-waiter-9")
     end
 
     test "a task declaring no dependencies is unaffected" do
@@ -177,7 +191,63 @@ defmodule ForemanServer.TaskDependencyGuardTest do
       # regression here would break approval outright.
       seed_task("dep-waiter-10", "open")
 
-      refute match?({:error, {:task_dependencies_unsatisfied, _}}, approve("dep-waiter-10"))
+      assert @past_the_guard = approve("dep-waiter-10")
+    end
+  end
+
+  describe "an idempotent approval retry is not re-judged" do
+    test "a committed approval_id bypasses the guard even once a dependency reopens" do
+      # The module docstring promises a re-sent command_id succeeds "even if the
+      # assets have since changed", and a dependency's status is such an asset:
+      # approve while it is closed, let `task.retry` return it to `open`, then
+      # re-send the original command after a network failure. Judging that
+      # retry would report a failure that never happened — the approval is
+      # already committed and the dispatch is deduplicated by command_id.
+      # The approval_id must arrive on `TaskApproved`, not `TaskCreated` —
+      # `EventCodec` rejects undeclared fields, so seeding it on creation
+      # raises. That rejection is the §5.4 boundary doing its job; the first
+      # draft of this test fabricated an impossible event and the codec caught
+      # it.
+      seed_task("dep-waiter-retry", "open", dependencies: ["dep-reopened"])
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "TaskApproved",
+                   payload: %{
+                     task_id: "dep-waiter-retry",
+                     approval_id: "cid-committed-approval",
+                     approved_by: "operator",
+                     approved_at: "2026-08-30T00:00:00Z",
+                     run_id: "run-dep-retry",
+                     workflow_snapshot: %{}
+                   }
+                 }
+               ])
+
+      # The dependency reopens only AFTER the approval committed — the exact
+      # asset change the docstring's promise covers.
+      seed_task("dep-reopened", "open")
+
+      retry =
+        CommandGateway.dispatch_operator(%{
+          command_id: "cid-committed-approval",
+          aggregate_id: "task:dep-waiter-retry",
+          type: "task.approve",
+          payload: %{task_id: "dep-waiter-retry"}
+        })
+
+      refute match?({:error, {:task_dependencies_unsatisfied, _}}, retry)
+    end
+
+    test "a DIFFERENT command_id on the same task is still judged" do
+      # The bypass keys on the committed approval_id, so it must not become a
+      # blanket exemption for any task that was ever approved.
+      seed_task("dep-open-2", "open")
+      seed_task("dep-waiter-new", "open", dependencies: ["dep-open-2"])
+
+      assert {:error, {:task_dependencies_unsatisfied, [{"dep-open-2", "open"}]}} =
+               approve("dep-waiter-new")
     end
   end
 

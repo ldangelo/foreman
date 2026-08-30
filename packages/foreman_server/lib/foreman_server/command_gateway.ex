@@ -269,7 +269,7 @@ defmodule ForemanServer.CommandGateway do
          type: "task.approve",
          aggregate_id: aggregate_id,
          payload: payload
-       }) do
+       } = command) do
     task_id = get_value(payload, :task_id) || get_value(payload, "task_id")
 
     cond do
@@ -288,7 +288,7 @@ defmodule ForemanServer.CommandGateway do
       true ->
         case ProjectionStore.task_projection(task_id) do
           nil -> {:error, {:task_not_found, task_id}}
-          task -> require_dependencies_satisfied(task)
+          task -> require_dependencies_satisfied(task, command)
         end
     end
   end
@@ -311,10 +311,27 @@ defmodule ForemanServer.CommandGateway do
   # automatic dispatch when the last dependency closes. This refuses an approval
   # that cannot honour its own declaration, and nothing more. An operator
   # re-approves once the dependencies are closed.
-  defp require_dependencies_satisfied(task) do
-    case unsatisfied_dependencies(Map.get(task, :dependencies) || []) do
-      [] -> :ok
-      unsatisfied -> {:error, {:task_dependencies_unsatisfied, unsatisfied}}
+  #
+  # An idempotent approval RETRY bypasses the guard entirely. The module
+  # docstring promises a re-sent `command_id` succeeds "even if the assets have
+  # since changed", and `enrich_operator_command/1` honours that by rebuilding
+  # the original payload from the projection when `approval_id == command_id`.
+  # A dependency's status is one of those assets: approve while a dependency is
+  # `closed`, let it be `task.retry`'d back to `open`, then re-send the original
+  # command after a network failure, and a guard that ran first would answer
+  # `:task_dependencies_unsatisfied` where the operator had already been told
+  # the approval succeeded. Validating here cannot re-decide a committed
+  # approval — the dispatch is deduplicated by `command_id` downstream and
+  # emits no second event — so refusing would report a failure that did not
+  # happen. The guard governs NEW approvals only.
+  defp require_dependencies_satisfied(task, command) do
+    if Map.get(task, :approval_id) == Map.get(command, :command_id) do
+      :ok
+    else
+      case unsatisfied_dependencies(Map.get(task, :dependencies) || []) do
+        [] -> :ok
+        unsatisfied -> {:error, {:task_dependencies_unsatisfied, unsatisfied}}
+      end
     end
   end
 
