@@ -544,6 +544,15 @@ foreman server stop               # Stop server started by Foreman
 
 `server status` shows the active `MIX_ENV`, event store, projection store, and project config store. In Postgres event-store mode, read projections persist in `foreman_project_projections`, `foreman_task_projections`, `foreman_run_projections`, and `foreman_inbox_message_projections`; in term mode projections remain in memory and rebuild from the term log. `MIX_ENV=test` refuses user port `4766` and non-temp storage unless `FOREMAN_ALLOW_TEST_PORT_COLLISION=1` / `FOREMAN_ALLOW_TEST_PERSISTENT_STORAGE=1` are set intentionally. `server doctor` validates event-store readability, projection catch-up/lag, worker projections, VCS adapters, provider adapters, and integration projections. The JSON output includes counters/timers for phase duration, retries, failures, recoveries, worker restarts, and projection lag. When server auth is enabled, set `FOREMAN_SERVER_AUTH_TOKEN` so doctor/metrics calls send the bearer token. Binding the Elixir HTTP server beyond loopback also requires this token. Worker starts strip forbidden host variables (`FOREMAN_SERVER_AUTH_TOKEN`, `AWS_*`, `GITHUB_*`, `NPM_*`, `SSH_*`, `DATABASE_*`) and scope explicit project/run secrets to the run. Destructive server commands record `AuthorizationChecked` and `AuditRecorded` events.
 
+> **Correction.** No `*_projections` tables exist. The repository has exactly two
+> migrations — `create_jido_storage_tables` and `create_idempotency_keys_table`
+> — and none of `foreman_project_projections`, `foreman_task_projections`,
+> `foreman_run_projections` or `foreman_inbox_message_projections` appears in any
+> source file. `foreman server` is not a command either (see the note under
+> Agent Mail and `foreman-x4ca`). Left in place as intended design; the
+> `foreman_inbox_message_projections` name in particular is the read side of the
+> deleted `InboxThread` aggregate and was never built.
+
 Elixir backend roles: the **Node CLI** parses commands/renders projections, the **Elixir server** owns aggregate-validated commands/events/projections/recovery/security/overwatch and all database access, automatically ticks the scheduler every 5 seconds to claim `ready` tasks within capacity and launch the Node/Pi worker bridge, and **Node/Pi workers** execute Pi SDK phases, stream worker events, emit authoritative terminal run/task events, stream Pi SDK tool calls/assistant messages as ordered worker events, expose typed Foreman tools (`mail_send`, `mail_read`, `phase_handoff`, `artifact_write`, `validation_result`, `task_block`, `progress_update`, `ask_operator`, `abort_phase`, `needs_retry`, `safe_command_run`), and ask Elixir overwatch to approve/deny tool calls before execution. Node workers and CLI clients do not connect directly to the database; they use Elixir HTTP commands/projections and do not drain DB-backed merge queues from inside the worker. Raw log files are compatibility/debug projections of the worker event stream. The launcher records process-exit facts and emits a diagnostic fallback failure only when a worker exits without an authoritative terminal event; that fallback may parse the final worker output to avoid stale phase attribution, but authoritative worker terminal events remain preferred. If an Elixir-backed view is wrong, inspect the event timeline first, then projection lag/rebuild state, then recovery events (`ExternalWorkerObserved` before `WorkerReattached`, `WorkerRestarted`, or `NeedsOperator`). After cutover, Elixir is the backend; `foreman daemon start|restart` fails fast and directs operators to `foreman server start`. See [Elixir Backend Architecture](./guides/elixir-backend-architecture.md).
 
 The Elixir server also includes a PR monitor. For runs with recorded GitHub PR URLs, it periodically runs GitHub PR inspection from the registered project path, records merged PR metadata on the run, and updates the associated task to `merged` when GitHub reports `MERGED`. A GitHub closed-but-unmerged PR records the run PR state as closed and closes the associated task. As a real-time optimization, the server exposes `POST /webhooks/github` for GitHub `pull_request` webhook events (HMAC-SHA256 verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`); polling remains as fallback. `foreman server doctor` reports whether the webhook secret is configured.
@@ -906,6 +915,32 @@ behavior cannot diverge.
 ---
 
 ## Agent Mail
+
+> **NOT IMPLEMENTED.** Neither `foreman inbox` nor `foreman inbox send` exists.
+> The **Go CLI**'s command switch
+> (`packages/foreman_cli/cmd/foreman/main.go:85-98`) dispatches exactly
+> `project`, `task`, `run`, `workflow` and `init`; anything else returns
+> `foreman: unknown command`. That is the only `foreman` entry point in the
+> repository — `packages/` holds `foreman_cli`, `foreman_server` and
+> `jido_harness`, and the string `inbox` appears in no Go, TypeScript or
+> JavaScript source in any of them. Passages elsewhere in this file describing a
+> Node CLI or `foreman daemon` refer to a retired architecture.
+>
+> The Elixir side this section describes is gone too. It named an "event-backed
+> inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`)", but the
+> only code that ever produced those events was
+> `ForemanServer.Aggregates.InboxThread`, which was unreachable from every
+> direction at once — `inbox.send` absent from the command allowlist, no
+> `"inbox:"` clause in `CommandRouter.aggregate_module_for/1`, no event structs,
+> no `ProjectionStore` handler, no HTTP route, no MCP tool, and no caller. It has
+> been deleted (see AGENTS.md §5.3). There is no
+> `foreman_inbox_message_projections` table in the codebase either, despite the
+> mention under `server status`.
+>
+> Retained as a record of the intended design, not as a description of behavior.
+> Do not implement against it without re-deriving the design: an entire
+> requirement (REQ-007 of `PRD-2026-d306444f-phase-commit-control.md`) was
+> specified against this inbox as though it worked, and had to be dropped.
 
 ### `foreman inbox`
 
