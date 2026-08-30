@@ -240,12 +240,34 @@ defmodule ForemanServer.TaskDependencyGuardTest do
       refute match?({:error, {:task_dependencies_unsatisfied, _}}, retry)
     end
 
-    test "a DIFFERENT command_id on the same task is still judged" do
-      # The bypass keys on the committed approval_id, so it must not become a
-      # blanket exemption for any task that was ever approved.
-      seed_task("dep-open-2", "open")
+    test "a DIFFERENT command_id on a task that HAS a committed approval is still judged" do
+      # The task must actually carry a committed approval_id, or this proves
+      # nothing. An earlier version seeded `approval_id == nil` and so only
+      # exercised ordinary blocking: a bug that bypassed the guard for any
+      # previously-approved task would have passed it, because a nil approval_id
+      # is not "previously approved" either. The bypass must key on EQUALITY
+      # with this command's id, not on the presence of some approval.
       seed_task("dep-waiter-new", "open", dependencies: ["dep-open-2"])
 
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "TaskApproved",
+                   payload: %{
+                     task_id: "dep-waiter-new",
+                     approval_id: "cid-some-earlier-approval",
+                     approved_by: "operator",
+                     approved_at: "2026-08-30T00:00:00Z",
+                     run_id: "run-dep-new",
+                     workflow_snapshot: %{}
+                   }
+                 }
+               ])
+
+      seed_task("dep-open-2", "open")
+
+      # `approve/1` mints a fresh command_id, so this is a NEW approval attempt
+      # on a task whose committed approval_id belongs to a different command.
       assert {:error, {:task_dependencies_unsatisfied, [{"dep-open-2", "open"}]}} =
                approve("dep-waiter-new")
     end
