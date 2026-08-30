@@ -6,7 +6,7 @@ nearly every document in `docs/` still said `Draft`, including the durable run
 log store that shipped as PR #422 and projects-crud whose TRD was already
 sitting in this folder.
 
-Four dispositions land a document here:
+Three dispositions land a document here:
 
 | Disposition | Meaning |
 |---|---|
@@ -37,7 +37,7 @@ editing the document to hide it.
 | `PRD-2026-54236004-workflow-simplification.md` | `IMPLEMENTED` | foreman run submit (run.go:131-244); curated prd/trd/fix manifests; backend enum in MCP schema; AutoPR wired |
 | `PRD-2026-6af02293-otp-agent-runtime.md` | `IMPLEMENTED` | agent_runtime/{supervisor,adapter_catalog,backend_adapter,router,failure_policy,invocation}.ex; 9/9 REQs |
 | `PRD-2026-81315f37-atomic-beads-task-create-and-watcher.md` | `IMPLEMENTED` | Actor.do_dispatch/4 two-stage finalization (actor.ex:282-381) + BeadsWatcher + BeadsOrphanJanitor + external_id round-trip |
-| `PRD-2026-cd07a086-durable-run-log-store.md` | `IMPLEMENTED` | shipped as PR #422 / b1c3a920: WorkerStdout|WorkerStderr events, worker_log_policy.ex, ProjectionStore.run_logs/1 |
+| `PRD-2026-cd07a086-durable-run-log-store.md` | `IMPLEMENTED` | shipped as PR #422 / b1c3a920: WorkerStdout / WorkerStderr events, worker_log_policy.ex, ProjectionStore.run_logs/1 |
 | `go-elixir-cqrs-parity-prd.md` | `IMPLEMENTED` | REQ-001..010 traced: command_controller ingress, projection_store, Overwatch, PR lifecycle, recovery, 66 typed events |
 | `PRD-2026-3d41f677-add-full-vcs-worktree-support-configured-via-wor.md` | `SUPERSEDED` | specifies PHASE-level worktree for v1; beb7dea6 shipped WORKFLOW-level, one worktree per run. Phase-level declarations are now REFUSED by Interpreter.validate_no_phase_worktree!/2 |
 | `PRD-2026-7b4a3944-go-elixir-cqrs-parity-gaps.md` | `SUPERSEDED` | a point-in-time gap audit (28 absent modules) whose gaps are closed; its TRD is the implementation record |

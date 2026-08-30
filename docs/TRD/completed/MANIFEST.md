@@ -6,7 +6,7 @@ nearly every document in `docs/` still said `Draft`, including the durable run
 log store that shipped as PR #422 and projects-crud whose TRD was already
 sitting in this folder.
 
-Four dispositions land a document here:
+Three dispositions land a document here:
 
 | Disposition | Meaning |
 |---|---|
