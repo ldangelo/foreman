@@ -641,7 +641,8 @@ optimization; polling remains the fallback.
 
 **One run yields at most one PR.** `auto_pr/1` is called once, from
 `finalize_run/1`, after every phase has completed, and it opens the PR from the
-run's single branch `foreman/<run-id>`. There is no per-phase PR and no stacked
+run's single branch — `foreman/<run-id>` unless the workflow's `worktree.branch`
+says otherwise. There is no per-phase PR and no stacked
 PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, `checkpointPr`, or
 `commit:` setting, and the PR is opened once, at run finalization.
 

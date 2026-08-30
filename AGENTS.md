@@ -355,9 +355,11 @@ default `workspace`), `cleanup` (default `never`). `{run_id}` is the only
 template placeholder. `{phase}` was dropped with the move: it named a per-phase
 branch and directory that no longer exist.
 
-`create_run_worktree/2` is the single provisioning path. It provisions one
-directory (`~/.foreman/worktrees/<project_id>/<run_id>/workspace`) on one branch
-(`foreman/<run_id>`), and every later phase reuses that record via
+`create_run_worktree/2` is the single provisioning path. Absent a `worktree:`
+block it provisions one directory
+(`~/.foreman/worktrees/<project_id>/<run_id>/workspace`) on one branch
+(`foreman/<run_id>`) — both DEFAULTS, overridable by the workflow's `path:` and
+`branch:` — and every later phase reuses that record via
 `ensure_run_worktree/2` -> `reuse_run_worktree/2`, reading its predecessors'
 output as ordinary files. `remember_run_worktree/2` latches the record on key
 presence, so the first phase provisions and the rest reuse.
