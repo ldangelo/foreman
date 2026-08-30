@@ -18,14 +18,26 @@ defmodule ForemanServer.Workflow.CommitDeferral do
   `RunExecutor`'s run-terminal warning read this one predicate, so they cannot
   disagree about what "pending" means.
 
-  ## Total, by construction
+  ## Total over its contract, loud outside it
 
-  `pending_phase/1` never raises. It runs during manifest load, where a
-  malformed phase list has not yet been rejected, so a non-map entry has to be
-  survivable rather than a crash from inside a validator that exists to produce
-  a good error message. A non-map entry counts as non-deferring — it cannot
-  carry `commit: false` — which matches how the surrounding validators treat
-  entries they cannot read.
+  Both entry points take a list of phase maps and raise `FunctionClauseError` on
+  anything else. There is no catch-all: "nothing is deferred" is the one answer
+  that silences BOTH consumers — the unsatisfiable-cleanup refusal at load and
+  the uncommitted-work warning at run end — so inventing it for input this
+  module cannot read would turn unreadable input into a silent all-clear
+  (AGENTS.md §5.2).
+
+  An earlier version of this section claimed the opposite, and its reasoning is
+  worth recording because it was wrong in a checkable way: it said
+  `pending_phase/1` "runs during manifest load, where a malformed phase list has
+  not yet been rejected", so tolerance was needed to avoid crashing from inside
+  a validator that exists to produce a good error message. The ordering is the
+  other way around. `Interpreter.load!/1` runs `validate_required_fields!` —
+  which rejects a non-list `phases` and any non-map phase entry, each with a
+  located message — BEFORE `validate_commits!`, and `parse_yaml!` rejects a
+  non-mapping entry even earlier, naming file and line. The tolerance protected
+  no error message; it only meant that if these functions were ever reached with
+  garbage, they would answer "all clear".
   """
 
   @doc """
