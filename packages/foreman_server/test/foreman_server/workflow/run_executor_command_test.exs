@@ -600,6 +600,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       run_id: run_id,
       workflow_name: "feature",
       workflow_digest: "test-digest",
+      worktree: %{enabled: false},
       phases: [
         %{
           name: :create_prd,
@@ -611,8 +612,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
           artifact_template: %{
             path: Path.join([artifact_dir, "{run_id}-{task_id}-create_prd.md"])
           },
-          context: %{"script_key" => script_key},
-          worktree: %{enabled: false}
+          context: %{"script_key" => script_key}
         }
       ]
     }
@@ -692,6 +692,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         trd_path: trd_path,
         beads_database_path: database_path
       },
+      # Non-worktree test: project path is a plain System.tmp_dir!() directory,
+      # not a git repo. Opt out of the default-on worktree. WORKFLOW-level,
+      # because a run has one worktree (see run_executor.ex
+      # maybe_create_worktree/2).
+      worktree: %{enabled: false},
       phases: [
         %{
           name: :implement_trd_beads,
@@ -703,11 +708,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
           artifact_template: %{
             path: Path.join([artifact_dir, "{run_id}-{task_id}-implement.md"])
           },
-          context: %{"script_key" => script_key},
-          # Non-worktree test: project path is a plain System.tmp_dir!()
-          # directory, not a git repo. Opt out of the TRD-2026 default-on
-          # worktree (see run_executor.ex maybe_create_worktree/3).
-          worktree: %{enabled: false}
+          context: %{"script_key" => script_key}
         }
       ]
     }
@@ -888,6 +889,11 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
         trd_path: relative_trd,
         beads_database_path: database_path
       },
+      worktree: %{
+        enabled: true,
+        path: "implement-trd-beads",
+        cleanup: "always"
+      },
       phases: [
         %{
           name: :implement_trd_beads,
@@ -899,12 +905,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
           artifact_template: %{
             path: Path.join([artifact_dir, "{run_id}-{task_id}-implement.md"])
           },
-          context: %{"script_key" => script_key, "write_paths" => [relative_trd]},
-          worktree: %{
-            enabled: true,
-            path: "implement-trd-beads",
-            cleanup: "always"
-          }
+          context: %{"script_key" => script_key, "write_paths" => [relative_trd]}
         }
       ]
     }

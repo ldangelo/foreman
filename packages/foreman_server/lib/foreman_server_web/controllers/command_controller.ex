@@ -5,8 +5,9 @@ defmodule ForemanServerWeb.CommandController do
   `POST /api/commands` is the **sole** external mutation surface. The
   body is forwarded to `ForemanServer.CommandGateway.dispatch_operator/2`
   which validates the envelope, gates on the operator allowlist
-  (`project.register`, `project.update`, `project.archive`, `task.create`,
-  `task.approve`, `task.retry`, `run.cancel`, `run.remove`, and `run.reset`),
+  (`project.register`, `project.update`, `project.archive`,
+  `project.reactivate`, `task.create`, `task.approve`, `task.retry`,
+  `run.cancel`, `run.remove`, and `run.reset`),
   enriches the payload, and dispatches to
   `CommandRouter`.
 
@@ -20,7 +21,7 @@ defmodule ForemanServerWeb.CommandController do
   alias ForemanServer.CommandGateway
 
   @default_command_gateway_module CommandGateway
-  @allowed_types ~w(project.register project.update project.archive task.create task.approve task.retry run.cancel run.remove run.reset)
+  @allowed_types ~w(project.register project.update project.archive project.reactivate task.create task.approve task.retry run.cancel run.remove run.reset)
 
   def create(conn, params) do
     envelope = build_envelope(params)
@@ -163,6 +164,7 @@ defmodule ForemanServerWeb.CommandController do
 
   defp aggregate_prefix("project.register"), do: "project"
   defp aggregate_prefix("project.update"), do: "project"
+  defp aggregate_prefix("project.reactivate"), do: "project"
   defp aggregate_prefix("project.archive"), do: "project"
   defp aggregate_prefix("task.create"), do: "task"
   defp aggregate_prefix("task.approve"), do: "task"
@@ -174,6 +176,7 @@ defmodule ForemanServerWeb.CommandController do
 
   defp id_field_for("project.register"), do: :project_id
   defp id_field_for("project.update"), do: :project_id
+  defp id_field_for("project.reactivate"), do: :project_id
   defp id_field_for("project.archive"), do: :project_id
   defp id_field_for("task.create"), do: :task_id
   defp id_field_for("task.approve"), do: :task_id

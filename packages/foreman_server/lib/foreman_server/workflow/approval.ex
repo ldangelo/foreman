@@ -111,12 +111,26 @@ defmodule ForemanServer.Workflow.Approval do
             end)
         }
 
-        snapshot = maybe_put_prompt(base_snapshot, payload[:prompt])
+        snapshot =
+          base_snapshot
+          |> maybe_put_worktree(workflow)
+          |> maybe_put_prompt(payload[:prompt])
 
         {:ok, workflow.name, workflow.digest, snapshot}
 
       {:error, reason} ->
         {:error, {:workflow_load_failed, task_type, reason}}
+    end
+  end
+
+  # The workflow's `worktree:` block travels on the snapshot beside `phases`,
+  # because the run it describes has exactly one worktree. Absent when the
+  # manifest declares none, so `WorktreeSpec.normalize/1` can still tell
+  # "declared nothing" (every default applies) from "declared disabled".
+  defp maybe_put_worktree(snapshot, workflow) do
+    case Map.get(workflow, :worktree) do
+      block when is_map(block) -> Map.put(snapshot, :worktree, block)
+      _ -> snapshot
     end
   end
 

@@ -187,15 +187,46 @@ defmodule ForemanServer.Workflow.ManifestWriterTest do
                ManifestWriter.write(manifest)
     end
 
-    test "rejects a manifest with a map at top level beyond name/description/phases" do
+    # This premise is obsolete, not merely misplaced. A top-level mapping is
+    # LEGAL now — the workflow-level `worktree:` block is one — so the writer
+    # accepts one nesting level and emits it. Only deeper nesting is rejected,
+    # symmetric with the phase-property rule, because the root parser
+    # (`Interpreter.parse_root_entries/3`) reads exactly one level.
+    test "accepts and emits a map at top level beyond name/description/phases" do
       manifest = %{
         "name" => "x",
         "phases" => [%{"name" => "a", "prompt" => "a.md"}],
         "metadata" => %{"key" => "value"}
       }
 
-      assert {:error, {:unsupported_construct, {:top_level_map, "metadata"}}} =
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ "metadata:"
+      assert yaml =~ "  key: value"
+    end
+
+    test "rejects a top-level map nested more than one level deep" do
+      manifest = %{
+        "name" => "x",
+        "phases" => [%{"name" => "a", "prompt" => "a.md"}],
+        "metadata" => %{"key" => %{"deeper" => "value"}}
+      }
+
+      assert {:error, {:unsupported_construct, {:deep_nesting, "metadata"}}} =
                ManifestWriter.write(manifest)
+    end
+
+    # A top-level scalar used to pass validation and then be dropped by
+    # `build_yaml/1`, so `write/1` reported success having lost data. Every
+    # bundled manifest carries `operator_timeout_ms`.
+    test "emits top-level scalars instead of silently dropping them" do
+      manifest = %{
+        "name" => "x",
+        "phases" => [%{"name" => "a", "prompt" => "a.md"}],
+        "operator_timeout_ms" => 300_000
+      }
+
+      assert {:ok, yaml} = ManifestWriter.write(manifest)
+      assert yaml =~ "operator_timeout_ms: 300000"
     end
 
     test "rejects a manifest missing required name key" do

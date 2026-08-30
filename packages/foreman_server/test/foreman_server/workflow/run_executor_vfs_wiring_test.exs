@@ -3,12 +3,16 @@ defmodule ForemanServer.Workflow.RunExecutorVfsWiringTest do
   TRD-2026-4212be7e / JSH-T003 / TRD-034 — verifies that
   `ForemanServer.Workflow.RunExecutor` binds `run_id` to its worktree
   root in `VfsIsolation` before any phase body executes, and unbinds
-  it during phase cleanup.
+  it when the run's worktree is reclaimed.
 
   The wiring lives in two places:
     * `foreman_env/2` calls `bind_vfs(state.run_id, worktree_record.worktree_path)`
-    * `cleanup_phase_worktree/4` and `maybe_stop_shell_session/1` call
+    * `do_clean_run_worktree/2` and `maybe_stop_shell_session/1` call
       `unbind_vfs(state.run_id)`
+
+  The unbind used to sit in `cleanup_phase_worktree/4`, which ran at every
+  phase boundary. A run now has one worktree for its whole execution, so the
+  binding must survive every phase and is released once, at finalization.
 
   These tests exercise the underlying helpers via the
   `@doc false __bind_vfs_for_test__/2` and `__unbind_vfs_for_test__/1`
@@ -82,6 +86,16 @@ defmodule ForemanServer.Workflow.RunExecutorVfsWiringTest do
   end
 
   describe "exported test surfaces exist and are wired correctly" do
+    # `function_exported?/3` answers false for a module that is merely not
+    # LOADED yet, so without this the two assertions below pass or fail on test
+    # ordering: they only saw a loaded module when some earlier test in the run
+    # had already invoked it. `Code.ensure_loaded!/1` makes the probe answer the
+    # question it claims to ask (and raises if the module is genuinely absent).
+    setup do
+      Code.ensure_loaded!(ForemanServer.Workflow.RunExecutor)
+      :ok
+    end
+
     test "RunExecutor exports __bind_vfs_for_test__/2" do
       assert function_exported?(ForemanServer.Workflow.RunExecutor, :__bind_vfs_for_test__, 2)
     end

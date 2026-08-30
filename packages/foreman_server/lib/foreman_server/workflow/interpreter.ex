@@ -38,6 +38,8 @@ defmodule ForemanServer.Workflow.Interpreter do
       |> parse_yaml!(path)
 
     validate_required_fields!(workflow, path)
+    validate_no_phase_worktree!(workflow, path)
+    validate_worktree!(workflow, path)
     {:ok, workflow}
   end
 
@@ -77,7 +79,12 @@ defmodule ForemanServer.Workflow.Interpreter do
       [] ->
         workflow
 
-      [%{line: line_number}] ->
+      # Matched with a tail: the previous `[%{line: line_number}]` clause only
+      # accepted a SINGLE leftover line, so any unparsed block of two or more
+      # lines raised `no case clause matching` with the whole token list
+      # inspected into the message instead of naming the offending line
+      # (AGENTS.md 5.2).
+      [%{line: line_number} | _] ->
         raise ArgumentError,
               "unsupported YAML content in #{path} at line #{line_number}; expected a top-level mapping"
     end
@@ -88,6 +95,26 @@ defmodule ForemanServer.Workflow.Interpreter do
       {"phases", ""} ->
         {phases, remaining} = parse_phase_entries(rest, [], path)
         parse_root_entries(remaining, Map.put(acc, "phases", phases), path)
+
+      # A top-level key with no inline value introduces a nested mapping, e.g.
+      # the workflow-level `worktree:` block. Only `phases:` used to be allowed
+      # to nest, so `worktree:` parsed as the empty string and left its own
+      # indented lines unconsumed — which is what the incomplete `remaining`
+      # clause above then crashed on. Mirrors `parse_phase_properties/3`, one
+      # indent level shallower.
+      {key, ""} ->
+        case parse_nested_map(rest, %{}, 2, path) do
+          # No indented child line followed, so the key carried a BLANK SCALAR,
+          # not a nested mapping. Keep `""` — `missing_or_blank?/1` answers true
+          # for `""` but false for `%{}`, so nesting unconditionally let a blank
+          # required key such as `name:` pass `validate_required_fields!/2` and
+          # propagate `name: %{}` into the frozen workflow_snapshot.
+          {empty, remaining} when map_size(empty) == 0 ->
+            parse_root_entries(remaining, Map.put(acc, key, ""), path)
+
+          {nested_map, remaining} ->
+            parse_root_entries(remaining, Map.put(acc, key, nested_map), path)
+        end
 
       {key, value} ->
         parse_root_entries(rest, Map.put(acc, key, parse_scalar(value)), path)
@@ -220,97 +247,120 @@ defmodule ForemanServer.Workflow.Interpreter do
               "workflow template #{path} phase #{index} must define a non-empty \"name\" key"
         else
           validate_phase_actions!(phase, index, path)
-          validate_worktree!(phase, index, path)
         end
     end
   end
 
-  defp validate_worktree!(phase, index, path) do
-    case Map.get(phase, "worktree") do
+  # The `worktree:` block is WORKFLOW-level, so it is validated once against the
+  # manifest rather than once per phase. Error messages therefore no longer
+  # carry a phase index or phase name.
+  # A phase-level `worktree:` block is REFUSED, not dropped. `worktree:` moved
+  # from phase level to workflow level in this change, and `PhaseSpec.normalize/1`
+  # drops keys it does not know — so a manifest carrying the old
+  # `phases[*].worktree.enabled: false` would parse, lose the opt-out, and then
+  # get the default-on worktree: an explicit refusal to provision silently
+  # inverted into provisioning, which fails outright on a non-git project path.
+  # AGENTS.md 5.4b's drop rule is for UNKNOWN keys; a relocated key is malformed,
+  # not unknown, so 5.3 applies and it gets its own loud error.
+  defp validate_no_phase_worktree!(workflow, path) do
+    workflow
+    |> Map.get("phases", [])
+    |> Enum.with_index(1)
+    |> Enum.each(fn {phase, index} ->
+      if is_map(phase) and Map.has_key?(phase, "worktree") do
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} declares a phase-level " <>
+              "\"worktree\" block; a run has ONE worktree, so `worktree:` is now " <>
+              "declared once at the workflow level — move it there"
+      end
+    end)
+
+    :ok
+  end
+
+  defp validate_worktree!(workflow, path) do
+    case Map.get(workflow, "worktree") do
       nil ->
         :ok
 
       worktree when is_map(worktree) ->
-        validate_worktree_map!(phase, index, path, worktree)
+        validate_worktree_map!(path, worktree)
 
       _other ->
         raise Workflow.MissingRequiredPhaseError,
-          message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree\" must be a mapping"
+          message: "workflow template #{path} \"worktree\" must be a mapping"
     end
   end
 
-  defp validate_worktree_map!(phase, index, path, worktree) do
+  # The five keys `WorktreeSpec.@fields` reads. Anything else is refused rather
+  # than ignored: `WorktreeSpec.normalize/1` keeps only recognized keys, so a
+  # misspelling like `enabeld: false` would validate, get dropped in
+  # normalization, and hand the executor a spec that says nothing — provisioning
+  # the DEFAULT-ON worktree for a manifest that plainly asked for no worktree.
+  # A typo must not be a silent behavior change (AGENTS.md 5.2).
+  @worktree_keys ~w(enabled base branch path cleanup)
+
+  defp validate_worktree_map!(path, worktree) do
+    case Map.keys(worktree) -- @worktree_keys do
+      [] ->
+        :ok
+
+      unknown ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} \"worktree\" has unrecognized " <>
+              "#{if length(unknown) == 1, do: "key", else: "keys"} " <>
+              "#{Enum.map_join(Enum.sort(unknown), ", ", &inspect/1)}; " <>
+              "supported: #{Enum.join(@worktree_keys, ", ")}"
+    end
+
     case Map.get(worktree, "enabled") do
-      nil ->
-        :ok
-
-      true ->
-        :ok
-
-      false ->
-        :ok
-
-      "true" ->
-        :ok
-
-      "false" ->
+      value when value in [nil, true, false, "true", "false"] ->
         :ok
 
       _other ->
         raise Workflow.MissingRequiredPhaseError,
-          message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.enabled\" must be a boolean"
+          message: "workflow template #{path} \"worktree.enabled\" must be a boolean"
     end
 
-    validate_worktree_string_field!(worktree, "base", phase, index, path)
-    validate_worktree_string_field!(worktree, "branch", phase, index, path)
-    validate_worktree_path!(worktree, phase, index, path)
-    validate_worktree_cleanup!(worktree, phase, index, path)
+    validate_worktree_string_field!(worktree, "base", path)
+    validate_worktree_string_field!(worktree, "branch", path)
+    validate_worktree_path!(worktree, path)
+    validate_worktree_cleanup!(worktree, path)
     :ok
   end
 
-  defp validate_worktree_string_field!(worktree, key, phase, index, path) do
+  defp validate_worktree_string_field!(worktree, key, path) do
     case Map.get(worktree, key) do
       nil ->
         :ok
 
-      "" ->
-        raise Workflow.MissingRequiredPhaseError,
-          message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.#{key}\" must be a non-empty string"
-
-      value when is_binary(value) ->
+      value when is_binary(value) and value != "" ->
         :ok
 
       _other ->
         raise Workflow.MissingRequiredPhaseError,
-          message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.#{key}\" must be a non-empty string"
+          message: "workflow template #{path} \"worktree.#{key}\" must be a non-empty string"
     end
   end
 
-  defp validate_worktree_path!(worktree, phase, index, path) do
+  defp validate_worktree_path!(worktree, path) do
     case Map.get(worktree, "path") do
       nil ->
         :ok
 
-      "" ->
-        raise Workflow.MissingRequiredPhaseError,
-          message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must be a non-empty relative path (no leading slash, no \"..\" traversal)"
-
-      value when is_binary(value) ->
+      value when is_binary(value) and value != "" ->
         cond do
           String.starts_with?(value, "/") ->
             raise Workflow.MissingRequiredPhaseError,
               message:
-                "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must be relative (absolute paths rejected)"
+                "workflow template #{path} \"worktree.path\" must be relative (absolute paths rejected)"
 
           path_has_traversal?(value) ->
             raise Workflow.MissingRequiredPhaseError,
               message:
-                "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must not contain \"..\" traversal"
+                "workflow template #{path} \"worktree.path\" must not contain \"..\" traversal"
 
           true ->
             :ok
@@ -319,7 +369,7 @@ defmodule ForemanServer.Workflow.Interpreter do
       _other ->
         raise Workflow.MissingRequiredPhaseError,
           message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.path\" must be a non-empty relative path"
+            "workflow template #{path} \"worktree.path\" must be a non-empty relative path (no leading slash, no \"..\" traversal)"
     end
   end
 
@@ -329,18 +379,21 @@ defmodule ForemanServer.Workflow.Interpreter do
     |> Enum.any?(fn segment -> segment == ".." end)
   end
 
-  defp validate_worktree_cleanup!(worktree, phase, index, path) do
+  # `on_success` is a real third value, distinct from `always`: the run's
+  # worktree is reclaimed only when the run finalizes successfully. It was
+  # validated here from the start while `RunExecutor.worktree_cleanup/1`
+  # matched `"never"` and sent everything else to `:always` — so a manifest
+  # declaring `on_success` cleaned up on failure too, silently doing the
+  # opposite of what it said on the failure path (AGENTS.md 5.2).
+  defp validate_worktree_cleanup!(worktree, path) do
     case Map.get(worktree, "cleanup") do
-      nil ->
-        :ok
-
-      value when value in ["always", "never", "on_success"] ->
+      value when value in [nil, "always", "never", "on_success"] ->
         :ok
 
       _other ->
         raise Workflow.MissingRequiredPhaseError,
           message:
-            "workflow template #{path} phase #{index} (#{phase["name"]}) \"worktree.cleanup\" must be one of: always, never, on_success"
+            "workflow template #{path} \"worktree.cleanup\" must be one of: always, never, on_success"
     end
   end
 

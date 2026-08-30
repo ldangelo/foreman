@@ -52,8 +52,45 @@ workflow name is a server-side manifest selector, validated by
 PR creation is not phase-driven; see
 [AutoPR](#pr-creation-and-merge-reconciliation) below.
 
-Each run executes in its own git worktree, isolating one agent's edits
-from your main checkout and from every other concurrent run.
+Each run executes in **one** git worktree, isolating one agent's edits from your
+main checkout and from every other concurrent run. Unless the workflow says
+otherwise, the worktree is provisioned by the run's first phase at
+`~/.foreman/worktrees/<project-id>/<run-id>/workspace` on branch
+`foreman/<run-id>` — both are defaults, and a `worktree:` block may change the
+path and branch or switch provisioning off entirely (see below). Every
+subsequent phase of the same run executes in that same checkout — so a later
+phase reads an earlier phase's documents as ordinary files. Foreman commits
+whatever each phase produced at the phase boundary, so the run branch
+accumulates the whole pipeline and is what AutoPR proposes.
+
+The worktree is configured by a **workflow-level** `worktree:` block, declared at
+the top of the manifest beside `name:` and `phases:` — not on a phase. A run has
+exactly one worktree, so a phase has nothing to decide about it:
+
+```yaml
+name: prd
+worktree:
+  enabled: true            # false opts the whole workflow out
+  branch: foreman/{run_id} # {run_id} is the only placeholder
+  path: workspace          # leaf dir under ~/.foreman/worktrees/<project>/<run>/
+  cleanup: never           # never | always | on_success
+phases:
+  - name: create-prd
+    command: "/skill:create-prd"
+```
+
+`cleanup` decides when the directory is reclaimed: `never` (the default) keeps
+it, `always` reclaims on success and on failure, and `on_success` reclaims only
+on success so a failed run's checkout survives for inspection. The default is
+`never` because the worktree is the checkout AutoPR pushes from.
+`foreman run remove --id <run-id>` reclaims it (and the local branch) whenever
+you no longer need it.
+
+`base` may pin the checkout to a specific ref. For `implement-trd` and
+`implement-trd-beads` it must resolve to the ImplementationContext's frozen
+`source_revision`, and Foreman fails the run if it does not; for every other
+workflow the base is the project checkout's `HEAD` when the run's first phase
+starts.
 
 ## Local Development Environment
 
@@ -601,6 +638,26 @@ or closed, Foreman records that on the run and updates the associated
 task. `POST /webhooks/github` accepts GitHub `pull_request` webhook
 events (verified via `FOREMAN_GITHUB_WEBHOOK_SECRET`) as a real-time
 optimization; polling remains the fallback.
+
+**One run yields at most one PR.** `auto_pr/1` is called once, from
+`finalize_run/1`, after every phase has completed, and it opens the PR from the
+run's single branch — `foreman/<run-id>` unless the workflow's `worktree.branch`
+says otherwise. There is no per-phase PR and no stacked
+PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, `checkpointPr`, or
+`commit:` setting, and the PR is opened once, at run finalization.
+
+Stacked PRs belong to the ensemble skills, not to Foreman, and `--foreman`
+switches them off on purpose — under `--foreman` the Beads skill skips
+`git town append`, stacked-PR, and per-phase PR paths, because Foreman owns the
+branch and opens the PR. If you need one PR per shippable unit today, run the
+skill standalone rather than through a Foreman dispatch.
+
+**Commits are Foreman's, not the agent's.** At each phase boundary Foreman
+stages and commits whatever the phase produced into the run's worktree, so an
+agent that writes files without committing still leaves a proposable branch. The
+message (`Foreman run <run-id> phase <n>`) and author are fixed, the commit skips
+repository pre-commit hooks, and a phase that produced nothing creates no commit
+— so AutoPR still proposes only real work.
 
 ## Documentation Discipline
 

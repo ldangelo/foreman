@@ -289,8 +289,8 @@ defmodule ForemanServer.Workflow.CatalogTest do
     end
   end
 
-  describe "worktree normalization" do
-    test "legacy manifest without worktree block leaves resolved phase shape unchanged", %{
+  describe "workflow-level worktree block" do
+    test "legacy manifest without worktree block leaves resolved shape unchanged", %{
       tmp: tmp,
       server_name: name
     } do
@@ -300,10 +300,13 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert {:ok, workflow} = Catalog.load("legacy.yaml")
       phase = hd(workflow.phases)
       refute Map.has_key?(phase, :worktree)
+      # No top-level block declared, so the catalog carries no `:worktree` key
+      # at all and leaves the digest alone.
+      refute Map.has_key?(workflow, :worktree)
       assert workflow.digest == nil
     end
 
-    test "worktree block normalizes to atom-keyed form with defaults", %{
+    test "worktree block is carried verbatim with no injected defaults", %{
       tmp: tmp,
       server_name: name
     } do
@@ -311,11 +314,11 @@ defmodule ForemanServer.Workflow.CatalogTest do
         Path.join(tmp, "with-wt.yaml"),
         """
         name: with-wt
+        worktree:
+          enabled: true
         phases:
           - name: p1
             prompt: p.md
-            worktree:
-              base: main
         """
       )
 
@@ -323,16 +326,29 @@ defmodule ForemanServer.Workflow.CatalogTest do
       start_catalog(tmp, name)
 
       assert {:ok, workflow} = Catalog.load("with-wt.yaml")
-      phase = hd(workflow.phases)
 
-      assert phase.worktree == %{
-               enabled: true,
-               base: "main",
-               branch: "foreman/{run_id}/{phase}",
-               path: nil,
-               cleanup: "always"
-             }
+      # This test used to assert the catalog re-keyed the block to atoms and
+      # filled in `branch: "foreman/{run_id}/{phase}"`, `cleanup: "always"` and
+      # `path: nil`. That was wrong: it made the catalog a third normalizer for
+      # one block, with defaults that disagreed with both `PhaseSpec` and the
+      # executor's own reads. Normalization now happens exactly once, at the
+      # executor boundary, via `WorktreeSpec.normalize/1`.
+      #
+      # Injecting defaults here would also destroy information the executor
+      # needs: it would make "declared nothing" indistinguishable from
+      # "declared the default". That distinction is load-bearing for `enabled`.
+      assert workflow.worktree == %{"enabled" => true}
 
+      refute Map.has_key?(workflow.worktree, "branch")
+      refute Map.has_key?(workflow.worktree, "cleanup")
+      refute Map.has_key?(workflow.worktree, "path")
+      refute Map.has_key?(workflow.worktree, "base")
+
+      # Phases carry no worktree of their own any more.
+      refute Map.has_key?(hd(workflow.phases), :worktree)
+
+      # A top-level `worktree` key switches the resolved workflow to the
+      # computed canonical digest.
       assert is_binary(workflow.digest) and byte_size(workflow.digest) == 16
     end
 
@@ -344,12 +360,12 @@ defmodule ForemanServer.Workflow.CatalogTest do
         Path.join(tmp, "disabled-wt.yaml"),
         """
         name: disabled-wt
+        worktree:
+          enabled: false
+          branch: custom
         phases:
           - name: p1
             prompt: p.md
-            worktree:
-              enabled: false
-              branch: custom
         """
       )
 
@@ -357,30 +373,30 @@ defmodule ForemanServer.Workflow.CatalogTest do
       start_catalog(tmp, name)
 
       assert {:ok, workflow} = Catalog.load("disabled-wt.yaml")
-      phase = hd(workflow.phases)
 
-      assert phase.worktree.enabled == false
-      assert phase.worktree.branch == "custom"
+      # A present `false` is a declaration, not an absence — it must survive the
+      # trip through the catalog verbatim rather than being defaulted away.
+      assert workflow.worktree == %{"enabled" => false, "branch" => "custom"}
       assert is_binary(workflow.digest) and byte_size(workflow.digest) == 16
     end
 
     test "digest changes when worktree config changes", %{tmp: tmp, server_name: name} do
       base = """
       name: digest-wt
+      worktree:
+        base: main
       phases:
         - name: p1
           prompt: p.md
-          worktree:
-            base: main
       """
 
       modified = """
       name: digest-wt
+      worktree:
+        base: develop
       phases:
         - name: p1
           prompt: p.md
-          worktree:
-            base: develop
       """
 
       File.write!(Path.join(tmp, "prompts/p.md"), "p")
@@ -396,6 +412,9 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert {:ok, workflow_v2} = Catalog.load("digest-wt.yaml")
       digest_v2 = workflow_v2.digest
 
+      # The block moved out of `phases`, so `canonical_digest/1` has to fold it
+      # in explicitly — otherwise a `base`/`branch`/`cleanup` edit would be
+      # invisible to the digest.
       assert is_binary(digest_v1) and is_binary(digest_v2)
       assert digest_v1 != digest_v2
     end
@@ -405,12 +424,12 @@ defmodule ForemanServer.Workflow.CatalogTest do
         Path.join(tmp, "stable-wt.yaml"),
         """
         name: stable-wt
+        worktree:
+          base: main
+          branch: feat/x
         phases:
           - name: p1
             prompt: p.md
-            worktree:
-              base: main
-              branch: feat/x
         """
       )
 

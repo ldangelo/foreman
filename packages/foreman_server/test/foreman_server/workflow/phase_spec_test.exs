@@ -26,8 +26,7 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     :name,
     :prompt,
     :prompt_path,
-    :required_file,
-    :worktree
+    :required_file
   ]
 
   describe "both key conventions converge" do
@@ -119,39 +118,18 @@ defmodule ForemanServer.Workflow.PhaseSpecTest do
     end
   end
 
-  describe "worktree block" do
-    test "a phase declaring no worktree normalizes to nil, not a disabled worktree" do
-      # nil routes the run to the DEFAULT worktree; %{enabled: false} would not.
-      assert PhaseSpec.normalize(%{"name" => "x"})[:worktree] == nil
-    end
-
-    test "a declared worktree normalizes to atom keys" do
+  # The `worktree:` block moved to the workflow level; its normalization and
+  # tests live in `ForemanServer.Workflow.WorktreeSpecTest`.
+  describe "worktree is not a phase field" do
+    test "a declared phase-level worktree block is dropped" do
       spec =
         PhaseSpec.normalize(%{
           "name" => "x",
-          "worktree" => %{
-            "enabled" => true,
-            "base" => "abc123",
-            "branch" => "foreman/{run_id}/{phase}",
-            "path" => "implement-trd",
-            "cleanup" => "never"
-          }
+          "worktree" => %{"enabled" => true, "cleanup" => "never"}
         })
 
-      assert spec[:worktree] == %{
-               enabled: true,
-               base: "abc123",
-               branch: "foreman/{run_id}/{phase}",
-               path: "implement-trd",
-               cleanup: "never"
-             }
-    end
-
-    test "an already atom-keyed worktree is preserved" do
-      spec = PhaseSpec.normalize(%{worktree: %{enabled: false, cleanup: "always"}})
-
-      assert spec[:worktree][:enabled] == false
-      assert spec[:worktree][:cleanup] == "always"
+      refute Map.has_key?(spec, :worktree)
+      assert spec[:name] == "x"
     end
   end
 

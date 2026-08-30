@@ -1,0 +1,132 @@
+# CodeRabbit review configuration.
+#
+# Why this file exists: review behavior was previously set only in the
+# Repository/Organization web UI, so it was invisible to the repo and could not
+# be reviewed or changed alongside the code it governs. `@coderabbitai
+# configuration` on a PR prints the resolved settings and their source if you
+# need to see what the UI still supplies.
+#
+# `inheritance: true` is REQUIRED here, not decorative. It is what makes this
+# file a narrow override instead of a full replacement: every value not named
+# below continues to come from the Repository/Organization UI. Without it, the
+# `inheritance` schema default of `false` would silently reset unlisted settings
+# to CodeRabbit's own defaults — including `request_changes_workflow`, which the
+# UI sets to `true` and which is currently the only merge gate this repository
+# has (there is no test CI on pull requests).
+inheritance: true
+
+language: "en-US"
+
+reviews:
+  # Raised from `chill` (the schema default, and what the UI supplied) after a
+  # direct comparison on PR #423: the GitHub app at `chill` reported 4 findings,
+  # all cosmetic prose, while `coderabbit review` from the CLI over the same
+  # branch reported 9 including two functional defects — a parser change that
+  # let a blank required key pass validation, and a declared `cleanup: always`
+  # that stopped being honored on the run-halt path. Same backend, same static
+  # analysis; the difference was how much the profile allowed through.
+  #
+  # `assertive` is documented as "more feedback (which may feel nitpicky)".
+  # That is the accepted trade: in this repository a missed silent-failure bug
+  # costs far more than a declined nitpick, and declining one is cheap because
+  # every finding is verified against the code before it is acted on.
+  profile: "assertive"
+
+  # `.beads/**` is issue-tracker state, not source. The CLI spent 2 of its 9
+  # findings on `.beads/issues.jsonl` — asking for a sentinel issue to be closed
+  # and for duplicate work items to be reconciled — which is real housekeeping
+  # but is never what a code review of a pull request is for. `br` owns that
+  # file's contents.
+  path_filters:
+    - "!.beads/**"
+    - "!_build/**"
+    - "!deps/**"
+    - "!priv/static/**"
+
+  path_instructions:
+    - path: "packages/foreman_server/lib/**/*.ex"
+      instructions: >-
+        This codebase's governing rules are in AGENTS.md section 5, "Typed
+        Boundaries, Loud Failures". They exist because six stacked MCP defects
+        once shipped undetected, each having failed quietly. Apply them as
+        review criteria, and prefer a crash to a plausible-looking success.
+
+        Flag as defects: a bare map used as a result or error payload where a
+        struct with @enforce_keys belongs (5.1); a catch-all clause that wraps
+        an unrecognized value into a SUCCESS response, or a rescue/catch that
+        converts a defect into corrupt state (5.2); one error code serving both
+        "absent" and "malformed" (5.3); pattern-matching both atom and string
+        keys for the same field instead of normalizing once at the boundary
+        (5.4); a normalization path that inserts nil for an absent key rather
+        than dropping it, since callers written as `value || fallback` then
+        misbehave (5.4b); and two hand-maintained lists that must agree where
+        one could be generated from the other (5.5).
+
+        Treat a silent fall back to a default where the input was undeterminable
+        as a bug, not a robustness feature. The AGENTS.md record of this
+        codebase's worst failures is dominated by exactly that shape: a run that
+        reported success having committed nothing, an env var computed but never
+        delivered, a PR opened against a guessed base branch.
+
+    - path: "packages/foreman_server/lib/foreman_server/aggregates/**/*.ex"
+      instructions: >-
+        Every aggregate's top-level state MUST be a dedicated %State{} struct
+        updated with %State{state | field: value}. Flag Map.merge/2 on state,
+        struct/2 (which silently ignores unknown keys), or a plain map as
+        initial_state/0. Maps remain correct for genuinely dynamic nested
+        collections such as phase_status or retry_history. Struct construction
+        alone is not validation — domain invariants belong in handle_command/2.
+
+    - path: "packages/foreman_server/lib/foreman_server/events/**/*.ex"
+      instructions: >-
+        Event structs need @enforce_keys, @type t, and @derive Jason.Encoder,
+        with @derive placed before defstruct. Do NOT ask for the event to be
+        added to a registry: ForemanServer.EventCodec derives its registry at
+        compile time by scanning this directory, and a second hand-written list
+        is the defect that change removed. Adding an event is one file.
+
+    - path: "packages/foreman_server/priv/defaults/workflows/*.yaml"
+      instructions: >-
+        These are the only executable workflow manifests. Every phase must
+        declare command:, prompt:, or bash: — a `builtin: true` phase fails
+        validation. There are no pr:, merge:, stacked:, or checkpointPr keys,
+        and proposing them creates manifest surface no module reads, which
+        AGENTS.md records as the `clean_worktree` failure. `worktree:` is
+        declared once at WORKFLOW level, never per phase, because a run has
+        exactly one worktree. A phase `command:` value must be a slash
+        invocation beginning with "/".
+
+    - path: "packages/foreman_server/test/**/*.exs"
+      instructions: >-
+        A test must pin an observable contract and fail on a plausible bug.
+        Never suggest deleting or weakening a test to make it pass; if a
+        contract changed, the test should be rewritten to pin the new one.
+        Tests here deliberately drive real git and a real event store rather
+        than mocks — do not suggest replacing that with mocks. Note that
+        several suites are known to be load-dependent under a full-suite run
+        (FullWorkflowLifecycleTest, DispatcherBridgeTest, RunExecutorCommandTest)
+        and pass in isolation; a failure there is not automatically a
+        regression.
+
+    - path: "{AGENTS.md,CLAUDE.md,README.md,docs/user-guide.md,docs/cli-reference.md}"
+      instructions: >-
+        These five files are a documentation GATE, not optional prose. If a
+        change adds, removes, or renames an externally visible identifier —
+        command or event type, foreman_* MCP tool, HTTP route, CLI flag, env
+        var, config key, workflow or prompt name — the identifier's old and new
+        names must be reconciled across all five. Flag a stale reference to a
+        removed identifier, and flag a new identifier documented nowhere.
+
+        These documents deliberately record corrected mistakes, saying plainly
+        that an earlier claim was wrong and why. Do not flag that as
+        contradiction or redundancy — the correction is the point. DO flag a
+        passage that contradicts the current code, or two passages that
+        contradict each other without one being marked as the correction.
+
+    - path: "docs/{PRD,TRD}/**"
+      instructions: >-
+        Point-in-time design specifications, not living documents. Their claims
+        describe the design as of authoring and are expected to diverge from
+        later code. Do not report them as stale, out of date, or inconsistent
+        with the implementation, and do not suggest rewriting them to match
+        current reality; a forward-pointing note is the only correct fix.

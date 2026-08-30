@@ -853,7 +853,7 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
-  describe "task.approve strict rendering of phases[*].command and phases[*].worktree.base" do
+  describe "task.approve strict rendering of phases[*].command and worktree.base" do
     import Mox
     alias ForemanServer.TaskProviders.BrRunnerMock
     alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
@@ -917,14 +917,14 @@ defmodule ForemanServer.CommandGatewayTest do
       write_workflow.("implement-trd", """
       name: implement-trd
       description: Implement against a frozen TRD document.
+      worktree:
+        enabled: true
+        base: "{{implementation.source_revision}}"
+        branch: foreman/{run_id}
+        cleanup: always
       phases:
         - name: implement-trd
           command: "/skill:ensemble-full-implement-trd {{implementation.trd_path_argument}} --foreman"
-          worktree:
-            enabled: true
-            base: "{{implementation.source_revision}}"
-            branch: foreman/{run_id}/{phase}
-            cleanup: always
       """)
 
       prev_poll = Application.get_env(:foreman_server, :workflow_catalog_poll_ms)
@@ -1037,7 +1037,7 @@ defmodule ForemanServer.CommandGatewayTest do
       refute Map.has_key?(phase, :command)
     end
 
-    test "phases[*].worktree.base is materialized to the concrete source revision",
+    test "worktree.base is materialized to the concrete source revision",
          %{project_id: project_id, task_id: task_id, trd_path: trd_path} do
       assert {:ok, _} =
                CommandGateway.dispatch_operator(%{
@@ -1069,12 +1069,20 @@ defmodule ForemanServer.CommandGatewayTest do
       source_revision = get_in(snapshot, ["implementation", "source_revision"])
       assert is_binary(source_revision) and source_revision != ""
 
-      # Canonical string-keyed worktree (persisted in TaskApproved event payload).
-      worktree = phase["worktree"]
+      # The worktree block is declared ONCE at workflow level, so its
+      # rendered copy lives on the snapshot beside "phases". A
+      # per-phase block was the previous, wrong shape: it implied one
+      # clone per phase when a run has exactly one worktree.
+      # Canonical string-keyed (persisted in TaskApproved payload).
+      worktree = snapshot["worktree"]
       assert worktree["base"] == source_revision
       refute worktree["base"] =~ "{source_revision}"
-      refute Map.has_key?(phase, :worktree)
+      refute Map.has_key?(snapshot, :worktree)
       refute Map.has_key?(worktree, :base)
+
+      # Regression guard: no phase may carry a worktree block.
+      refute Map.has_key?(phase, "worktree")
+      refute Map.has_key?(phase, :worktree)
     end
 
     test "worktree.branch retains runtime placeholders (rendered at execution time)",
@@ -1103,14 +1111,15 @@ defmodule ForemanServer.CommandGatewayTest do
                  payload: %{task_id: task_id, approved_by: "operator-1"}
                })
 
-      phase = hd(payload["workflow_snapshot"]["phases"])
-      worktree = phase["worktree"]
+      snapshot = payload["workflow_snapshot"]
+      worktree = snapshot["worktree"]
+      refute Map.has_key?(hd(snapshot["phases"]), "worktree")
 
-      assert worktree["branch"] == "foreman/{run_id}/{phase}"
-      # worktree.path is not declared in the bundled manifest; the
-      # runtime derives it from `phase.name` via
-      # RunExecutor.worktree_path_for/4, so it must not appear in the
-      # approval-time snapshot.
+      assert worktree["branch"] == "foreman/{run_id}"
+      # worktree.path is not declared in this manifest; RunExecutor
+      # defaults the leaf to "workspace" at runtime, so it must not
+      # appear in the approval-time snapshot. (Nor may Catalog or
+      # Approval inject a default: they carry the block verbatim.)
       refute Map.has_key?(worktree, "path")
       refute Map.has_key?(worktree, :path)
     end
@@ -1155,7 +1164,8 @@ defmodule ForemanServer.CommandGatewayTest do
       assert Jason.decode!(encoded) == decoded
 
       [decoded_phase] = decoded["phases"]
-      decoded_worktree = decoded_phase["worktree"]
+      decoded_worktree = decoded["worktree"]
+      refute Map.has_key?(decoded_phase, "worktree")
 
       expected_argument = Jason.encode!(trd_path)
       expected_command = "/skill:ensemble-full-implement-trd #{expected_argument} --foreman"
@@ -1168,10 +1178,9 @@ defmodule ForemanServer.CommandGatewayTest do
       refute decoded_worktree["base"] =~ "{source_revision}"
 
       # Branch placeholders survive the round-trip so the execution-time
-      # renderer can substitute them. `worktree.path` is not declared
-      # in the bundled manifest; the runtime derives it from
-      # `phase.name`.
-      assert decoded_worktree["branch"] == "foreman/{run_id}/{phase}"
+      # renderer can substitute them. `worktree.path` is not declared in
+      # this manifest; RunExecutor defaults the leaf to "workspace".
+      assert decoded_worktree["branch"] == "foreman/{run_id}"
       refute Map.has_key?(decoded_worktree, "path")
     end
 
@@ -1219,7 +1228,11 @@ defmodule ForemanServer.CommandGatewayTest do
       assert is_binary(source_revision) and source_revision != ""
 
       [persisted_phase] = persisted_snapshot["phases"]
-      persisted_worktree = persisted_phase["worktree"]
+      persisted_worktree = persisted_snapshot["worktree"]
+
+      # Regression guard: the worktree block lives on the snapshot, not
+      # duplicated onto each phase.
+      refute Map.has_key?(persisted_phase, "worktree")
 
       # command must be concrete — no {{implementation.*}} tokens, no
       # {trd_path_argument} tokens. The bundle uses dotted
@@ -1237,11 +1250,11 @@ defmodule ForemanServer.CommandGatewayTest do
       assert persisted_worktree["base"] == source_revision
 
       # Branch keeps the runtime placeholder; path stays absent.
-      assert persisted_worktree["branch"] == "foreman/{run_id}/{phase}"
+      assert persisted_worktree["branch"] == "foreman/{run_id}"
       refute Map.has_key?(persisted_worktree, "path")
     end
 
-    test "rendered phase command and worktree.base retain approval-time SHA after HEAD movement",
+    test "rendered phase command and workflow worktree.base retain approval-time SHA after HEAD movement",
          %{
            project_id: project_id,
            task_id: task_id,
@@ -1279,13 +1292,15 @@ defmodule ForemanServer.CommandGatewayTest do
       assert is_binary(sha1) and String.length(sha1) in [40, 64]
 
       [first_phase] = first_payload["workflow_snapshot"]["phases"]
+      first_worktree = first_payload["workflow_snapshot"]["worktree"]
       expected_argument = Jason.encode!(trd_path)
       expected_command = "/skill:ensemble-full-implement-trd #{expected_argument} --foreman"
 
       assert first_phase["command"] == expected_command
       refute first_phase["command"] =~ "{trd_path_argument}"
-      assert first_phase["worktree"]["base"] == sha1
-      refute first_phase["worktree"]["base"] =~ "{source_revision}"
+      refute Map.has_key?(first_phase, "worktree")
+      assert first_worktree["base"] == sha1
+      refute first_worktree["base"] =~ "{source_revision}"
 
       # Advance HEAD with a fresh commit so a naive re-render would
       # pick up a new SHA. The freeze semantic only holds if downstream
@@ -1314,10 +1329,12 @@ defmodule ForemanServer.CommandGatewayTest do
                })
 
       [second_phase] = second_payload["workflow_snapshot"]["phases"]
+      second_worktree = second_payload["workflow_snapshot"]["worktree"]
       assert second_phase["command"] == expected_command
       refute second_phase["command"] =~ "{trd_path_argument}"
-      assert second_phase["worktree"]["base"] == sha1
-      refute second_phase["worktree"]["base"] =~ "{source_revision}"
+      refute Map.has_key?(second_phase, "worktree")
+      assert second_worktree["base"] == sha1
+      refute second_worktree["base"] =~ "{source_revision}"
       assert second_payload == first_payload
     end
   end
