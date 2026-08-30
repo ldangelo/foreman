@@ -38,6 +38,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Overwatch
   alias ForemanServer.PrAssociate
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
@@ -1452,6 +1453,17 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # "everything phases 1..N-1 produced". Phase 1's PRD is therefore correctly
   # not a candidate in phase 2.
   #
+  # A phase declaring `commit: false` DOES now reach a discovery-gated phase
+  # with its work still pending — the load-time guard that forbade it,
+  # `Interpreter.validate_commit_deferral!/2`'s `requiredFile` clause (that
+  # function is now `validate_commit_cleanup!/3`, and carries no such clause), was
+  # deleted deliberately, because forbidding it also forbade the phase batching
+  # the `commit:` tag exists to provide. When that happens HEAD has not moved,
+  # so the predecessor's uncommitted document IS a candidate for the successor's
+  # gate. That is a property of discovery's scope, not a manifest defect, and it
+  # is the operator's stated intent: phases that batch into one commit are one
+  # unit of work. Do not re-add a load-time veto here.
+  #
   # A worktree that has vanished mid-run is a hard failure (AGENTS.md 5.2/5.3):
   # continuing would run the phase against whatever directory git resolves
   # instead, and produce a plausible-looking artifact from the wrong tree.
@@ -1888,9 +1900,29 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp commit_phase_worktree(_state, _phase_spec, _phase_index, nil), do: {:ok, :no_worktree}
 
-  defp commit_phase_worktree(state, _phase_spec, phase_index, %{worktree_path: path})
+  defp commit_phase_worktree(state, phase_spec, phase_index, %{worktree_path: path})
        when is_binary(path) and path != "" do
-    commit_dirty_worktree(state, phase_index, path)
+    if phase_commits?(phase_spec) do
+      commit_dirty_worktree(state, phase_index, path)
+    else
+      # `commit: false` — the phase's work stays in the worktree for a later
+      # phase to commit. Nothing is inspected and nothing is staged.
+      #
+      # Load-time validation no longer proves a later phase commits. That claim
+      # was true of the unconditional refusal this replaced, and is now FALSE:
+      # `Interpreter.validate_commit_cleanup!/3` refuses only the manifest whose
+      # deferred work would be DESTROYED by `cleanup: always`/`on_success`. Under
+      # `cleanup: never` the work may legitimately be stranded in the retained
+      # worktree, which is what `warn_uncommitted_work/1` reports at run
+      # terminal. Nor does load time prove anything about discovery gates: the
+      # `requiredFile` clause that made deferral and discovery mutually exclusive
+      # was deleted, since it forbade the batching this tag exists to provide.
+      Logger.info(
+        "RunExecutor #{state.run_id} phase #{phase_index} declares commit: false, deferring"
+      )
+
+      {:ok, :commit_deferred}
+    end
   end
 
   # A worktree record without a usable path is a programming error, not a
@@ -1900,6 +1932,32 @@ defmodule ForemanServer.Workflow.RunExecutor do
     raise ArgumentError,
           "phase #{phase_index} worktree record carries no worktree_path: #{inspect(record)}"
   end
+
+  # Absent defaults to committing. That preserves the behavior from when the
+  # commit was unconditional, and it keeps the two invariants deferral can
+  # break (per-phase discovery scoping, AutoPR's commits-only gate) intact for
+  # every manifest that says nothing — including the seven bundled workflows
+  # that declare no `commit:` at all. Only an explicit `false` defers.
+  #
+  # A non-boolean cannot arrive here: `Interpreter.validate_commit_value!/3`
+  # rejects it at load. This is a total match over `true | false | nil` rather
+  # than a truthiness test so a value that somehow bypassed that boundary
+  # raises instead of being silently coerced (AGENTS.md 5.2).
+  defp phase_commits?(phase_spec) do
+    case Map.get(phase_spec, :commit) do
+      nil -> true
+      true -> true
+      false -> false
+    end
+  end
+
+  @doc false
+  # Test-only. `phase_commits?/1` is the single place the absent-means-commit
+  # default lives, and it reads the ATOM `:commit` on a NORMALIZED PhaseSpec —
+  # not the string-keyed manifest map. A test that hands it a raw parsed phase
+  # gets `nil` for every input and passes vacuously, so the export exists to
+  # make callers go through `PhaseSpec.normalize/1` as production does.
+  def __phase_commits_for_test__(phase_spec), do: phase_commits?(phase_spec)
 
   defp commit_dirty_worktree(state, phase_index, path) do
     case worktree_dirty?(path) do
@@ -1992,10 +2050,63 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # every phase boundary. With one worktree per run that is actively wrong: it
   # would delete the checkout the next phase is about to continue in.
   defp cleanup_run_worktree(state, outcome) when outcome in [:success, :failure] do
+    warn_uncommitted_work(state)
+
     case {Map.get(state, :run_worktree), outcome} do
       {%{cleanup: :always} = record, _} -> do_clean_run_worktree(state, record)
       {%{cleanup: :on_success} = record, :success} -> do_clean_run_worktree(state, record)
       _ -> :ok
+    end
+  end
+
+  # REQ-006. `Interpreter` refuses a manifest whose deferred work would be
+  # DESTROYED by cleanup, because that is unsatisfiable; a manifest that merely
+  # leaves work uncommitted in a retained worktree is legitimate and loads. The
+  # consequence, though, is invisible: `AutoPR` gates on
+  # `git rev-list --count base..head`, which counts commits only, so the run
+  # reports success and simply produces no PR. Without this line the operator
+  # has an absent PR and nothing anywhere attributing it.
+  #
+  # This replaced a LOAD-TIME raise on the same condition. The raise could not
+  # distinguish "authored a review-staging workflow" from "made a mistake", so
+  # it forbade the former outright. Warning here is strictly more informative
+  # as well as more permissive: it fires against a real run, naming the phase.
+  #
+  # Emitted before cleanup and on every terminal path — including a run that
+  # failed before reaching any committing phase, which is the case an
+  # end-of-pipeline check would miss entirely, since the later committing phase
+  # that would have absorbed the work never ran. That means the predicate reads
+  # the phases that actually EXECUTED, not the whole manifest.
+  defp warn_uncommitted_work(state) do
+    executed = executed_phase_specs(state)
+
+    case CommitDeferral.pending_phase_spec(executed) do
+      nil ->
+        :ok
+
+      pending ->
+        Logger.warning(
+          "RunExecutor #{state.run_id} left work uncommitted: phase #{pending} " <>
+            "(#{phase_spec_name(Enum.at(executed, pending))}) declared \"commit: false\" and no " <>
+            "later phase that ran committed it. The changes remain in the run's worktree; " <>
+            "AutoPR proposes commits only, so this run has no PR to show for that work."
+        )
+    end
+  end
+
+  # Only the phases that RAN. A run that fails at phase 1 of 3 must be judged on
+  # phase 1 alone: the manifest's later committing phase is not a defence for
+  # work that was never absorbed because execution stopped first.
+  #
+  # `completed` holds phase INDICES, so the count of executed phases is the
+  # highest index reached plus one — not `length/1`, which would undercount if
+  # an index were ever recorded out of order.
+  defp executed_phase_specs(state) do
+    specs = Map.get(state, :phase_specs) || []
+
+    case Map.get(state, :completed) || [] do
+      [] -> []
+      completed -> Enum.take(specs, Enum.max(completed) + 1)
     end
   end
 
@@ -2275,6 +2386,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __worktree_cleanup_for_test__(worktree), do: worktree_cleanup(worktree)
+
+  @doc false
+  def __warn_uncommitted_work_for_test__(state), do: warn_uncommitted_work(state)
 
   @doc false
   def __remember_run_base_branch_for_test__(state), do: remember_run_base_branch(state)

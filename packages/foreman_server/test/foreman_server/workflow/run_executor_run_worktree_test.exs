@@ -198,11 +198,130 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
                )
     end
 
-    test "a phase that opted out of worktrees commits nothing" do
+    # `commit:` is INERT when the workflow declares `worktree: enabled: false`.
+    # There is no checkout to commit in, so both values must reach the same
+    # no-op — and neither may error. An implementation that consulted
+    # `phase_commits?/1` before checking for a worktree would either raise or
+    # report a deferral for a workflow that never had a worktree to defer in,
+    # making a meaningless declaration look consequential.
+    test "a workflow that opted out of worktrees commits nothing" do
       assert RunExecutor.__commit_phase_worktree_for_test__(%{run_id: "r"}, %{}, nil) ==
                {:ok, :no_worktree}
     end
 
+    test "commit: false is inert with no worktree" do
+      assert RunExecutor.__commit_phase_worktree_for_test__(
+               %{run_id: "r"},
+               %{commit: false},
+               nil
+             ) == {:ok, :no_worktree}
+    end
+
+    test "commit: true is inert with no worktree, identically" do
+      # The PRD requires the two outcomes be indistinguishable, not merely both
+      # non-failing (AC-003-2).
+      assert RunExecutor.__commit_phase_worktree_for_test__(
+               %{run_id: "r"},
+               %{commit: true},
+               nil
+             ) == {:ok, :no_worktree}
+    end
+
+    # `commit: false` defers: the phase's work stays in the worktree so a later
+    # phase's commit absorbs it. The observable contract is that nothing is
+    # staged and HEAD does not move, while the FILES remain on disk — a
+    # deferral that discarded the work, or that committed anyway, would both
+    # look like success here without these two assertions.
+    test "commit: false leaves the work uncommitted and on disk", %{repo: repo, base: base} do
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/run-defer"
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+
+      write!(wt, "docs/PRD/PRD.md")
+
+      assert RunExecutor.__commit_phase_worktree_for_test__(
+               %{run_id: "run-defer"},
+               %{commit: false},
+               %{worktree_path: wt}
+             ) == {:ok, :commit_deferred}
+
+      assert resolve!(repo, branch) == base, "a deferred phase must not move the branch"
+      assert File.regular?(Path.join(wt, "docs/PRD/PRD.md")), "the work must survive on disk"
+
+      Default.clean_worktree(wt, worktree_opts(repo, base, branch))
+    end
+
+    # The next phase's commit must pick up the deferred work, which is the whole
+    # point of batching phases into one commit.
+    test "a later commit absorbs the deferred work", %{repo: repo, base: base} do
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/run-absorb"
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+
+      write!(wt, "docs/PRD/deferred.md")
+
+      assert {:ok, :commit_deferred} =
+               RunExecutor.__commit_phase_worktree_for_test__(
+                 %{run_id: "run-absorb"},
+                 %{commit: false},
+                 %{worktree_path: wt}
+               )
+
+      write!(wt, "docs/TRD/own.md")
+
+      assert {:ok, :committed} =
+               RunExecutor.__commit_phase_worktree_for_test__(
+                 %{run_id: "run-absorb"},
+                 %{commit: true},
+                 %{worktree_path: wt}
+               )
+
+      tip = resolve!(repo, branch)
+      assert tip != base
+
+      {tracked, 0} = System.cmd("git", ["-C", wt, "ls-tree", "-r", "--name-only", tip])
+      files = String.split(tracked, "\n", trim: true)
+
+      assert "docs/PRD/deferred.md" in files, "the deferred phase's work must be in the commit"
+      assert "docs/TRD/own.md" in files, "the committing phase's own work must be in the commit"
+
+      Default.clean_worktree(wt, worktree_opts(repo, base, branch))
+    end
+
+    # Absent is not `false`. Seven bundled workflows declare no `commit:` at
+    # all, and they must keep committing — this is the clause that preserves the
+    # behavior from when the commit was unconditional.
+    test "an absent commit key still commits", %{repo: repo, base: base} do
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/run-absent"
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+
+      write!(wt, "docs/PRD/PRD.md")
+
+      assert RunExecutor.__commit_phase_worktree_for_test__(
+               %{run_id: "run-absent"},
+               %{},
+               %{worktree_path: wt}
+             ) == {:ok, :committed}
+
+      assert resolve!(repo, branch) != base
+
+      Default.clean_worktree(wt, worktree_opts(repo, base, branch))
+    end
+
+    # A value that bypassed `Interpreter.validate_commit_value!/3` is a
+    # programming error, not a condition to coerce: a truthiness test would read
+    # the string "false" as "commit", silently doing the opposite of the
+    # manifest (AGENTS.md 5.2).
+    test "a non-boolean commit value raises rather than being coerced" do
+      assert_raise CaseClauseError, fn ->
+        RunExecutor.__commit_phase_worktree_for_test__(
+          %{run_id: "r"},
+          %{commit: "false"},
+          %{worktree_path: "/tmp/never-read"}
+        )
+      end
+    end
   end
 
   describe "one worktree for the whole run" do
@@ -274,6 +393,106 @@ defmodule ForemanServer.Workflow.RunExecutorRunWorktreeTest do
 
       Default.clean_worktree(wt, worktree_opts(repo, base, branch))
     end
+  end
+
+  # REQ-004: deferred work is ABSORBED by the next committing phase, which is
+  # the whole point of the tag — several phases batch into one commit.
+  #
+  # Shaped like the bundled `prd` workflow, because that is the motivating case:
+  # create-prd, refine-prd and create-trd produce planning documents that belong
+  # together in review, and implement-trd produces code that does not. Four
+  # phases, three deferring, driving the PRODUCTION commit path against a real
+  # git repository.
+  describe "deferral absorption across a prd-shaped run" do
+    test "three deferring phases land on ONE commit, distinct from the fourth", %{
+      repo: repo,
+      base: base
+    } do
+      wt = Path.join(repo, ".worktrees/workspace")
+      branch = "foreman/run-batch"
+      assert {:ok, _} = Default.create_worktree(repo, wt, worktree_opts(repo, base, branch))
+
+      state = %{run_id: "run-batch"}
+      defer = %{commit: false}
+      commit = %{commit: true}
+
+      # create-prd — defers
+      write!(wt, "docs/PRD/PRD-2026-aaaa-thing.md")
+
+      assert RunExecutor.__commit_phase_worktree_for_test__(state, defer, %{worktree_path: wt}) ==
+               {:ok, :commit_deferred}
+
+      assert resolve!(repo, branch) == base, "a deferring phase must not move the branch"
+
+      # refine-prd — defers, editing the document the previous phase left
+      write!(wt, "docs/PRD/PRD-2026-aaaa-thing.md", "refined body")
+
+      assert RunExecutor.__commit_phase_worktree_for_test__(state, defer, %{worktree_path: wt}) ==
+               {:ok, :commit_deferred}
+
+      # create-trd — defers
+      write!(wt, "docs/TRD/TRD-2026-aaaa-thing.md")
+
+      assert RunExecutor.__commit_phase_worktree_for_test__(state, defer, %{worktree_path: wt}) ==
+               {:ok, :commit_deferred}
+
+      assert resolve!(repo, branch) == base,
+             "three consecutive deferrals must still leave the branch untouched"
+
+      # implement-trd — commits, absorbing all three deferrals
+      assert RunExecutor.__commit_phase_worktree_for_test__(state, commit, %{worktree_path: wt}) ==
+               {:ok, :committed}
+
+      documents_commit = resolve!(repo, branch)
+      assert documents_commit != base
+
+      # AC-004-1: the planning documents are on EXACTLY ONE commit.
+      assert count_commits(repo, base, branch) == 1,
+             "three deferrals plus one commit must produce one commit, not three or four"
+
+      files = git!(repo, ["show", "--name-only", "--pretty=format:", documents_commit])
+      assert String.contains?(files, "docs/PRD/PRD-2026-aaaa-thing.md")
+      assert String.contains?(files, "docs/TRD/TRD-2026-aaaa-thing.md")
+
+      # AC-004-2: a later committing phase's work is a DISTINCT commit — the
+      # absorption must end, not swallow everything after it too.
+      write!(wt, "lib/thing.ex", "defmodule Thing do end")
+
+      assert RunExecutor.__commit_phase_worktree_for_test__(state, commit, %{worktree_path: wt}) ==
+               {:ok, :committed}
+
+      code_commit = resolve!(repo, branch)
+      assert code_commit != documents_commit
+      assert count_commits(repo, base, branch) == 2
+
+      code_files = git!(repo, ["show", "--name-only", "--pretty=format:", code_commit])
+      assert String.contains?(code_files, "lib/thing.ex")
+
+      refute String.contains?(code_files, "docs/PRD/PRD-2026-aaaa-thing.md"),
+             "the documents were already committed; they must not appear again"
+
+      Default.clean_worktree(wt, worktree_opts(repo, base, branch))
+    end
+
+    # AC-004-3: the bundled manifest is NOT changed by this feature. Every
+    # bundled workflow ships every phase committing, so shipped behavior is
+    # identical to before the tag existed; deferral is opt-in per manifest.
+    test "the bundled prd workflow still commits every phase" do
+      path = Path.join(:code.priv_dir(:foreman_server), "defaults/workflows/prd.yaml")
+
+      assert {:ok, workflow} = ForemanServer.Workflow.Interpreter.load!(path)
+
+      for phase <- workflow["phases"] do
+        assert Map.get(phase, "commit", true) == true,
+               "bundled prd.yaml phase #{phase["name"]} must commit"
+      end
+    end
+  end
+
+  defp count_commits(repo, base, branch) do
+    git!(repo, ["rev-list", "--count", "#{base}..#{branch}"])
+    |> String.trim()
+    |> String.to_integer()
   end
 
   defp worktree_opts(repo, base, branch) do

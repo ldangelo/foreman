@@ -35,7 +35,12 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     {:models, [:models, "models"]},
     {:max_turns, [:max_turns, "max_turns", "maxTurns"]},
     {:mail, [:mail, "mail"]},
-    {:context, [:context, "context"]}
+    {:context, [:context, "context"]},
+    # Phase-level, unlike `worktree:`: each phase produces its own output, so
+    # whether that output becomes a commit is a per-phase question. Absent is
+    # NOT the same as `false` — `fetch_any/2` below preserves a present `false`
+    # — because absent means "default" (commit) and `false` means "defer".
+    {:commit, [:commit, "commit"]}
   ]
 
   @doc """
@@ -62,9 +67,19 @@ defmodule ForemanServer.Workflow.PhaseSpec do
     Enum.map(phases, &normalize/1)
   end
 
+  # An ABSENT source key is omitted, not stored as `nil`. AGENTS.md 5.4b states
+  # this directly ("Never insert `nil` for an absent key"), and `commit:` is the
+  # field that makes it matter: `nil` would be a third state alongside the two
+  # the operator can write, leaving "declared nothing" and "declared the
+  # default" indistinguishable to anything using `Map.has_key?/2`. Readers using
+  # `Map.get/2` are unaffected — an omitted key already reads as `nil`.
   defp put_field({key, sources}, source_map, acc) do
-    Map.put(acc, key, fetch_any(source_map, sources))
+    case fetch_any(source_map, sources) do
+      nil -> acc
+      value -> Map.put(acc, key, value)
+    end
   end
+
 
   # `Enum.find_value/2` cannot express this: it treats a legitimately-present
   # `false` as "keep looking", which silently turned `worktree: {enabled: false}`

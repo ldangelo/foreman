@@ -18,14 +18,41 @@ worktree:
   branch: foreman/{run_id}
   path: workspace
   cleanup: never
+# `commit:` is PHASE-level — the opposite shape from `worktree:` above, and
+# deliberately so. A run has one worktree, so a phase has nothing to decide
+# there; but each phase produces its own output, so whether that output becomes
+# a commit is a per-phase question. `true` commits the phase's work when the
+# phase completes; `false` defers it so a later phase's commit absorbs it,
+# which is how several phases are batched into one commit. Absent defaults to
+# `true`.
+#
+# Every phase here commits, so each document lands as its own reviewable commit
+# on the run branch. Deferral is refused at load in exactly one case: the
+# manifest's LAST phase defers AND the worktree `cleanup:` is `always` or
+# `on_success`, because reclaiming the checkout would destroy work no phase ever
+# committed. Deferring under `cleanup: never` (as configured above) is
+# supported — the work survives in the worktree for a human to inspect, and
+# `RunExecutor` warns at run end that it was left uncommitted.
+#
+# Two earlier refusals are gone and should not be re-derived from older
+# comments: `commit: false` before a `requiredFile:` phase is allowed (that gate
+# discovers documents by git status against the phase's base, so a predecessor's
+# uncommitted work is correctly not seen as the successor's own), and a manifest
+# where no phase commits at all is allowed (AutoPR proposes nothing, which is a
+# legitimate stage-for-review outcome rather than an error).
 phases:
   - name: create-prd
     command: "/skill:ensemble-full-create-prd --foreman"
+    commit: true
   - name: refine-prd
     command: "/skill:ensemble-full-refine-prd --foreman"
+    commit: true
   - name: create-trd
     command: "/skill:ensemble-full-create-trd --foreman"
+    commit: true
   - name: refine-trd
     command: "/skill:ensemble-full-refine-trd-foreman --foreman"
+    commit: true
   - name: implement-trd
     command: "/skill:ensemble-full-implement-trd --foreman"
+    commit: true

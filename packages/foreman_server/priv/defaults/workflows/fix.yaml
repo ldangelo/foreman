@@ -12,6 +12,19 @@ worktree:
   branch: foreman/{run_id}
   path: workspace
   cleanup: never
+# `commit:` is PHASE-level, unlike `worktree:` above: a run has one worktree so a
+# phase has nothing to decide there, but each phase produces its own output, so
+# whether that output becomes a commit is a per-phase question. `true` commits
+# the phase's work when the phase completes; absent defaults to `true`.
+#
+# This workflow has a single phase, so `commit: false` would leave its work
+# uncommitted with no later phase to absorb it. That is ALLOWED under the
+# `cleanup: never` configured above — the work survives in the worktree for a
+# human to inspect, and `RunExecutor` warns at run end that the run left work
+# uncommitted. It is refused only if `cleanup:` were `always` or `on_success`,
+# where reclaiming the checkout would destroy the work outright. AutoPR would
+# propose nothing either way, since it gates on commits.
 phases:
   - name: fix
     command: "/skill:ensemble-fix-issue --foreman"
+    commit: true

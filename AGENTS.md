@@ -119,12 +119,75 @@ that directory is not evidence a mechanism works — the supported set is
 `checkpointPr`, `create-pr`, `pr-wait`, or `merge` phases, and do not dispatch
 those stale workflows.
 
-**There are no manifest settings for commits, stacked PRs, or per-phase PRs.**
-The workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`)
-is the complete vocabulary this change adds; `Interpreter` and `PhaseSpec`
-contain zero `pr`, `merge`, `checkpoint`, or `commit` keys. Every phase's work
-is committed unconditionally at the phase boundary by
-`RunExecutor.commit_phase_worktree/4`.
+**`commit:` is a phase-level boolean; there are still no manifest settings for
+stacked or per-phase PRs.** Read the second half as the standing design
+decision and the first half as a correction: this passage previously said "there
+are no manifest settings for commits", which was true when written and is not
+now. `commit: true` (the default when the key is absent) commits the phase's
+work when the phase completes; `commit: false` DEFERS it, leaving the changes in
+the worktree for a later phase's commit to absorb, which is how several phases
+are batched into one commit. `PhaseSpec.@fields` plus `commit`, plus the
+workflow-level `worktree:` block (`enabled`/`base`/`branch`/`path`/`cleanup`),
+is the complete declarable vocabulary; `Interpreter` and `PhaseSpec` still
+contain zero `pr`, `merge`, or `checkpoint` keys.
+
+**Deferral is rejected at LOAD time in exactly ONE case — the one the manifest
+alone makes unsatisfiable — and warned about at run terminal in the case whose
+consequence is merely invisible.** `Interpreter.validate_commit_cleanup!/3`
+refuses a manifest whose work no phase will ever commit when
+`worktree.cleanup` is `always` or `on_success`: both modes delete the run's
+worktree, so the deferred changes are destroyed with no branch and nothing for
+`AutoPR` to propose. Absent `cleanup:` is `never`, matching
+`RunExecutor.worktree_cleanup/1` — reading it as `always` would refuse nearly
+every deferring manifest, since most declare no `worktree:` block at all.
+
+Under `cleanup: never` the same manifest LOADS, and `RunExecutor`'s
+`warn_uncommitted_work/1` logs at run terminal instead, naming the deferring
+phase. It reads the phases that actually EXECUTED, not the manifest, so a run
+that fails before the absorbing phase still warns — an end-of-manifest check
+would see a committing phase that never ran and report no problem.
+
+**This passage previously described TWO load-time refusals; both claims are
+now wrong, and the way they were wrong is the point.**
+
+1. **A `requiredFile:` phase reached with work pending** was refused because
+   `PlanContext.discover_document/3` unions "committed since `base_ref`" with
+   "uncommitted in the working tree", so a non-committing predecessor's files
+   read as the successor's own new document — the gate passes while attributing
+   one phase's document to another. That hazard is REAL and still exists. The
+   refusal was the wrong response to it: it made deferral and discovery mutually
+   exclusive, so the phase immediately before a gated phase could never defer —
+   exactly the batching the tag exists to provide, and the shape `plan` and
+   `prd` want. Mis-attribution is a property of what discovery SCOPES; a
+   load-time veto on manifest shape cannot fix it, and the PRD excludes the
+   mechanism by Non-Goal.
+2. **Work still pending after the last phase** was refused unconditionally.
+   `AutoPR` genuinely counts commits only, so such a run produces no PR — but
+   that is a reason to make the absence attributable, not to forbid the
+   manifest. The unconditional raise could not distinguish an operator mistake
+   from a workflow that deliberately stages changes in a retained worktree for
+   human review, and so made the latter inexpressible.
+
+The general rule both corrections express is the PRD's design principle:
+**refuse what cannot be honoured, warn where the consequence would merely be
+invisible.** Do not re-add a load-time veto on a manifest that a retained
+worktree makes perfectly satisfiable.
+
+`CommitDeferral.pending_phase/1` (manifest string keys) and
+`pending_phase_spec/1` (normalized `PhaseSpec` atom keys) are two entry points
+over one shared fold. That is deliberate, not duplication: the loader and the
+executor genuinely hold different shapes, and a
+`Map.get(m, :commit) || Map.get(m, "commit")` hedge would leave neither
+boundary owning the convention (§5.4). The shared fold is what guarantees the
+refusal and the warning cannot disagree about what "pending" means. The pending
+flag CLEARS on a committing phase rather than latching, so
+`false → true → requiredFile` is valid; among consecutive deferrals it reports
+the EARLIEST index, because the operator needs where the uncommitted run begins.
+
+`RunExecutor.phase_commits?/1` matches `true | false | nil` totally rather than
+testing truthiness, so a value that somehow bypassed
+`validate_commit_value!/3` raises instead of being coerced — the string
+`"false"` is truthy and would otherwise commit while the manifest said not to.
 
 Stacked PRs remain an **ensemble-skill** concern, not a Foreman one, and
 `--foreman` deliberately turns them off:
@@ -140,9 +203,8 @@ after every phase completes — so a run yields at most one PR, opened from the
 single run branch. `AutoPR.maybe_create_pr/1` takes a fixed context (`run_id`,
 `base_branch`, `head_branch`, `artifact_path`, `cwd`) and derives title and body
 itself; there is no declarable title, body, draft, reviewer, or label. Foreman
-commits with a fixed message, its own author identity, and `--no-verify`, and
-none of that is declarable — nor is WHETHER a phase commits at all, since every
-phase commits unconditionally. Adding `pr:`/`stacked:` keys
+commits with a fixed message, its own author identity, and `--no-verify`; only
+WHETHER a phase commits is declarable, never how. Adding `pr:`/`stacked:` keys
 would create manifest surface that no module reads — the `clean_worktree`
 failure in this document, repeated. If per-phase or stacked PRs are wanted from
 Foreman, the work is a real change to `AutoPR` (which shells `gh pr create`

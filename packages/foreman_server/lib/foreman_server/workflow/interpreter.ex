@@ -6,6 +6,11 @@ defmodule ForemanServer.Workflow.Interpreter do
   @moduledoc """
   Loads workflow YAML files and validates their required phase structure.
   """
+
+  # Shared with `RunExecutor`, deliberately: the loader's refusal and the
+  # executor's run-terminal reporting MUST agree on what "pending" means, and
+  # they can only do that by reading one predicate.
+  alias ForemanServer.Workflow.CommitDeferral
   @required_top_level_keys ~w(name phases)
   @required_phase_keys ~w(name)
   @allowed_phase_actions ~w(prompt command bash)
@@ -40,6 +45,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_required_fields!(workflow, path)
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
+    validate_commits!(workflow, path)
     {:ok, workflow}
   end
 
@@ -397,6 +403,91 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
+  # `commit:` is PHASE-level, and deliberately the opposite shape from
+  # `worktree:`. A run has exactly one worktree, so a phase has nothing to
+  # decide there; but each phase produces its own output, so whether that
+  # output becomes a commit is genuinely a per-phase question. `true` (the
+  # default when the key is absent) commits the phase's work when the phase
+  # completes; `false` DEFERS it, leaving the changes in the worktree for a
+  # later phase to commit, which is how several phases are batched into one
+  # commit.
+  #
+  # Deferral is validated statically only where the manifest ALONE makes the
+  # declaration unsatisfiable. Whether never-committed work is a defect depends
+  # on `worktree.cleanup`, which is workflow-level, so the two must be read
+  # together — see `validate_commit_cleanup!/3`.
+  defp validate_commits!(workflow, path) do
+    phases = Map.get(workflow, "phases")
+
+    phases
+    |> Enum.with_index()
+    |> Enum.each(fn {phase, index} -> validate_commit_value!(phase, index, path) end)
+
+    validate_commit_cleanup!(phases, Map.get(workflow, "worktree"), path)
+    :ok
+  end
+
+  defp validate_commit_value!(phase, index, path) when is_map(phase) do
+    case Map.get(phase, "commit") do
+      value when value in [nil, true, false] ->
+        :ok
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message:
+            "workflow template #{path} phase #{index} \"commit\" must be a boolean (true or false)"
+    end
+  end
+
+  defp validate_commit_value!(_phase, _index, _path), do: :ok
+
+  # Refuses only the combination the manifest cannot honour: work that no phase
+  # will ever commit, in a worktree that will be DELETED. `cleanup: always` and
+  # `on_success` both reclaim the checkout, so the deferred changes are
+  # destroyed — there is no later run, no branch, and nothing for `AutoPR` to
+  # propose. Nothing at runtime can rescue that, and the failure it produces
+  # without this check is an unattributable `git worktree remove` error or a
+  # silently empty PR, so it is refused at load naming both halves of the
+  # contradiction.
+  #
+  # With `cleanup: never` (the default) the same manifest is LEGITIMATE: the
+  # work survives in the worktree on disk, where an operator can inspect or
+  # commit it by hand. That is a coherent thing to author — a workflow that
+  # stages changes for human review — so it loads, and REQ-006's run-terminal
+  # warning makes the absent PR attributable instead.
+  #
+  # This replaced an UNCONDITIONAL raise on any never-committed deferral, which
+  # conflated the two cases: it refused the legitimate `cleanup: never` manifest
+  # along with the impossible one, and so made "defer for review" inexpressible.
+  # The satisfiability test is the PRD's design principle — refuse what cannot
+  # be honoured, warn where the consequence would merely be invisible.
+  #
+  # `worktree: enabled: false` is not a case here: no worktree is created, so
+  # `commit:` is inert (REQ-003) and there is nothing to delete.
+  defp validate_commit_cleanup!(phases, worktree, path) do
+    pending = CommitDeferral.pending_phase(phases)
+    cleanup = cleanup_mode(worktree)
+
+    if is_integer(pending) and cleanup in ["always", "on_success"] and worktree_enabled?(worktree) do
+      raise Workflow.MissingRequiredPhaseError,
+        message:
+          "workflow template #{path} phase #{pending} declares \"commit: false\" but no later phase commits, and \"worktree.cleanup\" is \"#{cleanup}\": the deferred work would be destroyed when the run's worktree is reclaimed. Commit it in a later phase, or declare \"cleanup: never\" to keep the worktree for inspection."
+    end
+
+    :ok
+  end
+
+  # Absent `cleanup:` is `never` — the same default `RunExecutor.worktree_cleanup/1`
+  # applies. Reading it as `always` here would refuse every deferring manifest
+  # that declares no `worktree:` block at all, which is most of them.
+  defp cleanup_mode(worktree) when is_map(worktree), do: Map.get(worktree, "cleanup") || "never"
+  defp cleanup_mode(_worktree), do: "never"
+
+  defp worktree_enabled?(worktree) when is_map(worktree),
+    do: Map.get(worktree, "enabled") != false
+
+  defp worktree_enabled?(_worktree), do: true
+
   defp validate_phase_actions!(phase, index, path) do
     actions =
       @allowed_phase_actions
@@ -488,20 +579,34 @@ defmodule ForemanServer.Workflow.Interpreter do
     end
   end
 
+  # Quotedness decides TYPE, so it has to survive until after casting.
+  #
+  # This previously ran `strip_quotes` and then `cast_scalar`, which destroyed
+  # the only evidence that a value was written as a string: `commit: "false"`
+  # became the binary `"false"` and then the BOOLEAN `false`, silently typed as
+  # a deferral the operator never declared. That is the coercion `commit:`
+  # exists to refuse (PRD REQ-005), and it was invisible because the coerced
+  # value then failed a *different* check — the deferral rule — producing a
+  # confusing error about a phase that never commits.
+  #
+  # Real YAML agrees: a quoted scalar is a string. `"false"` is the three-word
+  # string, not false, and `"8080"` is not the integer. Only a PLAIN scalar is
+  # typed, which is what makes `Interpreter.validate_commit_value!/3` able to
+  # tell a boolean from a string that looks like one.
   defp parse_scalar(value) do
-    value
-    |> strip_quotes()
-    |> cast_scalar()
+    case classify_scalar(value) do
+      {:quoted, inner} -> inner
+      {:plain, plain} -> cast_scalar(plain)
+    end
   end
 
-  defp strip_quotes(value) do
+  defp classify_scalar(value) do
     if String.length(value) >= 2 and
          ((String.starts_with?(value, "\"") and String.ends_with?(value, "\"")) or
             (String.starts_with?(value, "'") and String.ends_with?(value, "'"))) do
-      value
-      |> String.slice(1, String.length(value) - 2)
+      {:quoted, String.slice(value, 1, String.length(value) - 2)}
     else
-      value
+      {:plain, value}
     end
   end
 

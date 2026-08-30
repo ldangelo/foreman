@@ -464,6 +464,170 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end
   end
 
+  # `commit:` is phase-level (a run has one worktree, but each phase produces
+  # its own output). ONE invariant is validated statically: work that no later
+  # phase commits is unproposable, and that is decidable from the manifest
+  # alone. A second refusal — a `requiredFile:` phase reached with work
+  # pending — used to live here and was deleted; see the test below that pins
+  # the manifest now loading.
+  describe "phase commit validation" do
+    defp commit_manifest(phases) do
+      body =
+        phases
+        |> Enum.map(fn {name, extra} ->
+          "  - name: #{name}\n    command: \"/skill:s-#{name}\"\n#{extra}"
+        end)
+        |> Enum.join()
+
+      write_temp_yaml!("name: c\ndescription: d\nphases:\n" <> body)
+    end
+
+    test "accepts an explicit commit: true" do
+      path = commit_manifest([{"a", "    commit: true\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert hd(workflow["phases"])["commit"] == true
+    end
+
+    test "accepts an absent commit key and does not synthesize one" do
+      # Absent must stay absent through the parser: the default lives in
+      # `RunExecutor.phase_commits?/1`, and injecting `true` here would make
+      # "declared nothing" indistinguishable from "declared the default".
+      path = commit_manifest([{"a", ""}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      refute Map.has_key?(hd(workflow["phases"]), "commit")
+    end
+
+    test "casts commit to a real boolean, not the string \"false\"" do
+      # `false` must survive as a boolean through the YAML parse AND the JSON
+      # round-trip the workflow snapshot performs. A string \"false\" would be
+      # truthy at every downstream read.
+      path = commit_manifest([{"a", "    commit: false\n"}, {"b", "    commit: true\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert hd(workflow["phases"])["commit"] === false
+    end
+
+    test "rejects a non-boolean commit value" do
+      path = commit_manifest([{"a", "    commit: maybe\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"commit\" must be a boolean/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a QUOTED commit: \"false\" rather than coercing it" do
+      # The dangerous case, because YAML makes it look intentional and every
+      # downstream read of the string "false" is truthy — the phase would
+      # commit while the manifest says it defers. Malformed must be refused,
+      # never mapped onto a plausible default (AGENTS.md 5.3).
+      path = commit_manifest([{"a", "    commit: \"false\"\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"commit\" must be a boolean/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "rejects a quoted commit: \"true\" on the same grounds" do
+      path = commit_manifest([{"a", "    commit: \"true\"\n"}])
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/phase 0 \"commit\" must be a boolean/,
+                   fn -> Workflow.Interpreter.load!(path) end
+    end
+
+    test "a declared commit value reaches the executor's phase_commits?/1" do
+      # Pins the declaration end-to-end: parsing a boolean is worthless if the
+      # value the executor reads disagrees with it. MUST go through
+      # `PhaseSpec.normalize/1` — `phase_commits?/1` reads the ATOM `:commit`,
+      # so handing it a raw string-keyed manifest phase yields nil for every
+      # input and the test passes vacuously.
+      path = commit_manifest([{"a", "    commit: false\n"}, {"b", "    commit: true\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      [deferring, committing] = Enum.map(workflow["phases"], &ForemanServer.Workflow.PhaseSpec.normalize/1)
+
+      refute ForemanServer.Workflow.RunExecutor.__phase_commits_for_test__(deferring)
+      assert ForemanServer.Workflow.RunExecutor.__phase_commits_for_test__(committing)
+    end
+
+    test "an absent commit key reaches phase_commits?/1 as committing" do
+      # The other half of absent-is-not-false: no :commit key at all, and the
+      # phase still commits.
+      path = commit_manifest([{"a", ""}])
+
+      spec = ForemanServer.Workflow.PhaseSpec.normalize(hd(workflow_phases(path)))
+      refute Map.has_key?(spec, :commit)
+      assert ForemanServer.Workflow.RunExecutor.__phase_commits_for_test__(spec)
+    end
+
+    defp workflow_phases(path) do
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      workflow["phases"]
+    end
+
+    test "accepts deferred work that no later phase commits, under the default cleanup" do
+      # This test previously asserted the OPPOSITE: any never-committed deferral
+      # was refused at load, on the grounds that AutoPR gates on
+      # `git rev-list --count base..head` and so cannot propose uncommitted work.
+      # That consequence is real, but it is not a reason to refuse the manifest —
+      # it conflated an operator mistake with a workflow that deliberately stages
+      # changes in a retained worktree for human review, and made the latter
+      # inexpressible.
+      #
+      # The refusal now fires only when cleanup would DESTROY the deferred work
+      # (see CommitCleanupValidationTest); when the worktree is retained, the
+      # run-terminal warning in CommitWarningTest makes the absent PR
+      # attributable instead. Absent `cleanup:` is `never`, so this manifest is
+      # the retained case.
+      path = commit_manifest([{"a", "    commit: false\n"}])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert workflow["phases"] |> hd() |> Map.get("commit") == false
+    end
+
+    test "accepts a requiredFile phase reached with work still pending" do
+      # This manifest was REFUSED at load until the `commit:` tag was reconciled
+      # to its PRD, on the theory that discovery would mis-attribute phase 0's
+      # uncommitted document to phase 1. The refusal was deleted because it made
+      # deferral and discovery mutually exclusive, forbidding exactly the
+      # batching the tag exists to provide — deferring the phase immediately
+      # before a gated phase is the shape the plan and prd workflows want.
+      #
+      # Mis-attribution remains a property of what discovery SCOPES; it is not
+      # something a load-time veto on manifest shape can fix, and treating the
+      # operator's declared intent as a defect was the wrong trade.
+      path =
+        commit_manifest([
+          {"a", "    commit: false\n"},
+          {"b", "    requiredFile: planning.prd_path\n    commit: true\n"}
+        ])
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert length(workflow["phases"]) == 2
+    end
+
+    test "accepts deferral absorbed by a later phase" do
+      path = commit_manifest([{"a", "    commit: false\n"}, {"b", "    commit: true\n"}])
+
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+
+    test "accepts a requiredFile phase once an intervening phase has committed" do
+      # The pending flag must CLEAR, not latch: phase 1's commit absorbs phase
+      # 0's deferred work, so phase 2's gate starts from a clean tree and is
+      # honest. A latching implementation would reject this valid manifest.
+      path =
+        commit_manifest([
+          {"a", "    commit: false\n"},
+          {"b", "    commit: true\n"},
+          {"c", "    requiredFile: planning.prd_path\n"}
+        ])
+
+      assert {:ok, _workflow} = Workflow.Interpreter.load!(path)
+    end
+  end
 
   defp write_temp_yaml!(contents) do
     directory =

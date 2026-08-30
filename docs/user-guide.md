@@ -643,8 +643,11 @@ optimization; polling remains the fallback.
 `finalize_run/1`, after every phase has completed, and it opens the PR from the
 run's single branch — `foreman/<run-id>` unless the workflow's `worktree.branch`
 says otherwise. There is no per-phase PR and no stacked
-PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, `checkpointPr`, or
-`commit:` setting, and the PR is opened once, at run finalization.
+PR: `foreman` exposes no `pr:`, `merge:`, `stacked:`, or `checkpointPr`
+setting, and the PR title and body are derived by `AutoPR` rather than
+declared. A phase-level `commit:` boolean does exist (see below), but it
+controls only whether a phase commits — never how, and never how many PRs a
+run opens.
 
 Stacked PRs belong to the ensemble skills, not to Foreman, and `--foreman`
 switches them off on purpose — under `--foreman` the Beads skill skips
@@ -658,6 +661,55 @@ agent that writes files without committing still leaves a proposable branch. The
 message (`Foreman run <run-id> phase <n>`) and author are fixed, the commit skips
 repository pre-commit hooks, and a phase that produced nothing creates no commit
 — so AutoPR still proposes only real work.
+
+A phase controls **whether** it commits, with a phase-level `commit:` boolean —
+never how. Unlike `worktree:`, which is workflow-level because a run has only
+one worktree, each phase produces its own output, so this is genuinely a
+per-phase question:
+
+```yaml
+phases:
+  - name: create-prd
+    command: "/skill:ensemble-full-create-prd --foreman"
+    commit: true          # commit this phase's work when it completes (default)
+  - name: refine-prd
+    command: "/skill:ensemble-full-refine-prd --foreman"
+    commit: false         # defer: a later phase's commit absorbs it
+  - name: create-trd
+    command: "/skill:ensemble-full-create-trd --foreman"
+    commit: true          # commits refine-prd's work together with its own
+```
+
+Omitting `commit:` means `true`, so the seven bundled workflows that declare
+nothing keep committing every phase. Use `commit: false` to batch consecutive
+phases into one reviewable commit.
+
+One combination is **rejected when the workflow loads**, not at run time,
+because nothing at run time can rescue it:
+
+- A phase declaring `commit: false` that no later phase commits, in a workflow
+  whose `worktree.cleanup` is `always` or `on_success`. The deferred changes
+  live only in the run's worktree, and both of those modes delete it — so the
+  work is destroyed with no branch and nothing for PR creation to propose. The
+  error names the deferring phase and the cleanup mode, and states both fixes:
+  commit the work in a later phase, or declare `cleanup: never`.
+
+The same never-committed deferral is **accepted** under `cleanup: never` (the
+default when you declare no `worktree:` block). There the work survives in the
+worktree on disk, so a workflow that stages changes for you to inspect or commit
+by hand is a legitimate thing to author. Because PR creation counts commits
+only, such a run succeeds and produces no PR — so Foreman logs a warning when
+the run reaches terminal, naming the deferring phase, and that warning also
+fires when a run fails before reaching the phase that would have absorbed the
+work.
+
+Two earlier rules described here no longer exist. A `commit: false` phase
+immediately before a `requiredFile:` phase was refused, on the theory that
+document discovery would attribute the earlier phase's uncommitted document to
+the gated phase; that refusal made deferral and discovery mutually exclusive and
+so forbade exactly the batching the tag exists to provide, which is the shape the
+`plan` and `prd` workflows want. Never-committed deferral was also refused
+unconditionally, which is the rule now narrowed to the cleanup case above.
 
 ## Documentation Discipline
 
