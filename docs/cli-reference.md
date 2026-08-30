@@ -907,6 +907,28 @@ behavior cannot diverge.
 
 ## Agent Mail
 
+> **NOT IMPLEMENTED.** Neither `foreman inbox` nor `foreman inbox send` exists.
+> The CLI's command switch (`packages/foreman_cli/cmd/foreman/main.go:85-98`)
+> dispatches exactly `project`, `task`, `run`, `workflow` and `init`; anything
+> else returns `foreman: unknown command`. The string `inbox` does not appear in
+> any Go, TypeScript or JavaScript source in any package.
+>
+> The Elixir side this section describes is gone too. It named an "event-backed
+> inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`)", but the
+> only code that ever produced those events was
+> `ForemanServer.Aggregates.InboxThread`, which was unreachable from every
+> direction at once — `inbox.send` absent from the command allowlist, no
+> `"inbox:"` clause in `CommandRouter.aggregate_module_for/1`, no event structs,
+> no `ProjectionStore` handler, no HTTP route, no MCP tool, and no caller. It has
+> been deleted (see AGENTS.md §5.3). There is no
+> `foreman_inbox_message_projections` table in the codebase either, despite the
+> mention under `server status`.
+>
+> Retained as a record of the intended design, not as a description of behavior.
+> Do not implement against it without re-deriving the design: an entire
+> requirement (REQ-007 of `PRD-2026-d306444f-phase-commit-control.md`) was
+> specified against this inbox as though it worked, and had to be dropped.
+
 ### `foreman inbox`
 
 View the Agent Mail inbox — messages sent between agents and the foreman orchestrator. In Elixir/default backend mode, inbox reads the Elixir event-backed inbox projection (`InboxMessageAppended` / `InboxDeliveryUpdated`) and does not require the Node daemon socket. When run on a TTY with no explicit selector, `foreman inbox` opens the unified cockpit focused on the inbox view: task list, selected-run timeline, status/board jump keys, details, and `m/e/l/r/f` tabs for messages, events, logs, reports, and files. The cockpit phase rail follows the selected run's workflow phase order and shows per-phase retry counts. Message rows render oldest-first (chronological) with local `mm/dd hh:mm`, sender, receiver, and message columns. The cockpit refreshes live while keeping the selected run pinned; `/`, `1/2/3`, `!`, `p`, and `d` search/filter rows; `a` or `:` opens the action palette. Palette reset requires explicit `y` confirmation and then runs `foreman reset` for the selected task; non-reset actions still print copy/manual command text. Use `--non-interactive` for scriptable output. Task/run drilldowns stay scriptable by default and enter the cockpit only with `--interactive`.

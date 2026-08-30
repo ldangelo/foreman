@@ -673,6 +673,31 @@ One catch-all serving both is a debugging tax. Give each cause its own code:
 implementation, and every call returned `METHOD_NOT_FOUND — Unknown tool`,
 indistinguishable from a client typo.
 
+**There is no per-run operator inbox, and there never was one that worked.**
+`ForemanServer.Aggregates.InboxThread` handled `inbox.send` and
+`inbox.delivery.update` and applied `InboxMessageAppended` /
+`InboxDeliveryUpdated`, and it was unreachable from every direction at once:
+`inbox.send` is not in `CommandGateway`'s command allowlist (an operator
+dispatch returns `{:error, {:command_not_allowed, "inbox.send"}}`),
+`CommandRouter.aggregate_module_for/1` has no `"inbox:"` clause, no module
+referenced it, no event struct existed for either event, `ProjectionStore` had
+no handler, and no HTTP route or MCP tool exposed a read path. Its only
+reference repo-wide was its own `defmodule` line.
+
+It has been deleted rather than wired: wiring it is a feature — allowlist entry,
+router clause, event structs, projection handler, read surface, retention — and
+its one would-be consumer (REQ-007 of
+`PRD-2026-d306444f-phase-commit-control.md`) was dropped. Git history holds the
+design if it is ever wanted.
+
+This cost real work before it was found: REQ-007 was specified against "the
+existing run-scoped operator inbox" as though it functioned, and the whole
+requirement had to be dropped once it did not. Do NOT confuse it with
+`ForemanServer.Inbox.SharedInbox`, which is live and different (ingestion of
+external items via the attach bridge and trigger poller). If you need to deliver
+something to an operator mid-run, no such channel exists — say so rather than
+designing against this one.
+
 ### 5.4 Typed parameters — one key convention, normalized once
 
 Pick one key convention per boundary (atoms internally), convert at the single
